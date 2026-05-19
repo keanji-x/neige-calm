@@ -1,18 +1,21 @@
 // TanStack Router setup — code-based (not file-based).
 //
-// We keep all data fetching exactly where it is (useKernel + pages.tsx
-// props) for this milestone; this file only handles "what page renders
-// for which URL" plus URL-sync of the route. A later pass will move
-// loaders / data-fetching into per-route `loader` functions.
-//
 // Routes:
 //   /                  → TodayPage
 //   /cove/$coveId      → CovePage
 //   /wave/$waveId      → WavePage
 //
 // The root route renders <CalmApp /> as a layout shell; CalmApp owns
-// Sidebar + TitleBar + kernel state, and emits an <Outlet /> for the
-// matched route. That keeps the kernel hook mounted once across nav.
+// Sidebar + TitleBar and emits an <Outlet /> for the matched route.
+//
+// Each route component below sources its data via TanStack Query hooks
+// from `api/queries.ts`. The kernel data is no longer threaded through
+// a shared context — Query handles caching, deduplication, and refetch.
+// WS events translate to query invalidations in `app/eventBridge.tsx`.
+//
+// A future pass will move per-route fetches into `loader` functions so
+// the URL alone is enough to prime the cache before render; the present
+// shape keeps loaders out of the picture entirely.
 
 import {
   createRootRoute,
@@ -22,8 +25,26 @@ import {
 } from '@tanstack/react-router';
 import { CalmApp } from '../CalmApp';
 import { CovePage, TodayPage, WavePage } from '../pages';
-import { MissingShell, useCalmShell } from './shell';
+import { MissingShell } from './shell';
 import { useGo } from './navigation';
+import { useTodayTerminal } from '../hooks/useTodayTerminal';
+import {
+  useCovesQuery,
+  useCreateWaveMutation,
+  useDeleteCardMutation,
+  useDeleteCoveMutation,
+  useDeleteWaveMutation,
+  useUpdateCoveMutation,
+  useUpdateWaveMutation,
+  useWaveDetailQuery,
+  useWavesByCoveQuery,
+} from '../api/queries';
+import { adaptCard, adaptCove, adaptWave } from '../api/adapt';
+import * as api from '../api/calm';
+import { useQueryClient, useQueries } from '@tanstack/react-query';
+import { queryKeys } from '../api/queries';
+import type { Cove, Wave, WaveCardSlot } from '../types';
+import type { AddPanelKind } from '../ui';
 
 // ---------- Route tree ----------
 
@@ -53,11 +74,9 @@ const routeTree = rootRoute.addChildren([indexRoute, coveRoute, waveRoute]);
 
 export const router = createRouter({
   routeTree,
-  // Use HTML5 history; default works fine. We don't need preloading yet.
   defaultPreload: false,
 });
 
-// Type registration for the router so `useNavigate` / `Link` are typed.
 declare module '@tanstack/react-router' {
   interface Register {
     router: typeof router;
@@ -65,55 +84,84 @@ declare module '@tanstack/react-router' {
 }
 
 // ---------- Route page components ----------
-//
-// Each route component pulls the shared "shell" state from CalmApp via
-// `useCalmShell()` (which CalmApp exposes through a context above the
-// <Outlet />) and stitches together the right props for the page.
-//
-// This keeps page bodies (TodayPage / CovePage / WavePage) unchanged —
-// they still receive the same props they used to, just sourced from
-// route params + the shell context instead of CalmApp's local state.
 
 function IndexComponent() {
-  const s = useCalmShell();
   const go = useGo();
+  const covesQ = useCovesQuery();
+  const kernelCoves = covesQ.data ?? [];
+
+  // Today's calendar + clock want a flat wave list across all coves.
+  // One query per cove keeps cache granularity sensible (a wave moving
+  // between coves invalidates only the two affected lists).
+  const waveQueries = useQueries({
+    queries: kernelCoves.map((c) => ({
+      queryKey: queryKeys.wavesInCove(c.id),
+      queryFn: () => api.wavesInCove(c.id),
+    })),
+  });
+
+  const coves: Cove[] = kernelCoves.map(adaptCove);
+  const waves: Wave[] = [];
+  for (const q of waveQueries) {
+    if (!q.data) continue;
+    for (const w of q.data) waves.push(adaptWave(w, []));
+  }
+
+  const todayTerm = useTodayTerminal();
+
   return (
     <TodayPage
-      waves={s.waves}
-      coves={s.coves}
+      waves={waves}
+      coves={coves}
       onGo={go}
-      todayTerminalId={s.todayTerm.today?.terminalId ?? null}
-      todayError={s.todayTerm.error}
-      onResetTodayTerminal={s.todayTerm.reset}
+      todayTerminalId={todayTerm.today?.terminalId ?? null}
+      todayError={todayTerm.error}
+      onResetTodayTerminal={todayTerm.reset}
     />
   );
 }
 
 function CoveComponent() {
-  const s = useCalmShell();
   const go = useGo();
   const { coveId } = useParams({ from: coveRoute.id });
-  const cove = s.coves.find((c) => c.id === coveId) ?? null;
-  if (!cove) return <MissingShell label="Cove" onGo={go} />;
+  const covesQ = useCovesQuery();
+  const wavesQ = useWavesByCoveQuery(coveId);
+  const createWave = useCreateWaveMutation();
+  const updateCove = useUpdateCoveMutation();
+  const deleteCove = useDeleteCoveMutation();
+  const deleteWave = useDeleteWaveMutation();
+
+  const kernelCove = covesQ.data?.find((c) => c.id === coveId);
+  if (!kernelCove) {
+    // While the coves list is loading, we don't know if the cove exists.
+    // Show the calm "Connecting…" shell rather than flashing a missing
+    // state. CalmApp already renders LoadingShell for the initial fetch,
+    // but a hard-refresh on /cove/:id can land here before cache primes.
+    if (covesQ.isLoading) return null;
+    return <MissingShell label="Cove" onGo={go} />;
+  }
+  const cove = adaptCove(kernelCove);
+  const waves: Wave[] = (wavesQ.data ?? []).map((w) => adaptWave(w, []));
+
   return (
     <CovePage
       cove={cove}
-      waves={s.waves.filter((w) => w.coveId === cove.id)}
+      waves={waves}
       onGo={go}
       onCreateWave={async (cId, title) => {
-        const w = await s.k.createWave(cId, title);
+        const w = await createWave.mutateAsync({ cove_id: cId, title });
         go({ name: 'wave', id: w.id });
       }}
       onRenameCove={async (cId, name) => {
         try {
-          await s.k.renameCove(cId, name);
+          await updateCove.mutateAsync({ id: cId, body: { name } });
         } catch (err) {
           console.warn('[Calm] cove rename failed:', err);
         }
       }}
       onDeleteCove={async (cId) => {
         try {
-          await s.k.deleteCove(cId);
+          await deleteCove.mutateAsync(cId);
           go({ name: 'today' });
         } catch (err) {
           console.warn('[Calm] cove delete failed:', err);
@@ -121,7 +169,7 @@ function CoveComponent() {
       }}
       onDeleteWave={async (waveId) => {
         try {
-          await s.k.deleteWave(waveId);
+          await deleteWave.mutateAsync({ id: waveId, coveId: cove.id });
         } catch (err) {
           console.warn('[Calm] wave delete failed:', err);
         }
@@ -131,30 +179,61 @@ function CoveComponent() {
 }
 
 function WaveComponent() {
-  const s = useCalmShell();
   const go = useGo();
   const { waveId } = useParams({ from: waveRoute.id });
-  const wave = s.currentWave(waveId) ?? s.waves.find((w) => w.id === waveId) ?? null;
-  if (!wave) return <MissingShell label="Wave" onGo={go} />;
-  const cove = s.coves.find((c) => c.id === wave.coveId) ?? null;
-  if (!cove) return <MissingShell label="Cove" onGo={go} />;
+  const detailQ = useWaveDetailQuery(waveId);
+  const covesQ = useCovesQuery();
+  const qc = useQueryClient();
+  const updateWave = useUpdateWaveMutation();
+  const deleteWave = useDeleteWaveMutation();
+  const deleteCard = useDeleteCardMutation();
+
+  // Wave detail is the source of truth for "does this wave exist?".
+  if (!detailQ.data) {
+    if (detailQ.isLoading) return null;
+    return <MissingShell label="Wave" onGo={go} />;
+  }
+  const detail = detailQ.data;
+  const kernelCove = covesQ.data?.find((c) => c.id === detail.wave.cove_id);
+  if (!kernelCove) {
+    if (covesQ.isLoading) return null;
+    return <MissingShell label="Cove" onGo={go} />;
+  }
+  const cove = adaptCove(kernelCove);
+  const uiWave = adaptWave(detail.wave, detail.overlays);
+  uiWave.cards = detail.cards.map((k): WaveCardSlot => {
+    const adapted = adaptCard(k);
+    if (adapted) return { kind: 'card', card: adapted };
+    return { kind: 'unknown', id: k.id, kernelKind: k.kind };
+  });
+
   return (
     <WavePage
-      wave={wave}
+      wave={uiWave}
       cove={cove}
       onGo={go}
-      onAddCard={s.addCard}
-      onRemoveCard={(wId, idx) => s.removeCard(wId, idx, waveId)}
+      onAddCard={async (wId, type) => {
+        await addCardOfKind(qc, wId, type);
+      }}
+      onRemoveCard={async (_wId, idx) => {
+        const target = detail.cards[idx];
+        if (!target) return;
+        try {
+          await deleteCard.mutateAsync({ id: target.id, waveId: detail.wave.id });
+        } catch (err) {
+          console.warn('[Calm] card delete failed:', err);
+        }
+      }}
       onRenameWave={async (wId, title) => {
         try {
-          await s.k.renameWave(wId, title);
+          await updateWave.mutateAsync({ id: wId, body: { title } });
         } catch (err) {
           console.warn('[Calm] wave rename failed:', err);
         }
       }}
       onDeleteWave={async (wId) => {
         try {
-          await s.k.deleteWave(wId);
+          await deleteWave.mutateAsync({ id: wId, coveId: cove.id });
           go({ name: 'cove', coveId: cove.id });
         } catch (err) {
           console.warn('[Calm] wave delete failed:', err);
@@ -162,4 +241,33 @@ function WaveComponent() {
       }}
     />
   );
+}
+
+/**
+ * Card create routed by kind. Terminal cards need the two-step "card
+ * row + Terminal row + payload patch" dance the kernel expects; doc /
+ * plan cards land in M3 with the plugin host, so for now we just warn.
+ *
+ * Lives here (not in queries.ts) because it composes three mutations
+ * in sequence; wrapping that in `useMutation` would obscure the
+ * sequencing for not much gain. We call the api client directly and
+ * trigger the wave-detail invalidation manually.
+ */
+async function addCardOfKind(
+  qc: ReturnType<typeof useQueryClient>,
+  waveId: string,
+  type: AddPanelKind,
+): Promise<void> {
+  if (type !== 'terminal') {
+    console.warn(`[Calm] card kind '${type}' not yet wired to the kernel`);
+    return;
+  }
+  try {
+    const card = await api.createCard(waveId, { kind: 'terminal' });
+    const term = await api.createTerminal(card.id, {});
+    await api.updateCard(card.id, { payload: { terminal_id: term.id } });
+    void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
+  } catch (err) {
+    console.warn('[Calm] terminal create failed:', err);
+  }
 }

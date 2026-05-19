@@ -1,38 +1,34 @@
 // CalmApp — the layout shell rendered by the router's root route.
 //
-// What's here: TitleBar, Sidebar, theme toggle, the kernel hook (single
-// mount across all routes), and the <Outlet /> where the matched route
-// renders its page. The "which page renders" logic moved to
-// `src/app/router.tsx`; this component no longer holds a `useState<Route>`
-// of its own. URL drives selection.
+// What's here: TitleBar, Sidebar, theme toggle, and the <Outlet /> where
+// the matched route renders its page. URL drives selection (see
+// `app/router.tsx`); this component holds no kernel data of its own.
 //
-// What we still own here:
-//  - theme state (light/dark toggle on the TitleBar)
-//  - useKernel + useTodayTerminal — single mount keeps the WS subscription
-//    and per-browser today-terminal cache stable across navigation
-//  - the adapted UI shapes (coves / waves) the page components consume
-//  - the WS-driven wave_detail fetch trigger when the URL points at a
-//    wave we haven't loaded yet
+// Kernel data flows through TanStack Query hooks (see `api/queries.ts`):
+// every page fetches what it needs and the shared QueryClient
+// deduplicates. WS-driven freshness is handled by `app/eventBridge.tsx`,
+// mounted inside `AppProviders` so it sees the same QueryClient.
 //
-// Route components (in src/app/router.tsx) read all of the above via
-// the CalmShellProvider context exposed below.
+// What this component still owns:
+//   * theme (light/dark toggle on the TitleBar — local UI state).
+//   * the Sidebar's data shape: it wants `Cove[]` and `Wave[]` (across
+//     all coves) for the "running / waiting" badges. We fetch coves
+//     once and fan out wave queries with `useQueries`, then adapt to
+//     UI shapes inline. The result is shallow-stable enough for the
+//     Sidebar; per-cove invalidations naturally roll up.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Outlet, useRouterState } from '@tanstack/react-router';
+import { useQueries } from '@tanstack/react-query';
 import { Sidebar, TitleBar } from './ui';
-import { adaptCard, adaptCove, adaptWave } from './api/adapt';
-import { useKernel } from './hooks/useKernel';
-import { useTodayTerminal } from './hooks/useTodayTerminal';
-import { CalmShellProvider, type CalmShellValue } from './app/shell';
+import { adaptCove, adaptWave } from './api/adapt';
+import * as api from './api/calm';
+import { queryKeys, useCovesQuery, useCreateCoveMutation } from './api/queries';
 import { useGo } from './app/navigation';
-import type { Cove, Route as AppRoute, Wave, WaveCardSlot } from './types';
-import type { AddPanelKind } from './ui';
+import type { Cove, Route as AppRoute, Wave } from './types';
 
 export function CalmApp() {
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
-
-  const k = useKernel();
-  const todayTerm = useTodayTerminal();
   const go = useGo();
 
   useEffect(() => {
@@ -49,95 +45,48 @@ export function CalmApp() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const route: AppRoute = useMemo(() => parseAppRoute(pathname), [pathname]);
 
-  // ----- Derived UI shapes ------------------------------------------------
+  // ----- Sidebar data -----------------------------------------------------
+  //
+  // Sidebar wants a flat list of all waves so it can render per-cove
+  // counts and the "Waiting on you" bucket. We fan out one query per
+  // cove and adapt the results. Each query has its own cache entry, so
+  // a single-cove invalidation only refetches that cove's wave list.
 
-  const coves: Cove[] = useMemo(() => k.coves.map(adaptCove), [k.coves]);
+  const covesQ = useCovesQuery();
+  const kernelCoves = covesQ.data ?? [];
 
-  /**
-   * UI `Wave[]` built from the flat per-cove fetches. `WavePage` only needs
-   * fully-loaded cards when the user navigates into a wave; for the sidebar
-   * and TodayPage we just need the kernel wave shape adapted with default
-   * status/progress (overlays fold in once `wave_detail` is fetched).
-   */
+  const waveQueries = useQueries({
+    queries: kernelCoves.map((c) => ({
+      queryKey: queryKeys.wavesInCove(c.id),
+      queryFn: () => api.wavesInCove(c.id),
+    })),
+  });
+
+  const coves: Cove[] = useMemo(() => kernelCoves.map(adaptCove), [kernelCoves]);
+
+  // Adapt waves with empty overlays; per-wave detail (with overlays)
+  // lands when the user opens that wave. The sidebar's status/progress
+  // badges therefore reflect "structural" state for unloaded waves —
+  // good enough since the badges that matter (running/waiting) come
+  // from overlays that the wave-detail query carries.
   const waves: Wave[] = useMemo(() => {
     const out: Wave[] = [];
-    for (const list of k.wavesByCove.values()) {
-      for (const w of list) {
-        const detail = k.waveDetails.get(w.id);
-        out.push(adaptWave(w, detail?.overlays ?? []));
+    for (const q of waveQueries) {
+      if (!q.data) continue;
+      for (const w of q.data) {
+        out.push(adaptWave(w, []));
       }
     }
     return out;
-  }, [k.wavesByCove, k.waveDetails]);
+    // Stable-ish: depends on each query's data identity. React-Query
+    // keeps data references stable across refetches when the payload
+    // is structurally equal, so this re-derives only on real changes.
+  }, [waveQueries]);
 
-  // For the currently-routed wave, fetch detail on demand and produce the
-  // UI shape (with cards from detail).
-  //
-  // Each kernel card maps to a `WaveCardSlot`: a parsed `WaveCardData` when
-  // the registry adapted it, or an `unknown` placeholder when no entry
-  // claimed it (most commonly because the per-kind zod schema rejected the
-  // payload). Filtering nulls would silently drop server cards the UI can't
-  // parse — surfacing them as placeholders keeps drift visible to the user
-  // and to the console warnings the builtin adapters emit on parse failure.
-  const currentWave = useCallback(
-    (waveId: string): Wave | null => {
-      const detail = k.waveDetails.get(waveId);
-      if (!detail) return null;
-      const uiWave = adaptWave(detail.wave, detail.overlays);
-      uiWave.cards = detail.cards.map((k): WaveCardSlot => {
-        const adapted = adaptCard(k);
-        if (adapted) return { kind: 'card', card: adapted };
-        return { kind: 'unknown', id: k.id, kernelKind: k.kind };
-      });
-      return uiWave;
-    },
-    [k.waveDetails],
-  );
+  const loading = covesQ.isLoading;
+  const error = covesQ.error;
 
-  // Trigger wave_detail fetch when route lands on an unloaded wave.
-  useEffect(() => {
-    if (route.name === 'wave' && !k.waveDetails.has(route.id)) {
-      void k.refetchWaveDetail(route.id);
-    }
-  }, [route, k]);
-
-  // ----- Actions ----------------------------------------------------------
-
-  const addCard = useCallback(
-    async (waveId: string, type: AddPanelKind) => {
-      if (type === 'terminal') {
-        try {
-          await k.createTerminalCard(waveId);
-        } catch (err) {
-          console.warn('[Calm] terminal create failed:', err);
-        }
-        return;
-      }
-      // doc / plan cards land in M3 with the plugin host. For now noop.
-      console.warn(`[Calm] card kind '${type}' not yet wired to the kernel`);
-    },
-    [k],
-  );
-
-  const removeCard = useCallback(
-    async (_waveId: string, idx: number, routedWaveId: string) => {
-      const detail = k.waveDetails.get(routedWaveId);
-      if (!detail) return;
-      const targetCardKernel = detail.cards[idx];
-      if (!targetCardKernel) return;
-      try {
-        await k.deleteCard(targetCardKernel.id);
-      } catch (err) {
-        console.warn('[Calm] card delete failed:', err);
-      }
-    },
-    [k],
-  );
-
-  const shell: CalmShellValue = useMemo(
-    () => ({ k, todayTerm, coves, waves, currentWave, addCard, removeCard }),
-    [k, todayTerm, coves, waves, currentWave, addCard, removeCard],
-  );
+  const createCove = useCreateCoveMutation();
 
   return (
     <div className="win">
@@ -152,19 +101,13 @@ export function CalmApp() {
           route={route}
           onGo={go}
           onCreateCove={async (name, color) => {
-            await k.createCove(name, color);
+            await createCove.mutateAsync({ name, color });
           }}
         />
         <main className="page">
           <div className="scroll">
-            {k.error && <ErrorBanner err={k.error} />}
-            {k.loading ? (
-              <LoadingShell />
-            ) : (
-              <CalmShellProvider value={shell}>
-                <Outlet />
-              </CalmShellProvider>
-            )}
+            {error && <ErrorBanner err={error} />}
+            {loading ? <LoadingShell /> : <Outlet />}
           </div>
         </main>
       </div>

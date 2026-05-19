@@ -1,63 +1,18 @@
-// CalmShell context — the "everything the page components need" object
-// that CalmApp passes down through an <Outlet />.
+// Shell utilities for the router shell.
 //
-// We use a context instead of plumbing props from rootRoute's component
-// because TanStack Router's <Outlet /> renders the child route directly;
-// there's no built-in prop-pass equivalent of React Router's `<Outlet
-// context=... />` for code-based child routes. Context is the simplest
-// idiomatic seam.
+// Historically this file owned a `CalmShellProvider` context that
+// shuttled kernel state from CalmApp's `useKernel` down to the route
+// components via React context. That moved when `useKernel` was
+// replaced by TanStack Query hooks: every page now reads kernel data
+// directly through `useCovesQuery` / `useWavesByCoveQuery` /
+// `useWaveDetailQuery`, so there's nothing left to share.
 //
-// Scope: layout + kernel handles + currently-mounted-route helpers.
-// Data is still owned by useKernel — this is just a transport layer
-// so route components can compose CovePage / WavePage props without
-// re-implementing the adaptation logic.
+// What stays here: `MissingShell`, the "the cove/wave you navigated to
+// no longer exists" fallback. It's rendered by the route components in
+// `router.tsx` when a param resolves to nothing.
 
-import { createContext, useContext, type ReactNode } from 'react';
 import { Icon } from '../Icon';
-import type { Cove, Route as AppRoute, Wave } from '../types';
-import type { AddPanelKind } from '../ui';
-import type { useKernel } from '../hooks/useKernel';
-import type { useTodayTerminal } from '../hooks/useTodayTerminal';
-
-export interface CalmShellValue {
-  k: ReturnType<typeof useKernel>;
-  todayTerm: ReturnType<typeof useTodayTerminal>;
-  coves: Cove[];
-  waves: Wave[];
-  /** Derive the UI Wave with cards for the given id, or null if detail
-   *  hasn't loaded yet. CalmApp triggers the fetch on route change. */
-  currentWave: (waveId: string) => Wave | null;
-  /** Card creation routed back through the kernel. Single source of truth
-   *  so WaveComponent doesn't reimplement the terminal-bootstrap dance. */
-  addCard: (waveId: string, type: AddPanelKind) => Promise<void>;
-  /** Card removal — index is the position within the *currently-routed*
-   *  wave's detail.cards. We pass the routed waveId so the helper can
-   *  look up the kernel card row. */
-  removeCard: (waveId: string, idx: number, routedWaveId: string) => Promise<void>;
-}
-
-const Ctx = createContext<CalmShellValue | null>(null);
-
-export function CalmShellProvider({
-  value,
-  children,
-}: {
-  value: CalmShellValue;
-  children: ReactNode;
-}) {
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
-}
-
-export function useCalmShell(): CalmShellValue {
-  const v = useContext(Ctx);
-  if (!v) {
-    throw new Error(
-      'useCalmShell must be used inside <CalmShellProvider>. ' +
-        'A route component rendered outside of <CalmApp /> as its layout?',
-    );
-  }
-  return v;
-}
+import type { Route as AppRoute } from '../types';
 
 export function MissingShell({
   label,

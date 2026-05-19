@@ -11,9 +11,19 @@
 // Browser-scoped (not per-user) by design — auth and per-user state come
 // with M3. Clearing site data costs you the binding; the underlying
 // Terminal row stays in the Scratch cove until you delete the card.
+//
+// This hook is the one place in the app that performs an imperative
+// bootstrap sequence rather than a single mutation. We could decompose
+// it into `useCreateCoveMutation` etc., but the "ensureScratchCove → ensure
+// TodayWave → ensureTerminalCard" chain is read-then-write three times
+// over, and modeling it as a single async resolver keeps the idempotency
+// invariants in one place. After mutating, we invalidate the affected
+// query keys so other consumers (Sidebar, Cove page) see the new rows.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import * as api from '../api/calm';
+import { queryKeys } from '../api/queries';
 
 const STORAGE_KEY = 'calm.todayCardId';
 const SCRATCH_COVE_NAME = 'Scratch';
@@ -38,6 +48,7 @@ export function useTodayTerminal(): UseTodayTerminalResult {
   const [today, setToday] = useState<TodayTerminal | null>(null);
   const [error, setError] = useState<Error | null>(null);
   const inFlightRef = useRef(false);
+  const qc = useQueryClient();
 
   const resolve = useCallback(async () => {
     if (inFlightRef.current) return;
@@ -68,8 +79,14 @@ export function useTodayTerminal(): UseTodayTerminalResult {
       //    same Scratch cove, same Today wave, same first terminal card
       //    (across browsers / cleared-storage cycles) so the kernel doesn't
       //    accumulate orphan cards.
-      const cove = await ensureScratchCove();
-      const wave = await ensureTodayWave(cove.id);
+      const { cove, created: coveCreated } = await ensureScratchCove();
+      if (coveCreated) {
+        void qc.invalidateQueries({ queryKey: queryKeys.coves() });
+      }
+      const { wave, created: waveCreated } = await ensureTodayWave(cove.id);
+      if (waveCreated) {
+        void qc.invalidateQueries({ queryKey: queryKeys.wavesInCove(cove.id) });
+      }
       const detail = await api.getWaveDetail(wave.id);
       const existingCard = detail.cards.find((c) => {
         if (c.kind !== 'terminal') return false;
@@ -94,6 +111,7 @@ export function useTodayTerminal(): UseTodayTerminalResult {
       const patched = await api.updateCard(card.id, {
         payload: { terminal_id: term.id },
       });
+      void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(wave.id) });
       localStorage.setItem(STORAGE_KEY, patched.id);
       setToday({ cardId: patched.id, terminalId: term.id });
     } catch (e) {
@@ -101,7 +119,7 @@ export function useTodayTerminal(): UseTodayTerminalResult {
     } finally {
       inFlightRef.current = false;
     }
-  }, []);
+  }, [qc]);
 
   useEffect(() => {
     void resolve();
@@ -126,15 +144,20 @@ export function useTodayTerminal(): UseTodayTerminalResult {
 async function ensureScratchCove() {
   const coves = await api.listCoves();
   const existing = coves.find((c) => c.name === SCRATCH_COVE_NAME);
-  if (existing) return existing;
-  return api.createCove({ name: SCRATCH_COVE_NAME, color: SCRATCH_COVE_COLOR });
+  if (existing) return { cove: existing, created: false };
+  const cove = await api.createCove({
+    name: SCRATCH_COVE_NAME,
+    color: SCRATCH_COVE_COLOR,
+  });
+  return { cove, created: true };
 }
 
 async function ensureTodayWave(coveId: string) {
   const waves = await api.wavesInCove(coveId);
   const existing = waves.find((w) => w.title === TODAY_WAVE_TITLE);
-  if (existing) return existing;
-  return api.createWave({ cove_id: coveId, title: TODAY_WAVE_TITLE });
+  if (existing) return { wave: existing, created: false };
+  const wave = await api.createWave({ cove_id: coveId, title: TODAY_WAVE_TITLE });
+  return { wave, created: true };
 }
 
 function isNotFound(e: unknown): boolean {
