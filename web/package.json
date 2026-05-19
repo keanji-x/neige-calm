@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "gen:api": "cargo run --quiet --manifest-path ../Cargo.toml --bin emit-openapi > src/api/openapi.json && openapi-typescript src/api/openapi.json -o src/api/generated.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "^1.7.2",
@@ -27,6 +28,7 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
+    "openapi-typescript": "^7.13.0",
     "typescript": "~6.0.2",
     "vite": "^8.0.4"
   }
