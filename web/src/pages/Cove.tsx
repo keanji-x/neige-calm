@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Crumbs, WaveRow } from '../ui';
+import { Crumbs } from '../shared/components/Crumbs';
+import { WaveRow } from '../shared/components/WaveRow';
 import type { Cove, Route, Wave } from '../types';
 import { DeleteButton } from './_shared';
 

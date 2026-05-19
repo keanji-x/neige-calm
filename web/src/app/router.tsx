@@ -13,9 +13,13 @@
 // a shared context — Query handles caching, deduplication, and refetch.
 // WS events translate to query invalidations in `app/eventBridge.tsx`.
 //
-// A future pass will move per-route fetches into `loader` functions so
-// the URL alone is enough to prime the cache before render; the present
-// shape keeps loaders out of the picture entirely.
+// Each route declares a `loader` that primes the relevant TanStack Query
+// cache entries via `queryClient.ensureQueryData(...)` before the route
+// component mounts. The matching `useQuery` hook inside the component
+// then reads the already-cached data instantly — no per-route spinner
+// flash on navigation. The loader uses the same `{ queryKey, queryFn }`
+// factories exported from `api/queries.ts`, so cache shape stays in lock-
+// step with the hook call sites.
 
 import {
   createRootRoute,
@@ -24,11 +28,14 @@ import {
   useParams,
 } from '@tanstack/react-router';
 import { CalmApp } from '../CalmApp';
-import { CovePage, TodayPage, WavePage } from '../pages';
+import { TodayPage } from '../pages/Today';
+import { CovePage } from '../pages/Cove';
+import { WavePage } from '../pages/Wave';
 import { MissingShell } from './shell';
 import { useGo } from './navigation';
 import { useTodayTerminal } from '../hooks/useTodayTerminal';
 import {
+  covesQueryOptions,
   useCovesQuery,
   useCreateWaveMutation,
   useDeleteCardMutation,
@@ -38,13 +45,16 @@ import {
   useUpdateWaveMutation,
   useWaveDetailQuery,
   useWavesByCoveQuery,
+  waveDetailQueryOptions,
+  wavesByCoveQueryOptions,
 } from '../api/queries';
 import { adaptCard, adaptCove, adaptWave } from '../api/adapt';
 import * as api from '../api/calm';
 import { useQueryClient, useQueries } from '@tanstack/react-query';
 import { queryKeys } from '../api/queries';
+import { queryClient } from './providers';
 import type { Cove, Wave, WaveCardSlot } from '../types';
-import type { AddPanelKind } from '../ui';
+import type { AddPanelKind } from '../shared/components/AddPanel';
 
 // ---------- Route tree ----------
 
@@ -55,18 +65,27 @@ const rootRoute = createRootRoute({
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
+  // Today fans out to per-cove wave lists on the page itself; we
+  // conservatively prefetch only the coves list here. The cove → waves
+  // fan-out stays lazy (the page uses `useQueries`) so a slow cove
+  // doesn't block the calendar.
+  loader: () => queryClient.ensureQueryData(covesQueryOptions()),
   component: IndexComponent,
 });
 
 const coveRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/cove/$coveId',
+  loader: ({ params }) =>
+    queryClient.ensureQueryData(wavesByCoveQueryOptions(params.coveId)),
   component: CoveComponent,
 });
 
 const waveRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/wave/$waveId',
+  loader: ({ params }) =>
+    queryClient.ensureQueryData(waveDetailQueryOptions(params.waveId)),
   component: WaveComponent,
 });
 

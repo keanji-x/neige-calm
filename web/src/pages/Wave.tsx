@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Icon } from '../Icon';
-import { AddPanel, type AddPanelKind } from '../ui';
+import { AddPanel, type AddPanelKind } from '../shared/components/AddPanel';
 import type { Cove, Route, Wave } from '../types';
 import { WaveGrid } from '../WaveGrid';
 import { DeleteButton } from './_shared';
