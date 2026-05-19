@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { coveOf, timeOfDay } from '../ui';
+import { coveOf, timeOfDay } from '../shared/components/helpers';
 import type { Cove, Route, Wave } from '../types';
 import { XtermView } from '../XtermView';
 

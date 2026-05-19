@@ -51,13 +51,35 @@ export const queryKeys = {
   waveDetail: (waveId: string) => ['wave', waveId] as const,
 };
 
+// ---------------- Query option factories ----------------
+//
+// Pure `{ queryKey, queryFn }` shapes that both hooks and TanStack Router
+// loaders can consume. Loaders call `queryClient.ensureQueryData(opts)`
+// before the route component mounts; the component then uses the matching
+// `useQuery` hook below which reads the already-cached data instantly,
+// eliminating the per-route spinner flash.
+
+export const covesQueryOptions = () => ({
+  queryKey: queryKeys.coves(),
+  queryFn: () => api.listCoves(),
+});
+
+export const wavesByCoveQueryOptions = (coveId: string) => ({
+  queryKey: queryKeys.wavesInCove(coveId),
+  queryFn: () => api.wavesInCove(coveId),
+});
+
+export const waveDetailQueryOptions = (waveId: string) => ({
+  queryKey: queryKeys.waveDetail(waveId),
+  queryFn: () => api.getWaveDetail(waveId),
+});
+
 // ---------------- Queries ----------------
 
 /** All coves. Used by Sidebar, Today calendar, and Cove routing. */
 export function useCovesQuery(opts?: Partial<UseQueryOptions<KernelCove[], Error>>) {
   return useQuery<KernelCove[], Error>({
-    queryKey: queryKeys.coves(),
-    queryFn: () => api.listCoves(),
+    ...covesQueryOptions(),
     ...opts,
   });
 }
@@ -68,8 +90,7 @@ export function useWavesByCoveQuery(
   opts?: Partial<UseQueryOptions<KernelWave[], Error>>,
 ) {
   return useQuery<KernelWave[], Error>({
-    queryKey: queryKeys.wavesInCove(coveId ?? ''),
-    queryFn: () => api.wavesInCove(coveId as string),
+    ...wavesByCoveQueryOptions(coveId ?? ''),
     enabled: !!coveId,
     ...opts,
   });
@@ -81,8 +102,7 @@ export function useWaveDetailQuery(
   opts?: Partial<UseQueryOptions<KernelWaveDetail, Error>>,
 ) {
   return useQuery<KernelWaveDetail, Error>({
-    queryKey: queryKeys.waveDetail(waveId ?? ''),
-    queryFn: () => api.getWaveDetail(waveId as string),
+    ...waveDetailQueryOptions(waveId ?? ''),
     enabled: !!waveId,
     ...opts,
   });

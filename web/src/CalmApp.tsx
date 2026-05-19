@@ -20,7 +20,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Outlet, useRouterState } from '@tanstack/react-router';
 import { useQueries } from '@tanstack/react-query';
-import { Sidebar, TitleBar } from './ui';
+import { Sidebar } from './shared/components/Sidebar';
+import { TitleBar } from './shared/components/TitleBar';
 import { adaptCove, adaptWave } from './api/adapt';
 import * as api from './api/calm';
 import { queryKeys, useCovesQuery, useCreateCoveMutation } from './api/queries';

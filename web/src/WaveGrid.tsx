@@ -8,7 +8,7 @@ import {
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 
-import { WaveCard } from './ui';
+import { WaveCard } from './shared/components/WaveCard';
 import { sizeFor, type CardSize } from './cards/registry';
 import { UnknownCard, UNKNOWN_CARD_SIZE } from './cards/UnknownCard';
 import type { WaveCardSlot } from './types';
