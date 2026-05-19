@@ -1,9 +1,17 @@
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { Icon } from '../Icon';
 import { AddPanel, type AddPanelKind } from '../shared/components/AddPanel';
 import type { Cove, Route, Wave } from '../types';
-import { WaveGrid } from '../WaveGrid';
 import { DeleteButton } from './_shared';
+
+// WaveGrid pulls in `react-grid-layout` (~50 KB minified) and is the
+// heaviest single dependency on this page. Loading it lazily keeps the
+// Wave route chunk small and means an empty wave (no cards yet) doesn't
+// pay the grid cost at all on first paint. The flash on first navigation
+// is intentional: we'd rather ship a smaller chunk than block render.
+const WaveGrid = lazy(() =>
+  import('../WaveGrid').then((m) => ({ default: m.WaveGrid })),
+);
 
 // ============================================================
 // WavePage — workbench: thin header + stacked cards.
@@ -133,11 +141,13 @@ export function WavePage({
       </header>
 
       <main className="workbench-main">
-        <WaveGrid
-          waveId={wave.id}
-          cards={cards}
-          onRemoveCard={(idx) => onRemoveCard(wave.id, idx)}
-        />
+        <Suspense fallback={<div className="synth">Loading grid…</div>}>
+          <WaveGrid
+            waveId={wave.id}
+            cards={cards}
+            onRemoveCard={(idx) => onRemoveCard(wave.id, idx)}
+          />
+        </Suspense>
         <AddPanel onAdd={(type) => onAddCard(wave.id, type)} />
       </main>
     </div>

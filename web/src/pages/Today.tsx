@@ -1,7 +1,13 @@
-import { useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { coveOf, timeOfDay } from '../shared/components/helpers';
 import type { Cove, Route, Wave } from '../types';
-import { XtermView } from '../XtermView';
+
+// xterm.js is heavy and only mounts when the Today home panel resolves a
+// live terminal. Splitting it lets Today's calendar / clock render before
+// the terminal renderer downloads.
+const XtermView = lazy(() =>
+  import('../XtermView').then((m) => ({ default: m.XtermView })),
+);
 
 // ============================================================
 // Calendar helpers.
@@ -180,7 +186,9 @@ function TodayTerminalPanel({
 function LiveTerminalSlot({ terminalId }: { terminalId: string }) {
   return (
     <div style={{ minHeight: 360 }}>
-      <XtermView terminalId={terminalId} />
+      <Suspense fallback={<div className="synth">Loading terminal…</div>}>
+        <XtermView terminalId={terminalId} />
+      </Suspense>
     </div>
   );
 }
