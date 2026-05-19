@@ -519,7 +519,12 @@ export interface components {
             plugin_id: string;
         };
         OverlayQuery: {
-            entity_id: string;
+            /**
+             * @description Optional. When omitted, returns every overlay of `entity_kind`
+             *     across the workspace — the sidebar uses this form to render
+             *     accurate per-wave status without fetching each wave's detail.
+             */
+            entity_id?: string | null;
             entity_kind: string;
         };
         Plugin: {
@@ -1031,7 +1036,12 @@ export interface operations {
         parameters: {
             query: {
                 entity_kind: string;
-                entity_id: string;
+                /**
+                 * @description Optional. When omitted, returns every overlay of `entity_kind`
+                 *     across the workspace — the sidebar uses this form to render
+                 *     accurate per-wave status without fetching each wave's detail.
+                 */
+                entity_id?: string | null;
             };
             header?: never;
             path?: never;
@@ -1039,7 +1049,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Overlays for an entity */
+            /** @description Overlays for an entity (or all of a kind when entity_id is omitted) */
             200: {
                 headers: {
                     [name: string]: unknown;

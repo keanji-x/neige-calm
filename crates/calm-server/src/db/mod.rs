@@ -58,6 +58,10 @@ pub trait Repo: Send + Sync + 'static {
         kind: &str,
     ) -> Result<()>;
     async fn overlays_for(&self, entity_kind: &str, entity_id: &str) -> Result<Vec<Overlay>>;
+    /// List every overlay attached to entities of the given `entity_kind`
+    /// (e.g. `"wave"`), regardless of `entity_id`. Used by the sidebar so
+    /// wave status indicators stay accurate without per-wave detail fetches.
+    async fn overlays_by_kind(&self, entity_kind: &str) -> Result<Vec<Overlay>>;
 
     // ---- terminals
     async fn terminal_create(&self, p: NewTerminal) -> Result<Terminal>;
@@ -485,6 +489,14 @@ impl Repo for MockRepo {
         Ok(s.overlays
             .values()
             .filter(|o| o.entity_kind == entity_kind && o.entity_id == entity_id)
+            .cloned()
+            .collect())
+    }
+    async fn overlays_by_kind(&self, entity_kind: &str) -> Result<Vec<Overlay>> {
+        let s = self.s.lock().unwrap();
+        Ok(s.overlays
+            .values()
+            .filter(|o| o.entity_kind == entity_kind)
             .cloned()
             .collect())
     }

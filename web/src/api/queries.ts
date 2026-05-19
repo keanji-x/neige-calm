@@ -32,6 +32,7 @@ import type {
   CovePatchBody,
   KernelCard,
   KernelCove,
+  KernelOverlay,
   KernelWave,
   KernelWaveDetail,
   NewCardBody,
@@ -49,6 +50,10 @@ export const queryKeys = {
   coves: () => ['coves'] as const,
   wavesInCove: (coveId: string) => ['waves', coveId] as const,
   waveDetail: (waveId: string) => ['wave', waveId] as const,
+  /** Global wave/card overlay snapshot — populated by the Sidebar so
+   *  per-wave status indicators stay accurate without detail fetches. */
+  overlaysByKind: (entity_kind: 'wave' | 'card') =>
+    ['overlays', entity_kind] as const,
 };
 
 // ---------------- Query option factories ----------------
@@ -72,6 +77,11 @@ export const wavesByCoveQueryOptions = (coveId: string) => ({
 export const waveDetailQueryOptions = (waveId: string) => ({
   queryKey: queryKeys.waveDetail(waveId),
   queryFn: () => api.getWaveDetail(waveId),
+});
+
+export const overlaysByKindQueryOptions = (entity_kind: 'wave' | 'card') => ({
+  queryKey: queryKeys.overlaysByKind(entity_kind),
+  queryFn: () => api.listAllOverlays(entity_kind),
 });
 
 // ---------------- Queries ----------------
@@ -104,6 +114,22 @@ export function useWaveDetailQuery(
   return useQuery<KernelWaveDetail, Error>({
     ...waveDetailQueryOptions(waveId ?? ''),
     enabled: !!waveId,
+    ...opts,
+  });
+}
+
+/**
+ * All overlays of a given entity kind (workspace-wide). Fed into adaptWave
+ * by IndexComponent so the Sidebar's status indicators reflect overlays on
+ * waves the user hasn't opened yet. eventBridge invalidates this on every
+ * overlay.set / overlay.deleted so it stays current.
+ */
+export function useOverlaysByKindQuery(
+  entity_kind: 'wave' | 'card',
+  opts?: Partial<UseQueryOptions<KernelOverlay[], Error>>,
+) {
+  return useQuery<KernelOverlay[], Error>({
+    ...overlaysByKindQueryOptions(entity_kind),
     ...opts,
   });
 }

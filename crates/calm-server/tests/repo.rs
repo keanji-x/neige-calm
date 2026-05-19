@@ -352,6 +352,57 @@ async fn overlay_upsert_is_idempotent_on_unique_key() {
     assert!(matches!(err, CalmError::NotFound(_)));
 }
 
+#[tokio::test]
+async fn overlays_by_kind_returns_all_wave_overlays_across_coves() {
+    let repo = fresh_repo().await;
+    let c1 = make_cove(&repo, "C1").await;
+    let c2 = make_cove(&repo, "C2").await;
+    let w1 = make_wave(&repo, &c1.id, "W1").await;
+    let w2 = make_wave(&repo, &c2.id, "W2").await;
+    let card = make_card(&repo, &w1.id, "terminal").await;
+
+    // Two wave overlays in different coves + one card overlay.
+    repo.overlay_upsert(NewOverlay {
+        plugin_id: "p".into(),
+        entity_kind: "wave".into(),
+        entity_id: w1.id.clone(),
+        kind: "status".into(),
+        payload: json!({"state": "running"}),
+    })
+    .await
+    .unwrap();
+    repo.overlay_upsert(NewOverlay {
+        plugin_id: "p".into(),
+        entity_kind: "wave".into(),
+        entity_id: w2.id.clone(),
+        kind: "status".into(),
+        payload: json!({"state": "waiting"}),
+    })
+    .await
+    .unwrap();
+    repo.overlay_upsert(NewOverlay {
+        plugin_id: "p".into(),
+        entity_kind: "card".into(),
+        entity_id: card.id.clone(),
+        kind: "status".into(),
+        payload: json!({"state": "running"}),
+    })
+    .await
+    .unwrap();
+
+    let waves = repo.overlays_by_kind("wave").await.unwrap();
+    assert_eq!(waves.len(), 2);
+    let ids: std::collections::HashSet<&str> =
+        waves.iter().map(|o| o.entity_id.as_str()).collect();
+    assert!(ids.contains(w1.id.as_str()));
+    assert!(ids.contains(w2.id.as_str()));
+    assert!(waves.iter().all(|o| o.entity_kind == "wave"));
+
+    let cards = repo.overlays_by_kind("card").await.unwrap();
+    assert_eq!(cards.len(), 1);
+    assert_eq!(cards[0].entity_id, card.id);
+}
+
 // --------------------------------------------------------- terminals ----
 
 #[tokio::test]

@@ -24,7 +24,12 @@ import { Sidebar } from './shared/components/Sidebar';
 import { TitleBar } from './shared/components/TitleBar';
 import { adaptCove, adaptWave } from './api/adapt';
 import * as api from './api/calm';
-import { queryKeys, useCovesQuery, useCreateCoveMutation } from './api/queries';
+import {
+  queryKeys,
+  useCovesQuery,
+  useCreateCoveMutation,
+  useOverlaysByKindQuery,
+} from './api/queries';
 import { useGo } from './app/navigation';
 import type { Cove, Route as AppRoute, Wave } from './types';
 
@@ -65,24 +70,38 @@ export function CalmApp() {
 
   const coves: Cove[] = useMemo(() => kernelCoves.map(adaptCove), [kernelCoves]);
 
-  // Adapt waves with empty overlays; per-wave detail (with overlays)
-  // lands when the user opens that wave. The sidebar's status/progress
-  // badges therefore reflect "structural" state for unloaded waves —
-  // good enough since the badges that matter (running/waiting) come
-  // from overlays that the wave-detail query carries.
+  // Workspace-wide wave overlays — one cheap query that the Sidebar
+  // reads to render accurate per-wave status indicators ("Waiting on
+  // you", "X running") for every cove, not just whichever wave the
+  // user has currently opened. eventBridge invalidates this snapshot
+  // on overlay.set/.deleted (and on wave/cove deletes where the kernel
+  // may not cascade individual events).
+  const waveOverlaysQ = useOverlaysByKindQuery('wave');
+
+  const overlaysByWaveId = useMemo(() => {
+    const m = new Map<string, typeof waveOverlaysQ.data>();
+    for (const o of waveOverlaysQ.data ?? []) {
+      if (o.entity_kind !== 'wave') continue;
+      const cur = m.get(o.entity_id);
+      if (cur) cur.push(o);
+      else m.set(o.entity_id, [o]);
+    }
+    return m;
+  }, [waveOverlaysQ.data]);
+
   const waves: Wave[] = useMemo(() => {
     const out: Wave[] = [];
     for (const q of waveQueries) {
       if (!q.data) continue;
       for (const w of q.data) {
-        out.push(adaptWave(w, []));
+        out.push(adaptWave(w, overlaysByWaveId.get(w.id) ?? []));
       }
     }
     return out;
     // Stable-ish: depends on each query's data identity. React-Query
     // keeps data references stable across refetches when the payload
     // is structurally equal, so this re-derives only on real changes.
-  }, [waveQueries]);
+  }, [waveQueries, overlaysByWaveId]);
 
   const loading = covesQ.isLoading;
   const error = covesQ.error;

@@ -27,7 +27,10 @@ pub fn router() -> Router<AppState> {
 #[derive(Deserialize, IntoParams, ToSchema)]
 pub struct OverlayQuery {
     pub entity_kind: String,
-    pub entity_id: String,
+    /// Optional. When omitted, returns every overlay of `entity_kind`
+    /// across the workspace — the sidebar uses this form to render
+    /// accurate per-wave status without fetching each wave's detail.
+    pub entity_id: Option<String>,
 }
 
 #[utoipa::path(
@@ -36,7 +39,7 @@ pub struct OverlayQuery {
     tag = "overlays",
     params(OverlayQuery),
     responses(
-        (status = 200, description = "Overlays for an entity", body = Vec<Overlay>),
+        (status = 200, description = "Overlays for an entity (or all of a kind when entity_id is omitted)", body = Vec<Overlay>),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
@@ -44,7 +47,10 @@ pub(crate) async fn list_overlays(
     State(s): State<AppState>,
     Query(q): Query<OverlayQuery>,
 ) -> Result<Json<Vec<Overlay>>> {
-    let overlays = s.repo.overlays_for(&q.entity_kind, &q.entity_id).await?;
+    let overlays = match q.entity_id.as_deref() {
+        Some(eid) => s.repo.overlays_for(&q.entity_kind, eid).await?,
+        None => s.repo.overlays_by_kind(&q.entity_kind).await?,
+    };
     Ok(Json(overlays))
 }
 

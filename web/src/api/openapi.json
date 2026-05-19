@@ -470,15 +470,19 @@
           {
             "name": "entity_id",
             "in": "query",
-            "required": true,
+            "description": "Optional. When omitted, returns every overlay of `entity_kind`\nacross the workspace — the sidebar uses this form to render\naccurate per-wave status without fetching each wave's detail.",
+            "required": false,
             "schema": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
         "responses": {
           "200": {
-            "description": "Overlays for an entity",
+            "description": "Overlays for an entity (or all of a kind when entity_id is omitted)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2016,12 +2020,15 @@
       "OverlayQuery": {
         "type": "object",
         "required": [
-          "entity_kind",
-          "entity_id"
+          "entity_kind"
         ],
         "properties": {
           "entity_id": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional. When omitted, returns every overlay of `entity_kind`\nacross the workspace — the sidebar uses this form to render\naccurate per-wave status without fetching each wave's detail."
           },
           "entity_kind": {
             "type": "string"

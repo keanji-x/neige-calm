@@ -11,7 +11,9 @@
 //   wave.deleted                  → invalidate ['waves', cove_id], drop ['wave', id]
 //   card.added / .updated         → invalidate ['wave', wave_id]
 //   card.deleted                  → invalidate ['wave', wave_id]
-//   overlay.set / .deleted        → invalidate the affected wave detail
+//   overlay.set / .deleted        → invalidate the affected wave detail AND
+//                                    the global ['overlays', entity_kind]
+//                                    snapshot used by the Sidebar
 //   plugin.state                  → no-op (no plugin list query yet)
 //
 // `overlay.{set,deleted}` is the only mildly tricky case: the kernel
@@ -44,9 +46,15 @@ export function EventBridge() {
 
 function dispatch(qc: QueryClient, ev: WireEvent): void {
   switch (ev.ev) {
-    case 'cove.updated':
+    case 'cove.updated': {
+      void qc.invalidateQueries({ queryKey: queryKeys.coves() });
+      return;
+    }
     case 'cove.deleted': {
       void qc.invalidateQueries({ queryKey: queryKeys.coves() });
+      // Same orphan reasoning as wave.deleted — overlays attached to the
+      // deleted cove's waves may not get individual cascade events.
+      void qc.invalidateQueries({ queryKey: queryKeys.overlaysByKind('wave') });
       return;
     }
     case 'wave.updated': {
@@ -59,6 +67,9 @@ function dispatch(qc: QueryClient, ev: WireEvent): void {
       const { id, cove_id } = ev.data;
       void qc.invalidateQueries({ queryKey: queryKeys.wavesInCove(cove_id) });
       qc.removeQueries({ queryKey: queryKeys.waveDetail(id) });
+      // Kernel doesn't guarantee an overlay.deleted cascade per orphaned
+      // overlay; refresh the global snapshot so stale entries vanish.
+      void qc.invalidateQueries({ queryKey: queryKeys.overlaysByKind('wave') });
       return;
     }
     case 'card.added':
@@ -71,6 +82,10 @@ function dispatch(qc: QueryClient, ev: WireEvent): void {
     case 'overlay.deleted': {
       const ek = ev.data.entity_kind;
       const eid = ev.data.entity_id;
+      if (ek === 'wave' || ek === 'card') {
+        // Sidebar's status indicators read the global per-kind snapshot.
+        void qc.invalidateQueries({ queryKey: queryKeys.overlaysByKind(ek) });
+      }
       if (ek === 'wave') {
         void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(eid) });
       } else if (ek === 'card') {

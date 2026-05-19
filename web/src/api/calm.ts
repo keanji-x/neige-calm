@@ -103,6 +103,17 @@ export const listOverlays = (entity_kind: 'wave' | 'card', entity_id: string) =>
     'GET',
     `/api/overlays?entity_kind=${entity_kind}&entity_id=${encodeURIComponent(entity_id)}`,
   );
+
+/**
+ * Lists every overlay of the given kind across the workspace. The kernel
+ * extends `GET /api/overlays` to accept `entity_kind` alone (without
+ * `entity_id`) for this use. The Sidebar uses the `'wave'` variant so
+ * status indicators stay accurate without fanning out per-wave detail
+ * fetches.
+ */
+export const listAllOverlays = (entity_kind: 'wave' | 'card') =>
+  request<KernelOverlay[]>('GET', `/api/overlays?entity_kind=${entity_kind}`);
+
 export const upsertOverlay = (b: NewOverlayBody) =>
   request<KernelOverlay>('POST', '/api/overlays', b);
 export const deleteOverlay = (b: {

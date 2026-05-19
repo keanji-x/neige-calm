@@ -39,6 +39,7 @@ import {
   useDeleteCardMutation,
   useDeleteCoveMutation,
   useDeleteWaveMutation,
+  useOverlaysByKindQuery,
   useUpdateCoveMutation,
   useUpdateWaveMutation,
   useWaveDetailQuery,
@@ -141,11 +142,27 @@ function IndexComponent() {
     })),
   });
 
+  // Workspace-wide wave overlays — fed into adaptWave so the Sidebar's
+  // status indicators ("waiting on you" / "running") are accurate for
+  // every wave, not just whichever wave the user has opened. eventBridge
+  // invalidates this snapshot on overlay.set/.deleted and on wave/cove
+  // deletes (where the kernel may not cascade individual events).
+  const waveOverlaysQ = useOverlaysByKindQuery('wave');
+  const overlaysByWaveId = new Map<string, typeof waveOverlaysQ.data>();
+  for (const o of waveOverlaysQ.data ?? []) {
+    if (o.entity_kind !== 'wave') continue;
+    const cur = overlaysByWaveId.get(o.entity_id);
+    if (cur) cur.push(o);
+    else overlaysByWaveId.set(o.entity_id, [o]);
+  }
+
   const coves: Cove[] = kernelCoves.map(adaptCove);
   const waves: Wave[] = [];
   for (const q of waveQueries) {
     if (!q.data) continue;
-    for (const w of q.data) waves.push(adaptWave(w, []));
+    for (const w of q.data) {
+      waves.push(adaptWave(w, overlaysByWaveId.get(w.id) ?? []));
+    }
   }
 
   const todayTerm = useTodayTerminal();
