@@ -4,10 +4,9 @@
 # image), bind-mounts $HOME at the same path inside the container, and
 # publishes a single host port (CALM_PORT, default 4040) via nginx.
 #
-#   make start   # build + bring stack up in background
+#   make dev     # build + bring stack up in background
 #   make stop    # tear stack down
 #   make logs    # tail logs
-#   make dev     # local hot-reload (no docker)
 #   make help    # everything
 
 SHELL          := bash
@@ -46,7 +45,7 @@ help: ## Show this help.
 	@awk 'BEGIN {FS = ":.*##"; printf "Targets:\n"} \
 	  /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 	@echo ""
-	@echo "Host port: $(CALM_PORT) (override: CALM_PORT=18080 make start)"
+	@echo "Host port: $(CALM_PORT) (override: CALM_PORT=18080 make dev)"
 
 # ---- build (on host, not in docker) -------------------------------------
 
@@ -65,8 +64,8 @@ $(DIST): $(shell find web/src -type f 2>/dev/null) web/package.json web/vite.con
 
 # ---- docker lifecycle ---------------------------------------------------
 
-.PHONY: start
-start: build dirs ## Build, then bring the stack up in the background.
+.PHONY: dev
+dev: build dirs ## Build, then bring the stack up in the background.
 	$(COMPOSE) up -d
 	@echo ""
 	@echo "  → http://localhost:$(CALM_PORT)/"
@@ -101,12 +100,6 @@ shell: ## Drop into a shell in the server container (already at $HOME).
 health: ## Smoke-test the API end-to-end through nginx.
 	@curl -fsS -w "  HTTP %{http_code}\n" http://localhost:$(CALM_PORT)/api/coves \
 	  && echo "ok" || (echo "down — try: make logs"; exit 1)
-
-# ---- non-docker local dev ----------------------------------------------
-
-.PHONY: dev
-dev: ## Local hot-reload: cargo run + vite dev, no docker. Ctrl-C to stop.
-	@scripts/dev.sh
 
 # ---- housekeeping ------------------------------------------------------
 

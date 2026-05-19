@@ -2,6 +2,7 @@
 name = "calm-server"
 version = "0.1.0"
 edition = "2024"
+default-run = "calm-server"
 
 [lib]
 path = "src/lib.rs"
