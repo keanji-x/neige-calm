@@ -1,0 +1,51 @@
+{
+  "manifest_version": 1,
+  "id": "dev.neige.hello-world",
+  "version": "0.1.0",
+  "min_kernel_version": "0.1.0",
+  "display_name": "Hello, world",
+  "description": "Reference plugin proving the M3-mcp-apps wire end-to-end. Exposes one tools/call-driven card whose iframe drives a pulsing status overlay on the configured wave.",
+  "author": { "name": "Neige", "url": "https://neige.dev" },
+  "license": "MIT",
+  "entrypoint": {
+    "command": "bin/hello-world",
+    "args": [],
+    "env": {
+      "RUST_LOG": "info",
+      "NEIGE_DEMO_WAVE": "REPLACE_WITH_WAVE_ID_BEFORE_INSTALL"
+    }
+  },
+  "exposes_tools": [
+    {
+      "name": "make_status_card",
+      "description": "Mount a pulsing status indicator card. Returns _meta.ui.resourceUri pointing at views/status.html so AddPanel treats it as card-producing."
+    }
+  ],
+  "views": [
+    {
+      "view_id": "status",
+      "title": "Hello status",
+      "scope": "card",
+      "default_size": { "w": 4, "h": 3, "min_w": 3, "min_h": 2 },
+      "entry_html": "views/status.html",
+      "csp": {
+        "default_src": ["'self'"],
+        "script_src": ["'self'", "'unsafe-inline'"],
+        "style_src": ["'self'", "'unsafe-inline'"],
+        "connect_src": ["'self'"],
+        "img_src": ["'self'", "data:"]
+      },
+      "permissions": {
+        "tools": ["neige.overlay.set", "neige.overlay.delete"]
+      }
+    }
+  ],
+  "permissions": {
+    "overlays_write": ["wave"],
+    "cards_create": false,
+    "cards_read_all": false,
+    "events_subscribe": [],
+    "kv_quota_bytes": 0,
+    "filesystem": []
+  }
+}

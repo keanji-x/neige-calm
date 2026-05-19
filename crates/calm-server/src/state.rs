@@ -1,0 +1,153 @@
+//! Shared app state passed to every handler.
+//!
+//! `Clone` is cheap — everything inside is wrapped in `Arc` or already
+//! reference-counted internally.
+
+use crate::config::Config;
+use crate::db::Repo;
+use crate::event::EventBus;
+use crate::plugin_host::{PluginHost, PluginRegistry};
+use std::path::PathBuf;
+use std::sync::Arc;
+
+#[derive(Clone)]
+pub struct AppState {
+    pub repo: Arc<dyn Repo>,
+    pub events: EventBus,
+    pub daemon: Arc<DaemonClient>,
+    pub plugin: Arc<PluginHost>,
+}
+
+impl AppState {
+    /// Real boot-time constructor. Loads the plugin manifest registry from
+    /// `cfg.plugins_dir`, creating the directory if it doesn't exist (fresh
+    /// install path), wires up `DaemonClient` + `EventBus` + `PluginHost`,
+    /// and auto-spawns every enabled plugin via `PluginHost::autospawn_enabled`.
+    ///
+    /// If the registry load returns an error (e.g. duplicate plugin id) we
+    /// surface it: that's a hard misconfiguration the operator needs to fix.
+    /// Per-plugin parse failures (and per-plugin spawn failures) are already
+    /// downgraded to `tracing::warn!` so one broken plugin can't block boot.
+    pub async fn new(cfg: &Config, repo: Arc<dyn Repo>) -> anyhow::Result<Self> {
+        let plugins_dir = cfg.plugins_dir_resolved();
+        if !plugins_dir.exists() {
+            // Fresh-install path: a missing dir is normal on first boot. We
+            // create it so that subsequent installs (Slice D) have a target.
+            tracing::info!(
+                plugins_dir = %plugins_dir.display(),
+                "creating plugins dir"
+            );
+            std::fs::create_dir_all(&plugins_dir)?;
+        }
+        let (registry, report) = PluginRegistry::load_from_dir(&plugins_dir)?;
+        tracing::info!(
+            loaded = report.loaded.len(),
+            skipped = report.skipped.len(),
+            "plugin registry loaded"
+        );
+
+        // Same treatment for the data dir — Slice B/C will write into per-plugin
+        // subdirs of this, so make sure the root exists at boot.
+        let plugins_data_dir = cfg.plugins_data_dir_resolved();
+        if !plugins_data_dir.exists() {
+            tracing::info!(
+                plugins_data_dir = %plugins_data_dir.display(),
+                "creating plugins data dir"
+            );
+            std::fs::create_dir_all(&plugins_data_dir)?;
+        }
+
+        let events = EventBus::new();
+        let plugin = Arc::new(PluginHost::new_full(
+            Arc::new(registry),
+            repo.clone(),
+            plugins_dir,
+            plugins_data_dir,
+            cfg.plugins_disabled.clone(),
+            events.clone(),
+        ));
+
+        // Auto-spawn every enabled plugin row. Per-plugin errors are logged
+        // inside `autospawn_enabled`; we never let one broken plugin block
+        // the rest of the boot path.
+        plugin.autospawn_enabled().await;
+
+        Ok(Self {
+            repo,
+            events,
+            daemon: Arc::new(DaemonClient::new(cfg)),
+            plugin,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DaemonClient — owned by Track D.
+//
+// Wraps the connection / spawning logic for `calm-session-daemon` so REST
+// + WS terminal handlers can talk to PTYs without leaking the framed-binary
+// protocol details into the rest of the codebase.
+// ---------------------------------------------------------------------------
+
+/// Lightweight handle the REST + WS halves both consult. The handle is
+/// "lightweight" because the daemon is its own long-lived process — we don't
+/// pool stream connections through here; instead WS handlers connect on
+/// demand using the stored socket path. All `DaemonClient` needs to do is
+/// (a) know where to put per-terminal sockets and (b) know which binary to
+/// spawn.
+pub struct DaemonClient {
+    /// Per-terminal sockets live under this directory as `<terminal_id>.sock`.
+    /// Created on first use by `routes::terminal::create`. Defaults to
+    /// `<config.data_dir>/terminals`.
+    pub data_dir: PathBuf,
+    /// Path to the `calm-session-daemon` binary. Resolved at startup to be
+    /// a sibling of the running `calm-server` exe (so `cargo run` /
+    /// `target/release` layouts work without an install step); falls back to
+    /// `calm-session-daemon` and lets `$PATH` lookup happen at spawn.
+    pub session_daemon_bin: PathBuf,
+}
+
+impl DaemonClient {
+    /// Real constructor. Pulls `data_dir` from the resolved config and
+    /// locates the daemon binary next to the current executable.
+    pub fn new(cfg: &Config) -> Self {
+        let data_dir = cfg.data_dir_resolved().join("terminals");
+        Self {
+            data_dir,
+            session_daemon_bin: resolve_session_daemon_bin(),
+        }
+    }
+
+    /// Placeholder for tests / dev paths that don't have a full `Config`.
+    /// Sockets land in a per-uid tempdir; binary lookup falls back to `$PATH`.
+    pub fn new_stub() -> Self {
+        let tmp = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
+            .join("calm-terminals");
+        Self {
+            data_dir: tmp,
+            session_daemon_bin: resolve_session_daemon_bin(),
+        }
+    }
+
+    /// Socket path for a given terminal id.
+    pub fn sock_path(&self, terminal_id: &str) -> PathBuf {
+        self.data_dir.join(format!("{terminal_id}.sock"))
+    }
+}
+
+/// Prefer a sibling of the running executable (works for `cargo run` and
+/// release layouts). Fall back to the bare name so PATH lookup happens at
+/// spawn time if the sibling isn't there.
+fn resolve_session_daemon_bin() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let candidate = dir.join("calm-session-daemon");
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    PathBuf::from("calm-session-daemon")
+}

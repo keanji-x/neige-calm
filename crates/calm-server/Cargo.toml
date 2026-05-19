@@ -1,0 +1,109 @@
+[package]
+name = "calm-server"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "calm-server"
+path = "src/main.rs"
+
+# Test-only stub plugins, built as side artifacts by `cargo test` and located
+# at runtime via `env!("CARGO_BIN_EXE_<name>")`. Kept under tests/fixtures/ so
+# they don't pollute `cargo install` and so `cargo build --release` for the
+# real binary doesn't drag them along. (Cargo only honors `required-features`
+# on bins; `cfg(test)` doesn't gate `[[bin]]`, so these *will* end up in
+# release builds — they're tiny and harmless, no `--release` work avoided.)
+[[bin]]
+name = "plugin-host-stub-echo"
+path = "tests/fixtures/stub-plugin-echo/main.rs"
+
+[[bin]]
+name = "plugin-host-stub-crash"
+path = "tests/fixtures/stub-plugin-crash/main.rs"
+
+[[bin]]
+name = "plugin-host-stub-caller"
+path = "tests/fixtures/stub-plugin-caller/main.rs"
+
+# M3-mcp-apps M2 — stub that responds to `tools/call` with a configurable
+# CallToolResult. Used by `tests/plugin_routes_tool_call.rs` to drive the
+# `via_tool_call` REST path end-to-end.
+[[bin]]
+name = "plugin-host-stub-toolcall"
+path = "tests/fixtures/stub-plugin-toolcall/main.rs"
+
+[dependencies]
+# HTTP / WS
+axum = { version = "0.8", features = ["ws", "macros"] }
+# Cookie extractor for Slice H's iframe-cookie verify path. `cookie` is the
+# only feature we use; matches neige-server's existing pin.
+axum-extra = { version = "0.10", features = ["cookie"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# Async
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.24"
+futures = "0.3"
+futures-util = "0.3"
+async-trait = "0.1"
+
+# Serde + JSON
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Storage
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "sqlite", "macros", "migrate", "chrono", "json"] }
+
+# IDs / time / encoding
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22"
+hex = "0.4"
+
+# Slice H — per-plugin auth tokens. `rand` for OsRng, `sha2` for SHA-256
+# (full-entropy tokens don't need bcrypt/argon2 — see design doc §6.1),
+# `subtle` for constant-time comparison.
+rand = "0.8"
+sha2 = "0.10"
+subtle = "2"
+
+# Errors
+anyhow = "1"
+thiserror = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI / config
+clap = { version = "4", features = ["derive", "env"] }
+
+# Plugin manifest parsing — validates `version` + `min_kernel_version`.
+# `jsonschema` was considered (per design doc §1) but skipped for Slice A: the
+# manifest surface is small and hand-rolled validation in `plugin_host::manifest`
+# yields better error messages with one fewer transitive dep tree.
+semver = "1"
+
+# Local crates
+calm-session = { path = "../calm-session" }
+
+# Plugin host (Slice B): unix-only — used by `plugin_host::process` to send a
+# real SIGTERM before falling back to SIGKILL. `tokio::process::Child::kill()`
+# only does SIGKILL on unix, so we need this to honor the grace period
+# described in design doc §2.4.
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["signal"] }
+
+[dev-dependencies]
+tempfile = "3"
+# Route integration tests drive the Router via `tower::ServiceExt::oneshot`
+# without bringing up a TCP listener. `tower` itself is already a normal dep
+# (used by axum) but the `oneshot` helper lives behind the `util` feature.
+tower = { version = "0.5", features = ["util"] }
+# Used to drain `axum::body::Body` in route tests — Axum 0.8 dropped the
+# `to_bytes` convenience; the canonical replacement is `http_body_util::BodyExt::collect`.
+http-body-util = "0.1"

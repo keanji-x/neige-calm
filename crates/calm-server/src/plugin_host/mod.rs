@@ -1,0 +1,813 @@
+//! Plugin host — the kernel's side of the plugin protocol.
+//!
+//! This module is sliced across the M3 implementation plan:
+//!
+//!   * **Slice A** — `manifest` (parser + validator), `registry`
+//!     (in-memory map of `id → Manifest`), and `PluginHost` (thin container
+//!     that owns the registry + a repo handle).
+//!   * **Slice B** — `process` + `mcp` + `error`: child supervision,
+//!     JSON-RPC framing, real `spawn`/`stop`/`restart` on `PluginHost`,
+//!     crash-loop disabling.
+//!   * **Slice C (this commit)** — `callbacks` + `perms` + `events`:
+//!     real `neige.*` dispatch. Replaces Slice B's MethodNotFound drainer
+//!     with a permission-gated router that writes overlays/cards/kv and
+//!     bridges the event bus to MCP notifications.
+//!   * **Slice H** — `auth`: per-plugin token mint/verify + iframe tokens.
+//!
+//! See `docs/m3-design.md` §8 for the full slice table.
+
+pub mod auth;
+pub mod callbacks;
+pub mod error;
+pub mod events;
+pub mod manifest;
+pub mod mcp;
+pub mod perms;
+pub mod process;
+pub mod registry;
+pub mod resources;
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+pub use auth::{PluginToken, hash_token, verify_token};
+pub use error::{HostError, McpError, ProcessError};
+pub use manifest::Manifest;
+pub use mcp::{
+    CallToolResult, ContentBlock, InboundNotification, InboundRequest, McpClient, RequestId,
+    ResourceContent, ResourceContents, RpcError,
+};
+pub use resources::{ResourceError, read_ui_resource};
+pub use process::PluginProcess;
+pub use registry::PluginRegistry;
+
+use tokio::sync::{Mutex, mpsc};
+
+use crate::db::Repo;
+use crate::event::{Event, EventBus};
+
+use callbacks::{CallbackCtx, SubscriptionRecord};
+
+// ---------------------------------------------------------------------------
+// Tunables
+// ---------------------------------------------------------------------------
+
+/// SIGTERM → SIGKILL grace. Design doc §2.4 quotes 500 ms / 5 s; we use a
+/// single combined window of 2 s. Most well-behaved plugins exit within tens
+/// of ms once they see EOF on stdin or a SIGTERM; 2 s gives slow plugins a
+/// fair chance without making the supervisor sluggish.
+const STOP_GRACE: Duration = Duration::from_secs(2);
+
+/// Crash-loop window per design doc Slice B header: 5 crashes in 5 minutes
+/// disables the plugin until an explicit `spawn(id)` call (which in this slice
+/// is the REST `/enable` path; for now also reachable via test).
+const CRASH_WINDOW: Duration = Duration::from_secs(300);
+const CRASH_WINDOW_LIMIT: u32 = 5;
+
+/// Exponential-backoff schedule for respawn: 1, 2, 4, 8, 30, 30, ...
+const BACKOFF_SCHEDULE_MS: &[u64] = &[1_000, 2_000, 4_000, 8_000, 30_000];
+
+// ---------------------------------------------------------------------------
+// Runtime status
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PluginRuntimeStatus {
+    /// Reserved for Slice D's install flow; included here so the state event
+    /// vocabulary is closed.
+    Installing,
+    Spawning,
+    Running,
+    /// Crash-looped or otherwise unrecoverable. Carries the latest error.
+    Crashed { reason: String },
+    Disabled,
+}
+
+impl PluginRuntimeStatus {
+    /// Wire string per design doc §7's `plugin.state` event.
+    pub fn wire_name(&self) -> &'static str {
+        match self {
+            Self::Installing => "installing",
+            Self::Spawning => "spawning",
+            Self::Running => "running",
+            Self::Crashed { .. } => "crashed",
+            Self::Disabled => "disabled",
+        }
+    }
+
+    pub fn last_error(&self) -> Option<&str> {
+        match self {
+            Self::Crashed { reason } => Some(reason.as_str()),
+            _ => None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Internal running-plugin record
+// ---------------------------------------------------------------------------
+
+struct RunningPlugin {
+    process: Arc<PluginProcess>,
+    mcp: Arc<McpClient>,
+    status: PluginRuntimeStatus,
+    /// Lets the supervisor task know it should NOT respawn (graceful stop).
+    /// Set true by `stop()` before the wait observation.
+    stopping: bool,
+    /// Cumulative crash count within the current rolling window.
+    crashes_in_window: u32,
+    window_started: Instant,
+    /// Supervisor task handle. Aborted on graceful stop so we don't leak.
+    supervisor: Option<tokio::task::JoinHandle<()>>,
+    /// Slice C router task that drains inbound MCP requests and dispatches
+    /// them to `callbacks::dispatch`. Held so it dies when `RunningPlugin`
+    /// is dropped; also explicitly aborted on `stop()`.
+    router: tokio::task::JoinHandle<()>,
+    /// Per-plugin subscription registry. `neige.event.subscribe` registers
+    /// long-lived bridge tasks here; `stop()` aborts them all before the
+    /// process is killed so they don't keep the event bus subscribed past
+    /// plugin exit.
+    subscriptions: Arc<Mutex<Vec<SubscriptionRecord>>>,
+}
+
+// ---------------------------------------------------------------------------
+// PluginHost
+// ---------------------------------------------------------------------------
+
+/// Per-plugin runtime view exposed to callers (Slice D's REST handlers).
+#[derive(Debug, Clone)]
+pub struct PluginHostStatus {
+    pub id: String,
+    pub status: PluginRuntimeStatus,
+    pub pid: Option<u32>,
+}
+
+pub struct PluginHost {
+    pub registry: Arc<PluginRegistry>,
+    pub(crate) repo: Arc<dyn Repo>,
+    /// Resolved per-plugin mutable-state root from `Config::plugins_data_dir_resolved`.
+    pub plugins_data_dir: PathBuf,
+    /// Resolved plugin install root from `Config::plugins_dir_resolved` — used
+    /// as a fallback when the registry didn't capture an install_path (e.g.
+    /// in-memory test seeds).
+    pub plugins_dir: PathBuf,
+    /// Plugin ids the operator has explicitly disabled via config.
+    plugins_disabled: Vec<String>,
+    /// Live broadcaster for `Event::PluginState`. Kept as an `Option` so test
+    /// shims can leave it `None` and skip emissions.
+    events: Option<EventBus>,
+    /// Same bus, hoisted into an `Arc` so the Slice C router can hand a
+    /// shared handle to each plugin's CallbackCtx. When `events` is `None`
+    /// (test shims) we still create a private bus here so dispatch keeps
+    /// working — emissions just go nowhere visible.
+    events_arc: Arc<EventBus>,
+    processes: Mutex<HashMap<String, RunningPlugin>>,
+}
+
+impl PluginHost {
+    /// Real boot-time constructor. Mirrors Slice A's `new`, but takes the
+    /// resolved-paths + event bus + config disable list so we can supervise.
+    pub fn new_full(
+        registry: Arc<PluginRegistry>,
+        repo: Arc<dyn Repo>,
+        plugins_dir: PathBuf,
+        plugins_data_dir: PathBuf,
+        plugins_disabled: Vec<String>,
+        events: EventBus,
+    ) -> Self {
+        let events_arc = Arc::new(events.clone());
+        Self {
+            registry,
+            repo,
+            plugins_dir,
+            plugins_data_dir,
+            plugins_disabled,
+            events: Some(events),
+            events_arc,
+            processes: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Slice A-shaped constructor retained for back-compat with callers that
+    /// just need a host wired to a registry + repo (tests). No event bus, no
+    /// supervision — `spawn` will still work, but events won't be emitted.
+    pub fn new(registry: Arc<PluginRegistry>, repo: Arc<dyn Repo>) -> Self {
+        Self {
+            registry,
+            repo,
+            plugins_dir: PathBuf::new(),
+            plugins_data_dir: std::env::temp_dir().join("calm-plugins-data"),
+            plugins_disabled: Vec::new(),
+            events: None,
+            // Private bus so dispatch can still emit; nobody subscribes.
+            events_arc: Arc::new(EventBus::new()),
+            processes: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Dev/test shim: an empty registry plus a `MockRepo`. Mirrors the old
+    /// `new_stub` constructor so existing call sites that just need a host
+    /// to plug into `AppState` keep compiling.
+    pub fn new_stub() -> Self {
+        Self::new(
+            Arc::new(PluginRegistry::empty()),
+            Arc::new(crate::db::MockRepo::new()),
+        )
+    }
+
+    /// Convenience accessor — most call sites only need the registry handle.
+    pub fn registry(&self) -> &Arc<PluginRegistry> {
+        &self.registry
+    }
+
+    /// `Arc<EventBus>` handle for the Slice C router. Always returns a real
+    /// bus — see field doc for the no-bus-configured case.
+    fn events_arc(&self) -> Arc<EventBus> {
+        Arc::clone(&self.events_arc)
+    }
+
+    /// Mint + persist a fresh process token for `id`, returning the raw value
+    /// the caller can put into the spawn env. The hash lands in
+    /// `plugin_tokens`; the raw value is **not** kept anywhere persistent —
+    /// after this call the kernel only knows the hash. That means a kernel
+    /// restart cannot resurrect the old token, so plugins re-handshake with a
+    /// fresh one each kernel boot. **This is intentional**: restart is a
+    /// security boundary; if the kernel was compromised between boots we want
+    /// every plugin to surface a fresh credential anyway.
+    pub async fn ensure_plugin_token(&self, id: &str) -> Result<String, HostError> {
+        let raw = PluginToken::generate();
+        let hashed = hash_token(raw.as_str());
+        self.repo
+            .plugin_token_set(id, &hashed, i64::MAX)
+            .await
+            .map_err(|e| HostError::BadState(format!("plugin_token_set({id}): {e}")))?;
+        Ok(raw.into_inner())
+    }
+
+    /// Forced rotation: delete the existing row + restart the plugin so it
+    /// picks up the new token on its next spawn. The actual mint happens
+    /// inside `spawn` via `ensure_plugin_token`; we just clear the slot here.
+    pub async fn rotate_plugin_token(self: &Arc<Self>, id: &str) -> Result<(), HostError> {
+        // Clearing the row first means: even if restart fails mid-flight, the
+        // next spawn will mint fresh. Old (raw) token in any plugin's hands is
+        // already worthless once the process is killed below.
+        let _ = self.repo.plugin_token_delete(id).await;
+        self.restart(id).await
+    }
+
+    /// Auto-spawn every enabled plugin known to the repo. Called from
+    /// `AppState::new` after the host is constructed. Per-plugin failures are
+    /// logged + swallowed: one broken plugin should not block boot.
+    pub async fn autospawn_enabled(self: &Arc<Self>) {
+        let rows = match self.repo.plugins_list_all().await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "plugin autospawn: list_all failed");
+                return;
+            }
+        };
+        for plug in rows {
+            if !plug.enabled {
+                continue;
+            }
+            if let Err(e) = self.spawn(&plug.id).await {
+                tracing::warn!(plugin_id = %plug.id, error = %e, "plugin autospawn failed");
+            }
+        }
+    }
+
+    /// Spawn a plugin by id. Returns `Ok(())` once `initialize` has handshaken
+    /// and the supervisor task is wired. Errors before that point unwind
+    /// without leaving a half-running entry.
+    pub async fn spawn(self: &Arc<Self>, id: &str) -> Result<(), HostError> {
+        // Disabled-by-config short-circuit.
+        if self.plugins_disabled.iter().any(|d| d == id) {
+            return Err(HostError::Disabled(id.to_string()));
+        }
+
+        // Already running?
+        {
+            let map = self.processes.lock().await;
+            if let Some(rp) = map.get(id) {
+                // Crashed→spawn is the recovery path; the supervisor cleared
+                // its handle, so we treat that as "go ahead".
+                if matches!(rp.status, PluginRuntimeStatus::Running | PluginRuntimeStatus::Spawning)
+                {
+                    return Err(HostError::AlreadyRunning(id.to_string()));
+                }
+            }
+        }
+
+        let manifest = self
+            .registry
+            .get(id)
+            .ok_or_else(|| HostError::NotFound(id.to_string()))?;
+        let install_path = self
+            .registry
+            .install_path(id)
+            .unwrap_or_else(|| self.plugins_dir.join(id));
+
+        // Slice H: mint a fresh process token + persist its hash. The raw value
+        // returned here is the same value we pass via env and the same value
+        // we'll require the plugin to echo back inside `initialize`.
+        //
+        // Note: every spawn mints fresh. A prior row in `plugin_tokens` is
+        // overwritten — the host doesn't try to "recover" the previous raw
+        // (which it can't, by design — see `ensure_plugin_token` docs).
+        let token = self.ensure_plugin_token(id).await?;
+
+        self.emit_state(id, &PluginRuntimeStatus::Spawning);
+
+        // Spawn the process. On failure we propagate without touching the
+        // processes map.
+        let process = Arc::new(
+            PluginProcess::spawn(&manifest, &install_path, &self.plugins_data_dir, &token)
+                .map_err(HostError::from)?,
+        );
+
+        // Hand stdio over to the MCP client. The supervisor task picks the
+        // `Child` up below for `wait()`.
+        let (stdin, stdout) = process
+            .take_stdio()
+            .ok_or_else(|| HostError::Mcp(McpError::TransportClosed("stdio not piped".into())))?;
+        let mcp = match McpClient::connect_with_auth(stdout, stdin, Some(token.as_str())).await {
+            Ok(c) => c,
+            Err(e) => {
+                // Failed handshake — try to clean up the child before bailing.
+                if let Some(mut child) = process.take_child() {
+                    let _ = child.start_kill();
+                }
+                // Slice H: an auth-mismatch failure is a security event, not
+                // a transient crash. We detect via the marker string the
+                // McpClient::initialize path emits, surface a Crashed state
+                // event with a clear reason, and crucially do **not** install
+                // a supervisor task so no respawn fires. The child has been
+                // kill_on_drop-flagged so dropping `process` SIGKILLs it.
+                if matches!(&e, McpError::Framing(m) if m == "auth mismatch") {
+                    let reason = "auth handshake failed";
+                    // Drop any stale processes-map entry so list_running /
+                    // status don't report a stale Running state.
+                    let _ = self.processes.lock().await.remove(id);
+                    self.emit_crashed(id, reason);
+                    return Err(HostError::AuthMismatch(id.to_string()));
+                }
+                self.emit_crashed(id, &format!("initialize failed: {e}"));
+                return Err(HostError::InitializeRejected(e.to_string()));
+            }
+        };
+
+        // Slice C / M1: install the real `neige.*` router *iff* the plugin
+        // declared the experimental `dev.neige/kernel-callbacks` capability in
+        // its initialize response. Without taking the inbound channel here,
+        // the bounded mpsc would backpressure as soon as a plugin issued any
+        // callback — so we always drain, just with different semantics.
+        let inbound = match mcp.take_inbound_requests() {
+            Some(rx) => rx,
+            None => {
+                // Re-entrancy guard: somebody else already took it (unexpected
+                // in current code paths). Use an empty channel that closes
+                // immediately so the router task exits cleanly.
+                let (_tx, rx) = mpsc::channel::<InboundRequest>(1);
+                rx
+            }
+        };
+        let inbound_notifs = mcp.take_inbound_notifications();
+        let subscriptions: Arc<Mutex<Vec<SubscriptionRecord>>> = Arc::new(Mutex::new(Vec::new()));
+        let router = if mcp.has_kernel_callbacks_capability() {
+            spawn_neige_router(
+                id.to_string(),
+                Arc::clone(&self.repo),
+                self.events_arc(),
+                Arc::clone(&self.registry),
+                Arc::clone(&mcp),
+                Arc::clone(&subscriptions),
+                inbound,
+                inbound_notifs,
+            )
+        } else {
+            tracing::info!(
+                plugin_id = %id,
+                "plugin did not declare experimental.dev.neige/kernel-callbacks; \
+                 installing MethodNotFound drainer (neige.* calls will fail)"
+            );
+            spawn_methodnotfound_drainer(id.to_string(), inbound, inbound_notifs)
+        };
+
+        // Supervisor task: waits for the child, restarts on unexpected exit.
+        let child_handle = process.take_child().ok_or_else(|| {
+            HostError::BadState("PluginProcess lost its Child before supervision".into())
+        })?;
+        let supervisor = {
+            let host = Arc::clone(self);
+            let plugin_id = id.to_string();
+            tokio::spawn(async move {
+                host.supervise(plugin_id, child_handle).await;
+            })
+        };
+
+        // Park the running record. We preserve any pre-existing crash-window
+        // counters (carried by `Crashed → Spawning` recovery paths) so the
+        // crash-loop disable threshold counts the actual rate, not just the
+        // restarts within one spawn lifetime.
+        {
+            let mut map = self.processes.lock().await;
+            let (crashes_in_window, window_started) = match map.get(id) {
+                Some(prev) => (prev.crashes_in_window, prev.window_started),
+                None => (0, Instant::now()),
+            };
+            map.insert(
+                id.to_string(),
+                RunningPlugin {
+                    process: process.clone(),
+                    mcp: mcp.clone(),
+                    status: PluginRuntimeStatus::Running,
+                    stopping: false,
+                    crashes_in_window,
+                    window_started,
+                    supervisor: Some(supervisor),
+                    router,
+                    subscriptions,
+                },
+            );
+        }
+
+        self.emit_state(id, &PluginRuntimeStatus::Running);
+        tracing::info!(plugin_id = %id, "plugin running");
+
+        Ok(())
+    }
+
+    /// Gracefully stop a plugin. Sets `stopping=true` so the supervisor task
+    /// won't respawn, sends SIGTERM via PluginProcess::stop, awaits exit.
+    pub async fn stop(self: &Arc<Self>, id: &str) -> Result<(), HostError> {
+        let (process, supervisor, subs) = {
+            let mut map = self.processes.lock().await;
+            let rp = map
+                .get_mut(id)
+                .ok_or_else(|| HostError::NotFound(id.to_string()))?;
+            if rp.stopping {
+                return Err(HostError::BadState(format!("{id} is already stopping")));
+            }
+            rp.stopping = true;
+            let process = Arc::clone(&rp.process);
+            let supervisor = rp.supervisor.take();
+            let subs = Arc::clone(&rp.subscriptions);
+            // Abort the router so it doesn't race the channel-close on
+            // mcp drop. The handle itself stays in the struct until we
+            // remove() below; abort() is idempotent and we don't await.
+            rp.router.abort();
+            (process, supervisor, subs)
+        };
+
+        // Abort every active `neige.event.subscribe` bridge task. Holding
+        // these past process exit would leak event-bus subscribers.
+        {
+            let mut s = subs.lock().await;
+            for rec in s.drain(..) {
+                rec.task.abort();
+            }
+        }
+
+        // Abort the supervisor *before* we kill the process so it doesn't
+        // race us into a respawn attempt.
+        if let Some(h) = supervisor {
+            h.abort();
+        }
+        match process.stop(STOP_GRACE).await {
+            Ok(_status) => {}
+            Err(ProcessError::AlreadyDead) => {
+                // Supervisor was already going to react to this. Fine.
+            }
+            Err(e) => {
+                return Err(HostError::Spawn(e));
+            }
+        }
+
+        {
+            let mut map = self.processes.lock().await;
+            map.remove(id);
+        }
+
+        self.emit_state(id, &PluginRuntimeStatus::Disabled);
+        Ok(())
+    }
+
+    /// Stop then spawn. Returns the spawn error if either half fails.
+    pub async fn restart(self: &Arc<Self>, id: &str) -> Result<(), HostError> {
+        // Stop is best-effort: if it returns NotFound (e.g. already crashed
+        // and cleaned up), we proceed to spawn.
+        match self.stop(id).await {
+            Ok(()) | Err(HostError::NotFound(_)) => {}
+            Err(e) => return Err(e),
+        }
+        self.spawn(id).await
+    }
+
+    /// Snapshot current status for one plugin.
+    pub async fn status(&self, id: &str) -> Option<PluginHostStatus> {
+        let map = self.processes.lock().await;
+        map.get(id).map(|rp| PluginHostStatus {
+            id: id.to_string(),
+            status: rp.status.clone(),
+            pid: rp.process.pid(),
+        })
+    }
+
+    /// Snapshot the full table — used by the REST `GET /api/plugins` handler
+    /// once Slice D wires it.
+    pub async fn list_running(&self) -> Vec<PluginHostStatus> {
+        let map = self.processes.lock().await;
+        map.iter()
+            .map(|(id, rp)| PluginHostStatus {
+                id: id.clone(),
+                status: rp.status.clone(),
+                pid: rp.process.pid(),
+            })
+            .collect()
+    }
+
+    /// Most-recent stderr lines, oldest → newest. `n` clamps to the ring
+    /// capacity inside `PluginProcess`.
+    pub async fn stderr_tail(&self, id: &str, n: usize) -> Option<Vec<String>> {
+        let map = self.processes.lock().await;
+        map.get(id).map(|rp| rp.process.stderr_tail(n))
+    }
+
+    /// Borrow the live MCP client. Slice C calls this to issue `tools/list`
+    /// or to drive other outbound RPC.
+    pub async fn mcp_client(&self, id: &str) -> Option<Arc<McpClient>> {
+        let map = self.processes.lock().await;
+        map.get(id).map(|rp| Arc::clone(&rp.mcp))
+    }
+
+    /// Dispatch a `neige.*` callback method against the in-kernel handler,
+    /// using the same `CallbackCtx` the plugin's inbound MCP router builds.
+    ///
+    /// M5: this is the host-fan-out the AppBridge `tools/call` route in
+    /// `routes::plugins::tool_call` hits when an iframe issues
+    /// `app.callServerTool({ name: "neige.overlay.set", ... })`. The route
+    /// already enforces the `neige.*` prefix per migration doc §7.6 row 5;
+    /// the plugin process is never asked.
+    ///
+    /// Returns `RpcError::Custom(-32002, ...)` if the plugin isn't currently
+    /// running.
+    pub async fn dispatch_neige_callback(
+        &self,
+        plugin_id: &str,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, RpcError> {
+        let (mcp, subscriptions) = {
+            let map = self.processes.lock().await;
+            let rp = map
+                .get(plugin_id)
+                .ok_or_else(|| RpcError::custom(-32002, "plugin not running"))?;
+            if !matches!(rp.status, PluginRuntimeStatus::Running) {
+                return Err(RpcError::custom(-32002, "plugin not running"));
+            }
+            (Arc::clone(&rp.mcp), Arc::clone(&rp.subscriptions))
+        };
+
+        let ctx = CallbackCtx {
+            plugin_id,
+            repo: Arc::clone(&self.repo),
+            event_bus: self.events_arc(),
+            registry: Arc::clone(&self.registry),
+            mcp,
+            subscriptions,
+        };
+        callbacks::dispatch(&ctx, method, params).await
+    }
+
+    // ----- internals -----
+
+    fn emit_state(&self, id: &str, status: &PluginRuntimeStatus) {
+        if let Some(bus) = &self.events {
+            bus.emit(Event::PluginState {
+                id: id.to_string(),
+                state: status.wire_name().to_string(),
+                last_error: status.last_error().map(String::from),
+            });
+        }
+    }
+
+    fn emit_crashed(&self, id: &str, reason: &str) {
+        let status = PluginRuntimeStatus::Crashed {
+            reason: reason.to_string(),
+        };
+        self.emit_state(id, &status);
+    }
+
+    /// Supervisor loop for one plugin: awaits child exit, classifies as
+    /// graceful vs crash, applies backoff + crash-loop disabling.
+    ///
+    /// Running as `Arc<Self>` lets us re-enter `spawn` after a crash. The
+    /// return is boxed because `supervise` ↔ `spawn` form a mutual recursion
+    /// through `tokio::spawn`; auto-Send inference can't see through that
+    /// cycle, so we erase one side via `Pin<Box<dyn Future + Send>>`.
+    fn supervise(
+        self: Arc<Self>,
+        id: String,
+        child: tokio::process::Child,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        Box::pin(self.supervise_inner(id, child))
+    }
+
+    async fn supervise_inner(self: Arc<Self>, id: String, mut child: tokio::process::Child) {
+        let exit_result = child.wait().await;
+        // Was this a graceful stop? Look at the map; if `stopping=true`, yes.
+        let stopping = {
+            let map = self.processes.lock().await;
+            map.get(&id).map(|rp| rp.stopping).unwrap_or(true)
+        };
+
+        if stopping {
+            tracing::info!(plugin_id = %id, "plugin exited gracefully");
+            return;
+        }
+
+        let reason = match exit_result {
+            Ok(status) => format!("exited with {status}"),
+            Err(e) => format!("wait failed: {e}"),
+        };
+        tracing::warn!(plugin_id = %id, reason = %reason, "plugin exited unexpectedly");
+
+        // Snapshot stderr tail so the crash event carries useful detail.
+        let tail = {
+            let map = self.processes.lock().await;
+            map.get(&id)
+                .map(|rp| rp.process.stderr_tail(10).join("\n"))
+                .unwrap_or_default()
+        };
+        let combined_reason = if tail.is_empty() {
+            reason
+        } else {
+            format!("{reason}\nstderr tail:\n{tail}")
+        };
+
+        // Crash-window bookkeeping.
+        let (attempts, exceeded) = {
+            let mut map = self.processes.lock().await;
+            let entry = match map.get_mut(&id) {
+                Some(e) => e,
+                None => {
+                    // Was removed by `stop()` — nothing to do.
+                    return;
+                }
+            };
+            if entry.window_started.elapsed() > CRASH_WINDOW {
+                entry.window_started = Instant::now();
+                entry.crashes_in_window = 0;
+            }
+            entry.crashes_in_window += 1;
+            entry.status = PluginRuntimeStatus::Crashed {
+                reason: combined_reason.clone(),
+            };
+            (
+                entry.crashes_in_window,
+                entry.crashes_in_window >= CRASH_WINDOW_LIMIT,
+            )
+        };
+
+        self.emit_crashed(&id, &combined_reason);
+
+        if exceeded {
+            tracing::error!(
+                plugin_id = %id,
+                attempts,
+                "plugin exceeded crash-window limit; not respawning",
+            );
+            // Leave the Crashed entry in place so `status()` returns it. The
+            // supervisor task ends here; an explicit `spawn(id)` revives.
+            // We do, however, remove the process arc so its file descriptors
+            // (already-closed pipes mostly) get reaped.
+            let mut map = self.processes.lock().await;
+            if let Some(rp) = map.get_mut(&id) {
+                rp.supervisor = None;
+            }
+            return;
+        }
+
+        // Backoff then respawn. Index by (attempts - 1) clamped to the table.
+        let idx = (attempts as usize).saturating_sub(1);
+        let delay_ms = BACKOFF_SCHEDULE_MS
+            .get(idx)
+            .copied()
+            .unwrap_or(*BACKOFF_SCHEDULE_MS.last().unwrap());
+        tracing::info!(
+            plugin_id = %id,
+            delay_ms,
+            attempts,
+            "scheduling plugin respawn",
+        );
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+
+        // Drop the old entry's process/mcp before respawning so the channels
+        // close before we open new ones.
+        {
+            let mut map = self.processes.lock().await;
+            map.remove(&id);
+        }
+        if let Err(e) = self.spawn(&id).await {
+            tracing::error!(plugin_id = %id, error = %e, "respawn failed");
+            self.emit_crashed(&id, &format!("respawn failed: {e}"));
+        }
+    }
+}
+
+impl Default for PluginHost {
+    fn default() -> Self {
+        Self::new_stub()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Slice C router: drains the inbound MCP request channel and dispatches each
+/// `neige.*` call to `callbacks::dispatch`. Also drains the notification
+/// channel — currently log-and-drop, since the design doc reserves
+/// `notifications/cancelled` and other side-channels for later use.
+///
+/// One task per plugin process. Ends when both channels close (plugin exited).
+#[allow(clippy::too_many_arguments)]
+fn spawn_neige_router(
+    plugin_id: String,
+    repo: Arc<dyn Repo>,
+    event_bus: Arc<EventBus>,
+    registry: Arc<PluginRegistry>,
+    mcp: Arc<McpClient>,
+    subscriptions: Arc<Mutex<Vec<SubscriptionRecord>>>,
+    mut inbound: mpsc::Receiver<InboundRequest>,
+    inbound_notifs: Option<mpsc::Receiver<InboundNotification>>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        // Drain notifications in a separate task — they're lossy by spec and
+        // we don't yet act on any specific notification method, but logging
+        // is useful for debugging plugin behaviour. We hold the JoinHandle
+        // implicitly (it dies when this outer task exits).
+        if let Some(mut notif_rx) = inbound_notifs {
+            let plugin_id_n = plugin_id.clone();
+            tokio::spawn(async move {
+                while let Some(notif) = notif_rx.recv().await {
+                    tracing::debug!(
+                        plugin_id = %plugin_id_n,
+                        method = %notif.method,
+                        "inbound plugin notification (currently logged + ignored)"
+                    );
+                }
+            });
+        }
+
+        while let Some(req) = inbound.recv().await {
+            let ctx = CallbackCtx {
+                plugin_id: &plugin_id,
+                repo: Arc::clone(&repo),
+                event_bus: Arc::clone(&event_bus),
+                registry: Arc::clone(&registry),
+                mcp: Arc::clone(&mcp),
+                subscriptions: Arc::clone(&subscriptions),
+            };
+            let outcome = callbacks::dispatch(&ctx, &req.method, req.params).await;
+            // If the responder is gone (plugin disconnected mid-call), drop
+            // silently — the mcp reader already cleans up the wire.
+            let _ = req.responder.send(outcome);
+        }
+        tracing::debug!(plugin_id = %plugin_id, "inbound request channel closed");
+    })
+}
+
+/// M1 gate: when a plugin omits the `experimental.dev.neige/kernel-callbacks`
+/// capability, the kernel installs this drainer in place of the dispatcher.
+/// Every inbound request is answered with `MethodNotFound`, so a plugin that
+/// later tries `neige.overlay.set` gets a clean -32601 instead of a hang. This
+/// matches Slice B's pre-Slice-C behaviour and keeps the wire sane for plugins
+/// that only need outbound `tools/call`.
+fn spawn_methodnotfound_drainer(
+    plugin_id: String,
+    mut inbound: mpsc::Receiver<InboundRequest>,
+    inbound_notifs: Option<mpsc::Receiver<InboundNotification>>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        if let Some(mut notif_rx) = inbound_notifs {
+            let plugin_id_n = plugin_id.clone();
+            tokio::spawn(async move {
+                while let Some(notif) = notif_rx.recv().await {
+                    tracing::debug!(
+                        plugin_id = %plugin_id_n,
+                        method = %notif.method,
+                        "inbound plugin notification (no-callbacks plugin; logged + ignored)"
+                    );
+                }
+            });
+        }
+        while let Some(req) = inbound.recv().await {
+            let outcome = Err(RpcError::method_not_found(&req.method));
+            let _ = req.responder.send(outcome);
+        }
+        tracing::debug!(plugin_id = %plugin_id, "inbound request channel closed (no-callbacks)");
+    })
+}

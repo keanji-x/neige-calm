@@ -1,0 +1,1943 @@
+/* ===== Neige Calm — restrained, editorial ===== */
+:root {
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  --font-serif: "New York", "Iowan Old Style", "Charter", "Georgia", serif;
+  --font-mono: "SF Mono", ui-monospace, "Menlo", monospace;
+
+  /* Cold neutrals — a hint of snow */
+  --bg: oklch(98.8% 0.003 240);
+  --paper: oklch(99.5% 0.002 240);
+  --hairline: oklch(92% 0.005 240);
+  --hairline-strong: oklch(86% 0.006 240);
+
+  --text: oklch(20% 0.008 250);
+  --text-2: oklch(45% 0.01 250);
+  --text-3: oklch(62% 0.01 250);
+  --text-4: oklch(76% 0.008 250);
+
+  --accent: oklch(54% 0.13 245);
+  --accent-soft: oklch(95% 0.025 245);
+
+  --warn: oklch(58% 0.16 30);
+  --warn-soft: oklch(96% 0.03 30);
+
+  /* generous shape */
+  --r: 14px;
+  --shadow: 0 1px 2px rgba(20,30,55,.04), 0 12px 36px rgba(20,30,55,.06);
+}
+
+[data-theme="dark"] {
+  --bg: oklch(16% 0.008 245);
+  --paper: oklch(19% 0.009 245);
+  --hairline: oklch(28% 0.01 245);
+  --hairline-strong: oklch(36% 0.012 245);
+  --text: oklch(96% 0.005 245);
+  --text-2: oklch(72% 0.012 245);
+  --text-3: oklch(56% 0.012 245);
+  --text-4: oklch(42% 0.012 245);
+  --accent: oklch(72% 0.14 245);
+  --accent-soft: oklch(28% 0.05 245);
+  --warn: oklch(70% 0.16 30);
+  --warn-soft: oklch(28% 0.05 30);
+  --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 36px rgba(0,0,0,.4);
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; height: 100%; }
+body {
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+button { font: inherit; cursor: pointer; background: 0; border: 0; color: inherit; padding: 0; }
+input, textarea { font: inherit; color: inherit; }
+
+/* window chrome — almost invisible */
+.win {
+  position: fixed; inset: 0;
+  display: flex; flex-direction: column;
+}
+.bar {
+  height: 36px;
+  display: flex; align-items: center; padding: 0 14px;
+  background: transparent;
+  flex-shrink: 0;
+  gap: 10px;
+}
+.bar .name {
+  position: absolute; left: 50%; transform: translateX(-50%);
+  font-size: 12px; font-weight: 600; color: var(--text-3); letter-spacing: 0.01em;
+}
+.bar .right { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+
+.stage {
+  flex: 1; min-height: 0;
+  display: flex;
+  position: relative;
+}
+
+/* side */
+.side {
+  width: 200px;
+  flex-shrink: 0;
+  display: flex; flex-direction: column;
+  padding: 6px 10px 14px;
+  gap: 2px;
+  border-right: 1px solid var(--hairline);
+  background: oklch(98% 0.003 240);
+}
+[data-theme="dark"] .side { background: oklch(15% 0.008 245); }
+.side .nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 10px;
+  width: 100%;
+  border-radius: 8px;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  transition: background 0.1s, color 0.1s;
+  position: relative;
+}
+.side .nav-item:hover { background: oklch(0% 0 0 / 0.04); color: var(--text); }
+[data-theme="dark"] .side .nav-item:hover { background: oklch(100% 0 0 / 0.05); }
+.side .nav-item.active { background: oklch(0% 0 0 / 0.055); color: var(--text); font-weight: 600; }
+
+/* Today — text-only, bold; carries weight by typography, not by an icon.
+   Matches the dot/swatch grammar of the rest of the sidebar by simply
+   refusing to compete with it. */
+.side .nav-today {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.005em;
+  padding: 10px 10px 12px;
+  color: var(--text);
+}
+.side .nav-today.active { font-weight: 700; }
+[data-theme="dark"] .side .nav-item.active { background: oklch(100% 0 0 / 0.07); }
+.side .nav-item .ico {
+  width: 18px; height: 18px;
+  display: grid; place-items: center;
+  color: var(--text-3);
+  flex-shrink: 0;
+}
+.side .nav-item.active .ico { color: var(--accent); }
+.side .nav-item .lbl { flex: 1; min-width: 0; }
+.side .nav-item .count {
+  font-size: 11px; font-weight: 700;
+  color: white;
+  background: var(--warn);
+  padding: 1px 6px;
+  border-radius: 999px;
+  min-width: 16px; height: 16px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-variant-numeric: tabular-nums;
+}
+.side .nav-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-4);
+  padding: 12px 10px 4px;
+}
+.side .nav-label.warn-text { color: var(--warn); }
+.side .side-wave {
+  display: flex; align-items: center; gap: 9px;
+  padding: 5px 10px;
+  width: 100%;
+  border-radius: 6px;
+  color: var(--text-2);
+  font-size: 12.5px;
+  text-align: left;
+  transition: background 0.1s, color 0.1s;
+}
+.side .side-wave:hover { background: oklch(0% 0 0 / 0.035); color: var(--text); }
+[data-theme="dark"] .side .side-wave:hover { background: oklch(100% 0 0 / 0.045); }
+.side .side-wave.active {
+  background: oklch(0% 0 0 / 0.05);
+  color: var(--text);
+  font-weight: 500;
+}
+[data-theme="dark"] .side .side-wave.active { background: oklch(100% 0 0 / 0.06); }
+.side .side-wave-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--warn);
+  flex-shrink: 0;
+  box-shadow: 0 0 0 3px var(--warn-soft);
+}
+.side .side-wave-title {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.side .sp { flex: 1; }
+.side .me-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+}
+.side .me-row .me {
+  width: 26px; height: 26px; border-radius: 50%;
+  background: linear-gradient(135deg, oklch(70% 0.08 245), oklch(55% 0.1 245));
+  color: white; font-weight: 600; font-size: 11px;
+  display: grid; place-items: center;
+  flex-shrink: 0;
+}
+.side .me-row .who { font-size: 12.5px; font-weight: 600; min-width: 0; flex: 1; }
+.side .me-row .who .sub { font-size: 10.5px; font-weight: 500; color: var(--text-3); }
+
+/* nested cove list inside sidebar */
+.side .cove-nav {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 10px;
+  width: 100%;
+  border-radius: 6px;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  transition: background 0.1s, color 0.1s;
+  position: relative;
+}
+.side .cove-nav:hover { background: oklch(0% 0 0 / 0.035); color: var(--text); }
+[data-theme="dark"] .side .cove-nav:hover { background: oklch(100% 0 0 / 0.045); }
+.side .cove-nav.active { background: oklch(0% 0 0 / 0.05); color: var(--text); font-weight: 600; }
+[data-theme="dark"] .side .cove-nav.active { background: oklch(100% 0 0 / 0.06); }
+.side .cove-nav .swatch-wrap {
+  position: relative;
+  width: 12px; height: 12px;
+  flex-shrink: 0;
+}
+.side .cove-nav .swatch {
+  width: 10px; height: 10px;
+  border-radius: 3px;
+}
+.side .cove-nav .swatch.pulse {
+  animation: dot-pulse 2.4s ease-in-out infinite;
+}
+.side .cove-nav .pip {
+  position: absolute;
+  top: -3px; right: -6px;
+  min-width: 14px; height: 14px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--warn);
+  color: white;
+  font-size: 9.5px; font-weight: 700;
+  display: grid; place-items: center;
+  box-shadow: 0 0 0 2px var(--bg);
+  font-variant-numeric: tabular-nums;
+}
+[data-theme="dark"] .side .cove-nav .pip { box-shadow: 0 0 0 2px oklch(15% 0.008 245); }
+.side .cove-nav .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Right-aligned wave count next to each cove. Tabular nums so the digits
+   don't shift as counts grow; same fade-out treatment as nav-label so it
+   reads as metadata, not a primary affordance. */
+.side .cove-nav .count {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-4);
+  font-variant-numeric: tabular-nums;
+  margin-left: 6px;
+}
+.side .cove-nav:hover .count,
+.side .cove-nav.active .count { color: var(--text-3); }
+
+/* `+ New cove` row — visually mute by default, brightens on hover.
+   Swatch slot holds a `+` glyph instead of a colored chip so it reads as
+   "create" not "broken cove". */
+.side .cove-nav.new { color: var(--text-3); font-weight: 500; }
+.side .cove-nav.new:hover { color: var(--text); background: oklch(0% 0 0 / 0.03); }
+[data-theme="dark"] .side .cove-nav.new:hover { background: oklch(100% 0 0 / 0.04); }
+.side .cove-nav.new .swatch-plus {
+  width: 10px; height: 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; line-height: 1;
+  color: var(--text-4);
+}
+.side .cove-nav.new:hover .swatch-plus { color: var(--text-2); }
+
+/* Inline-edit state — same row geometry as `.cove-nav` but with a text
+   input instead of a label, so opening the form feels like an in-place
+   nudge rather than a popover. */
+.side .cove-nav-edit {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 10px;
+  width: 100%;
+  border-radius: 6px;
+  background: oklch(0% 0 0 / 0.025);
+}
+[data-theme="dark"] .side .cove-nav-edit { background: oklch(100% 0 0 / 0.04); }
+.side .cove-nav-edit input {
+  flex: 1; min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+.side .cove-nav-edit input::placeholder { color: var(--text-4); }
+
+@keyframes live-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 currentColor; opacity: 1; }
+  50%      { box-shadow: 0 0 0 4px transparent; opacity: 0.75; }
+}
+
+/* running dot pulse */
+.live-dot {
+  animation: dot-pulse 2.2s ease-in-out infinite;
+}
+@keyframes dot-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
+
+/* main editorial column */
+.page {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column;
+  min-height: 0;
+}
+.scroll {
+  flex: 1; min-height: 0;
+  overflow: auto;
+  display: flex; flex-direction: column;
+  align-items: center;
+}
+.col {
+  width: 100%;
+  max-width: 620px;
+  padding: 28px 32px 32px;
+}
+.col.wide { max-width: 720px; }
+
+/* time line */
+.eyebrow {
+  font-size: 12px;
+  color: var(--text-3);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  margin-bottom: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* the synthesis paragraph */
+.synth {
+  font-family: var(--font-serif);
+  font-weight: 400;
+  font-size: 26px;
+  line-height: 1.32;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  text-wrap: pretty;
+  margin: 0 0 28px;
+}
+.synth em { font-style: italic; color: var(--accent); font-weight: 500; }
+.synth .quiet { color: var(--text-3); }
+
+/* attention card — the one card */
+.attn {
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r);
+  padding: 22px 24px 20px;
+  box-shadow: var(--shadow);
+  margin-bottom: 24px;
+}
+.attn.warn {
+  border-color: oklch(85% 0.05 30);
+  background: linear-gradient(180deg, var(--warn-soft), var(--paper) 60%);
+}
+.attn .label {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--warn);
+  margin-bottom: 14px;
+}
+.attn .label .pulse {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: currentColor; animation: pulse 1.6s infinite;
+}
+@keyframes pulse { 0%,100%{opacity:1; transform:scale(1)} 50%{opacity:0.4; transform:scale(1.4)} }
+
+.attn h2 {
+  font-family: var(--font-serif);
+  font-weight: 500;
+  font-size: 22px;
+  line-height: 1.3;
+  margin: 0 0 12px;
+  letter-spacing: -0.01em;
+  text-wrap: pretty;
+}
+.attn .body {
+  font-size: 15px; line-height: 1.55;
+  color: var(--text-2);
+  margin: 0 0 22px;
+  text-wrap: pretty;
+}
+.attn .body strong { color: var(--text); font-weight: 600; }
+.attn .actions {
+  display: flex; gap: 8px; align-items: center;
+  flex-wrap: wrap;
+}
+.attn .source {
+  display: flex; gap: 10px; align-items: center;
+  font-size: 12px; color: var(--text-3);
+  margin-bottom: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--hairline);
+  white-space: nowrap;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+.attn .source > :nth-child(3) { overflow: hidden; text-overflow: ellipsis; flex: 1; }
+.attn .source .dot { width: 7px; height: 7px; border-radius: 2px; }
+
+/* primary action button */
+.go {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 36px;
+  padding: 0 16px;
+  border-radius: 10px;
+  background: var(--text);
+  color: var(--bg);
+  font-size: 14px; font-weight: 600;
+  letter-spacing: -0.005em;
+  transition: transform 0.06s, opacity 0.1s;
+}
+.go:hover { opacity: 0.88; }
+.go:active { transform: scale(0.98); }
+.go.outline {
+  background: transparent; color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--hairline-strong);
+}
+.go.warn { background: var(--warn); color: white; }
+.go.ghost {
+  background: transparent; color: var(--text-2);
+  height: 30px; padding: 0 10px;
+}
+.go.ghost:hover { color: var(--text); background: oklch(0% 0 0 / 0.04); }
+[data-theme="dark"] .go.ghost:hover { background: oklch(100% 0 0 / 0.05); }
+.go .mini { font-size: 11px; opacity: 0.6; margin-left: 6px; }
+
+/* waves list — minimal */
+.waves {
+  display: flex; flex-direction: column;
+}
+.wave-row {
+  display: grid;
+  grid-template-columns: 26px 1fr auto;
+  gap: 14px;
+  align-items: center;
+  padding: 18px 4px;
+  border-bottom: 1px solid var(--hairline);
+  text-align: left;
+  transition: background 0.1s;
+  cursor: pointer;
+}
+.wave-row:hover { background: oklch(0% 0 0 / 0.018); }
+[data-theme="dark"] .wave-row:hover { background: oklch(100% 0 0 / 0.025); }
+.wave-row .glyph {
+  width: 26px; height: 26px;
+  display: grid; place-items: center;
+  color: var(--text-3);
+}
+.wave-row .body { min-width: 0; }
+.wave-row .t {
+  font-size: 15px; font-weight: 500;
+  color: var(--text);
+  margin-bottom: 3px;
+  text-wrap: pretty;
+}
+.wave-row .s {
+  font-size: 13px;
+  color: var(--text-3);
+  display: flex; gap: 10px; align-items: center;
+}
+.wave-row .s .cove-tag {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-weight: 500;
+}
+.wave-row .s .cove-tag i {
+  display: inline-block;
+  width: 6px; height: 6px; border-radius: 50%;
+}
+.wave-row .when {
+  font-size: 12px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* Per-row delete affordance — hidden until the row is hovered or
+   keyboard-focused. Sits absolutely so it doesn't push the existing
+   eta/progress cluster around when it appears. */
+.wave-row { position: relative; }
+.wave-row .wave-row-delete {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 24px; height: 24px;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--text-3);
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s, background 0.12s;
+}
+.wave-row:hover .wave-row-delete,
+.wave-row:focus-within .wave-row-delete { opacity: 1; }
+.wave-row .wave-row-delete:hover {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+/* fill bar */
+.fill {
+  position: relative;
+  width: 64px; height: 4px;
+  background: oklch(0% 0 0 / 0.06);
+  border-radius: 999px;
+  overflow: hidden;
+}
+[data-theme="dark"] .fill { background: oklch(100% 0 0 / 0.08); }
+.fill .v {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  background: var(--text-2);
+  border-radius: 999px;
+}
+.fill.running .v { background: var(--accent); }
+
+/* heading */
+.h-eyebrow {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+  margin-bottom: 6px;
+}
+.h-display {
+  font-family: var(--font-serif);
+  font-weight: 400;
+  font-size: 36px;
+  line-height: 1.15;
+  letter-spacing: -0.022em;
+  margin: 0 0 24px;
+  text-wrap: pretty;
+}
+
+/* ===== Wave detail: workbench layout ===== */
+.workbench {
+  width: 100%;
+  max-width: 1280px;
+  padding: 18px 32px 28px;
+  display: flex; flex-direction: column;
+  min-width: 0;
+}
+.wave-header {
+  display: flex; align-items: center; gap: 14px;
+  padding: 8px 0 14px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--hairline);
+}
+.wave-back {
+  width: 26px; height: 26px;
+  display: grid; place-items: center;
+  border-radius: 6px;
+  color: var(--text-3);
+  flex-shrink: 0;
+  transition: background 0.1s, color 0.1s;
+}
+.wave-back:hover { background: oklch(0% 0 0 / 0.05); color: var(--text); }
+[data-theme="dark"] .wave-back:hover { background: oklch(100% 0 0 / 0.06); }
+.wave-crumb {
+  display: flex; align-items: center; gap: 8px;
+  min-width: 0; flex: 1;
+  font-size: 14px;
+}
+.wave-cove-dot {
+  width: 9px; height: 9px; border-radius: 3px;
+  flex-shrink: 0;
+}
+.wave-cove {
+  color: var(--text-3);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.wave-cove:hover { color: var(--text); }
+.wave-sep { color: var(--text-4); flex-shrink: 0; }
+.wave-title {
+  font-family: var(--font-serif);
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wave-meta {
+  display: flex; align-items: center; gap: 14px;
+  flex-shrink: 0;
+}
+.status-pill {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 12.5px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.status-pill.running { color: var(--accent); }
+.status-pill.waiting { color: var(--warn); }
+.status-pill-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: currentColor;
+}
+.status-pill-dot.live-dot { animation: dot-pulse 2.2s ease-in-out infinite; }
+.status-pill-dot.warn    { box-shadow: 0 0 0 3px var(--warn-soft); }
+.wave-percent {
+  font-size: 12.5px; color: var(--text-3);
+  min-width: 36px; text-align: right;
+}
+
+/* Wave workbench body — flex column that hosts the RGL grid and a trailing
+   AddPanel. Fills the .workbench inner width; the grid's own width comes
+   from RGL's WidthProvider. */
+.workbench-main {
+  min-width: 0;
+  display: flex; flex-direction: column;
+}
+
+/* breadcrumb top */
+.crumbs {
+  font-size: 12px;
+  color: var(--text-3);
+  margin-bottom: 22px;
+  display: flex; align-items: center; gap: 6px;
+}
+.crumbs a { color: var(--text-3); cursor: pointer; }
+.crumbs a:hover { color: var(--text); }
+.crumbs .now { color: var(--text); font-weight: 500; }
+
+/* utility — used in a few spots for tabular numerals */
+.num { font-variant-numeric: tabular-nums; }
+
+/* warn text + section header variant */
+.warn-text { color: var(--warn); }
+.h-eyebrow.warn { color: var(--warn); }
+
+/* ===== Card slot (RGL grid cell) =====
+   Each grid item is a flex column so the child card (.term/.doc/.git/.diff/
+   .plan-card/.note) can grow to fill the cell. The slot itself is just a
+   transparent positioning context — the card draws the border + shadow. */
+.card-slot {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Inside a grid cell, cards drop their stacked-layout margin and stretch
+   to fill the slot. The slot owns the gap (RGL `margin` prop). */
+.card-slot > .term,
+.card-slot > .doc,
+.card-slot > .git,
+.card-slot > .diff,
+.card-slot > .plan-card,
+.card-slot > .note {
+  margin-bottom: 0;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.card-slot > .term .term-body,
+.card-slot > .doc .doc-body,
+.card-slot > .git .git-body,
+.card-slot > .diff .diff-body,
+.card-slot > .plan-card .plan-card-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  max-height: none;
+}
+
+/* Live xterm hosts its own internal scrollback viewport, so the wrapper
+   must NOT also be a scroll container — `overflow: auto` here triggers a
+   feedback loop with fit.fit():
+     content slightly > container → scrollbar appears → inner width shrinks
+     → fit() recomputes fewer cols → content shrinks → scrollbar disappears
+     → width grows → fit() runs again → …
+   which presents as the cell pulsing from the top-left. */
+.card-slot > .term.live .term-body {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Inside a grid cell the xterm wrapper drops the standalone-card minimum
+   height (it was 360 to keep the live PTY card readable when stacked).
+   The grid cell already enforces a `minH` in rows; letting xterm fit the
+   cell exactly stops the feedback loop where overflow → relayout →
+   ResizeObserver → fit() → overflow. */
+.card-slot .xterm-view {
+  min-height: 0;
+}
+
+/* Card headers are RGL drag handles — give them the grab cursor and disable
+   text selection so the drag feels native. The styling of each head
+   (.term-head/.doc-head/...) already exists; we only add the cursor here. */
+.card-drag-handle {
+  cursor: grab;
+  user-select: none;
+}
+.card-drag-handle:active,
+.react-grid-item.react-draggable-dragging .card-drag-handle {
+  cursor: grabbing;
+}
+
+/* Per-card × button. Hover-revealed, sits over the card head's top-right.
+   Stops mousedown from bubbling so clicks on it don't initiate a drag. */
+.card-grid-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--text-3);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.1s, color 0.1s;
+  z-index: 4;
+}
+.card-slot:hover .card-grid-close,
+.card-slot:focus-within .card-grid-close {
+  opacity: 1;
+}
+.card-grid-close:hover {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+/* ===== Add panel ===== */
+.add-panel {
+  align-self: flex-start;
+  height: 36px; padding: 0 16px;
+  border: 1.5px dashed var(--hairline-strong);
+  border-radius: var(--r);
+  color: var(--text-3);
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 24px;
+  transition: color 0.1s, border-color 0.1s;
+}
+.add-panel:hover { color: var(--text); border-color: var(--text-3); }
+.add-panel-menu {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 24px;
+}
+.add-panel-menu button {
+  height: 36px; padding: 0 14px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--r);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  background: var(--paper);
+  transition: background 0.1s;
+}
+.add-panel-menu button:hover { background: oklch(0% 0 0 / 0.04); }
+[data-theme="dark"] .add-panel-menu button:hover { background: oklch(100% 0 0 / 0.05); }
+.add-panel-menu button.cancel {
+  color: var(--text-3);
+  border-color: transparent;
+  background: transparent;
+}
+
+/* ===== Terminal card ===== */
+.term {
+  border: 1px solid var(--hairline);
+  border-radius: var(--r);
+  background: oklch(99% 0.003 240);
+  margin-bottom: 24px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+[data-theme="dark"] .term { background: oklch(18% 0.009 245); }
+.term-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--hairline);
+  background: oklch(96% 0.004 240);
+}
+[data-theme="dark"] .term-head { background: oklch(21% 0.009 245); }
+.term-dot {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: oklch(85% 0.008 240);
+}
+.term-dot.b { background: oklch(80% 0.008 240); }
+.term-dot.c { background: oklch(75% 0.008 240); }
+[data-theme="dark"] .term-dot   { background: oklch(35% 0.008 245); }
+[data-theme="dark"] .term-dot.b { background: oklch(40% 0.008 245); }
+[data-theme="dark"] .term-dot.c { background: oklch(45% 0.008 245); }
+.term-title {
+  margin-left: 6px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  font-weight: 600;
+}
+.term-body {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.7;
+  padding: 12px 16px 14px;
+  color: var(--text-2);
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+/* Live terminal — body hosts a real xterm; let it size itself, no body scroll
+   (xterm has its own scrollback viewport). */
+.term.live .term-body {
+  padding: 0;
+  max-height: none;
+  min-height: 360px;
+  overflow: hidden;
+  display: flex;
+}
+.term-live-pip {
+  margin-left: 6px;
+  color: var(--accent);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* xterm container ----------------------------------------------------- */
+.xterm-view {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 360px;
+  padding: 10px 14px 12px;
+}
+.xterm-container {
+  width: 100%;
+  height: 100%;
+}
+.xterm-container .xterm,
+.xterm-container .xterm-viewport,
+.xterm-container .xterm-screen { background: transparent !important; }
+.xterm-status {
+  position: absolute;
+  top: 8px; right: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  pointer-events: none;
+}
+/* Closed state needs to be interactable so the Restart button can be
+   clicked. Drop the pointer-events: none and centre over the canvas. */
+.xterm-status-closed {
+  position: absolute;
+  inset: 0;
+  top: 0; right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  pointer-events: auto;
+  background: oklch(99% 0 0 / 0.6);
+  backdrop-filter: blur(2px);
+  text-transform: none;
+  font-size: 13px;
+  letter-spacing: normal;
+}
+[data-theme="dark"] .xterm-status-closed { background: oklch(15% 0 0 / 0.55); }
+.xterm-restart {
+  height: 28px; padding: 0 12px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--r);
+  background: var(--paper);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+}
+.xterm-restart:hover {
+  background: oklch(0% 0 0 / 0.04);
+  border-color: var(--text-3);
+}
+[data-theme="dark"] .xterm-restart:hover { background: oklch(100% 0 0 / 0.05); }
+.term-line { white-space: pre-wrap; word-break: break-word; }
+.term-line.k-cmd  { color: var(--text); font-weight: 600; }
+.term-line.k-out  { color: var(--text-2); }
+.term-line.k-edit { color: var(--accent); }
+.term-line.k-edit::before { content: "✎  "; opacity: 0.6; }
+.term-line.k-log  { color: var(--text-3); }
+.term-line.k-log::before  { content: "·  "; opacity: 0.5; }
+.term-line.k-err  { color: var(--warn); }
+.term-line.k-err::before  { content: "⚠  "; }
+.term-line.k-me   { color: var(--text); font-weight: 500; }
+.term-line.k-me::before   { content: "›  "; color: var(--accent); opacity: 0.9; }
+.term-line.k-ask  { color: var(--text); font-weight: 600; padding-top: 4px; }
+.term-line.k-ask::before  { content: "?  "; color: var(--warn); font-weight: 700; }
+.term-line.k-hint { color: var(--text-3); font-style: italic; }
+.term-line.k-hint::before { content: "   "; }
+.term-line.k-pass { color: oklch(54% 0.14 145); }
+.term-line.k-pass::before { content: ""; }
+.term-line.k-fail { color: oklch(56% 0.14 25); font-weight: 600; }
+.term-line.k-fail::before { content: ""; }
+[data-theme="dark"] .term-line.k-pass { color: oklch(74% 0.14 145); }
+[data-theme="dark"] .term-line.k-fail { color: oklch(74% 0.14 25); }
+.term-line.k-cursor { padding-top: 2px; }
+.term-cursor {
+  display: inline-block;
+  width: 7px; height: 13px;
+  background: var(--text);
+  vertical-align: middle;
+  animation: term-blink 1.05s steps(2, start) infinite;
+}
+@keyframes term-blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+
+/* ===== Note card ===== */
+.note {
+  border: 1px solid var(--hairline);
+  border-radius: var(--r);
+  background: var(--paper);
+  padding: 18px 22px;
+  margin-bottom: 24px;
+}
+.note p {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--text-2);
+  text-wrap: pretty;
+}
+.note p code {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  background: oklch(0% 0 0 / 0.04);
+  padding: 1px 6px;
+  border-radius: 5px;
+  color: var(--text);
+}
+[data-theme="dark"] .note p code { background: oklch(100% 0 0 / 0.06); }
+
+/* ===== Doc card ===== */
+.doc {
+  border: 1px solid var(--hairline);
+  border-radius: var(--r);
+  background: var(--paper);
+  margin-bottom: 24px;
+  overflow: hidden;
+}
+.doc-head {
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--hairline);
+  font-family: var(--font-serif);
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  color: var(--text);
+  background: oklch(98% 0.003 240);
+}
+[data-theme="dark"] .doc-head { background: oklch(20% 0.009 245); }
+.doc-body {
+  padding: 14px 22px 18px;
+}
+.doc-body p {
+  margin: 0 0 12px;
+  font-size: 14.5px;
+  line-height: 1.6;
+  color: var(--text-2);
+  text-wrap: pretty;
+}
+.doc-body p:last-child { margin-bottom: 0; }
+.doc-body p strong { color: var(--text); font-weight: 600; }
+.doc-body p code {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  background: oklch(0% 0 0 / 0.04);
+  padding: 1px 6px;
+  border-radius: 5px;
+  color: var(--text);
+}
+[data-theme="dark"] .doc-body p code { background: oklch(100% 0 0 / 0.06); }
+
+/* ===== Git card ===== */
+.git {
+  border: 1px solid var(--hairline);
+  border-radius: var(--r);
+  background: var(--paper);
+  margin-bottom: 24px;
+  overflow: hidden;
+}
+.git-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--hairline);
+  background: oklch(98% 0.003 240);
+}
+[data-theme="dark"] .git-head { background: oklch(20% 0.009 245); }
+.git-branch {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--accent);
+  font-weight: 600;
+}
+.git-count {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  font-weight: 600;
+}
+.git-body { padding: 6px 0; }
+.git-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 14px;
+  padding: 8px 16px;
+  align-items: center;
+}
+.git-sha {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-3);
+}
+.git-msg {
+  font-size: 13.5px;
+  color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.git-when {
+  font-size: 11.5px;
+  color: var(--text-4);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ===== Diff card ===== */
+.diff {
+  border: 1px solid var(--hairline);
+  border-radius: var(--r);
+  background: var(--paper);
+  margin-bottom: 24px;
+  overflow: hidden;
+}
+.diff-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--hairline);
+  background: oklch(98% 0.003 240);
+}
+[data-theme="dark"] .diff-head { background: oklch(20% 0.009 245); }
+.diff-file {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--text);
+  font-weight: 600;
+}
+.diff-stats {
+  display: inline-flex; gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.diff-add { color: oklch(54% 0.14 145); font-weight: 600; }
+.diff-rm  { color: oklch(56% 0.14 25);  font-weight: 600; }
+[data-theme="dark"] .diff-add { color: oklch(72% 0.14 145); }
+[data-theme="dark"] .diff-rm  { color: oklch(72% 0.14 25);  }
+.diff-body {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.65;
+  padding: 6px 0;
+}
+.diff-hunk { padding: 6px 0; border-top: 1px solid var(--hairline); }
+.diff-hunk:first-child { border-top: 0; }
+.diff-line {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  padding: 0 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.diff-line.k-hdr {
+  color: var(--text-3);
+  padding: 2px 14px 4px;
+  font-size: 11.5px;
+  display: block;
+}
+.diff-gutter { color: var(--text-4); user-select: none; }
+.diff-line.k-add { background: oklch(96% 0.05 145 / 0.45); }
+.diff-line.k-add .diff-gutter,
+.diff-line.k-add .diff-text { color: oklch(40% 0.11 145); }
+.diff-line.k-rm  { background: oklch(96% 0.05 25 / 0.45); }
+.diff-line.k-rm .diff-gutter,
+.diff-line.k-rm .diff-text  { color: oklch(45% 0.13 25); }
+.diff-line.k-ctx .diff-text { color: var(--text-2); }
+[data-theme="dark"] .diff-line.k-add { background: oklch(28% 0.05 145 / 0.5); }
+[data-theme="dark"] .diff-line.k-add .diff-gutter,
+[data-theme="dark"] .diff-line.k-add .diff-text { color: oklch(78% 0.14 145); }
+[data-theme="dark"] .diff-line.k-rm  { background: oklch(28% 0.05 25 / 0.5); }
+[data-theme="dark"] .diff-line.k-rm .diff-gutter,
+[data-theme="dark"] .diff-line.k-rm .diff-text  { color: oklch(78% 0.14 25); }
+
+/* ===== Plan card ===== */
+.plan-card {
+  border: 1px solid var(--hairline);
+  border-radius: var(--r);
+  background: var(--paper);
+  margin-bottom: 24px;
+  overflow: hidden;
+}
+.plan-card-head {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--hairline);
+  background: oklch(98% 0.003 240);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+[data-theme="dark"] .plan-card-head { background: oklch(20% 0.009 245); }
+.plan-card-body {
+  list-style: none; margin: 0; padding: 6px 0;
+}
+.plan-card-body li {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 9px 16px;
+}
+.plan-card-body li .dot {
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  border: 1.5px solid var(--hairline-strong);
+  display: grid; place-items: center;
+  color: transparent;
+  font-size: 10px;
+}
+.plan-card-body li.done .dot { background: var(--text); border-color: var(--text); color: var(--bg); }
+.plan-card-body li.cur  .dot { border-color: var(--accent); position: relative; }
+.plan-card-body li.cur  .dot::before {
+  content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+}
+.plan-card-body li .lbl {
+  font-size: 14px;
+  color: var(--text);
+  line-height: 1.4;
+  text-wrap: pretty;
+}
+.plan-card-body li.done .lbl { color: var(--text-3); text-decoration: line-through; text-decoration-thickness: 1px; }
+.plan-card-body li.cur  .lbl { font-weight: 600; }
+.plan-card-body li .when {
+  font-size: 11.5px;
+  color: var(--text-4);
+  font-variant-numeric: tabular-nums;
+}
+
+
+/* ============================================================
+   Surf — main home view (terminal + Today/Calendar rail)
+   ============================================================ */
+.surf {
+  width: 100%;
+  max-width: 1180px;
+  flex: 1;
+  min-height: 0;
+  padding: 22px 28px 28px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 308px;
+  gap: 24px;
+  align-items: stretch;
+}
+
+/* the page parent has align-items: center on its flex column —
+   make sure surf gets full width */
+.scroll > .surf { align-self: stretch; }
+
+.surf-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* ---- clock + now strip ---- */
+.surf-clock {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 24px;
+  align-items: center;
+  padding: 6px 4px 0;
+}
+.surf-clock-time {
+  display: flex;
+  align-items: baseline;
+  gap: 1px;
+  font-family: var(--font-mono);
+  color: var(--text);
+  letter-spacing: -0.04em;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.surf-clock-h, .surf-clock-m {
+  font-size: 44px;
+  font-weight: 300;
+  font-variant-numeric: tabular-nums;
+}
+.surf-clock-colon {
+  font-size: 40px;
+  font-weight: 300;
+  color: var(--text-3);
+  margin: 0 -1px;
+  animation: clock-blink 1.6s steps(2, start) infinite;
+}
+@keyframes clock-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.surf-clock-ap {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-3);
+  letter-spacing: 0.08em;
+  margin-left: 7px;
+}
+.surf-clock-meta {
+  display: flex; flex-direction: column;
+  gap: 2px;
+  padding-left: 20px;
+  border-left: 1px solid var(--hairline);
+  flex-shrink: 0;
+}
+.surf-clock-day {
+  font-family: var(--font-serif);
+  font-size: 18px;
+  letter-spacing: -0.015em;
+  color: var(--text);
+  line-height: 1.15;
+}
+.surf-clock-date {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.surf-clock-now {
+  flex: 1 1 240px;
+  min-width: 220px;
+  display: flex;
+  justify-content: flex-end;
+}
+.surf-now-card {
+  display: block;
+  width: 100%;
+  max-width: 320px;
+  text-align: left;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  padding: 9px 13px 10px;
+  background: var(--paper);
+  transition: background 0.1s, border-color 0.1s;
+  cursor: pointer;
+}
+.surf-now-card.empty { cursor: default; color: var(--text-3); }
+.surf-now-card.empty:hover { background: var(--paper); }
+.surf-now-card:hover { background: oklch(0% 0 0 / 0.025); }
+[data-theme="dark"] .surf-now-card:hover { background: oklch(100% 0 0 / 0.04); }
+.surf-now-card.running {
+  border-color: oklch(80% 0.07 245);
+  background: oklch(97% 0.02 245);
+}
+[data-theme="dark"] .surf-now-card.running {
+  border-color: oklch(40% 0.08 245);
+  background: oklch(22% 0.03 245);
+}
+.surf-now-label {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-bottom: 3px;
+  font-variant-numeric: tabular-nums;
+}
+.surf-now-card.running .surf-now-label { color: var(--accent); }
+.surf-now-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--text-4);
+}
+.surf-now-dot.live {
+  background: var(--accent);
+  animation: dot-pulse 2.2s ease-in-out infinite;
+}
+.surf-now-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  line-height: 1.3;
+  text-wrap: pretty;
+  overflow: hidden; text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.surf-now-meta {
+  font-size: 11.5px;
+  color: var(--text-3);
+  margin-top: 3px;
+  display: flex; gap: 6px; align-items: center;
+}
+.surf-now-meta .surf-now-sep { color: var(--text-4); }
+
+@media (max-width: 720px) {
+  .surf-clock-meta { padding-left: 0; border-left: 0; }
+}
+
+/* ---- main terminal (plain) ---- */
+.surf-term {
+  flex: 1;
+  min-height: 480px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r);
+  background: oklch(99.2% 0.003 240);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+[data-theme="dark"] .surf-term { background: oklch(17.5% 0.009 245); }
+
+.surf-term-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--hairline);
+  background: oklch(96% 0.004 240);
+  flex-shrink: 0;
+}
+[data-theme="dark"] .surf-term-head { background: oklch(21% 0.009 245); }
+.surf-term-head .term-title { margin-left: 6px; }
+.surf-term-host {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-4);
+  letter-spacing: 0.02em;
+}
+
+.surf-term-body {
+  /* `overflow: hidden`, not `auto`: when this wraps a live <XtermView/>
+     (Today's default PTY), an auto scrollbar fights with xterm's own
+     scrollback viewport and fit.fit() in a width-feedback loop — same
+     bug as the wave grid's terminal cards, see notes near
+     `.card-slot > .term.live .term-body`. The boot/error fallback inside
+     is one or two lines so it never needs to scroll either. */
+  flex: 1; min-height: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  line-height: 1.75;
+  padding: 20px 22px 22px;
+  color: var(--text-2);
+}
+
+.surf-term-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-2);
+}
+.surf-term-line.dim { color: var(--text-3); }
+.surf-term-line strong { color: var(--text); font-weight: 600; }
+.surf-term-line code {
+  font-family: var(--font-mono);
+  background: oklch(0% 0 0 / 0.05);
+  padding: 0 5px;
+  border-radius: 4px;
+  color: var(--text);
+}
+[data-theme="dark"] .surf-term-line code { background: oklch(100% 0 0 / 0.06); }
+.surf-term-line .dim { color: var(--text-3); }
+
+.surf-cmd {
+  color: var(--text);
+  font-weight: 600;
+}
+.surf-arg {
+  color: var(--accent);
+}
+.surf-live {
+  color: oklch(48% 0.13 145);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+[data-theme="dark"] .surf-live { color: oklch(74% 0.14 145); }
+
+.surf-term-gap { height: 14px; }
+
+/* terminal prompt */
+.surf-prompt {
+  display: flex; align-items: center; gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  padding-top: 2px;
+}
+.surf-host {
+  color: oklch(48% 0.13 145);
+  font-weight: 600;
+}
+[data-theme="dark"] .surf-host { color: oklch(72% 0.14 145); }
+.surf-tilde {
+  color: var(--accent);
+  font-weight: 600;
+}
+.surf-ps {
+  color: var(--text);
+  font-weight: 600;
+}
+.surf-cursor {
+  display: inline-block;
+  width: 8px; height: 15px;
+  background: var(--text);
+  vertical-align: middle;
+  margin-left: 2px;
+  animation: term-blink 1.05s steps(2, start) infinite;
+}
+
+/* ---- right rail ---- */
+.surf-rail {
+  min-width: 0;
+  display: flex; flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+}
+
+.surf-card {
+  border: 1px solid var(--hairline);
+  border-radius: var(--r);
+  background: var(--paper);
+  padding: 16px 18px 18px;
+}
+.surf-card .h-eyebrow { margin-bottom: 10px; }
+
+/* Today */
+.surf-today { padding-bottom: 16px; }
+.surf-date {
+  font-family: var(--font-serif);
+  font-size: 22px;
+  font-weight: 400;
+  letter-spacing: -0.015em;
+  color: var(--text);
+  line-height: 1.2;
+  text-wrap: pretty;
+}
+.surf-tod {
+  font-size: 12.5px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+.surf-today-status {
+  display: none;
+}
+.cal-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--hairline);
+}
+.surf-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  font-variant-numeric: tabular-nums;
+}
+.surf-stat-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  align-self: center;
+}
+.surf-stat-dot.warn {
+  background: var(--warn);
+  box-shadow: 0 0 0 3px var(--warn-soft);
+}
+.surf-stat-dot.run {
+  background: var(--accent);
+  animation: dot-pulse 2.2s ease-in-out infinite;
+}
+.surf-stat-n {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+.surf-stat.warn .surf-stat-n { color: var(--warn); }
+.surf-stat-lbl {
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+.surf-stat-sep {
+  color: var(--text-4);
+  font-size: 13px;
+}
+
+/* ============================================================
+   Calendar (Week + Month) in the rail
+   ============================================================ */
+.cal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 14px;
+}
+.cal-head .h-eyebrow { margin: 0; }
+
+.cal-toggle {
+  display: inline-flex;
+  background: oklch(0% 0 0 / 0.045);
+  border-radius: 7px;
+  padding: 2px;
+  gap: 1px;
+}
+[data-theme="dark"] .cal-toggle { background: oklch(100% 0 0 / 0.06); }
+.cal-toggle button {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 4px 10px;
+  border-radius: 5px;
+  color: var(--text-3);
+  transition: background 0.1s, color 0.1s;
+}
+.cal-toggle button:hover { color: var(--text); }
+.cal-toggle button.on {
+  background: var(--paper);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(20,30,55,.05);
+}
+[data-theme="dark"] .cal-toggle button.on { background: oklch(28% 0.01 245); }
+
+/* nav arrows (used in week + month head) */
+.cal-nav {
+  width: 22px; height: 22px;
+  display: grid; place-items: center;
+  color: var(--text-3);
+  border-radius: 5px;
+  font-size: 15px;
+  line-height: 1;
+}
+.cal-nav:hover { background: oklch(0% 0 0 / 0.045); color: var(--text); }
+[data-theme="dark"] .cal-nav:hover { background: oklch(100% 0 0 / 0.06); }
+
+.cal-month-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.005em;
+}
+
+/* ---- week ---- */
+.cal-week-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px;
+}
+.cal-week-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 1px;
+}
+.cal-week-day {
+  display: flex; flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 0 6px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.cal-week-day:hover { background: oklch(0% 0 0 / 0.035); }
+[data-theme="dark"] .cal-week-day:hover { background: oklch(100% 0 0 / 0.045); }
+.cal-week-dow {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-4);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.cal-week-date {
+  width: 24px; height: 24px;
+  display: grid; place-items: center;
+  border-radius: 50%;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.cal-week-day.today .cal-week-date {
+  background: var(--text);
+  color: var(--bg);
+  font-weight: 600;
+}
+.cal-week-day.sel:not(.today) .cal-week-date {
+  box-shadow: inset 0 0 0 1.5px var(--text);
+}
+.cal-week-day.sel { background: oklch(0% 0 0 / 0.035); }
+[data-theme="dark"] .cal-week-day.sel { background: oklch(100% 0 0 / 0.05); }
+.cal-week-dots {
+  display: flex; gap: 2px;
+  min-height: 5px;
+  align-items: center;
+}
+.cal-week-dot {
+  width: 4px; height: 4px;
+  border-radius: 50%;
+}
+
+/* ---- month ---- */
+.cal-month-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px;
+}
+.cal-month-dow {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  margin-bottom: 4px;
+}
+.cal-month-dow span {
+  text-align: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-4);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 0;
+}
+.cal-month-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 1px;
+}
+.cal-month-day {
+  aspect-ratio: 1;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 2px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.cal-month-day:hover { background: oklch(0% 0 0 / 0.035); }
+[data-theme="dark"] .cal-month-day:hover { background: oklch(100% 0 0 / 0.05); }
+.cal-md-n {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.cal-month-day.dim .cal-md-n { color: var(--text-4); }
+.cal-month-day.today .cal-md-n {
+  background: var(--text);
+  color: var(--bg);
+  width: 20px; height: 20px;
+  display: grid; place-items: center;
+  border-radius: 50%;
+  font-weight: 600;
+}
+.cal-month-day.sel:not(.today) {
+  box-shadow: inset 0 0 0 1.5px var(--text);
+}
+.cal-md-dots {
+  display: flex; gap: 2px;
+  height: 4px;
+  align-items: center;
+}
+.cal-md-dots i {
+  display: block;
+  width: 3.5px; height: 3.5px;
+  border-radius: 50%;
+}
+.cal-month-day.today .cal-md-dots i {
+  /* small dots under today; keep visible */
+  outline: 1px solid var(--bg);
+}
+
+/* ---- agenda below the grid ---- */
+.cal-agenda-head {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hairline);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  letter-spacing: -0.005em;
+}
+.cal-agenda {
+  display: flex; flex-direction: column;
+  margin: 0 -4px;
+}
+.cal-empty {
+  font-size: 12.5px;
+  color: var(--text-3);
+  padding: 4px 4px 2px;
+  font-style: italic;
+}
+.cal-event {
+  display: grid;
+  grid-template-columns: 40px 3px 1fr;
+  gap: 9px;
+  padding: 6px 6px;
+  border-radius: 6px;
+  text-align: left;
+  align-items: stretch;
+  transition: background 0.1s;
+  cursor: pointer;
+  position: relative;
+}
+.cal-event:hover { background: oklch(0% 0 0 / 0.035); }
+[data-theme="dark"] .cal-event:hover { background: oklch(100% 0 0 / 0.045); }
+.cal-event.waiting {
+  background: oklch(97% 0.018 30);
+}
+[data-theme="dark"] .cal-event.waiting {
+  background: oklch(24% 0.03 30);
+}
+.cal-event.waiting:hover {
+  background: oklch(95% 0.025 30);
+}
+[data-theme="dark"] .cal-event.waiting:hover {
+  background: oklch(27% 0.035 30);
+}
+.cal-event-run {
+  color: var(--accent);
+  font-weight: 500;
+}
+.cal-event-time {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+  padding-top: 2px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.cal-event-bar {
+  border-radius: 2px;
+  align-self: stretch;
+}
+.cal-event-body { min-width: 0; }
+.cal-event-title {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+  line-height: 1.3;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cal-event-meta {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 1px;
+}
+
+/* narrow viewports — stack rail under terminal */
+@media (max-width: 920px) {
+  .surf {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .surf-term { min-height: 380px; }
+}
+
+/* ============================================================
+   LoginPage — paper card, serif title, mono input. One thing on
+   the page; same Calm vocabulary as everywhere else.
+   ============================================================ */
+.login-page {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+}
+.login-card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r);
+  box-shadow: var(--shadow);
+  padding: 30px 32px 28px;
+}
+.login-eyebrow {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+  margin-bottom: 10px;
+}
+.login-title {
+  font-family: var(--font-serif);
+  font-weight: 400;
+  font-size: 30px;
+  line-height: 1.15;
+  letter-spacing: -0.022em;
+  color: var(--text);
+  margin: 0 0 10px;
+}
+.login-hint {
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text-3);
+  margin: 0 0 22px;
+}
+.login-hint code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: oklch(0% 0 0 / 0.04);
+  padding: 1px 6px;
+  border-radius: 5px;
+  color: var(--text);
+}
+[data-theme="dark"] .login-hint code { background: oklch(100% 0 0 / 0.06); }
+.login-input {
+  display: block;
+  width: 100%;
+  height: 40px;
+  padding: 0 13px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  outline: none;
+  transition: border-color 0.1s, box-shadow 0.1s;
+  margin-bottom: 12px;
+}
+.login-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.login-input::placeholder { color: var(--text-4); }
+.login-error {
+  font-size: 12.5px;
+  color: var(--warn);
+  margin: 0 0 12px;
+}
+
+/* ============================================================
+   react-grid-layout overrides — drop the Grafana look and rebind the
+   grid to Calm's tokens. RGL's bundled CSS handles the absolute
+   positioning + transforms; we only restyle the visible bits.
+   ============================================================ */
+.wave-grid {
+  /* The grid itself is just a positioning host; the cards carry the chrome.
+     A small bottom margin so the trailing AddPanel doesn't kiss the last
+     row. */
+  margin-bottom: 16px;
+}
+
+/* Each grid cell. We override RGL's bundled transition (which animates
+   width + height + transform over 200ms) — width/height transitions cause
+   the inner xterm's ResizeObserver to refit every frame for the duration
+   of the animation, which presents as a 200ms shake whenever a card is
+   added or the grid reflows. Limiting the transition to transform-only
+   keeps the slide animation while letting the cell snap to its final size
+   in a single frame. */
+.react-grid-item,
+.react-grid-item.cssTransforms {
+  transition: transform 200ms ease, box-shadow 0.15s ease;
+  transition-property: transform, box-shadow;
+}
+.react-grid-item.react-grid-placeholder {
+  /* The drop-target ghost. Default is a solid red rectangle — replace
+     with a soft accent fill + hairline so it reads as "this is where the
+     card will land" instead of "warning". */
+  background: var(--accent-soft);
+  border: 1px dashed var(--accent);
+  border-radius: var(--r);
+  opacity: 0.7;
+  z-index: 2;
+  transition-duration: 100ms;
+}
+[data-theme="dark"] .react-grid-item.react-grid-placeholder {
+  background: oklch(40% 0.08 245 / 0.35);
+}
+
+/* Lift the card while dragging — same shadow grammar as `.attn` and the
+   surf terminal, just a touch stronger so the displacement reads. */
+.react-grid-item.react-draggable-dragging {
+  z-index: 10;
+  cursor: grabbing;
+  box-shadow: 0 4px 14px rgba(20,30,55,.08), 0 22px 48px rgba(20,30,55,.12);
+}
+[data-theme="dark"] .react-grid-item.react-draggable-dragging {
+  box-shadow: 0 4px 14px rgba(0,0,0,.4), 0 22px 48px rgba(0,0,0,.55);
+}
+.react-grid-item.resizing {
+  z-index: 5;
+  opacity: 0.92;
+}
+
+/* Resize handle — default is a SE-corner SVG triangle. Replace with a
+   minimal hairline-corner glyph that brightens to the accent on hover.
+   Only the SE handle is enabled (see WaveGrid.tsx). */
+.react-resizable-handle {
+  background-image: none;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  bottom: 3px;
+  right: 3px;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s;
+  color: var(--text-4);
+}
+.react-resizable-handle::after {
+  content: "";
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 9px;
+  height: 9px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  border-bottom-right-radius: 2px;
+}
+.react-grid-item:hover > .react-resizable-handle {
+  opacity: 1;
+}
+.react-resizable-handle:hover {
+  color: var(--accent);
+}

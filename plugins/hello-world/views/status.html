@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Hello status</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --fg: #2a2f3a;
+      --muted: #5b626d;
+      --bg: #fff;
+      --accent: #2f8c3c;
+      --accent-paused: #c98a2a;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --fg: #d9deea;
+        --muted: #9aa1ad;
+        --bg: #14171c;
+      }
+    }
+    body {
+      margin: 0;
+      padding: 12px 14px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 13px;
+      color: var(--fg);
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .row { display: flex; align-items: center; gap: 8px; }
+    .dot {
+      width: 9px; height: 9px; border-radius: 50%;
+      background: var(--accent);
+      animation: pulse 2s infinite;
+    }
+    .dot.paused {
+      background: var(--accent-paused);
+      animation: none;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.45; }
+    }
+    .label { font-weight: 500; }
+    .meta {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    button {
+      align-self: flex-start;
+      font: inherit;
+      color: var(--fg);
+      background: transparent;
+      border: 1px solid var(--muted);
+      border-radius: 4px;
+      padding: 3px 8px;
+      cursor: pointer;
+    }
+    button:hover { border-color: var(--fg); }
+    .log {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 10px;
+      color: var(--muted);
+      white-space: pre-wrap;
+      max-height: 80px;
+      overflow-y: auto;
+    }
+  </style>
+</head>
+<body>
+  <div class="row">
+    <span class="dot" id="dot"></span>
+    <span class="label" id="greeting">Hello, plugin world.</span>
+  </div>
+  <div class="meta" id="meta"></div>
+  <button id="toggle">Toggle overlay</button>
+  <div class="log" id="log"></div>
+
+  <script type="module">
+    // Hand-rolled MCP-Apps iframe-side client.
+    //
+    // We deliberately do not depend on @modelcontextprotocol/ext-apps from a
+    // CDN: app-with-deps.js is ~330 KB, and esm.sh would require widening
+    // connect_src/script_src in this view's CSP. The wire is JSON-RPC 2.0
+    // over postMessage — small enough to inline.
+    //
+    // Protocol surface used here:
+    //   * host → iframe `ui/notifications/tool-result`   (carries card payload)
+    //   * host → iframe `ui/notifications/host-context-changed` (theme etc.)
+    //   * iframe → host `ui/notifications/initialized`   (ready signal)
+    //   * iframe → host `tools/call { name: "neige.overlay.set", ...}`
+    //   The host (web-calm's AppBridge wrapper, M5) routes `neige.*` tool
+    //   calls to the kernel's /tool-call fan-out which dispatches into
+    //   callbacks.rs. Plugin-server tools are denied iframe-side by the
+    //   manifest's view-level permissions whitelist.
+
+    const log = (msg) => {
+      const el = document.getElementById("log");
+      el.textContent = (el.textContent + "\n" + msg).split("\n").slice(-6).join("\n");
+    };
+
+    // State updated when the host pushes a `tool-result` notification.
+    let state = {
+      payload: null,
+      cardId: null,
+      waveId: null,
+      overlayOn: true,
+    };
+    let nextId = 1;
+    const pending = new Map();
+
+    function send(msg) {
+      // The parent is the AppBridge sandbox proxy iframe; postMessage targets
+      // window.parent. AppBridge owns origin checks on its side; we trust the
+      // sandbox boundary because srcdoc inner frames can only reach their
+      // proxy parent regardless of what we set here.
+      try {
+        window.parent.postMessage(msg, "*");
+      } catch (e) {
+        log("postMessage failed: " + e);
+      }
+    }
+
+    function call(method, params) {
+      const id = nextId++;
+      return new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+        send({ jsonrpc: "2.0", id, method, params });
+        // 5s default timeout — overlay writes should round-trip in <50 ms.
+        setTimeout(() => {
+          if (pending.has(id)) {
+            pending.delete(id);
+            reject(new Error("rpc timeout for " + method));
+          }
+        }, 5000);
+      });
+    }
+
+    function notify(method, params) {
+      send({ jsonrpc: "2.0", method, params });
+    }
+
+    function applyPayload(structuredContent, toolInfo) {
+      if (!structuredContent) return;
+      state.payload = structuredContent;
+      state.waveId = structuredContent.wave_id || state.waveId;
+      if (toolInfo && toolInfo.id) {
+        state.cardId = toolInfo.id;
+      }
+      const greeting = structuredContent.greeting || "Hello, plugin world.";
+      document.getElementById("greeting").textContent = greeting;
+      const bits = [];
+      if (state.cardId) bits.push("card " + state.cardId.slice(0, 8));
+      if (state.waveId) bits.push("wave " + state.waveId.slice(0, 8));
+      document.getElementById("meta").textContent = bits.join(" · ");
+    }
+
+    window.addEventListener("message", (event) => {
+      const msg = event.data;
+      if (!msg || msg.jsonrpc !== "2.0") return;
+
+      // Response to one of our outbound calls.
+      if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
+        const p = pending.get(msg.id);
+        if (!p) return;
+        pending.delete(msg.id);
+        if (msg.error) p.reject(new Error(msg.error.message || "rpc error"));
+        else p.resolve(msg.result);
+        return;
+      }
+
+      // Inbound request/notification from the host.
+      const method = msg.method || "";
+      switch (method) {
+        case "ui/notifications/tool-result": {
+          // The card's structuredContent (from the plugin's tools/call result)
+          // is delivered here. AppBridge also forwards toolInfo with the card
+          // id we use to scope overlay writes.
+          const p = msg.params || {};
+          applyPayload(p.structuredContent || p.structured_content, p.toolInfo || p.tool_info);
+          break;
+        }
+        case "ui/notifications/host-context-changed": {
+          // Theme + container size updates. We don't render anything fancy yet
+          // but log so the demo is visible.
+          log("host-context: " + JSON.stringify(msg.params || {}));
+          break;
+        }
+        case "ui/initialize": {
+          // Some hosts open with an explicit ui/initialize request; reply
+          // with our app capabilities. Optional — most hosts just push
+          // notifications. We answer if there's an id.
+          if (msg.id !== undefined) {
+            send({
+              jsonrpc: "2.0",
+              id: msg.id,
+              result: {
+                appCapabilities: { tools: { callServerTool: true } }
+              }
+            });
+          }
+          break;
+        }
+        default:
+          // Unknown method — log and reply MethodNotFound if it expects one.
+          if (msg.id !== undefined) {
+            send({
+              jsonrpc: "2.0",
+              id: msg.id,
+              error: { code: -32601, message: "Method not found: " + method }
+            });
+          }
+          break;
+      }
+    });
+
+    async function setOverlay(state_str) {
+      if (!state.waveId) {
+        log("no wave_id yet; cannot set overlay");
+        return;
+      }
+      try {
+        await call("tools/call", {
+          name: "neige.overlay.set",
+          arguments: {
+            entity_kind: "wave",
+            entity_id: state.waveId,
+            kind: "status",
+            payload: { state: state_str, source: "hello-world" }
+          }
+        });
+        log("overlay.set " + state_str + " ok");
+      } catch (e) {
+        log("overlay.set failed: " + e.message);
+      }
+    }
+
+    document.getElementById("toggle").addEventListener("click", async () => {
+      const dot = document.getElementById("dot");
+      state.overlayOn = !state.overlayOn;
+      if (state.overlayOn) {
+        dot.classList.remove("paused");
+        await setOverlay("running");
+      } else {
+        dot.classList.add("paused");
+        await setOverlay("paused");
+      }
+    });
+
+    // Signal ready. AppBridge listens for ui/notifications/initialized and
+    // resolves its connect() promise on the host side.
+    notify("ui/notifications/initialized", {});
+    log("iframe initialized");
+  </script>
+</body>
+</html>

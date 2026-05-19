@@ -1,0 +1,58 @@
+import { XtermView } from '../../XtermView';
+import type { TerminalCardData } from '../../types';
+import type { CardEntry } from '../registry';
+
+function TerminalCard({ card }: { card: TerminalCardData }) {
+  const { title, lines, terminalId } = card;
+  const live = !!terminalId;
+  return (
+    <div className={'term' + (live ? ' live' : '')}>
+      <div className="term-head card-drag-handle">
+        <span className="term-dot" />
+        <span className="term-dot b" />
+        <span className="term-dot c" />
+        <span className="term-title">
+          {title || 'terminal'}
+          {live && <span className="term-live-pip"> · live</span>}
+        </span>
+      </div>
+      <div className="term-body">
+        {live ? (
+          <XtermView terminalId={terminalId!} />
+        ) : (
+          <>
+            {lines.map((l, i) => (
+              <div key={i} className={'term-line k-' + l.kind}>
+                {l.text}
+              </div>
+            ))}
+            <div className="term-line k-cursor">
+              <span className="term-cursor" />
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export const TerminalEntry: CardEntry<TerminalCardData> = {
+  type: 'terminal',
+  Component: TerminalCard,
+  defaultSize: { w: 6, h: 10, minW: 4, minH: 6 },
+  fromKernel: (k) => {
+    if (k.kind !== 'terminal') return null;
+    const payload =
+      typeof k.payload === 'object' && k.payload !== null
+        ? (k.payload as { terminal_id?: string })
+        : null;
+    return {
+      type: 'terminal',
+      id: k.id,
+      title: 'terminal',
+      lines: [],
+      terminalId: payload?.terminal_id,
+    };
+  },
+  addPanel: { label: 'New terminal', icon: 'terminal' },
+};

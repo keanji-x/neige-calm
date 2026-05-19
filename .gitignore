@@ -1,0 +1,24 @@
+# Rust
+/target
+plugins/*/target
+
+# Node
+web/node_modules
+web/dist
+web/.tmp
+**/*.tsbuildinfo
+
+# Vitest cache
+.vite/
+
+# OS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Env
+.env
+.env.local
