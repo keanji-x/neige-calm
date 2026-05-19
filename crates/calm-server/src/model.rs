@@ -8,10 +8,11 @@
 //! `Some(v)` = replace.
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 // ---------------- Cove ----------------
 
-#[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema)]
 pub struct Cove {
     pub id: String,
     pub name: String,
@@ -21,7 +22,7 @@ pub struct Cove {
     pub updated_at: i64,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, ToSchema)]
 pub struct NewCove {
     pub name: String,
     pub color: String,
@@ -29,7 +30,7 @@ pub struct NewCove {
     pub sort: Option<f64>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, ToSchema)]
 pub struct CovePatch {
     pub name: Option<String>,
     pub color: Option<String>,
@@ -38,7 +39,7 @@ pub struct CovePatch {
 
 // ---------------- Wave ----------------
 
-#[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema)]
 pub struct Wave {
     pub id: String,
     pub cove_id: String,
@@ -49,26 +50,27 @@ pub struct Wave {
     pub updated_at: i64,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, ToSchema)]
 pub struct NewWave {
     pub cove_id: String,
     pub title: String,
     pub sort: Option<f64>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, ToSchema)]
 pub struct WavePatch {
     pub title: Option<String>,
     pub sort: Option<f64>,
     /// Pass `Some(Some(ts))` to archive, `Some(None)` to unarchive,
     /// or omit (`None`) to leave alone.
     #[serde(default, deserialize_with = "deserialize_double_option")]
+    #[schema(value_type = Option<i64>, nullable = true)]
     pub archived_at: Option<Option<i64>>,
 }
 
 // ---------------- Card ----------------
 
-#[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema)]
 pub struct Card {
     pub id: String,
     pub wave_id: String,
@@ -77,12 +79,13 @@ pub struct Card {
     pub kind: String,
     pub sort: f64,
     #[sqlx(json)]
+    #[schema(value_type = Object)]
     pub payload: serde_json::Value,
     pub created_at: i64,
     pub updated_at: i64,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, ToSchema)]
 pub struct NewCard {
     /// Defaulted so the REST handler can override from the `:wave_id` path
     /// param without forcing every client body to repeat it. Direct repo
@@ -92,19 +95,21 @@ pub struct NewCard {
     pub kind: String,
     pub sort: Option<f64>,
     #[serde(default)]
+    #[schema(value_type = Object)]
     pub payload: serde_json::Value,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, ToSchema)]
 pub struct CardPatch {
     pub kind: Option<String>,
     pub sort: Option<f64>,
+    #[schema(value_type = Option<Object>)]
     pub payload: Option<serde_json::Value>,
 }
 
 // ---------------- Overlay ----------------
 
-#[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema)]
 pub struct Overlay {
     pub id: String,
     pub plugin_id: String,
@@ -114,53 +119,59 @@ pub struct Overlay {
     /// Plugin-defined string. Kernel does not interpret.
     pub kind: String,
     #[sqlx(json)]
+    #[schema(value_type = Object)]
     pub payload: serde_json::Value,
     pub updated_at: i64,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, ToSchema)]
 pub struct NewOverlay {
     pub plugin_id: String,
     pub entity_kind: String,
     pub entity_id: String,
     pub kind: String,
+    #[schema(value_type = Object)]
     pub payload: serde_json::Value,
 }
 
 // ---------------- Terminal ----------------
 
-#[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema)]
 pub struct Terminal {
     pub id: String,
     pub card_id: String,
     pub program: String,
     pub cwd: String,
     #[sqlx(json)]
+    #[schema(value_type = Object)]
     pub env: serde_json::Value,
     pub daemon_handle: Option<String>,
     pub created_at: i64,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, ToSchema)]
 pub struct NewTerminal {
     pub card_id: String,
     pub program: String,
     pub cwd: String,
     #[serde(default = "empty_object")]
+    #[schema(value_type = Object)]
     pub env: serde_json::Value,
 }
 
 // ---------------- Plugin (M3) ----------------
 
-#[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema)]
 pub struct Plugin {
     pub id: String,
     pub version: String,
     pub install_path: String,
     #[sqlx(json)]
+    #[schema(value_type = Object)]
     pub manifest: serde_json::Value,
     pub enabled: bool,
     #[sqlx(json)]
+    #[schema(value_type = Object)]
     pub user_config: serde_json::Value,
     pub installed_at: i64,
     pub updated_at: i64,
@@ -186,7 +197,7 @@ pub struct NewPlugin {
 
 /// What a Wave detail page renders: the wave itself plus its cards and
 /// any overlays scoped to the wave (status/progress badges) and its cards.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ToSchema)]
 pub struct WaveDetail {
     pub wave: Wave,
     pub cards: Vec<Card>,

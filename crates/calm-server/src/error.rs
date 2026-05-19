@@ -7,8 +7,25 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error;
+use utoipa::ToSchema;
+
+/// JSON shape returned for every error response — `{error, code}`.
+/// Mirrors the body produced by `CalmError::into_response`. Hand-written
+/// duplicate of the in-line `json!` body so OpenAPI consumers see a
+/// concrete schema.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ErrorBody {
+    /// Human-readable error message.
+    pub error: String,
+    /// Stable machine-readable code — one of `not_found`, `conflict`,
+    /// `bad_request`, `unauthorized`, `plugin_install`, `plugin_permission`,
+    /// `plugin_conflict`, `db_error`, `io_error`, `serde_error`, `internal`,
+    /// `forbidden_tool`, `not_a_card_tool`, `tool_call_failed`.
+    pub code: String,
+}
 
 #[derive(Debug, Error)]
 pub enum CalmError {
