@@ -95,11 +95,38 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
       }
     };
 
+    // Heartbeat liveness detection. The server pings every 10s and closes
+    // after 30s of silence. The browser auto-pongs at the protocol layer
+    // (we don't see it from JS), and pong-received events aren't surfaced
+    // to JS either — so the only signal we can use is "did we see ANY
+    // message lately." If nothing arrives for 40s (server's 30s window +
+    // headroom), the underlying daemon or network is gone; mark closed and
+    // tear down. We deliberately do NOT auto-reconnect — terminals carry
+    // state, so the user reconnects via the Restart button (which also
+    // triggers the kernel's daemon-respawn path).
+    const DEAD_AFTER_MS = 40_000;
+    let liveness: ReturnType<typeof setTimeout> | null = null;
+    const bumpLiveness = () => {
+      if (liveness) clearTimeout(liveness);
+      liveness = setTimeout(() => {
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+          setStatus('closed');
+          try {
+            ws.close();
+          } catch {
+            /* already closed */
+          }
+        }
+      }, DEAD_AFTER_MS);
+    };
+
     ws.onopen = () => {
       setStatus('open');
       send({ Attach: { cols: term.cols, rows: term.rows } });
+      bumpLiveness();
     };
     ws.onmessage = (e) => {
+      bumpLiveness();
       let msg: Record<string, unknown>;
       try {
         msg = JSON.parse(typeof e.data === 'string' ? e.data : '');
@@ -130,7 +157,13 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
       // Hello/Chat events: ignored — calm-server doesn't use chat mode for
       // built-in terminal cards.
     };
-    ws.onclose = () => setStatus('closed');
+    ws.onclose = () => {
+      if (liveness) {
+        clearTimeout(liveness);
+        liveness = null;
+      }
+      setStatus('closed');
+    };
     ws.onerror = () => setStatus('closed');
 
     const dataSub = term.onData((d) => {
@@ -167,6 +200,10 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
     ro.observe(container);
 
     return () => {
+      if (liveness) {
+        clearTimeout(liveness);
+        liveness = null;
+      }
       ro.disconnect();
       dataSub.dispose();
       try {

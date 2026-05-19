@@ -3,8 +3,15 @@
 // Auto-reconnects with exponential backoff. The subscription set is sticky —
 // changing it (via `subscribe(topics)`) re-publishes to the server and is
 // remembered across reconnects.
+//
+// Each incoming frame is runtime-validated through `wireEventSchema` (zod)
+// from `./schemas`. A malformed frame logs a warning and is dropped — the
+// stream itself keeps going. This guards against schema drift from new
+// kernel versions while keeping the JSON.parse / dispatch path the only
+// existing failure mode for listeners.
 
 import type { WireEvent } from './wire';
+import { wireEventSchema } from './schemas';
 
 type Listener = (ev: WireEvent) => void;
 
@@ -62,12 +69,24 @@ export class EventStream {
       this.publishSub();
     });
     ws.addEventListener('message', (m) => {
-      let parsed: WireEvent;
+      const raw = typeof m.data === 'string' ? m.data : '';
+      let json: unknown;
       try {
-        parsed = JSON.parse(typeof m.data === 'string' ? m.data : '');
+        json = JSON.parse(raw);
       } catch {
         return;
       }
+      // Runtime-validate through the discriminated zod union. Unknown
+      // variants or shape drift drop with a console warning; we never
+      // dispatch unvalidated data, so listeners can rely on the WireEvent
+      // type at the boundary.
+      const result = wireEventSchema.safeParse(json);
+      if (!result.success) {
+        // eslint-disable-next-line no-console
+        console.warn('event bus: unknown payload', raw, result.error);
+        return;
+      }
+      const parsed: WireEvent = result.data as WireEvent;
       for (const fn of this.listeners) fn(parsed);
     });
     ws.addEventListener('close', () => {
