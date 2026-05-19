@@ -115,6 +115,19 @@ export function useWaveDetailQuery(
 // events from the kernel will also invalidate the same keys, but we still
 // trigger invalidation client-side because (a) the WS round-trip is async,
 // and (b) we want the UI to settle even if the event bus is briefly down.
+//
+// Optimistic updates are layered on the obvious low-risk wins (title /
+// color renames, drag-reorder `sort` patches). Pattern:
+//
+//   onMutate   → cancelQueries, snapshot cache, write optimistic value,
+//                return { previous } so onError can restore.
+//   onError    → setQueryData back to the snapshot if we took one.
+//   onSettled  → invalidate (runs after both success and error so the
+//                rollback path also resyncs from server truth).
+//
+// Creates and deletes intentionally stay non-optimistic: they hinge on
+// server-assigned ids and cascading invalidations, where rollback is much
+// more error-prone than the snappiness payoff.
 
 export function useCreateCoveMutation() {
   const qc = useQueryClient();
@@ -126,11 +139,51 @@ export function useCreateCoveMutation() {
   });
 }
 
+/**
+ * Update a cove. Optimistic for `name` and `color` patches (the common
+ * rename / palette-swap path). If the patch carries any other field
+ * (currently only `sort`), we fall through to the plain invalidate-on-
+ * settle path — reorder rollback for coves is rare and would require
+ * snapshotting + replaying the full list re-sort.
+ */
 export function useUpdateCoveMutation() {
   const qc = useQueryClient();
-  return useMutation<KernelCove, Error, { id: string; body: CovePatchBody }>({
+  type Vars = { id: string; body: CovePatchBody };
+  type Ctx = { previous: KernelCove[] | null };
+  return useMutation<KernelCove, Error, Vars, Ctx>({
     mutationFn: ({ id, body }) => api.updateCove(id, body),
-    onSuccess: () => {
+    onMutate: async ({ id, body }) => {
+      const isOptimisticField =
+        body.name !== undefined || body.color !== undefined;
+      if (!isOptimisticField) return { previous: null };
+
+      const key = queryKeys.coves();
+      await qc.cancelQueries({ queryKey: key });
+      const previous = qc.getQueryData<KernelCove[]>(key) ?? null;
+      if (previous) {
+        const now = Date.now();
+        qc.setQueryData<KernelCove[]>(
+          key,
+          previous.map((c) =>
+            c.id === id
+              ? {
+                  ...c,
+                  ...(body.name != null ? { name: body.name } : {}),
+                  ...(body.color != null ? { color: body.color } : {}),
+                  updated_at: now,
+                }
+              : c,
+          ),
+        );
+      }
+      return { previous };
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.previous) {
+        qc.setQueryData(queryKeys.coves(), context.previous);
+      }
+    },
+    onSettled: () => {
       void qc.invalidateQueries({ queryKey: queryKeys.coves() });
     },
   });
@@ -158,13 +211,102 @@ export function useCreateWaveMutation() {
   });
 }
 
+/**
+ * Update a wave. Optimistic for `title` (rename) and `sort` (drag-reorder
+ * within the cove's wave list). Other patch fields (e.g. `archived_at`)
+ * stay non-optimistic — archive flips trigger cascading UI moves that are
+ * cleaner to drive from the server-confirmed state.
+ *
+ * Two caches can hold a copy of the wave: the list `['waves', cove_id]`
+ * and the detail `['wave', id]`. We update whichever ones are populated,
+ * and snapshot both so onError can restore them.
+ */
 export function useUpdateWaveMutation() {
   const qc = useQueryClient();
-  return useMutation<KernelWave, Error, { id: string; body: WavePatchBody }>({
+  type Vars = { id: string; body: WavePatchBody };
+  type Ctx = {
+    previousList: { key: ReturnType<typeof queryKeys.wavesInCove>; value: KernelWave[] } | null;
+    previousDetail: KernelWaveDetail | null;
+    detailKey: ReturnType<typeof queryKeys.waveDetail>;
+  };
+  return useMutation<KernelWave, Error, Vars, Ctx>({
     mutationFn: ({ id, body }) => api.updateWave(id, body),
-    onSuccess: (wave) => {
-      void qc.invalidateQueries({ queryKey: queryKeys.wavesInCove(wave.cove_id) });
-      void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(wave.id) });
+    onMutate: async ({ id, body }) => {
+      const detailKey = queryKeys.waveDetail(id);
+      const empty: Ctx = { previousList: null, previousDetail: null, detailKey };
+      const isOptimisticField =
+        body.title !== undefined || body.sort !== undefined;
+      if (!isOptimisticField) return empty;
+
+      // Locate the wave's cove via cached detail first, then fall back to
+      // scanning cached wave lists. If neither cache is warm there's
+      // nothing to optimistically mutate; we still let the request run.
+      const cachedDetail = qc.getQueryData<KernelWaveDetail>(detailKey);
+      let listKey: ReturnType<typeof queryKeys.wavesInCove> | null = null;
+      if (cachedDetail) {
+        listKey = queryKeys.wavesInCove(cachedDetail.wave.cove_id);
+      } else {
+        const all = qc.getQueriesData<KernelWave[]>({ queryKey: ['waves'] });
+        for (const [k, v] of all) {
+          if (v && v.some((w) => w.id === id)) {
+            listKey = k as ReturnType<typeof queryKeys.wavesInCove>;
+            break;
+          }
+        }
+      }
+
+      await qc.cancelQueries({ queryKey: detailKey });
+      if (listKey) await qc.cancelQueries({ queryKey: listKey });
+
+      const now = Date.now();
+      const applyPatch = (w: KernelWave): KernelWave => ({
+        ...w,
+        ...(body.title != null ? { title: body.title } : {}),
+        ...(body.sort != null ? { sort: body.sort } : {}),
+        updated_at: now,
+      });
+
+      const ctx: Ctx = { ...empty };
+
+      if (listKey) {
+        const previousList = qc.getQueryData<KernelWave[]>(listKey);
+        if (previousList) {
+          ctx.previousList = { key: listKey, value: previousList };
+          qc.setQueryData<KernelWave[]>(
+            listKey,
+            previousList.map((w) => (w.id === id ? applyPatch(w) : w)),
+          );
+        }
+      }
+
+      if (cachedDetail) {
+        ctx.previousDetail = cachedDetail;
+        qc.setQueryData<KernelWaveDetail>(detailKey, {
+          ...cachedDetail,
+          wave: applyPatch(cachedDetail.wave),
+        });
+      }
+
+      return ctx;
+    },
+    onError: (_err, _vars, context) => {
+      if (!context) return;
+      if (context.previousList) {
+        qc.setQueryData(context.previousList.key, context.previousList.value);
+      }
+      if (context.previousDetail) {
+        qc.setQueryData(context.detailKey, context.previousDetail);
+      }
+    },
+    onSettled: (wave, _err, vars, context) => {
+      // Prefer the server-confirmed cove_id; fall back to whatever list
+      // we touched optimistically. Either way we want the detail key
+      // invalidated.
+      const coveId = wave?.cove_id ?? context?.previousList?.value[0]?.cove_id;
+      if (coveId) {
+        void qc.invalidateQueries({ queryKey: queryKeys.wavesInCove(coveId) });
+      }
+      void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(vars.id) });
     },
   });
 }
@@ -192,12 +334,68 @@ export function useCreateCardMutation() {
   });
 }
 
+/**
+ * Update a card. Optimistic only for `sort` — the drag-reorder case
+ * within a wave's card grid. `payload` is intentionally NOT optimistic:
+ * its shape is per-card-kind (see `cards/*` adapters) and a mid-edit
+ * rollback would smear partial state across the card's bespoke UI.
+ *
+ * The caller doesn't pass `wave_id` in vars, so we discover it by
+ * scanning cached wave details for the card. If we can't find it we
+ * still send the mutation; onSettled then has no detail key to
+ * invalidate and we rely on the WS `card.updated` fanout (see
+ * `eventBridge.tsx`, which itself scans for the owning wave).
+ */
 export function useUpdateCardMutation() {
   const qc = useQueryClient();
-  return useMutation<KernelCard, Error, { id: string; body: CardPatchBody }>({
+  type Vars = { id: string; body: CardPatchBody };
+  type Ctx = {
+    detailKey: ReturnType<typeof queryKeys.waveDetail> | null;
+    previousDetail: KernelWaveDetail | null;
+  };
+  return useMutation<KernelCard, Error, Vars, Ctx>({
     mutationFn: ({ id, body }) => api.updateCard(id, body),
-    onSuccess: (card) => {
-      void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(card.wave_id) });
+    onMutate: async ({ id, body }) => {
+      const empty: Ctx = { detailKey: null, previousDetail: null };
+      // Only `sort` is safe to optimistically mirror.
+      if (body.sort === undefined || body.sort === null) return empty;
+
+      const entries = qc.getQueriesData<KernelWaveDetail>({ queryKey: ['wave'] });
+      let detailKey: ReturnType<typeof queryKeys.waveDetail> | null = null;
+      let previousDetail: KernelWaveDetail | null = null;
+      for (const [k, v] of entries) {
+        if (v && v.cards.some((c) => c.id === id)) {
+          detailKey = k as ReturnType<typeof queryKeys.waveDetail>;
+          previousDetail = v;
+          break;
+        }
+      }
+      if (!detailKey || !previousDetail) return empty;
+
+      await qc.cancelQueries({ queryKey: detailKey });
+      const now = Date.now();
+      const nextSort = body.sort;
+      qc.setQueryData<KernelWaveDetail>(detailKey, {
+        ...previousDetail,
+        cards: previousDetail.cards.map((c) =>
+          c.id === id ? { ...c, sort: nextSort, updated_at: now } : c,
+        ),
+      });
+
+      return { detailKey, previousDetail };
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.detailKey && context.previousDetail) {
+        qc.setQueryData(context.detailKey, context.previousDetail);
+      }
+    },
+    onSettled: (card, _err, _vars, context) => {
+      const waveId = card?.wave_id;
+      if (waveId) {
+        void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
+      } else if (context?.detailKey) {
+        void qc.invalidateQueries({ queryKey: context.detailKey });
+      }
     },
   });
 }
