@@ -1,14 +1,29 @@
-import type { Cove, Wave, TermLine, GitCommit, DiffHunk } from './types';
+import type { Cove, Wave, TermLine, GitCommit, DiffHunk, WaveCardSlot } from './types';
 
-// Card factories.
-const term = (title: string, lines: TermLine[]) =>
-  ({ type: 'terminal' as const, title, lines });
-const doc = (title: string, body: string) =>
-  ({ type: 'doc' as const, title, body });
-const git = (branch: string, commits: GitCommit[]) =>
-  ({ type: 'git' as const, branch, commits });
-const diff = (file: string, added: number, removed: number, hunks: DiffHunk[]) =>
-  ({ type: 'diff' as const, file, added, removed, hunks });
+// Card factories. Each returns a `WaveCardSlot` with `kind: 'card'` so seed
+// data lines up with the runtime adapter's shape — the wave grid renders
+// the same union (`card | unknown`) regardless of source.
+const term = (title: string, lines: TermLine[]): WaveCardSlot => ({
+  kind: 'card',
+  card: { type: 'terminal', title, lines },
+});
+const doc = (title: string, body: string): WaveCardSlot => ({
+  kind: 'card',
+  card: { type: 'doc', title, body },
+});
+const git = (branch: string, commits: GitCommit[]): WaveCardSlot => ({
+  kind: 'card',
+  card: { type: 'git', branch, commits },
+});
+const diff = (
+  file: string,
+  added: number,
+  removed: number,
+  hunks: DiffHunk[],
+): WaveCardSlot => ({
+  kind: 'card',
+  card: { type: 'diff', file, added, removed, hunks },
+});
 
 export const coves: Cove[] = [
   { id: 'atlas',   name: 'Atlas',     subtitle: 'Personal site',         color: 'oklch(58% 0.16 235)' },

@@ -25,7 +25,7 @@ import { useKernel } from './hooks/useKernel';
 import { useTodayTerminal } from './hooks/useTodayTerminal';
 import { CalmShellProvider, type CalmShellValue } from './app/shell';
 import { useGo } from './app/navigation';
-import type { Cove, Route as AppRoute, Wave, WaveCardData } from './types';
+import type { Cove, Route as AppRoute, Wave, WaveCardSlot } from './types';
 import type { AddPanelKind } from './ui';
 
 export function CalmApp() {
@@ -72,14 +72,23 @@ export function CalmApp() {
 
   // For the currently-routed wave, fetch detail on demand and produce the
   // UI shape (with cards from detail).
+  //
+  // Each kernel card maps to a `WaveCardSlot`: a parsed `WaveCardData` when
+  // the registry adapted it, or an `unknown` placeholder when no entry
+  // claimed it (most commonly because the per-kind zod schema rejected the
+  // payload). Filtering nulls would silently drop server cards the UI can't
+  // parse — surfacing them as placeholders keeps drift visible to the user
+  // and to the console warnings the builtin adapters emit on parse failure.
   const currentWave = useCallback(
     (waveId: string): Wave | null => {
       const detail = k.waveDetails.get(waveId);
       if (!detail) return null;
       const uiWave = adaptWave(detail.wave, detail.overlays);
-      uiWave.cards = detail.cards
-        .map(adaptCard)
-        .filter((c): c is WaveCardData => c !== null);
+      uiWave.cards = detail.cards.map((k): WaveCardSlot => {
+        const adapted = adaptCard(k);
+        if (adapted) return { kind: 'card', card: adapted };
+        return { kind: 'unknown', id: k.id, kernelKind: k.kind };
+      });
       return uiWave;
     },
     [k.waveDetails],

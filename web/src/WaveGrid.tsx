@@ -9,8 +9,9 @@ import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 
 import { WaveCard } from './ui';
-import { sizeFor } from './cards/registry';
-import type { WaveCardData } from './types';
+import { sizeFor, type CardSize } from './cards/registry';
+import { UnknownCard, UNKNOWN_CARD_SIZE } from './cards/UnknownCard';
+import type { WaveCardSlot } from './types';
 
 const COLS = 12;
 const ROW_HEIGHT = 40;
@@ -18,8 +19,15 @@ const MARGIN: readonly [number, number] = [14, 14];
 
 // Card identity: kernel id if we have it, otherwise positional fallback.
 // Stable across reorders so RGL keys + persisted layout don't drift.
-function cardKey(card: WaveCardData, idx: number): string {
-  return card.id ?? `idx-${idx}`;
+// Works uniformly across `card` slots (id from WaveCardData) and `unknown`
+// slots (id is the KernelCard.id, always present).
+function slotKey(slot: WaveCardSlot, idx: number): string {
+  if (slot.kind === 'card') return slot.card.id ?? `idx-${idx}`;
+  return slot.id || `idx-${idx}`;
+}
+
+function slotSize(slot: WaveCardSlot): CardSize {
+  return slot.kind === 'card' ? sizeFor(slot.card) : UNKNOWN_CARD_SIZE;
 }
 
 const STORAGE_PREFIX = 'calm:layout:';
@@ -55,27 +63,27 @@ function saveStored(waveId: string, layout: Layout) {
   }
 }
 
-// Build a complete LayoutItem[] for the current card list: reuse stored
+// Build a complete LayoutItem[] for the current slot list: reuse stored
 // positions where we have them, auto-pack newcomers in row-major order at
 // the bottom.
 function reconcile(
-  cards: WaveCardData[],
+  slots: WaveCardSlot[],
   stored: Record<string, StoredEntry>,
 ): LayoutItem[] {
   // The lowest free row, computed from stored entries we plan to keep.
   let nextY = 0;
-  for (let i = 0; i < cards.length; i++) {
-    const key = cardKey(cards[i], i);
+  for (let i = 0; i < slots.length; i++) {
+    const key = slotKey(slots[i], i);
     const e = stored[key];
     if (e) nextY = Math.max(nextY, e.y + e.h);
   }
   let cursorX = 0;
   let rowH = 0;
   const result: LayoutItem[] = [];
-  for (let i = 0; i < cards.length; i++) {
-    const card = cards[i];
-    const key = cardKey(card, i);
-    const size = sizeFor(card);
+  for (let i = 0; i < slots.length; i++) {
+    const slot = slots[i];
+    const key = slotKey(slot, i);
+    const size = slotSize(slot);
     const e = stored[key];
     if (e) {
       result.push({
@@ -116,7 +124,14 @@ export function WaveGrid({
   onRemoveCard,
 }: {
   waveId: string;
-  cards: WaveCardData[];
+  /**
+   * Heterogeneous card slots: a parsed `WaveCardData` per slot, or an
+   * `unknown` placeholder for kernel cards the registry couldn't adapt.
+   * The placeholder rendering lives in `cards/UnknownCard.tsx`; rendering
+   * here keeps the fallback adjacent to its sibling cards in the grid
+   * rather than dropping the row entirely.
+   */
+  cards: WaveCardSlot[];
   onRemoveCard: (idx: number) => void;
 }) {
   const { width, containerRef, mounted } = useContainerWidth();
@@ -125,7 +140,7 @@ export function WaveGrid({
   // In-place layout edits are persisted via onLayoutChange and don't need to
   // round-trip through state.
   const cardKeys = useMemo(
-    () => cards.map((c, i) => cardKey(c, i)).join('|'),
+    () => cards.map((c, i) => slotKey(c, i)).join('|'),
     [cards],
   );
   const [layout, setLayout] = useState<LayoutItem[]>(() =>
@@ -159,8 +174,8 @@ export function WaveGrid({
             saveStored(waveId, next);
           }}
         >
-          {cards.map((c, i) => (
-            <div key={cardKey(c, i)} className="card-slot">
+          {cards.map((slot, i) => (
+            <div key={slotKey(slot, i)} className="card-slot">
               <button
                 className="card-grid-close"
                 onClick={(e) => {
@@ -173,7 +188,11 @@ export function WaveGrid({
               >
                 ×
               </button>
-              <WaveCard card={c} />
+              {slot.kind === 'card' ? (
+                <WaveCard card={slot.card} />
+              ) : (
+                <UnknownCard kernelKind={slot.kernelKind} />
+              )}
             </div>
           ))}
         </GridLayout>

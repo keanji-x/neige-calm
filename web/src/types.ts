@@ -126,6 +126,18 @@ export type WaveCardData =
   | PlanCardData
   | PluginCardData;
 
+/**
+ * A position in a Wave's card grid. Either a parsed UI card (the happy
+ * path) or an "unknown" placeholder that the registry's `adaptKernelCard`
+ * couldn't claim — typically because the kernel card's payload failed its
+ * per-kind zod schema. We keep this slot type separate from `WaveCardData`
+ * so the discriminated union stays clean: every `WaveCardData` is a card
+ * we know how to render, and the fallback path lives one layer up.
+ */
+export type WaveCardSlot =
+  | { kind: 'card'; card: WaveCardData }
+  | { kind: 'unknown'; id: string; kernelKind: string };
+
 export interface Wave {
   id: string;
   coveId: string;
@@ -135,7 +147,7 @@ export interface Wave {
   eta: string;
   now: string;
   plan?: PlanStep[];
-  cards?: WaveCardData[];
+  cards?: WaveCardSlot[];
 }
 
 export type Route =

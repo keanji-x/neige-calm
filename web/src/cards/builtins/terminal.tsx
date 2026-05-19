@@ -1,6 +1,18 @@
+import { z } from 'zod';
 import { XtermView } from '../../XtermView';
 import type { TerminalCardData } from '../../types';
 import type { CardEntry } from '../registry';
+
+/**
+ * Wire shape for a `kind: "terminal"` card's `payload`. Server-side it's
+ * minted by `POST /api/terminals` and contains the kernel `Terminal.id` so
+ * the client can attach the live PTY. Empty payload is tolerated — a card
+ * created before the terminal spawned still renders (as the static
+ * `lines`-only flavor) until the kernel patches `terminal_id` in.
+ */
+const terminalPayloadSchema = z.object({
+  terminal_id: z.string().optional(),
+});
 
 function TerminalCard({ card }: { card: TerminalCardData }) {
   const { title, lines, terminalId } = card;
@@ -42,16 +54,25 @@ export const TerminalEntry: CardEntry<TerminalCardData> = {
   defaultSize: { w: 6, h: 10, minW: 4, minH: 6 },
   fromKernel: (k) => {
     if (k.kind !== 'terminal') return null;
-    const payload =
-      typeof k.payload === 'object' && k.payload !== null
-        ? (k.payload as { terminal_id?: string })
-        : null;
+    // A `null` payload is legal here — predates the kernel attaching a
+    // `terminal_id`. Treat as empty object so the optional field stays
+    // undefined; non-object payloads on a `terminal` card are an error.
+    const candidate = k.payload ?? {};
+    const parsed = terminalPayloadSchema.safeParse(candidate);
+    if (!parsed.success) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[cards] terminal payload invalid for ${k.id}:`,
+        parsed.error.issues,
+      );
+      return null;
+    }
     return {
       type: 'terminal',
       id: k.id,
       title: 'terminal',
       lines: [],
-      terminalId: payload?.terminal_id,
+      terminalId: parsed.data.terminal_id,
     };
   },
   addPanel: { label: 'New terminal', icon: 'terminal' },
