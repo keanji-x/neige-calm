@@ -1,0 +1,70 @@
+# Runtime-only docker stack. Binary + web bundle are built on the host
+# (see scripts/docker-up.sh); the containers just run them. This keeps
+# iteration fast and — crucially — lets calm-server reach the host's $HOME
+# and the host repo path via bind mounts, so terminals/sessions/plugins
+# see the same filesystem they would if you ran the binary directly.
+#
+# Quick start:
+#   scripts/docker-up.sh                # builds binary + web, then `up -d`
+#   open http://localhost:8080/
+#
+# Override ports / mounts via .env (see .env.example).
+
+services:
+  server:
+    # Host is Debian bookworm + glibc 2.36; the slim image matches, so the
+    # natively-compiled binary just runs. If you cross-compile or upgrade
+    # the host distro, bump this tag accordingly.
+    image: debian:bookworm-slim
+    init: true
+    # Run as the host user so files written under $HOME keep correct
+    # ownership when you read them back from the host.
+    user: "${UID:-1000}:${GID:-1000}"
+    working_dir: ${HOME}
+    environment:
+      HOME: ${HOME}
+      USER: ${USER:-calm}
+      CALM_LISTEN: 0.0.0.0:4040
+      # Default sqlite path mirrors XDG layout the binary would pick on the
+      # host, so swapping between docker and `cargo run` shares the same db.
+      CALM_DB_URL: ${CALM_DB_URL:-sqlite://${HOME}/.local/share/neige-calm/calm.db?mode=rwc}
+      CALM_ALLOWED_ORIGIN: http://localhost:${CALM_PORT:-4040}
+      RUST_LOG: ${RUST_LOG:-info,calm_server=debug}
+    volumes:
+      # The release binaries. Built on the host by `make build`. calm-server
+      # looks for calm-session-daemon as a sibling of its own exe (see
+      # state.rs::resolve_session_daemon_bin), so both land in /usr/local/bin.
+      - ${CALM_BIN:-./target/release/calm-server}:/usr/local/bin/calm-server:ro
+      - ${CALM_DAEMON_BIN:-./target/release/calm-session-daemon}:/usr/local/bin/calm-session-daemon:ro
+      # Host home, same path inside the container. calm-server's data dir,
+      # plugin install dir, and plugin state dir all default under here, so
+      # no extra env wiring is needed.
+      - ${HOME}:${HOME}
+      # The repo lives outside $HOME on this machine (/mnt/data2/...) with a
+      # symlink in $HOME. Mount the real path too so the symlink resolves.
+      # Safe no-op if you don't have /mnt/data2; remove or change via .env.
+      - ${CALM_EXTRA_MOUNT:-/mnt/data2}:${CALM_EXTRA_MOUNT:-/mnt/data2}
+    # Server is only reachable via the docker network (web → server:4040).
+    # The host sees just one port: nginx on CALM_PORT (4040 by default).
+    # Uncomment to also expose the API directly for raw curl testing.
+    # ports:
+    #   - "4041:4040"
+    expose:
+      - "4040"
+    command: ["calm-server"]
+    restart: unless-stopped
+
+  web:
+    # Same idea: nginx just serves the pre-built bundle and reverse-proxies
+    # /api → server. No build step in docker. nginx listens on 8080 inside
+    # the container; we publish that as CALM_PORT on the host.
+    image: nginx:1.27-alpine
+    depends_on:
+      server:
+        condition: service_started
+    volumes:
+      - ./web/dist:/usr/share/nginx/html/calm:ro
+      - ./docker/nginx.conf:/etc/nginx/conf.d/calm.conf:ro
+    ports:
+      - "${CALM_PORT:-4040}:8080"
+    restart: unless-stopped
