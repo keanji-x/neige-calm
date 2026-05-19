@@ -1,6 +1,9 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { CalmApp } from './CalmApp'
+import { RouterProvider } from '@tanstack/react-router'
+import { TanStackRouterDevtools } from '@tanstack/router-devtools'
+import { AppProviders } from './app/providers'
+import { router } from './app/router'
 import { registerBuiltins } from './cards/builtins'
 import './calm.css'
 
@@ -13,10 +16,15 @@ registerBuiltins();
 // Auth is M3 work, alongside the plugin host (per-plugin tokens land at
 // the same time as per-user sessions). For dev on a loopback port this is
 // fine. The AuthGate.tsx / LoginPage.tsx files are kept so the M3 wire-up
-// can re-mount them around <CalmApp /> without rewriting.
+// can re-mount them around the router at the right time.
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <CalmApp />
+    <AppProviders>
+      <RouterProvider router={router} />
+      {import.meta.env.DEV && (
+        <TanStackRouterDevtools router={router} position="bottom-right" />
+      )}
+    </AppProviders>
   </StrictMode>,
 )

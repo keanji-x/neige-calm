@@ -1,19 +1,39 @@
+// CalmApp — the layout shell rendered by the router's root route.
+//
+// What's here: TitleBar, Sidebar, theme toggle, the kernel hook (single
+// mount across all routes), and the <Outlet /> where the matched route
+// renders its page. The "which page renders" logic moved to
+// `src/app/router.tsx`; this component no longer holds a `useState<Route>`
+// of its own. URL drives selection.
+//
+// What we still own here:
+//  - theme state (light/dark toggle on the TitleBar)
+//  - useKernel + useTodayTerminal — single mount keeps the WS subscription
+//    and per-browser today-terminal cache stable across navigation
+//  - the adapted UI shapes (coves / waves) the page components consume
+//  - the WS-driven wave_detail fetch trigger when the URL points at a
+//    wave we haven't loaded yet
+//
+// Route components (in src/app/router.tsx) read all of the above via
+// the CalmShellProvider context exposed below.
+
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Icon } from './Icon';
+import { Outlet, useRouterState } from '@tanstack/react-router';
 import { Sidebar, TitleBar } from './ui';
-import { CovePage, TodayPage, WavePage } from './pages';
 import { adaptCard, adaptCove, adaptWave } from './api/adapt';
 import { useKernel } from './hooks/useKernel';
 import { useTodayTerminal } from './hooks/useTodayTerminal';
-import type { Cove, Route, Wave, WaveCardData } from './types';
+import { CalmShellProvider, type CalmShellValue } from './app/shell';
+import { useGo } from './app/navigation';
+import type { Cove, Route as AppRoute, Wave, WaveCardData } from './types';
 import type { AddPanelKind } from './ui';
 
 export function CalmApp() {
-  const [route, setRoute] = useState<Route>({ name: 'today' });
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
 
   const k = useKernel();
   const todayTerm = useTodayTerminal();
+  const go = useGo();
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -22,7 +42,12 @@ export function CalmApp() {
     };
   }, [theme]);
 
-  const go = useCallback((r: Route) => setRoute(r), []);
+  // Derive the current AppRoute shape from the router's location so the
+  // Sidebar's "highlight active" logic keeps working without props on
+  // every route component. Subscribing via useRouterState ensures we
+  // re-render on history changes (back / forward / programmatic nav).
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const route: AppRoute = useMemo(() => parseAppRoute(pathname), [pathname]);
 
   // ----- Derived UI shapes ------------------------------------------------
 
@@ -38,7 +63,6 @@ export function CalmApp() {
     const out: Wave[] = [];
     for (const list of k.wavesByCove.values()) {
       for (const w of list) {
-        // If we have detail loaded, use its overlays. Otherwise defaults.
         const detail = k.waveDetails.get(w.id);
         out.push(adaptWave(w, detail?.overlays ?? []));
       }
@@ -48,16 +72,18 @@ export function CalmApp() {
 
   // For the currently-routed wave, fetch detail on demand and produce the
   // UI shape (with cards from detail).
-  const currentWave: Wave | null = useMemo(() => {
-    if (route.name !== 'wave') return null;
-    const detail = k.waveDetails.get(route.id);
-    if (!detail) return null;
-    const uiWave = adaptWave(detail.wave, detail.overlays);
-    uiWave.cards = detail.cards
-      .map(adaptCard)
-      .filter((c): c is WaveCardData => c !== null);
-    return uiWave;
-  }, [route, k.waveDetails]);
+  const currentWave = useCallback(
+    (waveId: string): Wave | null => {
+      const detail = k.waveDetails.get(waveId);
+      if (!detail) return null;
+      const uiWave = adaptWave(detail.wave, detail.overlays);
+      uiWave.cards = detail.cards
+        .map(adaptCard)
+        .filter((c): c is WaveCardData => c !== null);
+      return uiWave;
+    },
+    [k.waveDetails],
+  );
 
   // Trigger wave_detail fetch when route lands on an unloaded wave.
   useEffect(() => {
@@ -85,9 +111,8 @@ export function CalmApp() {
   );
 
   const removeCard = useCallback(
-    async (_waveId: string, idx: number) => {
-      if (route.name !== 'wave') return;
-      const detail = k.waveDetails.get(route.id);
+    async (_waveId: string, idx: number, routedWaveId: string) => {
+      const detail = k.waveDetails.get(routedWaveId);
       if (!detail) return;
       const targetCardKernel = detail.cards[idx];
       if (!targetCardKernel) return;
@@ -97,108 +122,13 @@ export function CalmApp() {
         console.warn('[Calm] card delete failed:', err);
       }
     },
-    [k, route],
+    [k],
   );
 
-  // ----- Render -----------------------------------------------------------
-
-  const findCove = (id: string) => coves.find((c) => c.id === id) || null;
-
-  const renderPage = () => {
-    if (k.loading) {
-      return <LoadingShell />;
-    }
-    if (route.name === 'today') {
-      return (
-        <TodayPage
-          waves={waves}
-          coves={coves}
-          onGo={go}
-          todayTerminalId={todayTerm.today?.terminalId ?? null}
-          todayError={todayTerm.error}
-          onResetTodayTerminal={todayTerm.reset}
-        />
-      );
-    }
-    if (route.name === 'cove') {
-      const cove = findCove(route.coveId);
-      if (!cove) return <Missing label="Cove" onGo={go} />;
-      return (
-        <CovePage
-          cove={cove}
-          waves={waves.filter((w) => w.coveId === cove.id)}
-          onGo={go}
-          onCreateWave={async (coveId, title) => {
-            const w = await k.createWave(coveId, title);
-            go({ name: 'wave', id: w.id });
-          }}
-          onRenameCove={async (coveId, name) => {
-            try {
-              await k.renameCove(coveId, name);
-            } catch (err) {
-              console.warn('[Calm] cove rename failed:', err);
-            }
-          }}
-          onDeleteCove={async (coveId) => {
-            try {
-              await k.deleteCove(coveId);
-              // Kernel cascades the cove's waves+cards; the WS event will
-              // purge sidebar state. Bounce back to Today so we don't
-              // render a stale CovePage for the now-gone cove.
-              go({ name: 'today' });
-            } catch (err) {
-              console.warn('[Calm] cove delete failed:', err);
-            }
-          }}
-          onDeleteWave={async (waveId) => {
-            try {
-              await k.deleteWave(waveId);
-              // We stay on the CovePage — the WS `wave.deleted` event
-              // will remove the row from the list.
-            } catch (err) {
-              console.warn('[Calm] wave delete failed:', err);
-            }
-          }}
-        />
-      );
-    }
-    if (route.name === 'wave') {
-      // Use the detail-derived wave if present; otherwise fall back to the
-      // flat row from wavesByCove. The fallback won't have cards but the
-      // wave-detail fetch is in flight from the effect above.
-      const wave = currentWave ?? waves.find((w) => w.id === route.id) ?? null;
-      if (!wave) return <Missing label="Wave" onGo={go} />;
-      const cove = findCove(wave.coveId);
-      if (!cove) return <Missing label="Cove" onGo={go} />;
-      return (
-        <WavePage
-          wave={wave}
-          cove={cove}
-          onGo={go}
-          onAddCard={addCard}
-          onRemoveCard={removeCard}
-          onRenameWave={async (waveId, title) => {
-            try {
-              await k.renameWave(waveId, title);
-            } catch (err) {
-              console.warn('[Calm] wave rename failed:', err);
-            }
-          }}
-          onDeleteWave={async (waveId) => {
-            try {
-              await k.deleteWave(waveId);
-              // Cascade: kernel removes the wave's cards. Bounce up to
-              // the parent cove since the WavePage just disappeared.
-              go({ name: 'cove', coveId: cove.id });
-            } catch (err) {
-              console.warn('[Calm] wave delete failed:', err);
-            }
-          }}
-        />
-      );
-    }
-    return <Missing label="Page" onGo={go} />;
-  };
+  const shell: CalmShellValue = useMemo(
+    () => ({ k, todayTerm, coves, waves, currentWave, addCard, removeCard }),
+    [k, todayTerm, coves, waves, currentWave, addCard, removeCard],
+  );
 
   return (
     <div className="win">
@@ -219,12 +149,30 @@ export function CalmApp() {
         <main className="page">
           <div className="scroll">
             {k.error && <ErrorBanner err={k.error} />}
-            {renderPage()}
+            {k.loading ? (
+              <LoadingShell />
+            ) : (
+              <CalmShellProvider value={shell}>
+                <Outlet />
+              </CalmShellProvider>
+            )}
           </div>
         </main>
       </div>
     </div>
   );
+}
+
+function parseAppRoute(pathname: string): AppRoute {
+  if (pathname.startsWith('/cove/')) {
+    const id = decodeURIComponent(pathname.slice('/cove/'.length).replace(/\/$/, ''));
+    if (id) return { name: 'cove', coveId: id };
+  }
+  if (pathname.startsWith('/wave/')) {
+    const id = decodeURIComponent(pathname.slice('/wave/'.length).replace(/\/$/, ''));
+    if (id) return { name: 'wave', id };
+  }
+  return { name: 'today' };
 }
 
 function LoadingShell() {
@@ -241,21 +189,6 @@ function ErrorBanner({ err }: { err: Error }) {
       <p className="synth">
         Kernel error: {err.message}. The page reflects the last successful read.
       </p>
-    </div>
-  );
-}
-
-function Missing({ label, onGo }: { label: string; onGo: (r: Route) => void }) {
-  return (
-    <div className="col">
-      <p className="synth">That {label} isn't here anymore.</p>
-      <button
-        className="go outline"
-        onClick={() => onGo({ name: 'today' })}
-        style={{ alignSelf: 'flex-start' }}
-      >
-        <Icon n="back" s={13} /> Back to Today
-      </button>
     </div>
   );
 }
