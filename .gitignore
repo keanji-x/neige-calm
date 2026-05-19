@@ -11,6 +11,11 @@ web/.tmp
 # Vitest cache
 .vite/
 
+# Playwright
+web/test-results/
+web/playwright-report/
+web/playwright/.cache/
+
 # OS
 .DS_Store
 
