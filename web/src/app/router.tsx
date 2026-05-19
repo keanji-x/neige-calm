@@ -107,8 +107,14 @@ const waveRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([indexRoute, coveRoute, waveRoute]);
 
+// `basepath` mirrors Vite's `base: '/calm/'` (see vite.config.ts) so URLs
+// in the browser actually read `/calm/cove/$id` rather than `/cove/$id`.
+// Router internals (route definitions above, useRouterState's pathname)
+// still see paths relative to the basepath — only the browser URL and
+// generated <a href> include the prefix.
 export const router = createRouter({
   routeTree,
+  basepath: '/calm',
   defaultPreload: false,
 });
 

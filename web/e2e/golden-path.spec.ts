@@ -22,11 +22,10 @@ test('loads the calm shell and navigates into the Scratch cove', async ({ page }
   await expect(scratch).toBeVisible();
   await scratch.click();
 
-  // URL changes to .../cove/<id>. The TanStack Router is mounted without
-  // a basepath today, so the production build at `/calm/` still navigates
-  // to `/cove/<id>` (no `/calm/` prefix on internal links). We don't pin
-  // the id either — it depends on seed timestamp / repo.
-  await expect(page).toHaveURL(/\/cove\/[^/]+$/);
+  // URL changes to /calm/cove/<id>. The router declares basepath '/calm'
+  // (matching Vite's base) so internal navigation produces the prefixed
+  // URL. We don't pin the id — it depends on seed timestamp / repo.
+  await expect(page).toHaveURL(/\/calm\/cove\/[^/]+$/);
 
   // And the cove page itself rendered — sidebar still visible alongside it.
   await expect(page.locator('aside.side')).toBeVisible();
