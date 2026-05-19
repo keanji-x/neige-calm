@@ -17,7 +17,7 @@
 //     UI shapes inline. The result is shallow-stable enough for the
 //     Sidebar; per-cove invalidations naturally roll up.
 
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import { Outlet, useRouterState } from '@tanstack/react-router';
 import { useQueries } from '@tanstack/react-query';
 import { Sidebar } from './shared/components/Sidebar';
@@ -108,7 +108,17 @@ export function CalmApp() {
         <main className="page">
           <div className="scroll">
             {error && <ErrorBanner err={error} />}
-            {loading ? <LoadingShell /> : <Outlet />}
+            {loading ? (
+              <LoadingShell />
+            ) : (
+              // Route page components are lazily imported in `app/router.tsx`,
+              // so the first navigation to each route suspends while its
+              // chunk downloads. One Suspense at the Outlet covers all of
+              // them with a consistent fallback.
+              <Suspense fallback={<RouteLoading />}>
+                <Outlet />
+              </Suspense>
+            )}
           </div>
         </main>
       </div>
@@ -132,6 +142,17 @@ function LoadingShell() {
   return (
     <div className="col">
       <p className="synth">Connecting to calm-server…</p>
+    </div>
+  );
+}
+
+function RouteLoading() {
+  // Briefly visible only on the very first navigation to a route whose
+  // chunk hasn't been fetched yet. We deliberately match LoadingShell's
+  // muted styling so the transition reads as "calm" rather than "spinner".
+  return (
+    <div className="col">
+      <p className="synth">Loading…</p>
     </div>
   );
 }

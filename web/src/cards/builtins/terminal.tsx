@@ -1,7 +1,15 @@
+import { lazy, Suspense } from 'react';
 import { z } from 'zod';
-import { XtermView } from '../../XtermView';
 import type { TerminalCardData } from '../../types';
 import type { CardEntry } from '../registry';
+
+// xterm.js + the fit addon plus its CSS bring real weight (~150 KB raw).
+// Only load the renderer when a terminal card actually goes live; the
+// static-`lines` flavor that ships before the kernel patches in a
+// `terminal_id` doesn't need any of it.
+const XtermView = lazy(() =>
+  import('../../XtermView').then((m) => ({ default: m.XtermView })),
+);
 
 /**
  * Wire shape for a `kind: "terminal"` card's `payload`. Server-side it's
@@ -30,7 +38,9 @@ function TerminalCard({ card }: { card: TerminalCardData }) {
       </div>
       <div className="term-body">
         {live ? (
-          <XtermView terminalId={terminalId!} />
+          <Suspense fallback={<div className="term-line k-cursor">Loading terminal…</div>}>
+            <XtermView terminalId={terminalId!} />
+          </Suspense>
         ) : (
           <>
             {lines.map((l, i) => (

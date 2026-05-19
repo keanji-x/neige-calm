@@ -21,6 +21,7 @@
 // factories exported from `api/queries.ts`, so cache shape stays in lock-
 // step with the hook call sites.
 
+import { lazy } from 'react';
 import {
   createRootRoute,
   createRoute,
@@ -28,9 +29,6 @@ import {
   useParams,
 } from '@tanstack/react-router';
 import { CalmApp } from '../CalmApp';
-import { TodayPage } from '../pages/Today';
-import { CovePage } from '../pages/Cove';
-import { WavePage } from '../pages/Wave';
 import { MissingShell } from './shell';
 import { useGo } from './navigation';
 import { useTodayTerminal } from '../hooks/useTodayTerminal';
@@ -55,6 +53,24 @@ import { queryKeys } from '../api/queries';
 import { queryClient } from './providers';
 import type { Cove, Wave, WaveCardSlot } from '../types';
 import type { AddPanelKind } from '../shared/components/AddPanel';
+
+// Per-route page components are loaded on demand so the entry chunk only
+// carries the shell + routing wiring; each page's code ships as its own
+// chunk fetched when the user navigates. The route `loader` runs in
+// parallel with the JS download, so query data is primed by the time the
+// lazy component resolves — no cascading waterfall.
+//
+// CalmApp wraps <Outlet /> in <Suspense>, providing a single fallback for
+// every lazy route component below.
+const TodayPage = lazy(() =>
+  import('../pages/Today').then((m) => ({ default: m.TodayPage })),
+);
+const CovePage = lazy(() =>
+  import('../pages/Cove').then((m) => ({ default: m.CovePage })),
+);
+const WavePage = lazy(() =>
+  import('../pages/Wave').then((m) => ({ default: m.WavePage })),
+);
 
 // ---------- Route tree ----------
 
