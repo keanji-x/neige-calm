@@ -9,7 +9,7 @@
 //! a client sends both, `via_tool_call` wins (the tool-call result overrides
 //! the direct-create fields).
 
-use crate::error::{CalmError, Result};
+use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::Event;
 use crate::model::{Card, CardPatch, NewCard};
 use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
@@ -23,17 +23,31 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
+use utoipa::ToSchema;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/api/waves/{wave_id}/cards", get(list_by_wave).post(create))
+        .route(
+            "/api/waves/{wave_id}/cards",
+            get(list_cards_by_wave).post(create_card),
+        )
         .route(
             "/api/cards/{id}",
-            axum::routing::patch(update).delete(delete_),
+            axum::routing::patch(update_card).delete(delete_card),
         )
 }
 
-async fn list_by_wave(
+#[utoipa::path(
+    get,
+    path = "/api/waves/{wave_id}/cards",
+    tag = "cards",
+    params(("wave_id" = String, Path, description = "Wave id")),
+    responses(
+        (status = 200, description = "Cards in wave (sorted)", body = Vec<Card>),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn list_cards_by_wave(
     State(s): State<AppState>,
     Path(wave_id): Path<String>,
 ) -> Result<Json<Vec<Card>>> {
@@ -54,31 +68,49 @@ async fn list_by_wave(
 /// header. We keep the legacy fields alongside via `#[serde(flatten)]` so
 /// existing clients (web-calm AddPanel for terminal/doc cards) keep working
 /// unchanged.
-#[derive(Debug, Deserialize)]
-struct CreateCardBody {
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateCardBody {
     /// Legacy direct-create fields. Mirrors `NewCard` shape; `wave_id` is
     /// taken from the path so we omit it here.
     #[serde(default)]
-    kind: Option<String>,
+    pub kind: Option<String>,
     #[serde(default)]
-    sort: Option<f64>,
+    pub sort: Option<f64>,
     #[serde(default)]
-    payload: Option<Value>,
+    #[schema(value_type = Option<Object>)]
+    pub payload: Option<Value>,
     /// M2: plugin tool-call descriptor. When present, the kernel calls the
     /// plugin and the `kind` / `payload` fields above are ignored.
     #[serde(default)]
-    via_tool_call: Option<ViaToolCall>,
+    pub via_tool_call: Option<ViaToolCall>,
 }
 
-#[derive(Debug, Deserialize)]
-struct ViaToolCall {
-    plugin_id: String,
-    tool_name: String,
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ViaToolCall {
+    pub plugin_id: String,
+    pub tool_name: String,
     #[serde(default)]
-    arguments: Value,
+    #[schema(value_type = Object)]
+    pub arguments: Value,
 }
 
-async fn create(
+#[utoipa::path(
+    post,
+    path = "/api/waves/{wave_id}/cards",
+    tag = "cards",
+    params(("wave_id" = String, Path, description = "Wave id this card belongs to")),
+    request_body = CreateCardBody,
+    responses(
+        (status = 201, description = "Card created", body = Card),
+        (status = 400, description = "Missing `kind` and no `via_tool_call`", body = ErrorBody),
+        (status = 403, description = "Plugin lacks `permissions.cards_create`", body = ErrorBody),
+        (status = 404, description = "Plugin not running / not in registry", body = ErrorBody),
+        (status = 422, description = "Tool returned no `_meta.ui.resourceUri`", body = ErrorBody),
+        (status = 502, description = "Plugin tool call failed", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn create_card(
     State(s): State<AppState>,
     Path(wave_id): Path<String>,
     Json(body): Json<CreateCardBody>,
@@ -213,7 +245,19 @@ fn tool_call_bad_gateway(plugin_id: &str, tool_name: &str, detail: &str) -> Resp
     (StatusCode::BAD_GATEWAY, Json(body)).into_response()
 }
 
-async fn update(
+#[utoipa::path(
+    patch,
+    path = "/api/cards/{id}",
+    tag = "cards",
+    params(("id" = String, Path, description = "Card id")),
+    request_body = CardPatch,
+    responses(
+        (status = 200, description = "Card updated", body = Card),
+        (status = 404, description = "Card not found", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn update_card(
     State(s): State<AppState>,
     Path(id): Path<String>,
     Json(p): Json<CardPatch>,
@@ -223,7 +267,18 @@ async fn update(
     Ok(Json(card))
 }
 
-async fn delete_(State(s): State<AppState>, Path(id): Path<String>) -> Result<StatusCode> {
+#[utoipa::path(
+    delete,
+    path = "/api/cards/{id}",
+    tag = "cards",
+    params(("id" = String, Path, description = "Card id")),
+    responses(
+        (status = 204, description = "Card deleted"),
+        (status = 404, description = "Card not found", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn delete_card(State(s): State<AppState>, Path(id): Path<String>) -> Result<StatusCode> {
     // Look up first so we have the wave_id for the delete event.
     let card = s
         .repo

@@ -29,6 +29,7 @@ pub mod db;
 pub mod error;
 pub mod event;
 pub mod model;
+pub mod openapi;
 pub mod plugin_host;
 pub mod routes;
 pub mod state;

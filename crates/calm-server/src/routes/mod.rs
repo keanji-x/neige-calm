@@ -1,8 +1,10 @@
 //! HTTP route registry. Each sub-module (`coves`, `waves`, ...) returns its
 //! own `Router<AppState>`; this file merges them.
 
+use crate::openapi::ApiDoc;
 use crate::state::AppState;
-use axum::Router;
+use axum::{Json, Router, routing::get};
+use utoipa::OpenApi;
 
 pub mod cards;
 pub mod coves;
@@ -19,4 +21,15 @@ pub fn router() -> Router<AppState> {
         .merge(overlays::router())
         .merge(plugins::router())
         .merge(terminal::router())
+        // OpenAPI document — the source-of-truth for web-calm's generated
+        // TypeScript types. No swagger-ui — just the spec, served as JSON
+        // so the frontend toolchain can hit it during build.
+        .route("/api/openapi.json", get(openapi_spec))
+}
+
+/// Serve the generated OpenAPI document. Computed once per request — the
+/// document is small (a few KB) and `OpenApi` is `Send + Sync`, so we could
+/// also cache it in `OnceLock`; keeping it simple for M1.
+async fn openapi_spec() -> Json<utoipa::openapi::OpenApi> {
+    Json(ApiDoc::openapi())
 }

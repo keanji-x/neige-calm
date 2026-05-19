@@ -30,7 +30,7 @@
 //!     `GET /api/plugins/:id/resources/:view_id` and resolves through the
 //!     kernel-internal `read_ui_resource()`.
 
-use crate::error::{CalmError, Result};
+use crate::error::{CalmError, ErrorBody, Result};
 use crate::model::{NewPlugin, Plugin};
 use crate::plugin_host::{
     Manifest, PluginRegistry, PluginRuntimeStatus, ResourceError, RpcError, read_ui_resource,
@@ -47,6 +47,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path as StdPath, PathBuf};
+use utoipa::{IntoParams, ToSchema};
 
 // ---------------------------------------------------------------------------
 // Router
@@ -57,16 +58,22 @@ pub fn router() -> Router<AppState> {
         // /views must be registered before `/:id` paths so it doesn't match
         // the `:id` extractor — axum's router is order-sensitive only for
         // overlapping shapes, but explicit ordering avoids surprises.
-        .route("/api/plugins", get(list))
-        .route("/api/plugins/views", get(views_catalog))
-        .route("/api/plugins/install", post(install))
-        .route("/api/plugins/{id}", get(detail).delete(uninstall))
-        .route("/api/plugins/{id}/enable", post(enable))
-        .route("/api/plugins/{id}/disable", post(disable))
-        .route("/api/plugins/{id}/config", patch(config_patch))
-        .route("/api/plugins/{id}/log", get(log_tail))
-        .route("/api/plugins/{id}/reload", post(reload))
-        .route("/api/plugins/{id}/rotate-token", post(rotate_token))
+        .route("/api/plugins", get(list_plugins))
+        .route("/api/plugins/views", get(list_plugin_views))
+        .route("/api/plugins/install", post(install_plugin))
+        .route(
+            "/api/plugins/{id}",
+            get(get_plugin_detail).delete(uninstall_plugin),
+        )
+        .route("/api/plugins/{id}/enable", post(enable_plugin))
+        .route("/api/plugins/{id}/disable", post(disable_plugin))
+        .route("/api/plugins/{id}/config", patch(patch_plugin_config))
+        .route("/api/plugins/{id}/log", get(tail_plugin_log))
+        .route("/api/plugins/{id}/reload", post(reload_plugin))
+        .route(
+            "/api/plugins/{id}/rotate-token",
+            post(rotate_plugin_token),
+        )
         // M5: iframe HTML lives at `GET /api/plugins/:id/resources/:view_id`.
         // The handler resolves the URL into `ui://<id>/<view_id>` and calls
         // `plugin_host::read_ui_resource`. Browsers can't speak postMessage
@@ -75,11 +82,14 @@ pub fn router() -> Router<AppState> {
         // exactly this URL pattern. No cookies; the desktop-local CORS gate
         // and the `neige.*` prefix check on `tool-call` provide the trust
         // boundary (see migration doc §3.3).
-        .route("/api/plugins/{id}/resources/{view_id}", get(view_html))
+        .route(
+            "/api/plugins/{id}/resources/{view_id}",
+            get(get_plugin_view_html),
+        )
         // M5: AppBridge `tools/call` fan-out. The iframe never reaches the
         // plugin process — `name` MUST start with `neige.` (§7.6 row 5),
         // and the call is dispatched through the in-kernel callback router.
-        .route("/api/plugins/{id}/tool-call", post(tool_call))
+        .route("/api/plugins/{id}/tool-call", post(plugin_tool_call))
 }
 
 // ---------------------------------------------------------------------------
@@ -90,7 +100,7 @@ pub fn router() -> Router<AppState> {
 /// with the runtime status the supervisor knows about. The full manifest is
 /// excluded here to keep the list payload cheap; callers needing the manifest
 /// hit `GET /api/plugins/:id`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct PluginListItem {
     pub id: String,
     pub version: String,
@@ -108,7 +118,7 @@ pub struct PluginListItem {
 /// Single-plugin detail returned by GET-by-id, install, enable, disable,
 /// config-patch, and reload. The full manifest blob rides along so the UI can
 /// render version/author/views without a separate fetch.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct PluginDetail {
     pub id: String,
     pub version: String,
@@ -116,7 +126,9 @@ pub struct PluginDetail {
     pub state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    #[schema(value_type = Object)]
     pub manifest: Value,
+    #[schema(value_type = Object)]
     pub user_config: Value,
     pub installed_at: i64,
     pub updated_at: i64,
@@ -128,7 +140,7 @@ pub struct PluginDetail {
 /// `ui://<plugin>/<view>` identifier. `plugin_id` + `view_id` stay on the
 /// wire alongside it during the M3→M4 transition; M4's frontend pivots to
 /// `resource_uri` and a follow-up slice may drop the legacy pair.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ViewCatalogEntry {
     pub plugin_id: String,
     pub view_id: String,
@@ -144,7 +156,7 @@ pub struct ViewCatalogEntry {
     pub scope: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ViewSizeWire {
     pub w: u32,
     pub h: u32,
@@ -158,12 +170,12 @@ pub struct ViewSizeWire {
 // Request bodies
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct InstallBody {
     pub source: InstallSource,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InstallSource {
     LocalPath { path: String },
@@ -173,7 +185,7 @@ pub enum InstallSource {
     Other,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
 pub struct LogQuery {
     pub n: Option<usize>,
 }
@@ -181,10 +193,11 @@ pub struct LogQuery {
 /// M5: AppBridge → kernel tool-call wire body. Mirrors the JSON-RPC
 /// `tools/call` params shape so the web-calm helper can hand it through
 /// verbatim from the iframe-side `app.callServerTool({ name, arguments })`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ToolCallBody {
     pub name: String,
     #[serde(default = "default_arguments")]
+    #[schema(value_type = Object)]
     pub arguments: Value,
 }
 
@@ -196,7 +209,16 @@ fn default_arguments() -> Value {
 // Handlers — GET list / GET detail
 // ---------------------------------------------------------------------------
 
-async fn list(State(s): State<AppState>) -> Result<Json<Vec<PluginListItem>>> {
+#[utoipa::path(
+    get,
+    path = "/api/plugins",
+    tag = "plugins",
+    responses(
+        (status = 200, description = "Installed plugins with their runtime state", body = Vec<PluginListItem>),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn list_plugins(State(s): State<AppState>) -> Result<Json<Vec<PluginListItem>>> {
     let rows = s.repo.plugins_list_all().await?;
     let mut out = Vec::with_capacity(rows.len());
     for plug in rows {
@@ -234,7 +256,18 @@ async fn list(State(s): State<AppState>) -> Result<Json<Vec<PluginListItem>>> {
     Ok(Json(out))
 }
 
-async fn detail(
+#[utoipa::path(
+    get,
+    path = "/api/plugins/{id}",
+    tag = "plugins",
+    params(("id" = String, Path, description = "Plugin id")),
+    responses(
+        (status = 200, description = "Plugin detail (manifest + state)", body = PluginDetail),
+        (status = 404, description = "Plugin not found", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn get_plugin_detail(
     State(s): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<PluginDetail>> {
@@ -250,7 +283,19 @@ async fn detail(
 // POST install — local_path only for M3
 // ---------------------------------------------------------------------------
 
-async fn install(
+#[utoipa::path(
+    post,
+    path = "/api/plugins/install",
+    tag = "plugins",
+    request_body = InstallBody,
+    responses(
+        (status = 201, description = "Plugin installed (disabled by default)", body = PluginDetail),
+        (status = 400, description = "Manifest invalid / unsupported source", body = ErrorBody),
+        (status = 409, description = "Plugin id already installed", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn install_plugin(
     State(s): State<AppState>,
     Json(body): Json<InstallBody>,
 ) -> Result<(StatusCode, Json<PluginDetail>)> {
@@ -335,7 +380,18 @@ async fn install(
 // POST enable / disable
 // ---------------------------------------------------------------------------
 
-async fn enable(
+#[utoipa::path(
+    post,
+    path = "/api/plugins/{id}/enable",
+    tag = "plugins",
+    params(("id" = String, Path, description = "Plugin id")),
+    responses(
+        (status = 200, description = "Plugin enabled and spawned", body = PluginDetail),
+        (status = 404, description = "Plugin not found", body = ErrorBody),
+        (status = 500, description = "Spawn failed / internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn enable_plugin(
     State(s): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<PluginDetail>> {
@@ -358,7 +414,18 @@ async fn enable(
     Ok(Json(build_detail(&s, plug).await))
 }
 
-async fn disable(
+#[utoipa::path(
+    post,
+    path = "/api/plugins/{id}/disable",
+    tag = "plugins",
+    params(("id" = String, Path, description = "Plugin id")),
+    responses(
+        (status = 200, description = "Plugin disabled and stopped", body = PluginDetail),
+        (status = 404, description = "Plugin not found", body = ErrorBody),
+        (status = 500, description = "Stop failed / internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn disable_plugin(
     State(s): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<PluginDetail>> {
@@ -387,7 +454,19 @@ async fn disable(
 // PATCH config
 // ---------------------------------------------------------------------------
 
-async fn config_patch(
+#[utoipa::path(
+    patch,
+    path = "/api/plugins/{id}/config",
+    tag = "plugins",
+    params(("id" = String, Path, description = "Plugin id")),
+    request_body(content = Object, description = "Free-form user-config JSON object"),
+    responses(
+        (status = 200, description = "Config updated", body = PluginDetail),
+        (status = 404, description = "Plugin not found", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn patch_plugin_config(
     State(s): State<AppState>,
     Path(id): Path<String>,
     Json(body): Json<Value>,
@@ -410,7 +489,18 @@ async fn config_patch(
 // DELETE — full uninstall
 // ---------------------------------------------------------------------------
 
-async fn uninstall(
+#[utoipa::path(
+    delete,
+    path = "/api/plugins/{id}",
+    tag = "plugins",
+    params(("id" = String, Path, description = "Plugin id")),
+    responses(
+        (status = 204, description = "Plugin uninstalled"),
+        (status = 404, description = "Plugin not found", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn uninstall_plugin(
     State(s): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
@@ -446,7 +536,21 @@ async fn uninstall(
 // GET log
 // ---------------------------------------------------------------------------
 
-async fn log_tail(
+#[utoipa::path(
+    get,
+    path = "/api/plugins/{id}/log",
+    tag = "plugins",
+    params(
+        ("id" = String, Path, description = "Plugin id"),
+        LogQuery,
+    ),
+    responses(
+        (status = 200, description = "Recent stderr lines (newest last)", body = Vec<String>),
+        (status = 404, description = "Plugin not found", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn tail_plugin_log(
     State(s): State<AppState>,
     Path(id): Path<String>,
     Query(q): Query<LogQuery>,
@@ -467,7 +571,19 @@ async fn log_tail(
 // POST reload — dev hot-reload of manifest + restart if enabled
 // ---------------------------------------------------------------------------
 
-async fn reload(
+#[utoipa::path(
+    post,
+    path = "/api/plugins/{id}/reload",
+    tag = "plugins",
+    params(("id" = String, Path, description = "Plugin id")),
+    responses(
+        (status = 200, description = "Manifest reloaded + plugin restarted if enabled", body = PluginDetail),
+        (status = 400, description = "Manifest invalid / id mismatch after reload", body = ErrorBody),
+        (status = 404, description = "Plugin not found", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn reload_plugin(
     State(s): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<PluginDetail>> {
@@ -525,7 +641,16 @@ async fn reload(
 // GET views catalog
 // ---------------------------------------------------------------------------
 
-async fn views_catalog(State(s): State<AppState>) -> Result<Json<Vec<ViewCatalogEntry>>> {
+#[utoipa::path(
+    get,
+    path = "/api/plugins/views",
+    tag = "plugins",
+    responses(
+        (status = 200, description = "Catalog of views from currently enabled plugins", body = Vec<ViewCatalogEntry>),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn list_plugin_views(State(s): State<AppState>) -> Result<Json<Vec<ViewCatalogEntry>>> {
     // Only emit entries for plugins that are currently enabled — disabled
     // plugins can't actually render. Take a snapshot of the installed table
     // and join against the registry's manifest cache.
@@ -582,7 +707,22 @@ async fn views_catalog(State(s): State<AppState>) -> Result<Json<Vec<ViewCatalog
 // (when set; absent → no header → AppBridge's default no-network sandbox
 // kicks in).
 
-async fn view_html(
+#[utoipa::path(
+    get,
+    path = "/api/plugins/{id}/resources/{view_id}",
+    tag = "plugins",
+    params(
+        ("id" = String, Path, description = "Plugin id"),
+        ("view_id" = String, Path, description = "View id within the plugin manifest"),
+    ),
+    responses(
+        (status = 200, description = "MCP-App HTML (Content-Type: text/html;profile=mcp-app)", body = String, content_type = "text/html;profile=mcp-app"),
+        (status = 400, description = "Malformed ui:// URI", body = ErrorBody),
+        (status = 404, description = "Plugin or view not found / asset missing", body = ErrorBody),
+        (status = 500, description = "I/O error reading asset", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn get_plugin_view_html(
     State(s): State<AppState>,
     Path((id, view_id)): Path<(String, String)>,
 ) -> Response {
@@ -718,7 +858,20 @@ fn csp_header_from_meta(meta: Option<&Value>) -> Option<String> {
 // router uses (via `PluginHost::dispatch_neige_callback`), so permissions,
 // quotas, and ownership rules all apply identically.
 
-async fn tool_call(
+#[utoipa::path(
+    post,
+    path = "/api/plugins/{id}/tool-call",
+    tag = "plugins",
+    params(("id" = String, Path, description = "Plugin id")),
+    request_body = ToolCallBody,
+    responses(
+        (status = 200, description = "Tool result JSON (shape depends on dispatched neige.* callback)", body = Object),
+        (status = 403, description = "Non-neige.* tool requested from iframe", body = ErrorBody),
+        (status = 404, description = "Plugin not running", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn plugin_tool_call(
     State(s): State<AppState>,
     Path(id): Path<String>,
     Json(body): Json<ToolCallBody>,
@@ -764,7 +917,18 @@ async fn tool_call(
 // POST /api/plugins/:id/rotate-token — admin endpoint per design §6.3
 // ---------------------------------------------------------------------------
 
-async fn rotate_token(
+#[utoipa::path(
+    post,
+    path = "/api/plugins/{id}/rotate-token",
+    tag = "plugins",
+    params(("id" = String, Path, description = "Plugin id")),
+    responses(
+        (status = 200, description = "Token rotated", body = PluginDetail),
+        (status = 404, description = "Plugin not found", body = ErrorBody),
+        (status = 500, description = "Rotate failed", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn rotate_plugin_token(
     State(s): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<PluginDetail>> {
