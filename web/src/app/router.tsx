@@ -286,23 +286,23 @@ function WaveComponent() {
 
 /**
  * Card create routed by kind. Terminal cards need the two-step "card
- * row + Terminal row + payload patch" dance the kernel expects; doc /
- * plan cards land in M3 with the plugin host, so for now we just warn.
+ * row + Terminal row + payload patch" dance the kernel expects.
  *
  * Lives here (not in queries.ts) because it composes three mutations
  * in sequence; wrapping that in `useMutation` would obscure the
  * sequencing for not much gain. We call the api client directly and
  * trigger the wave-detail invalidation manually.
+ *
+ * Non-terminal kinds (doc/git/diff/plan) were removed in Wave 4; new
+ * card kinds will arrive through the plugin host (M3) as `ui://` cards,
+ * not as additional built-ins, so this function intentionally only
+ * handles `'terminal'`.
  */
 async function addCardOfKind(
   qc: ReturnType<typeof useQueryClient>,
   waveId: string,
-  type: AddPanelKind,
+  _type: AddPanelKind,
 ): Promise<void> {
-  if (type !== 'terminal') {
-    console.warn(`[Calm] card kind '${type}' not yet wired to the kernel`);
-    return;
-  }
   try {
     const card = await api.createCard(waveId, { kind: 'terminal' });
     const term = await api.createTerminal(card.id, {});
