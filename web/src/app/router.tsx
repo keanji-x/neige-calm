@@ -52,6 +52,8 @@ import * as api from '../api/calm';
 import { useQueryClient, useQueries } from '@tanstack/react-query';
 import { queryKeys } from '../api/queries';
 import { queryClient } from './providers';
+import { dlog } from '../util/debug';
+import { suppressCardEvents } from './eventBridge';
 import type { Cove, Wave, WaveCardSlot } from '../types';
 import type { AddPanelKind } from '../shared/components/AddPanel';
 
@@ -245,6 +247,13 @@ function WaveComponent() {
   const updateWave = useUpdateWaveMutation();
   const deleteWave = useDeleteWaveMutation();
   const deleteCard = useDeleteCardMutation();
+  dlog('WaveComponent', 'render', {
+    waveId,
+    detailLoaded: !!detailQ.data,
+    cardsCount: detailQ.data?.cards.length,
+    detailFetchStatus: detailQ.fetchStatus,
+    detailStatus: detailQ.status,
+  });
 
   // Wave detail is the source of truth for "does this wave exist?".
   if (!detailQ.data) {
@@ -320,12 +329,31 @@ async function addCardOfKind(
   waveId: string,
   _type: AddPanelKind,
 ): Promise<void> {
+  // Suppress this wave's WS card events for the duration of the 3-step
+  // create. Without this, the kernel's intermediate emissions (card.added
+  // with payload=null, before the terminal_id patch) would race the
+  // mutation chain through EventBridge → invalidate → refetch and the UI
+  // would render the half-built card before snapping to the final state.
+  // See PR #12 + issue #13 for the underlying CRUD-API design problem.
+  const releaseSuppression = suppressCardEvents(waveId);
   try {
+    dlog('addCardOfKind', 'step 1: createCard START', { waveId });
     const card = await api.createCard(waveId, { kind: 'terminal' });
+    dlog('addCardOfKind', 'step 1: createCard DONE', { cardId: card.id, payload: card.payload });
+    dlog('addCardOfKind', 'step 2: createTerminal START');
     const term = await api.createTerminal(card.id, {});
+    dlog('addCardOfKind', 'step 2: createTerminal DONE', { termId: term.id });
+    dlog('addCardOfKind', 'step 3: updateCard START');
     await api.updateCard(card.id, { payload: { terminal_id: term.id } });
-    void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
+    dlog('addCardOfKind', 'step 3: updateCard DONE');
   } catch (err) {
     console.warn('[Calm] terminal create failed:', err);
+  } finally {
+    releaseSuppression();
+    // Single, post-flow refresh — the only WS-equivalent the UI sees for
+    // this mutation. Wave detail refetches once with the fully-formed
+    // card (terminal_id present), so no intermediate-state flash.
+    dlog('addCardOfKind', 'MANUAL invalidate (post-flow)', { waveId });
+    void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
   }
 }

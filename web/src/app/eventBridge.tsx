@@ -40,6 +40,7 @@ import { useEffect } from 'react';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { sharedEventStream } from '../api/events';
 import { queryKeys } from '../api/queries';
+import { dlog } from '../util/debug';
 import type { KernelWaveDetail, WireEvent } from '../api/wire';
 
 /** Debounce window for card-event invalidations, keyed by wave_id. Tuned
@@ -48,6 +49,42 @@ import type { KernelWaveDetail, WireEvent } from '../api/wire';
  *  (see header comment). Short enough that external clients still see a
  *  near-instant refresh. */
 const CARD_INVALIDATE_DEBOUNCE_MS = 60;
+
+// ---------------------------------------------------------------------------
+// Self-mutation suppression.
+//
+// While a client is in the middle of a multi-step kernel mutation (today:
+// the 3-step terminal-card create), it should NOT react to the WS event
+// echoes of its own intermediate writes — those echoes carry half-built
+// state (e.g. card.added with payload=null before the terminal_id patch).
+// The diagnostic logs that motivated this also showed the debounce window
+// expiring before step 2 finished, so debouncing alone isn't sufficient.
+//
+// The originating mutation marks wave_ids as suppressed for its duration
+// and fires its own invalidate at the end (the single, atomic-ish UI
+// refresh). External clients (different sessions, plugins) don't see this
+// flag and continue to handle events normally.
+//
+// When the atomic-create endpoint (#13) lands, the mutation collapses to
+// a single API call emitting a single event with the final state; this
+// suppression layer + addCardOfKind's try/finally can be removed wholesale.
+const suppressionRefs = new Map<string, number>();
+
+/** Mark `wave_id` as having an in-flight self-mutation; returns a release
+ *  function that the caller MUST invoke (use try/finally) when done.
+ *  Refcounted so concurrent mutations on the same wave nest safely. */
+export function suppressCardEvents(wave_id: string): () => void {
+  suppressionRefs.set(wave_id, (suppressionRefs.get(wave_id) ?? 0) + 1);
+  return () => {
+    const cur = suppressionRefs.get(wave_id) ?? 0;
+    if (cur <= 1) suppressionRefs.delete(wave_id);
+    else suppressionRefs.set(wave_id, cur - 1);
+  };
+}
+
+function isWaveSuppressed(wave_id: string): boolean {
+  return suppressionRefs.has(wave_id);
+}
 
 export function EventBridge() {
   const queryClient = useQueryClient();
@@ -59,7 +96,10 @@ export function EventBridge() {
     // Per-wave timer so bursts on different waves don't suppress each other.
     const pendingCardInvalidations = new Map<string, ReturnType<typeof setTimeout>>();
 
-    const off = stream.on((ev) => dispatch(queryClient, ev, pendingCardInvalidations));
+    const off = stream.on((ev) => {
+      dlog('eventBridge', 'RX', ev.ev, ev.data);
+      dispatch(queryClient, ev, pendingCardInvalidations);
+    });
 
     return () => {
       off();
@@ -77,9 +117,15 @@ function scheduleCardInvalidate(
   pending: Map<string, ReturnType<typeof setTimeout>>,
 ): void {
   const existing = pending.get(wave_id);
-  if (existing) clearTimeout(existing);
+  if (existing) {
+    clearTimeout(existing);
+    dlog('eventBridge', 'card invalidate RESET timer', { wave_id });
+  } else {
+    dlog('eventBridge', 'card invalidate START timer', { wave_id });
+  }
   const timer = setTimeout(() => {
     pending.delete(wave_id);
+    dlog('eventBridge', 'card invalidate FIRE', { wave_id });
     void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(wave_id) });
   }, CARD_INVALIDATE_DEBOUNCE_MS);
   pending.set(wave_id, timer);
@@ -120,6 +166,13 @@ function dispatch(
     case 'card.added':
     case 'card.updated':
     case 'card.deleted': {
+      if (isWaveSuppressed(ev.data.wave_id)) {
+        dlog('eventBridge', 'card event SUPPRESSED (self-mutation in flight)', {
+          ev: ev.ev,
+          wave_id: ev.data.wave_id,
+        });
+        return;
+      }
       scheduleCardInvalidate(qc, ev.data.wave_id, pendingCardInvalidations);
       return;
     }
