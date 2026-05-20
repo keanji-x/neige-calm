@@ -49,6 +49,7 @@
 //! with stdin = a single JSON object; the bridge POSTs it here and we
 //! tag it with the card id and emit `Event::CodexHook` on the bus.
 
+use crate::actor::Actor;
 use crate::db::sqlite::card_update_tx;
 use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
@@ -67,8 +68,6 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::path::Path as StdPath;
 use utoipa::ToSchema;
-
-const REST_ACTOR: &str = "user";
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -107,6 +106,7 @@ pub struct NewCodexBody {
 )]
 pub(crate) async fn create_codex(
     State(s): State<AppState>,
+    actor: Actor,
     Path(card_id): Path<String>,
     body: Option<Json<NewCodexBody>>,
 ) -> Result<(StatusCode, Json<Card>)> {
@@ -124,7 +124,7 @@ pub(crate) async fn create_codex(
         )));
     }
 
-    let card = spawn_codex_for(&s, &card, &p).await?;
+    let card = spawn_codex_for(&s, &actor, &card, &p).await?;
     Ok((StatusCode::ACCEPTED, Json(card)))
 }
 
@@ -134,7 +134,12 @@ pub(crate) async fn create_codex(
 /// create a Terminal row, and spawn the session daemon running interactive
 /// `codex`. Returns the updated Card with `payload.terminal_id` set so the
 /// frontend can attach the xterm.
-async fn spawn_codex_for(s: &AppState, card: &Card, p: &NewCodexBody) -> Result<Card> {
+async fn spawn_codex_for(
+    s: &AppState,
+    actor: &Actor,
+    card: &Card,
+    p: &NewCodexBody,
+) -> Result<Card> {
     // 1. Stable per-card CODEX_HOME. Keying on card_id means daemon
     //    revives after a container restart see the same auth.json / state
     //    that codex wrote last time — the old `/tmp/`-keyed tempdir was
@@ -252,7 +257,7 @@ async fn spawn_codex_for(s: &AppState, card: &Card, p: &NewCodexBody) -> Result<
     if !cwd.is_empty() {
         payload["cwd"] = serde_json::Value::String(cwd.clone());
     }
-    let updated = stamp_codex_terminal_payload(s, card, payload).await?;
+    let updated = stamp_codex_terminal_payload(s, actor, card, payload).await?;
 
     tracing::info!(
         card_id = %card.id,
@@ -271,10 +276,19 @@ async fn spawn_codex_for(s: &AppState, card: &Card, p: &NewCodexBody) -> Result<
     Ok(updated)
 }
 
-async fn stamp_codex_terminal_payload(s: &AppState, card: &Card, payload: Value) -> Result<Card> {
+async fn stamp_codex_terminal_payload(
+    s: &AppState,
+    actor: &Actor,
+    card: &Card,
+    payload: Value,
+) -> Result<Card> {
     let id = card.id.clone();
-    let (updated, _id) =
-        write_with_event_typed(s.repo.as_ref(), REST_ACTOR, None, &s.events, move |tx| {
+    let (updated, _id) = write_with_event_typed(
+        s.repo.as_ref(),
+        actor.as_str(),
+        None,
+        &s.events,
+        move |tx| {
             Box::pin(async move {
                 let updated = card_update_tx(
                     tx,
@@ -288,8 +302,9 @@ async fn stamp_codex_terminal_payload(s: &AppState, card: &Card, payload: Value)
                 .await?;
                 Ok((updated.clone(), Event::CardUpdated(updated)))
             })
-        })
-        .await?;
+        },
+    )
+    .await?;
     Ok(updated)
 }
 
@@ -493,7 +508,8 @@ mod tests {
             "terminal_id": "term_1",
             "cwd": "/workspace",
         });
-        let updated = stamp_codex_terminal_payload(&state, &card, payload)
+        let actor = Actor("user".to_string());
+        let updated = stamp_codex_terminal_payload(&state, &actor, &card, payload)
             .await
             .unwrap();
 
@@ -515,6 +531,6 @@ mod tests {
             .fetch_one(repo.pool())
             .await
             .unwrap();
-        assert_eq!(row, ("card.updated".into(), REST_ACTOR.into()));
+        assert_eq!(row, ("card.updated".into(), "user".into()));
     }
 }

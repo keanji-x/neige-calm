@@ -8,6 +8,7 @@
 //! Writes go through `Repo::write_with_event` via `write_with_event_typed`
 //! per Scope A — see `routes/coves.rs` for the template.
 
+use crate::actor::Actor;
 use crate::db::sqlite::{overlay_delete_tx, overlay_upsert_tx};
 use crate::db::write_with_event_typed;
 use crate::error::{ErrorBody, Result};
@@ -23,8 +24,6 @@ use axum::{
 };
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
-
-const REST_ACTOR: &str = "user";
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -74,19 +73,25 @@ pub(crate) async fn list_overlays(
 )]
 pub(crate) async fn upsert_overlay(
     State(s): State<AppState>,
+    actor: Actor,
     Json(p): Json<NewOverlay>,
 ) -> Result<Json<Overlay>> {
     // D4: kernel-owned overlay kinds (status/progress/eta/now) must match
     // their shape; plugin-defined kinds stay opaque.
     validate_overlay_payload(&p.kind, &p.payload)?;
-    let (overlay, _id) =
-        write_with_event_typed(s.repo.as_ref(), REST_ACTOR, None, &s.events, move |tx| {
+    let (overlay, _id) = write_with_event_typed(
+        s.repo.as_ref(),
+        actor.as_str(),
+        None,
+        &s.events,
+        move |tx| {
             Box::pin(async move {
                 let overlay = overlay_upsert_tx(tx, p).await?;
                 Ok((overlay.clone(), Event::OverlaySet(overlay)))
             })
-        })
-        .await?;
+        },
+    )
+    .await?;
     Ok(Json(overlay))
 }
 
@@ -110,10 +115,15 @@ pub struct OverlayDeleteBody {
 )]
 pub(crate) async fn delete_overlay(
     State(s): State<AppState>,
+    actor: Actor,
     Json(b): Json<OverlayDeleteBody>,
 ) -> Result<StatusCode> {
-    let (_unit, _id) =
-        write_with_event_typed(s.repo.as_ref(), REST_ACTOR, None, &s.events, move |tx| {
+    let (_unit, _id) = write_with_event_typed(
+        s.repo.as_ref(),
+        actor.as_str(),
+        None,
+        &s.events,
+        move |tx| {
             Box::pin(async move {
                 overlay_delete_tx(tx, &b.plugin_id, &b.entity_kind, &b.entity_id, &b.kind).await?;
                 Ok((
@@ -126,7 +136,8 @@ pub(crate) async fn delete_overlay(
                     },
                 ))
             })
-        })
-        .await?;
+        },
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }

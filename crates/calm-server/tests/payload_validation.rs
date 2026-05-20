@@ -62,9 +62,15 @@ async fn boot() -> (AppState, String) {
 }
 
 fn app(state: AppState) -> axum::Router {
+    // Scope G: the cards / overlays handlers extract `Actor` from request
+    // extensions, which means the middleware that populates it must be
+    // present. Mirror main.rs by layering it on the REST router.
     axum::Router::new()
         .merge(routes::cards::router())
         .merge(routes::overlays::router())
+        .layer(axum::middleware::from_fn(
+            calm_server::actor::actor_middleware,
+        ))
         .with_state(state)
 }
 

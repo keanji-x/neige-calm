@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::Request;
+use calm_server::actor::actor_middleware;
 use calm_server::db::Repo;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus};
@@ -110,8 +111,12 @@ async fn create_codex_rejects_non_codex_card() {
         plugin: Arc::new(PluginHost::new(Arc::new(PluginRegistry::empty()), repo)),
         codex: Arc::new(CodexClient::new_stub()),
     };
+    // Scope G: production wiring includes the actor middleware on the REST
+    // router; without it the `Actor` extractor returns 500 (its "middleware
+    // not applied" branch). Mirror main.rs.
     let app = axum::Router::new()
         .merge(routes::router())
+        .layer(axum::middleware::from_fn(actor_middleware))
         .with_state(state);
 
     let resp = app

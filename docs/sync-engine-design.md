@@ -50,6 +50,17 @@ Justifications:
 
 **Actor is a declared field, not an authenticated identity.** The `actor` column records who the producer of an event claims to be (`"user"`, `"ai:codex"`, `"plugin:<id>"`, `"kernel"`). In the single-user local-host deployment, this is trust-based — the calling subsystem populates it correctly. If neige-calm ever opens an externally-reachable API or accepts remote AI agents, **a separate auth design must precede that exposure** — `actor` becomes a security boundary at that point, not just a debug field. Today it is the latter.
 
+**Header plumbing (Scope G).** REST writes flow through an axum middleware (`calm_server::actor::actor_middleware`) that reads `X-Calm-Actor` from the incoming request and stamps an `Actor` extension on the request before the handler runs. Handlers extract `Actor` via a `FromRequestParts` impl and pass it straight to `write_with_event_typed`. Validation rules:
+
+- Header absent / empty → defaults to `"user"`. Preserves today's no-header UX for the web frontend.
+- `"user"` → accepted verbatim.
+- `"ai:<id>"` where `<id>` matches `[a-z0-9-]{1,64}` → accepted verbatim.
+- `"kernel"` → **rejected with 400**. Reserved for kernel-internal writes (card-FSM projector, codex hook ingest, orphan terminal sweeper). Those sites bypass the middleware entirely and call `write_with_event_typed` with `"kernel"` directly.
+- `"plugin:<id>"` → **rejected with 400**. Reserved for the plugin callback dispatcher (`plugin_host::callbacks`), which stamps the kernel-known plugin id from the connection context (`format!("plugin:{}", ctx.plugin_id)`) — plugins cannot spoof their own actor over either MCP or REST.
+- Anything else → rejected with 400.
+
+The middleware is layered on the REST router only; WebSocket endpoints (`/api/events`, `/api/terminals/:id`) are upgrade-style and do not write through the same path. Actor on WS frames is a separate (currently no-op) concern. The middleware is plumbing, not authentication — the §1.1 disclaimer above still applies: a real auth design must precede any externally-reachable surface before `actor` becomes a security boundary.
+
 ### 1.2 Existing `Event` enum: keep it, narrow its role
 
 `crates/calm-server/src/event.rs:39` already defines a typed `Event` enum that ts-rs exports. **Keep it.** It stays the typed input to `event_append` (one place that knows the serde tag/content shape and topic mapping), the unit `EventBus` broadcasts, and the ts-rs source for `web/src/api/generated-events.ts`. The only lifecycle change: events are now **first persisted, then broadcast**, never broadcast-only (see §3). We do **not** merge `Event` into a free-form row body — that would lose ts-rs typing and re-open the schema-drift class of bugs that #5 closed.
@@ -480,7 +491,7 @@ Still open — reviewer input most valuable on:
 Decisions (was open in v1):
 
 - **Retention default → forever.** `config.events_retention_days = None`; pruner only runs when an operator configures a finite window. Audit/replay is the architecture's headline value; defaulting to drop it is wrong. Per-actor retention is a forward-looking refinement (§2.3, §9.6). *Was v1 Q2.*
-- **Actor plumbing → axum middleware + typed request extension.** User → `"user"`. AI agents → `X-Calm-Actor: ai:<id>` header, validated against an allowlist. Plugins → existing hashed-token path; the callback dispatcher (`plugin_host::dispatch_neige_callback`) stamps `"plugin:<id>"` — the plugin process cannot spoof its own actor. Kernel-internal writes (FSM) pass `"kernel"` directly. Actor remains a declared field, not authenticated identity (§1.1); a separate auth design precedes any externally-reachable surface. *Was v1 Q3.*
+- **Actor plumbing → axum middleware + typed request extension.** Shipped in Scope G. User → `"user"`. AI agents → `X-Calm-Actor: ai:<id>` header, validated against the `[a-z0-9-]{1,64}` id format. Plugins → existing hashed-token path; the callback dispatcher (`plugin_host::callbacks::dispatch`) stamps `"plugin:<id>"` — the plugin process cannot spoof its own actor. Kernel-internal writes (FSM, codex hook ingest) pass `"kernel"` directly without going through the middleware. `kernel` and `plugin:*` are explicitly rejected from the header so REST callers cannot impersonate either. Actor remains a declared field, not authenticated identity (§1.1); a separate auth design precedes any externally-reachable surface. *Was v1 Q3.*
 - **`event_append` visibility → wrapper only.** `Repo::write_with_event` is the sole public path; the raw insert is `SqlxRepo`-private (or `#[cfg(test)]`-gated for replay-loader / fixture use). Tightening later is hard; opening up later is trivial. *Was v1 Q4.*
 - **`view` entity_kind on Overlay → reuse Overlay table.** `entity_kind: "view"` rather than a new `view_state` table. Saves a concept; validators (§5.2) and the kernel-owned `view` kinds allowlist keep the namespace clean. *Was v1 Q5.*
 

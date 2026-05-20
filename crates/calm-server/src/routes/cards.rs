@@ -9,6 +9,7 @@
 //! a client sends both, `via_tool_call` wins (the tool-call result overrides
 //! the direct-create fields).
 
+use crate::actor::Actor;
 use crate::db::sqlite::{card_create_tx, card_delete_tx, card_update_tx};
 use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
@@ -18,7 +19,6 @@ use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
 use crate::state::AppState;
 use crate::validation::validate_card_payload;
 
-const REST_ACTOR: &str = "user";
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -117,10 +117,14 @@ pub struct ViaToolCall {
 )]
 pub(crate) async fn create_card(
     State(s): State<AppState>,
+    actor: Actor,
     Path(wave_id): Path<String>,
     Json(body): Json<CreateCardBody>,
 ) -> Result<Response, Response> {
-    // M2: tool-call path wins over direct-create.
+    // M2: tool-call path wins over direct-create. The tool-call branch
+    // overrides the actor to `"plugin:<id>"` (the entity actually making
+    // the kernel write) regardless of any `X-Calm-Actor` header — plugins
+    // cannot spoof their own actor via REST (design §9 bullet 2/3).
     if let Some(via) = body.via_tool_call {
         return create_via_tool_call(&s, wave_id, via).await;
     }
@@ -141,15 +145,20 @@ pub(crate) async fn create_card(
         sort: body.sort,
         payload,
     };
-    let (card, _id) =
-        write_with_event_typed(s.repo.as_ref(), REST_ACTOR, None, &s.events, move |tx| {
+    let (card, _id) = write_with_event_typed(
+        s.repo.as_ref(),
+        actor.as_str(),
+        None,
+        &s.events,
+        move |tx| {
             Box::pin(async move {
                 let card = card_create_tx(tx, new).await?;
                 Ok((card.clone(), Event::CardAdded(card)))
             })
-        })
-        .await
-        .map_err(|e| e.into_response())?;
+        },
+    )
+    .await
+    .map_err(|e| e.into_response())?;
     Ok((StatusCode::CREATED, Json(card)).into_response())
 }
 
@@ -296,6 +305,7 @@ fn tool_call_bad_gateway(plugin_id: &str, tool_name: &str, detail: &str) -> Resp
 )]
 pub(crate) async fn update_card(
     State(s): State<AppState>,
+    actor: Actor,
     Path(id): Path<String>,
     Json(p): Json<CardPatch>,
 ) -> Result<Json<Card>> {
@@ -316,14 +326,19 @@ pub(crate) async fn update_card(
         };
         validate_card_payload(&kind, payload)?;
     }
-    let (card, _id) =
-        write_with_event_typed(s.repo.as_ref(), REST_ACTOR, None, &s.events, move |tx| {
+    let (card, _id) = write_with_event_typed(
+        s.repo.as_ref(),
+        actor.as_str(),
+        None,
+        &s.events,
+        move |tx| {
             Box::pin(async move {
                 let card = card_update_tx(tx, &id, p).await?;
                 Ok((card.clone(), Event::CardUpdated(card)))
             })
-        })
-        .await?;
+        },
+    )
+    .await?;
     Ok(Json(card))
 }
 
@@ -340,6 +355,7 @@ pub(crate) async fn update_card(
 )]
 pub(crate) async fn delete_card(
     State(s): State<AppState>,
+    actor: Actor,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
     // Look up first so we have the wave_id for the delete event.
@@ -350,8 +366,12 @@ pub(crate) async fn delete_card(
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
     let card_id = card.id.clone();
     let wave_id = card.wave_id.clone();
-    let (_unit, _id) =
-        write_with_event_typed(s.repo.as_ref(), REST_ACTOR, None, &s.events, move |tx| {
+    let (_unit, _id) = write_with_event_typed(
+        s.repo.as_ref(),
+        actor.as_str(),
+        None,
+        &s.events,
+        move |tx| {
             Box::pin(async move {
                 card_delete_tx(tx, &card_id).await?;
                 Ok((
@@ -362,7 +382,8 @@ pub(crate) async fn delete_card(
                     },
                 ))
             })
-        })
-        .await?;
+        },
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
