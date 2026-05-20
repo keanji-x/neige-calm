@@ -47,7 +47,7 @@
 //! issue #5.
 
 use crate::model::{Card, Cove, Overlay, Wave};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::broadcast;
 use ts_rs::TS;
@@ -69,7 +69,7 @@ const BUS_CAPACITY: usize = 1024;
 /// here to also derive `TS`. Inline struct variants (e.g. `CoveDeleted { id }`)
 /// are emitted directly; tuple variants over a named struct (e.g.
 /// `CoveUpdated(Cove)`) pull in the struct's own export.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(tag = "ev", content = "data")]
 #[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub enum Event {
@@ -184,6 +184,23 @@ impl Event {
             // `#[serde(tag, content)]` representation, but be conservative.
             _ => serde_json::Value::Null,
         }
+    }
+
+    /// Rebuild a typed `Event` from the `(kind, payload)` pair stored in the
+    /// `events` table. The wrapper splices the row's `kind` into the `ev`
+    /// tag and `payload` JSON into the `data` content slot, then runs the
+    /// derived `Deserialize` impl over the synthesized envelope.
+    ///
+    /// Used by Scope D's WS replay path: rows come back from the events
+    /// table as `(id, kind, payload_text)`, and the WS handler reconstitutes
+    /// each into a real `Event` so `topics(&ev)` can filter against the
+    /// connection's subscription set the same way it does for live frames.
+    pub fn from_kind_and_payload(
+        kind: &str,
+        payload: serde_json::Value,
+    ) -> Result<Self, serde_json::Error> {
+        let envelope = serde_json::json!({ "ev": kind, "data": payload });
+        serde_json::from_value(envelope)
     }
 }
 

@@ -274,6 +274,35 @@ pub trait Repo: Send + Sync + 'static {
         bus: &crate::event::EventBus,
         event: Event,
     ) -> Result<i64>;
+
+    /// Scope D — replay query. Read events with `id > since_id` from the
+    /// persistent log, deserialize each `(kind, payload)` row back into a
+    /// typed `Event`, and return them in ascending id order.
+    ///
+    /// Pairs with the WS `since` protocol (see `ws::events::handle`): the
+    /// handler calls this to stream historical frames to a reconnecting
+    /// client, then transitions to live broadcast. The cursor protocol
+    /// relies on the strict-monotonic `events.id` to dedupe replay-vs-live
+    /// at the boundary (design §2.2).
+    ///
+    /// `limit = None` returns every row above `since_id`; `Some(n)`
+    /// truncates at the first `n` rows in id order (used by chunked
+    /// pagination if a future tuning splits very large historical windows).
+    ///
+    /// Rows whose payload fails to deserialize back into an `Event` variant
+    /// are logged + skipped, not propagated as an error — corrupt history
+    /// shouldn't strand otherwise-connected clients.
+    async fn events_since(&self, since_id: i64, limit: Option<i64>) -> Result<Vec<(i64, Event)>>;
+
+    /// Lowest live `events.id`, or `None` if the table is empty.
+    ///
+    /// Used by the WS handler to detect a `since` cursor that predates the
+    /// retention horizon (after the operator turns on
+    /// `events_retention_days`). When `since < earliest_id`, the server
+    /// can't honor the replay; it must reply with a `_snapshot_required`
+    /// control frame so the client throws away its cached state and
+    /// refetches via REST (design §2.3).
+    async fn events_earliest_id(&self) -> Result<Option<i64>>;
 }
 
 // ---------------------------------------------------------------------------

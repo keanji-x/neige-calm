@@ -101,8 +101,32 @@ export function EventBridge() {
       dispatch(queryClient, ev, pendingCardInvalidations);
     });
 
+    // Sync engine phase 2 (Scope D) — control-frame hooks.
+    //
+    // `_replay_complete` fires once after a reconnect's historical
+    // window finishes streaming. Run a defensive batch invalidate so
+    // any optimistic state that drifted during the disconnected window
+    // converges. Cheap (TanStack batches the actual refetches), and
+    // catches edge cases that the per-event dispatcher above would miss
+    // (e.g. a card overlay whose wave detail isn't loaded right now).
+    const offReplay = stream.onReplayComplete(() => {
+      dlog('eventBridge', 'RX _replay_complete — running defensive batch invalidate');
+      void queryClient.invalidateQueries();
+    });
+
+    // `_snapshot_required` fires when the server can't honor the cursor
+    // (retention horizon). Clear the persisted React Query cache so the
+    // next mount comes up cold and refetches from REST. The EventStream
+    // has already wiped `lastEventId` by the time this listener runs.
+    const offSnapshot = stream.onSnapshotRequired(() => {
+      dlog('eventBridge', 'RX _snapshot_required — clearing query cache');
+      queryClient.clear();
+    });
+
     return () => {
       off();
+      offReplay();
+      offSnapshot();
       for (const timer of pendingCardInvalidations.values()) clearTimeout(timer);
       pendingCardInvalidations.clear();
     };
