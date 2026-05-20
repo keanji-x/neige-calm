@@ -267,9 +267,10 @@ impl Inner {
         });
     }
 
-    /// Commit a card state change: write the card-level overlay AND recompute
-    /// + write the wave-level union overlay. Emits `Event::OverlaySet` for
-    /// both so the WS bridge invalidates the right queries.
+    /// Commit a card state change: write the card-level overlay AND
+    /// recompute and write the wave-level union overlay. Emits
+    /// `Event::OverlaySet` for both so the WS bridge invalidates the right
+    /// queries.
     async fn commit(&self, card_id: &str, state: State) {
         // Look up the owning wave; we need it for the union step.
         let card = match self.repo.card_get(card_id).await {

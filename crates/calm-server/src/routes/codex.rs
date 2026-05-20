@@ -145,14 +145,12 @@ async fn spawn_codex_for(s: &AppState, card: &Card, p: &NewCodexBody) -> Result<
     //    restart find the dir already populated with codex's accumulated
     //    state (auth.json, history.jsonl, sessions/) — re-copying would
     //    clobber that with the user's pristine host config.
-    if is_fresh {
-        if let Some(src) = host_codex_dir()
-            && src.exists()
-        {
-            if let Err(e) = copy_dir_recursive(&src, &codex_home) {
-                tracing::warn!(error = %e, src = %src.display(), "codex seed copy failed; continuing without it");
-            }
-        }
+    if is_fresh
+        && let Some(src) = host_codex_dir()
+        && src.exists()
+        && let Err(e) = copy_dir_recursive(&src, &codex_home)
+    {
+        tracing::warn!(error = %e, src = %src.display(), "codex seed copy failed; continuing without it");
     }
 
     // 3. Always (re)write hooks.json — even if the seed brought one in, or

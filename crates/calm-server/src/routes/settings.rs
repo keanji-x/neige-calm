@@ -11,10 +11,10 @@
 //! omit a key entirely or send it explicitly as `null` / `""`. On the
 //! write boundary here:
 //!
-//!   * `null`              → delete the key (clear the override).
-//!   * `""` (empty string) → delete the key (same as null — an empty proxy
-//!                            is the same as "use container defaults").
-//!   * Non-empty value     → upsert.
+//!   * `null` — delete the key (clear the override).
+//!   * `""` (empty string) — delete the key (same as null; an empty proxy
+//!     is the same as "use container defaults").
+//!   * Non-empty value — upsert.
 //!
 //! This keeps the codex spawn reader simple: "if the key isn't in the bag,
 //! don't override the env." We never store empty rows, so the reader never
