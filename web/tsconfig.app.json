@@ -19,6 +19,10 @@
     "moduleDetection": "force",
     "noEmit": true,
     "jsx": "react-jsx",
+    // Enable JSON imports so `persistConfig.ts` can include the web
+    // package.json `version` in TanStack Query's `buster`. Vite supports
+    // JSON imports natively.
+    "resolveJsonModule": true,
 
     /* Type checking */
     "strict": true,
