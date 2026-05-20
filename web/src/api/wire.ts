@@ -90,10 +90,13 @@ export type CardPatchBody = Omit<Schemas['CardPatch'], 'payload'> & { payload?: 
 
 /**
  * `entity_kind` keeps its literal union — the Rust side is `String` so utoipa
- * emits `string`, but the kernel only accepts `"wave"` or `"card"`.
+ * emits `string`, but the kernel today only addresses overlays scoped to
+ * `"wave"`, `"card"`, or `"view"` (the latter introduced for Scope E's
+ * `useOverlayState` + WaveGrid layout, per design doc §5). New entity kinds
+ * land here in lock-step with a matching server-side acceptance.
  */
 export type NewOverlayBody = Omit<Schemas['NewOverlay'], 'entity_kind' | 'payload'> & {
-  entity_kind: 'wave' | 'card';
+  entity_kind: 'wave' | 'card' | 'view';
   payload: unknown;
 };
 

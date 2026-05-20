@@ -20,6 +20,7 @@
 //! | `Overlay.payload` | `"progress"`  | `{ value: f64 }` |
 //! | `Overlay.payload` | `"eta"`       | `{ text: String }` |
 //! | `Overlay.payload` | `"now"`       | `{ text: String }` |
+//! | `Overlay.payload` | `"layout"`    | `{ positions: { <card_id>: { x,y,w,h: u32 }, … } }` |
 //!
 //! Anything else (`ui://*` cards, plugin-defined overlay kinds) is accepted
 //! unchanged — the validator returns `Ok(())` without inspecting the payload.
@@ -120,9 +121,93 @@ pub fn validate_overlay_payload(kind: &str, payload: &Value) -> Result<()> {
                 .map(|_| ())
                 .map_err(|e| CalmError::BadRequest(format!("invalid now payload: {e}")))
         }
+        "layout" => validate_layout_payload(payload),
         // Plugin-defined overlay kinds stay opaque.
         _ => Ok(()),
     }
+}
+
+/// Grid column count — mirrors `web/src/WaveGrid.tsx::COLS`. Any layout
+/// whose `x + w` exceeds this would render off-screen, so the kernel
+/// rejects it at the write boundary rather than coping with the resulting
+/// half-broken RGL state on the client. If `COLS` ever changes on the
+/// frontend, this constant must move in lock-step.
+const LAYOUT_GRID_COLS: u32 = 12;
+
+/// Validate a `layout` overlay payload — the WaveGrid card position
+/// record that backs `useOverlayState({ entity_kind: 'view', kind: 'layout' })`
+/// per design doc §5.2.
+///
+/// Schema (strict — unknown fields anywhere reject):
+/// ```text
+/// {
+///   "positions": {
+///     "<card_id>": { "x": <u32>, "y": <u32>, "w": <u32>, "h": <u32> },
+///     ...
+///   }
+/// }
+/// ```
+///
+/// Geometry constraints:
+///   * `w >= 1`, `h >= 1`
+///   * `x + w <= LAYOUT_GRID_COLS` (`= 12`)
+///   * card_id keys must be non-empty
+fn validate_layout_payload(payload: &Value) -> Result<()> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct LayoutPayload {
+        positions: std::collections::BTreeMap<String, LayoutPos>,
+    }
+
+    // `y` is parsed (to enforce the `u32` non-negativity bound + the
+    // `deny_unknown_fields` strictness) but isn't otherwise checked — RGL
+    // doesn't have a "max rows" concept; cards just keep stacking down.
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    #[allow(dead_code)]
+    struct LayoutPos {
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+    }
+
+    let parsed: LayoutPayload = serde_json::from_value(payload.clone())
+        .map_err(|e| CalmError::BadRequest(format!("invalid layout payload: {e}")))?;
+
+    for (card_id, pos) in &parsed.positions {
+        if card_id.is_empty() {
+            return Err(CalmError::BadRequest(
+                "invalid layout payload: positions key must be a non-empty card id".into(),
+            ));
+        }
+        if pos.w < 1 {
+            return Err(CalmError::BadRequest(format!(
+                "invalid layout payload: positions.{card_id}.w must be >= 1, got {}",
+                pos.w
+            )));
+        }
+        if pos.h < 1 {
+            return Err(CalmError::BadRequest(format!(
+                "invalid layout payload: positions.{card_id}.h must be >= 1, got {}",
+                pos.h
+            )));
+        }
+        // `u32` already excludes negatives; only the grid-column bound needs
+        // a check. Use `checked_add` so an attacker can't smuggle through an
+        // overflowed sum that wraps under `LAYOUT_GRID_COLS`.
+        match pos.x.checked_add(pos.w) {
+            Some(sum) if sum <= LAYOUT_GRID_COLS => {}
+            _ => {
+                return Err(CalmError::BadRequest(format!(
+                    "invalid layout payload: positions.{card_id}.x + w must be <= {} (grid columns), got x={} w={}",
+                    LAYOUT_GRID_COLS, pos.x, pos.w
+                )));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -269,5 +354,133 @@ mod tests {
         validate_overlay_payload("custom-plugin-kind", &json!({ "anything": true })).unwrap();
         validate_overlay_payload("custom-plugin-kind", &json!([])).unwrap();
         validate_overlay_payload("custom-plugin-kind", &Value::Null).unwrap();
+    }
+
+    // ---------------- Overlay: layout ----------------
+
+    #[test]
+    fn layout_happy_empty_positions() {
+        validate_overlay_payload("layout", &json!({ "positions": {} })).unwrap();
+    }
+
+    #[test]
+    fn layout_happy_one_card() {
+        validate_overlay_payload(
+            "layout",
+            &json!({ "positions": { "card-1": { "x": 0, "y": 0, "w": 4, "h": 3 } } }),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn layout_happy_card_at_right_edge() {
+        // `x + w == COLS` is allowed (exact fit, no overflow).
+        validate_overlay_payload(
+            "layout",
+            &json!({ "positions": { "c": { "x": 8, "y": 0, "w": 4, "h": 2 } } }),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn layout_rejects_missing_positions() {
+        let err = validate_overlay_payload("layout", &json!({})).unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(_)));
+    }
+
+    #[test]
+    fn layout_rejects_positions_not_object() {
+        let err = validate_overlay_payload("layout", &json!({ "positions": [] })).unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(_)));
+    }
+
+    #[test]
+    fn layout_rejects_x_plus_w_over_cols() {
+        let err = validate_overlay_payload(
+            "layout",
+            &json!({ "positions": { "c": { "x": 10, "y": 0, "w": 4, "h": 2 } } }),
+        )
+        .unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(ref m) if m.contains("grid columns")));
+    }
+
+    #[test]
+    fn layout_rejects_w_zero() {
+        let err = validate_overlay_payload(
+            "layout",
+            &json!({ "positions": { "c": { "x": 0, "y": 0, "w": 0, "h": 2 } } }),
+        )
+        .unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(ref m) if m.contains("w must be >= 1")));
+    }
+
+    #[test]
+    fn layout_rejects_h_zero() {
+        let err = validate_overlay_payload(
+            "layout",
+            &json!({ "positions": { "c": { "x": 0, "y": 0, "w": 2, "h": 0 } } }),
+        )
+        .unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(ref m) if m.contains("h must be >= 1")));
+    }
+
+    #[test]
+    fn layout_rejects_negative_x() {
+        // serde_json refuses to coerce a negative number into `u32` —
+        // the deserialize step returns BadRequest.
+        let err = validate_overlay_payload(
+            "layout",
+            &json!({ "positions": { "c": { "x": -1, "y": 0, "w": 2, "h": 2 } } }),
+        )
+        .unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(_)));
+    }
+
+    #[test]
+    fn layout_rejects_negative_y() {
+        let err = validate_overlay_payload(
+            "layout",
+            &json!({ "positions": { "c": { "x": 0, "y": -1, "w": 2, "h": 2 } } }),
+        )
+        .unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(_)));
+    }
+
+    #[test]
+    fn layout_rejects_missing_position_field() {
+        // Missing `h` — serde rejects.
+        let err = validate_overlay_payload(
+            "layout",
+            &json!({ "positions": { "c": { "x": 0, "y": 0, "w": 2 } } }),
+        )
+        .unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(_)));
+    }
+
+    #[test]
+    fn layout_rejects_unknown_root_field() {
+        let err = validate_overlay_payload("layout", &json!({ "positions": {}, "extra": 1 }))
+            .unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(_)));
+    }
+
+    #[test]
+    fn layout_rejects_unknown_position_field() {
+        let err = validate_overlay_payload(
+            "layout",
+            &json!({ "positions": { "c": { "x": 0, "y": 0, "w": 2, "h": 2, "z": 9 } } }),
+        )
+        .unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(_)));
+    }
+
+    #[test]
+    fn layout_rejects_empty_card_id_key() {
+        let err = validate_overlay_payload(
+            "layout",
+            &json!({ "positions": { "": { "x": 0, "y": 0, "w": 2, "h": 2 } } }),
+        )
+        .unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(ref m) if m.contains("non-empty card id")));
     }
 }

@@ -1,0 +1,116 @@
+{
+  "name": "wave-grid-layout-trace",
+  "description": "Session: create cove → create wave → add 3 cards → drop layout overlay → move card_2 (replace overlay). After replay the resulting `view/layout` overlay must reflect the most recent positions: card_1@(0,0,4x3), card_2@(8,0,4x3) (moved), card_3@(4,0,4x3).",
+  "events": [
+    {
+      "kind": "cove.updated",
+      "actor": "user",
+      "payload": {
+        "id": "cove-1",
+        "name": "demo",
+        "color": "#abc",
+        "sort": 0.0,
+        "created_at": 1,
+        "updated_at": 1
+      }
+    },
+    {
+      "kind": "wave.updated",
+      "actor": "user",
+      "payload": {
+        "id": "wave-1",
+        "cove_id": "cove-1",
+        "title": "demo wave",
+        "sort": 0.0,
+        "archived_at": null,
+        "created_at": 2,
+        "updated_at": 2
+      }
+    },
+    {
+      "kind": "card.added",
+      "actor": "user",
+      "payload": {
+        "id": "card-1",
+        "wave_id": "wave-1",
+        "kind": "terminal",
+        "sort": 0.0,
+        "payload": {},
+        "created_at": 3,
+        "updated_at": 3
+      }
+    },
+    {
+      "kind": "card.added",
+      "actor": "user",
+      "payload": {
+        "id": "card-2",
+        "wave_id": "wave-1",
+        "kind": "terminal",
+        "sort": 1.0,
+        "payload": {},
+        "created_at": 4,
+        "updated_at": 4
+      }
+    },
+    {
+      "kind": "card.added",
+      "actor": "user",
+      "payload": {
+        "id": "card-3",
+        "wave_id": "wave-1",
+        "kind": "terminal",
+        "sort": 2.0,
+        "payload": {},
+        "created_at": 5,
+        "updated_at": 5
+      }
+    },
+    {
+      "kind": "overlay.set",
+      "actor": "user",
+      "payload": {
+        "id": "overlay-layout",
+        "plugin_id": "kernel",
+        "entity_kind": "view",
+        "entity_id": "wave-1",
+        "kind": "layout",
+        "payload": {
+          "positions": {
+            "card-1": { "x": 0, "y": 0, "w": 4, "h": 3 },
+            "card-2": { "x": 4, "y": 0, "w": 4, "h": 3 },
+            "card-3": { "x": 8, "y": 0, "w": 4, "h": 3 }
+          }
+        },
+        "updated_at": 6
+      }
+    },
+    {
+      "kind": "overlay.set",
+      "actor": "user",
+      "payload": {
+        "id": "overlay-layout",
+        "plugin_id": "kernel",
+        "entity_kind": "view",
+        "entity_id": "wave-1",
+        "kind": "layout",
+        "payload": {
+          "positions": {
+            "card-1": { "x": 0, "y": 0, "w": 4, "h": 3 },
+            "card-3": { "x": 4, "y": 0, "w": 4, "h": 3 },
+            "card-2": { "x": 8, "y": 0, "w": 4, "h": 3 }
+          }
+        },
+        "updated_at": 7
+      }
+    }
+  ],
+  "expected": {
+    "last_event_kind": "overlay.set",
+    "layout_positions": {
+      "card-1": { "x": 0, "y": 0, "w": 4, "h": 3 },
+      "card-3": { "x": 4, "y": 0, "w": 4, "h": 3 },
+      "card-2": { "x": 8, "y": 0, "w": 4, "h": 3 }
+    }
+  }
+}
