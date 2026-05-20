@@ -1,0 +1,17 @@
+[package]
+name = "calm-codex-bridge"
+version = "0.1.0"
+edition = "2024"
+
+# Tiny static-deploy binary: codex spawns it for every hook event,
+# bridge reads JSON from stdin and POSTs to calm-server. Default exit
+# 0 with empty stdout — codex never blocks on us.
+
+[[bin]]
+name = "neige-codex-bridge"
+path = "src/main.rs"
+
+[dependencies]
+# Synchronous, blocking HTTP. The bridge is short-lived (one POST per
+# fork) — no runtime needed; keeping the dep tree slim.
+ureq = { version = "2", default-features = false, features = ["tls"] }

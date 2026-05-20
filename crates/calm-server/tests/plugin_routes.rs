@@ -132,6 +132,7 @@ async fn boot_state() -> (AppState, TempDir, PathBuf) {
         events,
         daemon: Arc::new(DaemonClient::new_stub()),
         plugin,
+        codex: Arc::new(calm_server::state::CodexClient::new_stub()),
     };
     (state, tmp, plugins_dir)
 }

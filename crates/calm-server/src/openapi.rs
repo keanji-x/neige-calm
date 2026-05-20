@@ -22,6 +22,7 @@ use crate::routes::plugins::{
     InstallBody, InstallSource, PluginDetail, PluginListItem, ToolCallBody, ViewCatalogEntry,
     ViewSizeWire,
 };
+use crate::routes::codex::NewCodexBody;
 use crate::routes::terminal::NewTerminalBody;
 use utoipa::OpenApi;
 
@@ -56,6 +57,8 @@ use utoipa::OpenApi;
         // ---- terminals ----
         crate::routes::terminal::create_terminal,
         crate::routes::terminal::get_terminal_for_card,
+        // ---- codex ----
+        crate::routes::codex::create_codex,
         // ---- plugins ----
         crate::routes::plugins::list_plugins,
         crate::routes::plugins::get_plugin_detail,
@@ -91,6 +94,7 @@ use utoipa::OpenApi;
         CreateCardBody,
         ViaToolCall,
         NewTerminalBody,
+        NewCodexBody,
         OverlayQuery,
         OverlayDeleteBody,
         InstallBody,
@@ -109,6 +113,7 @@ use utoipa::OpenApi;
         (name = "cards", description = "Card CRUD"),
         (name = "overlays", description = "Plugin-rendered overlays attached to waves/cards"),
         (name = "terminals", description = "PTY-backed terminal cards"),
+        (name = "codex", description = "Codex (OpenAI) agent cards — hook-driven event stream"),
         (name = "plugins", description = "Plugin lifecycle, config, MCP fan-out"),
     ),
 )]

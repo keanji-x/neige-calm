@@ -40,6 +40,7 @@ async fn boot() -> (std::net::SocketAddr, EventBus) {
             Arc::new(calm_server::plugin_host::PluginRegistry::empty()),
             repo,
         )),
+        codex: Arc::new(calm_server::state::CodexClient::new_stub()),
     };
     let app = axum::Router::new().merge(ws::router()).with_state(state);
 
