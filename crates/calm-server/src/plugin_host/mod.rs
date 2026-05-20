@@ -312,7 +312,7 @@ impl PluginHost {
         // (which it can't, by design — see `ensure_plugin_token` docs).
         let token = self.ensure_plugin_token(id).await?;
 
-        self.emit_state(id, &PluginRuntimeStatus::Spawning);
+        self.emit_state(id, &PluginRuntimeStatus::Spawning).await;
 
         // Spawn the process. On failure we propagate without touching the
         // processes map.
@@ -344,10 +344,11 @@ impl PluginHost {
                     // Drop any stale processes-map entry so list_running /
                     // status don't report a stale Running state.
                     let _ = self.processes.lock().await.remove(id);
-                    self.emit_crashed(id, reason);
+                    self.emit_crashed(id, reason).await;
                     return Err(HostError::AuthMismatch(id.to_string()));
                 }
-                self.emit_crashed(id, &format!("initialize failed: {e}"));
+                self.emit_crashed(id, &format!("initialize failed: {e}"))
+                    .await;
                 return Err(HostError::InitializeRejected(e.to_string()));
             }
         };
@@ -427,7 +428,7 @@ impl PluginHost {
             );
         }
 
-        self.emit_state(id, &PluginRuntimeStatus::Running);
+        self.emit_state(id, &PluginRuntimeStatus::Running).await;
         tracing::info!(plugin_id = %id, "plugin running");
 
         Ok(())
@@ -484,7 +485,7 @@ impl PluginHost {
             map.remove(id);
         }
 
-        self.emit_state(id, &PluginRuntimeStatus::Disabled);
+        self.emit_state(id, &PluginRuntimeStatus::Disabled).await;
         Ok(())
     }
 
@@ -577,21 +578,32 @@ impl PluginHost {
 
     // ----- internals -----
 
-    fn emit_state(&self, id: &str, status: &PluginRuntimeStatus) {
+    /// Persist a `plugin.state` event and broadcast it. Goes through
+    /// `Repo::log_pure_event` so every fired event lands in the events
+    /// table with a real `_id`; the bus broadcast is fired only after
+    /// commit succeeds (commit-then-emit invariant).
+    async fn emit_state(&self, id: &str, status: &PluginRuntimeStatus) {
         if let Some(bus) = &self.events {
-            bus.emit(Event::PluginState {
+            let event = Event::PluginState {
                 id: id.to_string(),
                 state: status.wire_name().to_string(),
                 last_error: status.last_error().map(String::from),
-            });
+            };
+            if let Err(e) = self
+                .repo
+                .log_pure_event(&format!("plugin:{}", id), None, bus, event)
+                .await
+            {
+                tracing::warn!(plugin_id = %id, error = %e, "plugin_state event log failed");
+            }
         }
     }
 
-    fn emit_crashed(&self, id: &str, reason: &str) {
+    async fn emit_crashed(&self, id: &str, reason: &str) {
         let status = PluginRuntimeStatus::Crashed {
             reason: reason.to_string(),
         };
-        self.emit_state(id, &status);
+        self.emit_state(id, &status).await;
     }
 
     /// Supervisor loop for one plugin: awaits child exit, classifies as
@@ -665,7 +677,7 @@ impl PluginHost {
             )
         };
 
-        self.emit_crashed(&id, &combined_reason);
+        self.emit_crashed(&id, &combined_reason).await;
 
         if exceeded {
             tracing::error!(
@@ -706,7 +718,8 @@ impl PluginHost {
         }
         if let Err(e) = self.spawn(&id).await {
             tracing::error!(plugin_id = %id, error = %e, "respawn failed");
-            self.emit_crashed(&id, &format!("respawn failed: {e}"));
+            self.emit_crashed(&id, &format!("respawn failed: {e}"))
+                .await;
         }
     }
 }

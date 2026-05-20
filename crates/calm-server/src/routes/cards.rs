@@ -9,12 +9,16 @@
 //! a client sends both, `via_tool_call` wins (the tool-call result overrides
 //! the direct-create fields).
 
+use crate::db::sqlite::{card_create_tx, card_delete_tx, card_update_tx};
+use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::Event;
 use crate::model::{Card, CardPatch, NewCard};
 use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
 use crate::state::AppState;
 use crate::validation::validate_card_payload;
+
+const REST_ACTOR: &str = "user";
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -137,12 +141,15 @@ pub(crate) async fn create_card(
         sort: body.sort,
         payload,
     };
-    let card = s
-        .repo
-        .card_create(new)
+    let (card, _id) =
+        write_with_event_typed(s.repo.as_ref(), REST_ACTOR, None, &s.events, move |tx| {
+            Box::pin(async move {
+                let card = card_create_tx(tx, new).await?;
+                Ok((card.clone(), Event::CardAdded(card)))
+            })
+        })
         .await
         .map_err(|e| e.into_response())?;
-    s.events.emit(Event::CardAdded(card.clone()));
     Ok((StatusCode::CREATED, Json(card)).into_response())
 }
 
@@ -245,12 +252,25 @@ async fn create_via_tool_call(
         sort: None,
         payload,
     };
-    let card = s
-        .repo
-        .card_create(new)
-        .await
-        .map_err(|e| e.into_response())?;
-    s.events.emit(Event::CardAdded(card.clone()));
+    // M2 tool-call writes: actor stays `"plugin:<id>"` (the entity making
+    // the kernel write), `correlation` records the user-driven invocation
+    // so audit queries can reconstruct the causal chain (design §9 bullet 3).
+    let actor = format!("plugin:{}", via.plugin_id);
+    let correlation = format!("user_tool_call:{}", via.tool_name);
+    let (card, _id) = write_with_event_typed(
+        s.repo.as_ref(),
+        &actor,
+        Some(&correlation),
+        &s.events,
+        move |tx| {
+            Box::pin(async move {
+                let card = card_create_tx(tx, new).await?;
+                Ok((card.clone(), Event::CardAdded(card)))
+            })
+        },
+    )
+    .await
+    .map_err(|e| e.into_response())?;
     Ok((StatusCode::CREATED, Json(card)).into_response())
 }
 
@@ -296,8 +316,14 @@ pub(crate) async fn update_card(
         };
         validate_card_payload(&kind, payload)?;
     }
-    let card = s.repo.card_update(&id, p).await?;
-    s.events.emit(Event::CardUpdated(card.clone()));
+    let (card, _id) =
+        write_with_event_typed(s.repo.as_ref(), REST_ACTOR, None, &s.events, move |tx| {
+            Box::pin(async move {
+                let card = card_update_tx(tx, &id, p).await?;
+                Ok((card.clone(), Event::CardUpdated(card)))
+            })
+        })
+        .await?;
     Ok(Json(card))
 }
 
@@ -322,10 +348,21 @@ pub(crate) async fn delete_card(
         .card_get(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    s.repo.card_delete(&id).await?;
-    s.events.emit(Event::CardDeleted {
-        id: card.id,
-        wave_id: card.wave_id,
-    });
+    let card_id = card.id.clone();
+    let wave_id = card.wave_id.clone();
+    let (_unit, _id) =
+        write_with_event_typed(s.repo.as_ref(), REST_ACTOR, None, &s.events, move |tx| {
+            Box::pin(async move {
+                card_delete_tx(tx, &card_id).await?;
+                Ok((
+                    (),
+                    Event::CardDeleted {
+                        id: card_id,
+                        wave_id,
+                    },
+                ))
+            })
+        })
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }

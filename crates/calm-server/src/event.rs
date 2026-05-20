@@ -1,15 +1,50 @@
 //! Event bus + envelope shapes.
 //!
-//! Mutating handlers (REST `routes/*`, plugin overlay writes, terminal lifecycle)
-//! `state.events.emit(...)` after a successful write. The WS `/events` handler
-//! in `ws::events` subscribes to the bus and forwards filtered events to the UI.
+//! ## Sync engine phase 1 (Scope A) overview
 //!
-//! Wire format: `{"ev": "<dotted.name>", "data": {...}}`. The frontend's TS
-//! `Event` type is auto-generated from this enum via `ts-rs` and lives at
-//! `web/src/api/generated-events.ts`. The runtime zod validator in
-//! `web/src/api/schemas.ts` is type-pinned to that emitted TS type via an
-//! `expectTypeOf` conformance test, so any drift between this enum and the
-//! frontend fails at the type-check step. See D7 / issue #5.
+//! Every write that mutates kernel-owned state flows through
+//! `Repo::write_with_event` (see `db::mod`). That wrapper:
+//!
+//!   1. Opens a single sqlx transaction.
+//!   2. Runs the caller-supplied closure (entity inserts / updates).
+//!   3. Persists the produced `Event` into the `events` table (sync engine
+//!      log) inside the same transaction.
+//!   4. Commits, then — and **only** then — emits the event onto the
+//!      `EventBus` wrapped in a `BroadcastEnvelope { id, event }`.
+//!
+//! The wrapper guarantees the *commit-then-emit* invariant: if the txn
+//! rolls back, neither the entity row nor the event row exists, and the
+//! broadcast never fires. Conversely, a successful broadcast is always
+//! backed by a persisted event row, which the eventual Scope D replay
+//! protocol relies on.
+//!
+//! ## Why `BroadcastEnvelope`, not `Event::id`
+//!
+//! The wire format must carry the assigned event id (`_id` field, per
+//! design §2.4) so clients can advance their cursor. We pass that id over
+//! the broadcast channel rather than baking it into every `Event` variant
+//! because:
+//!
+//!   * the typed `Event` enum is the **ts-rs** source for the frontend;
+//!     adding `id` would force every variant to thread it through (and
+//!     change every `Event::CardAdded(card)` construction site to also
+//!     carry an id that the producer didn't yet know);
+//!   * `_id` is a transport-layer envelope concern, not a domain concern
+//!     — same reason `ev` and `data` live on the envelope and not on the
+//!     event payloads themselves.
+//!
+//! The WS `/api/events` handler unwraps the envelope, serializes the
+//! `Event` (`{ "ev": ..., "data": ... }`), then injects `"_id": <id>` into
+//! the resulting JSON object before sending it down the wire. See
+//! `ws::events::handle`.
+//!
+//! Wire format: `{"_id": 1729, "ev": "<dotted.name>", "data": {...}}`. The
+//! frontend's TS `Event` type is auto-generated from this enum via `ts-rs`
+//! and lives at `web/src/api/generated-events.ts`. The runtime zod
+//! validator in `web/src/api/schemas.ts` is type-pinned to that emitted
+//! TS type via an `expectTypeOf` conformance test, so any drift between
+//! this enum and the frontend fails at the type-check step. See D7 /
+//! issue #5.
 
 use crate::model::{Card, Cove, Overlay, Wave};
 use serde::Serialize;
@@ -19,7 +54,8 @@ use ts_rs::TS;
 
 /// Capacity of the broadcast channel. If a subscriber lags more than this,
 /// it'll receive a `Lagged` error and the server drops its connection — the
-/// client is expected to reconnect and re-fetch.
+/// client is expected to reconnect and re-fetch (and once Scope D lands,
+/// resume via `since=<lastId>`).
 const BUS_CAPACITY: usize = 1024;
 
 /// The full set of WS event envelopes the kernel emits on `/api/events`.
@@ -104,6 +140,43 @@ pub enum Event {
     },
 }
 
+impl Event {
+    /// String tag for the events-table `kind` column. Matches the
+    /// `#[serde(rename = "...")]` on each variant. Centralized here so the
+    /// `Repo::write_with_event` insert and the `events.kind` index agree
+    /// on spelling without re-parsing the serialized envelope.
+    pub fn kind_tag(&self) -> &'static str {
+        match self {
+            Event::CoveUpdated(_) => "cove.updated",
+            Event::CoveDeleted { .. } => "cove.deleted",
+            Event::WaveUpdated(_) => "wave.updated",
+            Event::WaveDeleted { .. } => "wave.deleted",
+            Event::CardAdded(_) => "card.added",
+            Event::CardUpdated(_) => "card.updated",
+            Event::CardDeleted { .. } => "card.deleted",
+            Event::OverlaySet(_) => "overlay.set",
+            Event::OverlayDeleted { .. } => "overlay.deleted",
+            Event::PluginState { .. } => "plugin.state",
+            Event::CodexHook { .. } => "codex.hook",
+        }
+    }
+
+    /// Extract just the `data` payload (the inner content the
+    /// `#[serde(tag, content)]` representation puts under `data`). Used by
+    /// the events-table insert so we persist the bare payload, not the full
+    /// `{ev, data}` envelope.
+    pub fn payload_value(&self) -> serde_json::Value {
+        match serde_json::to_value(self) {
+            Ok(serde_json::Value::Object(mut map)) => {
+                map.remove("data").unwrap_or(serde_json::Value::Null)
+            }
+            // Non-object serialization is impossible given the
+            // `#[serde(tag, content)]` representation, but be conservative.
+            _ => serde_json::Value::Null,
+        }
+    }
+}
+
 /// Subscription topics an `Event` matches. The WS handler intersects this with
 /// each client's `sub` filter to decide forward-or-drop.
 ///
@@ -169,9 +242,30 @@ pub fn topics(ev: &Event) -> Vec<String> {
     }
 }
 
+/// What the broadcast channel actually carries. The `id` is the row id
+/// returned by `events.id`'s AUTOINCREMENT insert (see `Repo::write_with_event`
+/// and `Repo::log_pure_event`). The WS handler uses it to stamp `_id` on the
+/// outgoing JSON envelope per design doc §2.4.
+///
+/// We don't derive `Serialize` here — the serialization of the envelope into
+/// the wire JSON is hand-rolled in `ws::events::handle` (it has to splice
+/// `_id` alongside the existing `{ev, data}` flat shape rather than nest
+/// `event` as a sub-object).
+#[derive(Clone, Debug)]
+pub struct BroadcastEnvelope {
+    /// Assigned `events.id`. `0` is reserved (never produced by the
+    /// auto-increment), used here as a sentinel for "no persisted row" in
+    /// out-of-scope code paths that haven't yet been migrated to
+    /// `write_with_event` / `log_pure_event`. Scope A converts every site
+    /// the design doc names; any future emitter that bypasses the wrapper
+    /// will surface as `_id: 0` on the wire, which is a useful canary.
+    pub id: i64,
+    pub event: Event,
+}
+
 #[derive(Clone)]
 pub struct EventBus {
-    tx: broadcast::Sender<Event>,
+    tx: broadcast::Sender<BroadcastEnvelope>,
 }
 
 impl EventBus {
@@ -180,13 +274,39 @@ impl EventBus {
         Self { tx }
     }
 
-    /// Send an event. Returns silently if there are no current subscribers.
-    pub fn emit(&self, ev: Event) {
-        let _ = self.tx.send(ev);
+    /// Internal helper used by the `Repo::write_with_event` /
+    /// `Repo::log_pure_event` wrappers to broadcast an already-persisted
+    /// event with its assigned id. Returns silently if there are no current
+    /// subscribers.
+    ///
+    /// Direct callers outside the repo wrappers should not exist; if you
+    /// find yourself reaching for this from a handler, you almost
+    /// certainly want to go through `write_with_event` instead so the
+    /// event lands in the persistent log.
+    pub(crate) fn emit_envelope(&self, env: BroadcastEnvelope) {
+        let _ = self.tx.send(env);
     }
 
-    /// New subscriber. The receiver picks up events emitted after this call.
-    pub fn subscribe(&self) -> broadcast::Receiver<Event> {
+    /// Synthetic broadcast for test scaffolding and FSM injection — emits
+    /// the event with an `id` of `0` (no persisted row).
+    ///
+    /// **Production code must not call this.** Production writes must
+    /// flow through `Repo::write_with_event` or `Repo::log_pure_event`
+    /// so the broadcast carries a real `events.id`. The `grep` lint
+    /// guards (`grep -rn "events.emit" crates/calm-server/src/{routes,plugin_host}`)
+    /// must return zero hits for production code; only tests and the
+    /// internal `card_fsm` test injection use this.
+    ///
+    /// Available outside `#[cfg(test)]` because integration tests in
+    /// `crates/calm-server/tests/` consume the library through normal
+    /// linkage — they don't see `#[cfg(test)]`-gated items.
+    pub fn emit(&self, ev: Event) {
+        let _ = self.tx.send(BroadcastEnvelope { id: 0, event: ev });
+    }
+
+    /// New subscriber. The receiver picks up envelopes emitted after this
+    /// call.
+    pub fn subscribe(&self) -> broadcast::Receiver<BroadcastEnvelope> {
         self.tx.subscribe()
     }
 }

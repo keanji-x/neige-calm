@@ -131,3 +131,10 @@ tower = { version = "0.5", features = ["util"] }
 # Used to drain `axum::body::Body` in route tests — Axum 0.8 dropped the
 # `to_bytes` convenience; the canonical replacement is `http_body_util::BodyExt::collect`.
 http-body-util = "0.1"
+# Microbench for the sync engine event_append overhead (design doc §6.4).
+# Target: <50µs per call against `sqlite::memory:`.
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[[bench]]
+name = "event_append"
+harness = false

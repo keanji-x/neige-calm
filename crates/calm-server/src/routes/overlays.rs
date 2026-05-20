@@ -4,7 +4,12 @@
 //! Writes (`upsert`, `delete`) eventually come from plugins via MCP and live
 //! in `plugin_host`. For M1 we expose write endpoints too so we can hand-test
 //! overlay rendering without a real plugin.
+//!
+//! Writes go through `Repo::write_with_event` via `write_with_event_typed`
+//! per Scope A — see `routes/coves.rs` for the template.
 
+use crate::db::sqlite::{overlay_delete_tx, overlay_upsert_tx};
+use crate::db::write_with_event_typed;
 use crate::error::{ErrorBody, Result};
 use crate::event::Event;
 use crate::model::{NewOverlay, Overlay};
@@ -18,6 +23,8 @@ use axum::{
 };
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
+
+const REST_ACTOR: &str = "user";
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -72,8 +79,14 @@ pub(crate) async fn upsert_overlay(
     // D4: kernel-owned overlay kinds (status/progress/eta/now) must match
     // their shape; plugin-defined kinds stay opaque.
     validate_overlay_payload(&p.kind, &p.payload)?;
-    let overlay = s.repo.overlay_upsert(p).await?;
-    s.events.emit(Event::OverlaySet(overlay.clone()));
+    let (overlay, _id) =
+        write_with_event_typed(s.repo.as_ref(), REST_ACTOR, None, &s.events, move |tx| {
+            Box::pin(async move {
+                let overlay = overlay_upsert_tx(tx, p).await?;
+                Ok((overlay.clone(), Event::OverlaySet(overlay)))
+            })
+        })
+        .await?;
     Ok(Json(overlay))
 }
 
@@ -99,14 +112,21 @@ pub(crate) async fn delete_overlay(
     State(s): State<AppState>,
     Json(b): Json<OverlayDeleteBody>,
 ) -> Result<StatusCode> {
-    s.repo
-        .overlay_delete(&b.plugin_id, &b.entity_kind, &b.entity_id, &b.kind)
+    let (_unit, _id) =
+        write_with_event_typed(s.repo.as_ref(), REST_ACTOR, None, &s.events, move |tx| {
+            Box::pin(async move {
+                overlay_delete_tx(tx, &b.plugin_id, &b.entity_kind, &b.entity_id, &b.kind).await?;
+                Ok((
+                    (),
+                    Event::OverlayDeleted {
+                        plugin_id: b.plugin_id,
+                        entity_kind: b.entity_kind,
+                        entity_id: b.entity_id,
+                        kind: b.kind,
+                    },
+                ))
+            })
+        })
         .await?;
-    s.events.emit(Event::OverlayDeleted {
-        plugin_id: b.plugin_id,
-        entity_kind: b.entity_kind,
-        entity_id: b.entity_id,
-        kind: b.kind,
-    });
     Ok(StatusCode::NO_CONTENT)
 }

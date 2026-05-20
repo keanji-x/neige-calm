@@ -5,18 +5,33 @@
 //! bundled migrations under `migrations/` are run on `open()`, and every
 //! observable behavior of `MockRepo` (cascades, sort defaulting, not-found
 //! semantics, overlay upsert by unique key) is replicated here.
+//!
+//! ## Sync engine — internal layout
+//!
+//! Every entity write the trait exposes (`cove_create`, `wave_update`,
+//! `card_create`, ...) is implemented as a thin wrapper around a `_tx`-
+//! suffixed free function that takes `&mut Transaction<'_, Sqlite>` and
+//! does the actual SQL. The wrappers each open their own one-shot
+//! transaction (the existing single-call semantics), but the `_tx`
+//! functions can also be **composed inside** `Repo::write_with_event`'s
+//! closure so the entity write and the `INSERT INTO events ...` run in
+//! the same transaction. See `db::mod`'s sync-engine comment.
 
 use std::str::FromStr;
 
 use async_trait::async_trait;
+use futures::future::BoxFuture;
 use sqlx::ConnectOptions;
 use sqlx::Executor;
 use sqlx::Row;
+use sqlx::Sqlite;
 use sqlx::SqlitePool;
+use sqlx::Transaction;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
-use super::Repo;
+use super::{Repo, WriteWithEventFn};
 use crate::error::{CalmError, Result};
+use crate::event::{BroadcastEnvelope, Event, EventBus};
 use crate::model::*;
 
 pub struct SqlxRepo {
@@ -57,6 +72,69 @@ impl SqlxRepo {
 
         Ok(Self { pool })
     }
+
+    /// Direct access to the pool for tests / fixtures / sync-engine
+    /// integration tests that need to `SELECT` from the `events` table
+    /// outside the `Repo` trait surface.
+    ///
+    /// Marked `#[doc(hidden)]` because production code must go through
+    /// the trait (so a future swap to a non-sqlite backend stays
+    /// possible). Integration tests under `tests/` need real access for
+    /// replay / atomicity assertions; that's what this surface is for.
+    #[doc(hidden)]
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
+    /// **Private.** The raw events-table insert. Lives off the trait per
+    /// design doc §1.4: only `Repo::write_with_event` and
+    /// `Repo::log_pure_event` may reach this path, so the commit-then-emit
+    /// invariant is unbypassable from the route / plugin host layers.
+    ///
+    /// Returns the auto-incremented row id, which is then stamped onto
+    /// the `BroadcastEnvelope` the wrapper emits on the bus.
+    async fn event_append_in_tx(
+        tx: &mut Transaction<'_, Sqlite>,
+        actor: &str,
+        correlation: Option<&str>,
+        event: &Event,
+    ) -> Result<i64> {
+        let kind = event.kind_tag();
+        let payload = event.payload_value();
+        let payload_text = serde_json::to_string(&payload)?;
+        let at = now_ms();
+        let row = sqlx::query(
+            r#"INSERT INTO events (kind, payload, actor, at, correlation)
+               VALUES (?1, ?2, ?3, ?4, ?5)
+               RETURNING id"#,
+        )
+        .bind(kind)
+        .bind(&payload_text)
+        .bind(actor)
+        .bind(at)
+        .bind(correlation)
+        .fetch_one(&mut **tx)
+        .await?;
+        let id: i64 = row.try_get("id")?;
+        Ok(id)
+    }
+
+    /// `#[cfg(test)]`-gated raw appender for fixture seeding / replay
+    /// loaders. Bypasses the wrapper deliberately so test scaffolds can
+    /// reconstruct an event stream verbatim (id-stamped) without driving
+    /// the full handler stack.
+    #[cfg(test)]
+    pub async fn event_append_fixture(
+        &self,
+        actor: &str,
+        correlation: Option<&str>,
+        event: &Event,
+    ) -> Result<i64> {
+        let mut tx = self.pool.begin().await?;
+        let id = Self::event_append_in_tx(&mut tx, actor, correlation, event).await?;
+        tx.commit().await?;
+        Ok(id)
+    }
 }
 
 // ---- helpers -----------------------------------------------------------------
@@ -66,8 +144,8 @@ impl SqlxRepo {
 /// `scope_sql` is appended verbatim after `FROM <table>`; supply `""` for
 /// global scope, or `"WHERE cove_id = ?1"` etc. Bind a single optional
 /// scope parameter via `scope_id`.
-async fn next_sort_scoped(
-    pool: &SqlitePool,
+async fn next_sort_scoped_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
     table: &str,
     scope_sql: &str,
     scope_id: Option<&str>,
@@ -77,9 +155,325 @@ async fn next_sort_scoped(
     if let Some(id) = scope_id {
         q = q.bind(id);
     }
-    let row = q.fetch_one(pool).await?;
+    let row = q.fetch_one(&mut **tx).await?;
     Ok(row.try_get::<f64, _>("s")?)
 }
+
+// ---------------------------------------------------------------------------
+// `_tx` helpers — composable inside `Repo::write_with_event` closures.
+// ---------------------------------------------------------------------------
+
+pub async fn cove_create_tx(tx: &mut Transaction<'_, Sqlite>, p: NewCove) -> Result<Cove> {
+    let sort = match p.sort {
+        Some(s) => s,
+        None => next_sort_scoped_in_tx(tx, "coves", "", None).await?,
+    };
+    let now = now_ms();
+    let id = new_id();
+    sqlx::query(
+        r#"INSERT INTO coves (id, name, color, sort, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
+    )
+    .bind(&id)
+    .bind(&p.name)
+    .bind(&p.color)
+    .bind(sort)
+    .bind(now)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+    Ok(Cove {
+        id,
+        name: p.name,
+        color: p.color,
+        sort,
+        created_at: now,
+        updated_at: now,
+    })
+}
+
+pub async fn cove_update_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    p: CovePatch,
+) -> Result<Cove> {
+    let mut c = sqlx::query_as::<_, Cove>(
+        r#"SELECT id, name, color, sort, created_at, updated_at
+           FROM coves WHERE id = ?1"#,
+    )
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| CalmError::NotFound(format!("cove {id}")))?;
+
+    if let Some(v) = p.name {
+        c.name = v;
+    }
+    if let Some(v) = p.color {
+        c.color = v;
+    }
+    if let Some(v) = p.sort {
+        c.sort = v;
+    }
+    c.updated_at = now_ms();
+
+    sqlx::query(
+        r#"UPDATE coves SET name = ?1, color = ?2, sort = ?3, updated_at = ?4
+           WHERE id = ?5"#,
+    )
+    .bind(&c.name)
+    .bind(&c.color)
+    .bind(c.sort)
+    .bind(c.updated_at)
+    .bind(&c.id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(c)
+}
+
+pub async fn cove_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<()> {
+    let res = sqlx::query("DELETE FROM coves WHERE id = ?1")
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
+    if res.rows_affected() == 0 {
+        return Err(CalmError::NotFound(format!("cove {id}")));
+    }
+    Ok(())
+}
+
+pub async fn wave_create_tx(tx: &mut Transaction<'_, Sqlite>, p: NewWave) -> Result<Wave> {
+    let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM coves WHERE id = ?1")
+        .bind(&p.cove_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    if exists.is_none() {
+        return Err(CalmError::NotFound(format!("cove {}", p.cove_id)));
+    }
+
+    let sort = match p.sort {
+        Some(s) => s,
+        None => next_sort_scoped_in_tx(tx, "waves", "WHERE cove_id = ?1", Some(&p.cove_id)).await?,
+    };
+    let now = now_ms();
+    let id = new_id();
+    sqlx::query(
+        r#"INSERT INTO waves
+           (id, cove_id, title, sort, archived_at, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6)"#,
+    )
+    .bind(&id)
+    .bind(&p.cove_id)
+    .bind(&p.title)
+    .bind(sort)
+    .bind(now)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+    Ok(Wave {
+        id,
+        cove_id: p.cove_id,
+        title: p.title,
+        sort,
+        archived_at: None,
+        created_at: now,
+        updated_at: now,
+    })
+}
+
+pub async fn wave_update_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    p: WavePatch,
+) -> Result<Wave> {
+    let mut w = sqlx::query_as::<_, Wave>(
+        r#"SELECT id, cove_id, title, sort, archived_at, created_at, updated_at
+           FROM waves WHERE id = ?1"#,
+    )
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| CalmError::NotFound(format!("wave {id}")))?;
+
+    if let Some(v) = p.title {
+        w.title = v;
+    }
+    if let Some(v) = p.sort {
+        w.sort = v;
+    }
+    if let Some(v) = p.archived_at {
+        w.archived_at = v;
+    }
+    w.updated_at = now_ms();
+
+    sqlx::query(
+        r#"UPDATE waves SET title = ?1, sort = ?2, archived_at = ?3, updated_at = ?4
+           WHERE id = ?5"#,
+    )
+    .bind(&w.title)
+    .bind(w.sort)
+    .bind(w.archived_at)
+    .bind(w.updated_at)
+    .bind(&w.id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(w)
+}
+
+pub async fn wave_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<()> {
+    let res = sqlx::query("DELETE FROM waves WHERE id = ?1")
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
+    if res.rows_affected() == 0 {
+        return Err(CalmError::NotFound(format!("wave {id}")));
+    }
+    Ok(())
+}
+
+pub async fn card_create_tx(tx: &mut Transaction<'_, Sqlite>, p: NewCard) -> Result<Card> {
+    let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM waves WHERE id = ?1")
+        .bind(&p.wave_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    if exists.is_none() {
+        return Err(CalmError::NotFound(format!("wave {}", p.wave_id)));
+    }
+
+    let sort = match p.sort {
+        Some(s) => s,
+        None => next_sort_scoped_in_tx(tx, "cards", "WHERE wave_id = ?1", Some(&p.wave_id)).await?,
+    };
+    let now = now_ms();
+    let id = new_id();
+    let payload_text = serde_json::to_string(&p.payload)?;
+    sqlx::query(
+        r#"INSERT INTO cards (id, wave_id, kind, sort, payload, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
+    )
+    .bind(&id)
+    .bind(&p.wave_id)
+    .bind(&p.kind)
+    .bind(sort)
+    .bind(&payload_text)
+    .bind(now)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+    Ok(Card {
+        id,
+        wave_id: p.wave_id,
+        kind: p.kind,
+        sort,
+        payload: p.payload,
+        created_at: now,
+        updated_at: now,
+    })
+}
+
+pub async fn card_update_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    p: CardPatch,
+) -> Result<Card> {
+    let mut c = sqlx::query_as::<_, Card>(
+        r#"SELECT id, wave_id, kind, sort, payload, created_at, updated_at
+           FROM cards WHERE id = ?1"#,
+    )
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
+
+    if let Some(v) = p.kind {
+        c.kind = v;
+    }
+    if let Some(v) = p.sort {
+        c.sort = v;
+    }
+    if let Some(v) = p.payload {
+        c.payload = v;
+    }
+    c.updated_at = now_ms();
+    let payload_text = serde_json::to_string(&c.payload)?;
+
+    sqlx::query(
+        r#"UPDATE cards SET kind = ?1, sort = ?2, payload = ?3, updated_at = ?4
+           WHERE id = ?5"#,
+    )
+    .bind(&c.kind)
+    .bind(c.sort)
+    .bind(&payload_text)
+    .bind(c.updated_at)
+    .bind(&c.id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(c)
+}
+
+pub async fn card_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<()> {
+    let res = sqlx::query("DELETE FROM cards WHERE id = ?1")
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
+    if res.rows_affected() == 0 {
+        return Err(CalmError::NotFound(format!("card {id}")));
+    }
+    Ok(())
+}
+
+pub async fn overlay_upsert_tx(tx: &mut Transaction<'_, Sqlite>, p: NewOverlay) -> Result<Overlay> {
+    let now = now_ms();
+    let new_id_str = new_id();
+    let payload_text = serde_json::to_string(&p.payload)?;
+    let row = sqlx::query_as::<_, Overlay>(
+        r#"INSERT INTO overlays
+               (id, plugin_id, entity_kind, entity_id, kind, payload, updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+           ON CONFLICT(plugin_id, entity_kind, entity_id, kind)
+             DO UPDATE SET payload = excluded.payload,
+                           updated_at = excluded.updated_at
+           RETURNING id, plugin_id, entity_kind, entity_id, kind, payload, updated_at"#,
+    )
+    .bind(&new_id_str)
+    .bind(&p.plugin_id)
+    .bind(&p.entity_kind)
+    .bind(&p.entity_id)
+    .bind(&p.kind)
+    .bind(&payload_text)
+    .bind(now)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(row)
+}
+
+pub async fn overlay_delete_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    plugin_id: &str,
+    entity_kind: &str,
+    entity_id: &str,
+    kind: &str,
+) -> Result<()> {
+    let res = sqlx::query(
+        r#"DELETE FROM overlays
+           WHERE plugin_id = ?1 AND entity_kind = ?2 AND entity_id = ?3 AND kind = ?4"#,
+    )
+    .bind(plugin_id)
+    .bind(entity_kind)
+    .bind(entity_id)
+    .bind(kind)
+    .execute(&mut **tx)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Err(CalmError::NotFound("overlay".into()));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Repo impl — thin pool-wrapping wrappers around the `_tx` helpers, plus
+// the read-side methods that don't need transaction composition.
+// ---------------------------------------------------------------------------
 
 #[async_trait]
 impl Repo for SqlxRepo {
@@ -106,80 +500,23 @@ impl Repo for SqlxRepo {
     }
 
     async fn cove_create(&self, p: NewCove) -> Result<Cove> {
-        let sort = match p.sort {
-            Some(s) => s,
-            None => next_sort_scoped(&self.pool, "coves", "", None).await?,
-        };
-        let now = now_ms();
-        let id = new_id();
-        sqlx::query(
-            r#"INSERT INTO coves (id, name, color, sort, created_at, updated_at)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
-        )
-        .bind(&id)
-        .bind(&p.name)
-        .bind(&p.color)
-        .bind(sort)
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
-        .await?;
-        Ok(Cove {
-            id,
-            name: p.name,
-            color: p.color,
-            sort,
-            created_at: now,
-            updated_at: now,
-        })
+        let mut tx = self.pool.begin().await?;
+        let out = cove_create_tx(&mut tx, p).await?;
+        tx.commit().await?;
+        Ok(out)
     }
 
     async fn cove_update(&self, id: &str, p: CovePatch) -> Result<Cove> {
         let mut tx = self.pool.begin().await?;
-        let mut c = sqlx::query_as::<_, Cove>(
-            r#"SELECT id, name, color, sort, created_at, updated_at
-               FROM coves WHERE id = ?1"#,
-        )
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| CalmError::NotFound(format!("cove {id}")))?;
-
-        if let Some(v) = p.name {
-            c.name = v;
-        }
-        if let Some(v) = p.color {
-            c.color = v;
-        }
-        if let Some(v) = p.sort {
-            c.sort = v;
-        }
-        c.updated_at = now_ms();
-
-        sqlx::query(
-            r#"UPDATE coves SET name = ?1, color = ?2, sort = ?3, updated_at = ?4
-               WHERE id = ?5"#,
-        )
-        .bind(&c.name)
-        .bind(&c.color)
-        .bind(c.sort)
-        .bind(c.updated_at)
-        .bind(&c.id)
-        .execute(&mut *tx)
-        .await?;
+        let out = cove_update_tx(&mut tx, id, p).await?;
         tx.commit().await?;
-        Ok(c)
+        Ok(out)
     }
 
     async fn cove_delete(&self, id: &str) -> Result<()> {
-        // ON DELETE CASCADE handles waves/cards once foreign_keys=ON.
-        let res = sqlx::query("DELETE FROM coves WHERE id = ?1")
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-        if res.rows_affected() == 0 {
-            return Err(CalmError::NotFound(format!("cove {id}")));
-        }
+        let mut tx = self.pool.begin().await?;
+        cove_delete_tx(&mut tx, id).await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -250,94 +587,23 @@ impl Repo for SqlxRepo {
     }
 
     async fn wave_create(&self, p: NewWave) -> Result<Wave> {
-        // Validate parent cove exists so we can return NotFound (matching
-        // MockRepo) instead of letting a foreign-key failure bubble as Db.
-        let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM coves WHERE id = ?1")
-            .bind(&p.cove_id)
-            .fetch_optional(&self.pool)
-            .await?;
-        if exists.is_none() {
-            return Err(CalmError::NotFound(format!("cove {}", p.cove_id)));
-        }
-
-        let sort = match p.sort {
-            Some(s) => s,
-            None => {
-                next_sort_scoped(&self.pool, "waves", "WHERE cove_id = ?1", Some(&p.cove_id))
-                    .await?
-            }
-        };
-        let now = now_ms();
-        let id = new_id();
-        sqlx::query(
-            r#"INSERT INTO waves
-               (id, cove_id, title, sort, archived_at, created_at, updated_at)
-               VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6)"#,
-        )
-        .bind(&id)
-        .bind(&p.cove_id)
-        .bind(&p.title)
-        .bind(sort)
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
-        .await?;
-        Ok(Wave {
-            id,
-            cove_id: p.cove_id,
-            title: p.title,
-            sort,
-            archived_at: None,
-            created_at: now,
-            updated_at: now,
-        })
+        let mut tx = self.pool.begin().await?;
+        let out = wave_create_tx(&mut tx, p).await?;
+        tx.commit().await?;
+        Ok(out)
     }
 
     async fn wave_update(&self, id: &str, p: WavePatch) -> Result<Wave> {
         let mut tx = self.pool.begin().await?;
-        let mut w = sqlx::query_as::<_, Wave>(
-            r#"SELECT id, cove_id, title, sort, archived_at, created_at, updated_at
-               FROM waves WHERE id = ?1"#,
-        )
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| CalmError::NotFound(format!("wave {id}")))?;
-
-        if let Some(v) = p.title {
-            w.title = v;
-        }
-        if let Some(v) = p.sort {
-            w.sort = v;
-        }
-        if let Some(v) = p.archived_at {
-            w.archived_at = v;
-        }
-        w.updated_at = now_ms();
-
-        sqlx::query(
-            r#"UPDATE waves SET title = ?1, sort = ?2, archived_at = ?3, updated_at = ?4
-               WHERE id = ?5"#,
-        )
-        .bind(&w.title)
-        .bind(w.sort)
-        .bind(w.archived_at)
-        .bind(w.updated_at)
-        .bind(&w.id)
-        .execute(&mut *tx)
-        .await?;
+        let out = wave_update_tx(&mut tx, id, p).await?;
         tx.commit().await?;
-        Ok(w)
+        Ok(out)
     }
 
     async fn wave_delete(&self, id: &str) -> Result<()> {
-        let res = sqlx::query("DELETE FROM waves WHERE id = ?1")
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-        if res.rows_affected() == 0 {
-            return Err(CalmError::NotFound(format!("wave {id}")));
-        }
+        let mut tx = self.pool.begin().await?;
+        wave_delete_tx(&mut tx, id).await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -365,124 +631,32 @@ impl Repo for SqlxRepo {
     }
 
     async fn card_create(&self, p: NewCard) -> Result<Card> {
-        let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM waves WHERE id = ?1")
-            .bind(&p.wave_id)
-            .fetch_optional(&self.pool)
-            .await?;
-        if exists.is_none() {
-            return Err(CalmError::NotFound(format!("wave {}", p.wave_id)));
-        }
-
-        let sort = match p.sort {
-            Some(s) => s,
-            None => {
-                next_sort_scoped(&self.pool, "cards", "WHERE wave_id = ?1", Some(&p.wave_id))
-                    .await?
-            }
-        };
-        let now = now_ms();
-        let id = new_id();
-        let payload_text = serde_json::to_string(&p.payload)?;
-        sqlx::query(
-            r#"INSERT INTO cards (id, wave_id, kind, sort, payload, created_at, updated_at)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
-        )
-        .bind(&id)
-        .bind(&p.wave_id)
-        .bind(&p.kind)
-        .bind(sort)
-        .bind(&payload_text)
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
-        .await?;
-        Ok(Card {
-            id,
-            wave_id: p.wave_id,
-            kind: p.kind,
-            sort,
-            payload: p.payload,
-            created_at: now,
-            updated_at: now,
-        })
+        let mut tx = self.pool.begin().await?;
+        let out = card_create_tx(&mut tx, p).await?;
+        tx.commit().await?;
+        Ok(out)
     }
 
     async fn card_update(&self, id: &str, p: CardPatch) -> Result<Card> {
         let mut tx = self.pool.begin().await?;
-        let mut c = sqlx::query_as::<_, Card>(
-            r#"SELECT id, wave_id, kind, sort, payload, created_at, updated_at
-               FROM cards WHERE id = ?1"#,
-        )
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-
-        if let Some(v) = p.kind {
-            c.kind = v;
-        }
-        if let Some(v) = p.sort {
-            c.sort = v;
-        }
-        if let Some(v) = p.payload {
-            c.payload = v;
-        }
-        c.updated_at = now_ms();
-        let payload_text = serde_json::to_string(&c.payload)?;
-
-        sqlx::query(
-            r#"UPDATE cards SET kind = ?1, sort = ?2, payload = ?3, updated_at = ?4
-               WHERE id = ?5"#,
-        )
-        .bind(&c.kind)
-        .bind(c.sort)
-        .bind(&payload_text)
-        .bind(c.updated_at)
-        .bind(&c.id)
-        .execute(&mut *tx)
-        .await?;
+        let out = card_update_tx(&mut tx, id, p).await?;
         tx.commit().await?;
-        Ok(c)
+        Ok(out)
     }
 
     async fn card_delete(&self, id: &str) -> Result<()> {
-        let res = sqlx::query("DELETE FROM cards WHERE id = ?1")
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-        if res.rows_affected() == 0 {
-            return Err(CalmError::NotFound(format!("card {id}")));
-        }
+        let mut tx = self.pool.begin().await?;
+        card_delete_tx(&mut tx, id).await?;
+        tx.commit().await?;
         Ok(())
     }
 
     // -------------------------------------------------------------- overlays
     async fn overlay_upsert(&self, p: NewOverlay) -> Result<Overlay> {
-        let now = now_ms();
-        let new_id_str = new_id();
-        let payload_text = serde_json::to_string(&p.payload)?;
-        // Use INSERT ... ON CONFLICT DO UPDATE and RETURNING the row, so the
-        // unique-key composite drives idempotent upsert and we don't need a
-        // separate read.
-        let row = sqlx::query_as::<_, Overlay>(
-            r#"INSERT INTO overlays
-                   (id, plugin_id, entity_kind, entity_id, kind, payload, updated_at)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-               ON CONFLICT(plugin_id, entity_kind, entity_id, kind)
-                 DO UPDATE SET payload = excluded.payload,
-                               updated_at = excluded.updated_at
-               RETURNING id, plugin_id, entity_kind, entity_id, kind, payload, updated_at"#,
-        )
-        .bind(&new_id_str)
-        .bind(&p.plugin_id)
-        .bind(&p.entity_kind)
-        .bind(&p.entity_id)
-        .bind(&p.kind)
-        .bind(&payload_text)
-        .bind(now)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(row)
+        let mut tx = self.pool.begin().await?;
+        let out = overlay_upsert_tx(&mut tx, p).await?;
+        tx.commit().await?;
+        Ok(out)
     }
 
     async fn overlay_delete(
@@ -492,19 +666,9 @@ impl Repo for SqlxRepo {
         entity_id: &str,
         kind: &str,
     ) -> Result<()> {
-        let res = sqlx::query(
-            r#"DELETE FROM overlays
-               WHERE plugin_id = ?1 AND entity_kind = ?2 AND entity_id = ?3 AND kind = ?4"#,
-        )
-        .bind(plugin_id)
-        .bind(entity_kind)
-        .bind(entity_id)
-        .bind(kind)
-        .execute(&self.pool)
-        .await?;
-        if res.rows_affected() == 0 {
-            return Err(CalmError::NotFound("overlay".into()));
-        }
+        let mut tx = self.pool.begin().await?;
+        overlay_delete_tx(&mut tx, plugin_id, entity_kind, entity_id, kind).await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -645,9 +809,6 @@ impl Repo for SqlxRepo {
     }
 
     async fn plugin_install(&self, p: NewPlugin) -> Result<Plugin> {
-        // Manifest and user_config are stored as TEXT (JSON-encoded). We
-        // serialize ourselves so the `INSERT ... ON CONFLICT DO UPDATE` clause
-        // can bind the strings once and reuse them through `excluded.*`.
         let manifest_text = serde_json::to_string(&p.manifest)?;
         let user_config_text = serde_json::to_string(&p.user_config)?;
         let now = now_ms();
@@ -689,7 +850,6 @@ impl Repo for SqlxRepo {
         if res.rows_affected() == 0 {
             return Err(CalmError::NotFound(format!("plugin {id}")));
         }
-        // Re-read so callers get the canonical row (including `installed_at`).
         self.plugin_get_by_id(id)
             .await?
             .ok_or_else(|| CalmError::NotFound(format!("plugin {id}")))
@@ -739,8 +899,6 @@ impl Repo for SqlxRepo {
     }
 
     async fn plugin_delete(&self, id: &str) -> Result<()> {
-        // ON DELETE CASCADE on plugin_tokens + plugin_kv handles the satellites
-        // (see migrations/0002_plugins.sql).
         let res = sqlx::query("DELETE FROM plugins WHERE id = ?1")
             .bind(id)
             .execute(&self.pool)
@@ -752,9 +910,6 @@ impl Repo for SqlxRepo {
     }
 
     async fn overlays_clear_by_plugin(&self, plugin_id: &str) -> Result<()> {
-        // No FK between overlays.plugin_id and plugins.id (plugins are
-        // discovered + ephemeral; overlays survive plugin removal by design),
-        // so we drop overlays explicitly here from Slice D's uninstall path.
         sqlx::query("DELETE FROM overlays WHERE plugin_id = ?1")
             .bind(plugin_id)
             .execute(&self.pool)
@@ -763,9 +918,6 @@ impl Repo for SqlxRepo {
     }
 
     async fn plugin_kv_clear(&self, plugin_id: &str) -> Result<()> {
-        // Idempotent — uninstall calls this unconditionally. The plugins-level
-        // delete also cascades via FK, so this is the explicit form for cases
-        // where the row was already removed (or never existed).
         sqlx::query("DELETE FROM plugin_kv WHERE plugin_id = ?1")
             .bind(plugin_id)
             .execute(&self.pool)
@@ -806,7 +958,6 @@ impl Repo for SqlxRepo {
     }
 
     async fn plugin_token_delete(&self, plugin_id: &str) -> Result<()> {
-        // Idempotent per the trait contract.
         sqlx::query("DELETE FROM plugin_tokens WHERE plugin_id = ?1")
             .bind(plugin_id)
             .execute(&self.pool)
@@ -857,10 +1008,6 @@ impl Repo for SqlxRepo {
         plugin_id: &str,
         prefix: &str,
     ) -> Result<Vec<(String, serde_json::Value)>> {
-        // `LIKE ? ESCAPE '\'` with the user-supplied prefix concatenated with
-        // `%` would let the prefix itself contain wildcards. Slice C will hand
-        // us trusted prefixes from plugin code, but Slice A's contract is "any
-        // string is a literal prefix" — so glob-escape `%` and `_` ourselves.
         let mut escaped = String::with_capacity(prefix.len() + 2);
         for ch in prefix.chars() {
             if ch == '%' || ch == '_' || ch == '\\' {
@@ -921,12 +1068,71 @@ impl Repo for SqlxRepo {
     }
 
     async fn settings_delete(&self, key: &str) -> Result<()> {
-        // Idempotent — empty-string upserts coming through `PUT /api/settings`
-        // get rewritten to deletes, and missing rows are not an error there.
         sqlx::query("DELETE FROM settings WHERE key = ?1")
             .bind(key)
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    // ---- sync engine -----------------------------------------------------
+    async fn write_with_event(
+        &self,
+        actor: &str,
+        correlation: Option<&str>,
+        bus: &EventBus,
+        f: WriteWithEventFn<'_>,
+    ) -> Result<i64> {
+        let mut tx = self.pool.begin().await?;
+        // Run the caller-supplied entity write.
+        let fut: BoxFuture<'_, Result<Event>> = f(&mut tx);
+        let event = match fut.await {
+            Ok(ev) => ev,
+            Err(e) => {
+                // Rollback is implicit on `tx` drop, but be explicit so the
+                // intent reads clearly.
+                let _ = tx.rollback().await;
+                return Err(e);
+            }
+        };
+        // Persist the event in the same txn.
+        let event_id = match Self::event_append_in_tx(&mut tx, actor, correlation, &event).await {
+            Ok(id) => id,
+            Err(e) => {
+                let _ = tx.rollback().await;
+                return Err(e);
+            }
+        };
+        // Commit before any externally-visible side effect.
+        tx.commit().await?;
+        // Commit-then-emit invariant: now (and only now) do we broadcast.
+        bus.emit_envelope(BroadcastEnvelope {
+            id: event_id,
+            event,
+        });
+        Ok(event_id)
+    }
+
+    async fn log_pure_event(
+        &self,
+        actor: &str,
+        correlation: Option<&str>,
+        bus: &EventBus,
+        event: Event,
+    ) -> Result<i64> {
+        let mut tx = self.pool.begin().await?;
+        let event_id = match Self::event_append_in_tx(&mut tx, actor, correlation, &event).await {
+            Ok(id) => id,
+            Err(e) => {
+                let _ = tx.rollback().await;
+                return Err(e);
+            }
+        };
+        tx.commit().await?;
+        bus.emit_envelope(BroadcastEnvelope {
+            id: event_id,
+            event,
+        });
+        Ok(event_id)
     }
 }

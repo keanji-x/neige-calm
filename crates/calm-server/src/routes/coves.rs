@@ -1,8 +1,13 @@
 //! `/api/coves` — Cove CRUD. **Owned by Track B.**
 //!
-//! After each successful mutation, emit the matching `Event` via
-//! `state.events.emit(...)` so the WS bus can fan out.
+//! Writes go through `Repo::write_with_event` (via the
+//! `write_with_event_typed` ergonomic wrapper). The wrapper atomically
+//! commits the entity write + the events-table insert, then broadcasts a
+//! `BroadcastEnvelope { id, event }` on the bus. Handler-level `events.emit`
+//! calls are gone after Scope A; see `docs/sync-engine-design.md` §3.
 
+use crate::db::sqlite::{cove_create_tx, cove_delete_tx, cove_update_tx};
+use crate::db::write_with_event_typed;
 use crate::error::{ErrorBody, Result};
 use crate::event::Event;
 use crate::model::{Cove, CovePatch, NewCove};
@@ -13,6 +18,10 @@ use axum::{
     http::StatusCode,
     routing::get,
 };
+
+/// Declared actor for REST writes. There's no auth today; this is the
+/// trust-based identity per design §1.1 disclaimer.
+const REST_ACTOR: &str = "user";
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -51,8 +60,14 @@ pub(crate) async fn create_cove(
     State(s): State<AppState>,
     Json(p): Json<NewCove>,
 ) -> Result<(StatusCode, Json<Cove>)> {
-    let cove = s.repo.cove_create(p).await?;
-    s.events.emit(Event::CoveUpdated(cove.clone()));
+    let (cove, _id) =
+        write_with_event_typed(s.repo.as_ref(), REST_ACTOR, None, &s.events, move |tx| {
+            Box::pin(async move {
+                let cove = cove_create_tx(tx, p).await?;
+                Ok((cove.clone(), Event::CoveUpdated(cove)))
+            })
+        })
+        .await?;
     Ok((StatusCode::CREATED, Json(cove)))
 }
 
@@ -73,8 +88,14 @@ pub(crate) async fn update_cove(
     Path(id): Path<String>,
     Json(p): Json<CovePatch>,
 ) -> Result<Json<Cove>> {
-    let cove = s.repo.cove_update(&id, p).await?;
-    s.events.emit(Event::CoveUpdated(cove.clone()));
+    let (cove, _id) =
+        write_with_event_typed(s.repo.as_ref(), REST_ACTOR, None, &s.events, move |tx| {
+            Box::pin(async move {
+                let cove = cove_update_tx(tx, &id, p).await?;
+                Ok((cove.clone(), Event::CoveUpdated(cove)))
+            })
+        })
+        .await?;
     Ok(Json(cove))
 }
 
@@ -93,7 +114,13 @@ pub(crate) async fn delete_cove(
     State(s): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
-    s.repo.cove_delete(&id).await?;
-    s.events.emit(Event::CoveDeleted { id });
+    let (_unit, _id) =
+        write_with_event_typed(s.repo.as_ref(), REST_ACTOR, None, &s.events, move |tx| {
+            Box::pin(async move {
+                cove_delete_tx(tx, &id).await?;
+                Ok(((), Event::CoveDeleted { id }))
+            })
+        })
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }

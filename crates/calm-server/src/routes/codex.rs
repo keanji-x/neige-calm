@@ -284,7 +284,14 @@ pub struct IngestQuery {
 
 /// Loopback-only ingest. The bridge subprocess POSTs the raw codex hook
 /// payload here; we extract `hook_event_name`, tag it, and emit on the
-/// bus. No persistence — codex card UIs are append-only ephemeral.
+/// bus.
+///
+/// Scope A — codex hook events flow through the sync engine's pure-event
+/// log (`Repo::log_pure_event`) so the wire envelope carries an `_id`
+/// the same way entity-write events do. The events row records every
+/// hook payload verbatim; that's intentional — codex card UIs are
+/// append-only ephemeral on the frontend, but the persistent event log
+/// is the audit/replay store the design doc §2.3 calls out.
 pub(crate) async fn ingest_hook(
     State(s): State<AppState>,
     Query(q): Query<IngestQuery>,
@@ -296,11 +303,21 @@ pub(crate) async fn ingest_hook(
         .unwrap_or("unknown");
     let kind = format!("hook.codex.{}", to_snake_case(event_name));
 
-    s.events.emit(Event::CodexHook {
-        card_id: q.card_id,
-        kind,
-        payload,
-    });
+    // Actor `"kernel"` because the codex bridge is a kernel-internal
+    // subprocess we spawn; the hook payload is not user-authored input,
+    // it's the codex CLI's own lifecycle signal.
+    s.repo
+        .log_pure_event(
+            "kernel",
+            None,
+            &s.events,
+            Event::CodexHook {
+                card_id: q.card_id,
+                kind,
+                payload,
+            },
+        )
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

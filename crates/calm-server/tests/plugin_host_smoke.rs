@@ -185,12 +185,12 @@ async fn crash_stub_respawns_after_first_crash() {
 
     while Instant::now() < deadline {
         let recv = tokio::time::timeout(Duration::from_secs(2), events_rx.recv()).await;
-        let ev = match recv {
-            Ok(Ok(ev)) => ev,
+        let env = match recv {
+            Ok(Ok(env)) => env,
             // Lagged or timeout — keep looping until the deadline.
             _ => continue,
         };
-        if let calm_server::event::Event::PluginState { id, state, .. } = ev
+        if let calm_server::event::Event::PluginState { id, state, .. } = env.event
             && id == "test.crash1"
         {
             match (state.as_str(), saw_running_first, saw_crashed) {
@@ -267,7 +267,7 @@ async fn boot_host_with_subscribe(
 ) -> (
     Arc<PluginHost>,
     TempDir,
-    tokio::sync::broadcast::Receiver<calm_server::event::Event>,
+    tokio::sync::broadcast::Receiver<calm_server::event::BroadcastEnvelope>,
 ) {
     let (host, tmp, events) = boot_host(plugin_id, stub_bin).await;
     let rx = events.subscribe();

@@ -18,7 +18,10 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-use crate::db::Repo;
+use crate::db::sqlite::{
+    card_create_tx, card_delete_tx, card_update_tx, overlay_delete_tx, overlay_upsert_tx,
+};
+use crate::db::{Repo, write_with_event_typed};
 use crate::event::{Event, EventBus};
 use crate::model::{CardPatch, NewCard, NewOverlay};
 use crate::validation::{validate_card_payload, validate_overlay_payload};
@@ -212,12 +215,21 @@ async fn overlay_set(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         kind: p.kind.clone(),
         payload: p.payload,
     };
-    let stored = ctx
-        .repo
-        .overlay_upsert(new_overlay)
-        .await
-        .map_err(internal_repo_err)?;
-    ctx.event_bus.emit(Event::OverlaySet(stored.clone()));
+    let actor = format!("plugin:{}", ctx.plugin_id);
+    let (stored, _id) = write_with_event_typed(
+        ctx.repo.as_ref(),
+        &actor,
+        None,
+        ctx.event_bus.as_ref(),
+        move |tx| {
+            Box::pin(async move {
+                let stored = overlay_upsert_tx(tx, new_overlay).await?;
+                Ok((stored.clone(), Event::OverlaySet(stored)))
+            })
+        },
+    )
+    .await
+    .map_err(internal_repo_err)?;
     Ok(json!({ "overlay_id": stored.id, "updated_at": stored.updated_at }))
 }
 
@@ -245,20 +257,34 @@ async fn overlay_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, R
     }
     // Scope strictly to this plugin's overlays — repo enforces by passing the
     // server-known plugin_id.
-    match ctx
-        .repo
-        .overlay_delete(ctx.plugin_id, &p.entity_kind, &p.entity_id, &p.kind)
-        .await
-    {
-        Ok(()) => {
-            ctx.event_bus.emit(Event::OverlayDeleted {
-                plugin_id: ctx.plugin_id.to_string(),
-                entity_kind: p.entity_kind,
-                entity_id: p.entity_id,
-                kind: p.kind,
-            });
-            Ok(json!({ "deleted": true }))
-        }
+    let actor = format!("plugin:{}", ctx.plugin_id);
+    let plugin_id_owned = ctx.plugin_id.to_string();
+    let entity_kind = p.entity_kind.clone();
+    let entity_id = p.entity_id.clone();
+    let kind = p.kind.clone();
+    let result = write_with_event_typed(
+        ctx.repo.as_ref(),
+        &actor,
+        None,
+        ctx.event_bus.as_ref(),
+        move |tx| {
+            Box::pin(async move {
+                overlay_delete_tx(tx, &plugin_id_owned, &entity_kind, &entity_id, &kind).await?;
+                Ok((
+                    (),
+                    Event::OverlayDeleted {
+                        plugin_id: plugin_id_owned,
+                        entity_kind,
+                        entity_id,
+                        kind,
+                    },
+                ))
+            })
+        },
+    )
+    .await;
+    match result {
+        Ok(_) => Ok(json!({ "deleted": true })),
         // Treat a missing overlay as idempotent success; plugins reissuing
         // delete during reconnect shouldn't fail their event loop.
         Err(crate::error::CalmError::NotFound(_)) => Ok(json!({ "deleted": false })),
@@ -305,11 +331,24 @@ async fn card_create(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         sort: p.sort,
         payload,
     };
-    let stored = ctx.repo.card_create(new).await.map_err(|e| match e {
+    let actor = format!("plugin:{}", ctx.plugin_id);
+    let (stored, _id) = write_with_event_typed(
+        ctx.repo.as_ref(),
+        &actor,
+        None,
+        ctx.event_bus.as_ref(),
+        move |tx| {
+            Box::pin(async move {
+                let stored = card_create_tx(tx, new).await?;
+                Ok((stored.clone(), Event::CardAdded(stored)))
+            })
+        },
+    )
+    .await
+    .map_err(|e| match e {
         crate::error::CalmError::NotFound(s) => entity_not_found(s),
         other => internal_repo_err(other),
     })?;
-    ctx.event_bus.emit(Event::CardAdded(stored.clone()));
     serde_json::to_value(&stored).map_err(|e| RpcError::internal(format!("serde: {e}")))
 }
 
@@ -362,15 +401,25 @@ async fn card_update(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         sort: p.sort,
         payload: p.payload,
     };
-    let updated = ctx
-        .repo
-        .card_update(&p.card_id, patch)
-        .await
-        .map_err(|e| match e {
-            crate::error::CalmError::NotFound(s) => entity_not_found(s),
-            other => internal_repo_err(other),
-        })?;
-    ctx.event_bus.emit(Event::CardUpdated(updated.clone()));
+    let actor = format!("plugin:{}", ctx.plugin_id);
+    let card_id = p.card_id.clone();
+    let (updated, _id) = write_with_event_typed(
+        ctx.repo.as_ref(),
+        &actor,
+        None,
+        ctx.event_bus.as_ref(),
+        move |tx| {
+            Box::pin(async move {
+                let updated = card_update_tx(tx, &card_id, patch).await?;
+                Ok((updated.clone(), Event::CardUpdated(updated)))
+            })
+        },
+    )
+    .await
+    .map_err(|e| match e {
+        crate::error::CalmError::NotFound(s) => entity_not_found(s),
+        other => internal_repo_err(other),
+    })?;
     serde_json::to_value(&updated).map_err(|e| RpcError::internal(format!("serde: {e}")))
 }
 
@@ -395,17 +444,31 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         )));
     }
     let wave_id = card.wave_id.clone();
-    ctx.repo
-        .card_delete(&p.card_id)
-        .await
-        .map_err(|e| match e {
-            crate::error::CalmError::NotFound(s) => entity_not_found(s),
-            other => internal_repo_err(other),
-        })?;
-    ctx.event_bus.emit(Event::CardDeleted {
-        id: p.card_id,
-        wave_id,
-    });
+    let card_id = p.card_id.clone();
+    let actor = format!("plugin:{}", ctx.plugin_id);
+    let _ = write_with_event_typed(
+        ctx.repo.as_ref(),
+        &actor,
+        None,
+        ctx.event_bus.as_ref(),
+        move |tx| {
+            Box::pin(async move {
+                card_delete_tx(tx, &card_id).await?;
+                Ok((
+                    (),
+                    Event::CardDeleted {
+                        id: card_id,
+                        wave_id,
+                    },
+                ))
+            })
+        },
+    )
+    .await
+    .map_err(|e| match e {
+        crate::error::CalmError::NotFound(s) => entity_not_found(s),
+        other => internal_repo_err(other),
+    })?;
     Ok(json!({}))
 }
 
@@ -458,14 +521,23 @@ async fn event_subscribe(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, 
     let task = tokio::spawn(async move {
         loop {
             match rx.recv().await {
-                Ok(ev) => {
+                Ok(env) => {
+                    let ev = env.event;
                     if !filter.matches(&ev) {
                         continue;
                     }
-                    let body = json!({
-                        "subscription_id": sub_id,
-                        "event": ev,
-                    });
+                    // Plugin notification payload mirrors the WS wire shape:
+                    // `_id` is the persisted events.id, alongside the typed
+                    // event. Plugins can use `_id` for the same cursor /
+                    // dedupe purposes the browser will (Scope D).
+                    let mut body = serde_json::Map::new();
+                    body.insert("subscription_id".into(), json!(sub_id));
+                    body.insert("_id".into(), json!(env.id));
+                    body.insert(
+                        "event".into(),
+                        serde_json::to_value(&ev).unwrap_or(serde_json::Value::Null),
+                    );
+                    let body = serde_json::Value::Object(body);
                     // notify returns Err on transport-closed; bail then so we
                     // don't spin until plugin stop.
                     if mcp.notify("neige.event", body).await.is_err() {
