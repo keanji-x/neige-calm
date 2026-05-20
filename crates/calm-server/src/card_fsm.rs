@@ -49,9 +49,14 @@ use serde_json::json;
 use tokio::sync::Mutex;
 use tokio::time::{Instant, sleep_until};
 
-use crate::db::Repo;
+use crate::db::sqlite::overlay_upsert_tx;
+use crate::db::{Repo, write_with_event_typed};
 use crate::event::{Event, EventBus};
 use crate::model::NewOverlay;
+
+/// Actor tag stamped on every event the FSM produces. Kernel-internal
+/// projector — distinct from `"user"` / `"plugin:<id>"` / `"ai:<id>"`.
+const FSM_ACTOR: &str = "kernel";
 
 /// Plugin id stamped on the FSM-authored overlays. The kernel uses a
 /// reserved `"kernel"` namespace — plugins can't write under it (their
@@ -144,7 +149,7 @@ pub fn spawn(repo: Arc<dyn Repo>, bus: EventBus) {
         let inner = Arc::new(Inner::new(repo, bus_clone));
         loop {
             match rx.recv().await {
-                Ok(ev) => inner.handle(ev).await,
+                Ok(env) => inner.handle(env.event).await,
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                     tracing::warn!(skipped = n, "card_fsm event subscriber lagged");
                 }
@@ -288,24 +293,28 @@ impl Inner {
             }
         };
 
-        // 1. Card overlay.
+        // 1. Card overlay. Goes through write_with_event so the overlay
+        //    row and the events row land in the same transaction; the bus
+        //    broadcast (with `_id` stamped) is emitted on commit success.
         let card_payload = json!({ "state": state.wire_name() });
-        match self
-            .repo
-            .overlay_upsert(NewOverlay {
-                plugin_id: KERNEL_PLUGIN_ID.to_string(),
-                entity_kind: "card".to_string(),
-                entity_id: card_id.to_string(),
-                kind: "status".to_string(),
-                payload: card_payload,
+        let new_overlay = NewOverlay {
+            plugin_id: KERNEL_PLUGIN_ID.to_string(),
+            entity_kind: "card".to_string(),
+            entity_id: card_id.to_string(),
+            kind: "status".to_string(),
+            payload: card_payload,
+        };
+        if let Err(e) =
+            write_with_event_typed(self.repo.as_ref(), FSM_ACTOR, None, &self.bus, move |tx| {
+                Box::pin(async move {
+                    let o = overlay_upsert_tx(tx, new_overlay).await?;
+                    Ok(((), Event::OverlaySet(o)))
+                })
             })
             .await
         {
-            Ok(o) => self.bus.emit(Event::OverlaySet(o)),
-            Err(e) => {
-                tracing::warn!(card_id, error = %e, "card_fsm: card overlay_upsert failed");
-                return;
-            }
+            tracing::warn!(card_id, error = %e, "card_fsm: card overlay_upsert failed");
+            return;
         }
 
         // 2. Wave union.
@@ -359,21 +368,23 @@ impl Inner {
             }
         });
 
-        match self
-            .repo
-            .overlay_upsert(NewOverlay {
-                plugin_id: KERNEL_PLUGIN_ID.to_string(),
-                entity_kind: "wave".to_string(),
-                entity_id: wave_id.to_string(),
-                kind: "status".to_string(),
-                payload,
+        let new_overlay = NewOverlay {
+            plugin_id: KERNEL_PLUGIN_ID.to_string(),
+            entity_kind: "wave".to_string(),
+            entity_id: wave_id.to_string(),
+            kind: "status".to_string(),
+            payload,
+        };
+        if let Err(e) =
+            write_with_event_typed(self.repo.as_ref(), FSM_ACTOR, None, &self.bus, move |tx| {
+                Box::pin(async move {
+                    let o = overlay_upsert_tx(tx, new_overlay).await?;
+                    Ok(((), Event::OverlaySet(o)))
+                })
             })
             .await
         {
-            Ok(o) => self.bus.emit(Event::OverlaySet(o)),
-            Err(e) => {
-                tracing::warn!(wave_id, error = %e, "card_fsm: wave overlay_upsert failed");
-            }
+            tracing::warn!(wave_id, error = %e, "card_fsm: wave overlay_upsert failed");
         }
     }
 }

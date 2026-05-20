@@ -1,5 +1,11 @@
 //! `/api/waves`, `/api/coves/:id/waves` — Wave CRUD. **Owned by Track B.**
+//!
+//! Writes go through `Repo::write_with_event` (via the
+//! `write_with_event_typed` ergonomic wrapper). See `routes/coves.rs` for
+//! the migration pattern; this file follows the same shape.
 
+use crate::db::sqlite::{wave_create_tx, wave_delete_tx, wave_update_tx};
+use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::Event;
 use crate::model::{NewWave, Wave, WaveDetail, WavePatch};
@@ -10,6 +16,8 @@ use axum::{
     http::StatusCode,
     routing::get,
 };
+
+const REST_ACTOR: &str = "user";
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -76,8 +84,14 @@ pub(crate) async fn create_wave(
     State(s): State<AppState>,
     Json(p): Json<NewWave>,
 ) -> Result<(StatusCode, Json<Wave>)> {
-    let wave = s.repo.wave_create(p).await?;
-    s.events.emit(Event::WaveUpdated(wave.clone()));
+    let (wave, _id) =
+        write_with_event_typed(s.repo.as_ref(), REST_ACTOR, None, &s.events, move |tx| {
+            Box::pin(async move {
+                let wave = wave_create_tx(tx, p).await?;
+                Ok((wave.clone(), Event::WaveUpdated(wave)))
+            })
+        })
+        .await?;
     Ok((StatusCode::CREATED, Json(wave)))
 }
 
@@ -98,8 +112,14 @@ pub(crate) async fn update_wave(
     Path(id): Path<String>,
     Json(p): Json<WavePatch>,
 ) -> Result<Json<Wave>> {
-    let wave = s.repo.wave_update(&id, p).await?;
-    s.events.emit(Event::WaveUpdated(wave.clone()));
+    let (wave, _id) =
+        write_with_event_typed(s.repo.as_ref(), REST_ACTOR, None, &s.events, move |tx| {
+            Box::pin(async move {
+                let wave = wave_update_tx(tx, &id, p).await?;
+                Ok((wave.clone(), Event::WaveUpdated(wave)))
+            })
+        })
+        .await?;
     Ok(Json(wave))
 }
 
@@ -118,16 +138,31 @@ pub(crate) async fn delete_wave(
     State(s): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
-    // Look up first so we know the cove_id for the delete event.
+    // Look up first (outside the txn) so we know the cove_id for the
+    // delete event. Reading outside the txn is fine — there's no
+    // concurrent write that could change `wave.cove_id` between the
+    // read and the write_with_event start (wave rows are immutable
+    // wrt their parent cove).
     let wave = s
         .repo
         .wave_get(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("wave {id}")))?;
-    s.repo.wave_delete(&id).await?;
-    s.events.emit(Event::WaveDeleted {
-        id: wave.id,
-        cove_id: wave.cove_id,
-    });
+    let cove_id = wave.cove_id.clone();
+    let wave_id = wave.id.clone();
+    let (_unit, _id) =
+        write_with_event_typed(s.repo.as_ref(), REST_ACTOR, None, &s.events, move |tx| {
+            Box::pin(async move {
+                wave_delete_tx(tx, &wave_id).await?;
+                Ok((
+                    (),
+                    Event::WaveDeleted {
+                        id: wave_id,
+                        cove_id,
+                    },
+                ))
+            })
+        })
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }

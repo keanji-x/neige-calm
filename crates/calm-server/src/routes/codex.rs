@@ -49,6 +49,8 @@
 //! with stdin = a single JSON object; the bridge POSTs it here and we
 //! tag it with the card id and emit `Event::CodexHook` on the bus.
 
+use crate::db::sqlite::card_update_tx;
+use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::Event;
 use crate::model::{Card, CardPatch, NewTerminal};
@@ -65,6 +67,8 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::path::Path as StdPath;
 use utoipa::ToSchema;
+
+const REST_ACTOR: &str = "user";
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -248,17 +252,7 @@ async fn spawn_codex_for(s: &AppState, card: &Card, p: &NewCodexBody) -> Result<
     if !cwd.is_empty() {
         payload["cwd"] = serde_json::Value::String(cwd.clone());
     }
-    let updated = s
-        .repo
-        .card_update(
-            &card.id,
-            CardPatch {
-                kind: None,
-                sort: None,
-                payload: Some(payload),
-            },
-        )
-        .await?;
+    let updated = stamp_codex_terminal_payload(s, card, payload).await?;
 
     tracing::info!(
         card_id = %card.id,
@@ -277,6 +271,28 @@ async fn spawn_codex_for(s: &AppState, card: &Card, p: &NewCodexBody) -> Result<
     Ok(updated)
 }
 
+async fn stamp_codex_terminal_payload(s: &AppState, card: &Card, payload: Value) -> Result<Card> {
+    let id = card.id.clone();
+    let (updated, _id) =
+        write_with_event_typed(s.repo.as_ref(), REST_ACTOR, None, &s.events, move |tx| {
+            Box::pin(async move {
+                let updated = card_update_tx(
+                    tx,
+                    &id,
+                    CardPatch {
+                        kind: None,
+                        sort: None,
+                        payload: Some(payload),
+                    },
+                )
+                .await?;
+                Ok((updated.clone(), Event::CardUpdated(updated)))
+            })
+        })
+        .await?;
+    Ok(updated)
+}
+
 #[derive(Debug, Deserialize)]
 pub struct IngestQuery {
     pub card_id: String,
@@ -284,7 +300,14 @@ pub struct IngestQuery {
 
 /// Loopback-only ingest. The bridge subprocess POSTs the raw codex hook
 /// payload here; we extract `hook_event_name`, tag it, and emit on the
-/// bus. No persistence — codex card UIs are append-only ephemeral.
+/// bus.
+///
+/// Scope A — codex hook events flow through the sync engine's pure-event
+/// log (`Repo::log_pure_event`) so the wire envelope carries an `_id`
+/// the same way entity-write events do. The events row records every
+/// hook payload verbatim; that's intentional — codex card UIs are
+/// append-only ephemeral on the frontend, but the persistent event log
+/// is the audit/replay store the design doc §2.3 calls out.
 pub(crate) async fn ingest_hook(
     State(s): State<AppState>,
     Query(q): Query<IngestQuery>,
@@ -296,11 +319,21 @@ pub(crate) async fn ingest_hook(
         .unwrap_or("unknown");
     let kind = format!("hook.codex.{}", to_snake_case(event_name));
 
-    s.events.emit(Event::CodexHook {
-        card_id: q.card_id,
-        kind,
-        payload,
-    });
+    // Actor `"kernel"` because the codex bridge is a kernel-internal
+    // subprocess we spawn; the hook payload is not user-authored input,
+    // it's the codex CLI's own lifecycle signal.
+    s.repo
+        .log_pure_event(
+            "kernel",
+            None,
+            &s.events,
+            Event::CodexHook {
+                card_id: q.card_id,
+                kind,
+                payload,
+            },
+        )
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -390,6 +423,13 @@ fn to_snake_case(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::Repo;
+    use crate::db::sqlite::SqlxRepo;
+    use crate::event::EventBus;
+    use crate::model::{NewCard, NewCove, NewWave};
+    use crate::plugin_host::{PluginHost, PluginRegistry};
+    use crate::state::{CodexClient, DaemonClient};
+    use std::sync::Arc;
 
     #[test]
     fn snake_case_examples() {
@@ -404,5 +444,77 @@ mod tests {
         let s = build_hooks_json("/usr/local/bin/neige-codex-bridge");
         let v: Value = serde_json::from_str(&s).expect("valid JSON");
         assert!(v["hooks"]["PreToolUse"].is_array());
+    }
+
+    #[tokio::test]
+    async fn codex_terminal_payload_stamp_persists_and_broadcasts_card_updated() {
+        let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+        let events = EventBus::new();
+        let state = AppState {
+            repo: repo.clone(),
+            events: events.clone(),
+            daemon: Arc::new(DaemonClient::new_stub()),
+            plugin: Arc::new(PluginHost::new(
+                Arc::new(PluginRegistry::empty()),
+                repo.clone(),
+            )),
+            codex: Arc::new(CodexClient::new_stub()),
+        };
+
+        let cove = repo
+            .cove_create(NewCove {
+                name: "c".into(),
+                color: "#000".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let wave = repo
+            .wave_create(NewWave {
+                cove_id: cove.id,
+                title: "w".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let card = repo
+            .card_create(NewCard {
+                wave_id: wave.id,
+                kind: "codex".into(),
+                sort: None,
+                payload: serde_json::json!({ "existing": true }),
+            })
+            .await
+            .unwrap();
+        let mut rx = events.subscribe();
+
+        let payload = serde_json::json!({
+            "existing": true,
+            "terminal_id": "term_1",
+            "cwd": "/workspace",
+        });
+        let updated = stamp_codex_terminal_payload(&state, &card, payload)
+            .await
+            .unwrap();
+
+        assert_eq!(updated.payload["terminal_id"], "term_1");
+        assert_eq!(updated.payload["cwd"], "/workspace");
+
+        let env = rx.recv().await.expect("card.updated broadcast");
+        assert!(env.id > 0, "expected real events.id");
+        match env.event {
+            Event::CardUpdated(updated_event) => {
+                assert_eq!(updated_event.id, card.id);
+                assert_eq!(updated_event.payload["terminal_id"], "term_1");
+            }
+            other => panic!("expected CardUpdated, got {other:?}"),
+        }
+
+        let row: (String, String) = sqlx::query_as("SELECT kind, actor FROM events WHERE id = ?1")
+            .bind(env.id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+        assert_eq!(row, ("card.updated".into(), REST_ACTOR.into()));
     }
 }

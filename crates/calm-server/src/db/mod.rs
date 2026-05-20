@@ -17,12 +17,59 @@
 //! * The repo stamps `created_at` / `updated_at` itself via `model::now_ms()`.
 //! * The repo allocates ids via `model::new_id()`.
 //! * `sort` defaults to "append to end" (current max + 1.0) when `None`.
+//!
+//! ## Sync engine write path (phase 1)
+//!
+//! After Scope A, every mutating handler in `routes/*.rs`,
+//! `plugin_host/callbacks.rs`, and the `card_fsm` overlay projector funnels
+//! through `Repo::write_with_event`. The wrapper opens a sqlx transaction,
+//! runs the caller-supplied closure (which must use the `_tx`-suffixed
+//! free functions in `db::sqlite` for any nested entity write), persists
+//! the produced `Event` into the `events` table in the same txn, commits,
+//! and only then emits a `BroadcastEnvelope { id, event }` on the
+//! `EventBus`. Failure of either the entity write or the event insert
+//! rolls back the whole transaction — neither row exists, and the bus is
+//! never notified. See `docs/sync-engine-design.md` §1.4 and §3.
+//!
+//! `log_pure_event` is the same shape for events that don't have an
+//! associated entity write (e.g. `Event::CodexHook`, `Event::PluginState`).
+//! It still goes through the events table and produces a stamped
+//! `BroadcastEnvelope`, so every broadcast a client sees has a real id
+//! it can use as a cursor.
+//!
+//! The raw `INSERT INTO events ...` is **private** to `SqlxRepo` (see
+//! `sqlite.rs::SqlxRepo::event_append_in_tx`). Exposing two parallel
+//! write paths on the trait would invite handlers to drift back to a
+//! bare insert and bypass the commit-then-emit guarantee.
 
 use crate::error::Result;
+use crate::event::Event;
 use crate::model::*;
 use async_trait::async_trait;
+use futures::future::BoxFuture;
+use sqlx::{Sqlite, Transaction};
 
 pub mod sqlite;
+
+/// Closure shape accepted by `Repo::write_with_event`. The closure receives
+/// a mutable transaction handle (so it can call the `_tx`-suffixed helpers
+/// in `db::sqlite`) and returns the `Event` to persist + broadcast.
+///
+/// The closure is **not** generic over a returned row type — that would
+/// make `Repo` not dyn-compatible, and `Arc<dyn Repo>` is plumbed through
+/// every handler and the plugin host. The typed row a handler wants to
+/// return to its REST caller is communicated via an outer captured
+/// `Arc<Mutex<Option<R>>>` (or similar). The thin `write_with_event_typed`
+/// free function below does that capture for ergonomic callers.
+///
+/// We require `for<'tx>` so the borrow of the transaction doesn't bleed
+/// out into the surrounding handler scope — same shape `sqlx::Transaction`
+/// itself uses on its associated executor functions.
+pub type WriteWithEventFn<'a> = Box<
+    dyn for<'tx> FnOnce(&'tx mut Transaction<'_, Sqlite>) -> BoxFuture<'tx, Result<Event>>
+        + Send
+        + 'a,
+>;
 
 #[async_trait]
 pub trait Repo: Send + Sync + 'static {
@@ -149,4 +196,127 @@ pub trait Repo: Send + Sync + 'static {
     async fn settings_get_all(&self) -> Result<Vec<(String, String)>>;
     async fn settings_upsert(&self, key: &str, value: &str) -> Result<()>;
     async fn settings_delete(&self, key: &str) -> Result<()>;
+
+    // ---- sync engine (phase 1) ------------------------------------------
+    //
+    // `write_with_event` is the *only* public path that writes events to
+    // the kernel's persistent log. The raw `INSERT INTO events` lives
+    // privately on `SqlxRepo`; see `sqlite::SqlxRepo::event_append_in_tx`.
+    //
+    // Two reasons to keep the raw form off the trait:
+    //
+    //  1. Two parallel paths invite handlers to drift back to the raw
+    //     form, bypassing the `write_with_event` transaction guarantee.
+    //  2. Loosening the surface later (if a real use case shows up) is
+    //     trivial; tightening it after callers have spread is hard.
+    //
+    // `log_pure_event` is the sibling for events that don't have an
+    // associated entity write — `Event::PluginState`,
+    // `Event::CodexHook`. It runs its own minimal transaction (just the
+    // events insert) so every event still has a real `events.id` to
+    // stamp on the wire envelope.
+
+    /// Atomic write + event-log invariant: run the closure inside one
+    /// sqlx transaction, then `INSERT INTO events ... RETURNING id` in
+    /// the same txn, commit, and emit `BroadcastEnvelope { id, event }`
+    /// on the supplied event bus.
+    ///
+    /// Error semantics:
+    ///   * Closure returns `Err(e)`: txn rolls back, `Err(e)` bubbles up,
+    ///     no entity row, no event row, no broadcast.
+    ///   * Events-insert fails (DB-level): txn rolls back, error bubbles
+    ///     up, same as above.
+    ///   * Commit fails: error bubbles up, no broadcast.
+    ///   * Commit succeeds, broadcast send returns zero subscribers: the
+    ///     event is persisted and visible to replay; current live clients
+    ///     see nothing, but that's fine (they have no live socket).
+    ///
+    /// `actor` is the declared identity of the producer
+    /// (`"user"`, `"kernel"`, `"plugin:<id>"`, `"ai:<id>"`). Not
+    /// authenticated — see design doc §1.1 disclaimer.
+    ///
+    /// `correlation` is optional; populated for plugin tool-call writes
+    /// per design §9 (`"user_tool_call:<call_id>"`).
+    async fn write_with_event(
+        &self,
+        actor: &str,
+        correlation: Option<&str>,
+        bus: &crate::event::EventBus,
+        f: WriteWithEventFn<'_>,
+    ) -> Result<i64>;
+
+    /// Persist + broadcast a pure event (no associated entity write). Same
+    /// commit-then-emit invariant as `write_with_event`, but no transaction
+    /// closure — the event itself is the only write.
+    ///
+    /// Used for `Event::CodexHook` (ingest at
+    /// `routes::codex::ingest_hook`) and `Event::PluginState` (plugin
+    /// supervisor lifecycle in `plugin_host::PluginHost::emit_state`).
+    /// Returns the assigned `events.id`.
+    async fn log_pure_event(
+        &self,
+        actor: &str,
+        correlation: Option<&str>,
+        bus: &crate::event::EventBus,
+        event: Event,
+    ) -> Result<i64>;
+}
+
+// ---------------------------------------------------------------------------
+// `write_with_event_typed` — ergonomic generic wrapper around the
+// dyn-compatible trait method.
+// ---------------------------------------------------------------------------
+
+/// Generic convenience wrapper over `Repo::write_with_event` for callers
+/// who want to return a typed row to their REST / plugin-host caller. The
+/// closure returns `(R, Event)`; we capture `R` in an outer mutex so the
+/// trait method's `WriteWithEventFn` (which only knows about `Event`) can
+/// stay dyn-compatible.
+///
+/// This is *purely sugar* — the underlying invariants (single transaction,
+/// commit-then-emit) come from the trait method.
+pub async fn write_with_event_typed<R, F>(
+    repo: &dyn Repo,
+    actor: &str,
+    correlation: Option<&str>,
+    bus: &crate::event::EventBus,
+    f: F,
+) -> Result<(R, i64)>
+where
+    R: Send + 'static,
+    F: for<'tx> FnOnce(&'tx mut Transaction<'_, Sqlite>) -> BoxFuture<'tx, Result<(R, Event)>>
+        + Send
+        + 'static,
+{
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    let captured: Arc<Mutex<Option<R>>> = Arc::new(Mutex::new(None));
+    let captured_inner = Arc::clone(&captured);
+
+    let boxed: WriteWithEventFn<'_> = Box::new(move |tx| {
+        let captured_inner = Arc::clone(&captured_inner);
+        Box::pin(async move {
+            let (row, event) = f(tx).await?;
+            *captured_inner.lock().await = Some(row);
+            Ok(event)
+        })
+    });
+
+    let event_id = repo
+        .write_with_event(actor, correlation, bus, boxed)
+        .await?;
+    let row = Arc::try_unwrap(captured)
+        .map_err(|_| {
+            crate::error::CalmError::Internal(
+                "write_with_event_typed: outstanding reference to captured row".into(),
+            )
+        })?
+        .into_inner()
+        .ok_or_else(|| {
+            crate::error::CalmError::Internal(
+                "write_with_event_typed: closure did not set row".into(),
+            )
+        })?;
+    Ok((row, event_id))
 }

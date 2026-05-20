@@ -55,8 +55,11 @@ async fn ingest_emits_codex_hook_event() {
         .unwrap();
     assert_eq!(resp.status(), 204);
 
-    let ev = rx.recv().await.expect("event emitted");
-    match ev {
+    let env = rx.recv().await.expect("event emitted");
+    // Sync engine phase 1: bus carries `BroadcastEnvelope { id, event }`.
+    // CodexHook is persisted via `log_pure_event`, so `id` must be > 0.
+    assert!(env.id > 0, "expected real events.id, got {}", env.id);
+    match env.event {
         Event::CodexHook {
             card_id,
             kind,
