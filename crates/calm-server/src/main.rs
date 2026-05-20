@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use calm_server::actor::actor_middleware;
 use calm_server::config::Config;
 use calm_server::db::Repo;
 use calm_server::db::sqlite::SqlxRepo;
@@ -51,8 +52,14 @@ async fn main() -> anyhow::Result<()> {
         .allow_headers([axum::http::header::CONTENT_TYPE])
         .allow_credentials(true);
 
+    // Scope G — REST routes carry the `X-Calm-Actor` middleware so handler
+    // writes get a declared actor (user / ai:<id>). WS endpoints are
+    // upgrade-style and don't write through the same path, so they don't
+    // need this layer; actor on WS frames is a separate concern.
+    let rest_routes = routes::router().layer(axum::middleware::from_fn(actor_middleware));
+
     let app = axum::Router::new()
-        .merge(routes::router())
+        .merge(rest_routes)
         .merge(ws::router())
         .with_state(state)
         .layer(cors);

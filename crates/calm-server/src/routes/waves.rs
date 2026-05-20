@@ -4,6 +4,7 @@
 //! `write_with_event_typed` ergonomic wrapper). See `routes/coves.rs` for
 //! the migration pattern; this file follows the same shape.
 
+use crate::actor::Actor;
 use crate::db::sqlite::{wave_create_tx, wave_delete_tx, wave_update_tx};
 use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
@@ -16,8 +17,6 @@ use axum::{
     http::StatusCode,
     routing::get,
 };
-
-const REST_ACTOR: &str = "user";
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -82,16 +81,22 @@ pub(crate) async fn get_wave_detail(
 )]
 pub(crate) async fn create_wave(
     State(s): State<AppState>,
+    actor: Actor,
     Json(p): Json<NewWave>,
 ) -> Result<(StatusCode, Json<Wave>)> {
-    let (wave, _id) =
-        write_with_event_typed(s.repo.as_ref(), REST_ACTOR, None, &s.events, move |tx| {
+    let (wave, _id) = write_with_event_typed(
+        s.repo.as_ref(),
+        actor.as_str(),
+        None,
+        &s.events,
+        move |tx| {
             Box::pin(async move {
                 let wave = wave_create_tx(tx, p).await?;
                 Ok((wave.clone(), Event::WaveUpdated(wave)))
             })
-        })
-        .await?;
+        },
+    )
+    .await?;
     Ok((StatusCode::CREATED, Json(wave)))
 }
 
@@ -109,17 +114,23 @@ pub(crate) async fn create_wave(
 )]
 pub(crate) async fn update_wave(
     State(s): State<AppState>,
+    actor: Actor,
     Path(id): Path<String>,
     Json(p): Json<WavePatch>,
 ) -> Result<Json<Wave>> {
-    let (wave, _id) =
-        write_with_event_typed(s.repo.as_ref(), REST_ACTOR, None, &s.events, move |tx| {
+    let (wave, _id) = write_with_event_typed(
+        s.repo.as_ref(),
+        actor.as_str(),
+        None,
+        &s.events,
+        move |tx| {
             Box::pin(async move {
                 let wave = wave_update_tx(tx, &id, p).await?;
                 Ok((wave.clone(), Event::WaveUpdated(wave)))
             })
-        })
-        .await?;
+        },
+    )
+    .await?;
     Ok(Json(wave))
 }
 
@@ -136,6 +147,7 @@ pub(crate) async fn update_wave(
 )]
 pub(crate) async fn delete_wave(
     State(s): State<AppState>,
+    actor: Actor,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
     // Look up first (outside the txn) so we know the cove_id for the
@@ -150,8 +162,12 @@ pub(crate) async fn delete_wave(
         .ok_or_else(|| CalmError::NotFound(format!("wave {id}")))?;
     let cove_id = wave.cove_id.clone();
     let wave_id = wave.id.clone();
-    let (_unit, _id) =
-        write_with_event_typed(s.repo.as_ref(), REST_ACTOR, None, &s.events, move |tx| {
+    let (_unit, _id) = write_with_event_typed(
+        s.repo.as_ref(),
+        actor.as_str(),
+        None,
+        &s.events,
+        move |tx| {
             Box::pin(async move {
                 wave_delete_tx(tx, &wave_id).await?;
                 Ok((
@@ -162,7 +178,8 @@ pub(crate) async fn delete_wave(
                     },
                 ))
             })
-        })
-        .await?;
+        },
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }

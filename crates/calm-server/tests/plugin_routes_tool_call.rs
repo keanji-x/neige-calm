@@ -172,8 +172,13 @@ async fn wait_for_running(host: &Arc<PluginHost>, id: &str) {
 }
 
 fn app(state: AppState) -> axum::Router {
+    // Scope G: the cards router pulls `Actor` from extensions, so the
+    // middleware that populates it must be present. Mirror main.rs.
     axum::Router::new()
         .merge(routes::cards::router())
+        .layer(axum::middleware::from_fn(
+            calm_server::actor::actor_middleware,
+        ))
         .with_state(state)
 }
 
