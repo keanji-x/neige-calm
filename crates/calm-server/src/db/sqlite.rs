@@ -893,4 +893,40 @@ impl Repo for SqlxRepo {
             .await?;
         Ok(())
     }
+
+    // -------------------------------------------------------------- settings
+    async fn settings_get_all(&self) -> Result<Vec<(String, String)>> {
+        let rows: Vec<(String, String)> =
+            sqlx::query_as(r#"SELECT key, value FROM settings ORDER BY key ASC"#)
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows)
+    }
+
+    async fn settings_upsert(&self, key: &str, value: &str) -> Result<()> {
+        let now = now_ms();
+        sqlx::query(
+            r#"INSERT INTO settings (key, value, updated_at)
+               VALUES (?1, ?2, ?3)
+               ON CONFLICT(key) DO UPDATE SET
+                   value      = excluded.value,
+                   updated_at = excluded.updated_at"#,
+        )
+        .bind(key)
+        .bind(value)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn settings_delete(&self, key: &str) -> Result<()> {
+        // Idempotent — empty-string upserts coming through `PUT /api/settings`
+        // get rewritten to deletes, and missing rows are not an error there.
+        sqlx::query("DELETE FROM settings WHERE key = ?1")
+            .bind(key)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 }

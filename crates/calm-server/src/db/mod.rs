@@ -137,4 +137,16 @@ pub trait Repo: Send + Sync + 'static {
         prefix: &str,
     ) -> Result<Vec<(String, serde_json::Value)>>;
     async fn plugin_kv_delete(&self, plugin_id: &str, key: &str) -> Result<()>;
+
+    // ---- app-global settings (Settings page, codex spawn proxy override).
+    //
+    // Tiny KV. `settings_get_all` returns every key/value pair the kernel
+    // owns; the Settings route just hands it back, and `routes::codex`
+    // reads the snapshot at spawn time to derive HTTP_PROXY env overrides.
+    // `settings_upsert` is per-key INSERT OR REPLACE; an empty string is
+    // treated as a delete on the *route* boundary (callers can still
+    // upsert an empty value if they have a reason to).
+    async fn settings_get_all(&self) -> Result<Vec<(String, String)>>;
+    async fn settings_upsert(&self, key: &str, value: &str) -> Result<()>;
+    async fn settings_delete(&self, key: &str) -> Result<()>;
 }

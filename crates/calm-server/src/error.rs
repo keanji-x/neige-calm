@@ -21,9 +21,10 @@ pub struct ErrorBody {
     /// Human-readable error message.
     pub error: String,
     /// Stable machine-readable code — one of `not_found`, `conflict`,
-    /// `bad_request`, `unauthorized`, `plugin_install`, `plugin_permission`,
-    /// `plugin_conflict`, `db_error`, `io_error`, `serde_error`, `internal`,
-    /// `forbidden_tool`, `not_a_card_tool`, `tool_call_failed`.
+    /// `bad_request`, `unauthorized`, `forbidden`, `plugin_install`,
+    /// `plugin_permission`, `plugin_conflict`, `db_error`, `io_error`,
+    /// `serde_error`, `internal`, `forbidden_tool`, `not_a_card_tool`,
+    /// `tool_call_failed`.
     pub code: String,
 }
 
@@ -40,6 +41,11 @@ pub enum CalmError {
 
     #[error("unauthorized")]
     Unauthorized,
+
+    /// 403 — non-plugin permission gate (filesystem read denied, etc.).
+    /// Distinct from `PluginPermission` so error codes stay meaningful.
+    #[error("forbidden: {0}")]
+    Forbidden(String),
 
     // ---- M3 plugin-specific variants ----
     //
@@ -83,6 +89,7 @@ impl CalmError {
             CalmError::Conflict(_) => "conflict",
             CalmError::BadRequest(_) => "bad_request",
             CalmError::Unauthorized => "unauthorized",
+            CalmError::Forbidden(_) => "forbidden",
             CalmError::PluginInstall(_) => "plugin_install",
             CalmError::PluginPermission(_) => "plugin_permission",
             CalmError::PluginConflict(_) => "plugin_conflict",
@@ -99,7 +106,7 @@ impl CalmError {
             CalmError::Conflict(_) | CalmError::PluginConflict(_) => StatusCode::CONFLICT,
             CalmError::BadRequest(_) | CalmError::PluginInstall(_) => StatusCode::BAD_REQUEST,
             CalmError::Unauthorized => StatusCode::UNAUTHORIZED,
-            CalmError::PluginPermission(_) => StatusCode::FORBIDDEN,
+            CalmError::Forbidden(_) | CalmError::PluginPermission(_) => StatusCode::FORBIDDEN,
             CalmError::Db(_) | CalmError::Io(_) | CalmError::Serde(_) | CalmError::Internal(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }

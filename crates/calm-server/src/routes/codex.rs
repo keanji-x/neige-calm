@@ -1,36 +1,59 @@
-//! `/api/cards/:id/codex` — create a Codex agent for a `kind == "codex"` card.
+//! `/api/cards/:id/codex` — bind a `kind == "codex"` card to a live
+//! interactive Codex CLI running inside a PTY.
 //!
-//! The kernel doesn't persist a codex row (codex has no PTY socket / no
-//! reattach contract — restarts re-spawn from scratch). Instead, hook
-//! events are streamed via the WS event bus into the codex card so the
-//! UI can render them.
+//! ## Why a PTY
+//!
+//! Earlier iterations spawned `codex exec <prompt>` headless and listened
+//! to hook events for signal. Hook events were genuinely useful (and still
+//! are — they show up as a status-bar feed in the UI), but the headless
+//! `exec` mode hides the actual TUI, makes it impossible to drive codex
+//! interactively, and — worst of all — appears to "hang" the moment codex
+//! can't reach the model API. The user can't see the codex error, so the
+//! card just sits there with no signal.
+//!
+//! By spawning interactive codex through the same PTY infrastructure the
+//! Terminal card uses (xterm.js ↔ `calm-session-daemon` ↔ codex CLI), we
+//! get the full TUI in the browser and the user can both drive the agent
+//! and see when something's wrong with the network / auth / API.
 //!
 //! ## Flow
 //!
 //! 1. Validate the card exists and is `kind == "codex"`.
-//! 2. `mktemp -d` a per-spawn `CODEX_HOME`. **Seed it** by copying the
-//!    contents of `~/.codex` so auth.json / config.toml carry over;
-//!    overwrite `hooks.json` to point every event at our bridge.
-//! 3. `spawn codex exec` with the temp `CODEX_HOME`, plus envs the bridge
-//!    needs to POST back: `NEIGE_CARD_ID`, `NEIGE_CALM_BASE_URL`.
-//! 4. Detach. The codex process owns its own lifetime; the WS bus
-//!    delivers hooks until the agent exits.
+//! 2. `mktemp -d` a per-spawn `CODEX_HOME`. **Seed it** from `~/.codex`
+//!    (auth.json / config.toml carry over) and overwrite `hooks.json` to
+//!    point every event at our bridge.
+//! 3. Create a `Terminal` row whose `program = "codex"`, `cwd =
+//!    <user-supplied or $HOME>`, and `env` carries `CODEX_HOME`,
+//!    `NEIGE_CARD_ID`, `NEIGE_CALM_BASE_URL`. The daemon will forward all
+//!    env to the PTY child (see `crates/calm-session/src/bin/daemon.rs`).
+//! 4. Spawn `calm-session-daemon` via `routes::terminal::spawn_daemon_for`.
+//! 5. Patch the Card.payload with `terminal_id` so the frontend can attach
+//!    the xterm via `/api/terminals/:id`.
 //!
-//! Cleanup: `tempfile::TempDir` would auto-clean on drop, but the spawned
-//! codex process out-lives the request handler, so we move ownership of
-//! the tempdir into the wait-task and let it drop when codex exits.
+//! Hook events stay on the WS event bus (`card:<card_id>` → `codex.hook`)
+//! exactly as before — the codex CLI runs the bridge on every hook via the
+//! `hooks.json` we seed.
+//!
+//! ## Tempdir lifetime
+//!
+//! The `CODEX_HOME` tempdir is intentionally leaked (`TempDir::keep()`). The
+//! kernel has no "agent died" hook on the codex card side, so there's no
+//! good signal to clean up on. Leaking matches the prior behavior — the
+//! tempdir survives until the next reboot's `/tmp` cleaner. Acceptable
+//! for a per-card directory with auth.json + config.toml + hooks.json.
 //!
 //! ## Hook bridge
 //!
 //! Internal ingest is at `POST /internal/codex/hook?card_id=<id>`. The
-//! bridge binary (`neige-codex-bridge`) is spawned by codex with stdin =
-//! a single JSON object per event; we tag it with the card id (from the
-//! query string, not the payload — codex doesn't know about cards) and
-//! emit `Event::CodexHook` to the bus.
+//! bridge binary (`neige-codex-bridge`) is invoked by codex on every hook
+//! with stdin = a single JSON object; the bridge POSTs it here and we
+//! tag it with the card id and emit `Event::CodexHook` on the bus.
 
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::Event;
-use crate::model::Card;
+use crate::model::{Card, CardPatch, NewTerminal};
+use crate::routes::settings::load_settings;
+use crate::routes::terminal::spawn_daemon_for;
 use crate::state::AppState;
 use axum::{
     Json, Router,
@@ -41,7 +64,6 @@ use axum::{
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::Path as StdPath;
-use std::process::Stdio;
 use utoipa::ToSchema;
 
 pub fn router() -> Router<AppState> {
@@ -55,21 +77,15 @@ pub fn router() -> Router<AppState> {
 
 #[derive(Deserialize, Debug, Default, ToSchema)]
 pub struct NewCodexBody {
-    /// Required — the first user prompt. Codex's `exec` flow accepts it
-    /// as a positional arg.
-    pub initial_prompt: String,
-    /// Optional override (default codex picks per its own config).
-    #[serde(default)]
-    pub model: Option<String>,
     /// Working directory codex runs in. Defaults to `$HOME` if empty.
     #[serde(default)]
     pub cwd: Option<String>,
-    /// Reserved for a future codex permission/sandbox flag — not wired
-    /// yet (the right `-c` config keys for `approval_policy` / sandbox
-    /// are version-sensitive). We accept the field so the schema-form on
-    /// the frontend can collect it without errors.
+    /// Reserved field — interactive codex has slash-commands for the
+    /// prompt; the API still accepts it for forward / backward
+    /// compatibility but does nothing with it. Kept so older clients keep
+    /// generating valid OpenAPI requests.
     #[serde(default)]
-    pub permission_mode: Option<String>,
+    pub initial_prompt: Option<String>,
 }
 
 #[utoipa::path(
@@ -79,7 +95,7 @@ pub struct NewCodexBody {
     params(("card_id" = String, Path, description = "Card id (must be a codex card)")),
     request_body(content = NewCodexBody, description = "Codex spawn parameters"),
     responses(
-        (status = 202, description = "Codex spawned; hook events stream over WS", body = Card),
+        (status = 202, description = "Codex spawned; hook events stream over WS, TUI runs in the card's PTY", body = Card),
         (status = 400, description = "Card is not a codex card", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
         (status = 500, description = "Spawn failed", body = ErrorBody),
@@ -103,50 +119,52 @@ pub(crate) async fn create_codex(
             card.kind
         )));
     }
-    if p.initial_prompt.trim().is_empty() {
-        return Err(CalmError::BadRequest(
-            "initial_prompt is required".to_string(),
-        ));
-    }
 
-    spawn_codex_for(&s, &card_id, &p).await?;
-
-    // The card payload stays minimal — codex has no row to point at; the
-    // UI subscribes to `card:<id>` for hook events. We just echo the card
-    // back so the client confirms binding succeeded.
+    let card = spawn_codex_for(&s, &card, &p).await?;
     Ok((StatusCode::ACCEPTED, Json(card)))
 }
 
-/// Build a fresh `CODEX_HOME` tempdir for this spawn, seed it from
-/// `$HOME/.codex` (so user auth + config carry through), overwrite
-/// `hooks.json` to point at our bridge, and `codex exec` against it.
-async fn spawn_codex_for(s: &AppState, card_id: &str, p: &NewCodexBody) -> Result<()> {
-    // 1. Per-spawn CODEX_HOME — never touch the user's real ~/.codex.
-    let codex_home = tempfile::Builder::new()
-        .prefix("neige-codex-")
-        .tempdir()
-        .map_err(|e| CalmError::Internal(format!("mktemp codex_home: {e}")))?;
+/// Persist a per-card `CODEX_HOME` under `data_dir/codex-homes/<card_id>/`
+/// (lives in the bind-mounted `$HOME`, so it survives container restarts),
+/// seed it from `$HOME/.codex` on first creation, write our hooks.json,
+/// create a Terminal row, and spawn the session daemon running interactive
+/// `codex`. Returns the updated Card with `payload.terminal_id` set so the
+/// frontend can attach the xterm.
+async fn spawn_codex_for(s: &AppState, card: &Card, p: &NewCodexBody) -> Result<Card> {
+    // 1. Stable per-card CODEX_HOME. Keying on card_id means daemon
+    //    revives after a container restart see the same auth.json / state
+    //    that codex wrote last time — the old `/tmp/`-keyed tempdir was
+    //    wiped by docker, leaving the daemon stuck in a respawn loop.
+    let codex_home = s.codex.codex_homes_dir.join(&card.id);
+    let is_fresh = !codex_home.exists();
+    std::fs::create_dir_all(&codex_home)
+        .map_err(|e| CalmError::Internal(format!("mkdir codex_home {}: {e}", codex_home.display())))?;
 
-    // 2. Seed from $HOME/.codex if present. Best-effort: a fresh user
-    //    without any codex config still works — codex will create
-    //    whatever files it needs in our tempdir.
-    if let Some(src) = host_codex_dir()
-        && src.exists()
-    {
-        if let Err(e) = copy_dir_recursive(&src, codex_home.path()) {
-            tracing::warn!(error = %e, src = %src.display(), "codex seed copy failed; continuing without it");
+    // 2. Seed from $HOME/.codex on first creation only. Re-spawns after a
+    //    restart find the dir already populated with codex's accumulated
+    //    state (auth.json, history.jsonl, sessions/) — re-copying would
+    //    clobber that with the user's pristine host config.
+    if is_fresh {
+        if let Some(src) = host_codex_dir()
+            && src.exists()
+        {
+            if let Err(e) = copy_dir_recursive(&src, &codex_home) {
+                tracing::warn!(error = %e, src = %src.display(), "codex seed copy failed; continuing without it");
+            }
         }
     }
 
-    // 3. Overwrite hooks.json — even if the seed brought one in, ours
-    //    has to win so codex calls our bridge.
+    // 3. Always (re)write hooks.json — even if the seed brought one in, or
+    //    a previous spawn wrote one with a stale bridge path. Cheap to
+    //    overwrite and ensures upgrades pick up the new path.
     let bridge_path = s.codex.bridge_bin.to_string_lossy().to_string();
     let hooks_json = build_hooks_json(&bridge_path);
-    let hooks_path = codex_home.path().join("hooks.json");
+    let hooks_path = codex_home.join("hooks.json");
     std::fs::write(&hooks_path, hooks_json)
         .map_err(|e| CalmError::Internal(format!("write hooks.json: {e}")))?;
 
-    // 4. Spawn codex.
+    // 4. Resolve cwd & assemble env that the daemon will forward to the
+    //    PTY child. Interactive `codex` (no args) boots into its TUI.
     let cwd = p
         .cwd
         .as_deref()
@@ -154,35 +172,98 @@ async fn spawn_codex_for(s: &AppState, card_id: &str, p: &NewCodexBody) -> Resul
         .map(String::from)
         .unwrap_or_else(default_cwd);
 
-    let mut cmd = tokio::process::Command::new(&s.codex.codex_bin);
-    cmd.arg("exec");
-    if let Some(model) = p.model.as_deref().filter(|s| !s.trim().is_empty()) {
-        cmd.args(["--model", model]);
+    let codex_home_path = codex_home.to_string_lossy().to_string();
+
+    // Pull the user's Settings snapshot. The Settings page (`/settings`)
+    // owns these values; for proxy fields we **only** inject the env var
+    // when the user actually has a non-empty override. Without an
+    // override, we leave the env alone so the daemon's child process
+    // inherits whatever proxy the container already exports (e.g. the
+    // compose-supplied `HTTP_PROXY=http://127.0.0.1:10809`). Explicitly
+    // setting an empty string here would *clear* the container default,
+    // which is the opposite of what the user expects.
+    let settings = load_settings(s.repo.as_ref()).await?;
+
+    let mut env_map = serde_json::Map::new();
+    env_map.insert(
+        "CODEX_HOME".to_string(),
+        serde_json::Value::String(codex_home_path.clone()),
+    );
+    env_map.insert(
+        "NEIGE_CARD_ID".to_string(),
+        serde_json::Value::String(card.id.clone()),
+    );
+    env_map.insert(
+        "NEIGE_CALM_BASE_URL".to_string(),
+        serde_json::Value::String(s.codex.ingest_url.clone()),
+    );
+    if let Some(p) = settings.http_proxy.as_deref().filter(|s| !s.is_empty()) {
+        // Set both lowercase and uppercase — codex (and the OpenAI client
+        // it links) reads `HTTPS_PROXY` / `HTTP_PROXY` (uppercase), but
+        // most reqwest-based tools also honor lowercase. Cheap to write
+        // both; matches what the container env already does.
+        env_map.insert("HTTP_PROXY".to_string(), serde_json::Value::String(p.to_string()));
+        env_map.insert("http_proxy".to_string(), serde_json::Value::String(p.to_string()));
     }
-    cmd.arg("--").arg(&p.initial_prompt);
-    cmd.current_dir(&cwd);
-    cmd.env("CODEX_HOME", codex_home.path());
-    cmd.env("NEIGE_CARD_ID", card_id);
-    cmd.env("NEIGE_CALM_BASE_URL", &s.codex.ingest_url);
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(false);
+    if let Some(p) = settings.https_proxy.as_deref().filter(|s| !s.is_empty()) {
+        env_map.insert("HTTPS_PROXY".to_string(), serde_json::Value::String(p.to_string()));
+        env_map.insert("https_proxy".to_string(), serde_json::Value::String(p.to_string()));
+    }
+    let env = serde_json::Value::Object(env_map);
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| CalmError::Internal(format!("spawn codex: {e}")))?;
-    let pid = child.id();
-    tracing::info!(pid = ?pid, card_id = %card_id, "spawned codex");
+    // 5. Persist the Terminal row.
+    let program = "codex".to_string();
+    let term = s
+        .repo
+        .terminal_create(NewTerminal {
+            card_id: card.id.clone(),
+            program: program.clone(),
+            cwd: cwd.clone(),
+            env: env.clone(),
+        })
+        .await?;
 
-    // Move tempdir ownership into the wait task so it stays alive while
-    // codex is running; auto-cleans on process exit.
-    tokio::spawn(async move {
-        let _guard = codex_home; // dropped after `wait` returns
-        let _ = child.wait().await;
-    });
+    // 6. Spawn the session daemon for this terminal.
+    spawn_daemon_for(s, &term, &program, &cwd, &env).await?;
 
-    Ok(())
+    // 7. Stamp the card payload so the frontend's `fromKernel` picks up the
+    //    terminal_id and renders xterm. We merge into any existing payload
+    //    so we don't clobber fields a future caller might add.
+    let mut payload = card.payload.clone();
+    if !payload.is_object() {
+        payload = serde_json::json!({});
+    }
+    payload["terminal_id"] = serde_json::Value::String(term.id.clone());
+    if !cwd.is_empty() {
+        payload["cwd"] = serde_json::Value::String(cwd.clone());
+    }
+    let updated = s
+        .repo
+        .card_update(
+            &card.id,
+            CardPatch {
+                kind: None,
+                sort: None,
+                payload: Some(payload),
+            },
+        )
+        .await?;
+
+    tracing::info!(
+        card_id = %card.id,
+        terminal_id = %term.id,
+        cwd = %cwd,
+        "spawned interactive codex"
+    );
+
+    // initial_prompt is intentionally ignored — interactive codex uses its
+    // own slash-command UX for input. We log it once for observability so
+    // older clients pushing prompts don't silently lose anything.
+    if let Some(ip) = p.initial_prompt.as_deref().filter(|s| !s.trim().is_empty()) {
+        tracing::debug!(card_id = %card.id, initial_prompt = %ip, "initial_prompt ignored in interactive mode");
+    }
+
+    Ok(updated)
 }
 
 #[derive(Debug, Deserialize)]

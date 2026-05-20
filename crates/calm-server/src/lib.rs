@@ -25,6 +25,7 @@
 //! config        Config (CLI / env)
 //! ```
 
+pub mod card_fsm;
 pub mod config;
 pub mod db;
 pub mod error;

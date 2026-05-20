@@ -59,6 +59,13 @@ impl AppState {
         }
 
         let events = EventBus::new();
+
+        // Per-card FSM (phase 1: codex cards only). Subscribes to the bus
+        // and projects `codex.hook` events onto a 6-state FSM, writing
+        // `Overlay { kind: "status" }` rows for cards and wave-union rows
+        // for waves. See `card_fsm` module docs for the scope rationale.
+        crate::card_fsm::spawn(repo.clone(), events.clone());
+
         let plugin = Arc::new(PluginHost::new_full(
             Arc::new(registry),
             repo.clone(),
@@ -169,6 +176,13 @@ pub struct CodexClient {
     pub bridge_bin: PathBuf,
     /// Loopback URL the bridge POSTs to (`http://127.0.0.1:<port>`).
     pub ingest_url: String,
+    /// Per-card CODEX_HOME parent. Lives under `data_dir/codex-homes/`,
+    /// which is `$HOME/.local/share/neige-calm/codex-homes/` by default
+    /// — bind-mounted into the container, so it survives `docker compose
+    /// down/up` and the codex card's auth.json + state stay alive across
+    /// restarts. (The old `/tmp/`-based location was wiped on every
+    /// container recreate, leaving the daemon stuck in a respawn loop.)
+    pub codex_homes_dir: PathBuf,
 }
 
 impl CodexClient {
@@ -180,6 +194,7 @@ impl CodexClient {
                 .clone()
                 .unwrap_or_else(resolve_codex_bridge_bin),
             ingest_url: cfg.codex_ingest_url_resolved(),
+            codex_homes_dir: cfg.data_dir_resolved().join("codex-homes"),
         }
     }
 
@@ -190,6 +205,7 @@ impl CodexClient {
             codex_bin: "codex".into(),
             bridge_bin: PathBuf::from("neige-codex-bridge"),
             ingest_url: "http://127.0.0.1:0".into(),
+            codex_homes_dir: std::env::temp_dir().join("neige-codex-homes-stub"),
         }
     }
 }
