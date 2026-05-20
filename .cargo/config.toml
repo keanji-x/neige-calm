@@ -1,0 +1,25 @@
+# Workspace cargo config.
+#
+# `TS_RS_EXPORT_DIR` is consumed by the `ts-rs` crate (a dependency of
+# `calm-server`). It controls the base directory into which TS bindings are
+# written, joined with each `#[ts(export_to = "..")]` path.
+#
+# Default is `./bindings` which would force every export_to to read like
+# `"../bindings/../../web/..."`. Pinning to `.` lets the attribute on each
+# derive read naturally — `"../../web/src/api/generated-events.ts"` relative
+# to the crate that owns the type (calm-server).
+#
+# `relative = true` resolves this against the directory containing this
+# config.toml (= the workspace root), regardless of which cwd `cargo test`
+# is invoked from. That matters because `npm run gen:api` runs cargo from
+# the `web/` directory via `--manifest-path ../Cargo.toml`.
+[env]
+TS_RS_EXPORT_DIR = { value = ".", relative = true, force = true }
+# Rust `i64`/`u64`/`i128`/`u128` default to `bigint` in ts-rs. We map them to
+# `number` because (a) the existing OpenAPI/`generated.ts` already represents
+# Rust `i64` (created_at, updated_at, archived_at) as `number`, (b) the runtime
+# zod schemas in `schemas.ts` use `z.number()`, and (c) timestamps comfortably
+# fit in JS's `Number.MAX_SAFE_INTEGER`. The conformance test in
+# `schemas.test.ts` would catch any drift if a future i64 field outgrew this
+# assumption — switch back to `bigint` and update the zod side then.
+TS_RS_LARGE_INT = "number"
