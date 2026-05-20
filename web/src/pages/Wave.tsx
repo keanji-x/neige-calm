@@ -1,4 +1,5 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef } from 'react';
+import { useState } from '../shared/state';
 import { Icon } from '../Icon';
 import { AddPanel, type AddPanelKind } from '../shared/components/AddPanel';
 import type { AddPanelMenuItem } from '../shared/components/AddPanel';

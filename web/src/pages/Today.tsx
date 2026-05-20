@@ -1,4 +1,5 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo } from 'react';
+import { useState } from '../shared/state';
 import { coveOf, timeOfDay } from '../shared/components/helpers';
 import type { Cove, Route, Wave } from '../types';
 

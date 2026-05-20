@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
+import { useState } from './shared/state';
 import { whoami } from './api/auth';
 import { LoginPage } from './LoginPage';
 

@@ -8,7 +8,8 @@
 // pattern keeps the visual style consistent across kinds and gives plugin
 // authors a declarative knob to collect input.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
+import { useState } from '../state';
 import { addPanelEntries, type AddPanelMenuItem } from '../../cards/registry';
 
 export type { AddPanelMenuItem } from '../../cards/registry';

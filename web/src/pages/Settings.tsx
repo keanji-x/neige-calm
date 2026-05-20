@@ -13,7 +13,8 @@
 // just produce a slightly out-of-date defaults — the user always edits
 // against what they last fetched.
 
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
+import { useState } from '../shared/state';
 import { Crumbs } from '../shared/components/Crumbs';
 import { useSettingsQuery, useUpdateSettingsMutation } from '../api/queries';
 import type { Route } from '../types';

@@ -16,7 +16,8 @@
 //     local FSM here, so wave-union (the kernel computes it server-side)
 //     and per-card dot agree by construction.
 
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
+import { useState } from '../../shared/state';
 import { z } from 'zod';
 import type { CodexCardData, FsmState } from '../../types';
 import { sharedEventStream } from '../../api/events';

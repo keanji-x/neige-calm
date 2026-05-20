@@ -17,7 +17,8 @@
 //     UI shapes inline. The result is shallow-stable enough for the
 //     Sidebar; per-cove invalidations naturally roll up.
 
-import { Suspense, useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo } from 'react';
+import { useState } from './shared/state';
 import { Outlet, useRouterState } from '@tanstack/react-router';
 import { useQueries } from '@tanstack/react-query';
 import { Sidebar } from './shared/components/Sidebar';

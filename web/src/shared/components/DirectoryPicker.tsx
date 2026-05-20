@@ -23,7 +23,8 @@
 // list. Promoting the browser into the modal body sidesteps that whole
 // class of layout bugs.
 
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
+import { useState } from '../state';
 import * as api from '../../api/calm';
 import { CalmApiError } from '../../api/calm';
 import type { ListdirResponse } from '../../api/wire';
