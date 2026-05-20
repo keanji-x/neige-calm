@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'react';
 import { z } from 'zod';
 import type { TerminalCardData } from '../../types';
 import type { CardEntry } from '../registry';
+import { dlog } from '../../util/debug';
 
 // xterm.js + the fit addon plus its CSS bring real weight (~150 KB raw).
 // Only load the renderer when a terminal card actually goes live; the
@@ -25,6 +26,7 @@ const terminalPayloadSchema = z.object({
 function TerminalCard({ card }: { card: TerminalCardData }) {
   const { title, lines, terminalId } = card;
   const live = !!terminalId;
+  dlog('TerminalCard', 'render', { id: card.id, live, terminalId });
   return (
     <div className={'term' + (live ? ' live' : '')}>
       <div className="term-head card-drag-handle">
@@ -64,6 +66,7 @@ export const TerminalEntry: CardEntry<TerminalCardData> = {
   defaultSize: { w: 6, h: 10, minW: 4, minH: 6 },
   fromKernel: (k) => {
     if (k.kind !== 'terminal') return null;
+    dlog('TerminalEntry.fromKernel', { id: k.id, payload: k.payload });
     // A `null` payload is legal here — predates the kernel attaching a
     // `terminal_id`. Treat as empty object so the optional field stays
     // undefined; non-object payloads on a `terminal` card are an error.
