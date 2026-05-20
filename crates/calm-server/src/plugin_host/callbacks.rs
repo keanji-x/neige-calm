@@ -21,6 +21,7 @@ use tokio::task::JoinHandle;
 use crate::db::Repo;
 use crate::event::{Event, EventBus};
 use crate::model::{CardPatch, NewCard, NewOverlay};
+use crate::validation::{validate_card_payload, validate_overlay_payload};
 
 use super::events::SubscriptionFilter;
 use super::mcp::{CallToolResult, McpClient, RpcError};
@@ -199,6 +200,10 @@ async fn overlay_set(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
             ctx.plugin_id, p.entity_kind
         )));
     }
+    // D4: validate kernel-owned overlay kinds; plugin-defined kinds opaque.
+    if let Err(e) = validate_overlay_payload(&p.kind, &p.payload) {
+        return Err(RpcError::invalid_params(e.to_string()));
+    }
     // plugin_id is server-enforced; we ignore any field the plugin tried to set.
     let new_overlay = NewOverlay {
         plugin_id: ctx.plugin_id.to_string(),
@@ -284,15 +289,21 @@ async fn card_create(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
             ctx.plugin_id, p.kind, ctx.plugin_id,
         )));
     }
+    let payload = if p.payload.is_null() {
+        json!({})
+    } else {
+        p.payload
+    };
+    // D4: kernel-owned card kinds (currently `terminal`) must match shape;
+    // plugin-prefixed and ui:// kinds remain opaque.
+    if let Err(e) = validate_card_payload(&p.kind, &payload) {
+        return Err(RpcError::invalid_params(e.to_string()));
+    }
     let new = NewCard {
         wave_id: p.wave_id,
         kind: p.kind,
         sort: p.sort,
-        payload: if p.payload.is_null() {
-            json!({})
-        } else {
-            p.payload
-        },
+        payload,
     };
     let stored = ctx.repo.card_create(new).await.map_err(|e| match e {
         crate::error::CalmError::NotFound(s) => entity_not_found(s),
@@ -337,6 +348,14 @@ async fn card_update(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
             "plugin `{}` cannot retarget card to kind `{}`",
             ctx.plugin_id, new_kind,
         )));
+    }
+    // D4: if the patch carries a payload, validate against the effective
+    // kind (the new kind if retargeting, otherwise the existing card's kind).
+    if let Some(payload) = p.payload.as_ref() {
+        let kind = p.kind.as_deref().unwrap_or(card.kind.as_str());
+        if let Err(e) = validate_card_payload(kind, payload) {
+            return Err(RpcError::invalid_params(e.to_string()));
+        }
     }
     let patch = CardPatch {
         kind: p.kind,
@@ -843,7 +862,9 @@ mod tests {
                 "entity_kind": "wave",
                 "entity_id": h.wave_id,
                 "kind": "status",
-                "payload": {}
+                // D4: `status` payload must include `state` since it's a
+                // kernel-owned overlay kind.
+                "payload": { "state": "running" }
             }),
         )
         .await
