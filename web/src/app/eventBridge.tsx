@@ -9,12 +9,23 @@
 //   cove.updated / cove.deleted   → invalidate ['coves']
 //   wave.updated                  → invalidate ['waves', cove_id] + ['wave', id]
 //   wave.deleted                  → invalidate ['waves', cove_id], drop ['wave', id]
-//   card.added / .updated         → invalidate ['wave', wave_id]
-//   card.deleted                  → invalidate ['wave', wave_id]
+//   card.added / .updated         → debounced invalidate ['wave', wave_id]
+//   card.deleted                  → debounced invalidate ['wave', wave_id]
 //   overlay.set / .deleted        → invalidate the affected wave detail AND
 //                                    the global ['overlays', entity_kind]
 //                                    snapshot used by the Sidebar
 //   plugin.state                  → no-op (no plugin list query yet)
+//
+// Why debounce card events: creating a terminal card today is a 3-step
+// kernel mutation (POST card → POST terminal → PATCH payload), emitting
+// `card.added` (no terminal_id yet) and `card.updated` (with terminal_id)
+// within ~10ms. Without coalescing, the UI renders the half-built card
+// first (static-text branch) and then swaps in `<XtermView>`, which the
+// user sees as a visible twitch. A small wave-keyed debounce collapses
+// rapid bursts into a single refetch carrying the final state. The fix
+// belongs here (not in `addCardOfKind`) because any future multi-step
+// kernel flow benefits automatically. A proper atomic create endpoint
+// would obviate the workaround — tracked separately.
 //
 // `overlay.{set,deleted}` is the only mildly tricky case: the kernel
 // addresses overlays by `entity_kind` + `entity_id`, so for card overlays
@@ -31,20 +42,54 @@ import { sharedEventStream } from '../api/events';
 import { queryKeys } from '../api/queries';
 import type { KernelWaveDetail, WireEvent } from '../api/wire';
 
+/** Debounce window for card-event invalidations, keyed by wave_id. Tuned
+ *  to comfortably swallow the ~10-20ms gap between the kernel's
+ *  card.added and card.updated emissions during multi-step card creation
+ *  (see header comment). Short enough that external clients still see a
+ *  near-instant refresh. */
+const CARD_INVALIDATE_DEBOUNCE_MS = 60;
+
 export function EventBridge() {
   const queryClient = useQueryClient();
 
   useEffect(() => {
     const stream = sharedEventStream();
     stream.subscribe(['*']);
-    const off = stream.on((ev) => dispatch(queryClient, ev));
-    return () => off();
+
+    // Per-wave timer so bursts on different waves don't suppress each other.
+    const pendingCardInvalidations = new Map<string, ReturnType<typeof setTimeout>>();
+
+    const off = stream.on((ev) => dispatch(queryClient, ev, pendingCardInvalidations));
+
+    return () => {
+      off();
+      for (const timer of pendingCardInvalidations.values()) clearTimeout(timer);
+      pendingCardInvalidations.clear();
+    };
   }, [queryClient]);
 
   return null;
 }
 
-function dispatch(qc: QueryClient, ev: WireEvent): void {
+function scheduleCardInvalidate(
+  qc: QueryClient,
+  wave_id: string,
+  pending: Map<string, ReturnType<typeof setTimeout>>,
+): void {
+  const existing = pending.get(wave_id);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(() => {
+    pending.delete(wave_id);
+    void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(wave_id) });
+  }, CARD_INVALIDATE_DEBOUNCE_MS);
+  pending.set(wave_id, timer);
+}
+
+function dispatch(
+  qc: QueryClient,
+  ev: WireEvent,
+  pendingCardInvalidations: Map<string, ReturnType<typeof setTimeout>>,
+): void {
   switch (ev.ev) {
     case 'cove.updated': {
       void qc.invalidateQueries({ queryKey: queryKeys.coves() });
@@ -75,7 +120,7 @@ function dispatch(qc: QueryClient, ev: WireEvent): void {
     case 'card.added':
     case 'card.updated':
     case 'card.deleted': {
-      void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(ev.data.wave_id) });
+      scheduleCardInvalidate(qc, ev.data.wave_id, pendingCardInvalidations);
       return;
     }
     case 'overlay.set':

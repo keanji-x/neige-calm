@@ -143,29 +143,86 @@ describe('EventBridge', () => {
     cleanup();
   });
 
-  it('card.added invalidates the owning wave detail', () => {
-    const client = makeClient();
-    const invalidate = vi.spyOn(client, 'invalidateQueries');
-    const Wrapper = wrap(client);
-    render(
-      <Wrapper>
-        <EventBridge />
-      </Wrapper>,
-    );
-    fakeStream.emit({
-      ev: 'card.added',
-      data: {
+  it('card.added invalidates the owning wave detail (debounced)', () => {
+    vi.useFakeTimers();
+    try {
+      const client = makeClient();
+      const invalidate = vi.spyOn(client, 'invalidateQueries');
+      const Wrapper = wrap(client);
+      render(
+        <Wrapper>
+          <EventBridge />
+        </Wrapper>,
+      );
+      fakeStream.emit({
+        ev: 'card.added',
+        data: {
+          id: 'card_1',
+          wave_id: 'wave_42',
+          kind: 'terminal',
+          sort: 0,
+          payload: { terminal_id: 't_x' },
+          created_at: 1,
+          updated_at: 2,
+        },
+      });
+      // Card invalidations are debounced (~60ms) to coalesce rapid bursts
+      // from multi-step kernel mutations. Nothing should fire yet.
+      expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ['wave', 'wave_42'] });
+      vi.advanceTimersByTime(100);
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['wave', 'wave_42'] });
+      cleanup();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('card.added + card.updated bursts coalesce into one invalidate', () => {
+    vi.useFakeTimers();
+    try {
+      const client = makeClient();
+      const invalidate = vi.spyOn(client, 'invalidateQueries');
+      const Wrapper = wrap(client);
+      render(
+        <Wrapper>
+          <EventBridge />
+        </Wrapper>,
+      );
+      // Mirrors the terminal-card create flow: card.added (no terminal_id),
+      // then card.updated (with terminal_id), within the debounce window.
+      const baseCard = {
         id: 'card_1',
         wave_id: 'wave_42',
         kind: 'terminal',
         sort: 0,
-        payload: { terminal_id: 't_x' },
         created_at: 1,
         updated_at: 2,
-      },
-    });
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['wave', 'wave_42'] });
-    cleanup();
+      } as const;
+      fakeStream.emit({ ev: 'card.added', data: { ...baseCard, payload: null } });
+      vi.advanceTimersByTime(15);
+      fakeStream.emit({
+        ev: 'card.updated',
+        data: { ...baseCard, payload: { terminal_id: 't_x' } },
+      });
+      // Still pending — the second event reset the debounce window.
+      const before = invalidate.mock.calls.filter((c) =>
+        Array.isArray(c[0]?.queryKey)
+          ? (c[0].queryKey as unknown[])[0] === 'wave'
+          : false,
+      ).length;
+      expect(before).toBe(0);
+      vi.advanceTimersByTime(100);
+      const after = invalidate.mock.calls.filter((c) =>
+        Array.isArray(c[0]?.queryKey)
+          ? (c[0].queryKey as unknown[])[0] === 'wave'
+          : false,
+      ).length;
+      // Exactly one ['wave', 'wave_42'] invalidation despite two events.
+      expect(after).toBe(1);
+      cleanup();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('plugin.state events are accepted but do not invalidate (no plugin query yet)', () => {
