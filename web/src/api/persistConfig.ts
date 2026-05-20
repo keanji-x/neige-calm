@@ -25,14 +25,12 @@
 //   ['overlays', 'wave' | 'card']     — workspace-wide overlay snapshot
 //   ['overlay', ...]                  — reserved future per-entity overlay key
 //
-// Buster strategy: the web app's `package.json` version. Bumping it (e.g.
-// when the API contract changes or a cache-format-breaking refactor lands)
-// causes TanStack Query to drop the persisted cache on next boot. Build-time
-// `version` is the cleanest signal — git SHA changes on every commit (too
-// aggressive), and a hand-edited string requires remembering to bump.
+// Buster strategy: cache schema + the web app's `package.json` version.
+// Bump `PERSIST_CACHE_SCHEMA_VERSION` when the persisted shape changes; bump
+// the package version when a release should invalidate old snapshots.
 
 import { createAsyncStoragePersister } from '@tanstack/query-async-storage-persister';
-import type { Query } from '@tanstack/react-query';
+import { defaultShouldDehydrateQuery, type Query } from '@tanstack/react-query';
 import { createStore, get as idbGet, set as idbSet, del as idbDel } from 'idb-keyval';
 import pkg from '../../package.json';
 
@@ -50,10 +48,14 @@ export const IDB_CACHE_KEY = 'tanstack-query-v1';
  *  paint-before-refetch hint, but anything older is mostly noise. */
 export const PERSIST_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
-/** Build-time buster derived from `web/package.json` version. Exported so the
- *  PersistQueryClientProvider in providers.tsx and the integration tests
- *  read the same source of truth. */
-export const PERSIST_BUSTER: string = pkg.version;
+/** Manual schema lever for cache-format or API-contract changes that should
+ *  evict all persisted Query snapshots, independent of package release
+ *  versioning discipline. */
+export const PERSIST_CACHE_SCHEMA_VERSION = 'query-cache-v1';
+
+/** Build-time buster derived from cache schema + `web/package.json` version.
+ *  Exported so the provider and tests read the same source of truth. */
+export const PERSIST_BUSTER: string = `${PERSIST_CACHE_SCHEMA_VERSION}:${pkg.version}`;
 
 /**
  * Build an IndexedDB-backed persister.
@@ -105,7 +107,7 @@ export function createIDBPersister(opts: { throttleTime?: number } = {}) {
  * Everything else (e.g. `['settings']`, future ad-hoc keys) is intentionally
  * dropped — see the file-level comment for the rationale.
  */
-export function shouldPersistQuery(query: Pick<Query, 'queryKey'>): boolean {
+export function isPersistableQueryKey(query: Pick<Query, 'queryKey'>): boolean {
   const key = query.queryKey;
   if (!Array.isArray(key) || key.length === 0) return false;
   const root = key[0];
@@ -113,6 +115,10 @@ export function shouldPersistQuery(query: Pick<Query, 'queryKey'>): boolean {
   if (root === 'waves' || root === 'wave') return key.length >= 2;
   if (root === 'overlays' || root === 'overlay') return key.length >= 2;
   return false;
+}
+
+export function shouldPersistQuery(query: Query): boolean {
+  return defaultShouldDehydrateQuery(query) && isPersistableQueryKey(query);
 }
 
 /**

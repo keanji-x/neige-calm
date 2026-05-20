@@ -20,17 +20,18 @@
 //
 // Devtools only mount in dev (Vite's `import.meta.env.DEV`).
 
-import { QueryClient } from '@tanstack/react-query';
+import { QueryClient, useIsRestoring } from '@tanstack/react-query';
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
 import type { ReactNode } from 'react';
 import { EventBridge } from './eventBridge';
-import { buildPersistOptions } from '../api/persistConfig';
+import { buildPersistOptions, PERSIST_MAX_AGE_MS } from '../api/persistConfig';
 
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 30_000,
+      gcTime: PERSIST_MAX_AGE_MS,
       retry: 1,
       refetchOnWindowFocus: false,
     },
@@ -45,10 +46,15 @@ export function AppProviders({ children }: { children: ReactNode }) {
   return (
     <PersistQueryClientProvider client={queryClient} persistOptions={persistOptions}>
       <EventBridge />
-      {children}
+      <QueryRestoreGate>{children}</QueryRestoreGate>
       {import.meta.env.DEV && (
         <ReactQueryDevtools initialIsOpen={false} buttonPosition="bottom-left" />
       )}
     </PersistQueryClientProvider>
   );
+}
+
+function QueryRestoreGate({ children }: { children: ReactNode }) {
+  const isRestoring = useIsRestoring();
+  return isRestoring ? null : children;
 }

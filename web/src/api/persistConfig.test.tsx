@@ -9,7 +9,7 @@
 //   2. A query whose key is NOT on the allowlist (`['transient']`) does
 //      NOT make it to disk — bumping the in-memory cache shouldn't ever
 //      bloat IndexedDB with ad-hoc keys.
-//   3. Changing the `buster` simulates a "new app version deployed":
+//   3. Changing the `buster` simulates a cache-schema or version bump:
 //      the old persisted blob is rejected and the new mount starts cold.
 //
 // We use `fake-indexeddb/auto` so jsdom gets a working in-process IDB
@@ -23,7 +23,7 @@
 // so the write completes synchronously after the await, instead of
 // requiring `vi.useFakeTimers()` games or 1s+ wall-clock waits per case.
 //
-// Why not unit-test `shouldPersistQuery` in isolation only: that function
+// Why not unit-test the allowlist predicate in isolation only: that function
 // trivially mirrors a list of key shapes; what we actually need to lock
 // in is the end-to-end provider behavior — predicate + persister +
 // hydrate all wired together. The TanStack code between predicate and
@@ -40,6 +40,7 @@ import type { PersistedClient } from '@tanstack/react-query-persist-client';
 import {
   buildPersistOptions,
   createIDBPersister,
+  isPersistableQueryKey,
   shouldPersistQuery,
   PERSIST_MAX_AGE_MS,
 } from './persistConfig';
@@ -91,40 +92,40 @@ beforeEach(() => {
   resetIDB();
 });
 
-// --- shouldPersistQuery (allowlist predicate) --------------------------
+// --- isPersistableQueryKey (allowlist predicate) -----------------------
 //
 // Belt-and-suspenders: the integration tests below exercise the predicate
 // end-to-end, but the allowlist is load-bearing enough that we also pin
 // each shape directly so a regression names itself in the test output.
 
-describe('shouldPersistQuery (allowlist)', () => {
+describe('isPersistableQueryKey (allowlist)', () => {
   it("accepts ['coves']", () => {
-    expect(shouldPersistQuery({ queryKey: ['coves'] })).toBe(true);
+    expect(isPersistableQueryKey({ queryKey: ['coves'] })).toBe(true);
   });
   it("accepts ['waves', <id>]", () => {
-    expect(shouldPersistQuery({ queryKey: ['waves', 'c1'] })).toBe(true);
+    expect(isPersistableQueryKey({ queryKey: ['waves', 'c1'] })).toBe(true);
   });
   it("accepts ['wave', <id>]", () => {
-    expect(shouldPersistQuery({ queryKey: ['wave', 'w1'] })).toBe(true);
+    expect(isPersistableQueryKey({ queryKey: ['wave', 'w1'] })).toBe(true);
   });
   it("accepts ['overlays', <kind>]", () => {
-    expect(shouldPersistQuery({ queryKey: ['overlays', 'wave'] })).toBe(true);
+    expect(isPersistableQueryKey({ queryKey: ['overlays', 'wave'] })).toBe(true);
   });
   it("accepts ['overlay', <id>]", () => {
-    expect(shouldPersistQuery({ queryKey: ['overlay', 'o1'] })).toBe(true);
+    expect(isPersistableQueryKey({ queryKey: ['overlay', 'o1'] })).toBe(true);
   });
 
   it("rejects ['settings']", () => {
-    expect(shouldPersistQuery({ queryKey: ['settings'] })).toBe(false);
+    expect(isPersistableQueryKey({ queryKey: ['settings'] })).toBe(false);
   });
   it('rejects unknown root keys', () => {
-    expect(shouldPersistQuery({ queryKey: ['transient'] })).toBe(false);
-    expect(shouldPersistQuery({ queryKey: ['foo', 'bar'] })).toBe(false);
+    expect(isPersistableQueryKey({ queryKey: ['transient'] })).toBe(false);
+    expect(isPersistableQueryKey({ queryKey: ['foo', 'bar'] })).toBe(false);
   });
   it('rejects empty / malformed keys', () => {
-    expect(shouldPersistQuery({ queryKey: [] })).toBe(false);
+    expect(isPersistableQueryKey({ queryKey: [] })).toBe(false);
     expect(
-      shouldPersistQuery({ queryKey: 'coves' as unknown as readonly unknown[] }),
+      isPersistableQueryKey({ queryKey: 'coves' as unknown as readonly unknown[] }),
     ).toBe(false);
   });
 });
@@ -195,6 +196,23 @@ describe('PersistQueryClientProvider + IndexedDB', () => {
     const persistedKeys = restored!.clientState.queries.map((q) => q.queryKey);
     expect(persistedKeys).toContainEqual(['coves']);
     expect(persistedKeys).not.toContainEqual(['transient']);
+  });
+
+  it('does NOT persist failed queries, even when the key is allowlisted', async () => {
+    const opts = buildPersistOptions();
+    const client = makeClient();
+
+    await expect(
+      client.fetchQuery({
+        queryKey: ['coves'],
+        queryFn: async () => {
+          throw new Error('boom');
+        },
+      }),
+    ).rejects.toThrow('boom');
+
+    const dehydrated = dehydrate(client, opts.dehydrateOptions);
+    expect(dehydrated.queries.map((q) => q.queryKey)).not.toContainEqual(['coves']);
   });
 
   it('clears the cache when the buster changes (e.g. on version bump)', async () => {
