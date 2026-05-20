@@ -1,9 +1,13 @@
-// Wire-shape types: thin re-export shim over `generated.ts`.
+// Wire-shape types: thin re-export shim over `generated.ts` (REST) and
+// `generated-events.ts` (WS event envelopes).
 //
 // `generated.ts` is produced from the kernel's OpenAPI spec (the source of
-// truth for the kernel ↔ UI JSON contract). Run `npm run gen:api` to refresh
-// after backend changes — it shells out to `cargo run --bin emit-openapi`
-// and pipes the result through `openapi-typescript`. The intermediate
+// truth for the kernel ↔ UI REST contract). `generated-events.ts` is
+// produced from the Rust `Event` enum via `ts-rs` (the source of truth for
+// the WS `/api/events` envelope). Run `npm run gen:api` to refresh both
+// after backend changes — it shells out to `cargo test export_bindings_`
+// (writes `generated-events.ts`) and `cargo run --bin emit-openapi |
+// openapi-typescript` (writes `generated.ts`). The intermediate
 // `openapi.json` is committed so frontend builds don't require cargo.
 //
 // This file exists to keep the public type names (KernelCove, KernelWave,
@@ -19,11 +23,15 @@
 //   * `entity_kind` on `NewOverlayBody` keeps its `'wave' | 'card'` literal
 //     union — utoipa emitted the underlying Rust `String` as plain `string`.
 //
-// WS event-envelope types (`WireEvent`) are kept here as-is: they're not in
-// the OpenAPI spec (no JSON request/response pair) and the runtime zod
-// schemas live in `./schemas.ts`.
+// WS event-envelope types now come from `./generated-events.ts` (re-exported
+// here as `WireEvent` for backwards compatibility). The hand-written union
+// was deleted in D7 (issue #5). The runtime zod schemas in `./schemas.ts`
+// are pinned to the generated `Event` type via an `expectTypeOf` conformance
+// test in `./schemas.test.ts` — any drift between the Rust enum and the
+// zod validator fails at type-check time.
 
 import type { components } from './generated';
+import type { Event as GeneratedEvent } from './generated-events';
 
 type Schemas = components['schemas'];
 
@@ -53,34 +61,17 @@ export type KernelWaveDetail = Omit<Schemas['WaveDetail'], 'cards' | 'overlays'>
 // ---------------- Event envelope (WS `/api/events`) ----------------
 //
 // Not in OpenAPI — WS endpoints don't surface as REST request/response
-// pairs. Runtime parse + narrowing lives in `./schemas.ts` (`wireEventSchema`).
+// pairs. Source of truth is the Rust `Event` enum in
+// `crates/calm-server/src/event.rs`; `ts-rs` emits the TS union into
+// `./generated-events.ts`. Runtime parse + narrowing lives in `./schemas.ts`
+// (`wireEventSchema`), and `./schemas.test.ts` pins the zod schema's inferred
+// type to `Event` at compile time.
+//
+// Re-exported here as `WireEvent` to keep existing consumers
+// (`api/events.ts`, `app/eventBridge.tsx`, `cards/*`) working without
+// touching their imports.
 
-/**
- * Wire event from the kernel. Mirrors `crates/calm-server/src/event.rs`
- * `#[serde(tag = "ev", content = "data")]`.
- *
- * Subscribers should narrow by `ev` then read `data` (the TS exhaustiveness
- * check in `dispatchEvent()` will flag any missing variant).
- */
-export type WireEvent =
-  | { ev: 'cove.updated';    data: KernelCove }
-  | { ev: 'cove.deleted';    data: { id: string } }
-  | { ev: 'wave.updated';    data: KernelWave }
-  | { ev: 'wave.deleted';    data: { id: string; cove_id: string } }
-  | { ev: 'card.added';      data: KernelCard }
-  | { ev: 'card.updated';    data: KernelCard }
-  | { ev: 'card.deleted';    data: { id: string; wave_id: string } }
-  | { ev: 'overlay.set';     data: KernelOverlay }
-  | {
-      ev: 'overlay.deleted';
-      data: {
-        plugin_id: string;
-        entity_kind: string;
-        entity_id: string;
-        kind: string;
-      };
-    }
-  | { ev: 'plugin.state';    data: { id: string; state: string } };
+export type WireEvent = GeneratedEvent;
 
 // ---------------- Request DTOs (mirror `model::NewX` / `XPatch`) ----------------
 

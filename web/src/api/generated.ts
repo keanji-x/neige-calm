@@ -374,6 +374,11 @@ export interface components {
              *     for plugin-provided cards. Kernel never interprets beyond that prefix.
              */
             kind: string;
+            /**
+             * @description Opaque JSON blob — ts-rs would otherwise emit `unknown` via the
+             *     `serde-json-impl` feature, but we pin it explicitly so a future
+             *     feature-flag change can't silently widen / narrow the surface.
+             */
             payload: Record<string, never>;
             /** Format: double */
             sort: number;
@@ -507,6 +512,10 @@ export interface components {
             id: string;
             /** @description Plugin-defined string. Kernel does not interpret. */
             kind: string;
+            /**
+             * @description Opaque JSON blob — see `Card.payload` for the rationale on the
+             *     explicit `unknown` override.
+             */
             payload: Record<string, never>;
             plugin_id: string;
             /** Format: int64 */

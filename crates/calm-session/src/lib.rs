@@ -22,6 +22,12 @@ use uuid::Uuid;
 /// Cap on a single frame. Anything larger is either a bug or hostile.
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 
+// NOTE (D7 / issue #5): the kernel's `Event` enum in `calm-server` now drives
+// its TS counterpart via `ts-rs` (see `web/src/api/generated-events.ts`). The
+// same treatment could be applied to `ClientMsg` / `DaemonMsg` below to retire
+// the hand-mirror in `web/src/cards/builtins/terminal/*` — out of scope for
+// this PR but the path is clear: add `ts-rs = "12"` to this crate, derive `TS`,
+// add a second `export_to` target in the npm `gen:api` step.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMsg {
     /// First message on every connection. Tells the daemon the client's

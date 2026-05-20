@@ -5,19 +5,36 @@
 //! in `ws::events` subscribes to the bus and forwards filtered events to the UI.
 //!
 //! Wire format: `{"ev": "<dotted.name>", "data": {...}}`. The frontend's TS
-//! `Event` type mirrors this.
+//! `Event` type is auto-generated from this enum via `ts-rs` and lives at
+//! `web/src/api/generated-events.ts`. The runtime zod validator in
+//! `web/src/api/schemas.ts` is type-pinned to that emitted TS type via an
+//! `expectTypeOf` conformance test, so any drift between this enum and the
+//! frontend fails at the type-check step. See D7 / issue #5.
 
 use crate::model::{Card, Cove, Overlay, Wave};
 use serde::Serialize;
 use tokio::sync::broadcast;
+use ts_rs::TS;
 
 /// Capacity of the broadcast channel. If a subscriber lags more than this,
 /// it'll receive a `Lagged` error and the server drops its connection — the
 /// client is expected to reconnect and re-fetch.
 const BUS_CAPACITY: usize = 1024;
 
-#[derive(Clone, Debug, Serialize)]
+/// The full set of WS event envelopes the kernel emits on `/api/events`.
+///
+/// `ts-rs` derives a matching TypeScript discriminated union, written to
+/// `web/src/api/generated-events.ts` when `cargo test export_bindings_` runs
+/// (driven by `npm run gen:api`). The serde `tag`/`content` attributes are
+/// honored — the emitted TS uses the same `{ ev, data }` envelope.
+///
+/// Note for future variants: ts-rs requires every payload type referenced
+/// here to also derive `TS`. Inline struct variants (e.g. `CoveDeleted { id }`)
+/// are emitted directly; tuple variants over a named struct (e.g.
+/// `CoveUpdated(Cove)`) pull in the struct's own export.
+#[derive(Clone, Debug, Serialize, TS)]
 #[serde(tag = "ev", content = "data")]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub enum Event {
     #[serde(rename = "cove.updated")]
     CoveUpdated(Cove),
@@ -54,7 +71,15 @@ pub enum Event {
         /// the UI can show it without a separate `/log` fetch. `None` for
         /// healthy transitions (Spawning → Running, etc.). Wire shape locked
         /// in design doc §7.
+        ///
+        /// `#[serde(default, skip_serializing_if = "Option::is_none")]`
+        /// combined with `#[ts(optional)]` matches the runtime behavior: the
+        /// field is absent on the wire when the inner `Option` is `None`, and
+        /// the TS type marks it as `last_error?: string`. (Without `optional`,
+        /// ts-rs would emit `last_error: string | null` which would diverge
+        /// from what the server actually serializes.)
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         last_error: Option<String>,
     },
 }

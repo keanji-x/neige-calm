@@ -1642,7 +1642,8 @@
             "description": "`\"terminal\"` for built-in PTY cards, `\"plugin:<plugin-id>:<view-id>\"`\nfor plugin-provided cards. Kernel never interprets beyond that prefix."
           },
           "payload": {
-            "type": "object"
+            "type": "object",
+            "description": "Opaque JSON blob — ts-rs would otherwise emit `unknown` via the\n`serde-json-impl` feature, but we pin it explicitly so a future\nfeature-flag change can't silently widen / narrow the surface."
           },
           "sort": {
             "type": "number",
@@ -1983,7 +1984,8 @@
             "description": "Plugin-defined string. Kernel does not interpret."
           },
           "payload": {
-            "type": "object"
+            "type": "object",
+            "description": "Opaque JSON blob — see `Card.payload` for the rationale on the\nexplicit `unknown` override."
           },
           "plugin_id": {
             "type": "string"

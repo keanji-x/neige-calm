@@ -4,7 +4,12 @@
     "target": "es2023",
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "module": "esnext",
-    "types": ["vite/client"],
+    // `@testing-library/jest-dom` augments vitest's `expect` with DOM
+    // matchers (toBeInTheDocument, etc.) via the import in tests/setup.ts.
+    // Listed here so `tsc -b` (which now also typechecks `*.test.tsx` —
+    // see the comment on `include`) finds the matcher type augmentations
+    // and doesn't error on `expect(el).toBeInTheDocument()`.
+    "types": ["vite/client", "@testing-library/jest-dom"],
     "skipLibCheck": true,
 
     /* Bundler mode */
@@ -24,6 +29,11 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"],
-  "exclude": ["**/*.test.ts", "**/*.test.tsx"]
+  "include": ["src"]
+  // Test files are intentionally NOT excluded: with `noEmit: true` they cost
+  // nothing at build time, and including them lets `tsc -b` catch type-level
+  // regressions inside `*.test.ts` — most importantly the ts-rs ↔ zod
+  // `expectTypeOf` conformance assertions in `src/api/schemas.test.ts`
+  // (D7 / issue #5). Those assertions are erased at runtime, so without a
+  // type-check pass over test files the guarantee they provide is invisible.
 }

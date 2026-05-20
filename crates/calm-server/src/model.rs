@@ -8,11 +8,13 @@
 //! `Some(v)` = replace.
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 use utoipa::ToSchema;
 
 // ---------------- Cove ----------------
 
-#[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema, TS)]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub struct Cove {
     pub id: String,
     pub name: String,
@@ -39,7 +41,8 @@ pub struct CovePatch {
 
 // ---------------- Wave ----------------
 
-#[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema, TS)]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub struct Wave {
     pub id: String,
     pub cove_id: String,
@@ -70,7 +73,8 @@ pub struct WavePatch {
 
 // ---------------- Card ----------------
 
-#[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema, TS)]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub struct Card {
     pub id: String,
     pub wave_id: String,
@@ -80,6 +84,10 @@ pub struct Card {
     pub sort: f64,
     #[sqlx(json)]
     #[schema(value_type = Object)]
+    /// Opaque JSON blob — ts-rs would otherwise emit `unknown` via the
+    /// `serde-json-impl` feature, but we pin it explicitly so a future
+    /// feature-flag change can't silently widen / narrow the surface.
+    #[ts(type = "unknown")]
     pub payload: serde_json::Value,
     pub created_at: i64,
     pub updated_at: i64,
@@ -109,7 +117,8 @@ pub struct CardPatch {
 
 // ---------------- Overlay ----------------
 
-#[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema, TS)]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub struct Overlay {
     pub id: String,
     pub plugin_id: String,
@@ -120,6 +129,9 @@ pub struct Overlay {
     pub kind: String,
     #[sqlx(json)]
     #[schema(value_type = Object)]
+    /// Opaque JSON blob — see `Card.payload` for the rationale on the
+    /// explicit `unknown` override.
+    #[ts(type = "unknown")]
     pub payload: serde_json::Value,
     pub updated_at: i64,
 }
