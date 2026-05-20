@@ -115,14 +115,17 @@ impl State {
 ///
 /// `Stop` → `AwaitingInput` (not `Idle`): when codex's agent loop stops it
 /// is genuinely waiting for the next user prompt, so the user is the
-/// bottleneck and the wave-union should surface that.  `PostToolUse` stays
-/// `Idle` — the agent loop is still active between tool calls and the next
-/// `PreToolUse` typically follows within ms.
+/// bottleneck and the wave-union should surface that. `PostToolUse` →
+/// `Working` (not `Idle`): the agent is still active between tool calls
+/// (reasoning about the next step), and only `stop` truly ends the turn.
+/// Previously this was `Idle` with a 750ms debounce, which leaked through
+/// whenever inter-tool reasoning took longer than the quiet window.
 fn codex_kind_to_state(kind: &str) -> Option<State> {
     match kind {
         "hook.codex.session_start" => Some(State::Starting),
-        "hook.codex.user_prompt_submit" | "hook.codex.pre_tool_use" => Some(State::Working),
-        "hook.codex.post_tool_use" => Some(State::Idle),
+        "hook.codex.user_prompt_submit"
+        | "hook.codex.pre_tool_use"
+        | "hook.codex.post_tool_use" => Some(State::Working),
         "hook.codex.stop" => Some(State::AwaitingInput),
         "hook.codex.permission_request" => Some(State::AwaitingInput),
         _ => None,
@@ -395,7 +398,7 @@ mod tests {
         );
         assert_eq!(
             codex_kind_to_state("hook.codex.post_tool_use"),
-            Some(State::Idle)
+            Some(State::Working)
         );
         assert_eq!(
             codex_kind_to_state("hook.codex.stop"),
@@ -524,7 +527,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn downgrade_is_debounced() {
+    async fn post_tool_use_stays_working() {
+        // post_tool_use now maps to Working, not Idle: between tool calls
+        // the agent is still actively reasoning, so the card should not
+        // briefly flicker to Idle. Only `stop` truly ends the turn.
         let (repo, bus, _wave_id, card_id) = setup().await;
         spawn(repo.clone(), bus.clone());
         tokio::task::yield_now().await;
@@ -540,16 +546,22 @@ mod tests {
             kind: "hook.codex.post_tool_use".into(),
             payload: Value::Null,
         });
-        // Within the quiet window: still "Working".
-        tokio::time::sleep(StdDuration::from_millis(150)).await;
+
+        // Past the old debounce window — still Working, never flickers.
+        tokio::time::sleep(StdDuration::from_millis(900)).await;
         let card_overlays = repo.overlays_for("card", &card_id).await.unwrap();
         let s = card_overlays.iter().find(|o| o.kind == "status").unwrap();
         assert_eq!(s.payload["state"], "Working");
 
-        // After the window: settles to "Idle".
-        tokio::time::sleep(StdDuration::from_millis(800)).await;
+        // stop → AwaitingInput commits the turn boundary.
+        bus.emit(Event::CodexHook {
+            card_id: card_id.clone(),
+            kind: "hook.codex.stop".into(),
+            payload: Value::Null,
+        });
+        tokio::time::sleep(StdDuration::from_millis(100)).await;
         let card_overlays = repo.overlays_for("card", &card_id).await.unwrap();
         let s = card_overlays.iter().find(|o| o.kind == "status").unwrap();
-        assert_eq!(s.payload["state"], "Idle");
+        assert_eq!(s.payload["state"], "AwaitingInput");
     }
 }
