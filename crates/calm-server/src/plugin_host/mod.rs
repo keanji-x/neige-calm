@@ -39,9 +39,9 @@ pub use mcp::{
     CallToolResult, ContentBlock, InboundNotification, InboundRequest, McpClient, RequestId,
     ResourceContent, ResourceContents, RpcError,
 };
-pub use resources::{ResourceError, read_ui_resource};
 pub use process::PluginProcess;
 pub use registry::PluginRegistry;
+pub use resources::{ResourceError, read_ui_resource};
 
 use tokio::sync::{Mutex, mpsc};
 
@@ -81,7 +81,9 @@ pub enum PluginRuntimeStatus {
     Spawning,
     Running,
     /// Crash-looped or otherwise unrecoverable. Carries the latest error.
-    Crashed { reason: String },
+    Crashed {
+        reason: String,
+    },
     Disabled,
 }
 
@@ -293,8 +295,10 @@ impl PluginHost {
             if let Some(rp) = map.get(id) {
                 // Crashed→spawn is the recovery path; the supervisor cleared
                 // its handle, so we treat that as "go ahead".
-                if matches!(rp.status, PluginRuntimeStatus::Running | PluginRuntimeStatus::Spawning)
-                {
+                if matches!(
+                    rp.status,
+                    PluginRuntimeStatus::Running | PluginRuntimeStatus::Spawning
+                ) {
                     return Err(HostError::AlreadyRunning(id.to_string()));
                 }
             }

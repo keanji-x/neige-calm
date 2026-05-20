@@ -21,7 +21,10 @@ fn main() {
     let stdout = std::io::stdout();
     let mut out = BufWriter::new(stdout.lock());
     // Stderr line so the kernel's ring buffer captures something useful.
-    eprintln!("stub-echo: hello, plugin id={:?}", std::env::var("NEIGE_PLUGIN_ID"));
+    eprintln!(
+        "stub-echo: hello, plugin id={:?}",
+        std::env::var("NEIGE_PLUGIN_ID")
+    );
 
     let lock = stdin.lock();
     for line in lock.lines() {

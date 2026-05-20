@@ -152,7 +152,12 @@ fn app(state: AppState) -> axum::Router {
 }
 
 async fn body_bytes(resp: axum::http::Response<Body>) -> Vec<u8> {
-    resp.into_body().collect().await.unwrap().to_bytes().to_vec()
+    resp.into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .to_vec()
 }
 
 async fn body_to_json(resp: axum::http::Response<Body>) -> Value {
@@ -182,10 +187,7 @@ async fn view_html_returns_body_and_mcp_app_mime() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!(
-                    "/api/plugins/{}/resources/status",
-                    fx.plugin_id
-                ))
+                .uri(format!("/api/plugins/{}/resources/status", fx.plugin_id))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -200,7 +202,11 @@ async fn view_html_returns_body_and_mcp_app_mime() {
         .to_string();
     assert_eq!(ctype, "text/html;profile=mcp-app");
     // No CSP declared → no header on the response.
-    assert!(resp.headers().get(header::CONTENT_SECURITY_POLICY).is_none());
+    assert!(
+        resp.headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .is_none()
+    );
     let body = String::from_utf8(body_bytes(resp).await).unwrap();
     assert!(body.contains("<body>hello m5"), "got body: {body}");
 }
@@ -224,10 +230,7 @@ async fn view_html_emits_csp_header_when_manifest_declares_csp() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!(
-                    "/api/plugins/{}/resources/status",
-                    fx.plugin_id
-                ))
+                .uri(format!("/api/plugins/{}/resources/status", fx.plugin_id))
                 .body(Body::empty())
                 .unwrap(),
         )

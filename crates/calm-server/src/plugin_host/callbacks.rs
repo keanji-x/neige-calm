@@ -527,7 +527,9 @@ async fn kv_set(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcError>
     let mut total: u64 = 0;
     let mut old_for_this_key: u64 = 0;
     for (k, v) in &existing {
-        let v_bytes = serde_json::to_string(v).map(|s| s.len() as u64).unwrap_or(0);
+        let v_bytes = serde_json::to_string(v)
+            .map(|s| s.len() as u64)
+            .unwrap_or(0);
         let entry_bytes = (k.len() as u64).saturating_add(v_bytes);
         total = total.saturating_add(entry_bytes);
         if k == &p.key {
@@ -886,12 +888,7 @@ mod tests {
         .await
         .expect("create");
         assert_eq!(res["kind"], "plugin:p1:demo");
-        let cards = h
-            .ctx_storage
-            .repo
-            .cards_by_wave(&h.wave_id)
-            .await
-            .unwrap();
+        let cards = h.ctx_storage.repo.cards_by_wave(&h.wave_id).await.unwrap();
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].kind, "plugin:p1:demo");
     }
@@ -985,20 +982,11 @@ mod tests {
         .await
         .unwrap();
         let cid = create["id"].as_str().unwrap().to_string();
-        let res = dispatch(
-            &h.ctx(),
-            "neige.card.delete",
-            json!({ "card_id": cid }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(res, json!({}));
-        let cards = h
-            .ctx_storage
-            .repo
-            .cards_by_wave(&h.wave_id)
+        let res = dispatch(&h.ctx(), "neige.card.delete", json!({ "card_id": cid }))
             .await
             .unwrap();
+        assert_eq!(res, json!({}));
+        let cards = h.ctx_storage.repo.cards_by_wave(&h.wave_id).await.unwrap();
         assert!(cards.is_empty());
     }
 
@@ -1033,13 +1021,9 @@ mod tests {
     async fn kv_list_with_prefix() {
         let h = Harness::new("p1", manifest_with_full_perms("p1")).await;
         for k in &["run/1", "run/2", "other/3"] {
-            dispatch(
-                &h.ctx(),
-                "neige.kv.set",
-                json!({ "key": k, "value": k }),
-            )
-            .await
-            .unwrap();
+            dispatch(&h.ctx(), "neige.kv.set", json!({ "key": k, "value": k }))
+                .await
+                .unwrap();
         }
         let list = dispatch(&h.ctx(), "neige.kv.list", json!({ "prefix": "run/" }))
             .await
@@ -1144,8 +1128,8 @@ mod tests {
             })),
             structured_content: Some(json!({ "state": "running" })),
         };
-        let got = extract_card_creation_from_tool_call_result(&result)
-            .expect("expected resource_uri");
+        let got =
+            extract_card_creation_from_tool_call_result(&result).expect("expected resource_uri");
         assert_eq!(got.resource_uri, "ui://dev.neige.hello-world/status");
         assert_eq!(got.structured_content, Some(json!({ "state": "running" })));
     }

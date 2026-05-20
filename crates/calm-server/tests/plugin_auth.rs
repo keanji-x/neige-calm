@@ -60,8 +60,7 @@ fn boot_host(
         "display_name": "Auth Stub",
         "entrypoint": { "command": "bin/stub", "env": env_map }
     });
-    let manifest: Manifest =
-        Manifest::parse(&manifest_json.to_string()).expect("manifest parses");
+    let manifest: Manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest parses");
 
     let registry = PluginRegistry::empty();
     registry.insert(manifest, Some(install_dir));
@@ -145,12 +144,7 @@ async fn rotate_plugin_token_swaps_hash_and_restarts() {
     )
     .await
     .unwrap();
-    let before = repo
-        .plugin_token_get("test.tok2")
-        .await
-        .unwrap()
-        .unwrap()
-        .0;
+    let before = repo.plugin_token_get("test.tok2").await.unwrap().unwrap().0;
 
     host.rotate_plugin_token("test.tok2")
         .await
@@ -164,12 +158,7 @@ async fn rotate_plugin_token_swaps_hash_and_restarts() {
     .await
     .unwrap();
 
-    let after = repo
-        .plugin_token_get("test.tok2")
-        .await
-        .unwrap()
-        .unwrap()
-        .0;
+    let after = repo.plugin_token_get("test.tok2").await.unwrap().unwrap().0;
     assert_ne!(before, after, "rotate must change the stored hash");
 
     host.stop("test.tok2").await.unwrap();
@@ -192,13 +181,13 @@ async fn auth_mismatch_kills_and_does_not_respawn() {
         &[("STUB_ECHO_OVERRIDE", "definitely-not-the-real-token")],
     );
 
-    let err = host.spawn("test.badauth").await.expect_err("spawn should fail");
+    let err = host
+        .spawn("test.badauth")
+        .await
+        .expect_err("spawn should fail");
     // The kernel surfaces AuthMismatch (distinct from InitializeRejected).
     assert!(
-        matches!(
-            err,
-            calm_server::plugin_host::HostError::AuthMismatch(_)
-        ),
+        matches!(err, calm_server::plugin_host::HostError::AuthMismatch(_)),
         "expected AuthMismatch, got {err:?}",
     );
 

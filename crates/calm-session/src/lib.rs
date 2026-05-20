@@ -124,10 +124,7 @@ mod tests {
         let qid = Uuid::parse_str("6b1f3a4d-2b5e-4d7e-9c1a-1b2c3d4e5f60").unwrap();
         let original = ClientMsg::AnswerQuestion {
             question_id: qid,
-            answers: HashMap::from([(
-                "Which option?".to_string(),
-                "the second one".to_string(),
-            )]),
+            answers: HashMap::from([("Which option?".to_string(), "the second one".to_string())]),
         };
         let encoded = bincode::serde::encode_to_vec(&original, bincode_config()).expect("encode");
         let (decoded, _): (ClientMsg, _) =

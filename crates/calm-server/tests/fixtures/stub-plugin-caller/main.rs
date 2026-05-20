@@ -33,10 +33,9 @@ fn main() {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut out = BufWriter::new(stdout.lock());
-    let plugin_id =
-        std::env::var("NEIGE_PLUGIN_ID").unwrap_or_else(|_| "test.caller".to_string());
-    let wave_id = std::env::var("NEIGE_DEMO_WAVE")
-        .unwrap_or_else(|_| "MISSING-WAVE-ENV".to_string());
+    let plugin_id = std::env::var("NEIGE_PLUGIN_ID").unwrap_or_else(|_| "test.caller".to_string());
+    let wave_id =
+        std::env::var("NEIGE_DEMO_WAVE").unwrap_or_else(|_| "MISSING-WAVE-ENV".to_string());
     eprintln!(
         "stub-caller: started plugin_id={} wave_id={}",
         plugin_id, wave_id

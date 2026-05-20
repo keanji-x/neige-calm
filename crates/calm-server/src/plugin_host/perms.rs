@@ -87,7 +87,9 @@ impl Permissions {
     /// grant). We do NOT try to compute glob ⊆ glob inclusion — a plugin that
     /// asks for `"card:*"` must have `"card:*"` (or `"*"`) in its manifest.
     pub fn can_subscribe(&self, ev_glob: &str) -> bool {
-        self.events_subscribe.iter().any(|g| g == "*" || g == ev_glob)
+        self.events_subscribe
+            .iter()
+            .any(|g| g == "*" || g == ev_glob)
     }
 
     /// Per-plugin KV byte budget. Manifest value if positive; otherwise the

@@ -127,7 +127,8 @@ impl PluginProcess {
         // alongside the in-memory snapshot.
         let stderr_ring: Arc<Mutex<VecDeque<String>>> =
             Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_RING_CAP)));
-        let stderr_task = stderr.map(|s| spawn_stderr_drainer(manifest.id.clone(), s, stderr_ring.clone()));
+        let stderr_task =
+            stderr.map(|s| spawn_stderr_drainer(manifest.id.clone(), s, stderr_ring.clone()));
 
         tracing::info!(
             plugin_id = %manifest.id,

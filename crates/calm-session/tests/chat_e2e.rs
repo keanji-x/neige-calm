@@ -159,7 +159,10 @@ async fn chat_user_message_round_trips_through_runner() {
     let ans = read_chat_event(&mut rd).await;
     assert!(ans.contains("stub_answer"), "got: {ans}");
     assert!(ans.contains(&qid.to_string()), "got: {ans}");
-    assert!(ans.contains("\"answers\":{\"Proceed?\":\"yes\"}"), "got: {ans}");
+    assert!(
+        ans.contains("\"answers\":{\"Proceed?\":\"yes\"}"),
+        "got: {ans}"
+    );
 
     // Stop → stub emits one last passthrough then exits 0.
     write_frame(&mut wr, &ClientMsg::ChatStop).await.unwrap();

@@ -276,17 +276,11 @@ mod tests {
             ..Default::default()
         };
         assert!(f.matches(&Event::OverlaySet(overlay(
-            "p",
-            "wave",
-            "w-target",
-            "status"
+            "p", "wave", "w-target", "status"
         ))));
         // Same wave, different overlay kind on it — still matches (we don't gate kind).
         assert!(f.matches(&Event::OverlaySet(overlay(
-            "p",
-            "wave",
-            "w-target",
-            "progress"
+            "p", "wave", "w-target", "progress"
         ))));
         // Wrong entity_id.
         assert!(!f.matches(&Event::OverlaySet(overlay(
@@ -294,10 +288,7 @@ mod tests {
         ))));
         // Wrong entity_kind (overlay says "card", filter wants "wave").
         assert!(!f.matches(&Event::OverlaySet(overlay(
-            "p",
-            "card",
-            "w-target",
-            "status"
+            "p", "card", "w-target", "status"
         ))));
     }
 
