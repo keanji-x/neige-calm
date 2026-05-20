@@ -121,6 +121,13 @@ pub struct View {
     #[serde(default)]
     pub entry_html: Option<String>,
 
+    /// Tool that creates a card mounting this view. Optional: when absent the
+    /// catalog handler falls back to `exposes_tools[0].name` (1-tool / 1-view
+    /// plugins like hello-world / todo). Plugins with multiple tools per view
+    /// (or multiple views per tool) need to spell the link out explicitly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creator_tool: Option<String>,
+
     /// MCP Apps `_meta.ui.csp` mirror (migration doc §6/M3). When set, the
     /// kernel emits it under `_meta.ui` of the `resources/read` response so
     /// AppBridge's sandbox proxy can enforce the right Content-Security-Policy

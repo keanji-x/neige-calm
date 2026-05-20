@@ -38,6 +38,7 @@ import type {
   NewCardBody,
   NewCoveBody,
   NewWaveBody,
+  PluginViewCatalogEntry,
   SettingsBag,
   SettingsPutBody,
   WavePatchBody,
@@ -60,6 +61,8 @@ export const queryKeys = {
    *  the Settings page; not invalidated by WS (settings only take effect
    *  on the next codex spawn, so there's no need for live propagation). */
   settings: () => ['settings'] as const,
+  /** Slice G AddPanel catalog. Snapshot of enabled plugins' views. */
+  pluginViews: () => ['plugin-views'] as const,
 };
 
 // ---------------- Query option factories ----------------
@@ -89,6 +92,21 @@ export const overlaysByKindQueryOptions = (entity_kind: 'wave' | 'card') => ({
   queryKey: queryKeys.overlaysByKind(entity_kind),
   queryFn: () => api.listAllOverlays(entity_kind),
 });
+
+export const pluginViewsQueryOptions = () => ({
+  queryKey: queryKeys.pluginViews(),
+  queryFn: () => api.listPluginViews(),
+});
+
+/** Slice G AddPanel catalog: views from currently-enabled plugins. */
+export function usePluginViewsQuery(
+  opts?: Partial<UseQueryOptions<PluginViewCatalogEntry[], Error>>,
+) {
+  return useQuery<PluginViewCatalogEntry[], Error>({
+    ...pluginViewsQueryOptions(),
+    ...opts,
+  });
+}
 
 // ---------------- Queries ----------------
 

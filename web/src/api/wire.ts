@@ -85,7 +85,20 @@ export type WavePatchBody = Schemas['WavePatch'];
  * `payload` override mirrors `KernelCard`: kernel routes accept any JSON
  * blob; the generated `Record<string, never>` would force callers to cast.
  */
-export type NewCardBody   = Omit<Schemas['NewCard'], 'payload'> & { payload?: unknown };
+// The route's body is `CreateCardBody` (route-level) but the generated
+// `NewCard` schema (repo struct) has `kind` required. The route accepts
+// either `kind`+`payload` (direct create) or `via_tool_call` (plugin
+// create), so both are optional at the wire boundary.
+export type NewCardBody   = Omit<Schemas['NewCard'], 'kind' | 'payload'> & {
+  kind?: string;
+  payload?: unknown;
+  /** M2 plugin-driven create: kernel invokes the named tool on the plugin
+   *  and extracts the resource URI from the result's `_meta.ui.resourceUri`. */
+  via_tool_call?: { plugin_id: string; tool_name: string; arguments?: unknown };
+};
+
+/** One entry in `/api/plugins/views` — fed into AddPanel's menu. */
+export type PluginViewCatalogEntry = Schemas['ViewCatalogEntry'];
 export type CardPatchBody = Omit<Schemas['CardPatch'], 'payload'> & { payload?: unknown };
 
 /**

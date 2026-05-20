@@ -660,7 +660,9 @@ input, textarea { font: inherit; color: inherit; }
 .card-slot > .git,
 .card-slot > .diff,
 .card-slot > .plan-card,
-.card-slot > .note {
+.card-slot > .note,
+.card-slot > .plugin-iframe-card,
+.card-slot > .codex-card {
   margin-bottom: 0;
   flex: 1;
   min-height: 0;
@@ -1149,6 +1151,50 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   height: 100%;
   color: var(--text-3); font-size: 12px;
   padding: 12px;
+}
+
+/* ===== Plugin iframe card =====
+   Shares chrome with .codex-card / .term: hairline border + canonical radius
+   + paper background + shadow; head is the same grey wash as the other
+   card heads so plugins visually belong to the same family. */
+.plugin-iframe-card {
+  border: 1px solid var(--hairline);
+  border-radius: var(--r);
+  background: var(--paper);
+  box-shadow: var(--shadow);
+  height: 100%;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.plugin-iframe-head {
+  display: flex; align-items: center; gap: 6px;
+  /* Match .term-head padding (9 12); +38 right for .card-grid-close X. */
+  padding: 9px 38px 9px 12px;
+  border-bottom: 1px solid var(--hairline);
+  background: oklch(96% 0.004 240);
+  min-height: 28px;
+}
+[data-theme="dark"] .plugin-iframe-head { background: oklch(21% 0.009 245); }
+.plugin-iframe-title {
+  flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  /* Mirrors .term-title (calm.css:1222-1229): small-caps editorial label,
+     muted color so the head reads as scaffold not headline. */
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  font-weight: 600;
+}
+.plugin-iframe-card > iframe {
+  flex: 1; min-height: 0;
+  border: none; width: 100%;
+  background: var(--paper);
+}
+.plugin-iframe-error-body {
+  padding: 12px;
+  font-size: 13px;
+  color: var(--warn);
 }
 
 /* ===== Terminal card ===== */

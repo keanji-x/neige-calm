@@ -89,6 +89,10 @@ export interface PluginCardData {
   id?: string;
   /** Full `ui://<plugin_id>/<view_id>` URI. */
   resource_uri: string;
+  /** Display title for the card head. Sourced from `payload.title` set by
+   *  the plugin's `tools/call` result. Falls back to the view_id when the
+   *  plugin didn't provide one. */
+  title?: string;
 }
 
 /**

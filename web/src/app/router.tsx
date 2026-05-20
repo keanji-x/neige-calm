@@ -57,6 +57,7 @@ import { dlog } from '../util/debug';
 import { suppressCardEvents } from './eventBridge';
 import type { Cove, Wave, WaveCardSlot } from '../types';
 import type { AddPanelKind } from '../shared/components/AddPanel';
+import { parsePluginItemType } from '../shared/components/AddPanel';
 
 // Per-route page components are loaded on demand so the entry chunk only
 // carries the shell + routing wiring; each page's code ships as its own
@@ -399,8 +400,31 @@ async function addCardWithValues(
 async function addCardOfKind(
   qc: ReturnType<typeof useQueryClient>,
   waveId: string,
-  _type: AddPanelKind,
+  type: AddPanelKind,
 ): Promise<void> {
+  // Plugin entry: dispatch via the M2 tool-call create path. The kernel
+  // invokes the plugin's `creator_tool`, extracts `_meta.ui.resourceUri`
+  // from the result, and writes a Card row with `kind = <ui://...>`.
+  const plugin = parsePluginItemType(type);
+  if (plugin) {
+    const release = suppressCardEvents(waveId);
+    try {
+      await api.createCard(waveId, {
+        via_tool_call: {
+          plugin_id: plugin.pluginId,
+          tool_name: plugin.toolName,
+          arguments: {},
+        },
+      });
+    } catch (err) {
+      console.warn('[Calm] plugin card create failed:', err);
+    } finally {
+      release();
+      void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
+    }
+    return;
+  }
+
   // Suppress this wave's WS card events for the duration of the 3-step
   // create. Without this, the kernel's intermediate emissions (card.added
   // with payload=null, before the terminal_id patch) would race the

@@ -151,6 +151,12 @@ pub struct ViewCatalogEntry {
     pub default_size: Option<ViewSizeWire>,
     /// `"card"` for M3 — wave/cove are banned per design §10.
     pub scope: String,
+    /// Tool name the AddPanel calls to create a card mounting this view.
+    /// Resolved from `view.creator_tool`, falling back to
+    /// `exposes_tools[0].name` when omitted (1-tool plugin convention).
+    /// Absent when neither source provides a name; AddPanel filters those out.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub creator_tool: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -665,6 +671,15 @@ pub(crate) async fn list_plugin_views(
         };
         for view in &manifest.views {
             let resource_uri = format!("ui://{}/{}", manifest.id, view.view_id);
+            // creator_tool: explicit field wins, then the 1-tool fallback so
+            // hello-world / todo Just Work without manifest churn.
+            let creator_tool = view.creator_tool.clone().or_else(|| {
+                if manifest.exposes_tools.len() == 1 {
+                    Some(manifest.exposes_tools[0].name.clone())
+                } else {
+                    None
+                }
+            });
             out.push(ViewCatalogEntry {
                 plugin_id: manifest.id.clone(),
                 view_id: view.view_id.clone(),
@@ -678,6 +693,7 @@ pub(crate) async fn list_plugin_views(
                     min_h: sz.min_h,
                 }),
                 scope: view.scope.clone(),
+                creator_tool,
             });
         }
     }
@@ -748,7 +764,11 @@ pub(crate) async fn get_plugin_view_html(
 
             let mut resp = Response::builder()
                 .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, mime);
+                .header(header::CONTENT_TYPE, mime)
+                // Iframe HTML is plugin-author-mutable during dev — a stale
+                // cached copy in the browser is a frequent footgun. Force a
+                // fresh fetch each mount; the file is small.
+                .header(header::CACHE_CONTROL, "no-store");
             if let Some(csp) = csp_header {
                 resp = resp.header(header::CONTENT_SECURITY_POLICY, csp);
             }

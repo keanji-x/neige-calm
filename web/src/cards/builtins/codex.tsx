@@ -173,7 +173,7 @@ export const CodexEntry: CardEntry<CodexCardData> = {
     };
   },
   addPanel: {
-    label: 'New codex',
+    label: 'Codex',
     icon: 'spark',
     createSchema: {
       // Interactive codex handles permission / model selection inside its

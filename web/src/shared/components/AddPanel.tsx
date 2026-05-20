@@ -8,9 +8,10 @@
 // pattern keeps the visual style consistent across kinds and gives plugin
 // authors a declarative knob to collect input.
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useState } from '../state';
 import { addPanelEntries, type AddPanelMenuItem } from '../../cards/registry';
+import type { PluginViewCatalogEntry } from '../../api/wire';
 
 export type { AddPanelMenuItem } from '../../cards/registry';
 
@@ -20,20 +21,57 @@ export type { AddPanelMenuItem } from '../../cards/registry';
 // table on receipt.
 export type AddPanelKind = string;
 
+/** Sentinel `item.type` prefix for plugin entries. Wave's `beginAdd`
+ *  branches on this to dispatch to the plugin-tool-call create path
+ *  instead of the static-kind switch. */
+export const PLUGIN_TYPE_PREFIX = 'plugin:tool:';
+
+/** Build the `AddPanelMenuItem.type` for a plugin entry. */
+function pluginItemType(pluginId: string, toolName: string): string {
+  return `${PLUGIN_TYPE_PREFIX}${pluginId}/${toolName}`;
+}
+
+/** Parse a plugin-entry `item.type` back into `{ pluginId, toolName }`,
+ *  returning null for non-plugin items. */
+export function parsePluginItemType(
+  type: string,
+): { pluginId: string; toolName: string } | null {
+  if (!type.startsWith(PLUGIN_TYPE_PREFIX)) return null;
+  const rest = type.slice(PLUGIN_TYPE_PREFIX.length);
+  const slash = rest.indexOf('/');
+  if (slash <= 0 || slash === rest.length - 1) return null;
+  return { pluginId: rest.slice(0, slash), toolName: rest.slice(slash + 1) };
+}
+
 export function AddPanel({
   onSelect,
+  pluginViews,
 }: {
   /** Callback fired when the user picks a menu entry. The caller decides
    *  whether to open a config card (schema-driven flow) or create the
    *  kind directly (no-config flow). */
   onSelect: (item: AddPanelMenuItem) => void;
+  /** Slice G: views from currently-enabled plugins. Each entry with a
+   *  resolved `creator_tool` becomes a menu item; the caller (router)
+   *  dispatches them via the `via_tool_call` create path. */
+  pluginViews?: PluginViewCatalogEntry[];
 }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
 
-  // Snapshot the menu at mount — the registry is populated synchronously
-  // at boot, so re-querying on every render only adds churn.
-  const items = addPanelEntries();
+  // Merge static built-in entries with the live plugin catalog. Built-ins
+  // first (stable position); plugin entries appended in catalog order.
+  const items = useMemo<AddPanelMenuItem[]>(() => {
+    const builtins = addPanelEntries();
+    const plugins = (pluginViews ?? [])
+      .filter((v) => !!v.creator_tool)
+      .map((v) => ({
+        type: pluginItemType(v.plugin_id, v.creator_tool as string),
+        label: v.title,
+        icon: v.icon ?? undefined,
+      }));
+    return [...builtins, ...plugins];
+  }, [pluginViews]);
 
   useEffect(() => {
     if (!open) return;

@@ -206,6 +206,7 @@ mod tests {
             title: "Status".to_string(),
             icon: None,
             scope: "card".to_string(),
+            creator_tool: None,
             default_size: None,
             entry_html: None,
             csp: None,

@@ -17,6 +17,7 @@ import type {
   NewOverlayBody,
   NewTerminalBody,
   NewWaveBody,
+  PluginViewCatalogEntry,
   SettingsBag,
   SettingsPutBody,
   WavePatchBody,
@@ -99,6 +100,11 @@ export const updateCard = (id: string, b: CardPatchBody) =>
   request<KernelCard>('PATCH', `/api/cards/${encodeURIComponent(id)}`, b);
 export const deleteCard = (id: string) =>
   request<void>('DELETE', `/api/cards/${encodeURIComponent(id)}`);
+
+// ---------------- plugin views (Slice G) ----------------
+
+export const listPluginViews = () =>
+  request<PluginViewCatalogEntry[]>('GET', '/api/plugins/views');
 
 // ---------------- overlays ----------------
 

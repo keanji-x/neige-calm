@@ -2547,6 +2547,13 @@
           "scope"
         ],
         "properties": {
+          "creator_tool": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Tool name the AddPanel calls to create a card mounting this view.\nResolved from `view.creator_tool`, falling back to\n`exposes_tools[0].name` when omitted (1-tool plugin convention).\nAbsent when neither source provides a name; AddPanel filters those out."
+          },
           "default_size": {
             "oneOf": [
               {

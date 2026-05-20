@@ -89,10 +89,19 @@ const HOST_CAPABILITIES: McpUiHostCapabilities = {
 };
 
 function detectTheme(): 'light' | 'dark' {
-  if (typeof window === 'undefined') return 'light';
+  if (typeof document === 'undefined') return 'light';
+  // The app's own theme (set on <html data-theme="…"> by CalmApp) is the
+  // source of truth — NOT prefers-color-scheme. A user with OS=dark but
+  // app=light otherwise gets a dark iframe inside a light host card,
+  // which is the symptom we're fixing.
+  const t = document.documentElement.dataset.theme;
+  if (t === 'dark' || t === 'light') return t;
+  // Pre-mount fallback only — once <html data-theme> is set, the branch
+  // above always wins.
   try {
-    const mql = window.matchMedia('(prefers-color-scheme: dark)');
-    return mql.matches ? 'dark' : 'light';
+    return window.matchMedia('(prefers-color-scheme: dark)').matches
+      ? 'dark'
+      : 'light';
   } catch {
     return 'light';
   }
@@ -267,53 +276,29 @@ function PluginIframeCard({ card }: { card: PluginCardData }) {
 
   const iframeSrc = `/api/plugins/${encodeURIComponent(parsed.plugin_id)}/resources/${encodeURIComponent(parsed.view_id)}`;
 
+  // Head label: prefer the title the plugin's tool returned; fall back to
+  // the view id. Never show the raw `ui://` URI in chrome — that's debug
+  // info, not user-facing.
+  const headTitle = card.title || parsed.view_id;
+
   return (
-    <div
-      className="plugin-iframe-card"
-      style={{
-        border: '1px solid var(--card-border, #ddd)',
-        display: 'flex',
-        flexDirection: 'column',
-        height: '100%',
-        boxSizing: 'border-box',
-      }}
-    >
-      <div
-        className="plugin-iframe-head card-drag-handle"
-        style={{
-          fontSize: 12,
-          opacity: 0.7,
-          padding: '4px 8px',
-          userSelect: 'none',
-          borderBottom: '1px solid var(--card-border, #eee)',
-        }}
-      >
-        Plugin: {parsed.plugin_id}:{parsed.view_id}
+    <div className="plugin-iframe-card">
+      <div className="plugin-iframe-head card-drag-handle">
+        <span className="plugin-iframe-title">{headTitle}</span>
       </div>
       {error ? (
-        <div
-          className="plugin-iframe-error-body"
-          style={{ padding: 8, fontSize: 13, color: 'var(--error-fg, #b00)' }}
-        >
-          {error}
-        </div>
+        <div className="plugin-iframe-error-body">{error}</div>
       ) : (
         <iframe
           ref={iframeRef}
           title={`plugin ${parsed.plugin_id}/${parsed.view_id}`}
           src={iframeSrc}
-          // AppBridge runs its own sandbox-proxy when the HTML carries the
-          // `text/html;profile=mcp-app` MIME, which the kernel emits via the
-          // M5 view-html route. We do NOT set `srcdoc` — the HTML is fetched
-          // via the iframe's own GET so the kernel's CSP header on the
-          // response applies to the document.
-          sandbox="allow-scripts allow-same-origin"
-          style={{
-            flex: 1,
-            border: 'none',
-            width: '100%',
-            background: 'transparent',
-          }}
+          // allow-forms: plugin iframes commonly need a form (Enter-to-submit,
+          // native validation). Without it the browser blocks every submit
+          // before our JS can preventDefault. Network writes are still gated
+          // by CSP connect-src (manifest-controlled) and the kernel's
+          // `neige.*` tool gate, so form submit can't reach arbitrary URLs.
+          sandbox="allow-scripts allow-same-origin allow-forms"
         />
       )}
     </div>
@@ -337,10 +322,17 @@ export const PluginIframeEntry: CardEntry<PluginCardData> = {
     // interpret either. Treat `payload` as `z.unknown()` by construction;
     // built-in cards (terminal/doc/git/diff/plan) each own a strict schema
     // in `cards/builtins/*.tsx` instead.
+    // Pull `title` out of the opaque payload if present — plugin tools that
+    // return `structuredContent: { title }` get a clean head label; everyone
+    // else falls back to the view id (e.g. "list") in the renderer below.
+    const payload = k.payload as Record<string, unknown> | null | undefined;
+    const title =
+      payload && typeof payload.title === 'string' ? payload.title : undefined;
     return {
       type: 'plugin',
       id: k.id,
       resource_uri: parsed.resource_uri,
+      title,
     };
   },
   // No addPanel entry yet — Slice G drives discoverability from the

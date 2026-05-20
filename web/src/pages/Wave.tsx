@@ -3,6 +3,7 @@ import { useState } from '../shared/state';
 import { Icon } from '../Icon';
 import { AddPanel, type AddPanelKind } from '../shared/components/AddPanel';
 import type { AddPanelMenuItem } from '../shared/components/AddPanel';
+import { usePluginViewsQuery } from '../api/queries';
 import type { Cove, FsmState, Route, Wave, WaveCardSlot } from '../types';
 import { Modal } from '../shared/components/Modal';
 import { SchemaForm } from '../shared/components/SchemaForm';
@@ -73,6 +74,9 @@ export function WavePage({
 }) {
   const pct = Math.round(wave.progress * 100);
   const cards: WaveCardSlot[] = wave.cards || [];
+  // Slice G: live plugin-views catalog feeding AddPanel. Cheap query (one
+  // GET on first paint), invalidated by plugin install/enable/disable.
+  const { data: pluginViews } = usePluginViewsQuery();
   // Schema-driven AddPanel selections open a modal SchemaForm — kept in
   // local state, never reaches the kernel until submit.
   const [modalItem, setModalItem] = useState<AddPanelMenuItem | null>(null);
@@ -175,7 +179,7 @@ export function WavePage({
           )}
         </span>
         <span className="wave-meta">
-          <AddPanel onSelect={beginAdd} />
+          <AddPanel onSelect={beginAdd} pluginViews={pluginViews} />
           {/* 6-state FSM dot + verb. Rendered whenever the kernel `card_fsm`
               has assigned a state to this wave (only happens when at least
               one tracked card — today: codex — exists in the wave). Falls

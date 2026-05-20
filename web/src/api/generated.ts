@@ -713,6 +713,13 @@ export interface components {
          *     `resource_uri` and a follow-up slice may drop the legacy pair.
          */
         ViewCatalogEntry: {
+            /**
+             * @description Tool name the AddPanel calls to create a card mounting this view.
+             *     Resolved from `view.creator_tool`, falling back to
+             *     `exposes_tools[0].name` when omitted (1-tool plugin convention).
+             *     Absent when neither source provides a name; AddPanel filters those out.
+             */
+            creator_tool?: string | null;
             default_size?: null | components["schemas"]["ViewSizeWire"];
             icon?: string | null;
             plugin_id: string;
