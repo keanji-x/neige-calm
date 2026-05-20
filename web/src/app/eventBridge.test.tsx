@@ -31,8 +31,11 @@ import type { WireEvent } from '../api/wire';
 // returns an unsubscribe. `emit(ev)` is test-only and synchronously calls
 // every listener — simulates the WS frame arrival path.
 type Listener = (ev: WireEvent) => void;
+type ControlListener = () => void;
 const fakeStream = {
   listeners: new Set<Listener>(),
+  replayCompleteListeners: new Set<ControlListener>(),
+  snapshotRequiredListeners: new Set<ControlListener>(),
   subscribe: vi.fn(),
   on(fn: Listener) {
     this.listeners.add(fn);
@@ -40,11 +43,31 @@ const fakeStream = {
       this.listeners.delete(fn);
     };
   },
+  onReplayComplete(fn: ControlListener) {
+    this.replayCompleteListeners.add(fn);
+    return () => {
+      this.replayCompleteListeners.delete(fn);
+    };
+  },
+  onSnapshotRequired(fn: ControlListener) {
+    this.snapshotRequiredListeners.add(fn);
+    return () => {
+      this.snapshotRequiredListeners.delete(fn);
+    };
+  },
   emit(ev: WireEvent) {
     for (const fn of this.listeners) fn(ev);
   },
+  emitReplayComplete() {
+    for (const fn of this.replayCompleteListeners) fn();
+  },
+  emitSnapshotRequired() {
+    for (const fn of this.snapshotRequiredListeners) fn();
+  },
   reset() {
     this.listeners.clear();
+    this.replayCompleteListeners.clear();
+    this.snapshotRequiredListeners.clear();
     this.subscribe.mockClear();
   },
 };
@@ -356,6 +379,44 @@ describe('EventBridge', () => {
       data: { id: 'plug_1', state: 'Running' },
     });
     expect(invalidate).not.toHaveBeenCalled();
+    cleanup();
+  });
+
+  // ---- Sync engine phase 2 (Scope D) control frames -------------------
+
+  it('_replay_complete triggers a defensive batch invalidateQueries', () => {
+    const client = makeClient();
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const Wrapper = wrap(client);
+    render(
+      <Wrapper>
+        <EventBridge />
+      </Wrapper>,
+    );
+    // The bridge calls `qc.invalidateQueries()` with no arguments — that's
+    // the broad-brush "every key" form, used to converge any optimistic
+    // state drift across the replay window.
+    fakeStream.emitReplayComplete();
+    expect(invalidate).toHaveBeenCalled();
+    // Confirm the call was the no-arg / no-key form (vs a targeted invalidate).
+    const replayCall = invalidate.mock.calls.find(
+      (c) => c.length === 0 || c[0] === undefined,
+    );
+    expect(replayCall).toBeTruthy();
+    cleanup();
+  });
+
+  it('_snapshot_required clears the React Query cache', () => {
+    const client = makeClient();
+    const clear = vi.spyOn(client, 'clear');
+    const Wrapper = wrap(client);
+    render(
+      <Wrapper>
+        <EventBridge />
+      </Wrapper>,
+    );
+    fakeStream.emitSnapshotRequired();
+    expect(clear).toHaveBeenCalledTimes(1);
     cleanup();
   });
 

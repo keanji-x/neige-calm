@@ -1135,4 +1135,56 @@ impl Repo for SqlxRepo {
         });
         Ok(event_id)
     }
+
+    async fn events_since(&self, since_id: i64, limit: Option<i64>) -> Result<Vec<(i64, Event)>> {
+        // `LIMIT -1` is sqlite's "no limit" sentinel; using `?` binding lets
+        // us keep one SQL string regardless of caller intent. Callers that
+        // pass `None` want every row > since_id.
+        let cap = limit.unwrap_or(-1);
+        let rows: Vec<(i64, String, String)> = sqlx::query_as(
+            r#"SELECT id, kind, payload
+               FROM events
+               WHERE id > ?1
+               ORDER BY id ASC
+               LIMIT ?2"#,
+        )
+        .bind(since_id)
+        .bind(cap)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for (id, kind, payload_text) in rows {
+            let payload: serde_json::Value = match serde_json::from_str(&payload_text) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!(
+                        id, kind = %kind, error = %e,
+                        "events_since: skipping row with malformed payload JSON",
+                    );
+                    continue;
+                }
+            };
+            match Event::from_kind_and_payload(&kind, payload) {
+                Ok(ev) => out.push((id, ev)),
+                Err(e) => {
+                    tracing::error!(
+                        id, kind = %kind, error = %e,
+                        "events_since: skipping row that no longer matches Event enum",
+                    );
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    async fn events_earliest_id(&self) -> Result<Option<i64>> {
+        // `MIN(id)` over an empty table returns a single `NULL` row. Reading
+        // the column as `Option<i64>` surfaces that as `None`; non-empty
+        // tables return `Some(min)`.
+        let row: (Option<i64>,) = sqlx::query_as("SELECT MIN(id) FROM events")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(row.0)
+    }
 }
