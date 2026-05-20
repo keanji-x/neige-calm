@@ -27,3 +27,7 @@ web/playwright/.cache/
 # Env
 .env
 .env.local
+
+# Claude Code working files (agent worktrees, memory, transcripts).
+# Per-session, machine-local; never belongs in version control.
+.claude/
