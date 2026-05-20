@@ -114,6 +114,23 @@ export const overlayDeletedSchema = z.object({
 });
 
 /**
+ * `Event::TerminalDeleted` — emitted by the orphan-terminal sweeper
+ * (`crates/calm-server/src/terminal_sweeper.rs`) when a terminal row is
+ * reaped because no card payload references it anymore. Actor is
+ * `"kernel"` on the events-table row. Topic: `terminal:<id>`. The UI
+ * doesn't currently subscribe to per-terminal topics, but the schema is
+ * carried here so the runtime validator accepts the frame on the
+ * firehose (`*`) subscription without dispatch-mismatch warnings.
+ */
+export const terminalDeletedSchema = z.object({
+  ev: z.literal('terminal.deleted'),
+  data: z.object({
+    id: z.string(),
+    card_id: z.string(),
+  }),
+});
+
+/**
  * `Event::PluginState` — emitted by the plugin host on lifecycle transitions.
  * `state` is a free-form string (e.g. `"Spawning"`, `"Running"`, `"Crashed"`)
  * matching the Rust `PluginState` enum's `Display`. `last_error` is `None`
@@ -162,6 +179,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   cardDeletedSchema,
   overlaySetSchema,
   overlayDeletedSchema,
+  terminalDeletedSchema,
   pluginStateSchema,
   codexHookSchema,
 ]);
@@ -185,6 +203,7 @@ export type CardUpdatedEvent = z.infer<typeof cardUpdatedSchema>;
 export type CardDeletedEvent = z.infer<typeof cardDeletedSchema>;
 export type OverlaySetEvent = z.infer<typeof overlaySetSchema>;
 export type OverlayDeletedEvent = z.infer<typeof overlayDeletedSchema>;
+export type TerminalDeletedEvent = z.infer<typeof terminalDeletedSchema>;
 export type PluginStateEvent = z.infer<typeof pluginStateSchema>;
 export type CodexHookEvent = z.infer<typeof codexHookSchema>;
 

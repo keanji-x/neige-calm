@@ -688,6 +688,8 @@ export interface components {
             daemon_handle?: string | null;
             env: Record<string, never>;
             id: string;
+            /** Format: int64 */
+            pid?: number | null;
             program: string;
         };
         /**

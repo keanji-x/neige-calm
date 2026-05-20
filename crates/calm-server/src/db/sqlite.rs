@@ -422,6 +422,17 @@ pub async fn card_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Resul
     Ok(())
 }
 
+pub async fn terminal_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<()> {
+    let res = sqlx::query("DELETE FROM terminals WHERE id = ?1")
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
+    if res.rows_affected() == 0 {
+        return Err(CalmError::NotFound(format!("terminal {id}")));
+    }
+    Ok(())
+}
+
 pub async fn overlay_upsert_tx(tx: &mut Transaction<'_, Sqlite>, p: NewOverlay) -> Result<Overlay> {
     let now = now_ms();
     let new_id_str = new_id();
@@ -723,8 +734,8 @@ impl Repo for SqlxRepo {
         let env_text = serde_json::to_string(&p.env)?;
         sqlx::query(
             r#"INSERT INTO terminals
-                   (id, card_id, program, cwd, env, daemon_handle, created_at)
-               VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6)"#,
+                   (id, card_id, program, cwd, env, daemon_handle, pid, created_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6)"#,
         )
         .bind(&id)
         .bind(&p.card_id)
@@ -741,13 +752,14 @@ impl Repo for SqlxRepo {
             cwd: p.cwd,
             env: p.env,
             daemon_handle: None,
+            pid: None,
             created_at: now,
         })
     }
 
     async fn terminal_get(&self, id: &str) -> Result<Option<Terminal>> {
         let row = sqlx::query_as::<_, Terminal>(
-            r#"SELECT id, card_id, program, cwd, env, daemon_handle, created_at
+            r#"SELECT id, card_id, program, cwd, env, daemon_handle, pid, created_at
                FROM terminals WHERE id = ?1"#,
         )
         .bind(id)
@@ -758,7 +770,7 @@ impl Repo for SqlxRepo {
 
     async fn terminal_get_by_card(&self, card_id: &str) -> Result<Option<Terminal>> {
         let row = sqlx::query_as::<_, Terminal>(
-            r#"SELECT id, card_id, program, cwd, env, daemon_handle, created_at
+            r#"SELECT id, card_id, program, cwd, env, daemon_handle, pid, created_at
                FROM terminals WHERE card_id = ?1"#,
         )
         .bind(card_id)
@@ -770,6 +782,54 @@ impl Repo for SqlxRepo {
     async fn terminal_set_handle(&self, id: &str, handle: Option<&str>) -> Result<()> {
         let res = sqlx::query("UPDATE terminals SET daemon_handle = ?1 WHERE id = ?2")
             .bind(handle)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        if res.rows_affected() == 0 {
+            return Err(CalmError::NotFound(format!("terminal {id}")));
+        }
+        Ok(())
+    }
+
+    async fn terminal_set_pid(&self, id: &str, pid: Option<u32>) -> Result<()> {
+        // Cast to i64 for sqlite's INTEGER affinity; u32 is well within range.
+        let pid_i64: Option<i64> = pid.map(|p| p as i64);
+        let res = sqlx::query("UPDATE terminals SET pid = ?1 WHERE id = ?2")
+            .bind(pid_i64)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        if res.rows_affected() == 0 {
+            return Err(CalmError::NotFound(format!("terminal {id}")));
+        }
+        Ok(())
+    }
+
+    async fn terminals_orphaned(&self, grace_seconds: i64) -> Result<Vec<Terminal>> {
+        // Orphan: no card.payload.terminal_id references this terminal row,
+        // AND the row was created more than `grace_seconds` ago (absorbs the
+        // 3-step terminal-card create race in `eventBridge.tsx:60-70`).
+        //
+        // `created_at` is unix ms; the grace bound is `now_ms - grace_seconds * 1000`.
+        let cutoff = now_ms() - grace_seconds.saturating_mul(1000);
+        let rows = sqlx::query_as::<_, Terminal>(
+            r#"SELECT t.id, t.card_id, t.program, t.cwd, t.env,
+                      t.daemon_handle, t.pid, t.created_at
+               FROM terminals t
+               WHERE NOT EXISTS (
+                   SELECT 1 FROM cards c
+                   WHERE json_extract(c.payload, '$.terminal_id') = t.id
+               )
+               AND t.created_at < ?1"#,
+        )
+        .bind(cutoff)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    async fn terminal_delete(&self, id: &str) -> Result<()> {
+        let res = sqlx::query("DELETE FROM terminals WHERE id = ?1")
             .bind(id)
             .execute(&self.pool)
             .await?;

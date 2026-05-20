@@ -35,5 +35,6 @@ pub mod openapi;
 pub mod plugin_host;
 pub mod routes;
 pub mod state;
+pub mod terminal_sweeper;
 pub mod validation;
 pub mod ws;

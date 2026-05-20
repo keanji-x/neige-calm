@@ -100,6 +100,15 @@ pub enum Event {
         kind: String,
     },
 
+    /// Terminal row removed (today: emitted by the orphan-terminal sweeper
+    /// at `crate::terminal_sweeper`; a future user-initiated delete endpoint
+    /// would emit the same variant). Carries the terminal id plus the
+    /// card_id the row pointed at — useful for audit log lookups even
+    /// though the card itself may have been deleted in an earlier event.
+    /// Topic mapping (see `topics`): `terminal:<id>` plus the firehose.
+    #[serde(rename = "terminal.deleted")]
+    TerminalDeleted { id: String, card_id: String },
+
     #[serde(rename = "plugin.state")]
     PluginState {
         id: String,
@@ -156,6 +165,7 @@ impl Event {
             Event::CardDeleted { .. } => "card.deleted",
             Event::OverlaySet(_) => "overlay.set",
             Event::OverlayDeleted { .. } => "overlay.deleted",
+            Event::TerminalDeleted { .. } => "terminal.deleted",
             Event::PluginState { .. } => "plugin.state",
             Event::CodexHook { .. } => "codex.hook",
         }
@@ -231,6 +241,8 @@ pub fn topics(ev: &Event) -> Vec<String> {
             "plugin:*".into(),
             "*".into(),
         ],
+
+        Event::TerminalDeleted { id, .. } => vec![format!("terminal:{}", id), "*".into()],
 
         Event::PluginState { id, .. } => {
             vec![format!("plugin:{}", id), "plugin:*".into(), "*".into()]

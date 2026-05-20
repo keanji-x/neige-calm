@@ -116,6 +116,20 @@ pub trait Repo: Send + Sync + 'static {
     async fn terminal_get(&self, id: &str) -> Result<Option<Terminal>>;
     async fn terminal_get_by_card(&self, card_id: &str) -> Result<Option<Terminal>>;
     async fn terminal_set_handle(&self, id: &str, handle: Option<&str>) -> Result<()>;
+    /// Persist the daemon PID captured by `routes::terminal::spawn_daemon_for`
+    /// (and the WS-side revive path). The orphan-terminal sweeper uses this
+    /// as a SIGTERM fallback target when graceful `ClientMsg::Kill` fails.
+    async fn terminal_set_pid(&self, id: &str, pid: Option<u32>) -> Result<()>;
+    /// Return every terminal row that has no card pointing at it via
+    /// `cards.payload.terminal_id`, and whose `created_at` is older than
+    /// `grace_seconds` ago. The grace window absorbs the 3-step
+    /// terminal-card create race (see `web/src/app/eventBridge.tsx:60-70`).
+    /// Used exclusively by the `terminal_sweeper` background task.
+    async fn terminals_orphaned(&self, grace_seconds: i64) -> Result<Vec<Terminal>>;
+    /// Remove a terminal row by id. Sibling to `card_delete` etc.; surfaced
+    /// on the trait so the sweeper can call it from inside its
+    /// `write_with_event` closure via the `_tx`-suffixed helper.
+    async fn terminal_delete(&self, id: &str) -> Result<()>;
 
     // ---- plugins
     //

@@ -80,13 +80,23 @@ impl AppState {
         // the rest of the boot path.
         plugin.autospawn_enabled().await;
 
-        Ok(Self {
+        let state = Self {
             repo,
             events,
             daemon: Arc::new(DaemonClient::new(cfg)),
             plugin,
             codex: Arc::new(CodexClient::new(cfg)),
-        })
+        };
+
+        // Orphan-terminal sweeper (Scope C). Ticks every 30s, reaps
+        // terminal rows that no card references via `payload.terminal_id`
+        // (with a 1-minute grace window for the 3-step create race), and
+        // emits `Event::TerminalDeleted` through the same `write_with_event`
+        // pipeline every other write uses so the cleanup is audited. See
+        // `terminal_sweeper` module docs and `docs/sync-engine-design.md` §10.
+        crate::terminal_sweeper::spawn(state.clone());
+
+        Ok(state)
     }
 }
 
