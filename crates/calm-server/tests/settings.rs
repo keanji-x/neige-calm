@@ -42,20 +42,32 @@ async fn repo_round_trips_settings_kv() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     assert!(repo.settings_get_all().await.unwrap().is_empty());
 
-    repo.settings_upsert("http_proxy", "http://127.0.0.1:10809").await.unwrap();
-    repo.settings_upsert("https_proxy", "http://127.0.0.1:10809").await.unwrap();
+    repo.settings_upsert("http_proxy", "http://127.0.0.1:10809")
+        .await
+        .unwrap();
+    repo.settings_upsert("https_proxy", "http://127.0.0.1:10809")
+        .await
+        .unwrap();
     let mut rows = repo.settings_get_all().await.unwrap();
     rows.sort();
     assert_eq!(
         rows,
         vec![
-            ("http_proxy".to_string(), "http://127.0.0.1:10809".to_string()),
-            ("https_proxy".to_string(), "http://127.0.0.1:10809".to_string()),
+            (
+                "http_proxy".to_string(),
+                "http://127.0.0.1:10809".to_string()
+            ),
+            (
+                "https_proxy".to_string(),
+                "http://127.0.0.1:10809".to_string()
+            ),
         ]
     );
 
     // Upsert is idempotent and overrides.
-    repo.settings_upsert("http_proxy", "http://proxy.example:3128").await.unwrap();
+    repo.settings_upsert("http_proxy", "http://proxy.example:3128")
+        .await
+        .unwrap();
     let rows = repo.settings_get_all().await.unwrap();
     let http = rows.iter().find(|(k, _)| k == "http_proxy").unwrap();
     assert_eq!(http.1, "http://proxy.example:3128");
@@ -70,7 +82,9 @@ async fn repo_round_trips_settings_kv() {
 #[tokio::test]
 async fn get_settings_returns_empty_bag_initially() {
     let (state, _repo) = fresh_state().await;
-    let app = axum::Router::new().merge(routes::router()).with_state(state);
+    let app = axum::Router::new()
+        .merge(routes::router())
+        .with_state(state);
 
     let resp = app
         .oneshot(
@@ -92,7 +106,9 @@ async fn get_settings_returns_empty_bag_initially() {
 #[tokio::test]
 async fn put_then_get_round_trips_proxy() {
     let (state, _repo) = fresh_state().await;
-    let app = axum::Router::new().merge(routes::router()).with_state(state);
+    let app = axum::Router::new()
+        .merge(routes::router())
+        .with_state(state);
 
     let body = serde_json::json!({
         "settings": {
@@ -138,10 +154,16 @@ async fn put_then_get_round_trips_proxy() {
 #[tokio::test]
 async fn put_with_empty_or_null_clears_key() {
     let (state, repo) = fresh_state().await;
-    repo.settings_upsert("http_proxy", "http://10.0.0.5:3128").await.unwrap();
-    repo.settings_upsert("https_proxy", "http://10.0.0.5:3128").await.unwrap();
+    repo.settings_upsert("http_proxy", "http://10.0.0.5:3128")
+        .await
+        .unwrap();
+    repo.settings_upsert("https_proxy", "http://10.0.0.5:3128")
+        .await
+        .unwrap();
 
-    let app = axum::Router::new().merge(routes::router()).with_state(state);
+    let app = axum::Router::new()
+        .merge(routes::router())
+        .with_state(state);
 
     // Empty string + null both clear.
     let body = serde_json::json!({
@@ -174,7 +196,9 @@ async fn put_with_empty_or_null_clears_key() {
 async fn settings_loader_picks_up_proxy_for_codex_spawn() {
     use calm_server::routes::settings::load_settings;
     let (state, repo) = fresh_state().await;
-    repo.settings_upsert("http_proxy", "http://corp.proxy:8080").await.unwrap();
+    repo.settings_upsert("http_proxy", "http://corp.proxy:8080")
+        .await
+        .unwrap();
 
     let s = load_settings(state.repo.as_ref()).await.unwrap();
     assert_eq!(s.http_proxy.as_deref(), Some("http://corp.proxy:8080"));

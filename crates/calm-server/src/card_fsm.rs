@@ -435,8 +435,7 @@ mod tests {
     use std::time::Duration as StdDuration;
 
     async fn setup() -> (Arc<dyn Repo>, EventBus, String, String) {
-        let repo: Arc<dyn Repo> =
-            Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+        let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let bus = EventBus::new();
         let cove = repo
             .cove_create(NewCove {
@@ -543,19 +542,13 @@ mod tests {
         // Within the quiet window: still "Working".
         tokio::time::sleep(StdDuration::from_millis(150)).await;
         let card_overlays = repo.overlays_for("card", &card_id).await.unwrap();
-        let s = card_overlays
-            .iter()
-            .find(|o| o.kind == "status")
-            .unwrap();
+        let s = card_overlays.iter().find(|o| o.kind == "status").unwrap();
         assert_eq!(s.payload["state"], "Working");
 
         // After the window: settles to "Idle".
         tokio::time::sleep(StdDuration::from_millis(800)).await;
         let card_overlays = repo.overlays_for("card", &card_id).await.unwrap();
-        let s = card_overlays
-            .iter()
-            .find(|o| o.kind == "status")
-            .unwrap();
+        let s = card_overlays.iter().find(|o| o.kind == "status").unwrap();
         assert_eq!(s.payload["state"], "Idle");
     }
 }

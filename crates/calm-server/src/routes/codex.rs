@@ -137,8 +137,9 @@ async fn spawn_codex_for(s: &AppState, card: &Card, p: &NewCodexBody) -> Result<
     //    wiped by docker, leaving the daemon stuck in a respawn loop.
     let codex_home = s.codex.codex_homes_dir.join(&card.id);
     let is_fresh = !codex_home.exists();
-    std::fs::create_dir_all(&codex_home)
-        .map_err(|e| CalmError::Internal(format!("mkdir codex_home {}: {e}", codex_home.display())))?;
+    std::fs::create_dir_all(&codex_home).map_err(|e| {
+        CalmError::Internal(format!("mkdir codex_home {}: {e}", codex_home.display()))
+    })?;
 
     // 2. Seed from $HOME/.codex on first creation only. Re-spawns after a
     //    restart find the dir already populated with codex's accumulated
@@ -202,12 +203,24 @@ async fn spawn_codex_for(s: &AppState, card: &Card, p: &NewCodexBody) -> Result<
         // it links) reads `HTTPS_PROXY` / `HTTP_PROXY` (uppercase), but
         // most reqwest-based tools also honor lowercase. Cheap to write
         // both; matches what the container env already does.
-        env_map.insert("HTTP_PROXY".to_string(), serde_json::Value::String(p.to_string()));
-        env_map.insert("http_proxy".to_string(), serde_json::Value::String(p.to_string()));
+        env_map.insert(
+            "HTTP_PROXY".to_string(),
+            serde_json::Value::String(p.to_string()),
+        );
+        env_map.insert(
+            "http_proxy".to_string(),
+            serde_json::Value::String(p.to_string()),
+        );
     }
     if let Some(p) = settings.https_proxy.as_deref().filter(|s| !s.is_empty()) {
-        env_map.insert("HTTPS_PROXY".to_string(), serde_json::Value::String(p.to_string()));
-        env_map.insert("https_proxy".to_string(), serde_json::Value::String(p.to_string()));
+        env_map.insert(
+            "HTTPS_PROXY".to_string(),
+            serde_json::Value::String(p.to_string()),
+        );
+        env_map.insert(
+            "https_proxy".to_string(),
+            serde_json::Value::String(p.to_string()),
+        );
     }
     let env = serde_json::Value::Object(env_map);
 
@@ -338,7 +351,8 @@ fn build_hooks_json(bridge: &str) -> String {
     // Bridge command — the binary path resolved by `state::CodexClient`.
     // Codex spec: each hook entry is `{"type":"command", "command":"<argv>"}`.
     // We rely on PATH lookup if `bridge` is a bare name.
-    let cmd = serde_json::to_string(bridge).unwrap_or_else(|_| String::from("\"neige-codex-bridge\""));
+    let cmd =
+        serde_json::to_string(bridge).unwrap_or_else(|_| String::from("\"neige-codex-bridge\""));
     format!(
         r#"{{
   "hooks": {{

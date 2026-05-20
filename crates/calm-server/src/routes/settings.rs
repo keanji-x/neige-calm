@@ -29,20 +29,13 @@
 
 use crate::error::{ErrorBody, Result};
 use crate::state::AppState;
-use axum::{
-    Json, Router,
-    extract::State,
-    routing::get,
-};
+use axum::{Json, Router, extract::State, routing::get};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use utoipa::ToSchema;
 
 pub fn router() -> Router<AppState> {
-    Router::new().route(
-        "/api/settings",
-        get(get_settings).put(put_settings),
-    )
+    Router::new().route("/api/settings", get(get_settings).put(put_settings))
 }
 
 /// Wire-shape: a flat string map of key -> value. We use `BTreeMap` for
@@ -71,9 +64,7 @@ pub struct SettingsPutBody {
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
-pub(crate) async fn get_settings(
-    State(s): State<AppState>,
-) -> Result<Json<SettingsBag>> {
+pub(crate) async fn get_settings(State(s): State<AppState>) -> Result<Json<SettingsBag>> {
     let rows = s.repo.settings_get_all().await?;
     let mut map = BTreeMap::new();
     for (k, v) in rows {

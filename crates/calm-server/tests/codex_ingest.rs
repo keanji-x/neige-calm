@@ -29,7 +29,9 @@ async fn ingest_emits_codex_hook_event() {
         plugin: Arc::new(PluginHost::new(Arc::new(PluginRegistry::empty()), repo)),
         codex: Arc::new(CodexClient::new_stub()),
     };
-    let app = axum::Router::new().merge(routes::router()).with_state(state);
+    let app = axum::Router::new()
+        .merge(routes::router())
+        .with_state(state);
     let mut rx = events.subscribe();
 
     let body = serde_json::json!({
@@ -105,7 +107,9 @@ async fn create_codex_rejects_non_codex_card() {
         plugin: Arc::new(PluginHost::new(Arc::new(PluginRegistry::empty()), repo)),
         codex: Arc::new(CodexClient::new_stub()),
     };
-    let app = axum::Router::new().merge(routes::router()).with_state(state);
+    let app = axum::Router::new()
+        .merge(routes::router())
+        .with_state(state);
 
     let resp = app
         .oneshot(
