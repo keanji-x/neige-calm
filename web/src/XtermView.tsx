@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
+import { dlog } from './util/debug';
 
 // Cool-neutral light xterm theme matching Calm's palette. Same numbers as
 // the previous useTerminalCore-backed version; only the wire below changed.
@@ -66,6 +67,11 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+    dlog('XtermView', 'mount START', {
+      terminalId,
+      containerW: container.offsetWidth,
+      containerH: container.offsetHeight,
+    });
 
     const term = new Terminal({
       theme: theme === 'dark' ? DARK_THEME : LIGHT_THEME,
@@ -80,7 +86,14 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
     term.open(container);
     try {
       fit.fit();
-    } catch {
+      dlog('XtermView', 'fit DONE (initial)', {
+        cols: term.cols,
+        rows: term.rows,
+        containerW: container.offsetWidth,
+        containerH: container.offsetHeight,
+      });
+    } catch (e) {
+      dlog('XtermView', 'fit FAILED (initial)', e);
       /* container may not be laid out yet on first frame */
     }
 
@@ -190,6 +203,12 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
           return;
         }
         if (term.cols !== lastCols || term.rows !== lastRows) {
+          dlog('XtermView', 'resize → fit', {
+            from: { cols: lastCols, rows: lastRows },
+            to: { cols: term.cols, rows: term.rows },
+            containerW: container.offsetWidth,
+            containerH: container.offsetHeight,
+          });
           lastCols = term.cols;
           lastRows = term.rows;
           send({ Resize: { cols: term.cols, rows: term.rows } });

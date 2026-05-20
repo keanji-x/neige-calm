@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo } from 'react';
 import {
   GridLayout,
   useContainerWidth,
@@ -11,6 +11,7 @@ import 'react-resizable/css/styles.css';
 import { WaveCard } from './shared/components/WaveCard';
 import { sizeFor, type CardSize } from './cards/registry';
 import { UnknownCard, UNKNOWN_CARD_SIZE } from './cards/UnknownCard';
+import { dlog } from './util/debug';
 import type { WaveCardSlot } from './types';
 
 const COLS = 12;
@@ -135,21 +136,44 @@ export function WaveGrid({
   onRemoveCard: (idx: number) => void;
 }) {
   const { width, containerRef, mounted } = useContainerWidth();
+  dlog('WaveGrid', 'render', { waveId, width, mounted, cardsCount: cards.length });
 
-  // Layout key set — recompute when cards arrive/leave or the wave changes.
-  // In-place layout edits are persisted via onLayoutChange and don't need to
-  // round-trip through state.
+  // Layout key set — recompute only when cards arrive/leave or the wave
+  // changes. Note: we deliberately do NOT mirror RGL's runtime layout in
+  // a React useState. Mirroring created a feedback loop where RGL's
+  // internal layout normalization (e.g. minW/minH vs stored values) fought
+  // our setState in a tight render cycle, alternating between two layout
+  // snapshots ~hundreds of times per second. See PR #12 + issue #13.
+  //
+  // Using useMemo + reference-stable output: when cards don't change, RGL
+  // sees the same `layout` prop reference and doesn't re-normalize.
   const cardKeys = useMemo(
     () => cards.map((c, i) => slotKey(c, i)).join('|'),
     [cards],
   );
-  const [layout, setLayout] = useState<LayoutItem[]>(() =>
-    reconcile(cards, loadStored(waveId)),
-  );
-  useEffect(() => {
-    setLayout(reconcile(cards, loadStored(waveId)));
+  const layout = useMemo<LayoutItem[]>(
+    () => reconcile(cards, loadStored(waveId)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [waveId, cardKeys]);
+    [waveId, cardKeys],
+  );
+  // Render-time diagnostic — confirm the layout reference is stable across
+  // re-renders that aren't card-driven.
+  dlog('WaveGrid', 'render-detail', {
+    layoutLen: layout.length,
+    layoutSig: layout.map((l) => `${l.i}@${l.x},${l.y},${l.w}x${l.h}`).join('|'),
+  });
+
+  // Drag/resize ends → persist to localStorage. Crucially does NOT call
+  // setState — RGL owns the runtime layout from this point onward; we
+  // only re-seed when `cards` changes (which gives RGL a new `layout`
+  // prop via useMemo above). On next mount, loadStored returns these
+  // saved positions.
+  const persistLayout = useCallback(
+    (next: Layout) => {
+      saveStored(waveId, next);
+    },
+    [waveId],
+  );
 
   return (
     <div ref={containerRef} className="wave-grid-wrap">
@@ -167,11 +191,11 @@ export function WaveGrid({
           dragConfig={{ handle: '.card-drag-handle' }}
           resizeConfig={{ handles: ['se'] }}
           onLayoutChange={(next) => {
-            // RGL hands us a readonly Layout; clone so our state stays
-            // mutable (set/spread later) without TS yelling.
-            const snapshot = next.slice();
-            setLayout(snapshot);
-            saveStored(waveId, next);
+            dlog('WaveGrid', 'onLayoutChange', {
+              items: next.length,
+              sig: next.map((l) => `${l.i}@${l.x},${l.y},${l.w}x${l.h}`).join('|'),
+            });
+            persistLayout(next);
           }}
         >
           {cards.map((slot, i) => (
