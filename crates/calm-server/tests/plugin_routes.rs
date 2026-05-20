@@ -26,7 +26,8 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use calm_server::db::{MockRepo, Repo};
+use calm_server::db::Repo;
+use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
 use calm_server::model::NewOverlay;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
@@ -104,15 +105,19 @@ fn write_bad_scope_plugin(plugins_dir: &Path, id: &str) -> PathBuf {
 }
 
 /// Build an `AppState` rooted in a fresh tempdir, an empty `PluginRegistry`,
-/// and a MockRepo. Returns the state, a holding TempDir (drops cleanup), and
-/// the resolved `plugins_dir` so tests can drop fixtures into it.
-fn boot_state() -> (AppState, TempDir, PathBuf) {
+/// and an in-memory `SqlxRepo`. Returns the state, a holding TempDir (drops
+/// cleanup), and the resolved `plugins_dir` so tests can drop fixtures into it.
+async fn boot_state() -> (AppState, TempDir, PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
     let plugins_dir = tmp.path().join("plugins");
     let plugins_data_dir = tmp.path().join("plugins-data");
     std::fs::create_dir_all(&plugins_dir).unwrap();
     std::fs::create_dir_all(&plugins_data_dir).unwrap();
-    let repo: Arc<dyn Repo> = Arc::new(MockRepo::new());
+    let repo: Arc<dyn Repo> = Arc::new(
+        SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite repo"),
+    );
     let events = EventBus::new();
     let plugin = Arc::new(PluginHost::new_full(
         Arc::new(PluginRegistry::empty()),
@@ -212,7 +217,7 @@ async fn wait_for_state(state: &AppState, id: &str, expected: &str, timeout: Dur
 
 #[tokio::test]
 async fn install_lists_and_details_round_trip() {
-    let (state, _tmp, plugins_dir) = boot_state();
+    let (state, _tmp, plugins_dir) = boot_state().await;
     // Source path lives OUTSIDE plugins_dir so install must materialize a
     // copy/link into plugins_dir/<id> — the realistic flow.
     let src_root = tempfile::tempdir().unwrap();
@@ -263,7 +268,7 @@ async fn install_lists_and_details_round_trip() {
 
 #[tokio::test]
 async fn enable_transitions_to_running() {
-    let (state, _tmp, _plugins_dir) = boot_state();
+    let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
     let src_dir = write_stub_plugin(src_root.path(), "test.enable");
 
@@ -304,7 +309,7 @@ async fn enable_transitions_to_running() {
 
 #[tokio::test]
 async fn disable_transitions_to_disabled() {
-    let (state, _tmp, _plugins_dir) = boot_state();
+    let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
     let src_dir = write_stub_plugin(src_root.path(), "test.disable");
     post_json(
@@ -339,7 +344,7 @@ async fn disable_transitions_to_disabled() {
 
 #[tokio::test]
 async fn log_tail_returns_stub_stderr() {
-    let (state, _tmp, _plugins_dir) = boot_state();
+    let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
     let src_dir = write_stub_plugin(src_root.path(), "test.log");
     post_json(
@@ -382,7 +387,7 @@ async fn log_tail_returns_stub_stderr() {
 
 #[tokio::test]
 async fn uninstall_cascades_satellites() {
-    let (state, _tmp, _plugins_dir) = boot_state();
+    let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
     let src_dir = write_stub_plugin(src_root.path(), "test.uninstall");
     post_json(
@@ -445,7 +450,7 @@ async fn uninstall_cascades_satellites() {
 
 #[tokio::test]
 async fn views_catalog_lists_enabled_plugin_views() {
-    let (state, _tmp, _plugins_dir) = boot_state();
+    let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
     let src_dir = write_stub_plugin(src_root.path(), "test.views");
 
@@ -503,7 +508,7 @@ async fn views_catalog_lists_enabled_plugin_views() {
 
 #[tokio::test]
 async fn install_rejects_wave_scope_manifest() {
-    let (state, _tmp, _plugins_dir) = boot_state();
+    let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
     let src_dir = write_bad_scope_plugin(src_root.path(), "test.badscope");
 
@@ -527,7 +532,7 @@ async fn install_rejects_wave_scope_manifest() {
 
 #[tokio::test]
 async fn install_twice_returns_409() {
-    let (state, _tmp, _plugins_dir) = boot_state();
+    let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
     let src_dir = write_stub_plugin(src_root.path(), "test.dup");
 
@@ -556,7 +561,7 @@ async fn install_twice_returns_409() {
 
 #[tokio::test]
 async fn install_rejects_unsupported_source() {
-    let (state, _tmp, _plugins_dir) = boot_state();
+    let (state, _tmp, _plugins_dir) = boot_state().await;
     let resp = post_json(
         app(state),
         "/api/plugins/install",
@@ -572,7 +577,7 @@ async fn install_rejects_unsupported_source() {
 
 #[tokio::test]
 async fn patch_config_writes_user_config() {
-    let (state, _tmp, _plugins_dir) = boot_state();
+    let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
     let src_dir = write_stub_plugin(src_root.path(), "test.config");
     post_json(

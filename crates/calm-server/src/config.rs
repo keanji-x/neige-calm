@@ -10,8 +10,9 @@ pub struct Config {
     #[arg(long, env = "CALM_LISTEN", default_value = "127.0.0.1:4040")]
     pub listen: String,
 
-    /// Storage URL. `sqlite://path/to/file.db?mode=rwc` or `mock` for the
-    /// in-memory `MockRepo` (handy for dev before track A lands).
+    /// Storage URL. `sqlite://path/to/file.db?mode=rwc` or `mock` for an
+    /// in-memory `SqlxRepo` (`sqlite::memory:`, handy for dev/tests; not
+    /// durable).
     #[arg(long, env = "CALM_DB_URL", default_value = "mock")]
     pub db_url: String,
 

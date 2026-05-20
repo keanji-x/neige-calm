@@ -23,7 +23,8 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use calm_server::db::{MockRepo, Repo};
+use calm_server::db::Repo;
+use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
 use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
 use calm_server::routes;
@@ -98,10 +99,25 @@ async fn boot(cfg: FxConfig<'_>) -> Fixture {
     let manifest: Manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest");
 
     let registry = PluginRegistry::empty();
-    registry.insert(manifest, Some(install_dir));
+    registry.insert(manifest, Some(install_dir.clone()));
     let events = EventBus::new();
     // Shared repo so the dispatcher's writes are observable from the test.
-    let repo: Arc<dyn Repo> = Arc::new(MockRepo::new());
+    let repo: Arc<dyn Repo> = Arc::new(
+        SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite repo"),
+    );
+    // Seed plugin row so plugin_token_set's FK is satisfied on spawn.
+    repo.plugin_install(calm_server::model::NewPlugin {
+        id: cfg.plugin_id.into(),
+        version: "0.1.0".into(),
+        install_path: install_dir.display().to_string(),
+        manifest: json!({}),
+        enabled: true,
+        user_config: json!({}),
+    })
+    .await
+    .expect("seed plugin row");
     let plugin_host = Arc::new(PluginHost::new_full(
         Arc::new(registry),
         Arc::clone(&repo),

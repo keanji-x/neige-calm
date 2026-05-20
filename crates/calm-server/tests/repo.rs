@@ -201,6 +201,88 @@ async fn wave_delete_cascades_to_cards() {
     assert!(repo.card_get(&other_card.id).await.unwrap().is_some());
 }
 
+// --- Cascade-to-terminals regression tests (issue #4 / D3) -----------------
+//
+// These three tests document the FK CASCADE contract: deleting a card, wave,
+// or cove must remove every terminal beneath it. They pass for SqlxRepo
+// (cascade is enforced by the schema) and would have failed for the old
+// MockRepo, whose `card_delete` / `wave_delete` / `cove_delete` only walked
+// the cove → wave → card layer and never reached the terminals map. Keep
+// these around so a future "let's bring back the in-memory mock" attempt
+// fails loudly at test time instead of silently leaving dangling terminals.
+
+async fn make_terminal(repo: &SqlxRepo, card_id: &str) -> Terminal {
+    repo.terminal_create(NewTerminal {
+        card_id: card_id.into(),
+        program: "bash".into(),
+        cwd: "/tmp".into(),
+        env: json!({}),
+    })
+    .await
+    .expect("create terminal")
+}
+
+#[tokio::test]
+async fn cascade_card_delete_removes_terminal() {
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "C").await;
+    let w = make_wave(&repo, &c.id, "W").await;
+    let card = make_card(&repo, &w.id, "terminal").await;
+    let term = make_terminal(&repo, &card.id).await;
+
+    repo.card_delete(&card.id).await.unwrap();
+
+    assert!(
+        repo.terminal_get(&term.id).await.unwrap().is_none(),
+        "terminal must cascade away when its parent card is deleted"
+    );
+}
+
+#[tokio::test]
+async fn cascade_wave_delete_removes_terminals() {
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "C").await;
+    let w = make_wave(&repo, &c.id, "W").await;
+    let card = make_card(&repo, &w.id, "terminal").await;
+    let term = make_terminal(&repo, &card.id).await;
+
+    // Unrelated wave/card/terminal that must NOT be touched.
+    let other_wave = make_wave(&repo, &c.id, "other").await;
+    let other_card = make_card(&repo, &other_wave.id, "terminal").await;
+    let other_term = make_terminal(&repo, &other_card.id).await;
+
+    repo.wave_delete(&w.id).await.unwrap();
+
+    assert!(repo.wave_get(&w.id).await.unwrap().is_none());
+    assert!(repo.card_get(&card.id).await.unwrap().is_none());
+    assert!(
+        repo.terminal_get(&term.id).await.unwrap().is_none(),
+        "terminal must cascade away when its grand-parent wave is deleted"
+    );
+    // Sibling subtree intact.
+    assert!(repo.wave_get(&other_wave.id).await.unwrap().is_some());
+    assert!(repo.card_get(&other_card.id).await.unwrap().is_some());
+    assert!(repo.terminal_get(&other_term.id).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn cascade_cove_delete_removes_terminals() {
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "C").await;
+    let w = make_wave(&repo, &c.id, "W").await;
+    let card = make_card(&repo, &w.id, "terminal").await;
+    let term = make_terminal(&repo, &card.id).await;
+
+    repo.cove_delete(&c.id).await.unwrap();
+
+    assert!(repo.wave_get(&w.id).await.unwrap().is_none());
+    assert!(repo.card_get(&card.id).await.unwrap().is_none());
+    assert!(
+        repo.terminal_get(&term.id).await.unwrap().is_none(),
+        "terminal must cascade away when its great-grand-parent cove is deleted"
+    );
+}
+
 // ----------------------------------------------------- Sort defaulting ----
 
 #[tokio::test]

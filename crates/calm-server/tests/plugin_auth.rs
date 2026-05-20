@@ -19,7 +19,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use calm_server::db::{MockRepo, Repo};
+use calm_server::db::Repo;
+use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
 use calm_server::plugin_host::{
     Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus, hash_token, verify_token,
@@ -35,7 +36,7 @@ const CALLER_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-caller");
 // Host fixtures (mirror plugin_host_smoke.rs but parameterized for env)
 // ---------------------------------------------------------------------------
 
-fn boot_host(
+async fn boot_host(
     plugin_id: &str,
     extra_env: &[(&str, &str)],
 ) -> (Arc<PluginHost>, Arc<dyn Repo>, TempDir, EventBus) {
@@ -63,9 +64,28 @@ fn boot_host(
     let manifest: Manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest parses");
 
     let registry = PluginRegistry::empty();
-    registry.insert(manifest, Some(install_dir));
+    registry.insert(manifest, Some(install_dir.clone()));
     let events = EventBus::new();
-    let repo: Arc<dyn Repo> = Arc::new(MockRepo::new());
+    let repo: Arc<dyn Repo> = Arc::new(
+        SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite repo"),
+    );
+    // Production flow installs the plugin row (via the REST install handler)
+    // before `spawn` runs; these tests bypass the REST surface and call
+    // `host.spawn` directly. With MockRepo this happened to work because the
+    // mock didn't enforce FKs — SqlxRepo's `plugin_tokens.plugin_id` FK
+    // requires a real plugins row. Seed it here.
+    repo.plugin_install(calm_server::model::NewPlugin {
+        id: plugin_id.into(),
+        version: "0.1.0".into(),
+        install_path: install_dir.display().to_string(),
+        manifest: json!({}),
+        enabled: true,
+        user_config: json!({}),
+    })
+    .await
+    .expect("seed plugin row");
     let host = Arc::new(PluginHost::new_full(
         Arc::new(registry),
         repo.clone(),
@@ -107,7 +127,7 @@ async fn wait_for_status(
 
 #[tokio::test]
 async fn process_token_persists_hash_on_spawn() {
-    let (host, repo, _tmp, _events) = boot_host("test.tok1", &[]);
+    let (host, repo, _tmp, _events) = boot_host("test.tok1", &[]).await;
     host.spawn("test.tok1").await.expect("spawn");
     wait_for_status(
         &host,
@@ -134,7 +154,7 @@ async fn process_token_persists_hash_on_spawn() {
 
 #[tokio::test]
 async fn rotate_plugin_token_swaps_hash_and_restarts() {
-    let (host, repo, _tmp, _events) = boot_host("test.tok2", &[]);
+    let (host, repo, _tmp, _events) = boot_host("test.tok2", &[]).await;
     host.spawn("test.tok2").await.unwrap();
     wait_for_status(
         &host,
@@ -179,7 +199,8 @@ async fn auth_mismatch_kills_and_does_not_respawn() {
     let (host, _repo, _tmp, _events) = boot_host(
         "test.badauth",
         &[("STUB_ECHO_OVERRIDE", "definitely-not-the-real-token")],
-    );
+    )
+    .await;
 
     let err = host
         .spawn("test.badauth")
@@ -279,7 +300,11 @@ async fn no_kernel_callbacks_capability_installs_method_not_found_drainer() {
     std::fs::create_dir_all(&plugins_data_dir).unwrap();
     std::os::unix::fs::symlink(Path::new(CALLER_BIN), bin_dir.join("stub")).unwrap();
 
-    let repo: Arc<dyn Repo> = Arc::new(MockRepo::new());
+    let repo: Arc<dyn Repo> = Arc::new(
+        SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite repo"),
+    );
     let cove = repo
         .cove_create(NewCove {
             name: "demo".into(),
@@ -324,8 +349,19 @@ async fn no_kernel_callbacks_capability_installs_method_not_found_drainer() {
     });
     let manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest parses");
     let registry = PluginRegistry::empty();
-    registry.insert(manifest, Some(install_dir));
+    registry.insert(manifest, Some(install_dir.clone()));
     let events = EventBus::new();
+    // Seed the plugins row before spawn (FK for plugin_tokens).
+    repo.plugin_install(calm_server::model::NewPlugin {
+        id: plugin_id.into(),
+        version: "0.1.0".into(),
+        install_path: install_dir.display().to_string(),
+        manifest: json!({}),
+        enabled: true,
+        user_config: json!({}),
+    })
+    .await
+    .expect("seed plugin row");
     let host = Arc::new(PluginHost::new_full(
         Arc::new(registry),
         Arc::clone(&repo),

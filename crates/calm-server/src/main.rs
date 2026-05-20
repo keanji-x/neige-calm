@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use calm_server::config::Config;
+use calm_server::db::Repo;
 use calm_server::db::sqlite::SqlxRepo;
-use calm_server::db::{MockRepo, Repo};
 use calm_server::routes;
 use calm_server::state::AppState;
 use calm_server::ws;
@@ -22,11 +22,14 @@ async fn main() -> anyhow::Result<()> {
 
     let cfg = Config::parse();
 
-    // Storage. `mock` keeps the in-memory backend for dev before track A
-    // wires SqlxRepo; anything else gets parsed as a sqlx URL.
+    // Storage. `mock` keeps the in-memory backend for dev — it now resolves to
+    // an in-memory `SqlxRepo` (`sqlite::memory:`) so dev parity with the
+    // production sqlite backend is exact (cascades, FK enforcement, etc.).
     let repo: Arc<dyn Repo> = if cfg.db_url == "mock" {
-        tracing::warn!("calm-server starting with MockRepo (in-memory, non-durable)");
-        Arc::new(MockRepo::new())
+        tracing::warn!(
+            "calm-server starting with in-memory SqlxRepo (sqlite::memory:, non-durable)"
+        );
+        Arc::new(SqlxRepo::open("sqlite::memory:").await?)
     } else {
         Arc::new(SqlxRepo::open(&cfg.db_url).await?)
     };

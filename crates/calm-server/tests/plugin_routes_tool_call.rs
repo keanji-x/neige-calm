@@ -22,7 +22,8 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use calm_server::db::{MockRepo, Repo};
+use calm_server::db::Repo;
+use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
 use calm_server::model::{NewCove, NewWave};
 use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
@@ -39,8 +40,8 @@ const TOOLCALL_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-toolcall");
 // Fixture
 // ---------------------------------------------------------------------------
 
-/// Test fixture: an `AppState` wired to a real `PluginHost`, a `MockRepo`
-/// pre-seeded with one cove + one wave, and one installed `stub-toolcall`
+/// Test fixture: an `AppState` wired to a real `PluginHost`, an in-memory
+/// `SqlxRepo` pre-seeded with one cove + one wave, and one installed `stub-toolcall`
 /// plugin with configurable env vars (mode / resource_uri / structured).
 struct Fixture {
     state: AppState,
@@ -65,7 +66,11 @@ async fn boot(cfg: StubConfig<'_>) -> Fixture {
     std::fs::create_dir_all(&plugins_data_dir).unwrap();
     std::os::unix::fs::symlink(Path::new(TOOLCALL_BIN), bin_dir.join("stub")).unwrap();
 
-    let repo: Arc<dyn Repo> = Arc::new(MockRepo::new());
+    let repo: Arc<dyn Repo> = Arc::new(
+        SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite repo"),
+    );
     let cove = repo
         .cove_create(NewCove {
             name: "demo".into(),
@@ -110,8 +115,19 @@ async fn boot(cfg: StubConfig<'_>) -> Fixture {
     let manifest: Manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest");
 
     let registry = PluginRegistry::empty();
-    registry.insert(manifest, Some(install_dir));
+    registry.insert(manifest, Some(install_dir.clone()));
     let events = EventBus::new();
+    // Seed plugin row so plugin_token_set's FK is satisfied at spawn time.
+    repo.plugin_install(calm_server::model::NewPlugin {
+        id: cfg.plugin_id.into(),
+        version: "0.1.0".into(),
+        install_path: install_dir.display().to_string(),
+        manifest: json!({}),
+        enabled: true,
+        user_config: json!({}),
+    })
+    .await
+    .expect("seed plugin row");
     let plugin_host = Arc::new(PluginHost::new_full(
         Arc::new(registry),
         Arc::clone(&repo),
