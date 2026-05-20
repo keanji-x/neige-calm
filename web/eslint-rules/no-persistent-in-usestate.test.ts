@@ -20,6 +20,11 @@ import neigeCalm from './index.cjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fixturePath = path.join(__dirname, '__fixtures__', 'violating.tsx');
+const reactMemberFixturePath = path.join(
+  __dirname,
+  '__fixtures__',
+  'react-state-hook-members.tsx',
+);
 
 describe('neige-calm/no-persistent-in-usestate (smoke test)', () => {
   it('reports a violation on useState<Persistent<T>>(...)', async () => {
@@ -70,6 +75,51 @@ describe('neige-calm/no-persistent-in-usestate (smoke test)', () => {
     // Pin on the stable message id so the assertion survives any future
     // human-readable message edits.
     expect(violations.every((v) => v.messageId === 'usePersistentInLocalState')).toBe(
+      true,
+    );
+  });
+});
+
+describe('neige-calm/no-react-state-hook-members (smoke test)', () => {
+  it('reports React.useState / React.useReducer namespace and default calls', async () => {
+    const eslint = new ESLint({
+      overrideConfigFile: true,
+      overrideConfig: [
+        {
+          files: ['**/*.tsx'],
+          languageOptions: {
+            parser: tsParser as never,
+            parserOptions: {
+              ecmaFeatures: { jsx: true },
+              project: false,
+            },
+          },
+          plugins: {
+            'neige-calm': neigeCalm,
+          },
+          rules: {
+            'neige-calm/no-react-state-hook-members': 'error',
+          },
+        },
+      ],
+    });
+
+    const results = await eslint.lintFiles([reactMemberFixturePath]);
+    expect(results).toHaveLength(1);
+    const result = results[0]!;
+    const violations = result.messages.filter(
+      (m) => m.ruleId === 'neige-calm/no-react-state-hook-members',
+    );
+    if (violations.length !== 3) {
+      throw new Error(
+        `expected three violations; ESLint reported: ${JSON.stringify(
+          result.messages,
+          null,
+          2,
+        )}`,
+      );
+    }
+    expect(violations.every((v) => v.messageId === 'noReactStateHookMember')).toBe(
       true,
     );
   });

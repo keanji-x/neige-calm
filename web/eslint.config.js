@@ -4,6 +4,8 @@
 //   - `no-restricted-imports` forbids `useState` / `useReducer` from `react`
 //     everywhere except `src/shared/state.ts` (the only file that may
 //     re-export them as the project-wide entry point).
+//   - `neige-calm/no-react-state-hook-members` closes the corresponding
+//     namespace/default import bypass (`React.useState`, `React.useReducer`).
 //   - `neige-calm/no-persistent-in-usestate` — custom rule that flags any
 //     `useState(...)` / `useReducer(...)` whose state type extends the
 //     `Persistent<T>` brand. See `eslint-rules/no-persistent-in-usestate.js`.
@@ -93,6 +95,7 @@ export default tseslint.config(
     },
     rules: {
       ...restrictedReactImports,
+      'neige-calm/no-react-state-hook-members': 'error',
       'neige-calm/no-persistent-in-usestate': 'error',
     },
   },
@@ -123,6 +126,7 @@ export default tseslint.config(
     },
     rules: {
       ...restrictedReactImports,
+      'neige-calm/no-react-state-hook-members': 'error',
       'neige-calm/no-persistent-in-usestate': 'error',
     },
   },
