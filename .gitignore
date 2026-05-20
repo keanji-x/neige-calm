@@ -28,6 +28,9 @@ web/playwright/.cache/
 .env
 .env.local
 
+# External repos for local comparison/research
+external/
+
 # Claude Code working files (agent worktrees, memory, transcripts).
 # Per-session, machine-local; never belongs in version control.
 .claude/
