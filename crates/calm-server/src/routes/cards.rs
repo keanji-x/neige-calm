@@ -14,6 +14,7 @@ use crate::event::Event;
 use crate::model::{Card, CardPatch, NewCard};
 use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
 use crate::state::AppState;
+use crate::validation::validate_card_payload;
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -126,11 +127,15 @@ pub(crate) async fn create_card(
         CalmError::BadRequest("create card body needs either `kind` or `via_tool_call`".into())
             .into_response()
     })?;
+    let payload = body.payload.unwrap_or(Value::Null);
+    // D4: reject malformed payloads for kernel-owned kinds. Plugin-defined
+    // (`ui://*`) kinds remain opaque per the architectural invariant.
+    validate_card_payload(&kind, &payload).map_err(|e| e.into_response())?;
     let new = NewCard {
         wave_id,
         kind,
         sort: body.sort,
-        payload: body.payload.unwrap_or(Value::Null),
+        payload,
     };
     let card = s
         .repo
@@ -228,11 +233,17 @@ async fn create_via_tool_call(
     // 6. Persist. `kind` is the bare `ui://...` URI (M4 will fully dispatch
     //    on this); `payload` defaults to JSON null when the tool omits
     //    `structuredContent`.
+    let payload = creation.structured_content.unwrap_or(Value::Null);
+    // D4: validate even on the tool-call path. In practice `ui://*` kinds
+    // are opaque so this is a no-op for plugin-defined views — but if a
+    // tool ever names a kernel kind (e.g. `"terminal"`) via resourceUri,
+    // we reject a malformed payload here rather than after the DB write.
+    validate_card_payload(&creation.resource_uri, &payload).map_err(|e| e.into_response())?;
     let new = NewCard {
         wave_id,
         kind: creation.resource_uri,
         sort: None,
-        payload: creation.structured_content.unwrap_or(Value::Null),
+        payload,
     };
     let card = s
         .repo
@@ -268,6 +279,23 @@ pub(crate) async fn update_card(
     Path(id): Path<String>,
     Json(p): Json<CardPatch>,
 ) -> Result<Json<Card>> {
+    // D4: if the patch carries a payload, validate it against the kind that
+    // will land in the DB. The kind is either the patch's new kind (when the
+    // patch retargets) or the existing card's kind. Look up the existing card
+    // before mutation when we need its kind to validate.
+    if let Some(payload) = p.payload.as_ref() {
+        let kind = match p.kind.as_deref() {
+            Some(k) => k.to_string(),
+            None => {
+                s.repo
+                    .card_get(&id)
+                    .await?
+                    .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?
+                    .kind
+            }
+        };
+        validate_card_payload(&kind, payload)?;
+    }
     let card = s.repo.card_update(&id, p).await?;
     s.events.emit(Event::CardUpdated(card.clone()));
     Ok(Json(card))

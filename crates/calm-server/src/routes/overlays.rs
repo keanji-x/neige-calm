@@ -9,6 +9,7 @@ use crate::error::{ErrorBody, Result};
 use crate::event::Event;
 use crate::model::{NewOverlay, Overlay};
 use crate::state::AppState;
+use crate::validation::validate_overlay_payload;
 use axum::{
     Json, Router,
     extract::{Query, State},
@@ -68,6 +69,9 @@ pub(crate) async fn upsert_overlay(
     State(s): State<AppState>,
     Json(p): Json<NewOverlay>,
 ) -> Result<Json<Overlay>> {
+    // D4: kernel-owned overlay kinds (status/progress/eta/now) must match
+    // their shape; plugin-defined kinds stay opaque.
+    validate_overlay_payload(&p.kind, &p.payload)?;
     let overlay = s.repo.overlay_upsert(p).await?;
     s.events.emit(Event::OverlaySet(overlay.clone()));
     Ok(Json(overlay))
