@@ -590,8 +590,8 @@ async fn kv_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcErr
 
 // ===========================================================================
 // Unit tests — direct calls against `dispatch` with a hand-rolled
-// CallbackCtx (MockRepo + in-process EventBus + a stub McpClient that we
-// build with `tokio::io::duplex`). Slice C's binding spec calls these
+// CallbackCtx (in-memory SqlxRepo + in-process EventBus + a stub McpClient
+// that we build with `tokio::io::duplex`). Slice C's binding spec calls these
 // "acceptable as long as they cover every method"; the end-to-end stub
 // alternative is heavier and adds little extra signal once the router is
 // directly exercised.
@@ -600,9 +600,9 @@ async fn kv_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::MockRepo;
+    use crate::db::sqlite::SqlxRepo;
     use crate::event::EventBus;
-    use crate::model::{NewCove, NewWave};
+    use crate::model::{NewCove, NewPlugin, NewWave};
     use crate::plugin_host::manifest::Manifest;
     use crate::plugin_host::mcp::McpClient;
     use crate::plugin_host::registry::PluginRegistry;
@@ -716,7 +716,24 @@ mod tests {
 
     impl Harness {
         async fn new(plugin_id: &str, manifest: Manifest) -> Self {
-            let repo: Arc<dyn Repo> = Arc::new(MockRepo::new());
+            let repo: Arc<dyn Repo> = Arc::new(
+                SqlxRepo::open("sqlite::memory:")
+                    .await
+                    .expect("open in-memory sqlite repo"),
+            );
+            // Seed a plugin row so kv writes pass the FK check (the production
+            // host always installs the plugin row before the child can call
+            // `neige.kv.*`; we mirror that here).
+            repo.plugin_install(NewPlugin {
+                id: plugin_id.into(),
+                version: "0.1.0".into(),
+                install_path: format!("/tmp/{plugin_id}"),
+                manifest: json!({}),
+                enabled: true,
+                user_config: json!({}),
+            })
+            .await
+            .unwrap();
             // Seed a cove + wave so card tests can attach.
             let cove = repo
                 .cove_create(NewCove {

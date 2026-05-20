@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use calm_server::db::MockRepo;
+use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
 use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
 use serde_json::json;
@@ -36,7 +36,7 @@ const CRASH_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-crash");
 /// We synthesize a faux install layout: `<plugins_dir>/<id>/bin/stub`. The
 /// stub binary is symlinked from the real artifact so manifest validation
 /// (which rejects absolute `entrypoint.command`) sees a sane relative path.
-fn boot_host(plugin_id: &str, stub_bin: &str) -> (Arc<PluginHost>, TempDir, EventBus) {
+async fn boot_host(plugin_id: &str, stub_bin: &str) -> (Arc<PluginHost>, TempDir, EventBus) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let plugins_dir = tmp.path().join("plugins");
     let plugins_data_dir = tmp.path().join("plugins-data");
@@ -58,11 +58,29 @@ fn boot_host(plugin_id: &str, stub_bin: &str) -> (Arc<PluginHost>, TempDir, Even
     let manifest: Manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest parses");
 
     let registry = PluginRegistry::empty();
-    registry.insert(manifest, Some(install_dir));
+    registry.insert(manifest, Some(install_dir.clone()));
     let events = EventBus::new();
+    let repo: Arc<dyn calm_server::db::Repo> = Arc::new(
+        SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite repo"),
+    );
+    // Production flow inserts the plugins row via the REST install handler
+    // before `spawn`; we bypass that here, so seed the row directly to satisfy
+    // the `plugin_tokens.plugin_id` FK at token-set time.
+    repo.plugin_install(calm_server::model::NewPlugin {
+        id: plugin_id.into(),
+        version: "0.1.0".into(),
+        install_path: install_dir.display().to_string(),
+        manifest: json!({}),
+        enabled: true,
+        user_config: json!({}),
+    })
+    .await
+    .expect("seed plugin row");
     let host = Arc::new(PluginHost::new_full(
         Arc::new(registry),
-        Arc::new(MockRepo::new()),
+        repo,
         plugins_dir,
         plugins_data_dir,
         Vec::new(),
@@ -102,7 +120,7 @@ async fn wait_for_status(
 
 #[tokio::test]
 async fn echo_stub_reaches_running() {
-    let (host, _tmp, _events) = boot_host("test.echo", ECHO_BIN);
+    let (host, _tmp, _events) = boot_host("test.echo", ECHO_BIN).await;
     host.spawn("test.echo").await.expect("spawn");
     let status = wait_for_status(
         &host,
@@ -127,7 +145,7 @@ async fn echo_stub_reaches_running() {
 
 #[tokio::test]
 async fn echo_stub_stops_within_grace() {
-    let (host, _tmp, _events) = boot_host("test.echo2", ECHO_BIN);
+    let (host, _tmp, _events) = boot_host("test.echo2", ECHO_BIN).await;
     host.spawn("test.echo2").await.expect("spawn");
     wait_for_status(
         &host,
@@ -155,7 +173,7 @@ async fn echo_stub_stops_within_grace() {
 
 #[tokio::test]
 async fn crash_stub_respawns_after_first_crash() {
-    let (host, _tmp, mut events_rx) = boot_host_with_subscribe("test.crash1", CRASH_BIN);
+    let (host, _tmp, mut events_rx) = boot_host_with_subscribe("test.crash1", CRASH_BIN).await;
     host.spawn("test.crash1").await.expect("spawn");
 
     // Drain events looking for: Running → Crashed → Running. The crash stub
@@ -202,7 +220,7 @@ async fn crash_loop_disables_after_threshold() {
     // take ~15+ seconds. Instead we kick the supervisor through the cycle
     // manually with `restart()` calls, which bypass backoff for the explicit
     // path. 5 forced spawns of the crash stub should leave us in Crashed.
-    let (host, _tmp, _events) = boot_host("test.crashloop", CRASH_BIN);
+    let (host, _tmp, _events) = boot_host("test.crashloop", CRASH_BIN).await;
 
     // We'll drive 5 spawn/wait-for-crash cycles, each one incrementing the
     // internal crashes_in_window. The 5th one should not auto-respawn —
@@ -243,7 +261,7 @@ async fn crash_loop_disables_after_threshold() {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn boot_host_with_subscribe(
+async fn boot_host_with_subscribe(
     plugin_id: &str,
     stub_bin: &str,
 ) -> (
@@ -251,7 +269,7 @@ fn boot_host_with_subscribe(
     TempDir,
     tokio::sync::broadcast::Receiver<calm_server::event::Event>,
 ) {
-    let (host, tmp, events) = boot_host(plugin_id, stub_bin);
+    let (host, tmp, events) = boot_host(plugin_id, stub_bin).await;
     let rx = events.subscribe();
     (host, tmp, rx)
 }

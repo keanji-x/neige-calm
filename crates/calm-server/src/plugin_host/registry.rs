@@ -74,7 +74,7 @@ impl std::fmt::Debug for PluginRegistry {
 }
 
 impl PluginRegistry {
-    /// Empty registry — handy for tests and the `PluginHost::default` shim.
+    /// Empty registry — handy for tests.
     pub fn empty() -> Self {
         Self {
             inner: Arc::new(RwLock::new(Inner::default())),

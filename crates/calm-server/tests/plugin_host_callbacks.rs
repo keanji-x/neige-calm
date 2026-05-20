@@ -18,7 +18,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use calm_server::db::{MockRepo, Repo};
+use calm_server::db::Repo;
+use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
 use calm_server::model::{NewCove, NewWave};
 use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
@@ -43,7 +44,11 @@ async fn boot_with_wave(
     std::fs::create_dir_all(&plugins_data_dir).unwrap();
     std::os::unix::fs::symlink(Path::new(CALLER_BIN), bin_dir.join("stub")).unwrap();
 
-    let repo: Arc<dyn Repo> = Arc::new(MockRepo::new());
+    let repo: Arc<dyn Repo> = Arc::new(
+        SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite repo"),
+    );
     let cove = repo
         .cove_create(NewCove {
             name: "demo".into(),
@@ -82,8 +87,21 @@ async fn boot_with_wave(
     let manifest: Manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest");
 
     let registry = PluginRegistry::empty();
-    registry.insert(manifest, Some(install_dir));
+    registry.insert(manifest, Some(install_dir.clone()));
     let events = EventBus::new();
+    // Seed plugins row so plugin_token_set's FK is satisfied at spawn time
+    // (the REST install handler does this in production; these direct-spawn
+    // tests bypass it).
+    repo.plugin_install(calm_server::model::NewPlugin {
+        id: plugin_id.into(),
+        version: "0.1.0".into(),
+        install_path: install_dir.display().to_string(),
+        manifest: json!({}),
+        enabled: true,
+        user_config: json!({}),
+    })
+    .await
+    .expect("seed plugin row");
     let host = Arc::new(PluginHost::new_full(
         Arc::new(registry),
         Arc::clone(&repo),

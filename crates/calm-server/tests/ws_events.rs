@@ -1,8 +1,8 @@
 //! Integration test for `GET /api/events` (track C).
 //!
-//! Boots a minimal Axum app with the WS events router + AppState (MockRepo,
-//! EventBus, stub daemon/plugin), then drives a real WebSocket client via
-//! `tokio_tungstenite` to verify:
+//! Boots a minimal Axum app with the WS events router + AppState (in-memory
+//! SqlxRepo, EventBus, stub daemon/plugin), then drives a real WebSocket
+//! client via `tokio_tungstenite` to verify:
 //!
 //!   1. `{"sub":[...]}` replaces the subscription set.
 //!   2. Events matching at least one subscribed topic are forwarded.
@@ -14,7 +14,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use calm_server::db::MockRepo;
+use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus};
 use calm_server::model::Cove;
 use calm_server::plugin_host::PluginHost;
@@ -27,11 +27,19 @@ use tokio_tungstenite::tungstenite::Message as TMessage;
 
 async fn boot() -> (std::net::SocketAddr, EventBus) {
     let events = EventBus::new();
+    let repo = Arc::new(
+        SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite repo"),
+    );
     let state = AppState {
-        repo: Arc::new(MockRepo::new()),
+        repo: repo.clone(),
         events: events.clone(),
         daemon: Arc::new(DaemonClient::new_stub()),
-        plugin: Arc::new(PluginHost::new_stub()),
+        plugin: Arc::new(PluginHost::new(
+            Arc::new(calm_server::plugin_host::PluginRegistry::empty()),
+            repo,
+        )),
     };
     let app = axum::Router::new().merge(ws::router()).with_state(state);
 

@@ -7,8 +7,9 @@
 //! error         CalmError + Result alias + IntoResponse
 //! event         Event enum + EventBus (broadcast fan-out)
 //! db            Repo trait
-//!   ├ mod.rs    MockRepo (in-memory, dev/test default)
-//!   └ sqlite.rs SqlxRepo (track A)
+//!   ├ mod.rs    `Repo` trait + helper free fns
+//!   └ sqlite.rs SqlxRepo (production + in-memory dev/test default via
+//!               `sqlite::memory:`)
 //! routes        HTTP API
 //!   ├ coves.rs       (track B)
 //!   ├ waves.rs       (track B)

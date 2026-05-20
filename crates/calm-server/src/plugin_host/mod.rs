@@ -209,16 +209,6 @@ impl PluginHost {
         }
     }
 
-    /// Dev/test shim: an empty registry plus a `MockRepo`. Mirrors the old
-    /// `new_stub` constructor so existing call sites that just need a host
-    /// to plug into `AppState` keep compiling.
-    pub fn new_stub() -> Self {
-        Self::new(
-            Arc::new(PluginRegistry::empty()),
-            Arc::new(crate::db::MockRepo::new()),
-        )
-    }
-
     /// Convenience accessor — most call sites only need the registry handle.
     pub fn registry(&self) -> &Arc<PluginRegistry> {
         &self.registry
@@ -718,12 +708,6 @@ impl PluginHost {
             tracing::error!(plugin_id = %id, error = %e, "respawn failed");
             self.emit_crashed(&id, &format!("respawn failed: {e}"));
         }
-    }
-}
-
-impl Default for PluginHost {
-    fn default() -> Self {
-        Self::new_stub()
     }
 }
 
