@@ -109,11 +109,7 @@ pub struct ResourceContents {
 pub struct CallToolResult {
     #[serde(default)]
     pub content: Vec<ContentBlock>,
-    #[serde(
-        default,
-        rename = "isError",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, rename = "isError", skip_serializing_if = "Option::is_none")]
     pub is_error: Option<bool>,
     #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
     pub meta: Option<Value>,
@@ -377,11 +373,8 @@ impl McpClient {
 
         // Bound the handshake — a healthy stub responds in < 50 ms; we give
         // 10 s for slow CI / cold-start cases.
-        let result = tokio::time::timeout(
-            Duration::from_secs(10),
-            self.call("initialize", params),
-        )
-        .await;
+        let result =
+            tokio::time::timeout(Duration::from_secs(10), self.call("initialize", params)).await;
 
         let value = match result {
             Ok(Ok(v)) => v,
@@ -458,7 +451,10 @@ impl McpClient {
         self.server_capabilities
             .lock()
             .unwrap()
-            .pointer(&format!("/experimental/{}", KERNEL_CALLBACKS_CAPABILITY.replace('/', "~1")))
+            .pointer(&format!(
+                "/experimental/{}",
+                KERNEL_CALLBACKS_CAPABILITY.replace('/', "~1")
+            ))
             .is_some()
     }
 
@@ -510,7 +506,9 @@ impl McpClient {
         // Cheap fast-path: if transport is already closed, surface that as an
         // internal error instead of registering a doomed responder.
         if let Some(reason) = self.closed.lock().await.clone() {
-            return Err(RpcError::internal(format!("mcp transport closed: {reason}")));
+            return Err(RpcError::internal(format!(
+                "mcp transport closed: {reason}"
+            )));
         }
 
         let id = RequestId::from_u64(self.next_id.fetch_add(1, Ordering::Relaxed));
@@ -561,10 +559,7 @@ impl McpClient {
     pub fn is_closed(&self) -> bool {
         // try_lock is a non-blocking peek; in the unlikely race we return
         // `false` and the next call will surface the actual state.
-        self.closed
-            .try_lock()
-            .map(|g| g.is_some())
-            .unwrap_or(false)
+        self.closed.try_lock().map(|g| g.is_some()).unwrap_or(false)
     }
 }
 
@@ -750,7 +745,9 @@ enum Frame {
 
 fn parse_frame(s: &str) -> Result<Frame, String> {
     let v: Value = serde_json::from_str(s).map_err(|e| format!("json parse: {e}"))?;
-    let obj = v.as_object().ok_or_else(|| "frame is not an object".to_string())?;
+    let obj = v
+        .as_object()
+        .ok_or_else(|| "frame is not an object".to_string())?;
 
     // Per spec, `jsonrpc` MUST be "2.0". We accept missing for ergonomic stubs
     // but warn — production plugins should send it.
@@ -778,10 +775,7 @@ fn parse_frame(s: &str) -> Result<Frame, String> {
             if let Some(err_v) = obj.get("error") {
                 let rpc: RpcError = serde_json::from_value(err_v.clone())
                     .map_err(|e| format!("invalid error object: {e}"))?;
-                Ok(Frame::Response {
-                    id,
-                    body: Err(rpc),
-                })
+                Ok(Frame::Response { id, body: Err(rpc) })
             } else if let Some(result_v) = obj.get("result") {
                 Ok(Frame::Response {
                     id,
@@ -794,10 +788,7 @@ fn parse_frame(s: &str) -> Result<Frame, String> {
         (None, Some(m)) => {
             // Notification: method, no id.
             let params = obj.get("params").cloned().unwrap_or(Value::Null);
-            Ok(Frame::Notification {
-                method: m,
-                params,
-            })
+            Ok(Frame::Notification { method: m, params })
         }
         (None, None) => Err("frame has neither id nor method".into()),
     }
@@ -886,15 +877,11 @@ mod tests {
 
     #[test]
     fn parse_response_with_error() {
-        let f = parse_frame(
-            r#"{"jsonrpc":"2.0","id":"abc","error":{"code":-32601,"message":"nope"}}"#,
-        )
-        .unwrap();
+        let f =
+            parse_frame(r#"{"jsonrpc":"2.0","id":"abc","error":{"code":-32601,"message":"nope"}}"#)
+                .unwrap();
         match f {
-            Frame::Response {
-                id,
-                body: Err(rpc),
-            } => {
+            Frame::Response { id, body: Err(rpc) } => {
                 assert_eq!(id, RequestId::Str("abc".into()));
                 assert_eq!(rpc.code, -32601);
                 assert_eq!(rpc.message, "nope");
@@ -1083,7 +1070,10 @@ mod tests {
         assert_eq!(result.contents.len(), 1);
         let entry = &result.contents[0];
         assert_eq!(entry.uri, "ui://stub/status");
-        assert_eq!(entry.mime_type.as_deref(), Some("text/html;profile=mcp-app"));
+        assert_eq!(
+            entry.mime_type.as_deref(),
+            Some("text/html;profile=mcp-app")
+        );
         assert_eq!(entry.text.as_deref(), Some("<html>ok</html>"));
         assert!(entry.blob.is_none());
         assert_eq!(

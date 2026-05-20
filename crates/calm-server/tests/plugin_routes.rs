@@ -147,11 +147,7 @@ async fn body_to_text(resp: axum::http::Response<Body>) -> String {
     String::from_utf8(bytes.to_vec()).unwrap()
 }
 
-async fn post_json(
-    app: axum::Router,
-    path: &str,
-    body: Value,
-) -> axum::http::Response<Body> {
+async fn post_json(app: axum::Router, path: &str, body: Value) -> axum::http::Response<Body> {
     app.oneshot(
         Request::builder()
             .method("POST")
@@ -191,12 +187,7 @@ async fn delete_path(app: axum::Router, path: &str) -> axum::http::Response<Body
 /// Poll `GET /api/plugins/:id` until `state` matches `expected` (wire string)
 /// or `deadline` is exceeded. Returns the final detail JSON so the caller can
 /// assert further.
-async fn wait_for_state(
-    state: &AppState,
-    id: &str,
-    expected: &str,
-    timeout: Duration,
-) -> Value {
+async fn wait_for_state(state: &AppState, id: &str, expected: &str, timeout: Duration) -> Value {
     let start = Instant::now();
     loop {
         let resp = get_path(app(state.clone()), &format!("/api/plugins/{id}")).await;
@@ -371,7 +362,8 @@ async fn log_tail_returns_stub_stderr() {
     let lines = body_to_json(resp).await;
     let arr = lines.as_array().expect("array");
     assert!(
-        arr.iter().any(|s| s.as_str().unwrap_or("").contains("stub-echo")),
+        arr.iter()
+            .any(|s| s.as_str().unwrap_or("").contains("stub-echo")),
         "expected stderr to contain stub line, got {:?}",
         arr
     );
@@ -441,7 +433,10 @@ async fn uninstall_cascades_satellites() {
         .unwrap();
     assert!(kv.is_empty(), "kv should be empty after uninstall");
     let overlays = state.repo.overlays_for("wave", "w1").await.unwrap();
-    assert!(overlays.is_empty(), "overlays should be cleared on uninstall");
+    assert!(
+        overlays.is_empty(),
+        "overlays should be cleared on uninstall"
+    );
 }
 
 // ===========================================================================

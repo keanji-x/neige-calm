@@ -93,11 +93,8 @@ pub trait Repo: Send + Sync + 'static {
     /// after re-reading manifest.json from disk so subsequent `GET
     /// /api/plugins/:id` responses (which read from the DB row, not the
     /// live registry) reflect on-disk reality.
-    async fn plugin_update_manifest(
-        &self,
-        id: &str,
-        manifest: serde_json::Value,
-    ) -> Result<Plugin>;
+    async fn plugin_update_manifest(&self, id: &str, manifest: serde_json::Value)
+    -> Result<Plugin>;
     async fn plugin_delete(&self, id: &str) -> Result<()>;
 
     /// Drop every overlay owned by a plugin. Slice D's uninstall route fires
@@ -126,11 +123,7 @@ pub trait Repo: Send + Sync + 'static {
     // `neige.kv.*`; Slice A owns the bare CRUD). Values are arbitrary JSON;
     // the kernel does not parse semantics, but it does enforce per-plugin
     // namespacing at this trait layer (no method takes a global key).
-    async fn plugin_kv_get(
-        &self,
-        plugin_id: &str,
-        key: &str,
-    ) -> Result<Option<serde_json::Value>>;
+    async fn plugin_kv_get(&self, plugin_id: &str, key: &str) -> Result<Option<serde_json::Value>>;
     async fn plugin_kv_set(
         &self,
         plugin_id: &str,
@@ -200,7 +193,11 @@ impl Repo for MockRepo {
     async fn coves_list(&self) -> Result<Vec<Cove>> {
         let s = self.s.lock().unwrap();
         let mut v: Vec<Cove> = s.coves.values().cloned().collect();
-        v.sort_by(|a, b| a.sort.partial_cmp(&b.sort).unwrap_or(std::cmp::Ordering::Equal));
+        v.sort_by(|a, b| {
+            a.sort
+                .partial_cmp(&b.sort)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         Ok(v)
     }
     async fn cove_get(&self, id: &str) -> Result<Option<Cove>> {
@@ -277,7 +274,11 @@ impl Repo for MockRepo {
             .filter(|w| w.cove_id == cove_id)
             .cloned()
             .collect();
-        v.sort_by(|a, b| a.sort.partial_cmp(&b.sort).unwrap_or(std::cmp::Ordering::Equal));
+        v.sort_by(|a, b| {
+            a.sort
+                .partial_cmp(&b.sort)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         Ok(v)
     }
     async fn wave_get(&self, id: &str) -> Result<Option<Wave>> {
@@ -294,7 +295,11 @@ impl Repo for MockRepo {
             .filter(|c| c.wave_id == id)
             .cloned()
             .collect();
-        cards.sort_by(|a, b| a.sort.partial_cmp(&b.sort).unwrap_or(std::cmp::Ordering::Equal));
+        cards.sort_by(|a, b| {
+            a.sort
+                .partial_cmp(&b.sort)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         let card_ids: std::collections::HashSet<String> =
             cards.iter().map(|c| c.id.clone()).collect();
         let overlays: Vec<Overlay> = s
@@ -318,7 +323,12 @@ impl Repo for MockRepo {
             return Err(CalmError::NotFound(format!("cove {}", p.cove_id)));
         }
         let sort = p.sort.unwrap_or_else(|| {
-            Self::next_sort(s.waves.values().filter(|w| w.cove_id == p.cove_id).map(|w| w.sort))
+            Self::next_sort(
+                s.waves
+                    .values()
+                    .filter(|w| w.cove_id == p.cove_id)
+                    .map(|w| w.sort),
+            )
         });
         let now = now_ms();
         let w = Wave {
@@ -377,7 +387,11 @@ impl Repo for MockRepo {
             .filter(|c| c.wave_id == wave_id)
             .cloned()
             .collect();
-        v.sort_by(|a, b| a.sort.partial_cmp(&b.sort).unwrap_or(std::cmp::Ordering::Equal));
+        v.sort_by(|a, b| {
+            a.sort
+                .partial_cmp(&b.sort)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         Ok(v)
     }
     async fn card_get(&self, id: &str) -> Result<Option<Card>> {
@@ -389,7 +403,12 @@ impl Repo for MockRepo {
             return Err(CalmError::NotFound(format!("wave {}", p.wave_id)));
         }
         let sort = p.sort.unwrap_or_else(|| {
-            Self::next_sort(s.cards.values().filter(|c| c.wave_id == p.wave_id).map(|c| c.sort))
+            Self::next_sort(
+                s.cards
+                    .values()
+                    .filter(|c| c.wave_id == p.wave_id)
+                    .map(|c| c.sort),
+            )
         });
         let now = now_ms();
         let c = Card {
@@ -673,11 +692,7 @@ impl Repo for MockRepo {
     }
 
     // ---- plugin kv
-    async fn plugin_kv_get(
-        &self,
-        plugin_id: &str,
-        key: &str,
-    ) -> Result<Option<serde_json::Value>> {
+    async fn plugin_kv_get(&self, plugin_id: &str, key: &str) -> Result<Option<serde_json::Value>> {
         Ok(self
             .s
             .lock()

@@ -132,7 +132,11 @@ pub(crate) async fn create_card(
         sort: body.sort,
         payload: body.payload.unwrap_or(Value::Null),
     };
-    let card = s.repo.card_create(new).await.map_err(|e| e.into_response())?;
+    let card = s
+        .repo
+        .card_create(new)
+        .await
+        .map_err(|e| e.into_response())?;
     s.events.emit(Event::CardAdded(card.clone()));
     Ok((StatusCode::CREATED, Json(card)).into_response())
 }
@@ -155,11 +159,10 @@ async fn create_via_tool_call(
     let mcp = match s.plugin.mcp_client(&via.plugin_id).await {
         Some(c) => c,
         None => {
-            return Err(CalmError::NotFound(format!(
-                "plugin `{}` is not running",
-                via.plugin_id
-            ))
-            .into_response());
+            return Err(
+                CalmError::NotFound(format!("plugin `{}` is not running", via.plugin_id))
+                    .into_response(),
+            );
         }
     };
 
@@ -172,11 +175,10 @@ async fn create_via_tool_call(
     let perms = match s.plugin.registry().get(&via.plugin_id) {
         Some(m) => m.permissions,
         None => {
-            return Err(CalmError::NotFound(format!(
-                "plugin `{}` not in registry",
-                via.plugin_id
-            ))
-            .into_response());
+            return Err(
+                CalmError::NotFound(format!("plugin `{}` not in registry", via.plugin_id))
+                    .into_response(),
+            );
         }
     };
     if !perms.cards_create {
@@ -232,7 +234,11 @@ async fn create_via_tool_call(
         sort: None,
         payload: creation.structured_content.unwrap_or(Value::Null),
     };
-    let card = s.repo.card_create(new).await.map_err(|e| e.into_response())?;
+    let card = s
+        .repo
+        .card_create(new)
+        .await
+        .map_err(|e| e.into_response())?;
     s.events.emit(Event::CardAdded(card.clone()));
     Ok((StatusCode::CREATED, Json(card)).into_response())
 }
@@ -278,7 +284,10 @@ pub(crate) async fn update_card(
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
-pub(crate) async fn delete_card(State(s): State<AppState>, Path(id): Path<String>) -> Result<StatusCode> {
+pub(crate) async fn delete_card(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode> {
     // Look up first so we have the wave_id for the delete event.
     let card = s
         .repo

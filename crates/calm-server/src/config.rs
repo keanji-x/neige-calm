@@ -21,7 +21,11 @@ pub struct Config {
     pub data_dir: Option<PathBuf>,
 
     /// CORS origin allowed by the API (typically the web-calm dev origin).
-    #[arg(long, env = "CALM_ALLOWED_ORIGIN", default_value = "http://localhost:5175")]
+    #[arg(
+        long,
+        env = "CALM_ALLOWED_ORIGIN",
+        default_value = "http://localhost:5175"
+    )]
     pub allowed_origin: String,
 
     /// Plugin install root (read-only code). Defaults to
@@ -45,9 +49,7 @@ impl Config {
         self.data_dir.clone().unwrap_or_else(|| {
             let base = std::env::var_os("XDG_DATA_HOME")
                 .map(PathBuf::from)
-                .or_else(|| {
-                    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share"))
-                })
+                .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
                 .unwrap_or_else(|| PathBuf::from("."));
             base.join("neige-calm")
         })
@@ -72,9 +74,7 @@ impl Config {
         self.plugins_data_dir.clone().unwrap_or_else(|| {
             let base = std::env::var_os("XDG_DATA_HOME")
                 .map(PathBuf::from)
-                .or_else(|| {
-                    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share"))
-                })
+                .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
                 .unwrap_or_else(|| PathBuf::from("."));
             base.join("neige-calm").join("plugins")
         })

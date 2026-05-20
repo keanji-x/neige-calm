@@ -11,9 +11,10 @@
 //! internal types.
 
 use crate::error::ErrorBody;
+use crate::model::Terminal;
 use crate::model::{
-    Card, CardPatch, Cove, CovePatch, NewCard, NewCove, NewOverlay, NewWave, Overlay, Plugin,
-    Wave, WaveDetail, WavePatch,
+    Card, CardPatch, Cove, CovePatch, NewCard, NewCove, NewOverlay, NewWave, Overlay, Plugin, Wave,
+    WaveDetail, WavePatch,
 };
 use crate::routes::cards::{CreateCardBody, ViaToolCall};
 use crate::routes::overlays::{OverlayDeleteBody, OverlayQuery};
@@ -22,7 +23,6 @@ use crate::routes::plugins::{
     ViewSizeWire,
 };
 use crate::routes::terminal::NewTerminalBody;
-use crate::model::Terminal;
 use utoipa::OpenApi;
 
 #[derive(OpenApi)]

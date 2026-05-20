@@ -131,9 +131,7 @@ async fn caller_stub_drives_neige_callbacks_end_to_end() {
         let terminal_card = cards.iter().find(|c| c.kind == "terminal");
         let other_card = cards.iter().find(|c| c.kind == "plugin:other.plugin:x");
 
-        if let (Some(kv_val), Some(demo), Some(_term)) =
-            (kv.as_ref(), demo_card, terminal_card)
-        {
+        if let (Some(kv_val), Some(demo), Some(_term)) = (kv.as_ref(), demo_card, terminal_card) {
             // Positive assertions on what should have happened.
             assert_eq!(kv_val, &json!(42), "kv.set must roundtrip through router");
 

@@ -22,9 +22,7 @@ use std::time::Duration;
 
 use calm_server::db::MockRepo;
 use calm_server::event::EventBus;
-use calm_server::plugin_host::{
-    Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus,
-};
+use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
 use serde_json::json;
 use tempfile::TempDir;
 use tokio::time::{Instant, sleep};
@@ -57,8 +55,7 @@ fn boot_host(plugin_id: &str, stub_bin: &str) -> (Arc<PluginHost>, TempDir, Even
         "display_name": "Smoke Stub",
         "entrypoint": { "command": "bin/stub" }
     });
-    let manifest: Manifest =
-        Manifest::parse(&manifest_json.to_string()).expect("manifest parses");
+    let manifest: Manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest parses");
 
     let registry = PluginRegistry::empty();
     registry.insert(manifest, Some(install_dir));
@@ -249,7 +246,11 @@ async fn crash_loop_disables_after_threshold() {
 fn boot_host_with_subscribe(
     plugin_id: &str,
     stub_bin: &str,
-) -> (Arc<PluginHost>, TempDir, tokio::sync::broadcast::Receiver<calm_server::event::Event>) {
+) -> (
+    Arc<PluginHost>,
+    TempDir,
+    tokio::sync::broadcast::Receiver<calm_server::event::Event>,
+) {
     let (host, tmp, events) = boot_host(plugin_id, stub_bin);
     let rx = events.subscribe();
     (host, tmp, rx)

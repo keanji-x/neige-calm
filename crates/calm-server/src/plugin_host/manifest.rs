@@ -302,18 +302,12 @@ impl Manifest {
         if Version::parse(&self.min_kernel_version).is_err() {
             return Err(ManifestError::invalid(
                 "min_kernel_version",
-                format!(
-                    "`{}` is not a valid semver string",
-                    self.min_kernel_version
-                ),
+                format!("`{}` is not a valid semver string", self.min_kernel_version),
             ));
         }
 
         if self.display_name.trim().is_empty() {
-            return Err(ManifestError::invalid(
-                "display_name",
-                "must be non-empty",
-            ));
+            return Err(ManifestError::invalid("display_name", "must be non-empty"));
         }
 
         if self.entrypoint.command.trim().is_empty() {
@@ -324,9 +318,7 @@ impl Manifest {
         }
         // Reject absolute paths and `..` escapes early — Slice B will also
         // re-check, but flagging here gives users a clearer error.
-        if self.entrypoint.command.starts_with('/')
-            || self.entrypoint.command.contains("..")
-        {
+        if self.entrypoint.command.starts_with('/') || self.entrypoint.command.contains("..") {
             return Err(ManifestError::invalid(
                 "entrypoint.command",
                 "must be a relative path inside the plugin install dir \
@@ -643,7 +635,8 @@ mod tests {
 
     #[test]
     fn bad_semver_rejected_version() {
-        let json = hello_world().replace("\"version\": \"0.1.0\"", "\"version\": \"not-a-version\"");
+        let json =
+            hello_world().replace("\"version\": \"0.1.0\"", "\"version\": \"not-a-version\"");
         let err = Manifest::parse(&json).unwrap_err();
         assert!(matches!(err, ManifestError::Invalid { field, .. } if field == "version"));
     }
@@ -758,8 +751,7 @@ mod tests {
     fn round_trip_to_json_preserves_fields() {
         let m = Manifest::parse(hello_world()).unwrap();
         let v = m.to_json();
-        let re_parsed: Manifest =
-            serde_json::from_value(v).expect("re-parse from serialized json");
+        let re_parsed: Manifest = serde_json::from_value(v).expect("re-parse from serialized json");
         assert_eq!(re_parsed.id, m.id);
         assert_eq!(re_parsed.views.len(), m.views.len());
     }
@@ -817,7 +809,10 @@ mod tests {
         let m = Manifest::parse(json).expect("valid manifest");
         let view = &m.views[0];
         let csp = view.csp.as_ref().expect("csp set");
-        assert_eq!(csp.default_src.as_deref(), Some(&["'self'".to_string()][..]));
+        assert_eq!(
+            csp.default_src.as_deref(),
+            Some(&["'self'".to_string()][..])
+        );
         assert_eq!(
             csp.script_src.as_deref(),
             Some(&["'self'".to_string(), "'unsafe-inline'".to_string()][..])
@@ -837,13 +832,19 @@ mod tests {
         );
         assert_eq!(
             csp.extras.get("font_src"),
-            Some(&vec!["'self'".to_string(), "https://fonts.gstatic.com".to_string()])
+            Some(&vec![
+                "'self'".to_string(),
+                "https://fonts.gstatic.com".to_string()
+            ])
         );
 
         let perms = view.permissions.as_ref().expect("permissions set");
         assert_eq!(
             perms.tools,
-            vec!["neige.overlay.set".to_string(), "neige.card.update".to_string()]
+            vec![
+                "neige.overlay.set".to_string(),
+                "neige.card.update".to_string()
+            ]
         );
     }
 
@@ -872,7 +873,10 @@ mod tests {
         let v = m.to_json();
         let re_parsed: Manifest = serde_json::from_value(v).expect("re-parse");
         let csp = re_parsed.views[0].csp.as_ref().expect("csp");
-        assert_eq!(csp.default_src.as_deref(), Some(&["'self'".to_string()][..]));
+        assert_eq!(
+            csp.default_src.as_deref(),
+            Some(&["'self'".to_string()][..])
+        );
         assert_eq!(
             csp.extras.get("worker_src"),
             Some(&vec!["blob:".to_string()])

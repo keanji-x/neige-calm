@@ -139,9 +139,7 @@ pub fn read_ui_resource(
     let install_path: PathBuf = registry
         .install_path(&plugin_id)
         .ok_or_else(|| ResourceError::PluginNotFound(plugin_id.clone()))?;
-    let html_path = install_path
-        .join("views")
-        .join(format!("{view_id}.html"));
+    let html_path = install_path.join("views").join(format!("{view_id}.html"));
     let text = std::fs::read_to_string(&html_path).map_err(|e| ResourceError::Io {
         path: html_path.display().to_string(),
         source: e,
@@ -243,7 +241,8 @@ mod tests {
         assert!(entry.text.as_ref().unwrap().contains("<body>hi"));
         let meta = entry.meta.as_ref().expect("meta set");
         assert_eq!(
-            meta.pointer("/ui/csp/default_src/0").and_then(|v| v.as_str()),
+            meta.pointer("/ui/csp/default_src/0")
+                .and_then(|v| v.as_str()),
             Some("'self'")
         );
         assert_eq!(

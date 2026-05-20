@@ -25,8 +25,8 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
-use futures::{SinkExt, StreamExt};
 use calm_session::{ClientMsg, DaemonMsg, read_frame, write_frame};
+use futures::{SinkExt, StreamExt};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -108,11 +108,9 @@ async fn resolve_live_sock(s: &AppState, id: &str) -> Result<PathBuf> {
     // when it succeeds, so we re-read to get the canonical path.
     let env = term.env.clone();
     spawn_daemon_for(s, &term, &term.program, &term.cwd, &env).await?;
-    let refreshed = s
-        .repo
-        .terminal_get(id)
-        .await?
-        .ok_or_else(|| crate::error::CalmError::Internal("terminal vanished after respawn".into()))?;
+    let refreshed = s.repo.terminal_get(id).await?.ok_or_else(|| {
+        crate::error::CalmError::Internal("terminal vanished after respawn".into())
+    })?;
     let handle = refreshed.daemon_handle.ok_or_else(|| {
         crate::error::CalmError::Internal(format!(
             "terminal {id}: daemon_handle still missing after respawn"
@@ -243,7 +241,9 @@ pub(crate) trait HeartbeatSink: Send + 'static {
 #[async_trait::async_trait]
 impl HeartbeatSink for futures::stream::SplitSink<WebSocket, Message> {
     async fn hb_send(&mut self, msg: Message) -> std::result::Result<(), ()> {
-        <Self as SinkExt<Message>>::send(self, msg).await.map_err(|_| ())
+        <Self as SinkExt<Message>>::send(self, msg)
+            .await
+            .map_err(|_| ())
     }
 }
 
@@ -310,10 +310,7 @@ mod heartbeat_tests {
     }
 
     fn is_close_1011(msg: &Message) -> bool {
-        matches!(
-            msg,
-            Message::Close(Some(CloseFrame { code: 1011, .. }))
-        )
+        matches!(msg, Message::Close(Some(CloseFrame { code: 1011, .. })))
     }
 
     fn is_ping(msg: &Message) -> bool {

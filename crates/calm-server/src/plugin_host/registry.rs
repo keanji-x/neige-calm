@@ -347,6 +347,9 @@ mod tests {
         reg.insert(Manifest::parse(SECOND_VALID).unwrap(), None);
         let mut ids: Vec<String> = reg.list().into_iter().map(|m| m.id).collect();
         ids.sort();
-        assert_eq!(ids, vec!["test.second".to_string(), "test.valid".to_string()]);
+        assert_eq!(
+            ids,
+            vec!["test.second".to_string(), "test.valid".to_string()]
+        );
     }
 }

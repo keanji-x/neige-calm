@@ -54,7 +54,7 @@ impl RawGuard {
 impl Drop for RawGuard {
     fn drop(&mut self) {
         use nix::sys::termios::{SetArg, tcsetattr};
-        let _ = tcsetattr(&std::io::stdin(), SetArg::TCSANOW, &self.saved);
+        let _ = tcsetattr(std::io::stdin(), SetArg::TCSANOW, &self.saved);
     }
 }
 
@@ -94,7 +94,10 @@ async fn main() -> anyhow::Result<()> {
             if bytes.contains(&0x1d) {
                 break;
             }
-            if write_frame(&mut wr, &ClientMsg::Stdin(bytes.to_vec())).await.is_err() {
+            if write_frame(&mut wr, &ClientMsg::Stdin(bytes.to_vec()))
+                .await
+                .is_err()
+            {
                 break;
             }
         }

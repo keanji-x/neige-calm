@@ -114,11 +114,9 @@ pub fn topics(ev: &Event) -> Vec<String> {
             "*".into(),
         ],
 
-        Event::PluginState { id, .. } => vec![
-            format!("plugin:{}", id),
-            "plugin:*".into(),
-            "*".into(),
-        ],
+        Event::PluginState { id, .. } => {
+            vec![format!("plugin:{}", id), "plugin:*".into(), "*".into()]
+        }
     }
 }
 

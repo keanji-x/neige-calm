@@ -100,10 +100,9 @@ impl CalmError {
             CalmError::BadRequest(_) | CalmError::PluginInstall(_) => StatusCode::BAD_REQUEST,
             CalmError::Unauthorized => StatusCode::UNAUTHORIZED,
             CalmError::PluginPermission(_) => StatusCode::FORBIDDEN,
-            CalmError::Db(_)
-            | CalmError::Io(_)
-            | CalmError::Serde(_)
-            | CalmError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            CalmError::Db(_) | CalmError::Io(_) | CalmError::Serde(_) | CalmError::Internal(_) => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
         }
     }
 }

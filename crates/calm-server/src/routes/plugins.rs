@@ -70,10 +70,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/plugins/{id}/config", patch(patch_plugin_config))
         .route("/api/plugins/{id}/log", get(tail_plugin_log))
         .route("/api/plugins/{id}/reload", post(reload_plugin))
-        .route(
-            "/api/plugins/{id}/rotate-token",
-            post(rotate_plugin_token),
-        )
+        .route("/api/plugins/{id}/rotate-token", post(rotate_plugin_token))
         // M5: iframe HTML lives at `GET /api/plugins/:id/resources/:view_id`.
         // The handler resolves the URL into `ui://<id>/<view_id>` and calls
         // `plugin_host::read_ui_resource`. Browsers can't speak postMessage
@@ -178,7 +175,9 @@ pub struct InstallBody {
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InstallSource {
-    LocalPath { path: String },
+    LocalPath {
+        path: String,
+    },
     /// Catch-all so we can return a friendly 400 for tarball/url/etc. instead
     /// of a serde deserialize error. Slice D scope is `local_path` only.
     #[serde(other)]
@@ -231,7 +230,11 @@ pub(crate) async fn list_plugins(State(s): State<AppState>) -> Result<Json<Vec<P
             // Not running and no record in the host table — match on enabled
             // to differentiate "never started" from "explicitly disabled".
             None => {
-                let wire = if plug.enabled { "installed" } else { "disabled" };
+                let wire = if plug.enabled {
+                    "installed"
+                } else {
+                    "disabled"
+                };
                 (wire.to_string(), None)
             }
         };
@@ -322,13 +325,10 @@ pub(crate) async fn install_plugin(
     }
     let manifest_path = src_path.join("manifest.json");
     let manifest_text = std::fs::read_to_string(&manifest_path).map_err(|e| {
-        CalmError::PluginInstall(format!(
-            "reading {}: {e}",
-            manifest_path.display()
-        ))
+        CalmError::PluginInstall(format!("reading {}: {e}", manifest_path.display()))
     })?;
-    let manifest = Manifest::parse(&manifest_text)
-        .map_err(|e| CalmError::PluginInstall(e.to_string()))?;
+    let manifest =
+        Manifest::parse(&manifest_text).map_err(|e| CalmError::PluginInstall(e.to_string()))?;
 
     // Reject reinstall while the previous row is still around. Slice D's
     // uninstall path is the only way to clear it; idempotent-by-conflict
@@ -368,9 +368,7 @@ pub(crate) async fn install_plugin(
     // implicitly: the manifest carries the perms, and the registry/permission
     // checker reads them directly on every callback — no separate "granted"
     // table to update in M3.
-    s.plugin
-        .registry()
-        .insert(manifest, Some(install_dir));
+    s.plugin.registry().insert(manifest, Some(install_dir));
 
     let detail = build_detail(&s, plug).await;
     Ok((StatusCode::CREATED, Json(detail)))
@@ -602,13 +600,10 @@ pub(crate) async fn reload_plugin(
     let install_dir = PathBuf::from(&plug.install_path);
     let manifest_path = install_dir.join("manifest.json");
     let manifest_text = std::fs::read_to_string(&manifest_path).map_err(|e| {
-        CalmError::PluginInstall(format!(
-            "reading {}: {e}",
-            manifest_path.display()
-        ))
+        CalmError::PluginInstall(format!("reading {}: {e}", manifest_path.display()))
     })?;
-    let manifest = Manifest::parse(&manifest_text)
-        .map_err(|e| CalmError::PluginInstall(e.to_string()))?;
+    let manifest =
+        Manifest::parse(&manifest_text).map_err(|e| CalmError::PluginInstall(e.to_string()))?;
     if manifest.id != id {
         return Err(CalmError::PluginInstall(format!(
             "manifest id changed during reload: was `{id}`, now `{}`",
@@ -619,15 +614,16 @@ pub(crate) async fn reload_plugin(
     // (which serializes from `Plugin::manifest`) reflects current reality. The
     // live `PluginRegistry` and `views_catalog` were already consistent before
     // this — this just keeps the detail endpoint from lying.
-    let manifest_value = serde_json::to_value(&manifest).map_err(|e| {
-        CalmError::Internal(format!("manifest re-serialize after reload: {e}"))
-    })?;
+    let manifest_value = serde_json::to_value(&manifest)
+        .map_err(|e| CalmError::Internal(format!("manifest re-serialize after reload: {e}")))?;
     s.plugin.registry().insert(manifest, Some(install_dir));
     s.repo.plugin_update_manifest(&id, manifest_value).await?;
     if plug.enabled
         && let Err(e) = s.plugin.spawn(&id).await
     {
-        return Err(CalmError::Internal(format!("respawn after reload failed: {e}")));
+        return Err(CalmError::Internal(format!(
+            "respawn after reload failed: {e}"
+        )));
     }
     let plug = s
         .repo
@@ -650,7 +646,9 @@ pub(crate) async fn reload_plugin(
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
-pub(crate) async fn list_plugin_views(State(s): State<AppState>) -> Result<Json<Vec<ViewCatalogEntry>>> {
+pub(crate) async fn list_plugin_views(
+    State(s): State<AppState>,
+) -> Result<Json<Vec<ViewCatalogEntry>>> {
     // Only emit entries for plugins that are currently enabled — disabled
     // plugins can't actually render. Take a snapshot of the installed table
     // and join against the registry's manifest cache.
@@ -1025,10 +1023,7 @@ fn materialize_install_tree(src: &StdPath, dst: &StdPath) -> Result<()> {
     }
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
-            CalmError::PluginInstall(format!(
-                "creating plugins parent {}: {e}",
-                parent.display()
-            ))
+            CalmError::PluginInstall(format!("creating plugins parent {}: {e}", parent.display()))
         })?;
     }
 
@@ -1087,7 +1082,11 @@ async fn build_detail(s: &AppState, plug: Plugin) -> PluginDetail {
             snap.status.last_error().map(String::from),
         ),
         None => {
-            let wire = if plug.enabled { "installed" } else { "disabled" };
+            let wire = if plug.enabled {
+                "installed"
+            } else {
+                "disabled"
+            };
             (wire.to_string(), None)
         }
     };

@@ -392,8 +392,7 @@ async fn overlays_by_kind_returns_all_wave_overlays_across_coves() {
 
     let waves = repo.overlays_by_kind("wave").await.unwrap();
     assert_eq!(waves.len(), 2);
-    let ids: std::collections::HashSet<&str> =
-        waves.iter().map(|o| o.entity_id.as_str()).collect();
+    let ids: std::collections::HashSet<&str> = waves.iter().map(|o| o.entity_id.as_str()).collect();
     assert!(ids.contains(w1.id.as_str()));
     assert!(ids.contains(w2.id.as_str()));
     assert!(waves.iter().all(|o| o.entity_kind == "wave"));
@@ -439,17 +438,10 @@ async fn terminal_create_rejects_duplicate_card_id() {
         .unwrap();
     let got = repo.terminal_get(&t.id).await.unwrap().unwrap();
     assert_eq!(got.daemon_handle.as_deref(), Some("handle-1"));
-    let by_card = repo
-        .terminal_get_by_card(&card.id)
-        .await
-        .unwrap()
-        .unwrap();
+    let by_card = repo.terminal_get_by_card(&card.id).await.unwrap().unwrap();
     assert_eq!(by_card.id, t.id);
 
-    let err = repo
-        .terminal_set_handle("no-such", None)
-        .await
-        .unwrap_err();
+    let err = repo.terminal_set_handle("no-such", None).await.unwrap_err();
     assert!(matches!(err, CalmError::NotFound(_)));
 
     // Terminal cascades when its card is deleted.
@@ -560,9 +552,7 @@ async fn plugin_token_cascades_on_plugin_delete() {
     repo.plugin_install(sample_new_plugin("p.casc", false))
         .await
         .unwrap();
-    repo.plugin_token_set("p.casc", "h", 1)
-        .await
-        .unwrap();
+    repo.plugin_token_set("p.casc", "h", 1).await.unwrap();
     repo.plugin_delete("p.casc").await.unwrap();
     assert!(repo.plugin_token_get("p.casc").await.unwrap().is_none());
 }

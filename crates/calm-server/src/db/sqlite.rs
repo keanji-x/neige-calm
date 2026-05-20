@@ -263,13 +263,8 @@ impl Repo for SqlxRepo {
         let sort = match p.sort {
             Some(s) => s,
             None => {
-                next_sort_scoped(
-                    &self.pool,
-                    "waves",
-                    "WHERE cove_id = ?1",
-                    Some(&p.cove_id),
-                )
-                .await?
+                next_sort_scoped(&self.pool, "waves", "WHERE cove_id = ?1", Some(&p.cove_id))
+                    .await?
             }
         };
         let now = now_ms();
@@ -381,13 +376,8 @@ impl Repo for SqlxRepo {
         let sort = match p.sort {
             Some(s) => s,
             None => {
-                next_sort_scoped(
-                    &self.pool,
-                    "cards",
-                    "WHERE wave_id = ?1",
-                    Some(&p.wave_id),
-                )
-                .await?
+                next_sort_scoped(&self.pool, "cards", "WHERE wave_id = ?1", Some(&p.wave_id))
+                    .await?
             }
         };
         let now = now_ms();
@@ -553,11 +543,10 @@ impl Repo for SqlxRepo {
         }
         // Per-card uniqueness — surface as Conflict to mirror MockRepo
         // (the schema also enforces this via UNIQUE on terminals.card_id).
-        let dup: Option<(String,)> =
-            sqlx::query_as("SELECT id FROM terminals WHERE card_id = ?1")
-                .bind(&p.card_id)
-                .fetch_optional(&self.pool)
-                .await?;
+        let dup: Option<(String,)> = sqlx::query_as("SELECT id FROM terminals WHERE card_id = ?1")
+            .bind(&p.card_id)
+            .fetch_optional(&self.pool)
+            .await?;
         if dup.is_some() {
             return Err(CalmError::Conflict(format!(
                 "terminal already exists for card {}",
@@ -691,14 +680,12 @@ impl Repo for SqlxRepo {
 
     async fn plugin_update_enabled(&self, id: &str, enabled: bool) -> Result<Plugin> {
         let now = now_ms();
-        let res = sqlx::query(
-            r#"UPDATE plugins SET enabled = ?1, updated_at = ?2 WHERE id = ?3"#,
-        )
-        .bind(enabled)
-        .bind(now)
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
+        let res = sqlx::query(r#"UPDATE plugins SET enabled = ?1, updated_at = ?2 WHERE id = ?3"#)
+            .bind(enabled)
+            .bind(now)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
         if res.rows_affected() == 0 {
             return Err(CalmError::NotFound(format!("plugin {id}")));
         }
@@ -715,14 +702,13 @@ impl Repo for SqlxRepo {
     ) -> Result<Plugin> {
         let now = now_ms();
         let user_config_text = serde_json::to_string(&user_config)?;
-        let res = sqlx::query(
-            r#"UPDATE plugins SET user_config = ?1, updated_at = ?2 WHERE id = ?3"#,
-        )
-        .bind(&user_config_text)
-        .bind(now)
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
+        let res =
+            sqlx::query(r#"UPDATE plugins SET user_config = ?1, updated_at = ?2 WHERE id = ?3"#)
+                .bind(&user_config_text)
+                .bind(now)
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
         if res.rows_affected() == 0 {
             return Err(CalmError::NotFound(format!("plugin {id}")));
         }
@@ -738,14 +724,12 @@ impl Repo for SqlxRepo {
     ) -> Result<Plugin> {
         let now = now_ms();
         let manifest_text = serde_json::to_string(&manifest)?;
-        let res = sqlx::query(
-            r#"UPDATE plugins SET manifest = ?1, updated_at = ?2 WHERE id = ?3"#,
-        )
-        .bind(&manifest_text)
-        .bind(now)
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
+        let res = sqlx::query(r#"UPDATE plugins SET manifest = ?1, updated_at = ?2 WHERE id = ?3"#)
+            .bind(&manifest_text)
+            .bind(now)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
         if res.rows_affected() == 0 {
             return Err(CalmError::NotFound(format!("plugin {id}")));
         }
@@ -831,18 +815,13 @@ impl Repo for SqlxRepo {
     }
 
     // -------------------------------------------------------- plugin kv
-    async fn plugin_kv_get(
-        &self,
-        plugin_id: &str,
-        key: &str,
-    ) -> Result<Option<serde_json::Value>> {
-        let row: Option<(String,)> = sqlx::query_as(
-            r#"SELECT value FROM plugin_kv WHERE plugin_id = ?1 AND key = ?2"#,
-        )
-        .bind(plugin_id)
-        .bind(key)
-        .fetch_optional(&self.pool)
-        .await?;
+    async fn plugin_kv_get(&self, plugin_id: &str, key: &str) -> Result<Option<serde_json::Value>> {
+        let row: Option<(String,)> =
+            sqlx::query_as(r#"SELECT value FROM plugin_kv WHERE plugin_id = ?1 AND key = ?2"#)
+                .bind(plugin_id)
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await?;
         match row {
             Some((text,)) => Ok(Some(serde_json::from_str(&text)?)),
             None => Ok(None),
