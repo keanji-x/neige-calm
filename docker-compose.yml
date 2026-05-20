@@ -30,12 +30,26 @@ services:
       CALM_DB_URL: ${CALM_DB_URL:-sqlite://${HOME}/.local/share/neige-calm/calm.db?mode=rwc}
       CALM_ALLOWED_ORIGIN: http://localhost:${CALM_PORT:-4040}
       RUST_LOG: ${RUST_LOG:-info,calm_server=debug}
+      # Codex CLI binary. Host install path is the musl static binary
+      # under /usr/local/lib/node_modules/@openai/codex/... — we bind-mount
+      # it into the container as /usr/local/bin/codex (see volumes below).
+      # Override CALM_CODEX_BIN in .env to point at a different location.
+      CALM_CODEX_BIN: ${CALM_CODEX_BIN:-codex}
     volumes:
       # The release binaries. Built on the host by `make build`. calm-server
       # looks for calm-session-daemon as a sibling of its own exe (see
       # state.rs::resolve_session_daemon_bin), so both land in /usr/local/bin.
       - ${CALM_BIN:-./target/release/calm-server}:/usr/local/bin/calm-server:ro
       - ${CALM_DAEMON_BIN:-./target/release/calm-session-daemon}:/usr/local/bin/calm-session-daemon:ro
+      # Codex hook bridge. calm-server's CodexClient looks for it next
+      # to its own binary (see state.rs::resolve_codex_bridge_bin) so it
+      # lands at the same /usr/local/bin path.
+      - ${CALM_CODEX_BRIDGE_BIN:-./target/release/neige-codex-bridge}:/usr/local/bin/neige-codex-bridge:ro
+      # Codex CLI. The host npm install drops a musl static binary at
+      # ${CALM_CODEX_HOST_BIN}; we mount it inside as a bare `codex` so
+      # `Command::new("codex")` resolves via PATH. Set CALM_CODEX_HOST_BIN
+      # in .env if your install path differs.
+      - ${CALM_CODEX_HOST_BIN:-/usr/local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/codex/codex}:/usr/local/bin/codex:ro
       # Host home, same path inside the container. calm-server's data dir,
       # plugin install dir, and plugin state dir all default under here, so
       # no extra env wiring is needed.
