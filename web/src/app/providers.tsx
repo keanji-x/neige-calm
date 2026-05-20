@@ -7,12 +7,25 @@
 // cache invalidations — the kernel's WS bus drives the UI's freshness
 // without anyone touching component state directly.
 //
+// Scope F: cache persistence to IndexedDB.
+// We swap the bare `QueryClientProvider` for `PersistQueryClientProvider`
+// from `@tanstack/react-query-persist-client`. On boot it hydrates the
+// in-memory cache from the persisted blob in IndexedDB; on cache writes
+// it serializes back. Allowlist + buster + maxAge live in
+// `api/persistConfig.ts` — see that file for the policy. The first paint
+// after a fresh reload now shows cached coves/waves/overlays instantly
+// while React Query refetches in the background per the normal
+// staleTime / refetchOnMount rules; nothing about the online behavior
+// changes, the persister just front-loads the data.
+//
 // Devtools only mount in dev (Vite's `import.meta.env.DEV`).
 
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient } from '@tanstack/react-query';
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
+import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
 import type { ReactNode } from 'react';
 import { EventBridge } from './eventBridge';
+import { buildPersistOptions } from '../api/persistConfig';
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -24,14 +37,18 @@ export const queryClient = new QueryClient({
   },
 });
 
+// Build persistOptions once at module scope so the IndexedDB connection
+// isn't reopened on every AppProviders re-render.
+const persistOptions = buildPersistOptions();
+
 export function AppProviders({ children }: { children: ReactNode }) {
   return (
-    <QueryClientProvider client={queryClient}>
+    <PersistQueryClientProvider client={queryClient} persistOptions={persistOptions}>
       <EventBridge />
       {children}
       {import.meta.env.DEV && (
         <ReactQueryDevtools initialIsOpen={false} buttonPosition="bottom-left" />
       )}
-    </QueryClientProvider>
+    </PersistQueryClientProvider>
   );
 }
