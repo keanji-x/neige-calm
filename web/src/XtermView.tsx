@@ -44,6 +44,14 @@ interface XtermViewProps {
   theme?: 'light' | 'dark';
 }
 
+/** Last close info, surfaced in the gray "disconnected" overlay so the user
+ *  (and we) can tell at a glance whether it was a proxy cut (1006), a
+ *  server-side heartbeat trip (1011), a clean server close (1001), etc. */
+interface CloseInfo {
+  code: number;
+  reason: string;
+}
+
 /**
  * Direct bridge to calm-server's `/api/terminals/:id` WS endpoint. Frames
  * are JSON-encoded `ClientMsg` / `DaemonMsg` from the `calm-session`
@@ -54,13 +62,15 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
   const [status, setStatus] = useState<'connecting' | 'open' | 'closed'>(
     'connecting',
   );
-  // Bumping this re-runs the WS effect, which rebuilds the terminal +
-  // reconnects. Cheap manual respawn affordance for the user when the
-  // shell exits or the daemon dies — the kernel auto-revives dead
-  // daemons on attach, so a reconnect is usually enough.
+  const [closeInfo, setCloseInfo] = useState<CloseInfo | null>(null);
+  // Bumping this re-runs the WS effect, which rebuilds the WS and re-attaches
+  // to the daemon. The daemon survives WS disconnects (it owns the PTY and a
+  // replay buffer), so reconnect is usually enough; if the daemon also died,
+  // the server's `resolve_live_sock` respawns it transparently.
   const [reconnectKey, setReconnectKey] = useState(0);
-  const restart = () => {
+  const reconnect = () => {
     setStatus('connecting');
+    setCloseInfo(null);
     setReconnectKey((k) => k + 1);
   };
 
@@ -108,38 +118,21 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
       }
     };
 
-    // Heartbeat liveness detection. The server pings every 10s and closes
-    // after 30s of silence. The browser auto-pongs at the protocol layer
-    // (we don't see it from JS), and pong-received events aren't surfaced
-    // to JS either — so the only signal we can use is "did we see ANY
-    // message lately." If nothing arrives for 40s (server's 30s window +
-    // headroom), the underlying daemon or network is gone; mark closed and
-    // tear down. We deliberately do NOT auto-reconnect — terminals carry
-    // state, so the user reconnects via the Restart button (which also
-    // triggers the kernel's daemon-respawn path).
-    const DEAD_AFTER_MS = 40_000;
-    let liveness: ReturnType<typeof setTimeout> | null = null;
-    const bumpLiveness = () => {
-      if (liveness) clearTimeout(liveness);
-      liveness = setTimeout(() => {
-        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-          setStatus('closed');
-          try {
-            ws.close();
-          } catch {
-            /* already closed */
-          }
-        }
-      }, DEAD_AFTER_MS);
-    };
+    // Liveness detection is owned server-side (ws/terminal.rs: 10s ping,
+    // 30s pong_timeout — closes with 1011 on timeout). The browser's
+    // WS impl handles TCP-level death itself and fires onclose/onerror.
+    // We previously kept a 40s client-side timer here too, but it only
+    // observed JS-level `onmessage` (Text/Binary), NOT browser auto-pongs
+    // — so a healthy WS attached to an idle codex prompt (no PTY output
+    // for 40s) would false-positive close as code 1006. Server-side
+    // heartbeat already covers the real failure modes; the client-side
+    // timer was redundant and harmful.
 
     ws.onopen = () => {
       setStatus('open');
       send({ Attach: { cols: term.cols, rows: term.rows } });
-      bumpLiveness();
     };
     ws.onmessage = (e) => {
-      bumpLiveness();
       let msg: Record<string, unknown>;
       try {
         msg = JSON.parse(typeof e.data === 'string' ? e.data : '');
@@ -170,14 +163,20 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
       // Hello/Chat events: ignored — calm-server doesn't use chat mode for
       // built-in terminal cards.
     };
-    ws.onclose = () => {
-      if (liveness) {
-        clearTimeout(liveness);
-        liveness = null;
-      }
+    ws.onclose = (e) => {
+      // Capture close code/reason so the gray "disconnected" overlay can
+      // tell us what kind of disconnect this was without devtools.
+      // 1006 = abnormal closure (network / proxy cut, no Close frame).
+      // 1011 = server-side heartbeat trip (see ws/terminal.rs PONG_TIMEOUT).
+      // 1001 = endpoint going away (server restart, page navigation).
+      setCloseInfo({ code: e.code, reason: e.reason || '' });
+      dlog('XtermView', 'WS close', { code: e.code, reason: e.reason, wasClean: e.wasClean });
       setStatus('closed');
     };
-    ws.onerror = () => setStatus('closed');
+    ws.onerror = (e) => {
+      dlog('XtermView', 'WS error', e);
+      setStatus('closed');
+    };
 
     const dataSub = term.onData((d) => {
       const bytes = Array.from(new TextEncoder().encode(d));
@@ -219,10 +218,6 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
     ro.observe(container);
 
     return () => {
-      if (liveness) {
-        clearTimeout(liveness);
-        liveness = null;
-      }
       ro.disconnect();
       dataSub.dispose();
       try {
@@ -242,9 +237,17 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
       )}
       {status === 'closed' && (
         <div className="xterm-status xterm-status-closed">
-          <span>disconnected</span>
-          <button onClick={restart} className="xterm-restart">
-            Restart
+          <span>
+            disconnected
+            {closeInfo && (
+              <span className="xterm-close-info">
+                {' '}— {closeInfo.code}
+                {closeInfo.reason ? ` (${closeInfo.reason})` : ''}
+              </span>
+            )}
+          </span>
+          <button onClick={reconnect} className="xterm-restart">
+            Reconnect
           </button>
         </div>
       )}
