@@ -95,6 +95,7 @@ fn event_name(ev: &Event) -> &'static str {
         Event::CardDeleted { .. } => "card.deleted",
         Event::OverlaySet(_) => "overlay.set",
         Event::OverlayDeleted { .. } => "overlay.deleted",
+        Event::TerminalDeleted { .. } => "terminal.deleted",
         Event::PluginState { .. } => "plugin.state",
         Event::CodexHook { .. } => "codex.hook",
     }
@@ -142,6 +143,11 @@ fn event_entity_id(ev: &Event) -> Option<String> {
         Event::PluginState { id, .. } => Some(id.clone()),
         // Codex hooks are scoped to a card_id, mirroring card.* events.
         Event::CodexHook { card_id, .. } => Some(card_id.clone()),
+        // Terminal-deleted: id IS the terminal id; we don't expose a
+        // "terminal" entity_kind on the filter API, so this only matches
+        // filters that omit `entity_kind` / `entity_id` or set them via
+        // the `events` clause.
+        Event::TerminalDeleted { id, .. } => Some(id.clone()),
     }
 }
 

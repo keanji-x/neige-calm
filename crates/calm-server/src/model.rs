@@ -158,6 +158,12 @@ pub struct Terminal {
     #[schema(value_type = Object)]
     pub env: serde_json::Value,
     pub daemon_handle: Option<String>,
+    /// Daemon process id, captured by `spawn_daemon_for` after `cmd.spawn()`.
+    /// Used by the orphan-terminal sweeper (`terminal_sweeper`) as the
+    /// SIGTERM fallback target when the graceful `ClientMsg::Kill` path
+    /// fails. `None` for rows that predate Scope C or for which the spawn
+    /// returned no pid (kernel-level edge case).
+    pub pid: Option<i64>,
     pub created_at: i64,
 }
 

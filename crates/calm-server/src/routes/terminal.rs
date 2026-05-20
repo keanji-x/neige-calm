@@ -197,6 +197,19 @@ pub(crate) async fn spawn_daemon_for(
         .map_err(|e| CalmError::Internal(format!("spawn calm-session-daemon: {e}")))?;
     let pid = child.id();
     tracing::info!(pid = ?pid, terminal_id = %term.id, "spawned calm-session-daemon");
+    // Persist the pid so the orphan-terminal sweeper has a SIGTERM fallback
+    // target when its graceful `ClientMsg::Kill` path doesn't take. Best-
+    // effort: a failed write here is a degraded-cleanup signal but must
+    // not abort the spawn (the daemon is running fine — we just lose the
+    // SIGTERM lever for that row until the next respawn).
+    if let Err(e) = s.repo.terminal_set_pid(&term.id, pid).await {
+        tracing::warn!(
+            terminal_id = %term.id,
+            pid = ?pid,
+            error = %e,
+            "failed to persist terminal pid; sweeper will fall back to socket-Kill only"
+        );
+    }
     tokio::spawn(async move {
         let _ = child.wait().await;
     });

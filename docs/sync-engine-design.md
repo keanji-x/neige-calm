@@ -497,6 +497,22 @@ Decisions (was open in v1):
 
 ---
 
+## 10. Orphan terminal cleanup
+
+Terminal rows (and their associated `calm-session-daemon` processes + unix sockets) currently leak when a terminal card is deleted: `routes/cards.rs::card_delete` removes only the card row, leaving the terminal entity and its daemon process alive forever. Scope C closes this with a sweeper that walks for orphans and reaps them via the same `write_with_event` pipeline so the cleanup is audited.
+
+**Orphan definition**: a `terminals` row whose `id` is not referenced by any `cards.payload.terminal_id`, AND whose `created_at` is older than a grace window (default: 1 minute). The grace window absorbs the 3-step terminal-card creation race (POST card → POST terminal → PATCH card.payload — `eventBridge.tsx:60-70`).
+
+**Sweeper**: a tokio task spawned at server start (`main.rs`, modeled after `card_fsm::spawn`). Ticks every 30s. For each orphan: send `ClientMsg::Kill` via unix socket, fall back to SIGTERM after a 5s grace, remove socket file, then `write_with_event(actor="kernel", ...)` to delete the terminal row and emit `Event::TerminalDeleted`.
+
+**Schema change**: add `pid INTEGER` column to `terminals` table so the SIGTERM fallback has a target.
+
+**Why through `write_with_event`**: cleanup events show up in the audit log (`SELECT * FROM events WHERE kind='terminal.deleted' AND actor='kernel'`), and any UI subscribed to terminal events sees them disappear cleanly.
+
+**Out-of-scope**: not handling user-initiated terminal deletion (today that endpoint doesn't exist; sweeper only catches orphans from deleted cards). If a future explicit "delete terminal" endpoint lands, it goes through `write_with_event` like any other write.
+
+---
+
 ## 9. Plugin compatibility
 
 Plugin write callbacks (`crates/calm-server/src/plugin_host/callbacks.rs`) follow the exact same `permission check → validate → repo write → event_bus.emit` shape as REST handlers (see `callbacks.rs:188-413` for the canonical examples on `overlay_set`, `card_create`, `card_update`, `card_delete`, `overlay_delete`). The sync engine changes apply identically:

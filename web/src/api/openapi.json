@@ -2498,6 +2498,14 @@
           "id": {
             "type": "string"
           },
+          "pid": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Daemon process id, captured by `spawn_daemon_for` after `cmd.spawn()`.\nUsed by the orphan-terminal sweeper (`terminal_sweeper`) as the\nSIGTERM fallback target when the graceful `ClientMsg::Kill` path\nfails. `None` for rows that predate Scope C or for which the spawn\nreturned no pid (kernel-level edge case)."
+          },
           "program": {
             "type": "string"
           }
