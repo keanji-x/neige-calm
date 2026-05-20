@@ -34,6 +34,7 @@ import { useGo } from './navigation';
 import { useTodayTerminal } from '../hooks/useTodayTerminal';
 import {
   covesQueryOptions,
+  settingsQueryOptions,
   useCovesQuery,
   useCreateWaveMutation,
   useDeleteCardMutation,
@@ -74,6 +75,9 @@ const CovePage = lazy(() =>
 const WavePage = lazy(() =>
   import('../pages/Wave').then((m) => ({ default: m.WavePage })),
 );
+const SettingsPage = lazy(() =>
+  import('../pages/Settings').then((m) => ({ default: m.SettingsPage })),
+);
 
 // ---------- Route tree ----------
 
@@ -108,7 +112,22 @@ const waveRoute = createRoute({
   component: WaveComponent,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, coveRoute, waveRoute]);
+const settingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings',
+  // Prime the settings cache so the form fills in without a spinner flash
+  // on the first visit. Cheap (one tiny GET) and falls back to a loading
+  // state inside the page itself on a slow link.
+  loader: () => queryClient.ensureQueryData(settingsQueryOptions()),
+  component: SettingsComponent,
+});
+
+const routeTree = rootRoute.addChildren([
+  indexRoute,
+  coveRoute,
+  waveRoute,
+  settingsRoute,
+]);
 
 // `basepath` mirrors Vite's `base: '/calm/'` (see vite.config.ts) so URLs
 // in the browser actually read `/calm/cove/$id` rather than `/cove/$id`.
@@ -238,6 +257,11 @@ function CoveComponent() {
   );
 }
 
+function SettingsComponent() {
+  const go = useGo();
+  return <SettingsPage onGo={go} />;
+}
+
 function WaveComponent() {
   const go = useGo();
   const { waveId } = useParams({ from: waveRoute.id });
@@ -351,21 +375,17 @@ async function addCardWithValues(
   const release = suppressCardEvents(waveId);
   try {
     dlog('addCardWithValues', 'codex create START', { waveId, values });
-    // Two-step like terminal: create the card row, then bind a codex
-    // process to it. Payload carries the spawn params for diagnostics.
+    // Two-step: create an empty-payload codex card row, then have the
+    // codex route spawn the PTY daemon and stamp `terminal_id` back into
+    // the payload. The frontend never pre-populates the payload here —
+    // doing so risks racing the server's `card_update` and stomping the
+    // terminal_id field on the next refetch.
     const card = await api.createCard(waveId, {
       kind: 'codex',
-      payload: {
-        initial_prompt: values.initial_prompt,
-        model: values.model || undefined,
-        cwd: values.cwd || undefined,
-      },
+      payload: {},
     });
     await api.createCodex(card.id, {
-      initial_prompt: values.initial_prompt,
-      model: values.model || undefined,
       cwd: values.cwd || undefined,
-      permission_mode: values.permission_mode || undefined,
     });
     dlog('addCardWithValues', 'codex create DONE', { cardId: card.id });
   } catch (err) {

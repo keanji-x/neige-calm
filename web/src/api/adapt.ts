@@ -7,6 +7,8 @@
 
 import type {
   Cove,
+  FsmCounts,
+  FsmState,
   Wave,
   WaveCardData,
   WaveStatus,
@@ -46,7 +48,13 @@ export function coveSummary(waves: Wave[]): string {
 
 /**
  * Folds the wave's own overlays into the UI shape. Recognized overlay kinds:
- *   - `"status"`   payload: `{ state: "running" | "waiting" }`
+ *   - `"status"`   payload: `{ state: "running" | "waiting" }` (legacy plugin
+ *                  overlays) OR `{ state: <FsmState>, counts: { working,
+ *                  awaiting, errored } }` (kernel-owned `card_fsm` rows).
+ *                  The latter is projected down to the 3-state legacy enum
+ *                  for `Wave.status` while the full FSM string + counts ride
+ *                  along on `Wave.fsmState` / `Wave.counts` for the new
+ *                  dot/badge UI.
  *   - `"progress"` payload: `{ value: number }`  (0..1)
  *   - `"eta"`      payload: `{ text: string }`
  *   - `"now"`      payload: `{ text: string }`
@@ -60,6 +68,8 @@ export function adaptWave(k: KernelWave, overlays: KernelOverlay[] = []): Wave {
   // strings rather than rendering placeholder dashes, so a wave with no
   // overlays reads as a quiet structural row, not a half-broken status pill.
   let status: WaveStatus = 'idle';
+  let fsmState: FsmState | undefined;
+  let counts: FsmCounts | undefined;
   let progress = 0;
   let eta = '';
   let now = '';
@@ -69,10 +79,34 @@ export function adaptWave(k: KernelWave, overlays: KernelOverlay[] = []): Wave {
     const p = o.payload as Record<string, unknown> | null;
     if (!p) continue;
     if (o.kind === 'status' && typeof p.state === 'string') {
-      // Only the recognized states map back to the UI enum; anything else
-      // leaves the wave idle (forward-compatible with future plugin states).
-      if (p.state === 'running') status = 'running';
-      else if (p.state === 'waiting') status = 'waiting';
+      // Two shapes coexist:
+      //   1. Legacy plugin overlays:  { state: "running" | "waiting" }
+      //   2. kernel card_fsm overlays: { state: FsmState, counts: {...} }
+      // We map both into the 3-state legacy `status` field, and additionally
+      // surface the raw FSM state + counts when present (kernel-owned rows
+      // are recognizable by their PascalCase state names).
+      const stateStr = p.state;
+      if (stateStr === 'running') status = 'running';
+      else if (stateStr === 'waiting') status = 'waiting';
+      else if (isFsmState(stateStr)) {
+        fsmState = stateStr;
+        status = projectFsmToLegacy(stateStr);
+      }
+      const c = p.counts;
+      if (
+        c &&
+        typeof c === 'object' &&
+        typeof (c as Record<string, unknown>).working === 'number' &&
+        typeof (c as Record<string, unknown>).awaiting === 'number' &&
+        typeof (c as Record<string, unknown>).errored === 'number'
+      ) {
+        const cc = c as Record<string, number>;
+        counts = {
+          working: cc.working,
+          awaiting: cc.awaiting,
+          errored: cc.errored,
+        };
+      }
     } else if (o.kind === 'progress' && typeof p.value === 'number') {
       progress = p.value;
     } else if (o.kind === 'eta' && typeof p.text === 'string') {
@@ -87,10 +121,48 @@ export function adaptWave(k: KernelWave, overlays: KernelOverlay[] = []): Wave {
     coveId: k.cove_id,
     title: k.title,
     status,
+    fsmState,
+    counts,
     progress,
     eta,
     now,
   };
+}
+
+function isFsmState(s: string): s is FsmState {
+  return (
+    s === 'Starting' ||
+    s === 'Idle' ||
+    s === 'Working' ||
+    s === 'AwaitingInput' ||
+    s === 'Errored' ||
+    s === 'Done'
+  );
+}
+
+/**
+ * Map the 6-state FSM down to the legacy 3-state `WaveStatus` so existing
+ * groupers (Sidebar's "Waiting on you", Today's running count, Cove's
+ * idle/waiting/running buckets) keep working without per-callsite changes.
+ *
+ *   AwaitingInput → waiting (block-on-user)
+ *   Errored       → waiting (needs attention; same visual prominence)
+ *   Working       → running
+ *   Starting      → running (pre-tool-use phase is a flavor of activity)
+ *   Idle | Done   → idle    (calm)
+ */
+function projectFsmToLegacy(s: FsmState): WaveStatus {
+  switch (s) {
+    case 'AwaitingInput':
+    case 'Errored':
+      return 'waiting';
+    case 'Working':
+    case 'Starting':
+      return 'running';
+    case 'Idle':
+    case 'Done':
+      return 'idle';
+  }
 }
 
 /**

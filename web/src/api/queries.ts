@@ -38,6 +38,8 @@ import type {
   NewCardBody,
   NewCoveBody,
   NewWaveBody,
+  SettingsBag,
+  SettingsPutBody,
   WavePatchBody,
 } from './wire';
 
@@ -54,6 +56,10 @@ export const queryKeys = {
    *  per-wave status indicators stay accurate without detail fetches. */
   overlaysByKind: (entity_kind: 'wave' | 'card') =>
     ['overlays', entity_kind] as const,
+  /** App-global settings bag (`http_proxy`, `https_proxy`, …). Read by
+   *  the Settings page; not invalidated by WS (settings only take effect
+   *  on the next codex spawn, so there's no need for live propagation). */
+  settings: () => ['settings'] as const,
 };
 
 // ---------------- Query option factories ----------------
@@ -432,6 +438,33 @@ export function useDeleteCardMutation() {
     mutationFn: ({ id }) => api.deleteCard(id),
     onSuccess: (_v, { waveId }) => {
       void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
+    },
+  });
+}
+
+// ---------------- settings ----------------
+//
+// Single global query + one mutation. Settings only feed the codex
+// spawn path at the moment, so we don't bother with optimistic updates
+// or WS-driven invalidation — the page just refetches after `PUT`.
+
+export const settingsQueryOptions = () => ({
+  queryKey: queryKeys.settings(),
+  queryFn: () => api.getSettings(),
+});
+
+export function useSettingsQuery() {
+  return useQuery<SettingsBag, Error>(settingsQueryOptions());
+}
+
+export function useUpdateSettingsMutation() {
+  const qc = useQueryClient();
+  return useMutation<SettingsBag, Error, SettingsPutBody>({
+    mutationFn: (body) => api.putSettings(body),
+    onSuccess: (bag) => {
+      // The PUT response is the authoritative new bag — write it through
+      // so the form re-primes without an extra round-trip.
+      qc.setQueryData(queryKeys.settings(), bag);
     },
   });
 }

@@ -12,10 +12,9 @@
 import { registerCard } from '../registry';
 import { TerminalEntry } from './terminal';
 import { CodexEntry } from './codex';
-import { ConfigCardEntry } from './config';
 import { PluginIframeEntry } from '../plugin-iframe';
 
-export { TerminalEntry, CodexEntry, ConfigCardEntry, PluginIframeEntry };
+export { TerminalEntry, CodexEntry, PluginIframeEntry };
 
 let registered = false;
 
@@ -27,9 +26,6 @@ export function registerBuiltins(): void {
   registered = true;
   registerCard(TerminalEntry);
   registerCard(CodexEntry);
-  // Transient config card — driven by the Wave page's AddPanel flow.
-  // Has no `fromKernel`; only appears via local state.
-  registerCard(ConfigCardEntry);
   // The plugin iframe entry is a built-in for now: it owns the `ui://`
   // kind namespace (the legacy `plugin:` form was deleted in M4). A
   // "plugin entry registers itself at runtime per-mount" model is part

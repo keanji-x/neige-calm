@@ -9,6 +9,7 @@
 
 import { useState } from 'react';
 import type { CreateField, CreateSchema } from '../../cards/registry';
+import { DirectoryPicker } from './DirectoryPicker';
 
 export type SchemaFormValues = Record<string, string>;
 
@@ -115,6 +116,13 @@ function FieldRow({
             </option>
           ))}
         </select>
+      ) : field.type === 'directory' ? (
+        <DirectoryPicker
+          id={id}
+          value={value}
+          onChange={onChange}
+          placeholder={field.placeholder}
+        />
       ) : (
         <input
           id={id}

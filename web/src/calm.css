@@ -741,18 +741,19 @@ input, textarea { font: inherit; color: inherit; }
   color: var(--warn);
 }
 
-/* ===== Add panel ===== */
+/* ===== Add panel =====
+   Now lives in the wave header (wave-meta cluster) so the create entry
+   point is up where the user looks first. The wrap drops its old grid-
+   below positioning hints; the meta cluster owns spacing. */
 .add-panel-wrap {
   position: relative;
-  align-self: flex-start;
-  margin-bottom: 24px;
 }
 .add-panel {
-  height: 36px; padding: 0 16px;
+  height: 28px; padding: 0 12px;
   border: 1.5px dashed var(--hairline-strong);
   border-radius: var(--r);
   color: var(--text-3);
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 500;
   transition: color 0.1s, border-color 0.1s;
   background: transparent;
@@ -763,7 +764,9 @@ input, textarea { font: inherit; color: inherit; }
 .add-panel-menu {
   position: absolute;
   top: calc(100% + 4px);
-  left: 0;
+  /* Right-anchor: AddPanel now sits near the right edge of the wave
+     header, so left-anchored menus would overflow off-screen. */
+  right: 0;
   min-width: 180px;
   background: var(--paper);
   border: 1px solid var(--hairline-strong);
@@ -791,24 +794,84 @@ input, textarea { font: inherit; color: inherit; }
   color: var(--text-3);
 }
 
-/* ===== Config card (transient AddPanel form) ===== */
-.config-card {
+/* ===== Modal (AddPanel schema form host) =====
+   Mirrors the in-grid card aesthetic — same --r, --shadow, --hairline,
+   same head background as .codex-card-head / .config-card-head — so the
+   modal reads as "a card detached from the grid", not a system dialog. */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(20, 30, 55, 0.32);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  padding: 24px;
+}
+[data-theme="dark"] .modal-overlay { background: rgba(0, 0, 0, 0.55); }
+.modal-panel {
+  width: min(620px, calc(100vw - 32px));
+  /* Min-height keeps the panel from collapsing onto its content when a
+     child-view (e.g. DirectoryPicker browser) is rendering and wants
+     real estate; the directory list is `flex:1` and would otherwise
+     hug its rows. Cap with max-height so we never overflow the
+     viewport. */
+  min-height: min(60vh, 480px);
+  max-height: calc(100vh - 64px);
+  background: var(--paper);
   border: 1px solid var(--hairline);
   border-radius: var(--r);
-  background: var(--paper);
   box-shadow: var(--shadow);
-  height: 100%;
   display: flex; flex-direction: column;
   overflow: hidden;
 }
-.config-card-head {
+/* When a child-view is up (DirectoryPicker browser, future inline
+   sub-flows): widen the panel and let it grow taller. The browse view
+   needs horizontal space for long folder names and vertical space for
+   a meaningful number of entries. */
+.modal-panel-wide {
+  width: min(820px, calc(100vw - 32px));
+  min-height: min(75vh, 640px);
+  max-height: min(85vh, 800px);
+}
+.modal-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding: 9px 12px;
   border-bottom: 1px solid var(--hairline);
   background: oklch(96% 0.004 240);
   font-size: 13px; font-weight: 500;
 }
-[data-theme="dark"] .config-card-head { background: oklch(21% 0.009 245); }
-.config-card-body { padding: 12px; flex: 1; overflow-y: auto; }
+[data-theme="dark"] .modal-head { background: oklch(21% 0.009 245); }
+.modal-title { color: var(--text); }
+.modal-close {
+  background: transparent;
+  border: none;
+  color: var(--text-3);
+  font-size: 18px; line-height: 1;
+  padding: 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.modal-close:hover { color: var(--text); background: oklch(0% 0 0 / 0.04); }
+[data-theme="dark"] .modal-close:hover { background: oklch(100% 0 0 / 0.06); }
+.modal-body { padding: 14px; overflow-y: auto; }
+/* When the modal body is hosting a child-view (DirectoryPicker
+   browser), the view fills the body edge-to-edge and brings its own
+   chrome (path bar, list, action row). Drop padding + scroll so the
+   inner browser owns the layout. */
+.modal-body-view,
+/* When the modal is in wide mode and direct children are a fullscreen-ish
+   widget (today: DirectoryBrowser as the codex create flow), give the
+   body the same flex sizing as a pushed view. Without this the inner
+   widget's `flex:1` has no flex parent to fill, the list collapses to
+   0 height, and folders are not visible. */
+.modal-panel-wide > .modal-body {
+  padding: 0;
+  overflow: hidden;
+  display: flex; flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
+}
 
 .schema-form { display: flex; flex-direction: column; gap: 10px; }
 .schema-form-field { display: flex; flex-direction: column; gap: 4px; }
@@ -838,6 +901,169 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .schema-form-submit { background: var(--text); color: var(--paper); border-color: var(--text); }
 .schema-form-submit:disabled { opacity: 0.5; cursor: not-allowed; }
 
+/* ===== Directory picker (SchemaForm `directory` field type) =====
+   Two surfaces:
+     - .dirpicker-field   the read-only path button shown inline in the
+                          SchemaForm.
+     - .dirpicker-browser the fullscreen-in-modal directory walker that
+                          replaces the modal body when Browse is clicked.
+
+   We used to render the browser as a portal popover floating above the
+   modal; that fought the modal's flex sizing and constantly clipped
+   the list. The browser now takes over the modal body via
+   `useModalView()`, so it inherits the panel's full height. */
+.dirpicker-wrap { position: relative; width: 100%; }
+.dirpicker-field {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%;
+  font: inherit;
+  text-align: left;
+  padding: 6px 8px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 0.1s;
+}
+.dirpicker-field:hover { border-color: var(--text-3); }
+.dirpicker-field-open { border-color: var(--text-3); box-shadow: 0 0 0 2px oklch(60% 0.04 245 / 0.18); }
+.dirpicker-value {
+  flex: 1; min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 12.5px;
+}
+.dirpicker-value-empty { color: var(--text-3); font-family: inherit; font-size: 13px; }
+.dirpicker-browse {
+  flex: none;
+  font-size: 12px;
+  color: var(--text-3);
+  border-left: 1px solid var(--hairline);
+  padding-left: 8px;
+}
+.dirpicker-field:hover .dirpicker-browse { color: var(--text); }
+
+/* The browser surface, mounted into modal-body-view. Fills the body —
+   the modal-panel itself owns max-height, so we just stretch. */
+.dirpicker-browser {
+  display: flex; flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
+  background: var(--paper);
+  overflow: hidden;
+}
+/* Inline fallback for when the picker is used outside a Modal context.
+   Not exercised in-app today; kept so the component degrades gracefully
+   if a future caller drops it on a plain page. */
+.dirpicker-inline {
+  margin-top: 6px;
+  height: 360px;
+  display: flex; flex-direction: column;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--r);
+  background: var(--paper);
+  overflow: hidden;
+}
+.dirpicker-inline > .dirpicker-browser { border-radius: inherit; }
+.dirpicker-browser-head {
+  flex: 0 0 auto;               /* never shrink the head */
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--hairline);
+  background: oklch(96% 0.004 240);
+}
+[data-theme="dark"] .dirpicker-browser-head { background: oklch(21% 0.009 245); }
+.dirpicker-up {
+  flex: none;
+  height: 30px; min-width: 34px;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 15px; line-height: 1;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.dirpicker-up:hover:not(:disabled) { background: oklch(0% 0 0 / 0.04); }
+[data-theme="dark"] .dirpicker-up:hover:not(:disabled) { background: oklch(100% 0 0 / 0.05); }
+.dirpicker-up:disabled { opacity: 0.4; cursor: not-allowed; }
+.dirpicker-cwd {
+  flex: 1; min-width: 0;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 12.5px;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* RTL keeps the deepest segment of the path visible when truncated,
+     which is the bit users actually care about. */
+  direction: rtl;
+  text-align: left;
+}
+.dirpicker-list {
+  flex: 1 1 0;                  /* grows + shrinks */
+  min-height: 0;                /* required: default min-height:auto would force list to its content size and push actions out */
+  list-style: none;
+  margin: 0; padding: 6px 0;
+  overflow-y: auto;
+}
+.dirpicker-entry {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%;
+  padding: 8px 16px;
+  text-align: left;
+  font-size: 13.5px;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+.dirpicker-entry:hover:not(:disabled) { background: oklch(0% 0 0 / 0.04); }
+[data-theme="dark"] .dirpicker-entry:hover:not(:disabled) { background: oklch(100% 0 0 / 0.05); }
+.dirpicker-entry:disabled { color: var(--text-3); cursor: default; }
+.dirpicker-entry-file { color: var(--text-3); }
+.dirpicker-entry-icon { flex: none; font-size: 13px; opacity: 0.8; }
+.dirpicker-entry-name {
+  flex: 1; min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dirpicker-status,
+.dirpicker-error {
+  padding: 12px 16px;
+  font-size: 13px;
+  color: var(--text-3);
+}
+.dirpicker-error { color: oklch(60% 0.15 25); }
+.dirpicker-actions {
+  flex: 0 0 auto;               /* never shrink the actions row */
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--hairline);
+  background: var(--paper);
+}
+.dirpicker-cancel,
+.dirpicker-select {
+  height: 32px; padding: 0 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  border: 1px solid var(--hairline-strong);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.dirpicker-select {
+  background: var(--text);
+  color: var(--paper);
+  border-color: var(--text);
+}
+.dirpicker-select:disabled { opacity: 0.5; cursor: not-allowed; }
+
 /* ===== Codex card ===== */
 .codex-card {
   border: 1px solid var(--hairline);
@@ -849,35 +1075,81 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   overflow: hidden;
 }
 .codex-card-head {
-  display: flex; align-items: center; gap: 8px;
-  padding: 9px 12px;
+  display: flex; align-items: center; gap: 12px;
+  /* right-padding leaves room for the absolutely-positioned `.card-grid-close`
+     X button (top:6 right:8 width:22) so the FSM status dot can sit flush
+     against the head's content edge without sliding under the X. */
+  padding: 6px 38px 6px 12px;
   border-bottom: 1px solid var(--hairline);
   background: oklch(96% 0.004 240);
   font-size: 13px; font-weight: 500;
+  min-height: 28px;
 }
 [data-theme="dark"] .codex-card-head { background: oklch(21% 0.009 245); }
-.codex-card-model { font-size: 11px; color: var(--text-3); font-weight: 400; }
-.codex-card-prompt {
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--hairline);
-  font-size: 12px;
+.codex-card-title { flex: 0 0 auto; }
+
+/* Status bar: latest hook event + working/idle dot. Takes up the rest of
+   the header so the label can ellipsis without pushing the dot. */
+.codex-status-bar {
+  flex: 1;
+  display: flex; align-items: center; gap: 8px;
+  min-width: 0; /* allow the label to actually shrink */
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
   color: var(--text-2);
 }
-.codex-card-prompt-label { color: var(--text-3); margin-right: 6px; }
-.codex-card-hooks {
-  flex: 1; overflow-y: auto;
-  list-style: none; margin: 0; padding: 0;
-  font-size: 12px;
-  font-family: ui-monospace, SFMono-Regular, monospace;
+.codex-status-label {
+  flex: 1;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  min-width: 0;
 }
-.codex-card-hook {
-  display: flex; gap: 8px;
-  padding: 4px 12px;
-  border-bottom: 1px dotted var(--hairline);
+.codex-status-count {
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: var(--text-3);
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: oklch(93% 0.005 240);
 }
-.codex-card-hook-name { color: var(--text-3); min-width: 110px; }
-.codex-card-hook-summary { color: var(--text); flex: 1; white-space: pre-wrap; word-break: break-word; }
-.codex-card-empty { padding: 12px; color: var(--text-3); font-size: 12px; }
+[data-theme="dark"] .codex-status-count { background: oklch(26% 0.008 245); }
+.codex-status-dot {
+  flex: 0 0 auto;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--text-4);
+  box-shadow: 0 0 0 2px rgba(0,0,0,0);
+  transition: background 240ms ease, box-shadow 240ms ease;
+}
+.codex-status-dot-working {
+  background: oklch(74% 0.16 70); /* amber */
+  box-shadow: 0 0 0 3px oklch(74% 0.16 70 / 0.20);
+  animation: codex-dot-pulse 1.6s ease-in-out infinite;
+}
+@keyframes codex-dot-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px oklch(74% 0.16 70 / 0.18); }
+  50%      { box-shadow: 0 0 0 5px oklch(74% 0.16 70 / 0.32); }
+}
+
+.codex-card-pty {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+  /* Flex container so child .xterm-view (flex:1) fills the remaining
+     height. Without this, .xterm-view falls back to its 360px min-height
+     and the bottom half of the card is empty. */
+  display: flex;
+}
+/* Inside the codex card, drop the global xterm-view min-height so it
+   uses 100% of its flex parent instead of clamping at 360px. */
+.codex-card-pty .xterm-view {
+  min-height: 0;
+}
+.codex-card-empty {
+  display: flex; align-items: center; justify-content: center;
+  height: 100%;
+  color: var(--text-3); font-size: 12px;
+  padding: 12px;
+}
 
 /* ===== Terminal card ===== */
 .term {
@@ -2043,4 +2315,63 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 .react-resizable-handle:hover {
   color: var(--accent);
+}
+
+/* ===== Settings page ============================================
+   Reuses .schema-form tokens for inputs/buttons; only the page-scoped
+   shell (section card, hints, toast) lives here. */
+.settings-section {
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r);
+  padding: 18px 20px 20px;
+  margin-bottom: 20px;
+}
+.settings-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin: 0 0 6px;
+}
+.settings-section-hint {
+  font-size: 13px;
+  color: var(--text-2);
+  margin: 0 0 14px;
+}
+.settings-section-hint code,
+.settings-field-hint code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 12px;
+  background: oklch(95% 0.005 240);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+[data-theme="dark"] .settings-section-hint code,
+[data-theme="dark"] .settings-field-hint code {
+  background: oklch(24% 0.01 245);
+}
+.settings-field-hint {
+  font-size: 12px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+.settings-error {
+  color: var(--warn, #c00);
+  font-size: 13px;
+  margin-top: 12px;
+}
+.settings-toast {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--text-2);
+  background: oklch(95% 0.02 145);
+  border: 1px solid oklch(85% 0.04 145);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+[data-theme="dark"] .settings-toast {
+  background: oklch(26% 0.02 145);
+  border-color: oklch(36% 0.03 145);
 }

@@ -10,12 +10,15 @@ import type {
   KernelTerminal,
   KernelWave,
   KernelWaveDetail,
+  ListdirResponse,
   NewCardBody,
   NewCodexBody,
   NewCoveBody,
   NewOverlayBody,
   NewTerminalBody,
   NewWaveBody,
+  SettingsBag,
+  SettingsPutBody,
   WavePatchBody,
 } from './wire';
 
@@ -153,6 +156,38 @@ export const createCodex = (cardId: string, b: NewCodexBody) =>
     `/api/cards/${encodeURIComponent(cardId)}/codex`,
     b,
   );
+
+// ---------------- fs ----------------
+
+/**
+ * Read-only directory listing. Backs the `DirectoryPicker` widget the
+ * codex `cwd` field uses. Omit `path` to start at the server's `$HOME`.
+ * Response paths are canonicalized — symlinks resolved, `..` collapsed.
+ */
+export const listDir = (path?: string) => {
+  const query = path && path.length > 0
+    ? `?path=${encodeURIComponent(path)}`
+    : '';
+  return request<ListdirResponse>('GET', `/api/fs/listdir${query}`);
+};
+
+// ---------------- settings ----------------
+
+/**
+ * Fetch the app-global settings bag. Always returns 200 with a (possibly
+ * empty) `settings` object — never 404, even on a fresh install.
+ */
+export const getSettings = () =>
+  request<SettingsBag>('GET', '/api/settings');
+
+/**
+ * Replace the persisted settings. Empty-string or `null` values clear the
+ * key on the server (see `routes::settings` for the rationale). The
+ * response echoes the resulting bag so the form can re-prime without a
+ * second GET.
+ */
+export const putSettings = (b: SettingsPutBody) =>
+  request<SettingsBag>('PUT', '/api/settings', b);
 
 // ---------------- plugin iframe tool-call ----------------
 

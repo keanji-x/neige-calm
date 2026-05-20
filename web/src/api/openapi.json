@@ -39,7 +39,7 @@
         },
         "responses": {
           "202": {
-            "description": "Codex spawned; hook events stream over WS",
+            "description": "Codex spawned; hook events stream over WS, TUI runs in the card's PTY",
             "content": {
               "application/json": {
                 "schema": {
@@ -503,6 +503,67 @@
           },
           "404": {
             "description": "Cove not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/fs/listdir": {
+      "get": {
+        "tags": [
+          "fs"
+        ],
+        "operationId": "listdir",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "description": "Absolute path to list; omitted → $HOME",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Directory listing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListdirResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Path doesn't exist or is not a directory",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Read permission denied",
             "content": {
               "application/json": {
                 "schema": {
@@ -1352,6 +1413,74 @@
         }
       }
     },
+    "/api/settings": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "operationId": "get_settings",
+        "responses": {
+          "200": {
+            "description": "Current settings map (string→string)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsBag"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "settings"
+        ],
+        "operationId": "put_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingsPutBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Settings replaced; returns the resulting bag",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsBag"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/waves": {
       "post": {
         "tags": [
@@ -1849,6 +1978,21 @@
           }
         }
       },
+      "DirEntry": {
+        "type": "object",
+        "required": [
+          "name",
+          "is_dir"
+        ],
+        "properties": {
+          "is_dir": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "ErrorBody": {
         "type": "object",
         "description": "JSON shape returned for every error response — `{error, code}`.\nMirrors the body produced by `CalmError::into_response`. Hand-written\nduplicate of the in-line `json!` body so OpenAPI consumers see a\nconcrete schema.",
@@ -1859,7 +2003,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable machine-readable code — one of `not_found`, `conflict`,\n`bad_request`, `unauthorized`, `plugin_install`, `plugin_permission`,\n`plugin_conflict`, `db_error`, `io_error`, `serde_error`, `internal`,\n`forbidden_tool`, `not_a_card_tool`, `tool_call_failed`."
+            "description": "Stable machine-readable code — one of `not_found`, `conflict`,\n`bad_request`, `unauthorized`, `forbidden`, `plugin_install`,\n`plugin_permission`, `plugin_conflict`, `db_error`, `io_error`,\n`serde_error`, `internal`, `forbidden_tool`, `not_a_card_tool`,\n`tool_call_failed`."
           },
           "error": {
             "type": "string",
@@ -1915,6 +2059,33 @@
           }
         ]
       },
+      "ListdirResponse": {
+        "type": "object",
+        "required": [
+          "path",
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DirEntry"
+            },
+            "description": "Children, sorted: directories first, then case-insensitive alpha.\nHidden entries (leading dot) are filtered out."
+          },
+          "parent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Canonical absolute path of the parent directory, or `null` at root."
+          },
+          "path": {
+            "type": "string",
+            "description": "Canonical absolute path of the listed directory."
+          }
+        }
+      },
       "NewCard": {
         "type": "object",
         "required": [
@@ -1942,9 +2113,6 @@
       },
       "NewCodexBody": {
         "type": "object",
-        "required": [
-          "initial_prompt"
-        ],
         "properties": {
           "cwd": {
             "type": [
@@ -1954,22 +2122,11 @@
             "description": "Working directory codex runs in. Defaults to `$HOME` if empty."
           },
           "initial_prompt": {
-            "type": "string",
-            "description": "Required — the first user prompt. Codex's `exec` flow accepts it\nas a positional arg."
-          },
-          "model": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional override (default codex picks per its own config)."
-          },
-          "permission_mode": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Reserved for a future codex permission/sandbox flag — not wired\nyet (the right `-c` config keys for `approval_policy` / sandbox\nare version-sensitive). We accept the field so the schema-form on\nthe frontend can collect it without errors."
+            "description": "Reserved field — interactive codex has slash-commands for the\nprompt; the API still accepts it for forward / backward\ncompatibility but does nothing with it. Kept so older clients keep\ngenerating valid OpenAPI requests."
           }
         }
       },
@@ -2272,6 +2429,42 @@
           }
         }
       },
+      "SettingsBag": {
+        "type": "object",
+        "description": "Wire-shape: a flat string map of key -> value. We use `BTreeMap` for\ndeterministic ordering in the response so the OpenAPI spec consumers\nsee stable test diffs.",
+        "required": [
+          "settings"
+        ],
+        "properties": {
+          "settings": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "SettingsPutBody": {
+        "type": "object",
+        "description": "Request body for `PUT /api/settings`. Values are `Option<String>` so\nthe client can clear a key by sending `null`. Empty strings are also\ntreated as deletes; see module docs for the rationale.",
+        "properties": {
+          "settings": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "Terminal": {
         "type": "object",
         "required": [
@@ -2543,6 +2736,14 @@
     {
       "name": "codex",
       "description": "Codex (OpenAI) agent cards — hook-driven event stream"
+    },
+    {
+      "name": "fs",
+      "description": "Read-only host filesystem helpers (directory listing for path pickers)"
+    },
+    {
+      "name": "settings",
+      "description": "App-global settings (HTTP proxy override, etc.)"
     },
     {
       "name": "plugins",

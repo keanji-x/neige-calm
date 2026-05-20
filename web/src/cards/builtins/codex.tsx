@@ -1,68 +1,83 @@
-// Codex (OpenAI) agent card.
+// Codex (OpenAI) agent card — interactive TUI variant.
 //
-// The kernel side spawns codex CLI bound to this card; hook events
-// (PreToolUse / PostToolUse / Stop / ...) stream over the WS event bus
-// on `card:<card_id>` as `codex.hook` envelopes. This component
-// subscribes to its own card id and renders the events in reverse-chrono
-// order. MVP: no fancy formatting — the goal here is verifying the
-// end-to-end path works, not polished UI.
+// Architecture:
+//   - The backend spawns the codex CLI under our `calm-session-daemon`
+//     PTY infrastructure (same path Terminal cards use). Its TUI renders
+//     into the embedded xterm.js view below.
+//   - Hook events (PreToolUse / PostToolUse / Stop / ...) stream over the
+//     WS event bus on `card:<card_id>` as `codex.hook` envelopes. We use
+//     them for the human-readable status label ("PreToolUse: Bash — ls").
+//   - The per-card FSM state (Starting / Idle / Working / AwaitingInput /
+//     Errored / Done) is owned by the **kernel** `card_fsm` task: it
+//     watches the same hook stream, runs a debounced 6-state FSM, and
+//     publishes the result as `Overlay { entity_kind:"card", kind:"status",
+//     payload:{state} }`. The card subscribes to overlay.set on its own
+//     topic and renders the dot from that — there is intentionally no
+//     local FSM here, so wave-union (the kernel computes it server-side)
+//     and per-card dot agree by construction.
 
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { z } from 'zod';
-import type { CodexCardData } from '../../types';
+import type { CodexCardData, FsmState } from '../../types';
 import { sharedEventStream } from '../../api/events';
+import { CardStatusDot } from '../../shared/components/CardStatusDot';
 import type { CardEntry } from '../registry';
 
+// Lazy-load xterm.js + addon — same pattern as the Terminal card so the
+// two cards share a single code-split chunk for the renderer.
+const XtermView = lazy(() =>
+  import('../../XtermView').then((m) => ({ default: m.XtermView })),
+);
+
 const codexPayloadSchema = z.object({
+  terminal_id: z.string().optional(),
   initial_prompt: z.string().optional(),
   model: z.string().optional(),
   cwd: z.string().optional(),
 });
 
-interface HookRow {
-  /** Monotonic insertion id — used as React key. */
-  seq: number;
-  /** Server-derived discriminator: `hook.codex.<event>` */
-  kind: string;
-  /** `hook_event_name` raw, e.g. `PreToolUse`. */
-  eventName: string;
-  /** First-pass short summary (tool name, command preview). */
-  summary: string;
-  /** Wallclock receive time. */
-  at: number;
-}
-
 function CodexCard({ card }: { card: CodexCardData }) {
   const cardId = card.id;
-  const [rows, setRows] = useState<HookRow[]>([]);
-  const seqRef = useRef(0);
+  // FSM state owned by the kernel `card_fsm` task. Defaults to "Starting"
+  // until the first overlay.set lands (the kernel writes one on the
+  // session_start hook, so this placeholder is usually visible for a few
+  // hundred ms at most).
+  const [fsm, setFsm] = useState<FsmState>('Starting');
+  // Human-readable "what is codex doing right now" label, derived from the
+  // most recent codex.hook event. Independent of the FSM state because the
+  // label is a string and the FSM is a closed enum.
+  const [label, setLabel] = useState<string>('starting…');
 
   useEffect(() => {
     if (!cardId) return;
     const stream = sharedEventStream();
     stream.addTopic(`card:${cardId}`);
     const off = stream.on((ev) => {
-      if (ev.ev !== 'codex.hook') return;
-      if (ev.data.card_id !== cardId) return;
-      const payload = (ev.data.payload ?? {}) as Record<string, unknown>;
-      const eventName = String(payload.hook_event_name ?? 'unknown');
-      const toolName = typeof payload.tool_name === 'string' ? payload.tool_name : '';
-      const summary = summarizeHook(payload, toolName);
-      const next: HookRow = {
-        seq: ++seqRef.current,
-        kind: ev.data.kind,
-        eventName,
-        summary,
-        at: Date.now(),
-      };
-      // Newest first — prepend.
-      setRows((cur) => [next, ...cur].slice(0, 200));
+      if (ev.ev === 'codex.hook' && ev.data.card_id === cardId) {
+        const payload = (ev.data.payload ?? {}) as Record<string, unknown>;
+        const eventName = String(payload.hook_event_name ?? 'unknown');
+        const toolName =
+          typeof payload.tool_name === 'string' ? payload.tool_name : '';
+        setLabel(summarizeHook(payload, eventName, toolName));
+        return;
+      }
+      if (ev.ev === 'overlay.set') {
+        const o = ev.data;
+        if (
+          o.entity_kind === 'card' &&
+          o.entity_id === cardId &&
+          o.kind === 'status'
+        ) {
+          const p = o.payload as Record<string, unknown> | null;
+          const s = p && typeof p.state === 'string' ? p.state : null;
+          if (s && isFsmState(s)) setFsm(s);
+        }
+      }
     });
     return () => {
       off();
-      // Topic intentionally NOT removed: another tab / re-mount of the
-      // same card would otherwise lose its subscription mid-stream. The
-      // topic set is sticky on the shared stream by design.
+      // Topic intentionally NOT removed — see XtermView's terminal flow
+      // for the same reasoning (sticky subscriptions on the shared stream).
     };
   }, [cardId]);
 
@@ -70,52 +85,66 @@ function CodexCard({ card }: { card: CodexCardData }) {
     <div className="codex-card">
       <div className="codex-card-head card-drag-handle">
         <span className="codex-card-title">Codex</span>
-        {card.model && <span className="codex-card-model">{card.model}</span>}
+        <div className="codex-status-bar" aria-live="polite">
+          <span className="codex-status-label" title={`${fsm} — ${label}`}>
+            {fsm}: {label}
+          </span>
+          <CardStatusDot state={fsm} title={`${fsm} — ${label}`} />
+        </div>
       </div>
-      <div className="codex-card-prompt">
-        <span className="codex-card-prompt-label">Prompt:</span>
-        <span className="codex-card-prompt-text">{card.initialPrompt || '(none)'}</span>
-      </div>
-      <ol className="codex-card-hooks">
-        {rows.length === 0 ? (
-          <li className="codex-card-empty">
-            Waiting for hook events… (PreToolUse / PostToolUse / Stop)
-          </li>
+      <div className="codex-card-pty">
+        {card.terminalId ? (
+          <Suspense fallback={<div className="codex-card-empty">Loading terminal…</div>}>
+            <XtermView terminalId={card.terminalId} />
+          </Suspense>
         ) : (
-          rows.map((r) => (
-            <li key={r.seq} className="codex-card-hook">
-              <span className={`codex-card-hook-name evt-${r.kind.replaceAll('.', '-')}`}>
-                {r.eventName}
-              </span>
-              <span className="codex-card-hook-summary">{r.summary}</span>
-            </li>
-          ))
+          <div className="codex-card-empty">
+            Codex is starting… waiting for PTY.
+          </div>
         )}
-      </ol>
+      </div>
     </div>
   );
 }
 
-function summarizeHook(payload: Record<string, unknown>, toolName: string): string {
-  // Cheap, no JSON-pretty-print — we just want a one-liner so the user
-  // can see *which* tool ran. Full payload inspection is a later UX pass.
+function isFsmState(s: string): s is FsmState {
+  return (
+    s === 'Starting' ||
+    s === 'Idle' ||
+    s === 'Working' ||
+    s === 'AwaitingInput' ||
+    s === 'Errored' ||
+    s === 'Done'
+  );
+}
+
+function summarizeHook(
+  payload: Record<string, unknown>,
+  eventName: string,
+  toolName: string,
+): string {
+  // Cheap one-liner. Same shape as the prior list-row summary so the
+  // language stays consistent. `eventName` always leads so the user has a
+  // discriminator even when tool_name is absent.
   if (toolName) {
     const input = payload.tool_input;
     if (input && typeof input === 'object') {
       const cmd = (input as Record<string, unknown>).command;
       if (typeof cmd === 'string') {
-        return `${toolName} — ${truncate(cmd, 80)}`;
+        return `${eventName}: ${toolName} — ${truncate(cmd, 60)}`;
       }
       const path = (input as Record<string, unknown>).path;
       if (typeof path === 'string') {
-        return `${toolName} — ${path}`;
+        return `${eventName}: ${toolName} — ${path}`;
       }
     }
-    return toolName;
+    return `${eventName}: ${toolName}`;
   }
   const prompt = payload.user_prompt;
-  if (typeof prompt === 'string') return truncate(prompt, 100);
-  return '';
+  if (typeof prompt === 'string') {
+    return `${eventName}: ${truncate(prompt, 60)}`;
+  }
+  return eventName;
 }
 
 function truncate(s: string, n: number): string {
@@ -125,7 +154,7 @@ function truncate(s: string, n: number): string {
 export const CodexEntry: CardEntry<CodexCardData> = {
   type: 'codex',
   Component: CodexCard,
-  defaultSize: { w: 6, h: 10, minW: 4, minH: 6 },
+  defaultSize: { w: 6, h: 12, minW: 4, minH: 8 },
   fromKernel: (k) => {
     if (k.kind !== 'codex') return null;
     const candidate = k.payload ?? {};
@@ -138,8 +167,7 @@ export const CodexEntry: CardEntry<CodexCardData> = {
     return {
       type: 'codex',
       id: k.id,
-      initialPrompt: parsed.data.initial_prompt ?? '',
-      model: parsed.data.model,
+      terminalId: parsed.data.terminal_id,
       cwd: parsed.data.cwd,
     };
   },
@@ -147,33 +175,13 @@ export const CodexEntry: CardEntry<CodexCardData> = {
     label: 'New codex',
     icon: 'spark',
     createSchema: {
+      // Interactive codex handles permission / model selection inside its
+      // own slash-command UX, so the schema-form is now just cwd.
       fields: [
-        {
-          key: 'initial_prompt',
-          label: 'Initial prompt',
-          type: 'textarea',
-          required: true,
-          placeholder: 'What should codex do?',
-        },
-        {
-          key: 'model',
-          label: 'Model',
-          type: 'enum',
-          options: ['', 'gpt-5.4', 'o4-mini'],
-          default: '',
-        },
         {
           key: 'cwd',
           label: 'Working directory',
-          type: 'string',
-          placeholder: '$HOME',
-        },
-        {
-          key: 'permission_mode',
-          label: 'Permission mode',
-          type: 'enum',
-          options: ['default', 'acceptEdits', 'plan', 'dontAsk', 'bypassPermissions'],
-          default: 'default',
+          type: 'directory',
         },
       ],
     },
