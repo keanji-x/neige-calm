@@ -1,0 +1,574 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Todo</title>
+  <style>
+    /* Calm tokens — pre-converted hex mirror of the OKLCH tokens in
+       web/src/calm.css §2. Do not invent values; see docs/design.md §8. */
+    :root {
+      color-scheme: light dark;
+
+      --bg: #fafbfc;
+      --paper: #fdfdfe;
+      --hairline: #e4e6eb;
+      --hairline-strong: #cfd2d9;
+      --text: #1f242e;
+      --text-2: #5d626c;
+      --text-3: #878b94;
+      --text-4: #a9adb4;
+      --accent: #3b6dbf;
+      --accent-soft: #e7edf7;
+      --warn: #c25a2b;
+      --warn-soft: #fbecdf;
+
+      --r: 14px;
+      --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+                   "Helvetica Neue", sans-serif;
+      --font-mono: "SF Mono", ui-monospace, "Menlo", monospace;
+    }
+    /* Theme follows the HOST (set on <html data-theme="…"> by bootstrap from
+       hostContext.theme), NOT prefers-color-scheme. Iframe and host must
+       agree on theme even when the OS disagrees with the app's setting.
+       prefers-color-scheme is kept only as the first-paint fallback before
+       the AppBridge handshake completes. */
+    html[data-theme="dark"] {
+      --bg: #1c1f25;
+      --paper: #23262d;
+      --hairline: #363a42;
+      --hairline-strong: #4a4e57;
+      --text: #eef0f4;
+      --text-2: #a8acb4;
+      --text-3: #7a7e87;
+      --text-4: #5a5e66;
+      --accent: #7aa6ea;
+      --accent-soft: #2a3a52;
+      --warn: #df8054;
+      --warn-soft: #4a2e22;
+    }
+    @media (prefers-color-scheme: dark) {
+      html:not([data-theme]) {
+        --bg: #1c1f25;
+        --paper: #23262d;
+        --hairline: #363a42;
+        --hairline-strong: #4a4e57;
+        --text: #eef0f4;
+        --text-2: #a8acb4;
+        --text-3: #7a7e87;
+        --text-4: #5a5e66;
+        --accent: #7aa6ea;
+        --accent-soft: #2a3a52;
+        --warn: #df8054;
+        --warn-soft: #4a2e22;
+      }
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 12px 14px;
+      font: 13px/1.5 var(--font-sans);
+      color: var(--text);
+      /* Iframe IS the card surface — use --paper (card bg), not --bg (page).
+         This keeps it flush with the host card chrome. */
+      background: var(--paper);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      height: 100vh;
+    }
+
+    /* List ------------------------------------------------------------ */
+    ul.items {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      flex: 1;
+      overflow-y: auto;
+    }
+    ul.items li.row {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 30px 8px 2px; /* right pad reserves the absolute delete slot */
+      border-bottom: 1px solid var(--hairline);
+    }
+    ul.items li.row:last-child { border-bottom: none; }
+    ul.items input[type="checkbox"] {
+      margin: 0;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    ul.items .text {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--text);
+    }
+    ul.items li.row.done .text {
+      color: var(--text-3);
+      text-decoration: line-through;
+    }
+
+    /* Empty state — mirrors .codex-card-empty (calm.css:1147). */
+    .empty {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 80px;
+      color: var(--text-3);
+      font-size: 12px;
+      padding: 12px;
+      font-style: italic;
+    }
+
+    /* Per-row delete — mirrors .wave-row-delete (calm.css:487-510):
+       absolute, hidden until row hover/focus, warn-soft tint on hover. */
+    .del {
+      position: absolute;
+      right: 4px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 24px; height: 24px;
+      display: flex; align-items: center; justify-content: center;
+      background: transparent;
+      border: none;
+      border-radius: 4px;
+      color: var(--text-3);
+      font: inherit;
+      font-size: 16px;
+      line-height: 1;
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity 0.12s, color 0.12s, background 0.12s;
+    }
+    ul.items li.row:hover .del,
+    ul.items li.row:focus-within .del { opacity: 1; }
+    .del:hover {
+      background: var(--warn-soft);
+      color: var(--warn);
+    }
+
+    /* Add row --------------------------------------------------------- */
+    .add {
+      display: flex;
+      gap: 6px;
+    }
+    .add input[type="text"] {
+      flex: 1;
+      font: inherit;
+      color: var(--text);
+      background: var(--paper);
+      border: 1px solid var(--hairline-strong);
+      border-radius: 4px;
+      padding: 6px 8px;
+      min-width: 0;
+      transition: border-color 0.1s, box-shadow 0.1s;
+    }
+    .add input[type="text"]:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+    .add button {
+      font: inherit;
+      font-size: 13px;
+      height: 32px;
+      padding: 0 12px;
+      color: var(--paper);
+      background: var(--text);
+      border: 1px solid var(--text);
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .add button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    /* Diagnostic log — kept (last 4 lines, mono, muted). Hidden until
+       something is written; mono so wrapped errors stay readable. */
+    .log {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-3);
+      white-space: pre-wrap;
+      max-height: 48px;
+      overflow-y: auto;
+      font-variant-numeric: tabular-nums;
+    }
+    .log:empty { display: none; }
+  </style>
+</head>
+<body>
+  <ul class="items" id="items">
+    <li class="empty" id="empty">Loading…</li>
+  </ul>
+
+  <form class="add" id="add-form">
+    <input type="text" id="add-input" placeholder="Add an item…" autocomplete="off" maxlength="500">
+    <button type="submit" id="add-btn">Add</button>
+  </form>
+
+  <div class="log" id="log"></div>
+
+  <script type="module">
+    // Hand-rolled MCP-Apps iframe-side client — same approach as
+    // plugins/hello-world/views/status.html. We deliberately do NOT pull a
+    // CDN bundle: the wire is small JSON-RPC 2.0 over postMessage and the
+    // view's CSP only allows 'self' + 'unsafe-inline'.
+    //
+    // Protocol surface used here:
+    //   host → iframe `ui/notifications/tool-result`          (card payload)
+    //   host → iframe `ui/notifications/host-context-changed` (theme + neige.cardId)
+    //   host → iframe `ui/initialize`                         (optional handshake)
+    //   iframe → host `ui/notifications/initialized`          (ready signal)
+    //   iframe → host `tools/call { name: "neige.kv.*", ... }` (persistence)
+    //
+    // The host (web/src/cards/plugin-iframe.tsx) routes `neige.*` tool calls
+    // to /api/plugins/:id/tool-call which dispatches into callbacks.rs.
+    // The manifest's view-level permissions whitelist restricts which tools
+    // the iframe is allowed to invoke (neige.kv.{get,set,delete} here).
+
+    const PLUGIN_ID = "dev.neige.todo";
+
+    const $ = (id) => document.getElementById(id);
+    // Apply theme from host. 'light' | 'dark' | undefined (undef → fall back
+    // to prefers-color-scheme via the html:not([data-theme]) MQ above).
+    function applyTheme(t) {
+      if (t === "dark" || t === "light") {
+        document.documentElement.dataset.theme = t;
+      }
+    }
+    const log = (msg) => {
+      const el = $("log");
+      el.textContent = (el.textContent + (el.textContent ? "\n" : "") + msg)
+        .split("\n").slice(-4).join("\n");
+    };
+
+    // ---- state ---------------------------------------------------------
+    let state = {
+      cardId: null,                  // resolved from host context / toolInfo
+      title: "Todo",
+      items: [],                     // [{ id, text, done, created_at }]
+      loaded: false,                 // KV load completed (success or miss)
+    };
+
+    let nextId = 1;
+    const pending = new Map();
+
+    // ---- postMessage envelope ------------------------------------------
+    function send(msg) {
+      // The parent is the AppBridge sandbox proxy frame. AppBridge owns
+      // origin verification on its side; we trust the sandbox boundary
+      // because srcdoc inner frames can only reach their proxy parent
+      // regardless of what targetOrigin we pass.
+      try {
+        window.parent.postMessage(msg, "*");
+      } catch (e) {
+        log("postMessage failed: " + e);
+      }
+    }
+
+    function call(method, params) {
+      const id = nextId++;
+      return new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+        send({ jsonrpc: "2.0", id, method, params });
+        // 5s timeout. KV round-trips should finish in <50 ms.
+        setTimeout(() => {
+          if (pending.has(id)) {
+            pending.delete(id);
+            reject(new Error("rpc timeout for " + method));
+          }
+        }, 5000);
+      });
+    }
+
+    function notify(method, params) {
+      send({ jsonrpc: "2.0", method, params });
+    }
+
+    // ---- neige.kv.* wrappers -------------------------------------------
+    // The host returns the kernel's reply wrapped as a CallToolResult with
+    // `structuredContent` = the raw handler value (see plugin-iframe.tsx's
+    // oncalltool: `{ content: [], structuredContent: result ?? {} }`).
+    function kvKey() {
+      // Per-card scope. Plugin KV is per-plugin already; we still namespace
+      // by card so multiple todo cards under the same plugin don't collide.
+      return "card/" + state.cardId + "/items";
+    }
+
+    async function kvGetItems() {
+      if (!state.cardId) throw new Error("no cardId — handshake didn't deliver it");
+      const res = await call("tools/call", {
+        name: "neige.kv.get",
+        arguments: { key: kvKey() },
+      });
+      const sc = (res && res.structuredContent) || {};
+      const value = sc.value;
+      if (Array.isArray(value)) return value;
+      return [];
+    }
+
+    async function kvSetItems(items) {
+      if (!state.cardId) throw new Error("no cardId — handshake didn't deliver it");
+      await call("tools/call", {
+        name: "neige.kv.set",
+        arguments: { key: kvKey(), value: items },
+      });
+    }
+
+    // ---- inbound message handling --------------------------------------
+    window.addEventListener("message", (event) => {
+      const msg = event.data;
+      if (!msg || msg.jsonrpc !== "2.0") return;
+
+      // Response to one of our outbound calls.
+      if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
+        const p = pending.get(msg.id);
+        if (!p) return;
+        pending.delete(msg.id);
+        if (msg.error) p.reject(new Error(msg.error.message || "rpc error"));
+        else p.resolve(msg.result);
+        return;
+      }
+
+      const method = msg.method || "";
+      switch (method) {
+        case "ui/notifications/tool-result": {
+          // First-mount card payload from the kernel's tools/call result.
+          const p = msg.params || {};
+          const sc = p.structuredContent || p.structured_content;
+          const toolInfo = p.toolInfo || p.tool_info;
+          applyPayload(sc, toolInfo);
+          break;
+        }
+        case "ui/notifications/host-context-changed": {
+          // Theme / size / neige.cardId updates. Re-apply theme on every
+          // change so the iframe tracks host toggles instantly.
+          const ctx = (msg.params && msg.params.hostContext) || msg.params || {};
+          if (ctx.theme) applyTheme(ctx.theme);
+          const neige = ctx.neige || {};
+          if (neige.cardId && !state.cardId) {
+            state.cardId = neige.cardId;
+            // Card id just became known — kick off the KV load if we
+            // haven't already.
+            void initialLoad();
+          }
+          break;
+        }
+        // ui/initialize is iframe→host in MCP-Apps (we initiate it from
+        // bootstrap()), so we don't expect inbound. Fall through to the
+        // default branch which replies MethodNotFound if a host ever sends
+        // one defensively.
+        default:
+          if (msg.id !== undefined) {
+            send({
+              jsonrpc: "2.0",
+              id: msg.id,
+              error: { code: -32601, message: "Method not found: " + method },
+            });
+          }
+          break;
+      }
+    });
+
+    function applyPayload(structuredContent, toolInfo) {
+      if (structuredContent) {
+        if (typeof structuredContent.title === "string" && structuredContent.title.length) {
+          state.title = structuredContent.title;
+        }
+      }
+      // Fallback path: some kernel versions tuck the card id under toolInfo
+      // when delivering the tool-result. Prefer that if we still don't have
+      // one (host-context-changed is the primary source).
+      if (toolInfo && toolInfo.id && !state.cardId) {
+        state.cardId = toolInfo.id;
+        void initialLoad();
+      }
+    }
+
+    // ---- initial load --------------------------------------------------
+    // Called once we know our card id. Guards against double-fire because
+    // both host-context-changed and the tool-result can arrive in any order.
+    let loadStarted = false;
+    async function initialLoad() {
+      if (loadStarted) return;
+      loadStarted = true;
+      try {
+        const items = await kvGetItems();
+        state.items = items;
+        state.loaded = true;
+        render();
+        $("add-input").disabled = false;
+        $("add-btn").disabled = false;
+      } catch (e) {
+        log("kv.get failed: " + e.message);
+        // Even on failure (e.g. quota error during write later), let the
+        // user type — empty list is a reasonable starting point.
+        state.items = [];
+        state.loaded = true;
+        render();
+        $("add-input").disabled = false;
+        $("add-btn").disabled = false;
+      }
+    }
+
+    // ---- render --------------------------------------------------------
+    function render() {
+      const ul = $("items");
+      ul.innerHTML = "";
+      if (!state.loaded) {
+        const li = document.createElement("li");
+        li.className = "empty";
+        li.textContent = "Loading…";
+        ul.appendChild(li);
+        return;
+      }
+      if (state.items.length === 0) {
+        const li = document.createElement("li");
+        li.className = "empty";
+        li.textContent = "Nothing here yet.";
+        ul.appendChild(li);
+        return;
+      }
+      for (const item of state.items) {
+        const li = document.createElement("li");
+        li.className = "row";
+        if (item.done) li.classList.add("done");
+
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = !!item.done;
+        cb.addEventListener("change", () => {
+          void toggleItem(item.id, cb.checked);
+        });
+
+        const text = document.createElement("span");
+        text.className = "text";
+        text.textContent = item.text;
+        text.title = item.text;
+
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "del";
+        del.textContent = "×";
+        del.title = "Delete";
+        del.setAttribute("aria-label", "Delete");
+        del.addEventListener("click", () => {
+          void deleteItem(item.id);
+        });
+
+        li.appendChild(cb);
+        li.appendChild(text);
+        li.appendChild(del);
+        ul.appendChild(li);
+      }
+    }
+
+    // ---- mutations -----------------------------------------------------
+    // Each mutation: update in-memory state, optimistically re-render, then
+    // persist. On persist failure, log + reload from KV so the UI matches
+    // truth (the kernel may have rejected on quota).
+    async function persist(after) {
+      try {
+        await kvSetItems(state.items);
+        if (after) after();
+      } catch (e) {
+        log("kv.set failed: " + e.message);
+        try {
+          state.items = await kvGetItems();
+        } catch { /* swallow — we already surfaced the first error */ }
+        render();
+      }
+    }
+
+    async function addItem(text) {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      const id = "i_" + Math.random().toString(36).slice(2, 10);
+      state.items.push({
+        id,
+        text: trimmed,
+        done: false,
+        created_at: Date.now(),
+      });
+      render();
+      await persist();
+    }
+
+    async function toggleItem(id, done) {
+      const it = state.items.find((x) => x.id === id);
+      if (!it) return;
+      it.done = !!done;
+      render();
+      await persist();
+    }
+
+    async function deleteItem(id) {
+      const before = state.items.length;
+      state.items = state.items.filter((x) => x.id !== id);
+      if (state.items.length === before) return;
+      render();
+      await persist();
+    }
+
+    // ---- form wiring ---------------------------------------------------
+    $("add-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const input = $("add-input");
+      const text = input.value;
+      input.value = "";
+      await addItem(text);
+      input.focus();
+    });
+
+    // ---- bootstrap -----------------------------------------------------
+    // MCP-Apps handshake per @modelcontextprotocol/ext-apps:
+    //   1. iframe→host `ui/initialize` REQUEST. The response carries
+    //      hostContext where the kernel stuffs `neige.cardId` (see
+    //      web/src/cards/plugin-iframe.tsx).
+    //   2. iframe→host `ui/notifications/initialized` notification.
+    //   3. Then proceed with KV load.
+    // host-context-changed is for LATER changes (theme/size); it does NOT
+    // fire on first mount, so we cannot rely on it for the initial cardId.
+
+    // Initial loading skeleton.
+    render();
+
+    (async function bootstrap() {
+      let initResult = null;
+      try {
+        // Spec-correct shape per @modelcontextprotocol/ext-apps/spec.types:
+        //   appCapabilities.tools = { listChanged?: boolean }
+        initResult = await call("ui/initialize", {
+          appCapabilities: { tools: { listChanged: false } },
+          appInfo: { name: "neige-todo", version: "0.1.0" },
+          protocolVersion: "2025-11-25",
+        });
+      } catch (e) {
+        log("ui/initialize failed: " + e.message);
+        return;
+      }
+      const ctx = (initResult && initResult.hostContext) || {};
+      applyTheme(ctx.theme);
+      const neige = ctx.neige || {};
+      if (neige.cardId) {
+        state.cardId = neige.cardId;
+      } else {
+        log("handshake ok but hostContext.neige.cardId missing");
+      }
+      notify("ui/notifications/initialized", {});
+      // Always run initialLoad so the user sees the empty state and the input
+      // works. kv.set without a cardId will surface a clear error.
+      void initialLoad();
+    })();
+
+    void PLUGIN_ID; // referenced for future debug surfaces; keep linter happy
+  </script>
+</body>
+</html>

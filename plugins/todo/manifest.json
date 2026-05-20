@@ -1,0 +1,51 @@
+{
+  "manifest_version": 1,
+  "id": "dev.neige.todo",
+  "version": "0.1.0",
+  "min_kernel_version": "0.1.0",
+  "display_name": "Todo list",
+  "description": "Per-card calm-mode todo list. Items persist in the plugin KV under card/<card_id>/items.",
+  "author": { "name": "Neige", "url": "https://neige.dev" },
+  "license": "MIT",
+  "entrypoint": {
+    "command": "bin/todo",
+    "args": [],
+    "env": {
+      "RUST_LOG": "info"
+    }
+  },
+  "exposes_tools": [
+    {
+      "name": "make_todo_card",
+      "description": "Mount a todo list card. Returns _meta.ui.resourceUri pointing at views/todo.html so AddPanel treats it as card-producing."
+    }
+  ],
+  "views": [
+    {
+      "view_id": "list",
+      "title": "Todo",
+      "scope": "card",
+      "creator_tool": "make_todo_card",
+      "default_size": { "w": 4, "h": 5, "min_w": 3, "min_h": 3 },
+      "entry_html": "views/todo.html",
+      "csp": {
+        "default_src": ["'self'"],
+        "script_src": ["'self'", "'unsafe-inline'"],
+        "style_src": ["'self'", "'unsafe-inline'"],
+        "connect_src": ["'self'"],
+        "img_src": ["'self'", "data:"]
+      },
+      "permissions": {
+        "tools": ["neige.kv.get", "neige.kv.set"]
+      }
+    }
+  ],
+  "permissions": {
+    "overlays_write": [],
+    "cards_create": true,
+    "cards_read_all": false,
+    "events_subscribe": [],
+    "kv_quota_bytes": 65536,
+    "filesystem": []
+  }
+}

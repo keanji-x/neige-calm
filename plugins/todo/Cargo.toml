@@ -1,0 +1,19 @@
+[package]
+name = "neige-calm-todo-plugin"
+version = "0.1.0"
+edition = "2021"
+description = "Per-card todo list plugin for neige-calm — exercises the MCP-Apps wire + neige.kv.* persistence."
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "todo"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std", "signal", "sync", "time"] }
+
+# Standalone workspace so the plugin builds independently of the kernel
+# workspace at the repo root. Mirrors plugins/hello-world.
+[workspace]
