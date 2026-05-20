@@ -282,6 +282,9 @@ function WaveComponent() {
       onAddCard={async (wId, type) => {
         await addCardOfKind(qc, wId, type);
       }}
+      onCreateCardWithBody={async (wId, type, values) => {
+        await addCardWithValues(qc, wId, type, values);
+      }}
       onRemoveCard={async (_wId, idx) => {
         const target = detail.cards[idx];
         if (!target) return;
@@ -324,6 +327,55 @@ function WaveComponent() {
  * not as additional built-ins, so this function intentionally only
  * handles `'terminal'`.
  */
+/**
+ * Schema-driven card create. The Wave page hands us the kind + the
+ * SchemaForm values; we look up the right kernel sequence per kind.
+ *
+ * Today only `codex` flows through here (multi-field input). Terminal
+ * stays on `addCardOfKind` (no schema → default args). Other kinds
+ * (`plugin:*` / `ui://*`) come through their own create path via the
+ * plugin host; they're not menu-driven from the AddPanel.
+ */
+async function addCardWithValues(
+  qc: ReturnType<typeof useQueryClient>,
+  waveId: string,
+  type: AddPanelKind,
+  values: Record<string, string>,
+): Promise<void> {
+  if (type !== 'codex') {
+    // Falls through to the default "no-config" pathway. The AddPanel
+    // shouldn't surface a schema form for kinds without `createSchema`,
+    // so this is defensive only.
+    return addCardOfKind(qc, waveId, type);
+  }
+  const release = suppressCardEvents(waveId);
+  try {
+    dlog('addCardWithValues', 'codex create START', { waveId, values });
+    // Two-step like terminal: create the card row, then bind a codex
+    // process to it. Payload carries the spawn params for diagnostics.
+    const card = await api.createCard(waveId, {
+      kind: 'codex',
+      payload: {
+        initial_prompt: values.initial_prompt,
+        model: values.model || undefined,
+        cwd: values.cwd || undefined,
+      },
+    });
+    await api.createCodex(card.id, {
+      initial_prompt: values.initial_prompt,
+      model: values.model || undefined,
+      cwd: values.cwd || undefined,
+      permission_mode: values.permission_mode || undefined,
+    });
+    dlog('addCardWithValues', 'codex create DONE', { cardId: card.id });
+  } catch (err) {
+    console.warn('[Calm] codex create failed:', err);
+  } finally {
+    release();
+    void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
+  }
+}
+
 async function addCardOfKind(
   qc: ReturnType<typeof useQueryClient>,
   waveId: string,

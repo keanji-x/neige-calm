@@ -98,3 +98,5 @@ export type NewOverlayBody = Omit<Schemas['NewOverlay'], 'entity_kind' | 'payloa
 };
 
 export type NewTerminalBody = Schemas['NewTerminalBody'];
+
+export type NewCodexBody = Schemas['NewCodexBody'];

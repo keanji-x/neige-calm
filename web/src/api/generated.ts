@@ -4,6 +4,22 @@
  */
 
 export interface paths {
+    "/api/cards/{card_id}/codex": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_codex"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cards/{card_id}/terminal": {
         parameters: {
             query?: never;
@@ -475,6 +491,24 @@ export interface components {
              */
             wave_id?: string;
         };
+        NewCodexBody: {
+            /** @description Working directory codex runs in. Defaults to `$HOME` if empty. */
+            cwd?: string | null;
+            /**
+             * @description Required — the first user prompt. Codex's `exec` flow accepts it
+             *     as a positional arg.
+             */
+            initial_prompt: string;
+            /** @description Optional override (default codex picks per its own config). */
+            model?: string | null;
+            /**
+             * @description Reserved for a future codex permission/sandbox flag — not wired
+             *     yet (the right `-c` config keys for `approval_policy` / sandbox
+             *     are version-sensitive). We accept the field so the schema-form on
+             *     the frontend can collect it without errors.
+             */
+            permission_mode?: string | null;
+        };
         NewCove: {
             color: string;
             name: string;
@@ -683,6 +717,61 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    create_codex: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Card id (must be a codex card) */
+                card_id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Codex spawn parameters */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewCodexBody"];
+            };
+        };
+        responses: {
+            /** @description Codex spawned; hook events stream over WS */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Card"];
+                };
+            };
+            /** @description Card is not a codex card */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Card not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Spawn failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     get_terminal_for_card: {
         parameters: {
             query?: never;

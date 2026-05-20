@@ -28,6 +28,34 @@ export interface CardSize {
   minH: number;
 }
 
+/**
+ * Minimal JSON-Schema subset the bundled `SchemaForm` renders. Intentionally
+ * not the full JSON-Schema spec — we only need enough to drive the create
+ * dialog for built-in card kinds. Plugins requiring richer schemas should
+ * carry their own renderer through the plugin host.
+ */
+export interface CreateField {
+  /** Field key on the resulting body object. */
+  key: string;
+  /** Label rendered above the input. */
+  label: string;
+  /** Storage type — controls the rendered widget. */
+  type: 'string' | 'textarea' | 'enum';
+  /** Required for `type: 'enum'`. */
+  options?: string[];
+  /** Default value pre-filled on first render. */
+  default?: string;
+  /** Optional placeholder shown when the field is empty. */
+  placeholder?: string;
+  /** True forces the input non-empty before the form will submit. */
+  required?: boolean;
+}
+
+export interface CreateSchema {
+  /** Ordered field list — rendered top-to-bottom. */
+  fields: CreateField[];
+}
+
 export interface CardEntry<T extends WaveCardData = WaveCardData> {
   /** The discriminator value used in `T['type']`, e.g. `'terminal'`, `'doc'`,
    *  or the sentinel `'plugin'` for `ui://`-backed iframe cards. */
@@ -39,7 +67,14 @@ export interface CardEntry<T extends WaveCardData = WaveCardData> {
   fromKernel?: (k: KernelCard) => T | null;
   /** Optional — when present, the entry appears in the AddPanel menu.
    *  Slice G iterates this. */
-  addPanel?: { label: string; icon?: string };
+  addPanel?: {
+    label: string;
+    icon?: string;
+    /** When present, picking this entry from the AddPanel menu shows an
+     *  inline config card rendered by `SchemaForm` instead of immediately
+     *  creating the card. Omit for zero-config kinds (current terminal). */
+    createSchema?: CreateSchema;
+  };
 }
 
 const REGISTRY = new Map<string, CardEntry<WaveCardData>>();
@@ -90,9 +125,12 @@ export interface AddPanelMenuItem {
   type: string;
   label: string;
   icon?: string;
+  /** Optional create-form schema. The menu host shows the inline config
+   *  card if this is set; otherwise the kind is created immediately. */
+  createSchema?: CreateSchema;
 }
 
-/** Entries that opted into the AddPanel menu. Slice G consumes this. */
+/** Entries that opted into the AddPanel menu. */
 export function addPanelEntries(): AddPanelMenuItem[] {
   const out: AddPanelMenuItem[] = [];
   for (const entry of REGISTRY.values()) {
@@ -101,6 +139,7 @@ export function addPanelEntries(): AddPanelMenuItem[] {
         type: String(entry.type),
         label: entry.addPanel.label,
         icon: entry.addPanel.icon,
+        createSchema: entry.addPanel.createSchema,
       });
     }
   }

@@ -1,7 +1,9 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { Icon } from '../Icon';
 import { AddPanel, type AddPanelKind } from '../shared/components/AddPanel';
-import type { Cove, Route, Wave } from '../types';
+import type { AddPanelMenuItem } from '../shared/components/AddPanel';
+import type { Cove, Route, Wave, WaveCardSlot } from '../types';
+import { registerConfigCardHandlers } from '../cards/builtins/config';
 import { DeleteButton } from './_shared';
 
 // WaveGrid pulls in `react-grid-layout` (~50 KB minified) and is the
@@ -23,6 +25,7 @@ export function WavePage({
   cove,
   onGo,
   onAddCard,
+  onCreateCardWithBody,
   onRemoveCard,
   onRenameWave,
   onDeleteWave,
@@ -30,13 +33,63 @@ export function WavePage({
   wave: Wave;
   cove: Cove;
   onGo: (r: Route) => void;
+  /** No-schema "create immediately" path — kept for terminal cards which
+   *  spawn with default args. */
   onAddCard: (waveId: string, type: AddPanelKind) => void;
+  /** Schema-driven path — invoked after the user submits a config card.
+   *  The Wave-level dispatcher knows how to translate per-kind values
+   *  into the right kernel calls. */
+  onCreateCardWithBody?: (
+    waveId: string,
+    type: AddPanelKind,
+    values: Record<string, string>,
+  ) => Promise<void>;
   onRemoveCard: (waveId: string, idx: number) => void;
   onRenameWave?: (waveId: string, title: string) => void | Promise<void>;
   onDeleteWave?: (waveId: string) => void | Promise<void>;
 }) {
   const pct = Math.round(wave.progress * 100);
-  const cards = wave.cards || [];
+  // Local-only transient slots (today: a "config card" rendered after the
+  // user picks a kind that declares a `createSchema`). These never reach
+  // the kernel; submitting / cancelling clears the slot. Tracked outside
+  // the kernel-derived `wave.cards` so they don't fight WS invalidations.
+  const [transientSlot, setTransientSlot] = useState<{
+    slot: WaveCardSlot;
+    targetKind: string;
+  } | null>(null);
+  const cards: WaveCardSlot[] = transientSlot
+    ? [...(wave.cards || []), transientSlot.slot]
+    : wave.cards || [];
+
+  const beginAdd = (item: AddPanelMenuItem) => {
+    if (!item.createSchema) {
+      // Legacy "create immediately" path — current terminal flow.
+      onAddCard(wave.id, item.type);
+      return;
+    }
+    // Schema-driven: drop in a transient config card and register
+    // submit/cancel handlers keyed by its id.
+    const id = `__config-${item.type}-${Date.now().toString(36)}`;
+    const slot: WaveCardSlot = {
+      kind: 'card',
+      card: { type: 'config', id, targetKind: item.type },
+    };
+    const unregister = registerConfigCardHandlers(id, {
+      onCancel: () => {
+        unregister();
+        setTransientSlot(null);
+      },
+      onSubmit: async (values) => {
+        try {
+          await onCreateCardWithBody?.(wave.id, item.type, values);
+        } finally {
+          unregister();
+          setTransientSlot(null);
+        }
+      },
+    });
+    setTransientSlot({ slot, targetKind: item.type });
+  };
 
   // Inline rename state. The title sits inside the breadcrumb so we
   // swap a same-class input in place of the span when editing — no
@@ -145,10 +198,20 @@ export function WavePage({
           <WaveGrid
             waveId={wave.id}
             cards={cards}
-            onRemoveCard={(idx) => onRemoveCard(wave.id, idx)}
+            onRemoveCard={(idx) => {
+              // The transient config card sits at the tail of the slot
+              // list (above) — close it locally without going through
+              // the kernel-card delete path.
+              const transientIdx = transientSlot ? cards.length - 1 : -1;
+              if (idx === transientIdx) {
+                setTransientSlot(null);
+                return;
+              }
+              onRemoveCard(wave.id, idx);
+            }}
           />
         </Suspense>
-        <AddPanel onAdd={(type) => onAddCard(wave.id, type)} />
+        <AddPanel onSelect={beginAdd} />
       </main>
     </div>
   );

@@ -9,6 +9,78 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/cards/{card_id}/codex": {
+      "post": {
+        "tags": [
+          "codex"
+        ],
+        "operationId": "create_codex",
+        "parameters": [
+          {
+            "name": "card_id",
+            "in": "path",
+            "description": "Card id (must be a codex card)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Codex spawn parameters",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewCodexBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Codex spawned; hook events stream over WS",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Card"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Card is not a codex card",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Spawn failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/cards/{card_id}/terminal": {
       "get": {
         "tags": [
@@ -1868,6 +1940,39 @@
           }
         }
       },
+      "NewCodexBody": {
+        "type": "object",
+        "required": [
+          "initial_prompt"
+        ],
+        "properties": {
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Working directory codex runs in. Defaults to `$HOME` if empty."
+          },
+          "initial_prompt": {
+            "type": "string",
+            "description": "Required — the first user prompt. Codex's `exec` flow accepts it\nas a positional arg."
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional override (default codex picks per its own config)."
+          },
+          "permission_mode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Reserved for a future codex permission/sandbox flag — not wired\nyet (the right `-c` config keys for `approval_policy` / sandbox\nare version-sensitive). We accept the field so the schema-form on\nthe frontend can collect it without errors."
+          }
+        }
+      },
       "NewCove": {
         "type": "object",
         "required": [
@@ -2434,6 +2539,10 @@
     {
       "name": "terminals",
       "description": "PTY-backed terminal cards"
+    },
+    {
+      "name": "codex",
+      "description": "Codex (OpenAI) agent cards — hook-driven event stream"
     },
     {
       "name": "plugins",

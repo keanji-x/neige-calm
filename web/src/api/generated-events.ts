@@ -42,7 +42,21 @@ export type Event = { "ev": "cove.updated", "data": Cove } | { "ev": "cove.delet
  * ts-rs would emit `last_error: string | null` which would diverge
  * from what the server actually serializes.)
  */
-last_error?: string, } };
+last_error?: string, } } | { "ev": "codex.hook", "data": { 
+/**
+ * Owning card id — topic key `card:<card_id>`.
+ */
+card_id: string, 
+/**
+ * Snake_case discriminator: `hook.codex.<event_name>` (e.g.
+ * `hook.codex.pre_tool_use`). Derived from `hook_event_name` in
+ * the codex payload; defaults to `hook.codex.unknown` if missing.
+ */
+kind: string, 
+/**
+ * Original codex hook JSON, verbatim.
+ */
+payload: unknown, } };
 
 export type Overlay = { id: string, plugin_id: string, 
 /**

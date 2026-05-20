@@ -64,9 +64,40 @@ export interface PluginCardData {
   resource_uri: string;
 }
 
+/**
+ * Codex (OpenAI) agent card. The kernel doesn't persist hook stream state
+ * — `CodexCard` subscribes to `card:<id>` on the WS bus and renders the
+ * live event stream. The card payload only carries the spawn params for
+ * diagnostics / replay; `initial_prompt` is preserved so the user can
+ * see what the agent was started with.
+ */
+export interface CodexCardData {
+  type: 'codex';
+  id?: string;
+  initialPrompt: string;
+  model?: string;
+  cwd?: string;
+}
+
+/**
+ * Transient "config card" — an in-flight AddPanel selection that hasn't
+ * been submitted yet. Lives only in the Wave page's local state; never
+ * persisted, never reaches the kernel. The `card-create` flow swaps it
+ * for the real card once the user submits the SchemaForm.
+ */
+export interface ConfigCardData {
+  type: 'config';
+  id?: string;
+  /** Kind being configured — used by the renderer to look up the schema
+   *  from the registry. */
+  targetKind: string;
+}
+
 export type WaveCardData =
   | TerminalCardData
-  | PluginCardData;
+  | PluginCardData
+  | CodexCardData
+  | ConfigCardData;
 
 /**
  * A position in a Wave's card grid. Either a parsed UI card (the happy

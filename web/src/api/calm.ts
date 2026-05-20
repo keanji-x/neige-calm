@@ -11,6 +11,7 @@ import type {
   KernelWave,
   KernelWaveDetail,
   NewCardBody,
+  NewCodexBody,
   NewCoveBody,
   NewOverlayBody,
   NewTerminalBody,
@@ -137,6 +138,20 @@ export const getTerminalForCard = (cardId: string) =>
   request<KernelTerminal>(
     'GET',
     `/api/cards/${encodeURIComponent(cardId)}/terminal`,
+  );
+
+// ---------------- codex ----------------
+
+/**
+ * Spawn the codex CLI bound to this card. Server returns the card row;
+ * hook events stream over the WS event bus on `card:<card_id>` as
+ * `codex.hook` envelopes.
+ */
+export const createCodex = (cardId: string, b: NewCodexBody) =>
+  request<KernelCard>(
+    'POST',
+    `/api/cards/${encodeURIComponent(cardId)}/codex`,
+    b,
   );
 
 // ---------------- plugin iframe tool-call ----------------
