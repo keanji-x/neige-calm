@@ -2,12 +2,22 @@
 // union in `schemas.ts`; if the kernel adds a new variant server-side, this
 // file is where the parser regression will surface.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, expectTypeOf } from 'vitest';
+import type { z } from 'zod';
 import {
   wireEventSchema,
   coveSchema,
   waveSchema,
+  cardSchema,
+  overlaySchema,
 } from './schemas';
+import type {
+  Event as GeneratedEvent,
+  Cove as GeneratedCove,
+  Wave as GeneratedWave,
+  Card as GeneratedCard,
+  Overlay as GeneratedOverlay,
+} from './generated-events';
 
 describe('wireEventSchema', () => {
   it('parses a valid cove.updated event', () => {
@@ -85,6 +95,34 @@ describe('wireEventSchema', () => {
     };
     const result = wireEventSchema.safeParse(bad);
     expect(result.success).toBe(false);
+  });
+});
+
+// ---------------- ts-rs ↔ zod conformance (D7 / issue #5) ----------------
+//
+// These assertions pin the runtime zod schemas to the TS types emitted by
+// `ts-rs` from the Rust `Event` enum. The generator is the single source of
+// truth; the zod schemas in `schemas.ts` only exist for runtime validation
+// at the WS boundary. If a Rust-side change drifts ahead of zod (or vice
+// versa), the project's `tsc -b` step (run during `npm run build` and on
+// each `npm run test` via vitest's type-check inference) fails right here.
+//
+// We use `expectTypeOf(...).toEqualTypeOf<...>()` for bidirectional
+// assignability. The whole-`Event`-union check is the bigger guarantee;
+// the per-entity checks make a regression easier to localize.
+describe('zod ↔ ts-rs conformance', () => {
+  it('wireEventSchema infers the generated Event union', () => {
+    expectTypeOf<z.infer<typeof wireEventSchema>>().toEqualTypeOf<GeneratedEvent>();
+  });
+
+  it('entity sub-schemas match their generated counterparts', () => {
+    // Per-entity pins make a regression easier to localize than the
+    // whole-union check above — a drift in `Card.payload` lights up here
+    // before reaching `wireEventSchema`.
+    expectTypeOf<z.infer<typeof coveSchema>>().toEqualTypeOf<GeneratedCove>();
+    expectTypeOf<z.infer<typeof waveSchema>>().toEqualTypeOf<GeneratedWave>();
+    expectTypeOf<z.infer<typeof cardSchema>>().toEqualTypeOf<GeneratedCard>();
+    expectTypeOf<z.infer<typeof overlaySchema>>().toEqualTypeOf<GeneratedOverlay>();
   });
 });
 
