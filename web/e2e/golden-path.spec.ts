@@ -1,0 +1,32 @@
+// Golden-path e2e: prove that the app loads, the sidebar renders the
+// seeded Scratch cove, and clicking it changes the route to `/cove/$id`.
+//
+// Prereq: `make dev` (or any equivalent) must be serving the full stack
+// at http://localhost:4040. The docker MockRepo seeds a "Scratch" cove
+// by default — we anchor on its name rather than DOM index so future
+// seed reorderings don't flake this test.
+
+import { test, expect } from '@playwright/test';
+
+test('loads the calm shell and navigates into the Scratch cove', async ({ page }) => {
+  await page.goto('/calm/');
+
+  // The sidebar `<aside class="side">` is the first thing the shell paints.
+  await expect(page.locator('aside.side')).toBeVisible();
+
+  // The "Today" nav button is always present (and is the default route).
+  await expect(page.getByRole('button', { name: /today/i })).toBeVisible();
+
+  // Find the seeded "Scratch" cove row in the sidebar and click it.
+  const scratch = page.locator('button.cove-nav', { hasText: 'Scratch' });
+  await expect(scratch).toBeVisible();
+  await scratch.click();
+
+  // URL changes to /calm/cove/<id>. The router declares basepath '/calm'
+  // (matching Vite's base) so internal navigation produces the prefixed
+  // URL. We don't pin the id — it depends on seed timestamp / repo.
+  await expect(page).toHaveURL(/\/calm\/cove\/[^/]+$/);
+
+  // And the cove page itself rendered — sidebar still visible alongside it.
+  await expect(page.locator('aside.side')).toBeVisible();
+});

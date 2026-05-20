@@ -1,6 +1,26 @@
-import { XtermView } from '../../XtermView';
+import { lazy, Suspense } from 'react';
+import { z } from 'zod';
 import type { TerminalCardData } from '../../types';
 import type { CardEntry } from '../registry';
+
+// xterm.js + the fit addon plus its CSS bring real weight (~150 KB raw).
+// Only load the renderer when a terminal card actually goes live; the
+// static-`lines` flavor that ships before the kernel patches in a
+// `terminal_id` doesn't need any of it.
+const XtermView = lazy(() =>
+  import('../../XtermView').then((m) => ({ default: m.XtermView })),
+);
+
+/**
+ * Wire shape for a `kind: "terminal"` card's `payload`. Server-side it's
+ * minted by `POST /api/terminals` and contains the kernel `Terminal.id` so
+ * the client can attach the live PTY. Empty payload is tolerated — a card
+ * created before the terminal spawned still renders (as the static
+ * `lines`-only flavor) until the kernel patches `terminal_id` in.
+ */
+const terminalPayloadSchema = z.object({
+  terminal_id: z.string().optional(),
+});
 
 function TerminalCard({ card }: { card: TerminalCardData }) {
   const { title, lines, terminalId } = card;
@@ -18,7 +38,9 @@ function TerminalCard({ card }: { card: TerminalCardData }) {
       </div>
       <div className="term-body">
         {live ? (
-          <XtermView terminalId={terminalId!} />
+          <Suspense fallback={<div className="term-line k-cursor">Loading terminal…</div>}>
+            <XtermView terminalId={terminalId!} />
+          </Suspense>
         ) : (
           <>
             {lines.map((l, i) => (
@@ -42,16 +64,25 @@ export const TerminalEntry: CardEntry<TerminalCardData> = {
   defaultSize: { w: 6, h: 10, minW: 4, minH: 6 },
   fromKernel: (k) => {
     if (k.kind !== 'terminal') return null;
-    const payload =
-      typeof k.payload === 'object' && k.payload !== null
-        ? (k.payload as { terminal_id?: string })
-        : null;
+    // A `null` payload is legal here — predates the kernel attaching a
+    // `terminal_id`. Treat as empty object so the optional field stays
+    // undefined; non-object payloads on a `terminal` card are an error.
+    const candidate = k.payload ?? {};
+    const parsed = terminalPayloadSchema.safeParse(candidate);
+    if (!parsed.success) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[cards] terminal payload invalid for ${k.id}:`,
+        parsed.error.issues,
+      );
+      return null;
+    }
     return {
       type: 'terminal',
       id: k.id,
       title: 'terminal',
       lines: [],
-      terminalId: payload?.terminal_id,
+      terminalId: parsed.data.terminal_id,
     };
   },
   addPanel: { label: 'New terminal', icon: 'terminal' },

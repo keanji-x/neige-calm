@@ -2,6 +2,7 @@
 name = "calm-server"
 version = "0.1.0"
 edition = "2024"
+default-run = "calm-server"
 
 [lib]
 path = "src/lib.rs"
@@ -87,6 +88,13 @@ clap = { version = "4", features = ["derive", "env"] }
 # manifest surface is small and hand-rolled validation in `plugin_host::manifest`
 # yields better error messages with one fewer transitive dep tree.
 semver = "1"
+
+# OpenAPI generation — utoipa derives schemas off our model structs and
+# path attributes off the handlers; utoipa-axum surfaces an `OpenApi` value
+# from the registered routes. No swagger-ui — the frontend consumes the
+# raw `/api/openapi.json` document to generate TypeScript types.
+utoipa = { version = "5", features = ["axum_extras"] }
+utoipa-axum = "0.2"
 
 # Local crates
 calm-session = { path = "../calm-session" }

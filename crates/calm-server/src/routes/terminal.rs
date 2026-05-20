@@ -15,7 +15,7 @@
 //! 5. Stamp `daemon_handle` on the Terminal row to the socket path so the
 //!    WS half can find it on `/api/terminals/:id` without recomputing.
 
-use crate::error::{CalmError, Result};
+use crate::error::{CalmError, ErrorBody, Result};
 use crate::model::{NewTerminal, Terminal};
 use crate::state::AppState;
 use axum::{
@@ -28,18 +28,30 @@ use serde::Deserialize;
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::net::UnixStream;
+use utoipa::ToSchema;
 
 pub fn router() -> Router<AppState> {
     Router::new().route(
         "/api/cards/{card_id}/terminal",
-        post(create).get(get_for_card),
+        post(create_terminal).get(get_terminal_for_card),
     )
 }
 
 /// Look up the Terminal row a card owns. Returns 404 if the card has no
 /// terminal (yet). The UI uses this to validate a card_id cached in
 /// localStorage before attempting a WS attach to its terminal.
-async fn get_for_card(
+#[utoipa::path(
+    get,
+    path = "/api/cards/{card_id}/terminal",
+    tag = "terminals",
+    params(("card_id" = String, Path, description = "Card id (must be a terminal card)")),
+    responses(
+        (status = 200, description = "Terminal row for this card", body = Terminal),
+        (status = 404, description = "Card has no terminal yet", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn get_terminal_for_card(
     State(s): State<AppState>,
     Path(card_id): Path<String>,
 ) -> Result<Json<Terminal>> {
@@ -51,7 +63,7 @@ async fn get_for_card(
     Ok(Json(term))
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Debug, Default, ToSchema)]
 pub struct NewTerminalBody {
     /// Empty string or missing → `$SHELL` (then `/bin/sh`).
     #[serde(default)]
@@ -61,10 +73,24 @@ pub struct NewTerminalBody {
     pub cwd: String,
     /// Extra env on top of the inherited set. JSON object: `{"FOO":"bar"}`.
     #[serde(default)]
+    #[schema(value_type = Object)]
     pub env: serde_json::Value,
 }
 
-async fn create(
+#[utoipa::path(
+    post,
+    path = "/api/cards/{card_id}/terminal",
+    tag = "terminals",
+    params(("card_id" = String, Path, description = "Card id (must be a terminal card)")),
+    request_body(content = NewTerminalBody, description = "Optional body — empty means use defaults"),
+    responses(
+        (status = 201, description = "Terminal created and daemon spawned", body = Terminal),
+        (status = 400, description = "Card is not a terminal card", body = ErrorBody),
+        (status = 404, description = "Card not found", body = ErrorBody),
+        (status = 500, description = "Daemon spawn failed", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn create_terminal(
     State(s): State<AppState>,
     Path(card_id): Path<String>,
     body: Option<Json<NewTerminalBody>>,

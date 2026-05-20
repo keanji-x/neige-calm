@@ -5,7 +5,7 @@
 //! in `plugin_host`. For M1 we expose write endpoints too so we can hand-test
 //! overlay rendering without a real plugin.
 
-use crate::error::Result;
+use crate::error::{ErrorBody, Result};
 use crate::event::Event;
 use crate::model::{NewOverlay, Overlay};
 use crate::state::AppState;
@@ -16,28 +16,55 @@ use axum::{
     routing::get,
 };
 use serde::Deserialize;
+use utoipa::{IntoParams, ToSchema};
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/api/overlays", get(list).post(upsert))
-        .route("/api/overlays/delete", axum::routing::post(delete_))
+        .route("/api/overlays", get(list_overlays).post(upsert_overlay))
+        .route("/api/overlays/delete", axum::routing::post(delete_overlay))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, IntoParams, ToSchema)]
 pub struct OverlayQuery {
     pub entity_kind: String,
-    pub entity_id: String,
+    /// Optional. When omitted, returns every overlay of `entity_kind`
+    /// across the workspace — the sidebar uses this form to render
+    /// accurate per-wave status without fetching each wave's detail.
+    pub entity_id: Option<String>,
 }
 
-async fn list(
+#[utoipa::path(
+    get,
+    path = "/api/overlays",
+    tag = "overlays",
+    params(OverlayQuery),
+    responses(
+        (status = 200, description = "Overlays for an entity (or all of a kind when entity_id is omitted)", body = Vec<Overlay>),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn list_overlays(
     State(s): State<AppState>,
     Query(q): Query<OverlayQuery>,
 ) -> Result<Json<Vec<Overlay>>> {
-    let overlays = s.repo.overlays_for(&q.entity_kind, &q.entity_id).await?;
+    let overlays = match q.entity_id.as_deref() {
+        Some(eid) => s.repo.overlays_for(&q.entity_kind, eid).await?,
+        None => s.repo.overlays_by_kind(&q.entity_kind).await?,
+    };
     Ok(Json(overlays))
 }
 
-async fn upsert(
+#[utoipa::path(
+    post,
+    path = "/api/overlays",
+    tag = "overlays",
+    request_body = NewOverlay,
+    responses(
+        (status = 200, description = "Overlay upserted", body = Overlay),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn upsert_overlay(
     State(s): State<AppState>,
     Json(p): Json<NewOverlay>,
 ) -> Result<Json<Overlay>> {
@@ -46,7 +73,7 @@ async fn upsert(
     Ok(Json(overlay))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct OverlayDeleteBody {
     pub plugin_id: String,
     pub entity_kind: String,
@@ -54,7 +81,17 @@ pub struct OverlayDeleteBody {
     pub kind: String,
 }
 
-async fn delete_(
+#[utoipa::path(
+    post,
+    path = "/api/overlays/delete",
+    tag = "overlays",
+    request_body = OverlayDeleteBody,
+    responses(
+        (status = 204, description = "Overlay deleted"),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn delete_overlay(
     State(s): State<AppState>,
     Json(b): Json<OverlayDeleteBody>,
 ) -> Result<StatusCode> {

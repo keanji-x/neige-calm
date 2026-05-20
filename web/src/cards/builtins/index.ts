@@ -2,16 +2,18 @@
 // `registerBuiltins()` slots them into the registry once at app boot
 // (called from `main.tsx`). Plugin cards register themselves later, via
 // Slice F's iframe runtime, against the same `registerCard` API.
+//
+// Today only `TerminalEntry` and `PluginIframeEntry` are live. The
+// earlier `doc` / `git` / `diff` / `plan` builtins were removed in Wave 4
+// — the kernel never produced those kinds, and the M3 plugin host
+// (sandboxed `ui://` iframes) is the supported path for non-terminal
+// cards going forward.
 
 import { registerCard } from '../registry';
 import { TerminalEntry } from './terminal';
-import { DocEntry } from './doc';
-import { GitEntry } from './git';
-import { DiffEntry } from './diff';
-import { PlanEntry } from './plan';
 import { PluginIframeEntry } from '../plugin-iframe';
 
-export { TerminalEntry, DocEntry, GitEntry, DiffEntry, PlanEntry, PluginIframeEntry };
+export { TerminalEntry, PluginIframeEntry };
 
 let registered = false;
 
@@ -22,10 +24,6 @@ export function registerBuiltins(): void {
   if (registered) return;
   registered = true;
   registerCard(TerminalEntry);
-  registerCard(DocEntry);
-  registerCard(GitEntry);
-  registerCard(DiffEntry);
-  registerCard(PlanEntry);
   // The plugin iframe entry is a built-in for now: it owns the `ui://`
   // kind namespace (the legacy `plugin:` form was deleted in M4). A
   // "plugin entry registers itself at runtime per-mount" model is part

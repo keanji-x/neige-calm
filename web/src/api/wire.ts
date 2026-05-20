@@ -1,67 +1,59 @@
-// Wire-shape types: a 1:1 mirror of `crates/calm-server/src/model.rs` JSON.
-// Keep this file in sync with the Rust definitions — it's the contract
-// boundary between kernel and UI.
+// Wire-shape types: thin re-export shim over `generated.ts`.
+//
+// `generated.ts` is produced from the kernel's OpenAPI spec (the source of
+// truth for the kernel ↔ UI JSON contract). Run `npm run gen:api` to refresh
+// after backend changes — it shells out to `cargo run --bin emit-openapi`
+// and pipes the result through `openapi-typescript`. The intermediate
+// `openapi.json` is committed so frontend builds don't require cargo.
+//
+// This file exists to keep the public type names (KernelCove, KernelWave,
+// ...) stable for consumers — only the underlying definition migrated from
+// hand-maintained to generated. A few shapes intentionally diverge from the
+// generated form where the OpenAPI emission lost fidelity:
+//
+//   * `payload: serde_json::Value` comes through as `Record<string, never>`
+//     (basically "empty object"), which is too narrow for the actual blobs
+//     the kernel passes around. We override it to `unknown` to match the
+//     previous hand-rolled wire and keep `cards/*`, `useKernel`, and
+//     `adapt.ts` working without per-call casts.
+//   * `entity_kind` on `NewOverlayBody` keeps its `'wave' | 'card'` literal
+//     union — utoipa emitted the underlying Rust `String` as plain `string`.
+//
+// WS event-envelope types (`WireEvent`) are kept here as-is: they're not in
+// the OpenAPI spec (no JSON request/response pair) and the runtime zod
+// schemas live in `./schemas.ts`.
 
-export interface KernelCove {
-  id: string;
-  name: string;
-  color: string;
-  sort: number;
-  created_at: number;
-  updated_at: number;
-}
+import type { components } from './generated';
 
-export interface KernelWave {
-  id: string;
-  cove_id: string;
-  title: string;
-  sort: number;
-  archived_at: number | null;
-  created_at: number;
-  updated_at: number;
-}
+type Schemas = components['schemas'];
 
-export interface KernelCard {
-  id: string;
-  wave_id: string;
-  /** `"terminal"` | `"ui://<plugin-id>/<view-id>"`. Kernel does not interpret further. */
-  kind: string;
-  sort: number;
-  /** Opaque per-card-kind blob; for built-in `terminal` cards it's empty. */
-  payload: unknown;
-  created_at: number;
-  updated_at: number;
-}
+// ---------------- Domain models (REST responses) ----------------
 
-export interface KernelOverlay {
-  id: string;
-  plugin_id: string;
-  /** `"wave"` | `"card"`. */
-  entity_kind: string;
-  entity_id: string;
-  /** Plugin-defined string. */
-  kind: string;
-  payload: unknown;
-  updated_at: number;
-}
+export type KernelCove = Schemas['Cove'];
+export type KernelWave = Schemas['Wave'];
 
-export interface KernelTerminal {
-  id: string;
-  card_id: string;
-  program: string;
-  cwd: string;
-  env: Record<string, string>;
-  daemon_handle: string | null;
-  created_at: number;
-}
+/**
+ * Override `payload` to `unknown` — the OpenAPI emitter renders Rust's
+ * `serde_json::Value` as `Record<string, never>` (empty object), which is
+ * unusable for the heterogeneous blobs kernel cards actually carry.
+ */
+export type KernelCard = Omit<Schemas['Card'], 'payload'> & { payload: unknown };
 
-export interface KernelWaveDetail {
-  wave: KernelWave;
+export type KernelOverlay = Omit<Schemas['Overlay'], 'payload'> & { payload: unknown };
+
+export type KernelTerminal = Schemas['Terminal'];
+
+export type KernelPlugin = Schemas['Plugin'];
+
+export type KernelWaveDetail = Omit<Schemas['WaveDetail'], 'cards' | 'overlays'> & {
   cards: KernelCard[];
   overlays: KernelOverlay[];
-}
+};
 
 // ---------------- Event envelope (WS `/api/events`) ----------------
+//
+// Not in OpenAPI — WS endpoints don't surface as REST request/response
+// pairs. Runtime parse + narrowing lives in `./schemas.ts` (`wireEventSchema`).
 
 /**
  * Wire event from the kernel. Mirrors `crates/calm-server/src/event.rs`
@@ -92,38 +84,26 @@ export type WireEvent =
 
 // ---------------- Request DTOs (mirror `model::NewX` / `XPatch`) ----------------
 
-export interface NewCoveBody  { name: string; color: string; sort?: number }
-export interface CovePatchBody { name?: string; color?: string; sort?: number }
+export type NewCoveBody   = Schemas['NewCove'];
+export type CovePatchBody = Schemas['CovePatch'];
 
-export interface NewWaveBody  { cove_id: string; title: string; sort?: number }
-export interface WavePatchBody {
-  title?: string;
-  sort?: number;
-  /** Pass `null` to unarchive, a number to archive at that ts, undefined to leave alone. */
-  archived_at?: number | null;
-}
+export type NewWaveBody   = Schemas['NewWave'];
+export type WavePatchBody = Schemas['WavePatch'];
 
-export interface NewCardBody  {
-  /** Server overrides from the path param `:wave_id`. */
-  wave_id?: string;
-  kind: string;
-  sort?: number;
-  payload?: unknown;
-}
-export interface CardPatchBody { kind?: string; sort?: number; payload?: unknown }
+/**
+ * `payload` override mirrors `KernelCard`: kernel routes accept any JSON
+ * blob; the generated `Record<string, never>` would force callers to cast.
+ */
+export type NewCardBody   = Omit<Schemas['NewCard'], 'payload'> & { payload?: unknown };
+export type CardPatchBody = Omit<Schemas['CardPatch'], 'payload'> & { payload?: unknown };
 
-export interface NewOverlayBody {
-  plugin_id: string;
+/**
+ * `entity_kind` keeps its literal union — the Rust side is `String` so utoipa
+ * emits `string`, but the kernel only accepts `"wave"` or `"card"`.
+ */
+export type NewOverlayBody = Omit<Schemas['NewOverlay'], 'entity_kind' | 'payload'> & {
   entity_kind: 'wave' | 'card';
-  entity_id: string;
-  kind: string;
   payload: unknown;
-}
+};
 
-export interface NewTerminalBody {
-  /** Empty string ⇒ kernel uses `$SHELL`. */
-  program?: string;
-  /** Empty string ⇒ kernel uses `$HOME`. */
-  cwd?: string;
-  env?: Record<string, string>;
-}
+export type NewTerminalBody = Schemas['NewTerminalBody'];

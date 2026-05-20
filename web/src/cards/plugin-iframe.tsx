@@ -330,6 +330,12 @@ export const PluginIframeEntry: CardEntry<PluginCardData> = {
     if (!isPluginCardKind(k.kind)) return null;
     const parsed = parsePluginCardKind(k.kind);
     if (!parsed) return null;
+    // No zod parse of `k.payload` here — plugin payloads are intentionally
+    // opaque to the host. The plugin's own SDK (AppBridge inside the
+    // iframe) owns whatever shape it expects, and the kernel doesn't
+    // interpret either. Treat `payload` as `z.unknown()` by construction;
+    // built-in cards (terminal/doc/git/diff/plan) each own a strict schema
+    // in `cards/builtins/*.tsx` instead.
     return {
       type: 'plugin',
       id: k.id,

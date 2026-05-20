@@ -530,6 +530,17 @@ impl Repo for SqlxRepo {
         Ok(rows)
     }
 
+    async fn overlays_by_kind(&self, entity_kind: &str) -> Result<Vec<Overlay>> {
+        let rows = sqlx::query_as::<_, Overlay>(
+            r#"SELECT id, plugin_id, entity_kind, entity_id, kind, payload, updated_at
+               FROM overlays WHERE entity_kind = ?1"#,
+        )
+        .bind(entity_kind)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     // ------------------------------------------------------------- terminals
     async fn terminal_create(&self, p: NewTerminal) -> Result<Terminal> {
         // Parent card must exist; surface as NotFound to mirror MockRepo.

@@ -1,0 +1,2441 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "calm-server",
+    "description": "Wire-format contract between calm-server (Rust) and web-calm (TS). Source of truth for generated TypeScript types.",
+    "license": {
+      "name": ""
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/cards/{card_id}/terminal": {
+      "get": {
+        "tags": [
+          "terminals"
+        ],
+        "summary": "Look up the Terminal row a card owns. Returns 404 if the card has no\nterminal (yet). The UI uses this to validate a card_id cached in\nlocalStorage before attempting a WS attach to its terminal.",
+        "operationId": "get_terminal_for_card",
+        "parameters": [
+          {
+            "name": "card_id",
+            "in": "path",
+            "description": "Card id (must be a terminal card)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Terminal row for this card",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Terminal"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card has no terminal yet",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "terminals"
+        ],
+        "operationId": "create_terminal",
+        "parameters": [
+          {
+            "name": "card_id",
+            "in": "path",
+            "description": "Card id (must be a terminal card)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Optional body — empty means use defaults",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewTerminalBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Terminal created and daemon spawned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Terminal"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Card is not a terminal card",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Daemon spawn failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/cards/{id}": {
+      "delete": {
+        "tags": [
+          "cards"
+        ],
+        "operationId": "delete_card",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Card deleted"
+          },
+          "404": {
+            "description": "Card not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "cards"
+        ],
+        "operationId": "update_card",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CardPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Card updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Card"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/coves": {
+      "get": {
+        "tags": [
+          "coves"
+        ],
+        "operationId": "list_coves",
+        "responses": {
+          "200": {
+            "description": "List all coves",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Cove"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "coves"
+        ],
+        "operationId": "create_cove",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewCove"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Cove created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Cove"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/coves/{cove_id}/waves": {
+      "get": {
+        "tags": [
+          "waves"
+        ],
+        "operationId": "list_waves_by_cove",
+        "parameters": [
+          {
+            "name": "cove_id",
+            "in": "path",
+            "description": "Cove id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Waves under cove",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Wave"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/coves/{id}": {
+      "delete": {
+        "tags": [
+          "coves"
+        ],
+        "operationId": "delete_cove",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Cove id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Cove deleted"
+          },
+          "404": {
+            "description": "Cove not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "coves"
+        ],
+        "operationId": "update_cove",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Cove id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CovePatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Cove updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Cove"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Cove not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/overlays": {
+      "get": {
+        "tags": [
+          "overlays"
+        ],
+        "operationId": "list_overlays",
+        "parameters": [
+          {
+            "name": "entity_kind",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "entity_id",
+            "in": "query",
+            "description": "Optional. When omitted, returns every overlay of `entity_kind`\nacross the workspace — the sidebar uses this form to render\naccurate per-wave status without fetching each wave's detail.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Overlays for an entity (or all of a kind when entity_id is omitted)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Overlay"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "overlays"
+        ],
+        "operationId": "upsert_overlay",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewOverlay"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Overlay upserted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Overlay"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/overlays/delete": {
+      "post": {
+        "tags": [
+          "overlays"
+        ],
+        "operationId": "delete_overlay",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OverlayDeleteBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Overlay deleted"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/plugins": {
+      "get": {
+        "tags": [
+          "plugins"
+        ],
+        "operationId": "list_plugins",
+        "responses": {
+          "200": {
+            "description": "Installed plugins with their runtime state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PluginListItem"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/plugins/install": {
+      "post": {
+        "tags": [
+          "plugins"
+        ],
+        "operationId": "install_plugin",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InstallBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Plugin installed (disabled by default)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Manifest invalid / unsupported source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Plugin id already installed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/plugins/views": {
+      "get": {
+        "tags": [
+          "plugins"
+        ],
+        "operationId": "list_plugin_views",
+        "responses": {
+          "200": {
+            "description": "Catalog of views from currently enabled plugins",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ViewCatalogEntry"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/plugins/{id}": {
+      "get": {
+        "tags": [
+          "plugins"
+        ],
+        "operationId": "get_plugin_detail",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Plugin detail (manifest + state)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Plugin not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "plugins"
+        ],
+        "operationId": "uninstall_plugin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Plugin uninstalled"
+          },
+          "404": {
+            "description": "Plugin not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/plugins/{id}/config": {
+      "patch": {
+        "tags": [
+          "plugins"
+        ],
+        "operationId": "patch_plugin_config",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Free-form user-config JSON object",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Config updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Plugin not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/plugins/{id}/disable": {
+      "post": {
+        "tags": [
+          "plugins"
+        ],
+        "operationId": "disable_plugin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Plugin disabled and stopped",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Plugin not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Stop failed / internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/plugins/{id}/enable": {
+      "post": {
+        "tags": [
+          "plugins"
+        ],
+        "operationId": "enable_plugin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Plugin enabled and spawned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Plugin not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Spawn failed / internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/plugins/{id}/log": {
+      "get": {
+        "tags": [
+          "plugins"
+        ],
+        "operationId": "tail_plugin_log",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "n",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recent stderr lines (newest last)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Plugin not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/plugins/{id}/reload": {
+      "post": {
+        "tags": [
+          "plugins"
+        ],
+        "operationId": "reload_plugin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Manifest reloaded + plugin restarted if enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Manifest invalid / id mismatch after reload",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Plugin not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/plugins/{id}/resources/{view_id}": {
+      "get": {
+        "tags": [
+          "plugins"
+        ],
+        "operationId": "get_plugin_view_html",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "view_id",
+            "in": "path",
+            "description": "View id within the plugin manifest",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "MCP-App HTML (Content-Type: text/html;profile=mcp-app)",
+            "content": {
+              "text/html;profile=mcp-app": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed ui:// URI",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Plugin or view not found / asset missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "I/O error reading asset",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/plugins/{id}/rotate-token": {
+      "post": {
+        "tags": [
+          "plugins"
+        ],
+        "operationId": "rotate_plugin_token",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Token rotated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Plugin not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Rotate failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/plugins/{id}/tool-call": {
+      "post": {
+        "tags": [
+          "plugins"
+        ],
+        "operationId": "plugin_tool_call",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolCallBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result JSON (shape depends on dispatched neige.* callback)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Non-neige.* tool requested from iframe",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Plugin not running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/waves": {
+      "post": {
+        "tags": [
+          "waves"
+        ],
+        "operationId": "create_wave",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewWave"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Wave created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Wave"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/waves/{id}": {
+      "get": {
+        "tags": [
+          "waves"
+        ],
+        "operationId": "get_wave_detail",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Wave id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Wave detail (wave + its cards + overlays)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaveDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Wave not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "waves"
+        ],
+        "operationId": "delete_wave",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Wave id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Wave deleted"
+          },
+          "404": {
+            "description": "Wave not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "waves"
+        ],
+        "operationId": "update_wave",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Wave id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WavePatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Wave updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Wave"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Wave not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/waves/{wave_id}/cards": {
+      "get": {
+        "tags": [
+          "cards"
+        ],
+        "operationId": "list_cards_by_wave",
+        "parameters": [
+          {
+            "name": "wave_id",
+            "in": "path",
+            "description": "Wave id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cards in wave (sorted)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Card"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "cards"
+        ],
+        "operationId": "create_card",
+        "parameters": [
+          {
+            "name": "wave_id",
+            "in": "path",
+            "description": "Wave id this card belongs to",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCardBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Card created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Card"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing `kind` and no `via_tool_call`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Plugin lacks `permissions.cards_create`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Plugin not running / not in registry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Tool returned no `_meta.ui.resourceUri`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Plugin tool call failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Card": {
+        "type": "object",
+        "required": [
+          "id",
+          "wave_id",
+          "kind",
+          "sort",
+          "payload",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`\"terminal\"` for built-in PTY cards, `\"plugin:<plugin-id>:<view-id>\"`\nfor plugin-provided cards. Kernel never interprets beyond that prefix."
+          },
+          "payload": {
+            "type": "object"
+          },
+          "sort": {
+            "type": "number",
+            "format": "double"
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "wave_id": {
+            "type": "string"
+          }
+        }
+      },
+      "CardPatch": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "payload": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "sort": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          }
+        }
+      },
+      "Cove": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "color",
+          "sort",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "color": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "sort": {
+            "type": "number",
+            "format": "double"
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "CovePatch": {
+        "type": "object",
+        "properties": {
+          "color": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sort": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          }
+        }
+      },
+      "CreateCardBody": {
+        "type": "object",
+        "description": "Body payload accepted by `POST /api/waves/:wave_id/cards`.\n\nTwo mutually-exclusive paths:\n  * **Direct create** — `kind`, `sort`, `payload`, `title` set (legacy\n    pre-M2 wire). The kernel writes the row verbatim.\n  * **`via_tool_call`** — kernel invokes the plugin's tool, extracts the\n    `ui://` resource URI from `_meta.ui.resourceUri`, persists a Card with\n    `kind = <resource_uri>` and `payload = structuredContent`.\n\nWhen both are sent, `via_tool_call` wins. Documented in this module's\nheader. We keep the legacy fields alongside via `#[serde(flatten)]` so\nexisting clients (web-calm AddPanel for terminal/doc cards) keep working\nunchanged.",
+        "properties": {
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Legacy direct-create fields. Mirrors `NewCard` shape; `wave_id` is\ntaken from the path so we omit it here."
+          },
+          "payload": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "sort": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "via_tool_call": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ViaToolCall",
+                "description": "M2: plugin tool-call descriptor. When present, the kernel calls the\nplugin and the `kind` / `payload` fields above are ignored."
+              }
+            ]
+          }
+        }
+      },
+      "ErrorBody": {
+        "type": "object",
+        "description": "JSON shape returned for every error response — `{error, code}`.\nMirrors the body produced by `CalmError::into_response`. Hand-written\nduplicate of the in-line `json!` body so OpenAPI consumers see a\nconcrete schema.",
+        "required": [
+          "error",
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Stable machine-readable code — one of `not_found`, `conflict`,\n`bad_request`, `unauthorized`, `plugin_install`, `plugin_permission`,\n`plugin_conflict`, `db_error`, `io_error`, `serde_error`, `internal`,\n`forbidden_tool`, `not_a_card_tool`, `tool_call_failed`."
+          },
+          "error": {
+            "type": "string",
+            "description": "Human-readable error message."
+          }
+        }
+      },
+      "InstallBody": {
+        "type": "object",
+        "required": [
+          "source"
+        ],
+        "properties": {
+          "source": {
+            "$ref": "#/components/schemas/InstallSource"
+          }
+        }
+      },
+      "InstallSource": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "path",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "local_path"
+                ]
+              },
+              "path": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Catch-all so we can return a friendly 400 for tarball/url/etc. instead\nof a serde deserialize error. Slice D scope is `local_path` only.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "other"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "NewCard": {
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "payload": {
+            "type": "object"
+          },
+          "sort": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "wave_id": {
+            "type": "string",
+            "description": "Defaulted so the REST handler can override from the `:wave_id` path\nparam without forcing every client body to repeat it. Direct repo\ncallers must still set this — passing \"\" produces a NotFound."
+          }
+        }
+      },
+      "NewCove": {
+        "type": "object",
+        "required": [
+          "name",
+          "color"
+        ],
+        "properties": {
+          "color": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "sort": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "If absent, server appends to end."
+          }
+        }
+      },
+      "NewOverlay": {
+        "type": "object",
+        "required": [
+          "plugin_id",
+          "entity_kind",
+          "entity_id",
+          "kind",
+          "payload"
+        ],
+        "properties": {
+          "entity_id": {
+            "type": "string"
+          },
+          "entity_kind": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "payload": {
+            "type": "object"
+          },
+          "plugin_id": {
+            "type": "string"
+          }
+        }
+      },
+      "NewTerminalBody": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "type": "string",
+            "description": "Empty string or missing → `$HOME` (then cwd of server)."
+          },
+          "env": {
+            "type": "object",
+            "description": "Extra env on top of the inherited set. JSON object: `{\"FOO\":\"bar\"}`."
+          },
+          "program": {
+            "type": "string",
+            "description": "Empty string or missing → `$SHELL` (then `/bin/sh`)."
+          }
+        }
+      },
+      "NewWave": {
+        "type": "object",
+        "required": [
+          "cove_id",
+          "title"
+        ],
+        "properties": {
+          "cove_id": {
+            "type": "string"
+          },
+          "sort": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "Overlay": {
+        "type": "object",
+        "required": [
+          "id",
+          "plugin_id",
+          "entity_kind",
+          "entity_id",
+          "kind",
+          "payload",
+          "updated_at"
+        ],
+        "properties": {
+          "entity_id": {
+            "type": "string"
+          },
+          "entity_kind": {
+            "type": "string",
+            "description": "`\"wave\"` or `\"card\"`."
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "Plugin-defined string. Kernel does not interpret."
+          },
+          "payload": {
+            "type": "object"
+          },
+          "plugin_id": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "OverlayDeleteBody": {
+        "type": "object",
+        "required": [
+          "plugin_id",
+          "entity_kind",
+          "entity_id",
+          "kind"
+        ],
+        "properties": {
+          "entity_id": {
+            "type": "string"
+          },
+          "entity_kind": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "plugin_id": {
+            "type": "string"
+          }
+        }
+      },
+      "OverlayQuery": {
+        "type": "object",
+        "required": [
+          "entity_kind"
+        ],
+        "properties": {
+          "entity_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional. When omitted, returns every overlay of `entity_kind`\nacross the workspace — the sidebar uses this form to render\naccurate per-wave status without fetching each wave's detail."
+          },
+          "entity_kind": {
+            "type": "string"
+          }
+        }
+      },
+      "Plugin": {
+        "type": "object",
+        "required": [
+          "id",
+          "version",
+          "install_path",
+          "manifest",
+          "enabled",
+          "user_config",
+          "installed_at",
+          "updated_at"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "install_path": {
+            "type": "string"
+          },
+          "installed_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "manifest": {
+            "type": "object"
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "user_config": {
+            "type": "object"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "PluginDetail": {
+        "type": "object",
+        "description": "Single-plugin detail returned by GET-by-id, install, enable, disable,\nconfig-patch, and reload. The full manifest blob rides along so the UI can\nrender version/author/views without a separate fetch.",
+        "required": [
+          "id",
+          "version",
+          "enabled",
+          "state",
+          "manifest",
+          "user_config",
+          "installed_at",
+          "updated_at"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "installed_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "manifest": {
+            "type": "object"
+          },
+          "state": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "user_config": {
+            "type": "object"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "PluginListItem": {
+        "type": "object",
+        "description": "Compact row used by `GET /api/plugins`. Pairs the persisted `Plugin` row\nwith the runtime status the supervisor knows about. The full manifest is\nexcluded here to keep the list payload cheap; callers needing the manifest\nhit `GET /api/plugins/:id`.",
+        "required": [
+          "id",
+          "version",
+          "enabled",
+          "state",
+          "manifest_name"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "manifest_description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "manifest_name": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "description": "Wire-name string per design §7.1: `running | spawning | crashed |\ndisabled | installing | installed`."
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "Terminal": {
+        "type": "object",
+        "required": [
+          "id",
+          "card_id",
+          "program",
+          "cwd",
+          "env",
+          "created_at"
+        ],
+        "properties": {
+          "card_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "daemon_handle": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "env": {
+            "type": "object"
+          },
+          "id": {
+            "type": "string"
+          },
+          "program": {
+            "type": "string"
+          }
+        }
+      },
+      "ToolCallBody": {
+        "type": "object",
+        "description": "M5: AppBridge → kernel tool-call wire body. Mirrors the JSON-RPC\n`tools/call` params shape so the web-calm helper can hand it through\nverbatim from the iframe-side `app.callServerTool({ name, arguments })`.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "arguments": {
+            "type": "object"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "ViaToolCall": {
+        "type": "object",
+        "required": [
+          "plugin_id",
+          "tool_name"
+        ],
+        "properties": {
+          "arguments": {
+            "type": "object"
+          },
+          "plugin_id": {
+            "type": "string"
+          },
+          "tool_name": {
+            "type": "string"
+          }
+        }
+      },
+      "ViewCatalogEntry": {
+        "type": "object",
+        "description": "One entry in the `/api/plugins/views` catalog. Used by Slice G's AddPanel.\n\nM3 (mcp-apps migration) adds `resource_uri` as the canonical\n`ui://<plugin>/<view>` identifier. `plugin_id` + `view_id` stay on the\nwire alongside it during the M3→M4 transition; M4's frontend pivots to\n`resource_uri` and a follow-up slice may drop the legacy pair.",
+        "required": [
+          "plugin_id",
+          "view_id",
+          "resource_uri",
+          "title",
+          "scope"
+        ],
+        "properties": {
+          "default_size": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ViewSizeWire"
+              }
+            ]
+          },
+          "icon": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plugin_id": {
+            "type": "string"
+          },
+          "resource_uri": {
+            "type": "string",
+            "description": "Canonical MCP Apps URI: `ui://<plugin_id>/<view_id>`. Always present —\ncomputed kernel-side so the frontend doesn't have to redo the join."
+          },
+          "scope": {
+            "type": "string",
+            "description": "`\"card\"` for M3 — wave/cove are banned per design §10."
+          },
+          "title": {
+            "type": "string"
+          },
+          "view_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ViewSizeWire": {
+        "type": "object",
+        "required": [
+          "w",
+          "h"
+        ],
+        "properties": {
+          "h": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "min_h": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "min_w": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "w": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "Wave": {
+        "type": "object",
+        "required": [
+          "id",
+          "cove_id",
+          "title",
+          "sort",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "archived_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "cove_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "string"
+          },
+          "sort": {
+            "type": "number",
+            "format": "double"
+          },
+          "title": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "WaveDetail": {
+        "type": "object",
+        "description": "What a Wave detail page renders: the wave itself plus its cards and\nany overlays scoped to the wave (status/progress badges) and its cards.",
+        "required": [
+          "wave",
+          "cards",
+          "overlays"
+        ],
+        "properties": {
+          "cards": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Card"
+            }
+          },
+          "overlays": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Overlay"
+            }
+          },
+          "wave": {
+            "$ref": "#/components/schemas/Wave"
+          }
+        }
+      },
+      "WavePatch": {
+        "type": "object",
+        "properties": {
+          "archived_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Pass `Some(Some(ts))` to archive, `Some(None)` to unarchive,\nor omit (`None`) to leave alone."
+          },
+          "sort": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "coves",
+      "description": "Cove CRUD"
+    },
+    {
+      "name": "waves",
+      "description": "Wave CRUD + composite detail"
+    },
+    {
+      "name": "cards",
+      "description": "Card CRUD"
+    },
+    {
+      "name": "overlays",
+      "description": "Plugin-rendered overlays attached to waves/cards"
+    },
+    {
+      "name": "terminals",
+      "description": "PTY-backed terminal cards"
+    },
+    {
+      "name": "plugins",
+      "description": "Plugin lifecycle, config, MCP fan-out"
+    }
+  ]
+}
