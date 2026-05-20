@@ -295,13 +295,30 @@ Out of scope for week 1: Claude Code, re-assignment, agent pools, task DAGs, ret
 
 ---
 
-## 6. Top unknowns the user must resolve
+## 6. Decisions (was open in v0)
 
-These could not be answered from reading code; they need external verification or a product decision.
+### 6.1 MCP transport — **HTTP, no per-agent bridge needed**
 
-1. **What MCP transports do `codex` and `claude` (TUIs) actually honor as clients today?** Both advertise an `mcp_servers` config block, but documented transports differ across versions. We need to confirm: does codex CLI version X accept `transport = "unix-socket"` with a `path` field? Does Claude Code? If only `stdio` (with a subprocess) is supported, the kernel's MCP server has to be a per-agent **subprocess** the agent spawns, which means the kernel ships a tiny `neige-mcp-bridge` binary that proxies the per-agent unix socket → stdio. That's an extra hop but not a blocker. **Action:** spend 30 minutes reading both CLIs' config docs.
+Confirmed against the published config references for both clients:
 
-2. **What does "task" really mean to the user?** The spec says "descriptions + optional assignee" — but tasks-with-dependencies (DAGs), tasks-with-deadlines, tasks-that-spawn-subtasks, and tasks-with-acceptance-criteria are all materially different products with different storage and dispatch shapes. If the user means "GitHub-issue-shaped tasks," option B (Card.kind="task") is fine. If they mean "Asana/Linear-shaped tasks with rich metadata and views," we probably want option A (dedicated tasks table) earlier than week 1's slice suggests. **Action:** one product conversation.
+| Client | stdio (subprocess) | Streamable HTTP | SSE | unix socket |
+|---|---|---|---|---|
+| **codex CLI** | ✓ (`command` + `args`) | ✓ (`url` + `http_headers` + `bearer_token_env_var`) | — | ✗ |
+| **Claude Code** | ✓ (`command` + `args`) | ✓ (`type = "streamable-http"` / `"http"`) | ✓ (deprecated) | ✗ |
+
+Neither honors unix socket. Both honor `stdio` and `streamable-http`. **Decision: HTTP.** The kernel already runs axum on `127.0.0.1:4040`; we add `/api/mcp` mounting a streamable-HTTP MCP server endpoint. No per-agent subprocess bridge needed.
+
+Auth: per-task **bearer token** minted on dispatch, written into the agent's spawn env as `NEIGE_TASK_TOKEN`. Agent's per-spawn `config.toml` references it via `bearer_token_env_var = "NEIGE_TASK_TOKEN"`. The kernel's MCP route maps token → task id at request time; every `neige.tasks.*` tool call is implicitly scoped to that task. Token TTL = agent process lifetime; revoked on `card.delete` or task `complete`.
+
+Codex per-spawn config injection: codex reads `~/.codex/config.toml` by default but honors `CODEX_HOME` to relocate. The kernel already sets a per-card `CODEX_HOME` to write `hooks.json` (per `routes::codex` spawn flow); we write `config.toml` to the same directory with one `[mcp_servers.neige]` block.
+
+Claude Code per-spawn config: same pattern via `~/.claude.json` under a per-card `HOME` override, or via `claude mcp add-json` at boot. Week-2 work; not in MVP.
+
+### 6.2 Task semantics — **flat (description + assignee)** for MVP
+
+Product owner confirmed: flat tasks. No DAGs, no deadlines, no acceptance criteria, no subtasks. Future iteration can add metadata; ship the dispatch loop first.
+
+This unlocks Option B for storage (`Card.kind = "task"`, payload carries `{ title, description, assignee?, status }`). No new SQL migration. The wave grouping becomes the de-facto "project" for tasks.
 
 ---
 
@@ -328,4 +345,52 @@ These could not be answered from reading code; they need external verification o
 | Best re-assignment for v1? | Hard kill + respawn. Soft handoff is hard and not needed yet. |
 | Recommended architecture? | Option 3 (Hybrid: PTY for visibility + MCP for control). |
 | Smallest provable slice? | 1 week, codex-only, no re-assignment, tasks-as-cards. |
-| Top blocking unknown? | Which MCP transports the codex/Claude Code TUIs actually honor. |
+| Top blocking unknown? | Resolved — both clients support streamable-HTTP; we use that with per-task bearer tokens. |
+
+---
+
+## 9. Implementation plan (post-research)
+
+Locked design after §6 decisions. Five logical commits, ~1 engineer-week. Each ships independently and leaves `main` working.
+
+### Commit 1 — kernel: per-task bearer tokens + MCP HTTP endpoint skeleton
+
+- `crates/calm-server/migrations/000X_agent_tokens.sql` — `agent_tokens(token PRIMARY KEY, task_id, card_id, created_at, revoked_at)`.
+- `crates/calm-server/src/db/sqlite.rs` — `agent_token_mint(task_id, card_id) -> String`, `agent_token_resolve(token) -> Option<(task_id, card_id)>`, `agent_token_revoke_for_card(card_id)`.
+- `crates/calm-server/src/routes/mcp.rs` (new, ~250 LOC) — `POST /api/mcp` that speaks streamable-HTTP MCP. Reads `Authorization: Bearer <token>`, resolves to a task scope, replies to standard MCP `initialize` / `tools/list` and a single stub tool that returns "not implemented yet". The wire bring-up; the tool surface arrives in commit 2.
+- Wires into the existing axum router; no other changes.
+
+### Commit 2 — `neige.tasks.*` tools + payload schema
+
+- `crates/calm-server/src/validation.rs` — add `"task"` to `validate_card_payload`. Schema: `{ title: str, description: str, assignee?: str, status: "pending"|"taken"|"working"|"complete"|"failed" }`.
+- `crates/calm-server/src/agent_host/mod.rs` (new) + `agent_host/tools.rs` (~300 LOC) — implements `neige.tasks.take`, `neige.tasks.update_progress`, `neige.tasks.complete`. Each one resolves the task id from the bearer-token scope, mutates the card payload through `write_with_event` (per the new sync engine), emits Card / Overlay events.
+- `routes/mcp.rs` dispatches `tools/call` into `agent_host::dispatch`.
+
+### Commit 3 — `routes/tasks.rs` + dispatch spawn flow
+
+- `crates/calm-server/src/routes/tasks.rs` (new, ~200 LOC) — `POST /api/tasks { wave_id, title, description, assignee? }` creates a `Card.kind = "task"` with `status = "pending"`. `POST /api/tasks/:id/dispatch` mints a bearer token, spawns a Codex card bound to the task via the existing codex spawn path with two additions:
+  - Writes `<CODEX_HOME>/config.toml` containing `[mcp_servers.neige] url = "http://127.0.0.1:4040/api/mcp", bearer_token_env_var = "NEIGE_TASK_TOKEN", enabled_tools = ["neige.tasks.take", "neige.tasks.update_progress", "neige.tasks.complete"]`.
+  - Sets `NEIGE_TASK_TOKEN` in the agent process env.
+  - Initial prompt to codex: "You have an MCP server `neige` with `tasks.take`. Call `tasks.take` to get the spec, work on it, then call `tasks.complete`."
+- Task card carries `payload.agent_card_id` linking task → spawned codex card.
+
+### Commit 4 — web: tasks page + task card
+
+- `web/src/api/tasks.ts` — list / create / dispatch hooks.
+- `web/src/pages/TasksPage.tsx` (new) — table view of tasks (title, status, assignee, agent card link). Filters by status. Single "Dispatch" button per pending task.
+- `web/src/cards/builtins/task.tsx` (new) — compact task display when one is dropped into a wave. Shows status, links to the spawned agent card.
+- Registry entry + `+ Add → Task` flow.
+
+### Commit 5 — end-to-end smoke + docs
+
+- `crates/calm-server/tests/task_dispatch.rs` — bring up server, mint token, simulate an MCP `tools/call neige.tasks.take` → verify it returns the task body; `tools/call neige.tasks.complete` → verify the card status flips and events fire.
+- `docs/task-dispatch-research.md` → mark §6 unknowns resolved (this commit).
+- `plugins/todo/README.md`-style README at `docs/task-dispatch-user-guide.md` explaining the dispatch loop end-to-end with one screenshot of the codex card calling `neige.tasks.take`.
+
+### Out of MVP (queued for v0.2)
+
+- Claude Code parity (separate spawn path, ~1 day).
+- Re-assignment (kill + respawn the codex card with new initial prompt; no context handoff). ~½ day.
+- Worker pool / "always-on idle agent" mode.
+- Cost tracking.
+- Per-task tool allowlist UI (today: hardcoded).
