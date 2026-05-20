@@ -43,6 +43,25 @@ pub struct Config {
     /// Useful for debugging a misbehaving plugin without touching its row.
     #[arg(long, env = "CALM_PLUGINS_DISABLED", value_delimiter = ',', num_args = 0..)]
     pub plugins_disabled: Vec<String>,
+
+    /// Override path for the `codex` CLI binary. Defaults to `codex` (PATH
+    /// lookup). The docker compose stack bind-mounts the musl static
+    /// binary directly into the container as `/usr/local/bin/codex`.
+    #[arg(long, env = "CALM_CODEX_BIN", default_value = "codex")]
+    pub codex_bin: String,
+
+    /// Override path for the `neige-codex-bridge` binary that codex hooks
+    /// shell out to. Defaults to looking next to `calm-server`, then PATH.
+    /// See `state::resolve_codex_bridge_bin`.
+    #[arg(long, env = "CALM_CODEX_BRIDGE_BIN")]
+    pub codex_bridge_bin: Option<PathBuf>,
+
+    /// Base URL the codex hook bridge uses to POST back to calm-server.
+    /// Defaults to `http://<listen>` — when `listen` binds `0.0.0.0`, we
+    /// rewrite the host to `127.0.0.1` for the loopback POST. Override if
+    /// you front calm-server with a proxy.
+    #[arg(long, env = "CALM_CODEX_INGEST_URL")]
+    pub codex_ingest_url: Option<String>,
 }
 
 impl Config {
@@ -79,5 +98,16 @@ impl Config {
                 .unwrap_or_else(|| PathBuf::from("."));
             base.join("neige-calm").join("plugins")
         })
+    }
+
+    /// Base URL bridges use to POST hook events back to the loopback
+    /// ingest endpoint. Rewrites a `0.0.0.0` bind to `127.0.0.1` so the
+    /// child process actually reaches a routable address.
+    pub fn codex_ingest_url_resolved(&self) -> String {
+        if let Some(u) = &self.codex_ingest_url {
+            return u.clone();
+        }
+        let listen = self.listen.replacen("0.0.0.0", "127.0.0.1", 1);
+        format!("http://{listen}")
     }
 }

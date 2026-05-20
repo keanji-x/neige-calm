@@ -56,6 +56,7 @@ async fn boot() -> (AppState, String) {
         events: EventBus::new(),
         daemon: Arc::new(DaemonClient::new_stub()),
         plugin: Arc::new(PluginHost::new(Arc::new(PluginRegistry::empty()), repo)),
+        codex: Arc::new(calm_server::state::CodexClient::new_stub()),
     };
     (state, wave.id)
 }

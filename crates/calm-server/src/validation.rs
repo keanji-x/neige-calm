@@ -56,6 +56,19 @@ pub fn validate_card_payload(kind: &str, payload: &Value) -> Result<()> {
                 .map(|_| ())
                 .map_err(|e| CalmError::BadRequest(format!("invalid terminal payload: {e}")))
         }
+        "codex" => {
+            // Codex cards carry an opaque blob with the original spawn
+            // params (initial_prompt, model, cwd) for diagnostics/replay.
+            // We don't pin a strict shape — the route reads the body
+            // separately, the payload is purely for the UI.
+            if payload.is_null() || payload.is_object() {
+                Ok(())
+            } else {
+                Err(CalmError::BadRequest(
+                    "codex payload must be an object or null".into(),
+                ))
+            }
+        }
         // Plugin-defined kinds are opaque per architectural invariant.
         _ => Ok(()),
     }

@@ -8,8 +8,35 @@
  *               Only this surfaces in the sidebar's "Waiting on you" group.
  * - `running` : an overlay explicitly says work is in flight (renders the
  *               progress bar + pulse).
+ *
+ * This 3-state vocabulary stays the canonical Wave summary that the legacy
+ * grouping (Sidebar / Today / Cove filters) reads. The per-card FSM
+ * (`web/src/cards/builtins/codex.tsx`) writes 6-state values via the
+ * `card_fsm` task — they're projected down to this enum in `adaptWave`. The
+ * full FSM name and counts ride along on `Wave.fsmState` / `Wave.counts`
+ * for the new dot + badge UI that wants the richer surface.
  */
 export type WaveStatus = 'idle' | 'running' | 'waiting';
+
+/**
+ * 6-state per-card / per-wave FSM (see `crates/calm-server/src/card_fsm.rs`).
+ * Wire names are PascalCase — kept identical between Rust and TS so a state
+ * string round-trips through overlays unchanged.
+ */
+export type FsmState =
+  | 'Starting'
+  | 'Idle'
+  | 'Working'
+  | 'AwaitingInput'
+  | 'Errored'
+  | 'Done';
+
+/** Wave-level FSM payload `counts` block (only present on wave overlays). */
+export interface FsmCounts {
+  working: number;
+  awaiting: number;
+  errored: number;
+}
 
 export interface Cove {
   id: string;
@@ -64,9 +91,29 @@ export interface PluginCardData {
   resource_uri: string;
 }
 
+/**
+ * Codex (OpenAI) agent card. Interactive variant: the kernel binds a
+ * `calm-session-daemon` PTY running `codex` to this card and stamps the
+ * `terminal_id` into the payload. `CodexCard` then renders the live TUI
+ * via `XtermView` and overlays a status bar fed from `codex.hook` events
+ * on the WS bus.
+ *
+ * Older cards created before the interactive rewrite may not have a
+ * `terminalId` yet — the card renders an "agent is starting" placeholder
+ * in that case.
+ */
+export interface CodexCardData {
+  type: 'codex';
+  id?: string;
+  /** Optional pointer at the PTY row spawned for this card. */
+  terminalId?: string;
+  cwd?: string;
+}
+
 export type WaveCardData =
   | TerminalCardData
-  | PluginCardData;
+  | PluginCardData
+  | CodexCardData;
 
 /**
  * A position in a Wave's card grid. Either a parsed UI card (the happy
@@ -85,6 +132,15 @@ export interface Wave {
   coveId: string;
   title: string;
   status: WaveStatus;
+  /**
+   * Richer FSM state for the new per-card-FSM-driven dot/badge UI. Optional
+   * because legacy plugin overlays still use the 3-state `status` field, and
+   * cards that aren't tracked by the kernel FSM (terminal, plugin — phase 2)
+   * leave this unset.
+   */
+  fsmState?: FsmState;
+  /** Per-state card counts inside this wave (only set when fsmState is set). */
+  counts?: FsmCounts;
   progress: number;
   eta: string;
   now: string;
@@ -94,4 +150,5 @@ export interface Wave {
 export type Route =
   | { name: 'today' }
   | { name: 'cove'; coveId: string }
-  | { name: 'wave'; id: string };
+  | { name: 'wave'; id: string }
+  | { name: 'settings' };

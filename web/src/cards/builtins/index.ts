@@ -11,9 +11,10 @@
 
 import { registerCard } from '../registry';
 import { TerminalEntry } from './terminal';
+import { CodexEntry } from './codex';
 import { PluginIframeEntry } from '../plugin-iframe';
 
-export { TerminalEntry, PluginIframeEntry };
+export { TerminalEntry, CodexEntry, PluginIframeEntry };
 
 let registered = false;
 
@@ -24,6 +25,7 @@ export function registerBuiltins(): void {
   if (registered) return;
   registered = true;
   registerCard(TerminalEntry);
+  registerCard(CodexEntry);
   // The plugin iframe entry is a built-in for now: it owns the `ui://`
   // kind namespace (the legacy `plugin:` form was deleted in M4). A
   // "plugin entry registers itself at runtime per-mount" model is part

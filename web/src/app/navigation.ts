@@ -23,6 +23,9 @@ export function useGo() {
       case 'wave':
         void navigate({ to: '/wave/$waveId', params: { waveId: r.id } });
         return;
+      case 'settings':
+        void navigate({ to: '/settings' });
+        return;
     }
   };
 }

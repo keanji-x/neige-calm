@@ -38,6 +38,7 @@ XDG_DIRS := \
 
 BIN := target/release/calm-server
 DAEMON := target/release/calm-session-daemon
+BRIDGE := target/release/neige-codex-bridge
 DIST := web/dist
 
 .PHONY: help
@@ -50,13 +51,13 @@ help: ## Show this help.
 # ---- build (on host, not in docker) -------------------------------------
 
 .PHONY: build
-build: $(BIN) $(DAEMON) $(DIST) ## Build calm-server, calm-session-daemon, web bundle.
+build: $(BIN) $(DAEMON) $(BRIDGE) $(DIST) ## Build server, daemon, codex bridge, web bundle.
 
-# Single cargo invocation builds both binaries — cheaper than two separate
-# calls because deps overlap. Touch both outputs so the rule re-fires only
-# when sources change.
-$(BIN) $(DAEMON) &: $(shell find crates -name '*.rs' -o -name 'Cargo.toml' 2>/dev/null) Cargo.toml Cargo.lock
-	cargo build --release -p calm-server -p calm-session --bin calm-server --bin calm-session-daemon
+# Single cargo invocation builds all three binaries — cheaper than three
+# separate calls because deps overlap. Touch every output so the rule
+# re-fires only when sources change.
+$(BIN) $(DAEMON) $(BRIDGE) &: $(shell find crates -name '*.rs' -o -name 'Cargo.toml' 2>/dev/null) Cargo.toml Cargo.lock
+	cargo build --release -p calm-server -p calm-session -p calm-codex-bridge --bin calm-server --bin calm-session-daemon --bin neige-codex-bridge
 
 $(DIST): $(shell find web/src -type f 2>/dev/null) web/package.json web/vite.config.ts web/index.html
 	@if [ ! -d web/node_modules ]; then (cd web && npm install); fi

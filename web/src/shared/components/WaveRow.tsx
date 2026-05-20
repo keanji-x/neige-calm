@@ -1,4 +1,5 @@
 import type { Cove, Wave } from '../../types';
+import { CardStatusDot } from './CardStatusDot';
 import { ProgressBar } from './ProgressBar';
 import { WaveGlyph } from './WaveGlyph';
 
@@ -46,9 +47,30 @@ export function WaveRow({
         }
       }}
     >
-      <WaveGlyph status={wave.status} />
+      {wave.fsmState ? (
+        // Per-card FSM is driving this wave — render the 6-state dot inside
+        // the same glyph slot so wave row spacing stays identical.
+        <span className="glyph">
+          <CardStatusDot state={wave.fsmState} />
+        </span>
+      ) : (
+        <WaveGlyph status={wave.status} />
+      )}
       <div className="body">
-        <div className="t">{wave.title}</div>
+        <div className="t">
+          {wave.title}
+          {/* Working-card count badge: only when more than one card is
+              actively working, since "Working (1)" reads as noise. */}
+          {wave.counts && wave.counts.working > 1 && (
+            <span
+              className="num"
+              style={{ marginLeft: 6, opacity: 0.65, fontSize: '0.85em' }}
+              title={`${wave.counts.working} cards working`}
+            >
+              ({wave.counts.working})
+            </span>
+          )}
+        </div>
         {(showCoveTag || showNow) && (
           <div className="s">
             {showCoveTag && (

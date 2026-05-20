@@ -16,6 +16,7 @@ pub struct AppState {
     pub events: EventBus,
     pub daemon: Arc<DaemonClient>,
     pub plugin: Arc<PluginHost>,
+    pub codex: Arc<CodexClient>,
 }
 
 impl AppState {
@@ -58,6 +59,13 @@ impl AppState {
         }
 
         let events = EventBus::new();
+
+        // Per-card FSM (phase 1: codex cards only). Subscribes to the bus
+        // and projects `codex.hook` events onto a 6-state FSM, writing
+        // `Overlay { kind: "status" }` rows for cards and wave-union rows
+        // for waves. See `card_fsm` module docs for the scope rationale.
+        crate::card_fsm::spawn(repo.clone(), events.clone());
+
         let plugin = Arc::new(PluginHost::new_full(
             Arc::new(registry),
             repo.clone(),
@@ -77,6 +85,7 @@ impl AppState {
             events,
             daemon: Arc::new(DaemonClient::new(cfg)),
             plugin,
+            codex: Arc::new(CodexClient::new(cfg)),
         })
     }
 }
@@ -150,4 +159,65 @@ fn resolve_session_daemon_bin() -> PathBuf {
         }
     }
     PathBuf::from("calm-session-daemon")
+}
+
+// ---------------------------------------------------------------------------
+// CodexClient — owned by Track Codex.
+//
+// Carries the codex CLI path, the hook bridge path, and the ingest URL.
+// The actual spawn lives in `routes::codex::spawn_codex_for`.
+// ---------------------------------------------------------------------------
+
+pub struct CodexClient {
+    /// `codex` CLI to spawn. Defaults to `codex` (PATH lookup).
+    pub codex_bin: String,
+    /// `neige-codex-bridge` binary path written into hooks.json. Resolved
+    /// as a sibling of `calm-server` exe, falling back to bare name.
+    pub bridge_bin: PathBuf,
+    /// Loopback URL the bridge POSTs to (`http://127.0.0.1:<port>`).
+    pub ingest_url: String,
+    /// Per-card CODEX_HOME parent. Lives under `data_dir/codex-homes/`,
+    /// which is `$HOME/.local/share/neige-calm/codex-homes/` by default
+    /// — bind-mounted into the container, so it survives `docker compose
+    /// down/up` and the codex card's auth.json + state stay alive across
+    /// restarts. (The old `/tmp/`-based location was wiped on every
+    /// container recreate, leaving the daemon stuck in a respawn loop.)
+    pub codex_homes_dir: PathBuf,
+}
+
+impl CodexClient {
+    pub fn new(cfg: &Config) -> Self {
+        Self {
+            codex_bin: cfg.codex_bin.clone(),
+            bridge_bin: cfg
+                .codex_bridge_bin
+                .clone()
+                .unwrap_or_else(resolve_codex_bridge_bin),
+            ingest_url: cfg.codex_ingest_url_resolved(),
+            codex_homes_dir: cfg.data_dir_resolved().join("codex-homes"),
+        }
+    }
+
+    /// Test stub — never actually spawns codex; tests that touch the
+    /// codex routes don't need a real binary on PATH.
+    pub fn new_stub() -> Self {
+        Self {
+            codex_bin: "codex".into(),
+            bridge_bin: PathBuf::from("neige-codex-bridge"),
+            ingest_url: "http://127.0.0.1:0".into(),
+            codex_homes_dir: std::env::temp_dir().join("neige-codex-homes-stub"),
+        }
+    }
+}
+
+fn resolve_codex_bridge_bin() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let candidate = dir.join("neige-codex-bridge");
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    PathBuf::from("neige-codex-bridge")
 }

@@ -7,9 +7,12 @@ use axum::{Json, Router, routing::get};
 use utoipa::OpenApi;
 
 pub mod cards;
+pub mod codex;
 pub mod coves;
+pub mod fs;
 pub mod overlays;
 pub mod plugins;
+pub mod settings;
 pub mod terminal;
 pub mod waves;
 
@@ -21,6 +24,9 @@ pub fn router() -> Router<AppState> {
         .merge(overlays::router())
         .merge(plugins::router())
         .merge(terminal::router())
+        .merge(codex::router())
+        .merge(fs::router())
+        .merge(settings::router())
         // OpenAPI document — the source-of-truth for web-calm's generated
         // TypeScript types. No swagger-ui — just the spec, served as JSON
         // so the frontend toolchain can hit it during build.

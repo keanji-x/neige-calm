@@ -17,11 +17,14 @@ use crate::model::{
     WaveDetail, WavePatch,
 };
 use crate::routes::cards::{CreateCardBody, ViaToolCall};
+use crate::routes::codex::NewCodexBody;
+use crate::routes::fs::{DirEntry, ListdirResponse};
 use crate::routes::overlays::{OverlayDeleteBody, OverlayQuery};
 use crate::routes::plugins::{
     InstallBody, InstallSource, PluginDetail, PluginListItem, ToolCallBody, ViewCatalogEntry,
     ViewSizeWire,
 };
+use crate::routes::settings::{SettingsBag, SettingsPutBody};
 use crate::routes::terminal::NewTerminalBody;
 use utoipa::OpenApi;
 
@@ -56,6 +59,13 @@ use utoipa::OpenApi;
         // ---- terminals ----
         crate::routes::terminal::create_terminal,
         crate::routes::terminal::get_terminal_for_card,
+        // ---- codex ----
+        crate::routes::codex::create_codex,
+        // ---- fs ----
+        crate::routes::fs::listdir,
+        // ---- settings ----
+        crate::routes::settings::get_settings,
+        crate::routes::settings::put_settings,
         // ---- plugins ----
         crate::routes::plugins::list_plugins,
         crate::routes::plugins::get_plugin_detail,
@@ -91,6 +101,11 @@ use utoipa::OpenApi;
         CreateCardBody,
         ViaToolCall,
         NewTerminalBody,
+        NewCodexBody,
+        DirEntry,
+        ListdirResponse,
+        SettingsBag,
+        SettingsPutBody,
         OverlayQuery,
         OverlayDeleteBody,
         InstallBody,
@@ -109,6 +124,9 @@ use utoipa::OpenApi;
         (name = "cards", description = "Card CRUD"),
         (name = "overlays", description = "Plugin-rendered overlays attached to waves/cards"),
         (name = "terminals", description = "PTY-backed terminal cards"),
+        (name = "codex", description = "Codex (OpenAI) agent cards — hook-driven event stream"),
+        (name = "fs", description = "Read-only host filesystem helpers (directory listing for path pickers)"),
+        (name = "settings", description = "App-global settings (HTTP proxy override, etc.)"),
         (name = "plugins", description = "Plugin lifecycle, config, MCP fan-out"),
     ),
 )]

@@ -98,3 +98,18 @@ export type NewOverlayBody = Omit<Schemas['NewOverlay'], 'entity_kind' | 'payloa
 };
 
 export type NewTerminalBody = Schemas['NewTerminalBody'];
+
+export type NewCodexBody = Schemas['NewCodexBody'];
+
+// ---------------- fs ----------------
+//
+// Used by the DirectoryPicker widget that backs the codex `cwd` field.
+export type ListdirResponse = Schemas['ListdirResponse'];
+export type DirEntry = Schemas['DirEntry'];
+
+// ---------------- settings ----------------
+//
+// App-global string-bag persisted under `settings.<key>`. The kernel uses
+// `http_proxy` / `https_proxy` today; any string keys are accepted.
+export type SettingsBag = Schemas['SettingsBag'];
+export type SettingsPutBody = Schemas['SettingsPutBody'];

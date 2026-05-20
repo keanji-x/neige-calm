@@ -4,6 +4,22 @@
  */
 
 export interface paths {
+    "/api/cards/{card_id}/codex": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_codex"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cards/{card_id}/terminal": {
         parameters: {
             query?: never;
@@ -87,6 +103,22 @@ export interface paths {
         options?: never;
         head?: never;
         patch: operations["update_cove"];
+        trace?: never;
+    };
+    "/api/fs/listdir": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listdir"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/overlays": {
@@ -313,6 +345,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_settings"];
+        put: operations["put_settings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/waves": {
         parameters: {
             query?: never;
@@ -435,6 +483,10 @@ export interface components {
             sort?: number | null;
             via_tool_call?: null | components["schemas"]["ViaToolCall"];
         };
+        DirEntry: {
+            is_dir: boolean;
+            name: string;
+        };
         /**
          * @description JSON shape returned for every error response — `{error, code}`.
          *     Mirrors the body produced by `CalmError::into_response`. Hand-written
@@ -444,9 +496,10 @@ export interface components {
         ErrorBody: {
             /**
              * @description Stable machine-readable code — one of `not_found`, `conflict`,
-             *     `bad_request`, `unauthorized`, `plugin_install`, `plugin_permission`,
-             *     `plugin_conflict`, `db_error`, `io_error`, `serde_error`, `internal`,
-             *     `forbidden_tool`, `not_a_card_tool`, `tool_call_failed`.
+             *     `bad_request`, `unauthorized`, `forbidden`, `plugin_install`,
+             *     `plugin_permission`, `plugin_conflict`, `db_error`, `io_error`,
+             *     `serde_error`, `internal`, `forbidden_tool`, `not_a_card_tool`,
+             *     `tool_call_failed`.
              */
             code: string;
             /** @description Human-readable error message. */
@@ -463,6 +516,17 @@ export interface components {
             /** @enum {string} */
             kind: "other";
         };
+        ListdirResponse: {
+            /**
+             * @description Children, sorted: directories first, then case-insensitive alpha.
+             *     Hidden entries (leading dot) are filtered out.
+             */
+            entries: components["schemas"]["DirEntry"][];
+            /** @description Canonical absolute path of the parent directory, or `null` at root. */
+            parent?: string | null;
+            /** @description Canonical absolute path of the listed directory. */
+            path: string;
+        };
         NewCard: {
             kind: string;
             payload?: Record<string, never>;
@@ -474,6 +538,17 @@ export interface components {
              *     callers must still set this — passing "" produces a NotFound.
              */
             wave_id?: string;
+        };
+        NewCodexBody: {
+            /** @description Working directory codex runs in. Defaults to `$HOME` if empty. */
+            cwd?: string | null;
+            /**
+             * @description Reserved field — interactive codex has slash-commands for the
+             *     prompt; the API still accepts it for forward / backward
+             *     compatibility but does nothing with it. Kept so older clients keep
+             *     generating valid OpenAPI requests.
+             */
+            initial_prompt?: string | null;
         };
         NewCove: {
             color: string;
@@ -585,6 +660,26 @@ export interface components {
             state: string;
             version: string;
         };
+        /**
+         * @description Wire-shape: a flat string map of key -> value. We use `BTreeMap` for
+         *     deterministic ordering in the response so the OpenAPI spec consumers
+         *     see stable test diffs.
+         */
+        SettingsBag: {
+            settings: {
+                [key: string]: string;
+            };
+        };
+        /**
+         * @description Request body for `PUT /api/settings`. Values are `Option<String>` so
+         *     the client can clear a key by sending `null`. Empty strings are also
+         *     treated as deletes; see module docs for the rationale.
+         */
+        SettingsPutBody: {
+            settings?: {
+                [key: string]: string | null;
+            };
+        };
         Terminal: {
             card_id: string;
             /** Format: int64 */
@@ -683,6 +778,61 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    create_codex: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Card id (must be a codex card) */
+                card_id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Codex spawn parameters */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewCodexBody"];
+            };
+        };
+        responses: {
+            /** @description Codex spawned; hook events stream over WS, TUI runs in the card's PTY */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Card"];
+                };
+            };
+            /** @description Card is not a codex card */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Card not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Spawn failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     get_terminal_for_card: {
         parameters: {
             query?: never;
@@ -1023,6 +1173,56 @@ export interface operations {
             };
             /** @description Cove not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    listdir: {
+        parameters: {
+            query?: {
+                /** @description Absolute path to list; omitted → $HOME */
+                path?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Directory listing */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListdirResponse"];
+                };
+            };
+            /** @description Path doesn't exist or is not a directory */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Read permission denied */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1686,6 +1886,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current settings map (string→string) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsBag"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    put_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SettingsPutBody"];
+            };
+        };
+        responses: {
+            /** @description Settings replaced; returns the resulting bag */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsBag"];
                 };
             };
             /** @description Internal error */

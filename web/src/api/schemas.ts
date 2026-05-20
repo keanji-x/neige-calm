@@ -129,6 +129,22 @@ export const pluginStateSchema = z.object({
   }),
 });
 
+/**
+ * `Event::CodexHook` — passthrough of one codex-CLI hook firing
+ * (PreToolUse / PostToolUse / Stop / ...). `kind` carries a snake-case
+ * discriminator (`hook.codex.<event>`) so callers can pattern-match
+ * without typing every codex payload field. `payload` is the raw codex
+ * JSON, kept opaque.
+ */
+export const codexHookSchema = z.object({
+  ev: z.literal('codex.hook'),
+  data: z.object({
+    card_id: z.string(),
+    kind: z.string(),
+    payload: z.unknown(),
+  }),
+});
+
 // ---------------- Discriminated union ----------------
 
 /**
@@ -147,6 +163,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   overlaySetSchema,
   overlayDeletedSchema,
   pluginStateSchema,
+  codexHookSchema,
 ]);
 
 // ---------------- Inferred types ----------------
@@ -169,5 +186,6 @@ export type CardDeletedEvent = z.infer<typeof cardDeletedSchema>;
 export type OverlaySetEvent = z.infer<typeof overlaySetSchema>;
 export type OverlayDeletedEvent = z.infer<typeof overlayDeletedSchema>;
 export type PluginStateEvent = z.infer<typeof pluginStateSchema>;
+export type CodexHookEvent = z.infer<typeof codexHookSchema>;
 
 export type WireEvent = z.infer<typeof wireEventSchema>;

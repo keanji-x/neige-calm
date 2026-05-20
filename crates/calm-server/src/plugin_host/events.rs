@@ -96,6 +96,7 @@ fn event_name(ev: &Event) -> &'static str {
         Event::OverlaySet(_) => "overlay.set",
         Event::OverlayDeleted { .. } => "overlay.deleted",
         Event::PluginState { .. } => "plugin.state",
+        Event::CodexHook { .. } => "codex.hook",
     }
 }
 
@@ -122,6 +123,7 @@ fn event_entity_kind(ev: &Event) -> Option<String> {
         }
         Event::OverlaySet(o) => Some(o.entity_kind.clone()),
         Event::OverlayDeleted { entity_kind, .. } => Some(entity_kind.clone()),
+        Event::CodexHook { .. } => Some("card".into()),
         _ => None,
     }
 }
@@ -138,6 +140,8 @@ fn event_entity_id(ev: &Event) -> Option<String> {
         Event::OverlaySet(o) => Some(o.entity_id.clone()),
         Event::OverlayDeleted { entity_id, .. } => Some(entity_id.clone()),
         Event::PluginState { id, .. } => Some(id.clone()),
+        // Codex hooks are scoped to a card_id, mirroring card.* events.
+        Event::CodexHook { card_id, .. } => Some(card_id.clone()),
     }
 }
 

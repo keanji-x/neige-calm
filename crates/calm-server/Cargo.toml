@@ -109,6 +109,10 @@ utoipa-axum = "0.2"
 # natively — see `Event` in `src/event.rs`.
 ts-rs = { version = "12", features = ["serde-json-impl", "no-serde-warnings"] }
 
+# Per-spawn `CODEX_HOME` tempdir owned by `routes::codex`. Moved out of
+# dev-deps so the production binary can use it too.
+tempfile = "3"
+
 # Local crates
 calm-session = { path = "../calm-session" }
 
@@ -120,7 +124,6 @@ calm-session = { path = "../calm-session" }
 nix = { version = "0.29", features = ["signal"] }
 
 [dev-dependencies]
-tempfile = "3"
 # Route integration tests drive the Router via `tower::ServiceExt::oneshot`
 # without bringing up a TCP listener. `tower` itself is already a normal dep
 # (used by axum) but the `oneshot` helper lives behind the `util` feature.

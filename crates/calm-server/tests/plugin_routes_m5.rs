@@ -137,6 +137,7 @@ async fn boot(cfg: FxConfig<'_>) -> Fixture {
         events,
         daemon: Arc::new(DaemonClient::new_stub()),
         plugin: plugin_host,
+        codex: Arc::new(calm_server::state::CodexClient::new_stub()),
     };
 
     Fixture {

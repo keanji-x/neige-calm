@@ -13,6 +13,7 @@
 
 use crate::model::{Card, Cove, Overlay, Wave};
 use serde::Serialize;
+use serde_json::Value;
 use tokio::sync::broadcast;
 use ts_rs::TS;
 
@@ -82,6 +83,25 @@ pub enum Event {
         #[ts(optional)]
         last_error: Option<String>,
     },
+
+    /// Codex CLI hook passthrough. The `neige-codex-bridge` subprocess POSTs
+    /// each hook event payload to `/internal/codex/hook`; the route packages
+    /// it into this variant and emits to the bus. The shape is intentionally
+    /// opaque (Value) — codex's hook payload is documented but evolves, and
+    /// the frontend codex card pattern-matches on `kind` (`hook.codex.<event>`)
+    /// rather than typing every field.
+    #[serde(rename = "codex.hook")]
+    CodexHook {
+        /// Owning card id — topic key `card:<card_id>`.
+        card_id: String,
+        /// Snake_case discriminator: `hook.codex.<event_name>` (e.g.
+        /// `hook.codex.pre_tool_use`). Derived from `hook_event_name` in
+        /// the codex payload; defaults to `hook.codex.unknown` if missing.
+        kind: String,
+        /// Original codex hook JSON, verbatim.
+        #[ts(type = "unknown")]
+        payload: Value,
+    },
 }
 
 /// Subscription topics an `Event` matches. The WS handler intersects this with
@@ -141,6 +161,10 @@ pub fn topics(ev: &Event) -> Vec<String> {
 
         Event::PluginState { id, .. } => {
             vec![format!("plugin:{}", id), "plugin:*".into(), "*".into()]
+        }
+
+        Event::CodexHook { card_id, .. } => {
+            vec![format!("card:{}", card_id), "*".into()]
         }
     }
 }

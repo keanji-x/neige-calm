@@ -202,6 +202,12 @@ function dispatch(
       // here and invalidate it.
       return;
     }
+    case 'codex.hook': {
+      // Codex hooks don't change persisted state — the codex card subscribes
+      // to its own card topic and consumes events directly. No query
+      // invalidation required.
+      return;
+    }
   }
 }
 

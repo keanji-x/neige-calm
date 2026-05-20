@@ -113,6 +113,7 @@ export function CalmApp() {
       <TitleBar
         theme={theme}
         onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+        onOpenSettings={() => go({ name: 'settings' })}
       />
       <div className="stage">
         <Sidebar
@@ -153,6 +154,9 @@ function parseAppRoute(pathname: string): AppRoute {
   if (pathname.startsWith('/wave/')) {
     const id = decodeURIComponent(pathname.slice('/wave/'.length).replace(/\/$/, ''));
     if (id) return { name: 'wave', id };
+  }
+  if (pathname === '/settings' || pathname.startsWith('/settings/')) {
+    return { name: 'settings' };
   }
   return { name: 'today' };
 }
