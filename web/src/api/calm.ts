@@ -102,7 +102,10 @@ export const deleteCard = (id: string) =>
 
 // ---------------- overlays ----------------
 
-export const listOverlays = (entity_kind: 'wave' | 'card', entity_id: string) =>
+export const listOverlays = (
+  entity_kind: 'wave' | 'card' | 'view',
+  entity_id: string,
+) =>
   request<KernelOverlay[]>(
     'GET',
     `/api/overlays?entity_kind=${entity_kind}&entity_id=${encodeURIComponent(entity_id)}`,
