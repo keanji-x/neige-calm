@@ -9,6 +9,16 @@
 #   open http://localhost:8080/
 #
 # Override ports / mounts via .env (see .env.example).
+#
+# ## Networking
+#
+# `server` runs with `network_mode: host` so it sees the host's loopback
+# proxy at `127.0.0.1:<proxy port>` directly. That's the *only* way
+# child processes spawned by calm-server (codex CLI, plugins, terminal
+# shells) can reach the user's HTTP proxy without us having to re-plumb
+# the proxy URL container-side. The cost is that `server` no longer lives
+# on the docker bridge network, so `web` (nginx) reaches it via
+# `host.docker.internal:4040`, set up below with `extra_hosts`.
 
 services:
   server:
@@ -17,6 +27,13 @@ services:
     # the host distro, bump this tag accordingly.
     image: debian:bookworm-slim
     init: true
+    # Host networking — the container shares the host's network namespace.
+    # `server:4040` URLs from the bridge-network `web` service no longer
+    # resolve; use `host.docker.internal:4040` (see the `web` block below).
+    # Outbound: the binary and every child it spawns see `127.0.0.1` as
+    # the host loopback, so a host-side proxy on `127.0.0.1:<port>` works
+    # transparently via HTTP_PROXY / HTTPS_PROXY.
+    network_mode: host
     # Run as the host user so files written under $HOME keep correct
     # ownership when you read them back from the host.
     user: "${UID:-1000}:${GID:-1000}"
@@ -24,7 +41,19 @@ services:
     environment:
       HOME: ${HOME}
       USER: ${USER:-calm}
-      CALM_LISTEN: 0.0.0.0:4040
+      # Bind on every host interface because two distinct callers need
+      # to reach the API on a host-networked listener:
+      #   1. The codex hook bridge from inside the same container — uses
+      #      127.0.0.1:4041 (loopback).
+      #   2. The bridge-networked `web` (nginx) container — reaches us via
+      #      `host.docker.internal:4041`, which resolves to the docker
+      #      bridge gateway IP (172.17.0.1 by default). A 127.0.0.1-only
+      #      bind wouldn't accept that connection.
+      # We pick port 4041 (not 4040) so we don't collide with the host
+      # port nginx publishes on (CALM_PORT, default 4040). Cross-origin
+      # browser access from outside is still blocked by
+      # CALM_ALLOWED_ORIGIN below.
+      CALM_LISTEN: ${CALM_LISTEN:-0.0.0.0:4041}
       # Default sqlite path mirrors XDG layout the binary would pick on the
       # host, so swapping between docker and `cargo run` shares the same db.
       CALM_DB_URL: ${CALM_DB_URL:-sqlite://${HOME}/.local/share/neige-calm/calm.db?mode=rwc}
@@ -35,7 +64,32 @@ services:
       # it into the container as /usr/local/bin/codex (see volumes below).
       # Override CALM_CODEX_BIN in .env to point at a different location.
       CALM_CODEX_BIN: ${CALM_CODEX_BIN:-codex}
+      # Outbound HTTP proxy. Default points at the typical host-side proxy
+      # most contributors run; override in .env if yours is elsewhere. Set
+      # all three (HTTP_PROXY/HTTPS_PROXY/NO_PROXY) so curl, codex, plugins,
+      # and reqwest all observe the same routing. NO_PROXY keeps loopback
+      # traffic (e.g. codex hook bridge → /internal/codex/hook on 127.0.0.1)
+      # off the proxy.
+      HTTP_PROXY: ${HTTP_PROXY:-http://127.0.0.1:10809}
+      HTTPS_PROXY: ${HTTPS_PROXY:-http://127.0.0.1:10809}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,::1}
+      http_proxy: ${HTTP_PROXY:-http://127.0.0.1:10809}
+      https_proxy: ${HTTPS_PROXY:-http://127.0.0.1:10809}
+      no_proxy: ${NO_PROXY:-localhost,127.0.0.1,::1}
+      # Slim image has no CA bundle; codex's rustls TLS client otherwise
+      # errors "no native root CA certificates found" and retries forever.
+      # Point it at the host bundle we mount below.
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+      SSL_CERT_DIR: /etc/ssl/certs
     volumes:
+      # Host CA bundle — needed because debian:bookworm-slim ships without
+      # ca-certificates and codex/reqwest/rustls all need root certs to
+      # validate TLS endpoints (OpenAI, GitHub, proxies). Read-only.
+      - /etc/ssl/certs:/etc/ssl/certs:ro
+      # Codex "managed" hooks policy — auto-trusted across every spawn so
+      # we never see the /hooks trust prompt. User-level hooks.json would
+      # otherwise require manual approval the first time codex sees them.
+      - ./docker/codex-requirements.toml:/etc/codex/requirements.toml:ro
       # The release binaries. Built on the host by `make build`. calm-server
       # looks for calm-session-daemon as a sibling of its own exe (see
       # state.rs::resolve_session_daemon_bin), so both land in /usr/local/bin.
@@ -58,13 +112,9 @@ services:
       # symlink in $HOME. Mount the real path too so the symlink resolves.
       # Safe no-op if you don't have /mnt/data2; remove or change via .env.
       - ${CALM_EXTRA_MOUNT:-/mnt/data2}:${CALM_EXTRA_MOUNT:-/mnt/data2}
-    # Server is only reachable via the docker network (web → server:4040).
-    # The host sees just one port: nginx on CALM_PORT (4040 by default).
-    # Uncomment to also expose the API directly for raw curl testing.
-    # ports:
-    #   - "4041:4040"
-    expose:
-      - "4040"
+    # No port mappings / expose under host networking — the binary is
+    # reachable on 127.0.0.1:4040 (the host's loopback) directly. nginx
+    # in the `web` container reaches it via host.docker.internal:4040.
     command: ["calm-server"]
     restart: unless-stopped
 
@@ -73,9 +123,16 @@ services:
     # /api → server. No build step in docker. nginx listens on 8080 inside
     # the container; we publish that as CALM_PORT on the host.
     image: nginx:1.27-alpine
+    # `host-gateway` is docker's magic alias for the host as seen from a
+    # bridge-network container. Required because `server` lives on host
+    # networking and is no longer a name resolvable inside the bridge.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # `depends_on` without a condition just orders startup — we deliberately
+    # don't gate on server health since host-networked services don't
+    # publish their container-side health back to the bridge anyway.
     depends_on:
-      server:
-        condition: service_started
+      - server
     volumes:
       - ./web/dist:/usr/share/nginx/html/calm:ro
       - ./docker/nginx.conf:/etc/nginx/conf.d/calm.conf:ro

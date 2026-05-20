@@ -1,0 +1,61 @@
+# Codex CLI "managed" requirements file, mounted at /etc/codex/requirements.toml
+# inside the server container.
+#
+# Why this file exists:
+#   User-level hooks (in $CODEX_HOME/hooks.json or config.toml) require an
+#   explicit `/hooks` slash-command trust before codex will fire them. That
+#   breaks our automation — we spawn a fresh CODEX_HOME per card and need
+#   hooks to start firing immediately, with no UI step in the middle.
+#
+#   Codex treats hooks declared in /etc/codex/requirements.toml as
+#   "managed by policy": trusted automatically, can't be disabled from
+#   /hooks. This is normally an enterprise MDM channel; we (the kernel)
+#   are the policy author for our own container.
+#
+# Bridge binary: `/usr/local/bin/neige-codex-bridge` (bind-mounted in by
+# docker-compose). It reads stdin JSON, looks at NEIGE_CARD_ID +
+# NEIGE_CALM_BASE_URL in the env (injected per-spawn by routes/codex.rs),
+# and POSTs the event to calm-server's /internal/codex/hook endpoint.
+
+# Restored `[features].hooks = true` after upgrading codex CLI to
+# 0.130.0+ — without this toggle codex 0.130 lists our hooks as
+# untrusted/inactive and silently doesn't fire them. The older 0.117
+# rejected the field; if you ever roll back the codex binary, expect
+# the daemon to crash-loop again.
+[features]
+hooks = true
+
+[hooks]
+managed_dir = "/usr/local/bin"
+
+[[hooks.SessionStart]]
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "/usr/local/bin/neige-codex-bridge"
+
+[[hooks.PreToolUse]]
+matcher = ".*"
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "/usr/local/bin/neige-codex-bridge"
+
+[[hooks.PostToolUse]]
+matcher = ".*"
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = "/usr/local/bin/neige-codex-bridge"
+
+[[hooks.PermissionRequest]]
+[[hooks.PermissionRequest.hooks]]
+type = "command"
+command = "/usr/local/bin/neige-codex-bridge"
+
+[[hooks.UserPromptSubmit]]
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = "/usr/local/bin/neige-codex-bridge"
+
+[[hooks.Stop]]
+[[hooks.Stop.hooks]]
+type = "command"
+command = "/usr/local/bin/neige-codex-bridge"
