@@ -23,6 +23,11 @@ export default defineConfig({
     include: [
       'src/**/*.test.{ts,tsx}',
       'tests/**/*.test.{ts,tsx}',
+      // The lint-rule smoke test sits next to the rule it tests
+      // (`eslint-rules/no-persistent-in-usestate.test.ts`). Pulling it
+      // under `src/` would muddle the source tree; instead, vitest
+      // discovers it via this explicit glob.
+      'eslint-rules/**/*.test.{ts,tsx}',
     ],
     // E2E specs live in ./e2e and are owned by playwright, not vitest.
     exclude: [
@@ -30,5 +35,16 @@ export default defineConfig({
       '**/dist/**',
       'e2e/**',
     ],
+    // Type-level tests live next to source as `*.test-d.ts`. They have no
+    // runtime body; vitest invokes `tsc` over them via its typecheck mode.
+    // The `Persistent<T>` brand guard (see `src/shared/state.test-d.ts`)
+    // depends on this — without typecheck enabled, the brand could rot
+    // silently. `tsc -b` (run during `npm run build`) catches the same
+    // regressions, but we wire it here so `npm test` is a complete gate too.
+    typecheck: {
+      enabled: true,
+      include: ['src/**/*.test-d.{ts,tsx}'],
+      tsconfig: './tsconfig.app.json',
+    },
   },
 });

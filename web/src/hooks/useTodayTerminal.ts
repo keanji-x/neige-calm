@@ -20,7 +20,8 @@
 // invariants in one place. After mutating, we invalidate the affected
 // query keys so other consumers (Sidebar, Cove page) see the new rows.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
+import { useState } from '../shared/state';
 import { useQueryClient } from '@tanstack/react-query';
 import * as api from '../api/calm';
 import { queryKeys } from '../api/queries';

@@ -12,7 +12,8 @@
 // widget needs a fullscreen-feeling sub-flow; popover-in-modal nesting
 // was the structural mistake we're replacing here.
 
-import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo } from 'react';
+import { useState } from '../state';
 import { createPortal } from 'react-dom';
 
 export interface ModalProps {

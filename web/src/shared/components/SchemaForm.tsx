@@ -7,7 +7,7 @@
 // possibly through a different renderer entirely; we'd rather keep this
 // file small than pre-build a generic that grows scope creep.
 
-import { useState } from 'react';
+import { useState } from '../state';
 import type { CreateField, CreateSchema } from '../../cards/registry';
 import { DirectoryPicker } from './DirectoryPicker';
 

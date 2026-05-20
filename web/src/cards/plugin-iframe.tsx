@@ -20,7 +20,8 @@
 // (`onreadresource`, `onlistresources`, …) stay default-empty so AppBridge
 // returns `MethodNotFound` for them, which is the right answer.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
+import { useState } from '../shared/state';
 
 import type { CardEntry } from './registry';
 import type { PluginCardData } from '../types';
