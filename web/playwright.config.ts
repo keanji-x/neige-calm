@@ -77,7 +77,7 @@ export default defineConfig({
   // One worker keeps cove/wave seed state predictable — multiple workers
   // would mutate the same MockRepo concurrently.
   workers: 1,
-  reporter: process.env.CI ? 'github' : 'list',
+  reporter: process.env.CI ? [['github'], ['html', { open: 'never' }]] : 'list',
   use: {
     // Capture artifacts only on failure to keep the local run cheap.
     trace: 'on-first-retry',
