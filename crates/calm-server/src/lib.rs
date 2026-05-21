@@ -34,6 +34,7 @@ pub mod event;
 pub mod model;
 pub mod openapi;
 pub mod plugin_host;
+pub mod replay;
 pub mod routes;
 pub mod state;
 pub mod terminal_sweeper;
