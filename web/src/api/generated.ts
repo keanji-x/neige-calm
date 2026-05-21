@@ -361,6 +361,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_version"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/waves": {
         parameters: {
             query?: never;
@@ -497,9 +513,9 @@ export interface components {
             /**
              * @description Stable machine-readable code — one of `not_found`, `conflict`,
              *     `bad_request`, `unauthorized`, `forbidden`, `plugin_install`,
-             *     `plugin_permission`, `plugin_conflict`, `db_error`, `io_error`,
-             *     `serde_error`, `internal`, `forbidden_tool`, `not_a_card_tool`,
-             *     `tool_call_failed`.
+             *     `plugin_permission`, `plugin_conflict`, `plugin_kernel_too_old`,
+             *     `db_error`, `io_error`, `serde_error`, `internal`, `forbidden_tool`,
+             *     `not_a_card_tool`, `tool_call_failed`.
              */
             code: string;
             /** @description Human-readable error message. */
@@ -720,6 +736,20 @@ export interface components {
              */
             call_id?: string | null;
             name: string;
+        };
+        /**
+         * @description Response shape for `GET /api/version`. camelCase on the wire so it lines
+         *     up with the rest of the TypeScript-facing surface.
+         */
+        VersionInfo: {
+            apiVersion: string;
+            buildSha?: string | null;
+            kernelVersion: string;
+            mcpProtocolVersion: string;
+            /** Format: int32 */
+            minWebCompatVersion: number;
+            /** Format: int32 */
+            syncEventVersion: number;
         };
         ViaToolCall: {
             arguments?: Record<string, never>;
@@ -1433,6 +1463,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Manifest min_kernel_version exceeds kernel version */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Internal error */
             500: {
                 headers: {
@@ -1670,6 +1709,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Manifest min_kernel_version exceeds kernel version */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Spawn failed / internal error */
             500: {
                 headers: {
@@ -1756,6 +1804,15 @@ export interface operations {
             };
             /** @description Plugin not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Manifest min_kernel_version exceeds kernel version */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1979,6 +2036,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_version: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Kernel + protocol version metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VersionInfo"];
                 };
             };
         };

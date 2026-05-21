@@ -44,7 +44,7 @@ Tier B surfaces in neige-calm today:
 - **Terminal daemon framing.** The `calm-session-daemon` IPC carries bincode frames over a unix socket. Today the framing is length-prefixed only (`crates/calm-session/src/lib.rs:87`) — no magic, no version. The rule is `magic + version` in the frame header; on mismatch the kernel kills and respawns the daemon (or marks it `needs_restart`).
 - **REST API.** Today OpenAPI advertises `info.version = CARGO_PKG_VERSION`, conflating the API contract with the binary release. The rule is an independent `apiVersion` constant, bumped only when the wire shape changes. Old clients get a "please refresh" response.
 - **WebSocket envelope.** Today's frame is `{ "_id": ..., "ev": ..., "data": ... }` — no version. The rule adds `eventVersion`; an old frontend on a newer server is told to refresh.
-- **Frontend ↔ backend skew.** Today the cache buster is `PERSIST_BUSTER` at `web/src/api/persistConfig.ts:54`. The rule is to surface a `minWebBuildId` in `/api/version`; a frontend below the minimum is force-refreshed.
+- **Frontend ↔ backend skew.** Today the cache buster is `PERSIST_BUSTER` at `web/src/api/persistConfig.ts:54`. The rule is to surface a `minWebCompatVersion` in `/api/version`; a frontend below the minimum is force-refreshed. Backend exposes `WEB_COMPAT_VERSION` (u32, bumped on breaking REST/WS changes) at `crates/calm-server/src/routes/version.rs`; the frontend ships a matching TS constant at `web/src/api/version.ts`. The two constants must be kept in lockstep across PRs — review discipline, not codegen.
 
 ### Tier C — Internal contracts (no version, no guarantee)
 
@@ -84,7 +84,7 @@ Tier D surfaces in neige-calm today:
 | Terminal daemon framing | B | Length-prefixed bincode at `crates/calm-session/src/lib.rs:87` — no magic, no version | Add `magic + version` to frame |
 | REST API | B | OpenAPI `info.version = CARGO_PKG_VERSION` | Independent `apiVersion` constant |
 | WS envelope | B | No version | Add `eventVersion` |
-| Frontend cache | B | `PERSIST_BUSTER` at `web/src/api/persistConfig.ts:54` | Add `minWebBuildId` enforcement |
+| Frontend cache | B | `PERSIST_BUSTER` at `web/src/api/persistConfig.ts:54` | Add `minWebCompatVersion` enforcement |
 | Repo trait | C | Recently split | Stays internal; no version |
 | Route handlers | C | — | Stays internal |
 | React components | C | — | Stays internal |

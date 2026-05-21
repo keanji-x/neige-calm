@@ -15,7 +15,7 @@ use calm_server::event::{EventBus, SYNC_EVENT_VERSION};
 use calm_server::plugin_host::mcp::KERNEL_PROTOCOL_VERSION;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
-use calm_server::routes::version::API_VERSION;
+use calm_server::routes::version::{API_VERSION, WEB_COMPAT_VERSION};
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
@@ -63,20 +63,25 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         "apiVersion",
         "syncEventVersion",
         "mcpProtocolVersion",
-        "minWebBuildId",
+        "minWebCompatVersion",
         "buildSha",
     ] {
         assert!(obj.contains_key(key), "missing field: {key}");
     }
+
+    // The previous placeholder field is gone — frontends keying off the
+    // old name need to fail loudly, not silently observe `null`.
+    assert!(
+        !obj.contains_key("minWebBuildId"),
+        "minWebBuildId should have been renamed to minWebCompatVersion"
+    );
 
     // Type correctness.
     assert!(v["kernelVersion"].is_string());
     assert!(v["apiVersion"].is_string());
     assert!(v["syncEventVersion"].is_number());
     assert!(v["mcpProtocolVersion"].is_string());
-    // `null` is a valid JSON value; `is_null()` confirms the default
-    // shape until a future PR threads real build artifacts in.
-    assert!(v["minWebBuildId"].is_null() || v["minWebBuildId"].is_string());
+    assert!(v["minWebCompatVersion"].is_number());
     assert!(v["buildSha"].is_null() || v["buildSha"].is_string());
 
     // Source agreement.
@@ -87,6 +92,13 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert_eq!(v["syncEventVersion"].as_u64().unwrap(), SYNC_EVENT_VERSION as u64);
     assert_eq!(v["syncEventVersion"].as_u64().unwrap(), 1);
 
-    // minWebBuildId is always null until a later PR populates it.
-    assert!(v["minWebBuildId"].is_null());
+    // minWebCompatVersion must echo the in-process constant — the whole
+    // point of the field is to bind frontend expectations to a value the
+    // backend controls. If someone bumps `WEB_COMPAT_VERSION` without
+    // bumping the response builder (or vice-versa), this assertion
+    // catches it.
+    assert_eq!(
+        v["minWebCompatVersion"].as_u64().unwrap(),
+        WEB_COMPAT_VERSION as u64,
+    );
 }
