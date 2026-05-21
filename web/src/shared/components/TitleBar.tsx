@@ -27,7 +27,14 @@ export function TitleBar({
             <Icon n="gear" s={14} />
           </button>
         )}
-        <button className="go ghost" onClick={onToggleTheme} title="Toggle theme">
+        <button
+          className="go ghost"
+          onClick={onToggleTheme}
+          title="Toggle theme"
+          aria-label={
+            theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'
+          }
+        >
           <Icon n={theme === 'dark' ? 'sun' : 'moon'} s={14} />
         </button>
       </div>

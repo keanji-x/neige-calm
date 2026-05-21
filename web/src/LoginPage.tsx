@@ -42,6 +42,9 @@ export function LoginPage() {
             placeholder="Token"
             value={token}
             onChange={(e) => setToken(e.target.value)}
+            // Single-purpose login screen with one interactive field; autofocusing
+            // it is expected UX and there's no surrounding context to skip past.
+            // eslint-disable-next-line jsx-a11y/no-autofocus
             autoFocus
             autoComplete="off"
             spellCheck={false}

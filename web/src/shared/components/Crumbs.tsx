@@ -17,7 +17,9 @@ export function Crumbs({ items }: { items: CrumbItem[] }) {
             {last ? (
               <span className="now">{it.label}</span>
             ) : (
-              <a onClick={it.onClick}>{it.label}</a>
+              <button type="button" className="crumb-link" onClick={it.onClick}>
+                {it.label}
+              </button>
             )}
             {!last && <span>·</span>}
           </Fragment>
