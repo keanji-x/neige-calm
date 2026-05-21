@@ -18,6 +18,7 @@
 //! instead of silently misinterpreting the bincode discriminants that follow.
 
 pub mod stream_json;
+pub mod terminal_session;
 
 use std::collections::HashMap;
 
@@ -66,7 +67,7 @@ pub enum FrameError {
 // the hand-mirror in `web/src/cards/builtins/terminal/*` — out of scope for
 // this PR but the path is clear: add `ts-rs = "12"` to this crate, derive `TS`,
 // add a second `export_to` target in the npm `gen:api` step.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClientMsg {
     /// First message on every connection. Tells the daemon the client's
     /// viewport so the PTY can be sized for it on first attach (latest-
@@ -101,7 +102,7 @@ pub enum ClientMsg {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DaemonMsg {
     /// Sent once right after `Attach` in terminal mode. `replay` is the
     /// recent PTY byte window kept in the daemon's ring buffer — feed it
