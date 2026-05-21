@@ -15,7 +15,7 @@ function makeCove(): Cove {
 }
 
 describe('CovePage EditableTitle keyboard entry', () => {
-  it('renders the cove title as a focusable button with Rename label', () => {
+  it('renders the cove title as a focusable button named after the cove', () => {
     render(
       <CovePage
         cove={makeCove()}
@@ -27,10 +27,18 @@ describe('CovePage EditableTitle keyboard entry', () => {
     // Rendered as an intrinsic <button> nested inside an <h1> so heading
     // semantics survive — no explicit tabindex needed (buttons are
     // focusable by default).
-    const title = screen.getByRole('button', { name: /Rename cove name: Atlas/i });
+    const title = screen.getByRole('button', { name: 'Atlas' });
     expect(title.tagName).toBe('BUTTON');
     // The wrapping h1 should still be discoverable by heading nav.
-    expect(screen.getByRole('heading', { level: 1 })).toContainElement(title);
+    // After #56 followup, its accessible name is just "Atlas." (the
+    // visible text, with the period the parent prints) — no "Rename cove
+    // name:" prefix, so heading-nav narration is clean. The sr-only
+    // helper sits *outside* the <h1> so it doesn't pollute the heading's
+    // name-from-content computation.
+    expect(screen.getByRole('heading', { level: 1, name: 'Atlas.' })).toContainElement(title);
+    // The rename verb is conveyed as an aria-describedby helper on the
+    // inner button, not as part of its name.
+    expect(title).toHaveAccessibleDescription('Rename cove name');
   });
 
   it('falls back to a plain h1 when onRenameCove is absent', () => {
@@ -41,8 +49,8 @@ describe('CovePage EditableTitle keyboard entry', () => {
         onGo={() => {}}
       />,
     );
-    // Heading exists but is not interactive.
-    expect(screen.queryByRole('button', { name: /Rename cove/i })).toBeNull();
+    // Heading exists but is not interactive — no button inside the title.
+    expect(screen.queryByRole('button', { name: 'Atlas' })).toBeNull();
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Atlas.');
   });
 
@@ -56,7 +64,7 @@ describe('CovePage EditableTitle keyboard entry', () => {
         onRenameCove={() => {}}
       />,
     );
-    const title = screen.getByRole('button', { name: /Rename cove name/i });
+    const title = screen.getByRole('button', { name: 'Atlas' });
     title.focus();
     await user.keyboard('{Enter}');
     const input = screen.getByRole('textbox', { name: 'Cove name' });
@@ -74,7 +82,7 @@ describe('CovePage EditableTitle keyboard entry', () => {
         onRenameCove={() => {}}
       />,
     );
-    const title = screen.getByRole('button', { name: /Rename cove name/i });
+    const title = screen.getByRole('button', { name: 'Atlas' });
     title.focus();
     await user.keyboard('{F2}');
     expect(screen.getByRole('textbox', { name: 'Cove name' })).toBeInTheDocument();
@@ -91,7 +99,7 @@ describe('CovePage EditableTitle keyboard entry', () => {
         onRenameCove={onRename}
       />,
     );
-    const title = screen.getByRole('button', { name: /Rename cove name/i });
+    const title = screen.getByRole('button', { name: 'Atlas' });
     title.focus();
     await user.keyboard('{Enter}');
     const input = screen.getByRole('textbox', { name: 'Cove name' });
@@ -100,7 +108,7 @@ describe('CovePage EditableTitle keyboard entry', () => {
 
     expect(screen.queryByRole('textbox', { name: 'Cove name' })).not.toBeInTheDocument();
     expect(onRename).not.toHaveBeenCalled();
-    const restored = screen.getByRole('button', { name: /Rename cove name: Atlas/i });
+    const restored = screen.getByRole('button', { name: 'Atlas' });
     expect(document.activeElement).toBe(restored);
   });
 
@@ -115,7 +123,7 @@ describe('CovePage EditableTitle keyboard entry', () => {
         onRenameCove={onRename}
       />,
     );
-    const title = screen.getByRole('button', { name: /Rename cove name/i });
+    const title = screen.getByRole('button', { name: 'Atlas' });
     title.focus();
     await user.keyboard('{Enter}');
     const input = screen.getByRole('textbox', { name: 'Cove name' });
@@ -132,7 +140,7 @@ describe('CovePage EditableTitle keyboard entry', () => {
     });
 
     expect(onRename).toHaveBeenCalledWith('c1', 'Beacon');
-    const restored = screen.getByRole('button', { name: /Rename cove name: Atlas/i });
+    const restored = screen.getByRole('button', { name: 'Atlas' });
     expect(document.activeElement).toBe(restored);
   });
 });

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef } from 'react';
+import { lazy, Suspense, useEffect, useId, useRef } from 'react';
 import { useState } from '../shared/state';
 import { Icon } from '../Icon';
 import { AddPanel, type AddPanelKind } from '../shared/components/AddPanel';
@@ -136,6 +136,11 @@ export function WavePage({
   // When a commit/cancel restores focus to the display span we set
   // this flag so the effect can run once the unmount has flushed.
   const restoreTitleFocus = useRef(false);
+  // Stable id for the visually-hidden rename hint. Same accessible-name
+  // split as CovePage's EditableTitle (#56 followup): the title's
+  // aria-label is just the wave name and the rename verb lives in a
+  // sibling span referenced via aria-describedby.
+  const renameHintId = useId();
   useEffect(() => {
     if (!editingTitle) {
       setDraftTitle(wave.title);
@@ -229,30 +234,41 @@ export function WavePage({
             // open rename mode without needing a pointer. The visual styling
             // is unchanged (cursor: text); only the focus-visible ring shows
             // to keyboard users. See calm.css `.wave-title[role="button"]`.
-            <span
-              ref={titleDisplayRef}
-              className="wave-title"
-              onClick={onRenameWave ? startRename : undefined}
-              onKeyDown={
-                onRenameWave
-                  ? (e) => {
-                      if (e.key === 'Enter' || e.key === 'F2') {
-                        e.preventDefault();
-                        startRename();
+            //
+            // Accessible-name split (#56 followup): aria-label is just the
+            // wave title; the rename verb lives in a sibling sr-only span
+            // referenced via aria-describedby. Keeps the breadcrumb's
+            // accessible name uncluttered (parity with CovePage's heading).
+            <>
+              <span
+                ref={titleDisplayRef}
+                className="wave-title"
+                onClick={onRenameWave ? startRename : undefined}
+                onKeyDown={
+                  onRenameWave
+                    ? (e) => {
+                        if (e.key === 'Enter' || e.key === 'F2') {
+                          e.preventDefault();
+                          startRename();
+                        }
                       }
-                    }
-                  : undefined
-              }
-              style={onRenameWave ? { cursor: 'text' } : undefined}
-              title={onRenameWave ? 'Click to rename' : undefined}
-              role={onRenameWave ? 'button' : undefined}
-              tabIndex={onRenameWave ? 0 : undefined}
-              aria-label={
-                onRenameWave ? `Rename wave: ${wave.title}` : undefined
-              }
-            >
-              {wave.title}
-            </span>
+                    : undefined
+                }
+                style={onRenameWave ? { cursor: 'text' } : undefined}
+                title={onRenameWave ? 'Click to rename' : undefined}
+                role={onRenameWave ? 'button' : undefined}
+                tabIndex={onRenameWave ? 0 : undefined}
+                aria-label={onRenameWave ? wave.title : undefined}
+                aria-describedby={onRenameWave ? renameHintId : undefined}
+              >
+                {wave.title}
+              </span>
+              {onRenameWave && (
+                <span id={renameHintId} className="sr-only">
+                  Rename wave
+                </span>
+              )}
+            </>
           )}
         </span>
         <span className="wave-meta">

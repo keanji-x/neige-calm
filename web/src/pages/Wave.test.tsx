@@ -86,7 +86,7 @@ function makeWave(overrides: Partial<Wave> = {}): Wave {
 }
 
 describe('WavePage rename keyboard entry', () => {
-  it('exposes the wave title as a focusable button with Rename label', () => {
+  it('exposes the wave title as a focusable button named after the wave', () => {
     render(
       withClient(
         <WavePage
@@ -99,8 +99,12 @@ describe('WavePage rename keyboard entry', () => {
         />,
       ),
     );
-    const title = screen.getByRole('button', { name: /Rename wave: Migrate auth/i });
+    const title = screen.getByRole('button', { name: 'Migrate auth' });
     expect(title).toHaveAttribute('tabindex', '0');
+    // After #56 followup, the rename verb is conveyed via
+    // aria-describedby (not stuffed into aria-label) so the accessible
+    // *name* stays "Migrate auth" while the *description* says "Rename wave".
+    expect(title).toHaveAccessibleDescription('Rename wave');
   });
 
   it('drops the keyboard affordance entirely when onRenameWave is absent', () => {
@@ -134,7 +138,7 @@ describe('WavePage rename keyboard entry', () => {
         />,
       ),
     );
-    const title = screen.getByRole('button', { name: /Rename wave/i });
+    const title = screen.getByRole('button', { name: 'Migrate auth' });
     title.focus();
     expect(document.activeElement).toBe(title);
 
@@ -161,7 +165,7 @@ describe('WavePage rename keyboard entry', () => {
         />,
       ),
     );
-    const title = screen.getByRole('button', { name: /Rename wave/i });
+    const title = screen.getByRole('button', { name: 'Migrate auth' });
     title.focus();
     await user.keyboard('{F2}');
     expect(screen.getByRole('textbox', { name: 'Wave title' })).toBeInTheDocument();
@@ -182,7 +186,7 @@ describe('WavePage rename keyboard entry', () => {
         />,
       ),
     );
-    const title = screen.getByRole('button', { name: /Rename wave/i });
+    const title = screen.getByRole('button', { name: 'Migrate auth' });
     title.focus();
     await user.keyboard('{Enter}');
     const input = screen.getByRole('textbox', { name: 'Wave title' });
@@ -194,7 +198,7 @@ describe('WavePage rename keyboard entry', () => {
     expect(screen.queryByRole('textbox', { name: 'Wave title' })).not.toBeInTheDocument();
     expect(onRename).not.toHaveBeenCalled();
     // Focus returned to the display element.
-    const restored = screen.getByRole('button', { name: /Rename wave: Migrate auth/i });
+    const restored = screen.getByRole('button', { name: 'Migrate auth' });
     expect(document.activeElement).toBe(restored);
   });
 
@@ -213,7 +217,7 @@ describe('WavePage rename keyboard entry', () => {
         />,
       ),
     );
-    const title = screen.getByRole('button', { name: /Rename wave/i });
+    const title = screen.getByRole('button', { name: 'Migrate auth' });
     title.focus();
     await user.keyboard('{Enter}');
     const input = screen.getByRole('textbox', { name: 'Wave title' });
@@ -232,7 +236,7 @@ describe('WavePage rename keyboard entry', () => {
     // Focus restoration: since the parent in production would re-render
     // with the new title, but in this test we keep wave.title unchanged,
     // the display span still appears with the original label.
-    const restored = screen.getByRole('button', { name: /Rename wave: Migrate auth/i });
+    const restored = screen.getByRole('button', { name: 'Migrate auth' });
     expect(document.activeElement).toBe(restored);
   });
 });
