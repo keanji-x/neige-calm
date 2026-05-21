@@ -18,8 +18,7 @@
 //!    `spawn_daemon_for` helper the terminal-card endpoint uses. A
 //!    daemon-spawn failure returns 500 to the client but does NOT roll
 //!    back the persisted rows: the orphan-terminal sweeper reaps them
-//!    within ~60s. This matches the prior `routes::codex::create_codex`
-//!    contract.
+//!    within ~60s.
 //!
 //! Why a pre-minted card_id (design option C)? The `CODEX_HOME` path is
 //! `<codex_homes_dir>/<card_id>/` — keyed on the card id so the daemon
@@ -116,8 +115,7 @@ pub(crate) async fn create_codex_card(
         .map(String::from)
         .unwrap_or_else(default_cwd);
 
-    // 4. Assemble the env map the daemon will forward to the PTY child.
-    //    Mirrors `spawn_codex_for`'s contract from the deleted endpoint:
+    // 4. Assemble the env map the daemon will forward to the PTY child:
     //    CODEX_HOME / NEIGE_CARD_ID / NEIGE_CALM_BASE_URL plus proxy vars
     //    pulled from `load_settings`. Only inject HTTP(S)_PROXY when the
     //    user has a non-empty override — empty would *clear* the container

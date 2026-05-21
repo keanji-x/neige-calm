@@ -23,7 +23,7 @@
 //! ## First-class keys
 //!
 //! `http_proxy` / `https_proxy` are the only keys the kernel actively reads
-//! today (see `routes::codex::spawn_codex_for`). The schema is intentionally
+//! today (see `routes::codex_cards::create_codex_card`). The schema is intentionally
 //! open: any string key/value pair is allowed, so future settings can land
 //! without a wire-level migration.
 

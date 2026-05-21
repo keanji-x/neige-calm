@@ -240,7 +240,7 @@ fn resolve_session_daemon_bin() -> PathBuf {
 // CodexClient — owned by Track Codex.
 //
 // Carries the codex CLI path, the hook bridge path, and the ingest URL.
-// The actual spawn lives in `routes::codex::spawn_codex_for`.
+// The actual spawn lives in `routes::codex_cards::create_codex_card`.
 // ---------------------------------------------------------------------------
 
 pub struct CodexClient {
