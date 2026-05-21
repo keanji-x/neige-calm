@@ -227,6 +227,11 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
             supports_scrollback: true,
             supports_sixel: false,
             supports_images: false,
+            // Browser is an untrusted ingress; the WS bridge force-strips
+            // this to false on every ClientHello regardless of what we
+            // send, but we declare false here to match the trust model
+            // documented on the field (see crates/calm-session/src/lib.rs).
+            kernel_originated_input: false,
           },
         },
       });
