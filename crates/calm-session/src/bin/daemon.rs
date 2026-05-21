@@ -898,9 +898,9 @@ async fn handle_client(
                         }
                     }
                     None => {
-                        // Sender dropped → up-task is gone, no more
-                        // direct frames coming. Keep listening to
-                        // broadcast.
+                        // Per-client sender dropped → up-loop has exited → down_task
+                        // is no longer useful. Broadcast forwarding terminates with us.
+                        break;
                     }
                 }
             }
