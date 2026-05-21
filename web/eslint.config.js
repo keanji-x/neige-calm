@@ -17,6 +17,7 @@
 
 import tseslint from 'typescript-eslint';
 import tsParser from '@typescript-eslint/parser';
+import jsxA11y from 'eslint-plugin-jsx-a11y';
 import neigeCalm from './eslint-rules/index.cjs';
 
 // Empty shim plugin: pre-existing `eslint-disable-next-line
@@ -80,6 +81,10 @@ export default tseslint.config(
   },
   // Default config for all TS/TSX under `src/`. Enables the type-aware
   // parser so the custom rule's type-checker calls work.
+  //
+  // a11y: `eslint-plugin-jsx-a11y/recommended` is enabled here as Slice 1
+  // of issue #56 (AI-testable a11y contracts). Future slices may add stricter
+  // rules; for now the recommended set is the baseline.
   {
     files: ['src/**/*.{ts,tsx}'],
     languageOptions: {
@@ -92,9 +97,11 @@ export default tseslint.config(
     plugins: {
       'neige-calm': neigeCalm,
       'react-hooks': reactHooksShim,
+      'jsx-a11y': jsxA11y,
     },
     rules: {
       ...restrictedReactImports,
+      ...jsxA11y.configs.recommended.rules,
       'neige-calm/no-react-state-hook-members': 'error',
       'neige-calm/no-persistent-in-usestate': 'error',
     },

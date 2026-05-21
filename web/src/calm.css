@@ -285,6 +285,11 @@ input, textarea { font: inherit; color: inherit; }
   font-size: 13px;
   font-weight: 500;
   color: var(--text);
+  border-radius: 3px;
+  transition: box-shadow 0.1s;
+}
+.side .cove-nav-edit input:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 .side .cove-nav-edit input::placeholder { color: var(--text-4); }
 
@@ -568,6 +573,10 @@ input, textarea { font: inherit; color: inherit; }
 }
 .wave-back:hover { background: oklch(0% 0 0 / 0.05); color: var(--text); }
 [data-theme="dark"] .wave-back:hover { background: oklch(100% 0 0 / 0.06); }
+.wave-back:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .wave-crumb {
   display: flex; align-items: center; gap: 8px;
   min-width: 0; flex: 1;
@@ -581,8 +590,18 @@ input, textarea { font: inherit; color: inherit; }
   color: var(--text-3);
   cursor: pointer;
   flex-shrink: 0;
+  /* When rendered as <button>: defaults like font-family/size differ from a
+     plain <a>; inherit them so the breadcrumb text looks identical to the
+     surrounding inline elements. The global `button { font: inherit; ... }`
+     reset (top of file) covers most of this; this rule preserves the
+     original anchor's color/hover semantics. */
 }
 .wave-cove:hover { color: var(--text); }
+.wave-cove:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
 .wave-sep { color: var(--text-4); flex-shrink: 0; }
 .wave-title {
   font-family: var(--font-serif);
@@ -591,6 +610,38 @@ input, textarea { font: inherit; color: inherit; }
   letter-spacing: -0.005em;
   color: var(--text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* When the wave title is in rename mode it becomes an <input> with the same
+   visual class. Strip the default chrome and pair `outline: none` with a
+   visible focus indicator so keyboard users can still see the focus ring. */
+.wave-title-input {
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 0;
+  margin: 0;
+  min-width: 120px;
+  border-radius: 4px;
+}
+.wave-title-input:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+/* Click-to-rename inputs on CovePage. These reuse `.h-display` for typography
+   and strip default chrome via inline styles; the matching focus indicator
+   lives here so keyboard users still get visible focus. */
+.cove-title-input {
+  border-radius: 4px;
+  transition: box-shadow 0.1s;
+}
+.cove-title-input:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.new-wave-input {
+  border-radius: 4px;
+  transition: box-shadow 0.1s;
+}
+.new-wave-input:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 .wave-meta {
   display: flex; align-items: center; gap: 14px;
@@ -630,8 +681,15 @@ input, textarea { font: inherit; color: inherit; }
   margin-bottom: 22px;
   display: flex; align-items: center; gap: 6px;
 }
-.crumbs a { color: var(--text-3); cursor: pointer; }
-.crumbs a:hover { color: var(--text); }
+.crumbs a,
+.crumbs .crumb-link { color: var(--text-3); cursor: pointer; }
+.crumbs a:hover,
+.crumbs .crumb-link:hover { color: var(--text); }
+.crumbs .crumb-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
 .crumbs .now { color: var(--text); font-weight: 500; }
 
 /* utility — used in a few spots for tabular numerals */

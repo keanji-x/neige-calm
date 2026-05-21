@@ -232,7 +232,7 @@ function EditableTitle({
         }}
         onBlur={() => void save()}
         aria-label={ariaLabel}
-        className="h-display"
+        className="h-display cove-title-input"
         style={{
           flex: 1,
           minWidth: 0,
@@ -247,7 +247,13 @@ function EditableTitle({
   }
   // Click-to-edit: no pencil affordance — the title itself is the
   // affordance. `cursor: text` is the hint; click → enter edit mode.
+  // TODO(a11y-#56-slice-3): give the click-to-rename heading a proper
+  // keyboard entry path (Enter/Space to enter edit mode, role+tabIndex, or
+  // a dedicated pencil button) so the rename flow is reachable without a
+  // pointer. Slice 1 only sets up the focus indicator on the input that
+  // appears once editing has started.
   return (
+    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- deferred to slice 3 (see TODO above)
     <h1
       className="h-display"
       style={{ flex: 1, margin: 0, cursor: 'text' }}
@@ -327,6 +333,8 @@ function NewWaveCTA({
         }}
         onBlur={() => void submit()}
         placeholder="Wave title…"
+        aria-label="New wave title"
+        className="new-wave-input"
         style={{
           flex: 1,
           minWidth: 0,

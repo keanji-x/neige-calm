@@ -121,6 +121,11 @@ export function Modal({ open, onClose, title, children, wide }: ModalProps) {
         }}
         role="presentation"
       >
+        {/* TODO(a11y-#56-slice-2): replace the onMouseDown stopPropagation
+            dance with a proper focus-trap / Escape-to-close dialog. The
+            Modal is being rebuilt in Slice 2; the lint rule is suppressed
+            here so Slice 1 ships without dragging Modal work in. */}
+        {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- deferred to slice 2 (see TODO above) */}
         <div
           className={`modal-panel${widePanel ? ' modal-panel-wide' : ''}`}
           role="dialog"

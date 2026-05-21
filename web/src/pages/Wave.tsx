@@ -137,14 +137,18 @@ export function WavePage({
         </button>
         <span className="wave-crumb">
           <span className="wave-cove-dot" style={{ background: cove.color }} />
-          <a className="wave-cove" onClick={() => onGo({ name: 'cove', coveId: cove.id })}>
+          <button
+            type="button"
+            className="wave-cove"
+            onClick={() => onGo({ name: 'cove', coveId: cove.id })}
+          >
             {cove.name}
-          </a>
+          </button>
           <span className="wave-sep">·</span>
           {editingTitle ? (
             <input
               ref={titleInputRef}
-              className="wave-title"
+              className="wave-title wave-title-input"
               value={draftTitle}
               onChange={(e) => setDraftTitle(e.target.value)}
               onKeyDown={(e) => {
@@ -153,17 +157,14 @@ export function WavePage({
               }}
               onBlur={() => void commitRename()}
               aria-label="Wave title"
-              style={{
-                background: 'transparent',
-                border: 'none',
-                outline: 'none',
-                font: 'inherit',
-                padding: 0,
-                margin: 0,
-                minWidth: 120,
-              }}
             />
           ) : (
+            // TODO(a11y-#56-slice-3): give the click-to-rename title a
+            // proper keyboard entry path (button or role+tabIndex+keyDown)
+            // so rename mode is reachable without a pointer. Slice 1 only
+            // adds the focus indicator to the input that appears once
+            // editing has started.
+            // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- deferred to slice 3 (see TODO above)
             <span
               className="wave-title"
               onClick={onRenameWave ? startRename : undefined}
