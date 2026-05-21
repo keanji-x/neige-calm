@@ -193,10 +193,76 @@ PR that introduced this primitive. New destructive flows added after
 this point MUST use ConfirmDialog rather than `window.confirm` or an
 ad hoc inline confirmation.
 
-## Reserved
+## Menu
 
-Stub headings for upcoming primitives. Filled in by the PRs noted below.
+The popover-menu primitive — a button trigger that opens a list of
+menuitems. Source: [`Menu.tsx`](./Menu/Menu.tsx). Tests:
+[`Menu.test.tsx`](./Menu/Menu.test.tsx),
+[`Menu.contract.test.tsx`](./Menu/Menu.contract.test.tsx). Extracted from
+`shared/components/AddPanel` in PR #XXX (slice 2 of #60); AddPanel is
+now a thin wrapper that maps registry entries to `MenuItem`s and
+forwards selection back to its caller. The shared in-composite key
+handling (`useRovingTabindex`) lives at
+[`ui/hooks/useRovingTabindex.ts`](./hooks/useRovingTabindex.ts) and is
+unit-tested independently in `useRovingTabindex.test.tsx`.
 
-### Menu
+### Visual
 
-TODO: filled in by PR #XXX (slice 2, Menu extraction from `AddPanel`).
+Reuses the existing AddPanel rulesets in `web/src/calm.css` —
+`.add-panel-wrap`, `.add-panel`, `.add-panel-menu`,
+`.add-panel-menu-item`, `.add-panel-empty`. The Menu primitive itself
+does NOT hard-code class names; callers pass `wrapClassName`,
+`menuClassName`, `itemClassName`, and `emptyClassName`, and the active
+(roving-focused) item gets `is-active` appended. Class-name renaming
+to primitive-neutral selectors is a deliberate follow-up (the current
+AddPanel-prefixed names are kept verbatim across the extraction so no
+CSS diff lands in this PR).
+
+### Accessibility
+
+Implements the menu pattern documented in
+[`docs/a11y-contract.md`](../../../docs/a11y-contract.md). Trigger is
+a `<button>` (caller-owned) carrying `aria-haspopup="menu"` +
+`aria-expanded`; the popover is `<ul role="menu">` with each entry as
+`<button role="menuitem">`. Keyboard semantics come from
+`useRovingTabindex` (ArrowUp/Down with wrap, Home/End, single-letter
+typeahead with ~500ms idle reset, Enter/Space activate, Escape close);
+the canonical contract for those keys lives in the hook. The Menu owns
+the open/close lifecycle and the focus-restore policy.
+
+Two contracts here are Neige-specific (not standard WAI-ARIA) and
+worth calling out:
+
+1. **Synchronous focus restore BEFORE `onSelect`.** When the user
+   activates a menuitem, the Menu moves focus back to the trigger
+   button *synchronously*, then calls `onSelect`. This ordering is
+   load-bearing: if `onSelect` opens a Dialog, the Dialog's mount-time
+   "snapshot the previously-focused element" effect must see the
+   trigger as `document.activeElement` — otherwise the Dialog would
+   snapshot the about-to-unmount menuitem and its close-time restore
+   would noop. Locked by `Menu.contract.test.tsx`.
+
+2. **Outside-click closes WITHOUT focus restore.** Dismissing the menu
+   by clicking elsewhere on the page does not pull focus back to the
+   trigger. The user gestured elsewhere intentionally, and yanking
+   their focus away from the clicked target would be hostile.
+   Symmetric with the Dialog overlay-click dismissal. Locked by
+   `Menu.contract.test.tsx`.
+
+### Test
+
+Selected via `getByRole('button', { name })` (trigger) and
+`getByRole('menuitem', { name })` (items) per a11y-contract §8.1.
+[`Menu.test.tsx`](./Menu/Menu.test.tsx) covers the wiring layer: trigger
+ARIA, popover structure, one representative key path per category
+(ArrowDown, Home/End, typeahead, Escape, Enter activation), the empty
+state, and disabled-item activation skip. It deliberately does NOT
+re-prove the hook's behavior; that's
+[`ui/hooks/useRovingTabindex.test.tsx`](./hooks/useRovingTabindex.test.tsx).
+[`Menu.contract.test.tsx`](./Menu/Menu.contract.test.tsx) covers the
+two Neige-specific contracts above end-to-end (the second test
+exercises Menu + Dialog together so the Dialog's
+previously-focused-element snapshot is part of the assertion).
+Deferred to e2e: the axe scan on the open menu (lives in
+`web/e2e/a11y-axe.spec.ts`) and real-browser keyboard traversal
+(`web/e2e/a11y-keyboard.spec.ts`).

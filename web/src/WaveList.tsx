@@ -43,7 +43,7 @@
 // the view-mode overlay.
 
 import { useCallback, useMemo, useRef } from 'react';
-import { useRovingTabindex } from './hooks/useRovingTabindex';
+import { useRovingTabindex } from './ui/hooks/useRovingTabindex';
 import { WaveCard } from './shared/components/WaveCard';
 import { UnknownCard } from './cards/UnknownCard';
 import { dlog } from './util/debug';
