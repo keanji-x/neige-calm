@@ -16,7 +16,9 @@ test('creates a new wave from the cove page and navigates to it', async ({ page 
   await page.goto('/calm/');
 
   // Step 1 — sidebar → Scratch cove. Same anchor logic as golden-path.
-  const scratch = page.locator('button.cove-nav', { hasText: 'Scratch' });
+  // Accessible name is the cove name (optionally with " <N>" wave-count
+  // suffix) — see Sidebar.tsx:62-77.
+  const scratch = page.getByRole('button', { name: /scratch/i });
   await expect(scratch).toBeVisible();
   await scratch.click();
   await expect(page).toHaveURL(/\/calm\/cove\/[^/]+$/);
