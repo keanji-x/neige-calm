@@ -238,6 +238,14 @@ type ResponderMap = Arc<Mutex<HashMap<RequestId, oneshot::Sender<Result<Value, R
 /// gating logic.
 pub const KERNEL_CALLBACKS_CAPABILITY: &str = "dev.neige/kernel-callbacks";
 
+/// Version of the `dev.neige/kernel-callbacks` capability the kernel supports.
+/// Plugins advertise `experimental[KERNEL_CALLBACKS_CAPABILITY].version` in
+/// their `initialize` response; only an **exact** match here counts as
+/// "capability declared". Any other value (including a missing `version`
+/// field) is treated as the capability being absent and a `warn!` log is
+/// emitted so the divergence is visible during debugging. Issue #45.
+pub const KERNEL_CALLBACKS_CAPABILITY_VERSION: u32 = 1;
+
 pub struct McpClient {
     next_id: AtomicU64,
     out_tx: mpsc::Sender<OutboundFrame>,
@@ -404,6 +412,23 @@ impl McpClient {
                 "initialize.serverInfo was not an object: {server_info}"
             )));
         }
+        // Issue #45: enforce that the plugin echoes the exact protocol version
+        // the kernel advertised. Pre-#45 the kernel sent `KERNEL_PROTOCOL_VERSION`
+        // but accepted any (or missing) `result.protocolVersion`; a plugin
+        // claiming an incompatible spec revision would silently negotiate
+        // against a kernel that doesn't actually speak its dialect. We now
+        // fail the handshake on mismatch — the existing initialize-failure
+        // path reaps the child and surfaces `HostError::InitializeRejected`.
+        let plugin_protocol = value
+            .get("protocolVersion")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if plugin_protocol != KERNEL_PROTOCOL_VERSION {
+            return Err(McpError::ProtocolVersionMismatch {
+                kernel: KERNEL_PROTOCOL_VERSION.to_string(),
+                plugin: plugin_protocol.to_string(),
+            });
+        }
         // M1: when we issued an expected_echo, the plugin must mirror it back
         // at `result._meta["dev.neige/auth"].echoed_token`. Use the marker
         // string `auth mismatch` so PluginHost::spawn can recognize the path
@@ -444,18 +469,42 @@ impl McpClient {
     }
 
     /// Convenience predicate: did the plugin opt into the `neige.*` namespace?
-    /// True iff `result.capabilities.experimental["dev.neige/kernel-callbacks"]`
-    /// is **present** (any value). We don't currently inspect the version
-    /// payload — bumping it is M2/M3's problem.
-    pub fn has_kernel_callbacks_capability(&self) -> bool {
-        self.server_capabilities
-            .lock()
-            .unwrap()
-            .pointer(&format!(
-                "/experimental/{}",
-                KERNEL_CALLBACKS_CAPABILITY.replace('/', "~1")
-            ))
-            .is_some()
+    /// True iff
+    /// `result.capabilities.experimental["dev.neige/kernel-callbacks"].version`
+    /// equals `KERNEL_CALLBACKS_CAPABILITY_VERSION`. Any other value
+    /// (including a missing entry or a missing `version` field) is treated
+    /// as the capability being absent. When the capability is present but
+    /// at a non-matching version, a `warn!` log is emitted so the divergence
+    /// is visible during debugging. Issue #45.
+    pub fn has_kernel_callbacks_capability(&self, plugin_id: &str) -> bool {
+        let caps = self.server_capabilities.lock().unwrap();
+        let entry = caps.pointer(&format!(
+            "/experimental/{}",
+            KERNEL_CALLBACKS_CAPABILITY.replace('/', "~1")
+        ));
+        match entry {
+            None => false,
+            Some(node) => {
+                // Per spec the value is an object with a `version` field. We
+                // accept only `u32` exact-match; anything else (missing field,
+                // wrong type, wrong number) → treat as absent and warn so
+                // operators can see the version skew.
+                let version = node.get("version").and_then(|v| v.as_u64());
+                match version {
+                    Some(v) if v == u64::from(KERNEL_CALLBACKS_CAPABILITY_VERSION) => true,
+                    _ => {
+                        tracing::warn!(
+                            plugin_id = %plugin_id,
+                            advertised = ?node.get("version"),
+                            expected = KERNEL_CALLBACKS_CAPABILITY_VERSION,
+                            "plugin advertised experimental.dev.neige/kernel-callbacks with \
+                             non-matching version; treating as absent"
+                        );
+                        false
+                    }
+                }
+            }
+        }
     }
 
     /// MCP `tools/call` (M2): invoke a tool the plugin server registered via
@@ -1152,5 +1201,176 @@ mod tests {
         assert_eq!(result["got"], "hello");
         drop(client);
         let _ = tokio::time::timeout(Duration::from_millis(200), plugin_task).await;
+    }
+
+    /// Issue #45 test helper: spawn a stub plugin that replies to `initialize`
+    /// with a caller-supplied `result` payload, then echoes any further
+    /// requests as `{"echo": method}`. Returns the duplex halves the kernel
+    /// side should hand to `McpClient::connect`, plus the JoinHandle so tests
+    /// can drain it on shutdown.
+    fn spawn_init_stub(
+        init_result: Value,
+    ) -> (
+        tokio::io::ReadHalf<tokio::io::DuplexStream>,
+        tokio::io::WriteHalf<tokio::io::DuplexStream>,
+        JoinHandle<()>,
+    ) {
+        let (kernel, plugin) = tokio::io::duplex(8 * 1024);
+        let (k_r, k_w) = tokio::io::split(kernel);
+        let (p_r, p_w) = tokio::io::split(plugin);
+        let task = tokio::spawn(async move {
+            let mut reader = BufReader::new(p_r);
+            let mut writer = p_w;
+            let mut buf = String::new();
+            loop {
+                buf.clear();
+                let n = reader.read_line(&mut buf).await.unwrap_or(0);
+                if n == 0 {
+                    return;
+                }
+                let v: Value = match serde_json::from_str(buf.trim()) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                let id = match v.get("id").cloned() {
+                    Some(i) => i,
+                    None => continue,
+                };
+                let method = v.get("method").and_then(|m| m.as_str()).unwrap_or("");
+                let reply = if method == "initialize" {
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": init_result,
+                    })
+                } else {
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": { "echo": method }
+                    })
+                };
+                let mut s = serde_json::to_string(&reply).unwrap();
+                s.push('\n');
+                if writer.write_all(s.as_bytes()).await.is_err() {
+                    return;
+                }
+                if writer.flush().await.is_err() {
+                    return;
+                }
+            }
+        });
+        (k_r, k_w, task)
+    }
+
+    #[tokio::test]
+    async fn initialize_accepts_matching_protocol_version() {
+        // Issue #45: when the plugin echoes the kernel's `KERNEL_PROTOCOL_VERSION`
+        // verbatim, handshake should succeed (this is the green-path baseline
+        // every existing stub fixture already meets).
+        let (k_r, k_w, task) = spawn_init_stub(json!({
+            "protocolVersion": KERNEL_PROTOCOL_VERSION,
+            "serverInfo": { "name": "stub", "version": "0.0.0" },
+            "capabilities": {}
+        }));
+        let client = McpClient::connect(k_r, k_w).await.expect("connect");
+        // sanity: with empty capabilities, the kernel-callbacks predicate
+        // returns false (capability absent).
+        assert!(!client.has_kernel_callbacks_capability("test.plugin"));
+        drop(client);
+        let _ = tokio::time::timeout(Duration::from_millis(200), task).await;
+    }
+
+    #[tokio::test]
+    async fn initialize_rejects_mismatched_protocol_version() {
+        // Issue #45: a plugin claiming a different `protocolVersion` must fail
+        // the handshake with the typed `ProtocolVersionMismatch` variant.
+        let (k_r, k_w, task) = spawn_init_stub(json!({
+            "protocolVersion": "2099-01-01",
+            "serverInfo": { "name": "stub", "version": "0.0.0" },
+            "capabilities": {}
+        }));
+        match McpClient::connect(k_r, k_w).await {
+            Ok(_) => panic!("handshake should fail on protocol mismatch"),
+            Err(McpError::ProtocolVersionMismatch { kernel, plugin }) => {
+                assert_eq!(kernel, KERNEL_PROTOCOL_VERSION);
+                assert_eq!(plugin, "2099-01-01");
+            }
+            Err(other) => panic!("expected ProtocolVersionMismatch, got {other:?}"),
+        }
+        let _ = tokio::time::timeout(Duration::from_millis(200), task).await;
+    }
+
+    #[tokio::test]
+    async fn capability_present_with_matching_version_is_true() {
+        // Issue #45: `version: KERNEL_CALLBACKS_CAPABILITY_VERSION` → present.
+        let (k_r, k_w, task) = spawn_init_stub(json!({
+            "protocolVersion": KERNEL_PROTOCOL_VERSION,
+            "serverInfo": { "name": "stub", "version": "0.0.0" },
+            "capabilities": {
+                "experimental": {
+                    KERNEL_CALLBACKS_CAPABILITY: { "version": KERNEL_CALLBACKS_CAPABILITY_VERSION }
+                }
+            }
+        }));
+        let client = McpClient::connect(k_r, k_w).await.expect("connect");
+        assert!(client.has_kernel_callbacks_capability("test.plugin"));
+        drop(client);
+        let _ = tokio::time::timeout(Duration::from_millis(200), task).await;
+    }
+
+    #[tokio::test]
+    async fn capability_present_with_wrong_version_is_false() {
+        // Issue #45: `version: 2` (or anything ≠ KERNEL_CALLBACKS_CAPABILITY_VERSION)
+        // → treated as absent. A warn-level log is emitted; we don't assert on
+        // the log output (no log-capture infra in this crate yet) but the
+        // boolean is the load-bearing contract for the host gating logic.
+        let (k_r, k_w, task) = spawn_init_stub(json!({
+            "protocolVersion": KERNEL_PROTOCOL_VERSION,
+            "serverInfo": { "name": "stub", "version": "0.0.0" },
+            "capabilities": {
+                "experimental": {
+                    KERNEL_CALLBACKS_CAPABILITY: { "version": 2 }
+                }
+            }
+        }));
+        let client = McpClient::connect(k_r, k_w).await.expect("connect");
+        assert!(!client.has_kernel_callbacks_capability("test.plugin"));
+        drop(client);
+        let _ = tokio::time::timeout(Duration::from_millis(200), task).await;
+    }
+
+    #[tokio::test]
+    async fn capability_present_without_version_field_is_false() {
+        // Issue #45: object present but `version` missing → absent.
+        let (k_r, k_w, task) = spawn_init_stub(json!({
+            "protocolVersion": KERNEL_PROTOCOL_VERSION,
+            "serverInfo": { "name": "stub", "version": "0.0.0" },
+            "capabilities": {
+                "experimental": {
+                    KERNEL_CALLBACKS_CAPABILITY: {}
+                }
+            }
+        }));
+        let client = McpClient::connect(k_r, k_w).await.expect("connect");
+        assert!(!client.has_kernel_callbacks_capability("test.plugin"));
+        drop(client);
+        let _ = tokio::time::timeout(Duration::from_millis(200), task).await;
+    }
+
+    #[tokio::test]
+    async fn capability_entirely_absent_is_false() {
+        // Issue #45: no `experimental` entry at all → absent (regression guard
+        // for the pre-#45 behavior that the no-capability gating tests already
+        // depend on; explicit here to keep all six cases co-located).
+        let (k_r, k_w, task) = spawn_init_stub(json!({
+            "protocolVersion": KERNEL_PROTOCOL_VERSION,
+            "serverInfo": { "name": "stub", "version": "0.0.0" },
+            "capabilities": {}
+        }));
+        let client = McpClient::connect(k_r, k_w).await.expect("connect");
+        assert!(!client.has_kernel_callbacks_capability("test.plugin"));
+        drop(client);
+        let _ = tokio::time::timeout(Duration::from_millis(200), task).await;
     }
 }

@@ -375,7 +375,7 @@ impl PluginHost {
         };
         let inbound_notifs = mcp.take_inbound_notifications();
         let subscriptions: Arc<Mutex<Vec<SubscriptionRecord>>> = Arc::new(Mutex::new(Vec::new()));
-        let router = if mcp.has_kernel_callbacks_capability() {
+        let router = if mcp.has_kernel_callbacks_capability(id) {
             spawn_neige_router(
                 id.to_string(),
                 Arc::clone(&self.repo),

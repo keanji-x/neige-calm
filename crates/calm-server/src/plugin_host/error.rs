@@ -68,6 +68,15 @@ pub enum McpError {
     /// channel buffer fills (~64 deep). The caller should back off and retry.
     #[error("mcp client outbound buffer full")]
     BufferFull,
+
+    /// The plugin's echoed `protocolVersion` in the `initialize` response did
+    /// not match `KERNEL_PROTOCOL_VERSION`. Issue #45: we now enforce an
+    /// exact-equal match instead of silently accepting whatever the plugin
+    /// claims. The handshake is failed and the process is reaped by the
+    /// existing initialize-failure path; the supervisor surfaces this via
+    /// `HostError::InitializeRejected`.
+    #[error("mcp protocol version mismatch: kernel={kernel}, plugin={plugin}")]
+    ProtocolVersionMismatch { kernel: String, plugin: String },
 }
 
 // ---------------------------------------------------------------------------
