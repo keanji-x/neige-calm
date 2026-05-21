@@ -273,10 +273,10 @@ async fn record_session_roundtrips_through_loader() {
     // the expected line count or we hit a deadline.
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     loop {
-        if let Ok(text) = std::fs::read_to_string(&session_path) {
-            if text.lines().filter(|l| !l.trim().is_empty()).count() >= want_kinds.len() {
-                break;
-            }
+        if let Ok(text) = std::fs::read_to_string(&session_path)
+            && text.lines().filter(|l| !l.trim().is_empty()).count() >= want_kinds.len()
+        {
+            break;
         }
         if std::time::Instant::now() >= deadline {
             panic!(

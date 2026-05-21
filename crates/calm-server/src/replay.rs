@@ -115,36 +115,36 @@ pub fn load_fixture_from_path(path: &Path) -> Result<Fixture, String> {
     // `"name"` / whitespace; that line on its own does not parse as
     // FixtureEvent (no `kind` field), so the sniff is unambiguous.
     let first_line = text.lines().find(|l| !l.trim().is_empty());
-    if let Some(line) = first_line {
-        if serde_json::from_str::<FixtureEvent>(line).is_ok() {
-            // NDJSON branch — every non-blank line is a FixtureEvent.
-            let mut events = Vec::new();
-            for (lineno, raw) in text.lines().enumerate() {
-                if raw.trim().is_empty() {
-                    continue;
-                }
-                let ev: FixtureEvent = serde_json::from_str(raw).map_err(|e| {
-                    format!(
-                        "parse fixture {} (line {}): {}",
-                        path.display(),
-                        lineno + 1,
-                        e
-                    )
-                })?;
-                events.push(ev);
+    if let Some(line) = first_line
+        && serde_json::from_str::<FixtureEvent>(line).is_ok()
+    {
+        // NDJSON branch — every non-blank line is a FixtureEvent.
+        let mut events = Vec::new();
+        for (lineno, raw) in text.lines().enumerate() {
+            if raw.trim().is_empty() {
+                continue;
             }
-            let name = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("recorded-session")
-                .to_string();
-            return Ok(Fixture {
-                name,
-                description: "recorded session (NDJSON)".to_string(),
-                events,
-                expected: FixtureExpected::default(),
-            });
+            let ev: FixtureEvent = serde_json::from_str(raw).map_err(|e| {
+                format!(
+                    "parse fixture {} (line {}): {}",
+                    path.display(),
+                    lineno + 1,
+                    e
+                )
+            })?;
+            events.push(ev);
         }
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("recorded-session")
+            .to_string();
+        return Ok(Fixture {
+            name,
+            description: "recorded session (NDJSON)".to_string(),
+            events,
+            expected: FixtureExpected::default(),
+        });
     }
 
     // Object branch — single JSON fixture object.
@@ -392,10 +392,9 @@ fn infer_wave_id(fixture: &Fixture) -> Option<String> {
         if ev.kind == "overlay.set"
             && ev.payload.get("entity_kind").and_then(|v| v.as_str()) == Some("view")
             && ev.payload.get("kind").and_then(|v| v.as_str()) == Some("layout")
+            && let Some(id) = ev.payload.get("entity_id").and_then(|v| v.as_str())
         {
-            if let Some(id) = ev.payload.get("entity_id").and_then(|v| v.as_str()) {
-                return Some(id.to_string());
-            }
+            return Some(id.to_string());
         }
     }
     None
