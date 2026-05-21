@@ -15,7 +15,15 @@ test('loads the calm shell and navigates into the Scratch cove', async ({ page }
   await expect(page.locator('aside.side')).toBeVisible();
 
   // The "Today" nav button is always present (and is the default route).
-  await expect(page.getByRole('button', { name: /today/i })).toBeVisible();
+  // Scope by the sidebar's top <nav aria-label="Sidebar navigation"> so a
+  // seed/test that produces a "Waiting on you" wave titled "Today" doesn't
+  // collide with this button on accessible name. See Sidebar.tsx +
+  // docs/a11y-contract.md §2.2.
+  await expect(
+    page
+      .getByRole('navigation', { name: 'Sidebar navigation' })
+      .getByRole('button', { name: 'Today' }),
+  ).toBeVisible();
 
   // Find the seeded "Scratch" cove row in the sidebar and click it.
   // The Sidebar button's accessible name is the cove name (plus an
