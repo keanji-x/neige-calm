@@ -23,7 +23,7 @@ export function Sidebar({
 }) {
   const waitingWaves = waves.filter((w) => w.status === 'waiting');
   return (
-    <aside className="side">
+    <aside className="side" aria-label="Navigation">
       <button
         className={'nav-item nav-today' + (route.name === 'today' ? ' active' : '')}
         onClick={() => onGo({ name: 'today' })}

@@ -343,7 +343,7 @@ export function WavePage({
         </span>
       </header>
 
-      <main className="workbench-main">
+      <section className="workbench-main">
         <Suspense
           fallback={
             <div className="synth">
@@ -365,7 +365,7 @@ export function WavePage({
             />
           )}
         </Suspense>
-      </main>
+      </section>
       {/* Shortcut: when a kind's createSchema is just one `directory` field,
           skip the SchemaForm wrapper entirely and let the user pick a
           directory = create. Today only codex hits this path. Other kinds
