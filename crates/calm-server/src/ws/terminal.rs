@@ -127,8 +127,51 @@ async fn handle(socket: WebSocket, sock: PathBuf, terminal_id: String) {
             return;
         }
     };
-    let (mut rd, mut wr) = stream.into_split();
-    let (ws_tx, mut ws_rx) = socket.split();
+    pump(socket, stream, terminal_id, PING_INTERVAL, PONG_TIMEOUT).await
+}
+
+/// Daemon transport abstraction. The WS bridge only needs the
+/// bidirectional `AsyncRead + AsyncWrite` half — in production this is a
+/// `tokio::net::UnixStream`; in tests it's one end of a
+/// `tokio::io::duplex` pair so we can drive the pump in-process without
+/// forking a real `calm-session-daemon`.
+///
+/// A blanket impl covers any type with the right combination of bounds;
+/// callers don't need to opt in explicitly.
+pub(crate) trait DaemonTransport:
+    tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static
+{
+}
+
+impl<T> DaemonTransport for T where
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static
+{
+}
+
+/// Core WS↔daemon bridge loop. Splits the `daemon` transport into its
+/// read/write halves, splits the `ws` socket, and drives three concurrent
+/// arms (up: WS Text → daemon bincode frame; down: daemon bincode frame
+/// → WS Text; heartbeat: pings + dead-client detection) inside a single
+/// `tokio::select!`. Exits as soon as any arm completes — closing one
+/// half cancels the rest.
+///
+/// `ping_interval` and `pong_timeout` are parameters so tests can pass
+/// short windows; production values are [`PING_INTERVAL`] and
+/// [`PONG_TIMEOUT`] (10s / 30s) and are wired in by [`handle`].
+///
+/// Generic over `DaemonTransport` so unit tests can substitute
+/// `tokio::io::DuplexStream`. The split-into-halves pattern requires
+/// `AsyncRead + AsyncWrite` on the concrete type, which the trait bound
+/// provides via [`tokio::io::split`].
+pub(crate) async fn pump<T: DaemonTransport>(
+    ws: WebSocket,
+    daemon: T,
+    terminal_id: String,
+    ping_interval: Duration,
+    pong_timeout: Duration,
+) {
+    let (mut rd, mut wr) = tokio::io::split(daemon);
+    let (ws_tx, mut ws_rx) = ws.split();
 
     // Share the write half across the three tasks (down-stream, ping, and
     // the heartbeat close path) behind a mutex. Contention here is trivial:
@@ -251,15 +294,15 @@ async fn handle(socket: WebSocket, sock: PathBuf, terminal_id: String) {
         let _ = ws_tx_down.lock().await.send(Message::Close(None)).await;
     };
 
-    // Heartbeat: ping every `PING_INTERVAL`; if `last_seen` is older than
-    // `PONG_TIMEOUT`, log + close with 1011. Browsers don't expose pongs to
+    // Heartbeat: ping every `ping_interval`; if `last_seen` is older than
+    // `pong_timeout`, log + close with 1011. Browsers don't expose pongs to
     // JS, but our `last_seen` is bumped on *any* frame, and clients ack
     // pings with pongs at the protocol layer — that's all we need for
     // server-side death detection. Exits when the socket gets closed (a
     // send error trips us out and the `select!` cancels the other arms).
     let ws_tx_hb = ws_tx.clone();
     let last_seen_hb = last_seen.clone();
-    let heartbeat = run_heartbeat(ws_tx_hb, last_seen_hb, PING_INTERVAL, PONG_TIMEOUT);
+    let heartbeat = run_heartbeat(ws_tx_hb, last_seen_hb, ping_interval, pong_timeout);
 
     tokio::select! {
         _ = up => {}
@@ -419,6 +462,348 @@ mod heartbeat_tests {
             !log.iter().any(is_close_1011),
             "did NOT expect a Close(1011), got: {:?}",
             log
+        );
+    }
+}
+
+#[cfg(test)]
+mod pump_tests {
+    //! In-process tests for the WS↔daemon bridge that don't fork a real
+    //! `calm-session-daemon`. We mount [`pump`] under a tiny `axum::Router`
+    //! with a single WS route, drive it with a `tokio_tungstenite` client
+    //! over a local TCP listener (the same pattern used in
+    //! `tests/ws_events.rs`), and on the daemon side substitute a
+    //! `tokio::io::duplex` pair for `UnixStream`. Net result: the only thing
+    //! we're skipping vs. production is the kernel socket — every byte of
+    //! the JSON↔bincode bridge is exercised.
+    //!
+    //! Timing: ping/pong values are kept very large (10s / 60s) so the
+    //! heartbeat arm never fires inside test wall-clock; the cases we
+    //! actually want to assert are about up/down translation and graceful
+    //! shutdown, not heartbeat behavior (covered by `heartbeat_tests`).
+    use super::*;
+    use axum::Router;
+    use axum::extract::ws::WebSocketUpgrade;
+    use axum::routing::get;
+    use calm_session::{ClientMsg, DaemonMsg, read_frame, write_frame};
+    use futures_util::{SinkExt, StreamExt};
+    use std::net::SocketAddr;
+    use tokio::io::DuplexStream;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::Message as TMessage;
+
+    /// Bring up a one-route axum app whose WS handler invokes [`pump`] with
+    /// the supplied `daemon_side` of a duplex pair. Returns the bound
+    /// address; the caller then connects with `tokio_tungstenite`.
+    ///
+    /// Each call creates a fresh listener on `127.0.0.1:0` so concurrent
+    /// tests don't share state. The server task is spawned and lives until
+    /// the test ends; no cleanup needed because the runtime tears it down.
+    async fn boot_pump(daemon_side: DuplexStream, ping: Duration, pong: Duration) -> SocketAddr {
+        // Wrap the DuplexStream in a Mutex<Option<…>> so the closure given
+        // to `Router::route` can `take` it the first time the route is
+        // hit. `on_upgrade` consumes the value by move; the option dance
+        // is just to satisfy `Fn` (not `FnOnce`) while only firing once.
+        let slot = Arc::new(Mutex::new(Some(daemon_side)));
+        let app = Router::new().route(
+            "/pump",
+            get(move |upgrade: WebSocketUpgrade| {
+                let slot = slot.clone();
+                async move {
+                    let daemon = slot
+                        .lock()
+                        .await
+                        .take()
+                        .expect("pump route called more than once");
+                    let terminal_id = "test-terminal-1".to_string();
+                    upgrade.on_upgrade(move |socket| pump(socket, daemon, terminal_id, ping, pong))
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        // Tiny breathing room — same idiom as tests/ws_events.rs.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        addr
+    }
+
+    /// Big enough to never wake during a test. We don't want the heartbeat
+    /// arm racing the assertions for up/down behavior.
+    fn long_window() -> (Duration, Duration) {
+        (Duration::from_secs(10), Duration::from_secs(60))
+    }
+
+    /// daemon → WS: write a `DaemonMsg::Stdout` on the duplex; the WS
+    /// client must receive a JSON Text frame that round-trips back to the
+    /// same `DaemonMsg`.
+    #[tokio::test]
+    async fn down_translates_daemon_frame_to_ws_text() {
+        let (mut daemon_side, server_side) = tokio::io::duplex(8192);
+        let (ping, pong) = long_window();
+        let addr = boot_pump(server_side, ping, pong).await;
+
+        let url = format!("ws://{}/pump", addr);
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        // Push one bincode frame from the "daemon" side.
+        write_frame(&mut daemon_side, &DaemonMsg::Stdout(b"world".to_vec()))
+            .await
+            .unwrap();
+
+        // WS client should receive a single Text frame.
+        let msg = tokio::time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("ws recv timed out")
+            .expect("ws closed unexpectedly")
+            .expect("ws error");
+        let text = match msg {
+            TMessage::Text(t) => t.to_string(),
+            other => panic!("expected text, got {:?}", other),
+        };
+        let parsed: DaemonMsg = serde_json::from_str(&text).expect("valid DaemonMsg JSON");
+        match parsed {
+            DaemonMsg::Stdout(bytes) => assert_eq!(bytes, b"world"),
+            other => panic!("expected Stdout(b\"world\"), got {:?}", other),
+        }
+    }
+
+    /// WS → daemon: client pushes a Text frame containing
+    /// `ClientMsg::Stdin`; the daemon side must observe one bincode-framed
+    /// `ClientMsg` matching it.
+    #[tokio::test]
+    async fn up_translates_ws_text_to_daemon_frame() {
+        let (mut daemon_side, server_side) = tokio::io::duplex(8192);
+        let (ping, pong) = long_window();
+        let addr = boot_pump(server_side, ping, pong).await;
+
+        let url = format!("ws://{}/pump", addr);
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        let stdin = ClientMsg::Stdin(b"hello".to_vec());
+        let json = serde_json::to_string(&stdin).unwrap();
+        ws.send(TMessage::Text(json)).await.unwrap();
+
+        let got: ClientMsg = tokio::time::timeout(
+            Duration::from_secs(2),
+            read_frame::<ClientMsg, _>(&mut daemon_side),
+        )
+        .await
+        .expect("daemon-side read timed out")
+        .expect("daemon-side read failed");
+        match got {
+            ClientMsg::Stdin(b) => assert_eq!(b, b"hello"),
+            other => panic!("expected Stdin(b\"hello\"), got {:?}", other),
+        }
+    }
+
+    /// When the daemon emits `ChildExited`, the pump must (a) forward the
+    /// frame as JSON, (b) send a WS Close, and (c) return. Asserting on
+    /// the stream draining to `None` is the test's proxy for "pump
+    /// returned".
+    #[tokio::test]
+    async fn child_exited_closes_ws_and_pump_returns() {
+        let (mut daemon_side, server_side) = tokio::io::duplex(8192);
+        let (ping, pong) = long_window();
+        let addr = boot_pump(server_side, ping, pong).await;
+
+        let url = format!("ws://{}/pump", addr);
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        write_frame(&mut daemon_side, &DaemonMsg::ChildExited { code: Some(0) })
+            .await
+            .unwrap();
+        // Drop our daemon-side writer so the down arm's read_frame would
+        // hit EOF if the ChildExited break didn't already trigger. Either
+        // way the pump must wind down.
+        drop(daemon_side);
+
+        // 1) Text frame carrying the JSON ChildExited.
+        let msg = tokio::time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("ws recv timed out")
+            .expect("ws closed before exit message")
+            .expect("ws error");
+        let text = match msg {
+            TMessage::Text(t) => t.to_string(),
+            other => panic!("expected text, got {:?}", other),
+        };
+        let parsed: DaemonMsg = serde_json::from_str(&text).unwrap();
+        assert!(
+            matches!(parsed, DaemonMsg::ChildExited { code: Some(0) }),
+            "expected ChildExited, got {:?}",
+            parsed
+        );
+
+        // 2) Close frame.
+        let close = tokio::time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("ws recv (close) timed out")
+            .expect("ws closed without sending Close")
+            .expect("ws error");
+        assert!(
+            matches!(close, TMessage::Close(_)),
+            "expected Close frame, got {:?}",
+            close
+        );
+
+        // 3) Stream drains to None — pump has dropped the WS sink.
+        let end = tokio::time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("stream did not end after Close");
+        assert!(
+            end.is_none() || matches!(end, Some(Err(_))),
+            "expected stream end after Close, got {:?}",
+            end
+        );
+    }
+
+    /// Bad JSON on the WS up path is logged + dropped (see daemon.rs:158
+    /// note in the original handler). The pump itself must keep running:
+    /// a following valid frame should arrive on the daemon side as if the
+    /// garbage was never there.
+    #[tokio::test]
+    async fn bad_json_does_not_kill_pump() {
+        let (mut daemon_side, server_side) = tokio::io::duplex(8192);
+        let (ping, pong) = long_window();
+        let addr = boot_pump(server_side, ping, pong).await;
+
+        let url = format!("ws://{}/pump", addr);
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        // 1) Garbage. Must be dropped silently — no bincode frame appears
+        //    on `daemon_side`.
+        ws.send(TMessage::Text("not valid json".into()))
+            .await
+            .unwrap();
+
+        // Probe: a short read on the daemon side must time out. If a
+        // bincode frame had been emitted, `read_frame` would return Ok
+        // immediately.
+        let probe = tokio::time::timeout(
+            Duration::from_millis(150),
+            read_frame::<ClientMsg, _>(&mut daemon_side),
+        )
+        .await;
+        assert!(
+            probe.is_err(),
+            "bad JSON unexpectedly produced a daemon-side frame: {:?}",
+            probe
+        );
+
+        // 2) Subsequent valid frame must arrive — proves pump is still
+        //    pumping.
+        let stdin = ClientMsg::Stdin(b"after-bad".to_vec());
+        ws.send(TMessage::Text(serde_json::to_string(&stdin).unwrap()))
+            .await
+            .unwrap();
+        let got: ClientMsg = tokio::time::timeout(
+            Duration::from_secs(2),
+            read_frame::<ClientMsg, _>(&mut daemon_side),
+        )
+        .await
+        .expect("daemon-side read timed out after bad JSON")
+        .expect("daemon-side read failed");
+        match got {
+            ClientMsg::Stdin(b) => assert_eq!(b, b"after-bad"),
+            other => panic!("expected Stdin(b\"after-bad\"), got {:?}", other),
+        }
+    }
+
+    /// Daemon writes bytes whose first 4 don't match `NEIG` framing magic.
+    /// The down arm's `read_frame` must return `FrameError::BadMagic`, which
+    /// the pump translates to an error-log + Close + return. We assert the
+    /// WS client sees the Close and the stream drains to None.
+    #[tokio::test]
+    async fn bad_magic_breaks_pump_cleanly() {
+        use tokio::io::AsyncWriteExt;
+
+        let (mut daemon_side, server_side) = tokio::io::duplex(8192);
+        let (ping, pong) = long_window();
+        let addr = boot_pump(server_side, ping, pong).await;
+
+        let url = format!("ws://{}/pump", addr);
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        // Garbage magic: anything that isn't `NEIG`. Four bytes is the
+        // exact width `read_frame` consumes before checking magic, so the
+        // BadMagic branch fires deterministically without us having to
+        // worry about partial-read interleaving.
+        daemon_side.write_all(b"XXXX").await.unwrap();
+        daemon_side.flush().await.unwrap();
+
+        // Down arm should hit BadMagic, error-log, break, then send Close.
+        let close = tokio::time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("ws recv (close) timed out")
+            .expect("ws closed without sending Close")
+            .expect("ws error");
+        assert!(
+            matches!(close, TMessage::Close(_)),
+            "expected Close frame, got {:?}",
+            close
+        );
+
+        // Stream drains — pump returned.
+        let end = tokio::time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("stream did not end after Close");
+        assert!(
+            end.is_none() || matches!(end, Some(Err(_))),
+            "expected stream end after Close, got {:?}",
+            end
+        );
+    }
+
+    /// Daemon writes a syntactically well-formed framing prefix but with
+    /// version=2 (kernel only supports version=1). The down arm's
+    /// `read_frame` must return `FrameError::UnsupportedFrameVersion`,
+    /// which the pump translates to an error-log + Close + return.
+    #[tokio::test]
+    async fn unsupported_frame_version_breaks_pump_cleanly() {
+        use tokio::io::AsyncWriteExt;
+
+        let (mut daemon_side, server_side) = tokio::io::duplex(8192);
+        let (ping, pong) = long_window();
+        let addr = boot_pump(server_side, ping, pong).await;
+
+        let url = format!("ws://{}/pump", addr);
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        // Magic `NEIG` (valid) + version=2 (big-endian, unsupported) +
+        // length=0. read_frame validates magic first, then version, so
+        // this drives the UnsupportedFrameVersion path before ever
+        // touching the length / payload.
+        let mut wire = Vec::with_capacity(10);
+        wire.extend_from_slice(b"NEIG");
+        wire.extend_from_slice(&2u16.to_be_bytes());
+        wire.extend_from_slice(&0u32.to_be_bytes());
+        daemon_side.write_all(&wire).await.unwrap();
+        daemon_side.flush().await.unwrap();
+
+        // Down arm should hit UnsupportedFrameVersion, error-log, break,
+        // then send Close.
+        let close = tokio::time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("ws recv (close) timed out")
+            .expect("ws closed without sending Close")
+            .expect("ws error");
+        assert!(
+            matches!(close, TMessage::Close(_)),
+            "expected Close frame, got {:?}",
+            close
+        );
+
+        // Stream drains — pump returned.
+        let end = tokio::time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("stream did not end after Close");
+        assert!(
+            end.is_none() || matches!(end, Some(Err(_))),
+            "expected stream end after Close, got {:?}",
+            end
         );
     }
 }
