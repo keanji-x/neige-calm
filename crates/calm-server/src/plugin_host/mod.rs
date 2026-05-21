@@ -45,7 +45,7 @@ pub use resources::{ResourceError, read_ui_resource};
 
 use tokio::sync::{Mutex, mpsc};
 
-use crate::db::Repo;
+use crate::db::RouteRepo;
 use crate::event::{Event, EventBus};
 
 use callbacks::{CallbackCtx, SubscriptionRecord};
@@ -148,7 +148,12 @@ pub struct PluginHostStatus {
 
 pub struct PluginHost {
     pub registry: Arc<PluginRegistry>,
-    pub(crate) repo: Arc<dyn Repo>,
+    /// Narrowed (PR #41) from `Arc<dyn Repo>` to `Arc<dyn RouteRepo>` —
+    /// the host only does eventized writes + out-of-domain plugin/token/kv
+    /// writes + reads. Raw sync-domain writes (`cove_*`, `wave_*`,
+    /// `card_*` direct, `overlay_upsert`) are unreachable so a future
+    /// contributor can't quietly bypass the audit log inside the host.
+    pub(crate) repo: Arc<dyn RouteRepo>,
     /// Resolved per-plugin mutable-state root from `Config::plugins_data_dir_resolved`.
     pub plugins_data_dir: PathBuf,
     /// Resolved plugin install root from `Config::plugins_dir_resolved` — used
@@ -173,7 +178,7 @@ impl PluginHost {
     /// resolved-paths + event bus + config disable list so we can supervise.
     pub fn new_full(
         registry: Arc<PluginRegistry>,
-        repo: Arc<dyn Repo>,
+        repo: Arc<dyn RouteRepo>,
         plugins_dir: PathBuf,
         plugins_data_dir: PathBuf,
         plugins_disabled: Vec<String>,
@@ -195,7 +200,7 @@ impl PluginHost {
     /// Slice A-shaped constructor retained for back-compat with callers that
     /// just need a host wired to a registry + repo (tests). No event bus, no
     /// supervision — `spawn` will still work, but events won't be emitted.
-    pub fn new(registry: Arc<PluginRegistry>, repo: Arc<dyn Repo>) -> Self {
+    pub fn new(registry: Arc<PluginRegistry>, repo: Arc<dyn RouteRepo>) -> Self {
         Self {
             registry,
             repo,
@@ -746,7 +751,7 @@ impl PluginHost {
 #[allow(clippy::too_many_arguments)]
 fn spawn_neige_router(
     plugin_id: String,
-    repo: Arc<dyn Repo>,
+    repo: Arc<dyn RouteRepo>,
     event_bus: Arc<EventBus>,
     registry: Arc<PluginRegistry>,
     mcp: Arc<McpClient>,

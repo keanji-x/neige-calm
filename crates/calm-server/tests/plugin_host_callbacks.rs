@@ -104,7 +104,11 @@ async fn boot_with_wave(
     .expect("seed plugin row");
     let host = Arc::new(PluginHost::new_full(
         Arc::new(registry),
-        Arc::clone(&repo),
+        // `repo.clone()` (method call) is a coercion site for the
+        // `Arc<dyn Repo>` → `Arc<dyn RouteRepo>` supertrait upcast
+        // (PR #41). `Arc::clone(&repo)` would NOT coerce because the
+        // free-function call returns the source type `Arc<dyn Repo>`.
+        repo.clone(),
         plugins_dir,
         plugins_data_dir,
         Vec::new(),
