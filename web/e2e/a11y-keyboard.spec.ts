@@ -27,6 +27,7 @@ interface FocusInfo {
   tag: string;
   role: string | null;
   name: string | null;
+  description: string | null;
 }
 
 // Tab forward until `predicate(activeElement)` matches, then return.
@@ -54,7 +55,7 @@ async function tabUntil(
     const info = await page.evaluate(() => {
       const el = document.activeElement as HTMLElement | null;
       if (!el || el === document.body) {
-        return { tag: '', role: null, name: null };
+        return { tag: '', role: null, name: null, description: null };
       }
       // Accessible name resolution, simplified: aria-label > aria-
       // labelledby (resolved to text) > <label for=...> (for form
@@ -86,6 +87,18 @@ async function tabUntil(
           if (wrappingLabel) labelText = wrappingLabel.textContent?.trim() ?? null;
         }
       }
+      // aria-describedby → joined text of referenced elements. Mirrors
+      // the aria-labelledby path above; used by the Cove/Wave rename
+      // surfaces to convey the rename verb without polluting the name.
+      const describedBy = el.getAttribute('aria-describedby');
+      let describedByText: string | null = null;
+      if (describedBy) {
+        const ids = describedBy.split(/\s+/);
+        const parts = ids
+          .map((id) => document.getElementById(id)?.textContent?.trim() ?? '')
+          .filter(Boolean);
+        if (parts.length) describedByText = parts.join(' ');
+      }
       return {
         tag: el.tagName.toLowerCase(),
         role: el.getAttribute('role'),
@@ -95,6 +108,7 @@ async function tabUntil(
           labelText ??
           el.getAttribute('title') ??
           (el.textContent ? el.textContent.trim().slice(0, 80) : null),
+        description: describedByText,
       };
     });
     if (predicate(info)) return;
@@ -433,8 +447,12 @@ test.describe('a11y · keyboard-only navigation', () => {
     await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
 
     // The wave title display is a <span role="button"> — see
-    // pages/Wave.tsx. Its accessible name is "Rename wave: <title>".
-    await tabUntil(page, (info) => /^rename wave:/i.test(info.name ?? ''));
+    // pages/Wave.tsx. After #56 followup its accessible name is just the
+    // wave title (e.g. "Today"); the rename verb is conveyed via
+    // aria-describedby. We match the span by its description to land
+    // specifically on the rename target (and not on the cove crumb
+    // button, which also carries text but no rename description).
+    await tabUntil(page, (info) => /^rename wave$/i.test(info.description ?? ''));
     // F2 is the documented rename shortcut (Windows convention). Enter
     // also works (Slice 3) but we exercise F2 here for variety.
     await page.keyboard.press('F2');
@@ -454,7 +472,12 @@ test.describe('a11y · keyboard-only navigation', () => {
     // focus there. After the WS event lands the display shows the new
     // title (we wait for both halves so the test is order-independent).
     await waitForEvent(page, 'wave.updated');
-    const display = page.getByRole('button', { name: new RegExp('rename wave:.*' + newTitle.split(' ').join('.*'), 'i') });
+    // Disambiguate via `description` — the rename span carries
+    // `aria-describedby` → "Rename wave" (see §5 of a11y-contract.md),
+    // while the sibling Delete button matches `newTitle` only as a
+    // substring inside its own accessible name ("Delete wave \"<title>\"")
+    // and would otherwise collide here under Playwright strict mode.
+    const display = page.getByRole('button', { name: newTitle, description: 'Rename wave' });
     await expect(display).toBeVisible();
     await expect(display).toBeFocused();
   });

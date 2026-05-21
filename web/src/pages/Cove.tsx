@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useId, useRef } from 'react';
 import { useState } from '../shared/state';
 import { Crumbs } from '../shared/components/Crumbs';
 import { WaveRow } from '../shared/components/WaveRow';
@@ -202,6 +202,12 @@ function EditableTitle({
   // drops to body and the keyboard user loses their place.
   const displayRef = useRef<HTMLButtonElement | null>(null);
   const restoreDisplayFocus = useRef(false);
+  // Stable id for the visually-hidden rename hint. The hint is referenced
+  // via aria-describedby so the button's accessible *name* is just the
+  // cove name (clean heading-nav narration) while AT still verbalizes the
+  // rename verb as a *description*. Generated via useId so multiple
+  // EditableTitles on the same page would not collide.
+  const hintId = useId();
 
   // External value changes (e.g. WS event from another tab) should not
   // clobber an in-flight edit; only sync `draft` when not editing.
@@ -270,25 +276,40 @@ function EditableTitle({
   // button click that Space/Enter would synthesize. The <h1> wraps the
   // button so heading-level navigation still lands on "the title" without
   // sacrificing the interactive semantics.
+  //
+  // Accessible-name split (#56 followup): the button's aria-label is just
+  // the cove name so heading-nav (`H` in screen readers) announces e.g.
+  // "Atlas, heading level 1" — not "Rename cove name: Atlas, heading
+  // level 1". The rename verb lives in a visually-hidden sibling span
+  // *outside* the <h1> (referenced via aria-describedby), so the heading's
+  // own accessible-name computation isn't polluted by the helper text.
+  // AT still verbalizes "Rename cove name" as the button's *description*
+  // when the button is focused.
   return (
-    <h1 className="h-display" style={{ flex: 1, margin: 0 }}>
-      <button
-        ref={displayRef}
-        type="button"
-        className="h-display-rename"
-        onClick={enter}
-        onKeyDown={(e) => {
-          if (e.key === 'F2') {
-            e.preventDefault();
-            enter();
-          }
-        }}
-        title="Click to rename"
-        aria-label={`Rename ${ariaLabel.toLowerCase()}: ${value}`}
-      >
-        {value}.
-      </button>
-    </h1>
+    <>
+      <h1 className="h-display" style={{ flex: 1, margin: 0 }}>
+        <button
+          ref={displayRef}
+          type="button"
+          className="h-display-rename"
+          onClick={enter}
+          onKeyDown={(e) => {
+            if (e.key === 'F2') {
+              e.preventDefault();
+              enter();
+            }
+          }}
+          title="Click to rename"
+          aria-label={value}
+          aria-describedby={hintId}
+        >
+          {value}.
+        </button>
+      </h1>
+      <span id={hintId} className="sr-only">
+        {`Rename ${ariaLabel.toLowerCase()}`}
+      </span>
+    </>
   );
 }
 

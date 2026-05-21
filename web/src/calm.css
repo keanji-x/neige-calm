@@ -57,6 +57,22 @@ body {
 button { font: inherit; cursor: pointer; background: 0; border: 0; color: inherit; padding: 0; }
 input, textarea { font: inherit; color: inherit; }
 
+/* Visually hidden but readable by assistive tech. Used for aria-describedby
+   helper spans (e.g. the rename hint on Cove/Wave titles) so the
+   accessible name stays clean while AT still verbalizes the action. The
+   standard "clip pattern" — no display:none (which would hide from AT). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* window chrome — almost invisible */
 .win {
   position: fixed; inset: 0;
