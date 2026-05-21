@@ -323,8 +323,23 @@ pub struct IngestQuery {
 /// hook payload verbatim; that's intentional — codex card UIs are
 /// append-only ephemeral on the frontend, but the persistent event log
 /// is the audit/replay store the design doc §2.3 calls out.
+///
+/// Scope β — the actor is now declarative: the codex bridge stamps
+/// `X-Calm-Actor: ai:codex` on every POST and the `actor_middleware`
+/// validates + injects an `Actor`. Pre-β this handler hardcoded `"kernel"`,
+/// which was wrong on two counts: codex's lifecycle signal is an *AI*
+/// write, not a server-internal one, and the audit log conflated the two.
+///
+/// Default-actor decision: we deliberately keep the middleware's `"user"`
+/// fallback for this route. An older bridge with no header is the only
+/// way to hit it, and tagging those hooks as `"user"` is honest — we
+/// don't actually know it was codex. The fix is to redeploy the bridge,
+/// not to silently re-attribute. (Overriding the default here would also
+/// require the middleware to admit `kernel`/`ai:codex` from this path,
+/// which conflicts with its "reserved namespace" gate.)
 pub(crate) async fn ingest_hook(
     State(s): State<AppState>,
+    actor: Actor,
     Query(q): Query<IngestQuery>,
     Json(payload): Json<Value>,
 ) -> Result<StatusCode> {
@@ -334,12 +349,9 @@ pub(crate) async fn ingest_hook(
         .unwrap_or("unknown");
     let kind = format!("hook.codex.{}", to_snake_case(event_name));
 
-    // Actor `"kernel"` because the codex bridge is a kernel-internal
-    // subprocess we spawn; the hook payload is not user-authored input,
-    // it's the codex CLI's own lifecycle signal.
     s.repo
         .log_pure_event(
-            "kernel",
+            actor.as_str(),
             None,
             &s.events,
             Event::CodexHook {

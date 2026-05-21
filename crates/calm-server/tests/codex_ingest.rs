@@ -30,8 +30,13 @@ async fn ingest_emits_codex_hook_event() {
         plugin: Arc::new(PluginHost::new(Arc::new(PluginRegistry::empty()), repo)),
         codex: Arc::new(CodexClient::new_stub()),
     };
+    // Scope β: the actor middleware must be present — the `ingest_hook`
+    // handler now extracts `Actor` from request extensions to honor the
+    // `X-Calm-Actor` header the bridge sends. Without the middleware the
+    // extractor returns 500 ("middleware not applied").
     let app = axum::Router::new()
         .merge(routes::router())
+        .layer(axum::middleware::from_fn(actor_middleware))
         .with_state(state);
     let mut rx = events.subscribe();
 
