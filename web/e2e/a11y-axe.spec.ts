@@ -54,13 +54,6 @@ async function waitForBootstrap(page: Page): Promise<void> {
 //     for normal text. Pre-existing from the M0 design port. Bumping
 //     these affects every page — schedule as a dedicated design-system
 //     pass (#56 slice 9 candidate).
-//   - region: the TitleBar (`web/src/shared/components/TitleBar.tsx`,
-//     `<div className="bar">`) renders the app name (`<div
-//     className="name">Neige</div>`) and theme/settings buttons outside
-//     any landmark. The fix is to promote `.bar` to `<header
-//     role="banner">` (or a plain `<header>`) so its children live
-//     inside a landmark. Touching the global chrome ripples through
-//     layout/CSS, so it's deferred to a dedicated banner pass.
 //   - nested-interactive: WaveRow is a `<div role="button">` that hosts
 //     a hover-reveal `<button>×</button>` delete control. The component
 //     comment in `WaveRow.tsx` calls this out — going back to a real
@@ -72,7 +65,6 @@ async function waitForBootstrap(page: Page): Promise<void> {
 // management, ARIA misuse, …) stays a reliable signal.
 const DEFERRED_RULES = [
   'color-contrast',
-  'region',
   'nested-interactive',
 ];
 

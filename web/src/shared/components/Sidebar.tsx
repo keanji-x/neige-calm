@@ -69,10 +69,18 @@ export function Sidebar({
                 className={'swatch' + (running > 0 ? ' pulse' : '')}
                 style={{ background: cove.color }}
               />
-              {waiting > 0 && <span className="pip">{waiting}</span>}
+              {waiting > 0 && (
+                <span className="pip" aria-hidden="true">
+                  {waiting}
+                </span>
+              )}
             </span>
             <span className="lbl">{cove.name}</span>
-            {cw.length > 0 && <span className="count">{cw.length}</span>}
+            {cw.length > 0 && (
+              <span className="count" aria-hidden="true">
+                {cw.length}
+              </span>
+            )}
           </button>
         );
       })}
