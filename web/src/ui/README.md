@@ -129,7 +129,7 @@ Source: [`ConfirmDialog.tsx`](./ConfirmDialog/ConfirmDialog.tsx). Tests:
 [`ConfirmDialog.test.tsx`](./ConfirmDialog/ConfirmDialog.test.tsx),
 [`ConfirmDialog.contract.test.tsx`](./ConfirmDialog/ConfirmDialog.contract.test.tsx).
 Added by PR
-[#XXX](https://github.com/keanji-x/neige-calm/pull/XXX) (slice 1, PR3).
+[#97](https://github.com/keanji-x/neige-calm/pull/97) (slice 1, PR3).
 
 ### Visual
 
