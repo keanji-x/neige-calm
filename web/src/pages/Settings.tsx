@@ -3,7 +3,7 @@
 //
 // First config block is HTTP/HTTPS proxy. The codex spawn path reads
 // these at process-spawn time and overrides whatever proxy the docker
-// container exports by default (see `routes::codex::spawn_codex_for`).
+// container exports by default (see `routes::codex_cards::create_codex_card`).
 //
 // The page sources `useSettingsQuery()` for the snapshot and reflects
 // edits into local form state; "Save" issues `useUpdateSettingsMutation`
