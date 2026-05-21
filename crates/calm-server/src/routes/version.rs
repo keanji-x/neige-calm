@@ -21,9 +21,9 @@
 //! * `mcpProtocolVersion` — the MCP spec date we advertise in `initialize`
 //!   responses to plugin processes. Sourced from `plugin_host::mcp` so the
 //!   two surfaces never drift.
-//! * `minWebBuildId` — placeholder for future "minimum web bundle the
-//!   kernel will accept" enforcement. Currently always `null`; a later PR
-//!   will populate it from a build artifact pinned at kernel-release time.
+//! * `minWebCompatVersion` — the minimum frontend `WEB_COMPAT_VERSION` the
+//!   running kernel still considers wire-compatible. Frontends below this
+//!   value must hard-refresh; see `docs/upgrade-stability.md` (Tier B).
 //! * `buildSha` — optional git SHA baked in at compile time via
 //!   `option_env!("NEIGE_BUILD_SHA")`. `null` for local `cargo build` runs;
 //!   release CI sets the env var.
@@ -39,6 +39,13 @@ use utoipa::ToSchema;
 /// way the web client needs to gate on; independent of `CARGO_PKG_VERSION`.
 pub const API_VERSION: &str = "1";
 
+/// Frontend ↔ backend compatibility version surfaced as `minWebCompatVersion`
+/// on `/api/version`. Monotonically increasing. Bump when REST/WS contract
+/// changes are incompatible with older frontends. Frontend's
+/// `WEB_COMPAT_VERSION` must be kept in lockstep — see
+/// `docs/upgrade-stability.md`.
+pub const WEB_COMPAT_VERSION: u32 = 1;
+
 pub fn router() -> Router<AppState> {
     Router::new().route("/api/version", get(get_version))
 }
@@ -52,7 +59,7 @@ pub struct VersionInfo {
     pub api_version: String,
     pub sync_event_version: u32,
     pub mcp_protocol_version: String,
-    pub min_web_build_id: Option<String>,
+    pub min_web_compat_version: u32,
     pub build_sha: Option<String>,
 }
 
@@ -70,7 +77,23 @@ pub(crate) async fn get_version() -> Json<VersionInfo> {
         api_version: API_VERSION.to_string(),
         sync_event_version: SYNC_EVENT_VERSION,
         mcp_protocol_version: KERNEL_PROTOCOL_VERSION.to_string(),
-        min_web_build_id: None,
+        min_web_compat_version: WEB_COMPAT_VERSION,
         build_sha: option_env!("NEIGE_BUILD_SHA").map(|s| s.to_string()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The wire field must echo the constant verbatim. Catches the
+    /// failure mode of bumping `WEB_COMPAT_VERSION` (or the response
+    /// builder) without bumping the other; the integration test in
+    /// `tests/version.rs` covers the same property at the HTTP layer,
+    /// this one fails loudly on the unit-test path too.
+    #[tokio::test]
+    async fn min_web_compat_version_matches_constant() {
+        let body = get_version().await;
+        assert_eq!(body.min_web_compat_version, WEB_COMPAT_VERSION);
+    }
 }

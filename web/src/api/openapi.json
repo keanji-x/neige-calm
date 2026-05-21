@@ -791,6 +791,16 @@
               }
             }
           },
+          "422": {
+            "description": "Manifest min_kernel_version exceeds kernel version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal error",
             "content": {
@@ -1081,6 +1091,16 @@
               }
             }
           },
+          "422": {
+            "description": "Manifest min_kernel_version exceeds kernel version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Spawn failed / internal error",
             "content": {
@@ -1200,6 +1220,16 @@
           },
           "404": {
             "description": "Plugin not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Manifest min_kernel_version exceeds kernel version",
             "content": {
               "application/json": {
                 "schema": {
@@ -1474,6 +1504,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/version": {
+      "get": {
+        "tags": [
+          "version"
+        ],
+        "operationId": "get_version",
+        "responses": {
+          "200": {
+            "description": "Kernel + protocol version metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionInfo"
                 }
               }
             }
@@ -2003,7 +2053,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable machine-readable code — one of `not_found`, `conflict`,\n`bad_request`, `unauthorized`, `forbidden`, `plugin_install`,\n`plugin_permission`, `plugin_conflict`, `db_error`, `io_error`,\n`serde_error`, `internal`, `forbidden_tool`, `not_a_card_tool`,\n`tool_call_failed`."
+            "description": "Stable machine-readable code — one of `not_found`, `conflict`,\n`bad_request`, `unauthorized`, `forbidden`, `plugin_install`,\n`plugin_permission`, `plugin_conflict`, `plugin_kernel_too_old`,\n`db_error`, `io_error`, `serde_error`, `internal`, `forbidden_tool`,\n`not_a_card_tool`, `tool_call_failed`."
           },
           "error": {
             "type": "string",
@@ -2533,6 +2583,44 @@
           }
         }
       },
+      "VersionInfo": {
+        "type": "object",
+        "description": "Response shape for `GET /api/version`. camelCase on the wire so it lines\nup with the rest of the TypeScript-facing surface.",
+        "required": [
+          "kernelVersion",
+          "apiVersion",
+          "syncEventVersion",
+          "mcpProtocolVersion",
+          "minWebCompatVersion"
+        ],
+        "properties": {
+          "apiVersion": {
+            "type": "string"
+          },
+          "buildSha": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kernelVersion": {
+            "type": "string"
+          },
+          "mcpProtocolVersion": {
+            "type": "string"
+          },
+          "minWebCompatVersion": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "syncEventVersion": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
       "ViaToolCall": {
         "type": "object",
         "required": [
@@ -2763,6 +2851,10 @@
     {
       "name": "plugins",
       "description": "Plugin lifecycle, config, MCP fan-out"
+    },
+    {
+      "name": "version",
+      "description": "Kernel, REST, sync, and MCP protocol versions"
     }
   ]
 }
