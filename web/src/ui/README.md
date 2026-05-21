@@ -69,8 +69,10 @@ will enforce the mechanical pieces.
   refactor to an adjacent primitive can't silently regress this one.
 - **App code does not query primitives by raw `role="…"`.** Call sites
   import the primitive and let it own the role; tests select with
-  `getByRole(role, { name })`. A future lint rule will flag `role="…"`
-  string literals in JSX outside `web/src/ui/`.
+  `getByRole(role, { name })`. Enforced by the
+  [`neige-calm/no-raw-primitive-role`](../../eslint-rules/no-raw-primitive-role.cjs)
+  ESLint rule: raw `role="dialog"`, `role="menu"`, or `role="menuitem"`
+  in JSX outside `web/src/ui/` is a lint error.
 - **No re-export shims.** When extracting a primitive from
   `shared/components`, update all callers directly. Stale re-exports
   rot and let two import paths drift apart silently.

@@ -9,6 +9,11 @@
 //   - `neige-calm/no-persistent-in-usestate` — custom rule that flags any
 //     `useState(...)` / `useReducer(...)` whose state type extends the
 //     `Persistent<T>` brand. See `eslint-rules/no-persistent-in-usestate.js`.
+//   - `neige-calm/no-raw-primitive-role` — forbids raw `role="dialog"`,
+//     `role="menu"`, or `role="menuitem"` in JSX outside `web/src/ui/`.
+//     App code must compose the Neige `<Dialog>` / `<Menu>` primitives
+//     rather than hand-rolling the role. See
+//     `eslint-rules/no-raw-primitive-role.cjs`.
 //
 // Wider linting (style, hooks, exhaustive-deps, etc.) is not in this PR.
 // Only the rules that the sync-engine design (`docs/sync-engine-design.md`
@@ -104,6 +109,7 @@ export default tseslint.config(
       ...jsxA11y.configs.recommended.rules,
       'neige-calm/no-react-state-hook-members': 'error',
       'neige-calm/no-persistent-in-usestate': 'error',
+      'neige-calm/no-raw-primitive-role': 'error',
     },
   },
   // Whitelist: the canonical entrypoint *must* import the originals from
@@ -135,6 +141,7 @@ export default tseslint.config(
       ...restrictedReactImports,
       'neige-calm/no-react-state-hook-members': 'error',
       'neige-calm/no-persistent-in-usestate': 'error',
+      'neige-calm/no-raw-primitive-role': 'error',
     },
   },
 );

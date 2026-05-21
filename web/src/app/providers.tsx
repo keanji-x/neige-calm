@@ -108,7 +108,14 @@ function ServerCompatGate({ children }: { children: ReactNode }) {
  *  user to refresh. Pure JSX — no modal library, no shadow DOM. */
 export function RefreshRequiredOverlay({ server }: { server: ServerVersionInfo }) {
   return (
+    // TODO(#60): migrate this overlay onto the `<Dialog>` primitive
+    // (`web/src/ui/Dialog`). The overlay deliberately runs *outside* the
+    // app's normal QueryClient / portal infrastructure (it's the
+    // refresh-required hard block) so the migration needs a story for
+    // standalone, infra-free Dialog mounting before it's safe. Tracked as
+    // unfinished slice-1 cleanup in issue #60 (no-raw-primitive-role survey).
     <div
+      // eslint-disable-next-line neige-calm/no-raw-primitive-role
       role="dialog"
       aria-modal="true"
       aria-labelledby="refresh-required-title"

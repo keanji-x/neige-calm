@@ -176,6 +176,13 @@ export function DirectoryBrowser({ initialPath, onCancel, onSelect, selectLabel 
   const goTo = (path: string) => setBrowsePath(path);
 
   return (
+    // TODO(#60): migrate this hand-rolled dialog onto the `<Dialog>` primitive
+    // (`web/src/ui/Dialog`) so it gets the standard focus trap, Escape, and
+    // focus-restore contracts. The `useModalView()` integration above means the
+    // picker often renders *inside* an outer Dialog already; the takeover path
+    // needs its own design before this can be a mechanical swap. Tracked as
+    // unfinished slice-1 cleanup in issue #60 (no-raw-primitive-role survey).
+    // eslint-disable-next-line neige-calm/no-raw-primitive-role
     <div className="dirpicker-browser" role="dialog" aria-label="Choose a directory">
       <div className="dirpicker-browser-head">
         <button
