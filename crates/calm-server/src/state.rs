@@ -257,12 +257,16 @@ impl DaemonClient {
     /// `ClientHello`, so the trust model is intact: only callers reaching
     /// the daemon directly over its private Unix socket can set it.
     ///
-    /// `terminal_id` MUST match the value the daemon was launched with,
-    /// in hyphenated UUID form — daemons compare via `Uuid::Display`,
-    /// which is always hyphenated. Callers that have the raw 32-hex
-    /// `model::new_id` form should `Uuid::parse_str(..).to_string()`
-    /// first; this method takes whatever it's given and forwards it
-    /// verbatim.
+    /// `terminal_id` is the same id `card.payload.terminal_id` stamps
+    /// (and the same `term.id` the daemon was spawned with). It may
+    /// arrive in either the simple no-dashes `model::new_id` form or
+    /// the hyphenated `Uuid::Display` form; we normalize to hyphenated
+    /// internally because the daemon compares `ClientHello.terminal_id`
+    /// byte-for-byte against its own `cli.id.to_string()` (always
+    /// hyphenated). This mirrors the normalization the WS bridge does
+    /// on every browser-originated `ClientHello` (see
+    /// `crates/calm-server/src/ws/terminal.rs` §CORRECTNESS) so the
+    /// kernel-side path has the same handshake-compat guarantee.
     pub async fn inject_stdin(
         &self,
         sock_path: &std::path::Path,
@@ -275,6 +279,14 @@ impl DaemonClient {
         };
         use tokio::net::UnixStream;
 
+        // Normalize to hyphenated form for the handshake (see method
+        // doc). If it doesn't parse as a Uuid we forward verbatim and
+        // let the daemon reject with `BadHandshake` — that's the
+        // correct fail-loud behavior for a malformed id.
+        let handshake_terminal_id = uuid::Uuid::parse_str(terminal_id)
+            .map(|u| u.to_string())
+            .unwrap_or_else(|_| terminal_id.to_string());
+
         let mut stream = UnixStream::connect(sock_path).await?;
 
         // ClientHello: `Observer` hint + `kernel_originated_input: true`.
@@ -284,7 +296,7 @@ impl DaemonClient {
         // to release it.
         let hello = ClientMsg::ClientHello {
             protocol_version: PROTOCOL_VERSION,
-            terminal_id: terminal_id.to_string(),
+            terminal_id: handshake_terminal_id,
             client_id: uuid::Uuid::new_v4(),
             desired_size: PtySize {
                 cols: 80,
@@ -310,11 +322,21 @@ impl DaemonClient {
         let input = ClientMsg::Input(bytes.to_vec());
         write_frame(&mut stream, &input).await.map_err(io_other)?;
 
-        // Best-effort shutdown so the daemon sees EOF promptly instead of
-        // waiting on the read half to time out. Drop alone would do the
-        // same thing eventually but flushing explicitly is friendlier.
-        use tokio::io::AsyncWriteExt;
-        let _ = stream.shutdown().await;
+        // Hold the connection open briefly so the daemon's read loop
+        // can drain both frames before our drop reaches the kernel as
+        // EOF. Without this gap, fast machines see the EOF before the
+        // ResizePty/Input effects finish applying; the Input frame is
+        // queued in the kernel's socket buffer but the daemon's
+        // `read_frame` returns `Err(io)` on the EOF mid-frame and the
+        // loop breaks without delivering the bytes.
+        //
+        // 50 ms is well below any human-perceptible budget and
+        // comfortably above the daemon's per-frame parse + effect
+        // application time (sub-millisecond on dev hardware).
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Drop the stream — the daemon's read loop sees EOF cleanly.
+        drop(stream);
         Ok(())
     }
 }
