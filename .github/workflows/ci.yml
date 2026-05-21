@@ -142,8 +142,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report
-          path: web/playwright-report/
+          path: |
+            web/playwright-report/
+            web/test-results/
           retention-days: 7
+          if-no-files-found: ignore
 
   openapi-drift:
     name: openapi drift (cargo emit-openapi == checked-in spec)
