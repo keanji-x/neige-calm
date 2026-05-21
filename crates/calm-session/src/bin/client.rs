@@ -98,6 +98,7 @@ async fn main() -> anyhow::Result<()> {
                 supports_scrollback: false,
                 supports_sixel: false,
                 supports_images: false,
+                kernel_originated_input: false,
             },
         },
     )
@@ -194,7 +195,8 @@ async fn main() -> anyhow::Result<()> {
             DaemonMsg::ResizeApplied { .. }
             | DaemonMsg::OwnerChanged { .. }
             | DaemonMsg::Backpressure { .. }
-            | DaemonMsg::SnapshotRequired { .. } => {
+            | DaemonMsg::SnapshotRequired { .. }
+            | DaemonMsg::ChildReady { .. } => {
                 // Informational frames the minimal CLI doesn't surface.
             }
         }

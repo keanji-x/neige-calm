@@ -18,11 +18,49 @@ export type CellSize = { width: number, height: number, };
  * intersection during handshake (e.g. no `Vt` in `render_encodings` →
  * [`ProtocolErrorCode::UnsupportedEncoding`]).
  */
-export type ClientCapabilities = { render_encodings: Array<RenderEncoding>, supports_scrollback: boolean, supports_sixel: boolean, supports_images: boolean, };
+export type ClientCapabilities = { render_encodings: Array<RenderEncoding>, supports_scrollback: boolean, supports_sixel: boolean, supports_images: boolean, 
+/**
+ * When true, this client is trusted to send [`ClientMsg::Input`]
+ * frames even when it is not the owner. Intended ONLY for
+ * kernel-originated clients connecting over a kernel-private unix
+ * domain socket (e.g. a future task-dispatch platform's
+ * `DaemonClient::inject_stdin`).
+ *
+ * Scope: only [`ClientMsg::Input`] is relaxed. [`ClientMsg::ResizeCommit`]
+ * and [`ClientMsg::Kill`] continue to require owner role even when
+ * this flag is set — the kernel relays input on behalf of an agent
+ * but is not itself the source of truth for viewport / lifecycle.
+ *
+ * # Trust model
+ *
+ * The daemon itself does NOT verify this flag — it trusts whatever
+ * the ClientHello asserts. Authorization is enforced at the
+ * ingress, not at the daemon:
+ *
+ * - **Kernel-private unix socket** (intended trusted ingress): the
+ *   kernel's own `DaemonClient` may set this to `true` when it
+ *   needs to inject stdin to a non-owner session (e.g. agent
+ *   auto-submit). This socket never crosses a network boundary.
+ * - **WebSocket bridge** (`crates/calm-server/src/ws/terminal.rs`,
+ *   `pump`'s up arm): THIS IS AN UNTRUSTED NETWORK SURFACE. Any
+ *   browser that can reach `/api/terminals/:id` can frame a
+ *   `ClientHello` with arbitrary capabilities. The bridge MUST
+ *   zero this field on every ClientHello before forwarding to the
+ *   daemon. Without that strip a browser could forge
+ *   `kernel_originated_input: true` and write arbitrary bytes to
+ *   another user's PTY while connected as an Observer.
+ *
+ * Wire default is `false`; older peers that don't serialize this
+ * field decode as `false` thanks to `#[serde(default)]`. Any
+ * future ingress that proxies a `ClientHello` over a non-trusted
+ * boundary MUST sanitize this field before forwarding to the
+ * daemon.
+ */
+kernel_originated_input: boolean, };
 
 export type ClientMsg = { "ClientHello": { protocol_version: number, terminal_id: string, client_id: string, desired_size: PtySize, cell_size: CellSize | null, initial_scrollback: InitialScrollback, resume_from: ResumeFrom | null, role_hint: Role | null, capabilities: ClientCapabilities, } } | { "Input": Array<number> } | { "ResizeCommit": { epoch: number, cols: number, rows: number, } } | "OwnerClaim" | "OwnerRelease" | { "RenderAck": { render_rev: number, pty_seq: number | null, } } | "Kill" | { "ChatUserMessage": { content: string, } } | "ChatStop" | { "AnswerQuestion": { question_id: string, answers: { [key in string]: string }, } };
 
-export type DaemonMsg = { "ServerHello": { protocol_version: number, terminal_id: string, session_id: string, client_role: Role, owner_client_id: string | null, pty_size: PtySize, pty_seq_head: number, pty_seq_tail: number, render_rev: number, snapshot: RenderSnapshot, history_gap: HistoryGap | null, } } | { "RenderSnapshot": RenderSnapshot } | { "RenderPatch": RenderPatch } | { "ResizeApplied": { epoch: number, pty_seq: number, render_rev: number, cols: number, rows: number, } } | { "OwnerChanged": { owner_client_id: string | null, } } | { "Backpressure": { policy: BackpressurePolicy, } } | { "SnapshotRequired": { reason: string, } } | { "TerminalExited": { code: number | null, pty_seq: number, render_rev: number, } } | { "ProtocolError": { code: ProtocolErrorCode, message: string, expected_version: number | null, } } | { "HelloChat": { replay: Array<string>, } } | { "ChatEvent": { json: string, } } | { "ChildExited": { code: number | null, } };
+export type DaemonMsg = { "ServerHello": { protocol_version: number, terminal_id: string, session_id: string, client_role: Role, owner_client_id: string | null, pty_size: PtySize, pty_seq_head: number, pty_seq_tail: number, render_rev: number, snapshot: RenderSnapshot, history_gap: HistoryGap | null, } } | { "RenderSnapshot": RenderSnapshot } | { "RenderPatch": RenderPatch } | { "ResizeApplied": { epoch: number, pty_seq: number, render_rev: number, cols: number, rows: number, } } | { "OwnerChanged": { owner_client_id: string | null, } } | { "Backpressure": { policy: BackpressurePolicy, } } | { "SnapshotRequired": { reason: string, } } | { "TerminalExited": { code: number | null, pty_seq: number, render_rev: number, } } | { "ProtocolError": { code: ProtocolErrorCode, message: string, expected_version: number | null, } } | { "ChildReady": { pty_seq: number, render_rev: number, } } | { "HelloChat": { replay: Array<string>, } } | { "ChatEvent": { json: string, } } | { "ChildExited": { code: number | null, } };
 
 /**
  * Communicates to the client that its requested resume cursor was older

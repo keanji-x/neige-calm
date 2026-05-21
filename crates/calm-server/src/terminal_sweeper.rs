@@ -250,6 +250,7 @@ async fn graceful_kill_via_socket(sock: &Path, terminal_id: &str) -> std::io::Re
                 supports_scrollback: false,
                 supports_sixel: false,
                 supports_images: false,
+                kernel_originated_input: false,
             },
         },
     )

@@ -163,6 +163,43 @@ pub struct ClientCapabilities {
     pub supports_scrollback: bool,
     pub supports_sixel: bool,
     pub supports_images: bool,
+    /// When true, this client is trusted to send [`ClientMsg::Input`]
+    /// frames even when it is not the owner. Intended ONLY for
+    /// kernel-originated clients connecting over a kernel-private unix
+    /// domain socket (e.g. a future task-dispatch platform's
+    /// `DaemonClient::inject_stdin`).
+    ///
+    /// Scope: only [`ClientMsg::Input`] is relaxed. [`ClientMsg::ResizeCommit`]
+    /// and [`ClientMsg::Kill`] continue to require owner role even when
+    /// this flag is set — the kernel relays input on behalf of an agent
+    /// but is not itself the source of truth for viewport / lifecycle.
+    ///
+    /// # Trust model
+    ///
+    /// The daemon itself does NOT verify this flag — it trusts whatever
+    /// the ClientHello asserts. Authorization is enforced at the
+    /// ingress, not at the daemon:
+    ///
+    /// - **Kernel-private unix socket** (intended trusted ingress): the
+    ///   kernel's own `DaemonClient` may set this to `true` when it
+    ///   needs to inject stdin to a non-owner session (e.g. agent
+    ///   auto-submit). This socket never crosses a network boundary.
+    /// - **WebSocket bridge** (`crates/calm-server/src/ws/terminal.rs`,
+    ///   `pump`'s up arm): THIS IS AN UNTRUSTED NETWORK SURFACE. Any
+    ///   browser that can reach `/api/terminals/:id` can frame a
+    ///   `ClientHello` with arbitrary capabilities. The bridge MUST
+    ///   zero this field on every ClientHello before forwarding to the
+    ///   daemon. Without that strip a browser could forge
+    ///   `kernel_originated_input: true` and write arbitrary bytes to
+    ///   another user's PTY while connected as an Observer.
+    ///
+    /// Wire default is `false`; older peers that don't serialize this
+    /// field decode as `false` thanks to `#[serde(default)]`. Any
+    /// future ingress that proxies a `ClientHello` over a non-trusted
+    /// boundary MUST sanitize this field before forwarding to the
+    /// daemon.
+    #[serde(default)]
+    pub kernel_originated_input: bool,
 }
 
 /// Self-contained snapshot of the current render state. Sent inside
@@ -383,6 +420,22 @@ pub enum DaemonMsg {
         message: String,
         expected_version: Option<u16>,
     },
+    /// One-shot signal sent after the PTY child has reached
+    /// input-readiness (e.g. shell prompt rendered, agent CLI listening
+    /// on stdin). Fired at most once per session; clients can use this
+    /// to know when injected stdin (e.g. auto-submit "\r") will be
+    /// processed instead of swallowed by the shell startup. Carries the
+    /// `pty_seq` and `render_rev` at the moment of detection so the
+    /// client can correlate against its own cursor.
+    ///
+    /// Detection: emitted by the daemon shell after `render_rev` has
+    /// remained stable for `CHILD_READY_QUIESCENT_MS` AND at least one
+    /// PTY chunk has been observed. See
+    /// [`crate::terminal_session::RenderPlane::detect_ready`] for the
+    /// timing constants. Terminal mode only — chat mode never emits this
+    /// (the chat runner has its own ready signal via its first stream
+    /// event).
+    ChildReady { pty_seq: u32, render_rev: u32 },
     /// Sent once right after the chat-mode handshake. `replay` is a list
     /// of already-serialized NeigeEvent JSON strings so a re-attaching
     /// client can rebuild conversation state without re-running the model.
@@ -530,6 +583,7 @@ mod framing_tests {
                 supports_scrollback: false,
                 supports_sixel: false,
                 supports_images: false,
+                kernel_originated_input: false,
             },
         }
     }

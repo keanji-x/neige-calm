@@ -285,6 +285,44 @@ async fn run_terminal(cli: Cli) -> anyhow::Result<()> {
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     spawn_child_waiter(child, render_plane.clone(), event_tx.clone(), shutdown_tx);
 
+    // ---- ChildReady poll timer ----
+    //
+    // Polls `RenderPlane::detect_ready()` every 50ms. The render plane
+    // returns `Some(Effect::Broadcast(DaemonMsg::ChildReady{..}))` exactly
+    // once per session — after `render_rev` has been quiescent for
+    // `CHILD_READY_QUIESCENT_MS` (100ms) following the first chunk that
+    // moved the model state. The poll-based shape avoids the per-chunk
+    // deadline-task race window: each new chunk simply resets the timer
+    // and the poller picks the new deadline up on the next tick.
+    //
+    // Terminal mode only — chat mode never spawns this task (chat has
+    // its own first-event ready notion).
+    let ready_task = {
+        let render_plane = render_plane.clone();
+        let event_tx = event_tx.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_millis(50));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // The first tick is immediate; skip it so we don't fire
+            // against a freshly-constructed plane.
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                let effect = match render_plane.lock() {
+                    Ok(mut rp) => rp.detect_ready(),
+                    Err(_) => None,
+                };
+                if let Some(Effect::Broadcast(msg)) = effect {
+                    let _ = event_tx.send(msg);
+                    // detect_ready is one-shot; once it returned Some
+                    // we'll never see another. Cheap to keep ticking
+                    // but stopping here avoids the per-tick lock.
+                    break;
+                }
+            }
+        })
+    };
+
     // ---- Socket ----
     let listener = bind_socket(&cli.sock)?;
     tracing::info!(sock = %cli.sock.display(), "listening");
@@ -312,6 +350,7 @@ async fn run_terminal(cli: Cli) -> anyhow::Result<()> {
     // Let in-flight clients flush the ChildExited frame before we close.
     tokio::time::sleep(Duration::from_millis(200)).await;
     accept_task.abort();
+    ready_task.abort();
 
     let _ = std::fs::remove_file(&cli.sock);
     Ok(())
