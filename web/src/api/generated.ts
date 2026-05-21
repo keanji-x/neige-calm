@@ -34,7 +34,7 @@ export interface paths {
          */
         get: operations["get_terminal_for_card"];
         put?: never;
-        post: operations["create_terminal"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -425,6 +425,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/waves/{wave_id}/terminal-cards": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_terminal_card"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -582,13 +598,27 @@ export interface components {
             payload: Record<string, never>;
             plugin_id: string;
         };
-        NewTerminalBody: {
+        /**
+         * @description Body for `POST /api/waves/:wave_id/terminal-cards`.
+         *
+         *     Deliberately omits `kind` (always `"terminal"`) and `payload` (the kernel
+         *     stamps `{schemaVersion, terminal_id}` itself). Empty `program` falls back
+         *     to `$SHELL` then `/bin/sh`; empty `cwd` falls back to `$HOME` then the
+         *     server's cwd. `env` is merged into the daemon's environment as additional
+         *     vars on top of `TERM` / `COLORTERM` / inherited.
+         */
+        NewTerminalCardBody: {
             /** @description Empty string or missing → `$HOME` (then cwd of server). */
             cwd?: string;
             /** @description Extra env on top of the inherited set. JSON object: `{"FOO":"bar"}`. */
             env?: Record<string, never>;
             /** @description Empty string or missing → `$SHELL` (then `/bin/sh`). */
             program?: string;
+            /**
+             * Format: double
+             * @description Sort order within the wave. `None` defaults to "append to end".
+             */
+            sort?: number | null;
         };
         NewWave: {
             cove_id: string;
@@ -913,61 +943,6 @@ export interface operations {
                 };
             };
             /** @description Internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    create_terminal: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Card id (must be a terminal card) */
-                card_id: string;
-            };
-            cookie?: never;
-        };
-        /** @description Optional body — empty means use defaults */
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["NewTerminalBody"];
-            };
-        };
-        responses: {
-            /** @description Terminal created and daemon spawned */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Terminal"];
-                };
-            };
-            /** @description Card is not a terminal card */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Card not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Daemon spawn failed */
             500: {
                 headers: {
                     [name: string]: unknown;
@@ -2319,6 +2294,52 @@ export interface operations {
             };
             /** @description Plugin tool call failed */
             502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_terminal_card: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Wave id to create the terminal card under */
+                wave_id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Optional body — empty means use defaults */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewTerminalCardBody"];
+            };
+        };
+        responses: {
+            /** @description Card + linked terminal created atomically; daemon spawned */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Card"];
+                };
+            };
+            /** @description Wave not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Daemon spawn failed (rows are persisted; sweeper reaps within ~60s) */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
