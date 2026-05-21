@@ -5,12 +5,27 @@
 //! [`crate::terminal_session::RenderPlane`] owns one [`TerminalModel`]; the
 //! daemon shell feeds it raw PTY bytes via [`TerminalModel::feed`].
 //!
+//! ## Architecture (#69)
+//!
+//! The VT parser and the terminal state are split by a [`TerminalHandler`]
+//! trait. [`VteProcessor`] owns a `vte::Parser` and translates each
+//! `vte::Perform` callback into a `TerminalHandler` method call by VT
+//! semantics (e.g. `print` / `cursor_to` / `erase_screen`). The grid /
+//! cursor / scrollback / SGR mutation lives entirely in
+//! `impl TerminalHandler for TerminalModel` — no parsing happens there,
+//! no state mutation happens in `VteProcessor`.
+//!
+//! Reference tests use real terminal recordings (planned). Methodology
+//! inspired by Warp/Alacritty's `Handler`-style separation between VT
+//! parsing and grid mutation; Neige's implementation is original — no
+//! AGPL code reuse.
+//!
 //! ## Pipeline
 //!
 //! 1. PTY chunk arrives → `RenderPlane::on_pty_chunk(bytes)`.
-//! 2. `feed(bytes)` drives `vte::Parser` byte-by-byte into [`Performer`],
-//!    which mutates a self-built cell grid + cursor + SGR state and
-//!    bumps `rev` once per visible state change.
+//! 2. `feed(bytes)` runs a [`VteProcessor`] over `&mut self` (since
+//!    `TerminalModel` implements [`TerminalHandler`]); each visible state
+//!    change bumps `rev` once.
 //! 3. The raw bytes are simultaneously broadcast as a `RenderPatch` with
 //!    `encoding = Vt` so xterm.js on the client gets the same bytes the
 //!    server's model just consumed.
@@ -242,11 +257,279 @@ impl Grid {
     }
 }
 
-/// Performer: implements `vte::Perform`, mutates the grid + cursor + SGR.
+/// Erase region selector for [`TerminalHandler::erase_screen`] /
+/// [`TerminalHandler::erase_line`]. Matches xterm's CSI J / CSI K modes
+/// (0 / 1 / 2) but named for clarity.
 ///
-/// Public because [`TerminalModel`] exposes it for `feed`/`snapshot`; not
-/// meant for external use.
-pub struct Performer {
+/// VT note: CSI 3 J ("also clear scrollback") is folded into [`Self::All`]
+/// — we don't expose a separate variant because the current
+/// implementation doesn't distinguish it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EraseMode {
+    /// From the cursor to the end of the line / screen (CSI 0 J / 0 K).
+    ToEnd,
+    /// From the start of the line / screen to the cursor (CSI 1 J / 1 K).
+    ToStart,
+    /// Entire line / screen (CSI 2 J / 2 K, and CSI 3 J).
+    All,
+}
+
+/// Trait implemented by the terminal state (grid + cursor + SGR +
+/// scrollback) consumed by [`VteProcessor`].
+///
+/// Methods are named after VT semantics rather than byte codes; the
+/// processor adapts each `vte::Perform` callback into the appropriate
+/// trait method, so SGR parsing, CUP decoding, etc. live exactly once on
+/// the implementation side.
+///
+/// Reference tests use real terminal recordings (planned). Methodology
+/// inspired by Warp/Alacritty `Handler` separation; no AGPL code reuse.
+pub trait TerminalHandler {
+    /// Print one printable character at the current cursor position.
+    /// Wide characters / combining marks are treated as single-width —
+    /// see module doc "EXPERIMENTAL" notes.
+    fn print(&mut self, c: char);
+
+    // ---- C0 controls ------------------------------------------------
+
+    /// CR (0x0D) — move cursor to column 0 of the current row.
+    fn carriage_return(&mut self);
+    /// LF / VT / FF (0x0A..=0x0C) — move cursor down one row, scrolling
+    /// the top line into scrollback if past the bottom.
+    fn line_feed(&mut self);
+    /// BS (0x08) — move cursor one column left (no wrap to previous
+    /// row).
+    fn backspace(&mut self);
+    /// HT (0x09) — advance cursor to the next 8-column tab stop, clamped
+    /// to `cols - 1`.
+    fn horizontal_tab(&mut self);
+    /// BEL (0x07) — noop in this implementation.
+    fn bell(&mut self);
+
+    // ---- CSI cursor moves -------------------------------------------
+
+    /// CUU (CSI A) — cursor up by `n`, saturating at row 0.
+    fn cursor_up(&mut self, n: u16);
+    /// CUD (CSI B / CSI e) — cursor down by `n`, clamped to last row.
+    fn cursor_down(&mut self, n: u16);
+    /// CUF (CSI C / CSI a) — cursor forward (right) by `n`, clamped to
+    /// last col.
+    fn cursor_forward(&mut self, n: u16);
+    /// CUB (CSI D) — cursor back (left) by `n`, saturating at col 0.
+    fn cursor_backward(&mut self, n: u16);
+
+    /// CUP / HVP (CSI H / CSI f) — absolute cursor position. `row` /
+    /// `col` are 0-indexed (the parser has already converted from the
+    /// 1-indexed wire form). Both axes clamp into grid bounds.
+    fn cursor_to(&mut self, row: u16, col: u16);
+
+    /// CHA / HPA (CSI G / CSI \`) — absolute column position, 0-indexed.
+    fn cursor_column(&mut self, col: u16);
+
+    /// VPA (CSI d) — absolute row position, 0-indexed.
+    fn cursor_row(&mut self, row: u16);
+
+    // ---- CSI erase --------------------------------------------------
+
+    /// ED (CSI J) — erase in display, relative to the cursor.
+    fn erase_screen(&mut self, mode: EraseMode);
+
+    /// EL (CSI K) — erase in line, relative to the cursor.
+    fn erase_line(&mut self, mode: EraseMode);
+
+    // ---- CSI scroll -------------------------------------------------
+
+    /// SU (CSI S) — scroll the viewport up by `n` lines; the top `n`
+    /// rows move into scrollback (no scroll region).
+    fn scroll_up(&mut self, n: u16);
+    /// SD (CSI T) — scroll the viewport down by `n` lines; the bottom
+    /// `n` rows are dropped, top `n` filled with blanks.
+    fn scroll_down(&mut self, n: u16);
+
+    // ---- SGR --------------------------------------------------------
+
+    /// SGR (CSI m) — set graphic rendition. `params` is the
+    /// already-flattened sequence of SGR codes (extended-color
+    /// `38;5;n` / `38;2;r;g;b` arrive as consecutive elements; the
+    /// implementation walks them).
+    fn set_sgr(&mut self, params: &[u16]);
+
+    // ---- DEC private modes -----------------------------------------
+
+    /// DECTCEM (CSI ?25 h/l) — show or hide the cursor.
+    fn set_cursor_visible(&mut self, visible: bool);
+
+    /// DECSET 1049 — enter alternate screen. Currently a noop; the
+    /// method exists so a future PR can fill it in without touching the
+    /// parser/trait boundary again.
+    fn enter_alt_screen(&mut self);
+
+    /// DECRST 1049 — exit alternate screen. Currently a noop.
+    fn exit_alt_screen(&mut self);
+}
+
+/// VTE-to-handler adapter. Owns nothing of its own beyond a borrow of the
+/// underlying [`TerminalHandler`]; implements `vte::Perform` and forwards
+/// each callback to the appropriate trait method.
+///
+/// Never mutates grid / cursor / SGR state directly — all of that lives
+/// in `impl TerminalHandler for TerminalModel`.
+pub struct VteProcessor<'a, H: TerminalHandler + ?Sized> {
+    handler: &'a mut H,
+}
+
+impl<'a, H: TerminalHandler + ?Sized> VteProcessor<'a, H> {
+    pub fn new(handler: &'a mut H) -> Self {
+        Self { handler }
+    }
+
+    fn first_param_or(params: &Params, default: u16) -> u16 {
+        params
+            .iter()
+            .next()
+            .and_then(|s| s.first().copied())
+            .filter(|v| *v != 0)
+            .unwrap_or(default)
+    }
+
+    fn first_param_raw(params: &Params) -> u16 {
+        params
+            .iter()
+            .next()
+            .and_then(|s| s.first().copied())
+            .unwrap_or(0)
+    }
+
+    fn erase_mode_from(raw: u16) -> EraseMode {
+        match raw {
+            0 => EraseMode::ToEnd,
+            1 => EraseMode::ToStart,
+            // 2 — full; 3 — also scrollback, folded into All.
+            _ => EraseMode::All,
+        }
+    }
+}
+
+impl<H: TerminalHandler + ?Sized> Perform for VteProcessor<'_, H> {
+    fn print(&mut self, c: char) {
+        self.handler.print(c);
+    }
+
+    fn execute(&mut self, byte: u8) {
+        match byte {
+            0x07 => self.handler.bell(),
+            0x08 => self.handler.backspace(),
+            0x09 => self.handler.horizontal_tab(),
+            0x0a..=0x0c => self.handler.line_feed(),
+            0x0d => self.handler.carriage_return(),
+            _ => { /* other C0 controls noop */ }
+        }
+    }
+
+    fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
+        // DEC private (ESC[?...) sequences arrive with intermediates =
+        // b"?". We dispatch DECTCEM (25) and DECSET 1049 (alt-screen);
+        // everything else is a noop.
+        if intermediates == b"?" {
+            match action {
+                'h' => {
+                    for s in params.iter() {
+                        if let Some(&p) = s.first() {
+                            match p {
+                                25 => self.handler.set_cursor_visible(true),
+                                1049 => self.handler.enter_alt_screen(),
+                                _ => { /* unknown DECSET: noop */ }
+                            }
+                        }
+                    }
+                }
+                'l' => {
+                    for s in params.iter() {
+                        if let Some(&p) = s.first() {
+                            match p {
+                                25 => self.handler.set_cursor_visible(false),
+                                1049 => self.handler.exit_alt_screen(),
+                                _ => { /* unknown DECRST: noop */ }
+                            }
+                        }
+                    }
+                }
+                _ => { /* unknown ?-CSI: noop */ }
+            }
+            return;
+        }
+
+        // Vanilla CSI.
+        match action {
+            'A' => self.handler.cursor_up(Self::first_param_or(params, 1)),
+            'B' | 'e' => self.handler.cursor_down(Self::first_param_or(params, 1)),
+            'C' | 'a' => self.handler.cursor_forward(Self::first_param_or(params, 1)),
+            'D' => self
+                .handler
+                .cursor_backward(Self::first_param_or(params, 1)),
+            'H' | 'f' => {
+                // CUP / HVP — wire is 1-indexed, trait API is 0-indexed.
+                let mut it = params.iter();
+                let row1 = it.next().and_then(|s| s.first().copied()).unwrap_or(1);
+                let col1 = it.next().and_then(|s| s.first().copied()).unwrap_or(1);
+                self.handler
+                    .cursor_to(row1.saturating_sub(1), col1.saturating_sub(1));
+            }
+            'G' | '`' => {
+                // CHA / HPA — 1-indexed col.
+                let col1 = Self::first_param_or(params, 1);
+                self.handler.cursor_column(col1.saturating_sub(1));
+            }
+            'd' => {
+                // VPA — 1-indexed row.
+                let row1 = Self::first_param_or(params, 1);
+                self.handler.cursor_row(row1.saturating_sub(1));
+            }
+            'J' => self
+                .handler
+                .erase_screen(Self::erase_mode_from(Self::first_param_raw(params))),
+            'K' => self
+                .handler
+                .erase_line(Self::erase_mode_from(Self::first_param_raw(params))),
+            'S' => self.handler.scroll_up(Self::first_param_or(params, 1)),
+            'T' => self.handler.scroll_down(Self::first_param_or(params, 1)),
+            'm' => {
+                // Flatten (semicolon + colon subparams) into a single
+                // sequence; SGR walking lives in the handler so it sees
+                // every code in order.
+                if params.is_empty() {
+                    self.handler.set_sgr(&[]);
+                } else {
+                    let flat: Vec<u16> = params.iter().flat_map(|s| s.iter().copied()).collect();
+                    self.handler.set_sgr(&flat);
+                }
+            }
+            // Unknown CSI: noop. NEVER panic — the protocol allows the
+            // child to emit anything (mouse, bracketed paste, ...).
+            _ => {}
+        }
+    }
+
+    fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, _byte: u8) {
+        // ESC-only sequences (no CSI / OSC) — DECSC / DECRC / index / RI /
+        // charset selection. All currently noop; flagged EXPERIMENTAL.
+    }
+
+    fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {
+        // OSC: window title, hyperlinks, palette queries — all ignored.
+    }
+
+    fn hook(&mut self, _params: &Params, _intermediates: &[u8], _ignore: bool, _action: char) {}
+    fn put(&mut self, _byte: u8) {}
+    fn unhook(&mut self) {}
+}
+
+/// High-level driver: owns the [`vte::Parser`], the grid, cursor, SGR
+/// state, and scrollback. Implements [`TerminalHandler`] so
+/// [`VteProcessor`] can drive it directly. Exposes `feed` / `resize` /
+/// `snapshot_vt` / `scrollback_vt` to the daemon.
+pub struct TerminalModel {
+    parser: Parser,
     grid: Grid,
     cursor: Cursor,
     sgr: SgrState,
@@ -256,9 +539,10 @@ pub struct Performer {
     cursor_visible: bool,
 }
 
-impl Performer {
-    fn new(cols: u16, rows: u16, scrollback_max_lines: usize) -> Self {
+impl TerminalModel {
+    pub fn new(cols: u16, rows: u16, scrollback_max_lines: usize) -> Self {
         Self {
+            parser: Parser::new(),
             grid: Grid::new(cols, rows),
             cursor: Cursor::default(),
             sgr: SgrState::default(),
@@ -282,7 +566,7 @@ impl Performer {
         }
     }
 
-    fn scroll_up(&mut self, n: u16) {
+    fn scroll_up_inner(&mut self, n: u16) {
         for _ in 0..n {
             if self.grid.rows.is_empty() {
                 break;
@@ -298,7 +582,7 @@ impl Performer {
         }
     }
 
-    fn scroll_down(&mut self, n: u16) {
+    fn scroll_down_inner(&mut self, n: u16) {
         for _ in 0..n {
             if !self.grid.rows.is_empty() {
                 self.grid.rows.pop();
@@ -314,357 +598,26 @@ impl Performer {
         // scrollback). xterm-by-default behaviour; we don't track the
         // scroll region (DECSTBM) — see EXPERIMENTAL notes in module doc.
         if self.cursor.row + 1 >= self.grid.rows_count {
-            self.scroll_up(1);
+            self.scroll_up_inner(1);
         } else {
             self.cursor.row += 1;
-        }
-    }
-
-    // ---- CSI helpers ----
-
-    fn first_param_or(&self, params: &Params, default: u16) -> u16 {
-        params
-            .iter()
-            .next()
-            .and_then(|s| s.first().copied())
-            .filter(|v| *v != 0)
-            .unwrap_or(default)
-    }
-
-    fn handle_cup(&mut self, params: &Params) {
-        // CUP / HVP: 1-indexed (row, col).
-        let mut it = params.iter();
-        let row1 = it.next().and_then(|s| s.first().copied()).unwrap_or(1);
-        let col1 = it.next().and_then(|s| s.first().copied()).unwrap_or(1);
-        let row = row1.saturating_sub(1);
-        let col = col1.saturating_sub(1);
-        self.cursor.row = row.min(self.grid.rows_count.saturating_sub(1));
-        self.cursor.col = col.min(self.grid.cols.saturating_sub(1));
-    }
-
-    fn handle_cuu(&mut self, params: &Params) {
-        let n = self.first_param_or(params, 1);
-        self.cursor.row = self.cursor.row.saturating_sub(n);
-    }
-
-    fn handle_cud(&mut self, params: &Params) {
-        let n = self.first_param_or(params, 1);
-        let new_row = self.cursor.row.saturating_add(n);
-        self.cursor.row = new_row.min(self.grid.rows_count.saturating_sub(1));
-    }
-
-    fn handle_cuf(&mut self, params: &Params) {
-        let n = self.first_param_or(params, 1);
-        let new_col = self.cursor.col.saturating_add(n);
-        self.cursor.col = new_col.min(self.grid.cols.saturating_sub(1));
-    }
-
-    fn handle_cub(&mut self, params: &Params) {
-        let n = self.first_param_or(params, 1);
-        self.cursor.col = self.cursor.col.saturating_sub(n);
-    }
-
-    fn handle_ed(&mut self, params: &Params) {
-        let mode = params
-            .iter()
-            .next()
-            .and_then(|s| s.first().copied())
-            .unwrap_or(0);
-        match mode {
-            // 0: cursor to end of screen.
-            0 => {
-                self.grid.clear_row_from(self.cursor.row, self.cursor.col);
-                for r in (self.cursor.row + 1)..self.grid.rows_count {
-                    self.grid.clear_row(r);
-                }
-            }
-            // 1: start to cursor.
-            1 => {
-                for r in 0..self.cursor.row {
-                    self.grid.clear_row(r);
-                }
-                self.grid.clear_row_to(self.cursor.row, self.cursor.col);
-            }
-            // 2: entire screen. (3 = also scrollback — we treat as 2.)
-            _ => self.grid.clear_all(),
-        }
-    }
-
-    fn handle_el(&mut self, params: &Params) {
-        let mode = params
-            .iter()
-            .next()
-            .and_then(|s| s.first().copied())
-            .unwrap_or(0);
-        match mode {
-            0 => self.grid.clear_row_from(self.cursor.row, self.cursor.col),
-            1 => self.grid.clear_row_to(self.cursor.row, self.cursor.col),
-            _ => self.grid.clear_row(self.cursor.row),
-        }
-    }
-
-    fn handle_sgr(&mut self, params: &Params) {
-        if params.is_empty() {
-            self.sgr.reset();
-            return;
-        }
-        // Iterate by param-position, but `iter()` yields `&[u16]` slices
-        // (subparams). For our purposes the first u16 in each slice IS
-        // the param. Extended color sequences (38;5;n / 38;2;r;g;b) are
-        // emitted as a *single* param with subparams when the client uses
-        // colon separators; we handle both colon and semicolon form by
-        // flattening into a single Vec<u16>.
-        let flat: Vec<u16> = params.iter().flat_map(|s| s.iter().copied()).collect();
-        let mut i = 0;
-        while i < flat.len() {
-            let p = flat[i];
-            match p {
-                0 => self.sgr.reset(),
-                1 => self.sgr.bold = true,
-                2 => self.sgr.dim = true,
-                3 => self.sgr.italic = true,
-                4 => self.sgr.underline = true,
-                7 => self.sgr.reverse = true,
-                8 => self.sgr.hidden = true,
-                9 => self.sgr.strikethrough = true,
-                22 => {
-                    self.sgr.bold = false;
-                    self.sgr.dim = false;
-                }
-                23 => self.sgr.italic = false,
-                24 => self.sgr.underline = false,
-                27 => self.sgr.reverse = false,
-                28 => self.sgr.hidden = false,
-                29 => self.sgr.strikethrough = false,
-                30..=37 => self.sgr.fg = Color::Indexed((p - 30) as u8),
-                38 => {
-                    // 38;5;n or 38;2;r;g;b
-                    if let Some(&kind) = flat.get(i + 1) {
-                        if kind == 5
-                            && let Some(&n) = flat.get(i + 2)
-                        {
-                            self.sgr.fg = Color::Indexed((n & 0xFF) as u8);
-                            i += 2;
-                        } else if kind == 2
-                            && let (Some(&r), Some(&g), Some(&b)) =
-                                (flat.get(i + 2), flat.get(i + 3), flat.get(i + 4))
-                        {
-                            self.sgr.fg = Color::Rgb(r as u8, g as u8, b as u8);
-                            i += 4;
-                        }
-                    }
-                }
-                39 => self.sgr.fg = Color::Default,
-                40..=47 => self.sgr.bg = Color::Indexed((p - 40) as u8),
-                48 => {
-                    if let Some(&kind) = flat.get(i + 1) {
-                        if kind == 5
-                            && let Some(&n) = flat.get(i + 2)
-                        {
-                            self.sgr.bg = Color::Indexed((n & 0xFF) as u8);
-                            i += 2;
-                        } else if kind == 2
-                            && let (Some(&r), Some(&g), Some(&b)) =
-                                (flat.get(i + 2), flat.get(i + 3), flat.get(i + 4))
-                        {
-                            self.sgr.bg = Color::Rgb(r as u8, g as u8, b as u8);
-                            i += 4;
-                        }
-                    }
-                }
-                49 => self.sgr.bg = Color::Default,
-                90..=97 => self.sgr.fg = Color::Indexed(8 + (p - 90) as u8),
-                100..=107 => self.sgr.bg = Color::Indexed(8 + (p - 100) as u8),
-                _ => { /* unknown SGR param — noop */ }
-            }
-            i += 1;
-        }
-    }
-}
-
-impl Perform for Performer {
-    fn print(&mut self, c: char) {
-        // Wide-char and combining-char handling: see EXPERIMENTAL note.
-        // Single-width assumed.
-        let cell = Cell {
-            ch: c,
-            sgr: self.sgr,
-        };
-        self.clamp_cursor();
-        self.grid.set_cell(self.cursor.row, self.cursor.col, cell);
-        if self.cursor.col + 1 < self.grid.cols {
-            self.cursor.col += 1;
-        } else {
-            // End of line: stay at the last column. xterm's "auto-wrap"
-            // pending-wrap flag is intentionally simplified — the next
-            // print will overwrite the last cell unless a CR/LF/CUP
-            // arrives first. Sufficient for typical shell prompts.
-            self.cursor.col = self.grid.cols.saturating_sub(1);
-        }
-        self.bump();
-    }
-
-    fn execute(&mut self, byte: u8) {
-        match byte {
-            0x07 => { /* BEL: noop */ }
-            0x08 if self.cursor.col > 0 => {
-                // BS
-                self.cursor.col -= 1;
-                self.bump();
-            }
-            0x09 => {
-                // HT: jump to next 8-col boundary.
-                let next = (self.cursor.col / 8 + 1) * 8;
-                let max = self.grid.cols.saturating_sub(1);
-                self.cursor.col = next.min(max);
-                self.bump();
-            }
-            0x0a..=0x0c => {
-                // LF / VT / FF — all treated as newline (xterm default).
-                self.newline();
-                self.bump();
-            }
-            0x0d => {
-                // CR
-                self.cursor.col = 0;
-                self.bump();
-            }
-            _ => { /* other C0 controls noop */ }
-        }
-    }
-
-    fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
-        // DEC private (ESC[?...) sequences arrive with intermediates = b"?".
-        // We only care about cursor visibility — alternate-screen
-        // (1049) is explicitly a noop per the EXPERIMENTAL note.
-        if intermediates == b"?" {
-            match action {
-                'h' => {
-                    // DECSET — process every param that we care about.
-                    // 1049 alternate screen: noop (see module doc).
-                    // Other DECSET codes: noop.
-                    for s in params.iter() {
-                        if let Some(&p) = s.first()
-                            && p == 25
-                        {
-                            self.cursor_visible = true;
-                            self.bump();
-                        }
-                    }
-                }
-                'l' => {
-                    for s in params.iter() {
-                        if let Some(&p) = s.first()
-                            && p == 25
-                        {
-                            self.cursor_visible = false;
-                            self.bump();
-                        }
-                    }
-                }
-                _ => { /* unknown ?-CSI: noop */ }
-            }
-            return;
-        }
-        // Vanilla CSI (no intermediates of interest).
-        match action {
-            'A' => {
-                self.handle_cuu(params);
-                self.bump();
-            }
-            'B' | 'e' => {
-                self.handle_cud(params);
-                self.bump();
-            }
-            'C' | 'a' => {
-                self.handle_cuf(params);
-                self.bump();
-            }
-            'D' => {
-                self.handle_cub(params);
-                self.bump();
-            }
-            'H' | 'f' => {
-                self.handle_cup(params);
-                self.bump();
-            }
-            'G' | '`' => {
-                // CHA / HPA: 1-indexed column.
-                let col1 = self.first_param_or(params, 1);
-                self.cursor.col = col1.saturating_sub(1).min(self.grid.cols.saturating_sub(1));
-                self.bump();
-            }
-            'd' => {
-                // VPA: 1-indexed row.
-                let row1 = self.first_param_or(params, 1);
-                self.cursor.row = row1
-                    .saturating_sub(1)
-                    .min(self.grid.rows_count.saturating_sub(1));
-                self.bump();
-            }
-            'J' => {
-                self.handle_ed(params);
-                self.bump();
-            }
-            'K' => {
-                self.handle_el(params);
-                self.bump();
-            }
-            'S' => {
-                let n = self.first_param_or(params, 1);
-                self.scroll_up(n);
-                self.bump();
-            }
-            'T' => {
-                let n = self.first_param_or(params, 1);
-                self.scroll_down(n);
-                self.bump();
-            }
-            'm' => {
-                self.handle_sgr(params);
-                self.bump();
-            }
-            // Unknown CSI: noop. NEVER panic — the protocol allows the
-            // child to emit anything (mouse, bracketed paste, ...).
-            _ => {}
-        }
-    }
-
-    fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, _byte: u8) {
-        // ESC-only sequences (no CSI / OSC) — DECSC / DECRC / index / RI /
-        // charset selection. All currently noop; flagged EXPERIMENTAL.
-    }
-
-    fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {
-        // OSC: window title, hyperlinks, palette queries — all ignored.
-    }
-
-    fn hook(&mut self, _params: &Params, _intermediates: &[u8], _ignore: bool, _action: char) {}
-    fn put(&mut self, _byte: u8) {}
-    fn unhook(&mut self) {}
-}
-
-/// High-level driver: owns the [`vte::Parser`] and [`Performer`]; exposes
-/// `feed` / `resize` / `snapshot_vt` / `scrollback_vt`.
-pub struct TerminalModel {
-    parser: Parser,
-    performer: Performer,
-}
-
-impl TerminalModel {
-    pub fn new(cols: u16, rows: u16, scrollback_max_lines: usize) -> Self {
-        Self {
-            parser: Parser::new(),
-            performer: Performer::new(cols, rows, scrollback_max_lines),
         }
     }
 
     /// Feed raw PTY bytes through the parser. Each visible state change
     /// bumps `rev()` by 1. Empty input bumps nothing.
     pub fn feed(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            self.parser.advance(&mut self.performer, b);
+        // Take the parser out so we can hand `&mut self` to the
+        // processor — the parser is logically separate from terminal
+        // state and the borrow checker needs us to prove that.
+        let mut parser = std::mem::replace(&mut self.parser, Parser::new());
+        {
+            let mut processor = VteProcessor::new(self);
+            for &b in bytes {
+                parser.advance(&mut processor, b);
+            }
         }
+        self.parser = parser;
     }
 
     /// Resize the internal grid. Existing content is clipped (cols
@@ -676,31 +629,31 @@ impl TerminalModel {
     pub fn resize(&mut self, cols: u16, rows: u16) {
         let new_cols = cols.max(1);
         let new_rows = rows.max(1);
-        if new_cols == self.performer.grid.cols && new_rows == self.performer.grid.rows_count {
+        if new_cols == self.grid.cols && new_rows == self.grid.rows_count {
             // Identity resize: still bump so the daemon can decide to
             // re-broadcast a snapshot. Cheap, infrequent.
-            self.performer.bump();
+            self.bump();
             return;
         }
 
         // 1. Adjust per-row width.
-        if new_cols != self.performer.grid.cols {
+        if new_cols != self.grid.cols {
             let new_cols_usize = new_cols as usize;
-            for row in self.performer.grid.rows.iter_mut() {
+            for row in self.grid.rows.iter_mut() {
                 row.resize(new_cols_usize, Cell::default());
             }
-            self.performer.grid.cols = new_cols;
+            self.grid.cols = new_cols;
         }
 
         // 2. Adjust row count.
-        let cur_rows = self.performer.grid.rows.len();
+        let cur_rows = self.grid.rows.len();
         let target_rows = new_rows as usize;
         match target_rows.cmp(&cur_rows) {
             std::cmp::Ordering::Greater => {
                 // Pad below.
                 let blank_row = vec![Cell::default(); new_cols as usize];
                 for _ in cur_rows..target_rows {
-                    self.performer.grid.rows.push(blank_row.clone());
+                    self.grid.rows.push(blank_row.clone());
                 }
             }
             std::cmp::Ordering::Less => {
@@ -712,43 +665,40 @@ impl TerminalModel {
                 //     cursor up by that many rows (xterm-style anchor-to-
                 //     bottom for an active prompt at/near bottom).
                 let to_drop = cur_rows - target_rows;
-                if (self.performer.cursor.row as usize) < target_rows {
+                if (self.cursor.row as usize) < target_rows {
                     for _ in 0..to_drop {
-                        self.performer.grid.rows.pop();
+                        self.grid.rows.pop();
                     }
                 } else {
                     for _ in 0..to_drop {
-                        if !self.performer.grid.rows.is_empty() {
-                            let dropped = self.performer.grid.rows.remove(0);
-                            self.performer.scrollback.push_back(dropped);
-                            while self.performer.scrollback.len()
-                                > self.performer.scrollback_max_lines
-                            {
-                                self.performer.scrollback.pop_front();
+                        if !self.grid.rows.is_empty() {
+                            let dropped = self.grid.rows.remove(0);
+                            self.scrollback.push_back(dropped);
+                            while self.scrollback.len() > self.scrollback_max_lines {
+                                self.scrollback.pop_front();
                             }
                         }
                     }
-                    self.performer.cursor.row =
-                        self.performer.cursor.row.saturating_sub(to_drop as u16);
+                    self.cursor.row = self.cursor.row.saturating_sub(to_drop as u16);
                 }
             }
             std::cmp::Ordering::Equal => {}
         }
-        self.performer.grid.rows_count = new_rows;
-        self.performer.clamp_cursor();
-        self.performer.bump();
+        self.grid.rows_count = new_rows;
+        self.clamp_cursor();
+        self.bump();
     }
 
     pub fn rev(&self) -> u32 {
-        self.performer.rev
+        self.rev
     }
 
     pub fn size(&self) -> (u16, u16) {
-        (self.performer.grid.cols, self.performer.grid.rows_count)
+        (self.grid.cols, self.grid.rows_count)
     }
 
     pub fn cursor(&self) -> Cursor {
-        self.performer.cursor
+        self.cursor
     }
 
     /// Serialize the current viewport at the requested geometry.
@@ -785,7 +735,7 @@ impl TerminalModel {
             let last_non_blank = {
                 let mut found = None;
                 for col_idx in 0..target_cols {
-                    let cell = self.performer.grid.cell(row_idx, col_idx);
+                    let cell = self.grid.cell(row_idx, col_idx);
                     if !cell.is_blank() {
                         found = Some(col_idx);
                     }
@@ -795,7 +745,7 @@ impl TerminalModel {
 
             if let Some(end) = last_non_blank {
                 for col_idx in 0..=end {
-                    let cell = self.performer.grid.cell(row_idx, col_idx);
+                    let cell = self.grid.cell(row_idx, col_idx);
                     if cell.sgr != last_sgr {
                         out.extend_from_slice(&cell.sgr.to_sgr_bytes());
                         last_sgr = cell.sgr;
@@ -810,13 +760,13 @@ impl TerminalModel {
 
         // Reset SGR + position cursor + cursor visibility.
         out.extend_from_slice(b"\x1b[0m");
-        let cur = self.performer.cursor;
+        let cur = self.cursor;
         // Clamp cursor into the target geometry.
         let row = (cur.row.min(target_rows.saturating_sub(1))) + 1;
         let col = (cur.col.min(target_cols.saturating_sub(1))) + 1;
         let pos = format!("\x1b[{};{}H", row, col);
         out.extend_from_slice(pos.as_bytes());
-        if self.performer.cursor_visible {
+        if self.cursor_visible {
             out.extend_from_slice(b"\x1b[?25h");
         } else {
             out.extend_from_slice(b"\x1b[?25l");
@@ -834,15 +784,15 @@ impl TerminalModel {
     pub fn scrollback_vt(&self, limit: ScrollbackLimit) -> Vec<u8> {
         let max = match limit {
             ScrollbackLimit::None => return Vec::new(),
-            ScrollbackLimit::All => self.performer.scrollback.len(),
-            ScrollbackLimit::Lines(n) => (n as usize).min(self.performer.scrollback.len()),
+            ScrollbackLimit::All => self.scrollback.len(),
+            ScrollbackLimit::Lines(n) => (n as usize).min(self.scrollback.len()),
         };
         if max == 0 {
             return Vec::new();
         }
-        let start = self.performer.scrollback.len() - max;
-        let mut out = Vec::with_capacity(max * self.performer.grid.cols as usize * 2);
-        for line in self.performer.scrollback.iter().skip(start) {
+        let start = self.scrollback.len() - max;
+        let mut out = Vec::with_capacity(max * self.grid.cols as usize * 2);
+        for line in self.scrollback.iter().skip(start) {
             out.extend_from_slice(b"\x1b[0m");
             let mut last_sgr = SgrState::default();
             // Strip trailing blanks for compactness.
@@ -862,6 +812,232 @@ impl TerminalModel {
             out.extend_from_slice(b"\x1b[K\r\n");
         }
         out
+    }
+}
+
+// =========================================================================
+// `TerminalHandler` impl: all grid/cursor/SGR/scrollback mutation lives
+// here. `VteProcessor` calls into these methods; nothing in the parser
+// adapter touches state directly. Every public method bumps `rev` once
+// per visible state change (matches PR-2 semantics — see existing
+// `terminal_model.rs` acceptance tests).
+// =========================================================================
+impl TerminalHandler for TerminalModel {
+    fn print(&mut self, c: char) {
+        // Wide-char and combining-char handling: see EXPERIMENTAL note.
+        // Single-width assumed.
+        let cell = Cell {
+            ch: c,
+            sgr: self.sgr,
+        };
+        self.clamp_cursor();
+        self.grid.set_cell(self.cursor.row, self.cursor.col, cell);
+        if self.cursor.col + 1 < self.grid.cols {
+            self.cursor.col += 1;
+        } else {
+            // End of line: stay at the last column. xterm's "auto-wrap"
+            // pending-wrap flag is intentionally simplified — the next
+            // print will overwrite the last cell unless a CR/LF/CUP
+            // arrives first. Sufficient for typical shell prompts.
+            self.cursor.col = self.grid.cols.saturating_sub(1);
+        }
+        self.bump();
+    }
+
+    fn carriage_return(&mut self) {
+        self.cursor.col = 0;
+        self.bump();
+    }
+
+    fn line_feed(&mut self) {
+        self.newline();
+        self.bump();
+    }
+
+    fn backspace(&mut self) {
+        if self.cursor.col > 0 {
+            self.cursor.col -= 1;
+            self.bump();
+        }
+    }
+
+    fn horizontal_tab(&mut self) {
+        // HT: jump to next 8-col boundary.
+        let next = (self.cursor.col / 8 + 1) * 8;
+        let max = self.grid.cols.saturating_sub(1);
+        self.cursor.col = next.min(max);
+        self.bump();
+    }
+
+    fn bell(&mut self) {
+        // BEL: noop — does not bump rev (no visible change).
+    }
+
+    fn cursor_up(&mut self, n: u16) {
+        self.cursor.row = self.cursor.row.saturating_sub(n);
+        self.bump();
+    }
+
+    fn cursor_down(&mut self, n: u16) {
+        let new_row = self.cursor.row.saturating_add(n);
+        self.cursor.row = new_row.min(self.grid.rows_count.saturating_sub(1));
+        self.bump();
+    }
+
+    fn cursor_forward(&mut self, n: u16) {
+        let new_col = self.cursor.col.saturating_add(n);
+        self.cursor.col = new_col.min(self.grid.cols.saturating_sub(1));
+        self.bump();
+    }
+
+    fn cursor_backward(&mut self, n: u16) {
+        self.cursor.col = self.cursor.col.saturating_sub(n);
+        self.bump();
+    }
+
+    fn cursor_to(&mut self, row: u16, col: u16) {
+        self.cursor.row = row.min(self.grid.rows_count.saturating_sub(1));
+        self.cursor.col = col.min(self.grid.cols.saturating_sub(1));
+        self.bump();
+    }
+
+    fn cursor_column(&mut self, col: u16) {
+        self.cursor.col = col.min(self.grid.cols.saturating_sub(1));
+        self.bump();
+    }
+
+    fn cursor_row(&mut self, row: u16) {
+        self.cursor.row = row.min(self.grid.rows_count.saturating_sub(1));
+        self.bump();
+    }
+
+    fn erase_screen(&mut self, mode: EraseMode) {
+        match mode {
+            EraseMode::ToEnd => {
+                self.grid.clear_row_from(self.cursor.row, self.cursor.col);
+                for r in (self.cursor.row + 1)..self.grid.rows_count {
+                    self.grid.clear_row(r);
+                }
+            }
+            EraseMode::ToStart => {
+                for r in 0..self.cursor.row {
+                    self.grid.clear_row(r);
+                }
+                self.grid.clear_row_to(self.cursor.row, self.cursor.col);
+            }
+            EraseMode::All => self.grid.clear_all(),
+        }
+        self.bump();
+    }
+
+    fn erase_line(&mut self, mode: EraseMode) {
+        match mode {
+            EraseMode::ToEnd => self.grid.clear_row_from(self.cursor.row, self.cursor.col),
+            EraseMode::ToStart => self.grid.clear_row_to(self.cursor.row, self.cursor.col),
+            EraseMode::All => self.grid.clear_row(self.cursor.row),
+        }
+        self.bump();
+    }
+
+    fn scroll_up(&mut self, n: u16) {
+        self.scroll_up_inner(n);
+        self.bump();
+    }
+
+    fn scroll_down(&mut self, n: u16) {
+        self.scroll_down_inner(n);
+        self.bump();
+    }
+
+    fn set_sgr(&mut self, params: &[u16]) {
+        if params.is_empty() {
+            self.sgr.reset();
+            self.bump();
+            return;
+        }
+        // Walk by param-position. Extended color sequences
+        // (38;5;n / 38;2;r;g;b — colon or semicolon separated) arrive
+        // pre-flattened from `VteProcessor`.
+        let mut i = 0;
+        while i < params.len() {
+            let p = params[i];
+            match p {
+                0 => self.sgr.reset(),
+                1 => self.sgr.bold = true,
+                2 => self.sgr.dim = true,
+                3 => self.sgr.italic = true,
+                4 => self.sgr.underline = true,
+                7 => self.sgr.reverse = true,
+                8 => self.sgr.hidden = true,
+                9 => self.sgr.strikethrough = true,
+                22 => {
+                    self.sgr.bold = false;
+                    self.sgr.dim = false;
+                }
+                23 => self.sgr.italic = false,
+                24 => self.sgr.underline = false,
+                27 => self.sgr.reverse = false,
+                28 => self.sgr.hidden = false,
+                29 => self.sgr.strikethrough = false,
+                30..=37 => self.sgr.fg = Color::Indexed((p - 30) as u8),
+                38 => {
+                    // 38;5;n or 38;2;r;g;b
+                    if let Some(&kind) = params.get(i + 1) {
+                        if kind == 5
+                            && let Some(&n) = params.get(i + 2)
+                        {
+                            self.sgr.fg = Color::Indexed((n & 0xFF) as u8);
+                            i += 2;
+                        } else if kind == 2
+                            && let (Some(&r), Some(&g), Some(&b)) =
+                                (params.get(i + 2), params.get(i + 3), params.get(i + 4))
+                        {
+                            self.sgr.fg = Color::Rgb(r as u8, g as u8, b as u8);
+                            i += 4;
+                        }
+                    }
+                }
+                39 => self.sgr.fg = Color::Default,
+                40..=47 => self.sgr.bg = Color::Indexed((p - 40) as u8),
+                48 => {
+                    if let Some(&kind) = params.get(i + 1) {
+                        if kind == 5
+                            && let Some(&n) = params.get(i + 2)
+                        {
+                            self.sgr.bg = Color::Indexed((n & 0xFF) as u8);
+                            i += 2;
+                        } else if kind == 2
+                            && let (Some(&r), Some(&g), Some(&b)) =
+                                (params.get(i + 2), params.get(i + 3), params.get(i + 4))
+                        {
+                            self.sgr.bg = Color::Rgb(r as u8, g as u8, b as u8);
+                            i += 4;
+                        }
+                    }
+                }
+                49 => self.sgr.bg = Color::Default,
+                90..=97 => self.sgr.fg = Color::Indexed(8 + (p - 90) as u8),
+                100..=107 => self.sgr.bg = Color::Indexed(8 + (p - 100) as u8),
+                _ => { /* unknown SGR param — noop */ }
+            }
+            i += 1;
+        }
+        self.bump();
+    }
+
+    fn set_cursor_visible(&mut self, visible: bool) {
+        self.cursor_visible = visible;
+        self.bump();
+    }
+
+    fn enter_alt_screen(&mut self) {
+        // EXPERIMENTAL: alternate-screen is a noop in this implementation.
+        // See module-level "EXPERIMENTAL" note — vim / less / htop will
+        // bleed through into the main grid until a follow-up wires this.
+    }
+
+    fn exit_alt_screen(&mut self) {
+        // See `enter_alt_screen` — symmetric noop.
     }
 }
 
@@ -903,9 +1079,9 @@ mod unit_tests {
     fn sgr_reset_via_zero() {
         let mut m = TerminalModel::new(80, 24, 100);
         m.feed(b"\x1b[1;31m");
-        assert!(m.performer.sgr.bold);
+        assert!(m.sgr.bold);
         m.feed(b"\x1b[0m");
-        assert!(!m.performer.sgr.bold);
-        assert_eq!(m.performer.sgr.fg, Color::Default);
+        assert!(!m.sgr.bold);
+        assert_eq!(m.sgr.fg, Color::Default);
     }
 }
