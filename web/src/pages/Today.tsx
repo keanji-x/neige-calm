@@ -95,7 +95,7 @@ export function TodayPage({
           onReset={onResetTodayTerminal}
         />
       </section>
-      <aside className="surf-rail">
+      <aside className="surf-rail" aria-label="Calendar">
         <CalendarCard
           today0={today0}
           events={events}

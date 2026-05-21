@@ -200,7 +200,7 @@ export function DirectoryBrowser({ initialPath, onCancel, onSelect, selectLabel 
           {browsePath ?? '…'}
         </span>
       </div>
-      <ul className="dirpicker-list" role="listbox">
+      <ul className="dirpicker-list" role="listbox" aria-label="Directory entries">
         {loading ? (
           <li className="dirpicker-status">Loading…</li>
         ) : error ? (

@@ -54,42 +54,26 @@ async function waitForBootstrap(page: Page): Promise<void> {
 //     for normal text. Pre-existing from the M0 design port. Bumping
 //     these affects every page — schedule as a dedicated design-system
 //     pass (#56 slice 9 candidate).
-//   - landmark-unique: the Today page renders two <aside> landmarks
-//     (Sidebar + calendar rail) without distinct accessible names.
-//     Add `aria-label="Navigation"` / `aria-label="Calendar"` etc. to
-//     fix — a structural change deferred to slice 9.
-//   - region: a few small text spans (e.g. ".bar" titlebar children)
-//     sit outside any landmark. Wrap them in `<header role="banner">`
-//     or remove the standalone text. Same slice-9 candidate.
+//   - region: the TitleBar (`web/src/shared/components/TitleBar.tsx`,
+//     `<div className="bar">`) renders the app name (`<div
+//     className="name">Neige</div>`) and theme/settings buttons outside
+//     any landmark. The fix is to promote `.bar` to `<header
+//     role="banner">` (or a plain `<header>`) so its children live
+//     inside a landmark. Touching the global chrome ripples through
+//     layout/CSS, so it's deferred to a dedicated banner pass.
 //   - nested-interactive: WaveRow is a `<div role="button">` that hosts
 //     a hover-reveal `<button>×</button>` delete control. The component
 //     comment in `WaveRow.tsx` calls this out — going back to a real
 //     <button> requires moving the delete control elsewhere. Slice 9
 //     ergonomic pass.
-//   - landmark-main-is-top-level / landmark-no-duplicate-main: WavePage
-//     renders an inner `<main class="workbench-main">` while the app
-//     root already provides a top-level `<main>` via the router shell.
-//     Renaming the inner element to `<section>` (or dropping the role)
-//     is the fix; deferred to slice 9 so we don't perturb the layout in
-//     this slice.
-//   - aria-input-field-name: DirectoryPicker's `<ul role="listbox">`
-//     lacks an aria-label. Trivial fix (add `aria-label="Directory
-//     entries"` on the ul) but it lives in a separate component and
-//     would expand the surface of this slice unnecessarily — folded
-//     into the slice 9 design-system pass with the other named-region
-//     fixes.
 //
-// Until the design-system pass lands, we exclude these rules so the
-// rest of the axe surface (which catches *new* regressions on labels,
-// focus management, ARIA misuse, …) stays a reliable signal.
+// Until the follow-ups land, we exclude these rules so the rest of the
+// axe surface (which catches *new* regressions on labels, focus
+// management, ARIA misuse, …) stays a reliable signal.
 const DEFERRED_RULES = [
   'color-contrast',
-  'landmark-unique',
   'region',
   'nested-interactive',
-  'landmark-main-is-top-level',
-  'landmark-no-duplicate-main',
-  'aria-input-field-name',
 ];
 
 // Default Axe builder used by every scan. `withTags` pins the rule set to
