@@ -22,9 +22,9 @@ pub struct ErrorBody {
     pub error: String,
     /// Stable machine-readable code — one of `not_found`, `conflict`,
     /// `bad_request`, `unauthorized`, `forbidden`, `plugin_install`,
-    /// `plugin_permission`, `plugin_conflict`, `db_error`, `io_error`,
-    /// `serde_error`, `internal`, `forbidden_tool`, `not_a_card_tool`,
-    /// `tool_call_failed`.
+    /// `plugin_permission`, `plugin_conflict`, `plugin_kernel_too_old`,
+    /// `db_error`, `io_error`, `serde_error`, `internal`, `forbidden_tool`,
+    /// `not_a_card_tool`, `tool_call_failed`.
     pub code: String,
 }
 
@@ -69,6 +69,13 @@ pub enum CalmError {
     #[error("plugin conflict: {0}")]
     PluginConflict(String),
 
+    /// 422 — manifest is structurally valid but its `min_kernel_version`
+    /// demands a kernel newer than the one we are. Distinct from
+    /// `PluginInstall` (which is a 400 "your input is malformed") because
+    /// the input is fine; it's our deployment that's incompatible. Issue #45.
+    #[error("plugin kernel too old: {0}")]
+    PluginKernelTooOld(String),
+
     #[error("database error: {0}")]
     Db(#[from] sqlx::Error),
 
@@ -93,6 +100,7 @@ impl CalmError {
             CalmError::PluginInstall(_) => "plugin_install",
             CalmError::PluginPermission(_) => "plugin_permission",
             CalmError::PluginConflict(_) => "plugin_conflict",
+            CalmError::PluginKernelTooOld(_) => "plugin_kernel_too_old",
             CalmError::Db(_) => "db_error",
             CalmError::Io(_) => "io_error",
             CalmError::Serde(_) => "serde_error",
@@ -107,6 +115,7 @@ impl CalmError {
             CalmError::BadRequest(_) | CalmError::PluginInstall(_) => StatusCode::BAD_REQUEST,
             CalmError::Unauthorized => StatusCode::UNAUTHORIZED,
             CalmError::Forbidden(_) | CalmError::PluginPermission(_) => StatusCode::FORBIDDEN,
+            CalmError::PluginKernelTooOld(_) => StatusCode::UNPROCESSABLE_ENTITY,
             CalmError::Db(_) | CalmError::Io(_) | CalmError::Serde(_) | CalmError::Internal(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }

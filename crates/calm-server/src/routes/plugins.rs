@@ -307,6 +307,7 @@ pub(crate) async fn get_plugin_detail(
         (status = 201, description = "Plugin installed (disabled by default)", body = PluginDetail),
         (status = 400, description = "Manifest invalid / unsupported source", body = ErrorBody),
         (status = 409, description = "Plugin id already installed", body = ErrorBody),
+        (status = 422, description = "Manifest min_kernel_version exceeds kernel version", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
@@ -341,6 +342,26 @@ pub(crate) async fn install_plugin(
     })?;
     let manifest =
         Manifest::parse(&manifest_text).map_err(|e| CalmError::PluginInstall(e.to_string()))?;
+
+    // Issue #45: refuse to install a plugin we can never spawn. Doing this at
+    // install time (vs only at spawn time) avoids littering the DB and the
+    // filesystem with a row + symlink that's permanently inert. Manifest
+    // validation already confirmed the field parses; we just compare here.
+    let required = semver::Version::parse(&manifest.min_kernel_version).map_err(|e| {
+        CalmError::PluginInstall(format!(
+            "manifest min_kernel_version `{}` is not valid semver: {e}",
+            manifest.min_kernel_version
+        ))
+    })?;
+    if let Err(err) = crate::plugin_host::check_min_kernel_version(
+        &crate::plugin_host::KERNEL_VERSION,
+        &required,
+    ) {
+        return Err(CalmError::PluginKernelTooOld(format!(
+            "plugin `{}` requires kernel >= {}, this kernel is {}",
+            manifest.id, err.required, err.actual,
+        )));
+    }
 
     // Reject reinstall while the previous row is still around. Slice D's
     // uninstall path is the only way to clear it; idempotent-by-conflict
@@ -398,6 +419,7 @@ pub(crate) async fn install_plugin(
     responses(
         (status = 200, description = "Plugin enabled and spawned", body = PluginDetail),
         (status = 404, description = "Plugin not found", body = ErrorBody),
+        (status = 422, description = "Manifest min_kernel_version exceeds kernel version", body = ErrorBody),
         (status = 500, description = "Spawn failed / internal error", body = ErrorBody),
     ),
 )]
@@ -414,7 +436,7 @@ pub(crate) async fn enable_plugin(
     // next boot) will keep trying. We do surface the error to the caller so
     // the UI can show it immediately rather than waiting for a state event.
     if let Err(e) = s.plugin.spawn(&id).await {
-        return Err(CalmError::Internal(format!("spawn failed: {e}")));
+        return Err(spawn_error_to_calm(e));
     }
     let plug = s
         .repo
@@ -590,6 +612,7 @@ pub(crate) async fn tail_plugin_log(
         (status = 200, description = "Manifest reloaded + plugin restarted if enabled", body = PluginDetail),
         (status = 400, description = "Manifest invalid / id mismatch after reload", body = ErrorBody),
         (status = 404, description = "Plugin not found", body = ErrorBody),
+        (status = 422, description = "Manifest min_kernel_version exceeds kernel version", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
@@ -622,6 +645,28 @@ pub(crate) async fn reload_plugin(
             manifest.id
         )));
     }
+
+    // Issue #45: pre-check `min_kernel_version` *before* we mutate the
+    // registry or DB. If the reloaded manifest now demands a newer kernel
+    // than we are, we want a clean 422 — not a half-applied reload where the
+    // DB shows a manifest the host can never spawn. The spawn path runs the
+    // same check, but that's downstream of the registry/DB writes.
+    let required = semver::Version::parse(&manifest.min_kernel_version).map_err(|e| {
+        CalmError::PluginInstall(format!(
+            "manifest min_kernel_version `{}` is not valid semver: {e}",
+            manifest.min_kernel_version
+        ))
+    })?;
+    if let Err(err) = crate::plugin_host::check_min_kernel_version(
+        &crate::plugin_host::KERNEL_VERSION,
+        &required,
+    ) {
+        return Err(CalmError::PluginKernelTooOld(format!(
+            "plugin `{id}` requires kernel >= {}, this kernel is {}",
+            err.required, err.actual,
+        )));
+    }
+
     // Persist the on-disk manifest back to the DB row so `GET /api/plugins/:id`
     // (which serializes from `Plugin::manifest`) reflects current reality. The
     // live `PluginRegistry` and `views_catalog` were already consistent before
@@ -633,9 +678,7 @@ pub(crate) async fn reload_plugin(
     if plug.enabled
         && let Err(e) = s.plugin.spawn(&id).await
     {
-        return Err(CalmError::Internal(format!(
-            "respawn after reload failed: {e}"
-        )));
+        return Err(spawn_error_to_calm(e));
     }
     let plug = s
         .repo
@@ -980,6 +1023,24 @@ fn rpc_to_calm(e: RpcError) -> CalmError {
         RpcError::INVALID_PARAMS => CalmError::BadRequest(e.message),
         RpcError::METHOD_NOT_FOUND => CalmError::BadRequest(e.message),
         _ => CalmError::Internal(e.message),
+    }
+}
+
+/// Translate a `PluginHost::spawn` failure into a route-shaped `CalmError`.
+///
+/// Most variants flatten to a 500 with the underlying string — the caller
+/// (operator / UI) only needs to know "spawn failed, here's why". The
+/// exception is `KernelTooOld` (issue #45): the manifest demands a kernel we
+/// don't ship, so we surface a 422 `PluginKernelTooOld` carrying both
+/// versions in the body. That lets the UI render a "upgrade required" hint
+/// instead of a generic internal-error toast.
+fn spawn_error_to_calm(e: crate::plugin_host::HostError) -> CalmError {
+    match e {
+        crate::plugin_host::HostError::KernelTooOld(k) => CalmError::PluginKernelTooOld(format!(
+            "plugin requires kernel >= {}, this kernel is {}",
+            k.required, k.actual,
+        )),
+        other => CalmError::Internal(format!("spawn failed: {other}")),
     }
 }
 

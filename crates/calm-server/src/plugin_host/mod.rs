@@ -26,6 +26,7 @@ pub mod perms;
 pub mod process;
 pub mod registry;
 pub mod resources;
+pub mod version;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -42,6 +43,7 @@ pub use mcp::{
 pub use process::PluginProcess;
 pub use registry::PluginRegistry;
 pub use resources::{ResourceError, read_ui_resource};
+pub use version::{KERNEL_VERSION, KernelTooOld, check_min_kernel_version};
 
 use tokio::sync::{Mutex, mpsc};
 
@@ -303,6 +305,33 @@ impl PluginHost {
             .registry
             .get(id)
             .ok_or_else(|| HostError::NotFound(id.to_string()))?;
+
+        // Issue #45: refuse to spawn plugins that demand a newer kernel than
+        // we are. Parse failures on `min_kernel_version` already get caught
+        // by `Manifest::validate` at load time, so the unwrap-via-parse here
+        // is purely for re-hydrating the validated string into a `Version`.
+        // We do *not* abort the whole autospawn loop on failure — the caller
+        // (`autospawn_enabled`) logs and continues, matching the design's
+        // "one bad plugin doesn't block boot" policy.
+        let required = semver::Version::parse(&manifest.min_kernel_version).map_err(|e| {
+            HostError::BadState(format!(
+                "plugin `{id}` has an unparseable min_kernel_version `{}` \
+                 (should have been rejected at manifest load): {e}",
+                manifest.min_kernel_version
+            ))
+        })?;
+        if let Err(err) = check_min_kernel_version(&KERNEL_VERSION, &required) {
+            tracing::warn!(
+                plugin_id = %id,
+                required = %err.required,
+                actual = %err.actual,
+                "plugin '{id}' requires kernel >= {}, this kernel is {} — refusing to load",
+                err.required,
+                err.actual,
+            );
+            return Err(HostError::KernelTooOld(err));
+        }
+
         let install_path = self
             .registry
             .install_path(id)

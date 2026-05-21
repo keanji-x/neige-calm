@@ -10,6 +10,8 @@ use std::io;
 
 use thiserror::Error;
 
+use super::version::KernelTooOld;
+
 // ---------------------------------------------------------------------------
 // Process-layer errors
 // ---------------------------------------------------------------------------
@@ -126,4 +128,11 @@ pub enum HostError {
     /// state event reports `Crashed { reason: "auth handshake failed" }`.
     #[error("plugin auth handshake failed: {0}")]
     AuthMismatch(String),
+
+    /// Issue #45: the manifest's `min_kernel_version` exceeds the running
+    /// kernel's version. The check fires before any process spawn, so this
+    /// variant never leaves a half-spawned plugin behind. Routes map it to a
+    /// 4xx so callers see the typed reason rather than a generic 500.
+    #[error(transparent)]
+    KernelTooOld(#[from] KernelTooOld),
 }

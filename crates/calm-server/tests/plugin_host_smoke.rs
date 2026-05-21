@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
+use calm_server::plugin_host::{HostError, Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
 use serde_json::json;
 use tempfile::TempDir;
 use tokio::time::{Instant, sleep};
@@ -37,6 +37,16 @@ const CRASH_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-crash");
 /// stub binary is symlinked from the real artifact so manifest validation
 /// (which rejects absolute `entrypoint.command`) sees a sane relative path.
 async fn boot_host(plugin_id: &str, stub_bin: &str) -> (Arc<PluginHost>, TempDir, EventBus) {
+    boot_host_with_min_kernel(plugin_id, stub_bin, "0.0.1").await
+}
+
+/// Same as `boot_host`, but lets the test override the manifest's
+/// `min_kernel_version`. Used by the issue-#45 spawn-refusal test.
+async fn boot_host_with_min_kernel(
+    plugin_id: &str,
+    stub_bin: &str,
+    min_kernel_version: &str,
+) -> (Arc<PluginHost>, TempDir, EventBus) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let plugins_dir = tmp.path().join("plugins");
     let plugins_data_dir = tmp.path().join("plugins-data");
@@ -51,7 +61,7 @@ async fn boot_host(plugin_id: &str, stub_bin: &str) -> (Arc<PluginHost>, TempDir
         "manifest_version": 1,
         "id": plugin_id,
         "version": "0.1.0",
-        "min_kernel_version": "0.0.1",
+        "min_kernel_version": min_kernel_version,
         "display_name": "Smoke Stub",
         "entrypoint": { "command": "bin/stub" }
     });
@@ -255,6 +265,36 @@ async fn crash_loop_disables_after_threshold() {
         }
         sleep(Duration::from_millis(250)).await;
     }
+}
+
+// ---------------------------------------------------------------------------
+// 5. Issue #45 — min_kernel_version gate refuses incompatible plugins.
+// ---------------------------------------------------------------------------
+
+/// A manifest demanding kernel 99.0.0 must fail `spawn` with `KernelTooOld`
+/// *before* any process work. We assert: (a) the error variant is right,
+/// (b) it carries both versions, and (c) no plugin row ever flipped to
+/// `Running` / `Spawning` (the spawn aborts upstream of the processes map).
+#[tokio::test]
+async fn spawn_refuses_plugin_requiring_newer_kernel() {
+    let (host, _tmp, _events) =
+        boot_host_with_min_kernel("test.toonew", ECHO_BIN, "99.0.0").await;
+    let err = host
+        .spawn("test.toonew")
+        .await
+        .expect_err("spawn should refuse a 99.0.0-requiring plugin");
+    match err {
+        HostError::KernelTooOld(k) => {
+            assert_eq!(k.required.to_string(), "99.0.0");
+            // We don't pin actual; just confirm the field is populated and is
+            // a non-99 kernel (otherwise the test environment is doing
+            // something unexpected).
+            assert_ne!(k.actual.to_string(), "99.0.0");
+        }
+        other => panic!("expected KernelTooOld, got {other:?}"),
+    }
+    // The spawn aborted before touching the processes map.
+    assert!(host.status("test.toonew").await.is_none());
 }
 
 // ---------------------------------------------------------------------------
