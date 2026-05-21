@@ -333,6 +333,151 @@ async fn ws_strips_kernel_originated_input_flag() {
     }
 }
 
+/// CORRECTNESS: `model::new_id()` returns the *simple* (32-hex, no dashes)
+/// UUID form. The API response leaks that verbatim to the browser; the
+/// browser sends it back inside `ClientHello.terminal_id`. The daemon, on
+/// the other hand, validates `ClientHello.terminal_id ==
+/// cli.id.to_string()` byte-for-byte, and `Uuid::to_string()` is always
+/// the hyphenated form. Without normalization at the WS bridge, every
+/// browser hello would fail with `BadHandshake` — the daemon side would
+/// see "0123456789abcdef…" but compare against "01234567-89ab-cdef-…".
+///
+/// This test forges a ClientHello whose `terminal_id` is the simple form
+/// of a valid UUID, runs it through the pump, and asserts the daemon side
+/// reads the hyphenated form. Mirrors the
+/// `ws_strips_kernel_originated_input_flag` pattern.
+#[tokio::test]
+async fn ws_normalizes_terminal_id_to_hyphenated() {
+    // Use a deterministic UUID so the assertion can compare against a
+    // known hyphenated string. `Uuid::nil()` is trivially distinguishable;
+    // any v4 works, this one is just a literal for clarity.
+    let uuid = Uuid::parse_str("da163adc-4ccf-4b50-9e2e-3248afe7dcd1").unwrap();
+    let simple = uuid.simple().to_string();
+    let hyphenated = uuid.to_string();
+    assert_eq!(
+        hyphenated, "da163adc-4ccf-4b50-9e2e-3248afe7dcd1",
+        "uuid Display must be hyphenated"
+    );
+    assert_eq!(
+        simple, "da163adc4ccf4b509e2e3248afe7dcd1",
+        "uuid simple form must omit dashes"
+    );
+
+    let (mut daemon_side, server_side) = tokio::io::duplex(8192);
+    let addr = boot(server_side, &hyphenated).await;
+
+    let url = format!("ws://{}/pump", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+    // Forge a ClientHello carrying the *simple* form, exactly what the
+    // browser would send after reading the API response.
+    let forged = ClientMsg::ClientHello {
+        protocol_version: PROTOCOL_VERSION,
+        terminal_id: simple.clone(),
+        client_id: Uuid::new_v4(),
+        desired_size: PtySize {
+            cols: 132,
+            rows: 50,
+            pixel_width: None,
+            pixel_height: None,
+        },
+        cell_size: None,
+        initial_scrollback: InitialScrollback::None,
+        resume_from: None,
+        role_hint: None,
+        capabilities: ClientCapabilities {
+            render_encodings: vec![RenderEncoding::Vt],
+            supports_scrollback: false,
+            supports_sixel: false,
+            supports_images: false,
+            kernel_originated_input: false,
+        },
+    };
+    ws.send(TMessage::Text(serde_json::to_string(&forged).unwrap()))
+        .await
+        .unwrap();
+
+    let got: ClientMsg = tokio::time::timeout(
+        Duration::from_secs(2),
+        read_frame::<ClientMsg, _>(&mut daemon_side),
+    )
+    .await
+    .expect("daemon-side hello read timed out")
+    .expect("daemon-side hello decode failed");
+
+    match got {
+        ClientMsg::ClientHello { terminal_id, .. } => {
+            assert_eq!(
+                terminal_id, hyphenated,
+                "WS bridge MUST normalize terminal_id to hyphenated form so \
+                 daemon byte-level handshake (uses `cli.id.to_string()` which \
+                 is hyphenated) succeeds against server-generated simple-form \
+                 ids (`model::new_id` uses `Uuid::simple()`)"
+            );
+        }
+        other => panic!("expected ClientHello, got {other:?}"),
+    }
+}
+
+/// CORRECTNESS: if the client somehow sends a `terminal_id` that isn't a
+/// valid UUID, the WS bridge must pass it through verbatim so the daemon
+/// can reject it as `BadHandshake`. Silently mangling malformed input
+/// would mask client bugs and make debugging harder.
+#[tokio::test]
+async fn ws_passes_through_malformed_terminal_id_unchanged() {
+    let (mut daemon_side, server_side) = tokio::io::duplex(8192);
+    let addr = boot(server_side, TID).await;
+
+    let url = format!("ws://{}/pump", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+    let garbage = "not-a-uuid-at-all".to_string();
+    let forged = ClientMsg::ClientHello {
+        protocol_version: PROTOCOL_VERSION,
+        terminal_id: garbage.clone(),
+        client_id: Uuid::new_v4(),
+        desired_size: PtySize {
+            cols: 132,
+            rows: 50,
+            pixel_width: None,
+            pixel_height: None,
+        },
+        cell_size: None,
+        initial_scrollback: InitialScrollback::None,
+        resume_from: None,
+        role_hint: None,
+        capabilities: ClientCapabilities {
+            render_encodings: vec![RenderEncoding::Vt],
+            supports_scrollback: false,
+            supports_sixel: false,
+            supports_images: false,
+            kernel_originated_input: false,
+        },
+    };
+    ws.send(TMessage::Text(serde_json::to_string(&forged).unwrap()))
+        .await
+        .unwrap();
+
+    let got: ClientMsg = tokio::time::timeout(
+        Duration::from_secs(2),
+        read_frame::<ClientMsg, _>(&mut daemon_side),
+    )
+    .await
+    .expect("daemon-side hello read timed out")
+    .expect("daemon-side hello decode failed");
+
+    match got {
+        ClientMsg::ClientHello { terminal_id, .. } => {
+            assert_eq!(
+                terminal_id, garbage,
+                "WS bridge MUST pass malformed terminal_id through unchanged so \
+                 the daemon's BadHandshake remains fail-loud"
+            );
+        }
+        other => panic!("expected ClientHello, got {other:?}"),
+    }
+}
+
 /// When the daemon emits `TerminalExited`, the pump forwards it as JSON
 /// and then closes the WS — the stream drains to None.
 #[tokio::test]
