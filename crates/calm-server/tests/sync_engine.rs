@@ -33,7 +33,7 @@ use calm_server::db::sqlite::{
 };
 use calm_server::db::write_with_event_typed;
 use calm_server::error::CalmError;
-use calm_server::event::{Event, EventBus};
+use calm_server::event::{Event, EventBus, SYNC_EVENT_VERSION};
 use calm_server::model::{Cove, NewCard, NewCove, NewOverlay, NewWave, Wave};
 
 /// Boot an in-memory `SqlxRepo` and a fresh `EventBus`. Repo is returned
@@ -636,4 +636,102 @@ async fn property_cold_replay_converges_with_continuous_subscriber() {
         assert_eq!(live_id, replay_id, "id matches at each step");
         assert_eq!(live_kind, replay_kind, "kind matches at each step");
     }
+}
+
+// ---------------------------------------------------------------------------
+// 7. Event version — round-trip through the persisted log.
+// ---------------------------------------------------------------------------
+//
+// The sync event log is a Tier-A persistence contract (see
+// `docs/upgrade-stability.md`). Every envelope on the bus and every row on
+// disk now carries an explicit `event_version` stamp — when the schema
+// evolves, replicas use this to refuse incompatible logs rather than
+// silently misinterpreting them.
+//
+// This test pins the contract end-to-end: a write goes through
+// `write_with_event`, the row lands in the `events` table with the kernel's
+// current `SYNC_EVENT_VERSION` in its `event_version` column, and the
+// replay path (`events_since`) propagates that same value back into the
+// envelope. If either side drifts (writer forgets to stamp, reader forgets
+// to select, default changes without bumping the constant), this test
+// fails.
+
+#[tokio::test]
+async fn event_version_round_trips_from_write_to_replay() {
+    let (repo, concrete, bus) = boot().await;
+
+    // Write one event through the production path.
+    let (_cove, event_id) = write_with_event_typed(repo.as_ref(), "user", None, &bus, move |tx| {
+        Box::pin(async move {
+            let cove = cove_create_tx(
+                tx,
+                NewCove {
+                    name: "version-rt".into(),
+                    color: "#000".into(),
+                    sort: None,
+                },
+            )
+            .await?;
+            Ok((cove.clone(), Event::CoveUpdated(cove)))
+        })
+    })
+    .await
+    .expect("write_with_event ok");
+
+    // Row stamped with the current constant. Read the raw column directly
+    // so the test fails clearly if the INSERT forgot to bind it.
+    let row: (u32,) = sqlx::query_as("SELECT event_version FROM events WHERE id = ?1")
+        .bind(event_id)
+        .fetch_one(concrete.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        row.0, SYNC_EVENT_VERSION,
+        "row's event_version column must match the kernel's constant"
+    );
+
+    // Replay path round-trips the version into the envelope.
+    let log = repo.events_since(0, None).await.unwrap();
+    let (replayed_id, replayed_version, _ev) = log
+        .into_iter()
+        .find(|(id, _, _)| *id == event_id)
+        .expect("replayed event present");
+    assert_eq!(replayed_id, event_id);
+    assert_eq!(
+        replayed_version, SYNC_EVENT_VERSION,
+        "events_since must propagate the row's event_version"
+    );
+}
+
+// And the matching default-backfill guarantee: rows inserted before
+// migration 0006 (or any future row whose `event_version` we leave to the
+// column default) come back as `1` from the replay path. We provoke this
+// by inserting a row directly without binding `event_version`, mirroring
+// what an upgraded-from-old-schema row looks like after the migration's
+// `DEFAULT 1` clause fires.
+
+#[tokio::test]
+async fn replay_treats_unstamped_row_as_version_one() {
+    let (repo, concrete, _bus) = boot().await;
+
+    // Insert a row that does not bind `event_version` — relies on the
+    // column default to fill it. Matches the post-migration shape of any
+    // row written before 0006 (and the wire fallback for any future
+    // insertion that forgets the bind, which is the very thing we're
+    // codifying by requiring the column to be NOT NULL DEFAULT 1).
+    sqlx::query(
+        r##"INSERT INTO events (kind, payload, actor, at, correlation)
+           VALUES ('cove.updated', '{"id":"c","name":"n","color":"#000","sort":0,"created_at":0,"updated_at":0}', 'user', 0, NULL)"##,
+    )
+    .execute(concrete.pool())
+    .await
+    .unwrap();
+
+    let log = repo.events_since(0, None).await.unwrap();
+    assert_eq!(log.len(), 1);
+    let (_id, version, _ev) = &log[0];
+    assert_eq!(
+        *version, 1,
+        "post-migration default backfills unstamped rows to version 1"
+    );
 }
