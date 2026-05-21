@@ -487,11 +487,14 @@ mod tests {
         // Give the spawn a tick to subscribe.
         tokio::task::yield_now().await;
 
-        bus.emit(Event::CodexHook {
-            card_id: card_id.clone(),
-            kind: "hook.codex.pre_tool_use".into(),
-            payload: Value::Null,
-        });
+        bus.emit(
+            "ai:codex",
+            Event::CodexHook {
+                card_id: card_id.clone(),
+                kind: "hook.codex.pre_tool_use".into(),
+                payload: Value::Null,
+            },
+        );
 
         // Wait a beat for the async handler to land the overlay write.
         tokio::time::sleep(StdDuration::from_millis(100)).await;
@@ -515,17 +518,23 @@ mod tests {
         spawn(repo.clone(), bus.clone());
         tokio::task::yield_now().await;
 
-        bus.emit(Event::CodexHook {
-            card_id: card_id.clone(),
-            kind: "hook.codex.pre_tool_use".into(),
-            payload: Value::Null,
-        });
+        bus.emit(
+            "ai:codex",
+            Event::CodexHook {
+                card_id: card_id.clone(),
+                kind: "hook.codex.pre_tool_use".into(),
+                payload: Value::Null,
+            },
+        );
         tokio::time::sleep(StdDuration::from_millis(50)).await;
-        bus.emit(Event::CodexHook {
-            card_id: card_id.clone(),
-            kind: "hook.codex.permission_request".into(),
-            payload: Value::Null,
-        });
+        bus.emit(
+            "ai:codex",
+            Event::CodexHook {
+                card_id: card_id.clone(),
+                kind: "hook.codex.permission_request".into(),
+                payload: Value::Null,
+            },
+        );
         tokio::time::sleep(StdDuration::from_millis(100)).await;
 
         let card_overlays = repo.overlays_for("card", &card_id).await.unwrap();
@@ -546,17 +555,23 @@ mod tests {
         spawn(repo.clone(), bus.clone());
         tokio::task::yield_now().await;
 
-        bus.emit(Event::CodexHook {
-            card_id: card_id.clone(),
-            kind: "hook.codex.pre_tool_use".into(),
-            payload: Value::Null,
-        });
+        bus.emit(
+            "ai:codex",
+            Event::CodexHook {
+                card_id: card_id.clone(),
+                kind: "hook.codex.pre_tool_use".into(),
+                payload: Value::Null,
+            },
+        );
         tokio::time::sleep(StdDuration::from_millis(50)).await;
-        bus.emit(Event::CodexHook {
-            card_id: card_id.clone(),
-            kind: "hook.codex.post_tool_use".into(),
-            payload: Value::Null,
-        });
+        bus.emit(
+            "ai:codex",
+            Event::CodexHook {
+                card_id: card_id.clone(),
+                kind: "hook.codex.post_tool_use".into(),
+                payload: Value::Null,
+            },
+        );
 
         // Past the old debounce window — still Working, never flickers.
         tokio::time::sleep(StdDuration::from_millis(900)).await;
@@ -565,11 +580,14 @@ mod tests {
         assert_eq!(s.payload["state"], "Working");
 
         // stop → AwaitingInput commits the turn boundary.
-        bus.emit(Event::CodexHook {
-            card_id: card_id.clone(),
-            kind: "hook.codex.stop".into(),
-            payload: Value::Null,
-        });
+        bus.emit(
+            "ai:codex",
+            Event::CodexHook {
+                card_id: card_id.clone(),
+                kind: "hook.codex.stop".into(),
+                payload: Value::Null,
+            },
+        );
         tokio::time::sleep(StdDuration::from_millis(100)).await;
         let card_overlays = repo.overlays_for("card", &card_id).await.unwrap();
         let s = card_overlays.iter().find(|o| o.kind == "status").unwrap();

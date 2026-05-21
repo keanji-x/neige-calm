@@ -1205,6 +1205,7 @@ impl RepoEventWrite for SqlxRepo {
         // Commit-then-emit invariant: now (and only now) do we broadcast.
         bus.emit_envelope(BroadcastEnvelope {
             id: event_id,
+            actor: actor.to_string(),
             event,
         });
         Ok(event_id)
@@ -1228,6 +1229,7 @@ impl RepoEventWrite for SqlxRepo {
         tx.commit().await?;
         bus.emit_envelope(BroadcastEnvelope {
             id: event_id,
+            actor: actor.to_string(),
             event,
         });
         Ok(event_id)

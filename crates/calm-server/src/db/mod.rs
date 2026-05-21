@@ -26,7 +26,7 @@
 //! runs the caller-supplied closure (which must use the `_tx`-suffixed
 //! free functions in `db::sqlite` for any nested entity write), persists
 //! the produced `Event` into the `events` table in the same txn, commits,
-//! and only then emits a `BroadcastEnvelope { id, event }` on the
+//! and only then emits a `BroadcastEnvelope { id, actor, event }` on the
 //! `EventBus`. Failure of either the entity write or the event insert
 //! rolls back the whole transaction — neither row exists, and the bus is
 //! never notified. See `docs/sync-engine-design.md` §1.4 and §3.
@@ -187,7 +187,7 @@ pub trait RepoRead: Send + Sync + 'static {
 pub trait RepoEventWrite: RepoRead {
     /// Atomic write + event-log invariant: run the closure inside one
     /// sqlx transaction, then `INSERT INTO events ... RETURNING id` in
-    /// the same txn, commit, and emit `BroadcastEnvelope { id, event }`
+    /// the same txn, commit, and emit `BroadcastEnvelope { id, actor, event }`
     /// on the supplied event bus.
     ///
     /// Error semantics:

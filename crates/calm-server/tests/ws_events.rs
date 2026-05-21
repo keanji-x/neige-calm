@@ -80,9 +80,9 @@ async fn forwards_matching_event() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Non-matching event first; must NOT arrive.
-    bus.emit(Event::CoveUpdated(sample_cove("c-other")));
+    bus.emit("user", Event::CoveUpdated(sample_cove("c-other")));
     // Matching event; must arrive.
-    bus.emit(Event::CoveUpdated(sample_cove("c-001")));
+    bus.emit("user", Event::CoveUpdated(sample_cove("c-001")));
 
     let msg = timeout(Duration::from_secs(2), ws.next())
         .await
@@ -113,7 +113,7 @@ async fn empty_sub_drops_everything() {
         .unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    bus.emit(Event::CoveUpdated(sample_cove("c-001")));
+    bus.emit("user", Event::CoveUpdated(sample_cove("c-001")));
 
     // Expect a timeout (no message arrives).
     let res = timeout(Duration::from_millis(300), ws.next()).await;
@@ -131,7 +131,7 @@ async fn firehose_receives_all() {
         .unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    bus.emit(Event::CoveDeleted { id: "c-x".into() });
+    bus.emit("user", Event::CoveDeleted { id: "c-x".into() });
 
     let msg = timeout(Duration::from_secs(2), ws.next())
         .await
@@ -165,7 +165,7 @@ async fn replaces_not_extends() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Emit c-001: should be dropped (we replaced, not extended).
-    bus.emit(Event::CoveUpdated(sample_cove("c-001")));
+    bus.emit("user", Event::CoveUpdated(sample_cove("c-001")));
     let res = timeout(Duration::from_millis(300), ws.next()).await;
     assert!(
         res.is_err(),
@@ -174,7 +174,7 @@ async fn replaces_not_extends() {
     );
 
     // Emit c-002: should arrive.
-    bus.emit(Event::CoveUpdated(sample_cove("c-002")));
+    bus.emit("user", Event::CoveUpdated(sample_cove("c-002")));
     let msg = timeout(Duration::from_secs(2), ws.next())
         .await
         .expect("timeout")

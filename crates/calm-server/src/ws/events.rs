@@ -289,7 +289,16 @@ where
             last_id = id;
             continue;
         }
-        let env = BroadcastEnvelope { id, event: ev };
+        // The replay path reconstructs an envelope from `(id, ev)` rows in
+        // the `events` table. `events_since` does not currently return the
+        // `actor` column (replay is read-only and the wire format omits
+        // actor — see `render_envelope`), so we synthesize an empty actor
+        // here. This branch never feeds the `RECORD_SESSION` recorder.
+        let env = BroadcastEnvelope {
+            id,
+            actor: String::new(),
+            event: ev,
+        };
         let payload = match render_envelope(&env) {
             Ok(p) => p,
             Err(e) => {
@@ -376,6 +385,7 @@ mod tests {
     fn render_envelope_has_id_and_keeps_event_shape() {
         let env = BroadcastEnvelope {
             id: 42,
+            actor: "user".into(),
             event: Event::CoveUpdated(sample_cove()),
         };
         let s = render_envelope(&env).expect("render");
@@ -399,6 +409,7 @@ mod tests {
         // persisted row yet" (see `BroadcastEnvelope` docs).
         let env = BroadcastEnvelope {
             id: 0,
+            actor: "kernel".into(),
             event: Event::CoveUpdated(sample_cove()),
         };
         let s = render_envelope(&env).expect("render");

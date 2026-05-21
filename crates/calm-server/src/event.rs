@@ -10,7 +10,7 @@
 //!   3. Persists the produced `Event` into the `events` table (sync engine
 //!      log) inside the same transaction.
 //!   4. Commits, then — and **only** then — emits the event onto the
-//!      `EventBus` wrapped in a `BroadcastEnvelope { id, event }`.
+//!      `EventBus` wrapped in a `BroadcastEnvelope { id, actor, event }`.
 //!
 //! The wrapper guarantees the *commit-then-emit* invariant: if the txn
 //! rolls back, neither the entity row nor the event row exists, and the
@@ -279,7 +279,10 @@ pub fn topics(ev: &Event) -> Vec<String> {
 /// We don't derive `Serialize` here — the serialization of the envelope into
 /// the wire JSON is hand-rolled in `ws::events::handle` (it has to splice
 /// `_id` alongside the existing `{ev, data}` flat shape rather than nest
-/// `event` as a sub-object).
+/// `event` as a sub-object). `actor` is not part of the public wire format
+/// either (see `ws::events::render_envelope`); it lives on the envelope so
+/// in-process subscribers (today: the `RECORD_SESSION` recorder) can capture
+/// attribution that the persisted `events.actor` column carries.
 #[derive(Clone, Debug)]
 pub struct BroadcastEnvelope {
     /// Assigned `events.id`. `0` is reserved (never produced by the
@@ -289,6 +292,12 @@ pub struct BroadcastEnvelope {
     /// the design doc names; any future emitter that bypasses the wrapper
     /// will surface as `_id: 0` on the wire, which is a useful canary.
     pub id: i64,
+    /// Declared producer identity, matching the `actor` column on the
+    /// persisted `events` row. Same grammar as `write_with_event`'s `actor`
+    /// argument: `"user"`, `"kernel"`, `"plugin:<id>"`, `"ai:<id>"`. Used by
+    /// `replay::spawn_session_recorder` so `RECORD_SESSION` traces preserve
+    /// real attribution; not surfaced on the public WS wire format.
+    pub actor: String,
     pub event: Event,
 }
 
@@ -326,11 +335,21 @@ impl EventBus {
     /// must return zero hits for production code; only tests and the
     /// internal `card_fsm` test injection use this.
     ///
+    /// `actor` is the declared producer identity (`"user"`, `"kernel"`,
+    /// `"plugin:<id>"`, `"ai:<id>"`) — tests should pass whatever value
+    /// would be threaded through `write_with_event` in the equivalent
+    /// production path, so recorder smoke tests preserve realistic
+    /// attribution.
+    ///
     /// Available outside `#[cfg(test)]` because integration tests in
     /// `crates/calm-server/tests/` consume the library through normal
     /// linkage — they don't see `#[cfg(test)]`-gated items.
-    pub fn emit(&self, ev: Event) {
-        let _ = self.tx.send(BroadcastEnvelope { id: 0, event: ev });
+    pub fn emit(&self, actor: &str, ev: Event) {
+        let _ = self.tx.send(BroadcastEnvelope {
+            id: 0,
+            actor: actor.to_string(),
+            event: ev,
+        });
     }
 
     /// New subscriber. The receiver picks up envelopes emitted after this
