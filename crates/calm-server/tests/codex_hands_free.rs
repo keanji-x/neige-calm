@@ -604,9 +604,7 @@ async fn attach_owner_ws(
     addr: std::net::SocketAddr,
     terminal_id: &str,
 ) -> (
-    tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    >,
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     Vec<u8>,
 ) {
     let ws_url = format!("ws://{addr}/api/terminals/{terminal_id}");
@@ -795,14 +793,14 @@ async fn auto_submit_subscriber_chain_emits_input_on_session_start() {
     //    paths satisfy the predicate. We start the search past the
     //    sentinel-byte offset so the `\r` baked into `\r\n` rendering of
     //    the sentinel's newline doesn't false-positive us.
-    let after_sentinel = prefix.windows(b"FAKE_CODEX_READY".len())
+    let after_sentinel = prefix
+        .windows(b"FAKE_CODEX_READY".len())
         .position(|w| w == b"FAKE_CODEX_READY")
         .map(|i| i + b"FAKE_CODEX_READY".len())
         .unwrap_or(prefix.len());
     let (saw_cr, full) =
         drain_until_render_contains(&mut ws, prefix.clone(), Duration::from_secs(2), |buf| {
-            buf.len() > after_sentinel
-                && buf[after_sentinel..].contains(&b'\r')
+            buf.len() > after_sentinel && buf[after_sentinel..].contains(&b'\r')
         })
         .await;
     assert!(
@@ -876,16 +874,18 @@ async fn auto_submit_subscriber_skips_when_payload_opt_out() {
 
     // Wait past SUBMIT_DELAY (600 ms) + a generous slack window. If the
     // subscriber gates correctly, NO `\r` shows up after the sentinel.
-    let after_sentinel = prefix.windows(b"FAKE_CODEX_READY".len())
+    let after_sentinel = prefix
+        .windows(b"FAKE_CODEX_READY".len())
         .position(|w| w == b"FAKE_CODEX_READY")
         .map(|i| i + b"FAKE_CODEX_READY".len())
         .unwrap_or(prefix.len());
-    let (saw_cr, full) =
-        drain_until_render_contains(&mut ws, prefix.clone(), Duration::from_millis(1500), |buf| {
-            buf.len() > after_sentinel
-                && buf[after_sentinel..].contains(&b'\r')
-        })
-        .await;
+    let (saw_cr, full) = drain_until_render_contains(
+        &mut ws,
+        prefix.clone(),
+        Duration::from_millis(1500),
+        |buf| buf.len() > after_sentinel && buf[after_sentinel..].contains(&b'\r'),
+    )
+    .await;
     assert!(
         !saw_cr,
         "auto_submit subscriber injected `\\r` for an opt-out card; \

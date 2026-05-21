@@ -556,15 +556,33 @@ export interface components {
             wave_id?: string;
         };
         NewCodexBody: {
+            /**
+             * @description When `true`, the kernel injects a single `\r` over the per-
+             *     terminal daemon socket ~600 ms after the codex `session_start`
+             *     hook fires, submitting whatever's currently in the composer.
+             *     Combined with `prompt` this gives a fully hands-free
+             *     "spawn → composer populated → submit" flow for caller-driven
+             *     agent spawns. Defaults to `false` so the existing user-initiated
+             *     spawn behavior (TUI lands, user types and presses Enter) is
+             *     preserved.
+             *
+             *     This is the only persisted bit the auto-submit subscriber reads
+             *     off the card payload — see `codex_auto_submit.rs`.
+             */
+            auto_submit?: boolean;
             /** @description Working directory codex runs in. Defaults to `$HOME` if empty. */
             cwd?: string | null;
             /**
-             * @description Reserved field — interactive codex has slash-commands for the
-             *     prompt; the API still accepts it for forward / backward
-             *     compatibility but does nothing with it. Kept so older clients keep
-             *     generating valid OpenAPI requests.
+             * @description Optional prompt to pre-fill the TUI's composer with. When set,
+             *     codex is spawned as `codex '<prompt>'` (positional `[PROMPT]`
+             *     arg, shell-single-quoted). Codex 0.132's TUI stores this on the
+             *     `ChatWidget` as `initial_user_message` and renders it in the
+             *     composer awaiting Enter; it does NOT auto-submit on its own
+             *     — pair with `auto_submit = true` for a fully hands-free spawn.
+             *     `None` (the default) leaves the launch unchanged so user-created
+             *     codex cards continue to land on an empty composer.
              */
-            initial_prompt?: string | null;
+            prompt?: string | null;
         };
         NewCove: {
             color: string;

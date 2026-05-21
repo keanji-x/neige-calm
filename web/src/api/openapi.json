@@ -2164,6 +2164,10 @@
       "NewCodexBody": {
         "type": "object",
         "properties": {
+          "auto_submit": {
+            "type": "boolean",
+            "description": "When `true`, the kernel injects a single `\\r` over the per-\nterminal daemon socket ~600 ms after the codex `session_start`\nhook fires, submitting whatever's currently in the composer.\nCombined with `prompt` this gives a fully hands-free\n\"spawn → composer populated → submit\" flow for caller-driven\nagent spawns. Defaults to `false` so the existing user-initiated\nspawn behavior (TUI lands, user types and presses Enter) is\npreserved.\n\nThis is the only persisted bit the auto-submit subscriber reads\noff the card payload — see `codex_auto_submit.rs`."
+          },
           "cwd": {
             "type": [
               "string",
@@ -2171,12 +2175,12 @@
             ],
             "description": "Working directory codex runs in. Defaults to `$HOME` if empty."
           },
-          "initial_prompt": {
+          "prompt": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Reserved field — interactive codex has slash-commands for the\nprompt; the API still accepts it for forward / backward\ncompatibility but does nothing with it. Kept so older clients keep\ngenerating valid OpenAPI requests."
+            "description": "Optional prompt to pre-fill the TUI's composer with. When set,\ncodex is spawned as `codex '<prompt>'` (positional `[PROMPT]`\narg, shell-single-quoted). Codex 0.132's TUI stores this on the\n`ChatWidget` as `initial_user_message` and renders it in the\ncomposer awaiting Enter; it does NOT auto-submit on its own\n— pair with `auto_submit = true` for a fully hands-free spawn.\n`None` (the default) leaves the launch unchanged so user-created\ncodex cards continue to land on an empty composer."
           }
         }
       },
