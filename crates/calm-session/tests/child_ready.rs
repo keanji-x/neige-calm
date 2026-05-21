@@ -2,32 +2,51 @@
 //! `ChildReady` quiescent-window detector introduced as PR-2.5 follow-up
 //! to PR #68.
 //!
-//! These tests use real `tokio::time::sleep` (wall-clock) rather than
-//! virtual time because [`RenderPlane`] internally captures
-//! `std::time::Instant` instants in `on_pty_chunk` — virtualizing the
-//! tokio runtime would not advance those. A reviewer-suggested follow-up
-//! is to refactor to inject a `now: fn() -> Instant`; for now the
-//! wall-clock waits are bounded (≤150ms per case) and the suite stays
-//! under 1s total.
+//! These tests drive [`RenderPlane`] under virtual time via an injected
+//! mock clock (`Arc<AtomicU64>`-backed) constructed through
+//! [`RenderPlane::with_clock`]. Both write-side (`on_pty_chunk` setting
+//! `last_rev_change_at`) and read-side (`detect_ready` comparing against
+//! "now") route through the same clock, so advancing the counter is the
+//! sole source of elapsed time. No wall-clock sleeps, no jitter margin
+//! needed.
+//!
+//! See [`RenderPlane::with_clock`] for the contract that keeps the two
+//! sides in sync.
+//!
+//! Closes #82.
 
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use calm_session::DaemonMsg;
 use calm_session::terminal_session::{CHILD_READY_QUIESCENT_MS, Effect, RenderPlane};
 
-/// Margin we add on top of `CHILD_READY_QUIESCENT_MS` when sleeping to
-/// guarantee the deadline is past — covers tokio scheduler jitter on CI
-/// (typically <5ms in practice; 30ms keeps us comfortably above noise).
-const MARGIN_MS: u64 = 30;
+/// Build a mock clock. Returns `(counter, clock)` where:
+///
+/// - `counter` is the shared virtual-millisecond store. Tests advance
+///   it via `counter.store(N, ..)` or `counter.fetch_add(N, ..)`.
+/// - `clock` is the closure handed to [`RenderPlane::with_clock`]; each
+///   call returns `base + counter ms`, so virtual time is monotonic and
+///   the absolute `Instant` returned is meaningful for `duration_since`.
+fn mock_clock() -> (Arc<AtomicU64>, Box<dyn Fn() -> Instant + Send + Sync>) {
+    let counter = Arc::new(AtomicU64::new(0));
+    let base = Instant::now();
+    let c = counter.clone();
+    let f: Box<dyn Fn() -> Instant + Send + Sync> =
+        Box::new(move || base + Duration::from_millis(c.load(Ordering::SeqCst)));
+    (counter, f)
+}
 
-#[tokio::test]
-async fn child_ready_fires_once_after_quiescent_window() {
-    let mut plane = RenderPlane::new(80, 24, 1024, 100);
+#[test]
+fn child_ready_fires_once_after_quiescent_window() {
+    let (counter, clock) = mock_clock();
+    let mut plane = RenderPlane::with_clock(80, 24, 1024, 100, clock);
 
     // No chunks yet → detector cannot fire (`last_rev_change_at` is None).
     assert!(plane.detect_ready().is_none());
 
-    // Feed a chunk → model.rev() bumps → timer starts now.
+    // Feed a chunk → model.rev() bumps → timer starts at virtual t=0.
     plane.on_pty_chunk(b"$ ".to_vec());
     // Immediately after the chunk the window hasn't elapsed.
     assert!(
@@ -35,8 +54,8 @@ async fn child_ready_fires_once_after_quiescent_window() {
         "should not fire immediately after first chunk"
     );
 
-    // Wait past the quiescent window.
-    tokio::time::sleep(Duration::from_millis(CHILD_READY_QUIESCENT_MS + MARGIN_MS)).await;
+    // Advance past the quiescent window.
+    counter.store(CHILD_READY_QUIESCENT_MS + 1, Ordering::SeqCst);
     let eff = plane.detect_ready();
     assert!(
         matches!(eff, Some(Effect::Broadcast(DaemonMsg::ChildReady { .. }))),
@@ -51,28 +70,31 @@ async fn child_ready_fires_once_after_quiescent_window() {
     );
 }
 
-#[tokio::test]
-async fn child_ready_resets_on_new_chunk_within_window() {
-    let mut plane = RenderPlane::new(80, 24, 1024, 100);
+#[test]
+fn child_ready_resets_on_new_chunk_within_window() {
+    let (counter, clock) = mock_clock();
+    let mut plane = RenderPlane::with_clock(80, 24, 1024, 100, clock);
 
+    // First chunk at virtual t=0.
     plane.on_pty_chunk(b"$ ".to_vec());
-    tokio::time::sleep(Duration::from_millis(CHILD_READY_QUIESCENT_MS / 2)).await;
-    // Still painting — second chunk arrives mid-window.
+    // Advance to half-window — still painting; second chunk arrives.
+    counter.store(CHILD_READY_QUIESCENT_MS / 2, Ordering::SeqCst);
     plane.on_pty_chunk(b"a".to_vec());
-    tokio::time::sleep(Duration::from_millis(CHILD_READY_QUIESCENT_MS / 2)).await;
+    // Advance another half-window (cumulative ~100ms virtual, but the
+    // LAST chunk was only 50ms ago — detector must not fire yet).
+    counter.store(CHILD_READY_QUIESCENT_MS, Ordering::SeqCst);
 
-    // Cumulative wall time is ~100ms but the LAST chunk was only 50ms
-    // ago — detector must not fire yet.
     assert!(
         plane.detect_ready().is_none(),
         "ChildReady fired before quiescent window elapsed since the most recent chunk"
     );
 
-    // Now wait the rest of the window past the second chunk.
-    tokio::time::sleep(Duration::from_millis(
-        CHILD_READY_QUIESCENT_MS / 2 + MARGIN_MS,
-    ))
-    .await;
+    // Now advance the rest of the window past the second chunk
+    // (chunk landed at QUIESCENT/2, fire at QUIESCENT/2 + QUIESCENT + 1).
+    counter.store(
+        CHILD_READY_QUIESCENT_MS / 2 + CHILD_READY_QUIESCENT_MS + 1,
+        Ordering::SeqCst,
+    );
     let eff = plane.detect_ready();
     assert!(
         matches!(eff, Some(Effect::Broadcast(DaemonMsg::ChildReady { .. }))),
@@ -80,14 +102,15 @@ async fn child_ready_resets_on_new_chunk_within_window() {
     );
 }
 
-#[tokio::test]
-async fn child_ready_carries_correct_seq_and_rev() {
-    let mut plane = RenderPlane::new(80, 24, 1024, 100);
+#[test]
+fn child_ready_carries_correct_seq_and_rev() {
+    let (counter, clock) = mock_clock();
+    let mut plane = RenderPlane::with_clock(80, 24, 1024, 100, clock);
     // Two chunks, both move state visibly (printable chars bump rev).
     plane.on_pty_chunk(b"$".to_vec());
     plane.on_pty_chunk(b" ".to_vec());
 
-    tokio::time::sleep(Duration::from_millis(CHILD_READY_QUIESCENT_MS + MARGIN_MS)).await;
+    counter.store(CHILD_READY_QUIESCENT_MS + 1, Ordering::SeqCst);
 
     match plane.detect_ready() {
         Some(Effect::Broadcast(DaemonMsg::ChildReady {
@@ -104,14 +127,15 @@ async fn child_ready_carries_correct_seq_and_rev() {
     }
 }
 
-#[tokio::test]
-async fn detect_ready_returns_none_when_no_chunks_observed() {
+#[test]
+fn detect_ready_returns_none_when_no_chunks_observed() {
     // Guard against the obvious bug: a fresh plane with no chunks must
     // NEVER fire ChildReady, no matter how long we wait. The detector
     // gates on `last_rev_change_at` being Some(_), and that's set only
     // when a chunk produces a rev change.
-    let mut plane = RenderPlane::new(80, 24, 1024, 100);
-    tokio::time::sleep(Duration::from_millis(CHILD_READY_QUIESCENT_MS * 2)).await;
+    let (counter, clock) = mock_clock();
+    let mut plane = RenderPlane::with_clock(80, 24, 1024, 100, clock);
+    counter.store(CHILD_READY_QUIESCENT_MS * 5, Ordering::SeqCst);
     assert!(
         plane.detect_ready().is_none(),
         "detect_ready fired without any PTY chunks ever arriving"

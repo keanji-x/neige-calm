@@ -753,14 +753,60 @@ pub struct RenderPlane {
     ///
     /// [`detect_ready`]: RenderPlane::detect_ready
     child_ready_fired: bool,
+    /// Injectable clock used everywhere RenderPlane needs "now". Production
+    /// goes through [`Self::new`], which wires this to `Instant::now`; tests
+    /// use [`Self::with_clock`] to provide an `AtomicU64`-backed mock so
+    /// the quiescent-window detector can be exercised without wall-clock
+    /// sleeps. See [`Self::with_clock`] for the contract on adding new
+    /// wall-clock call sites.
+    now: Box<dyn Fn() -> Instant + Send + Sync>,
 }
 
 impl RenderPlane {
+    /// Production constructor: wires the clock to [`Instant::now`].
     pub fn new(
         cols: u16,
         rows: u16,
         transcript_max_bytes: usize,
         scrollback_max_lines: usize,
+    ) -> Self {
+        Self::with_clock(
+            cols,
+            rows,
+            transcript_max_bytes,
+            scrollback_max_lines,
+            Box::new(Instant::now),
+        )
+    }
+
+    /// Constructor with an injected clock (test use). Production goes
+    /// through [`Self::new`].
+    ///
+    /// # Time injection
+    ///
+    /// Production code path uses [`Self::new`], which wires `now` to
+    /// [`Instant::now`]. Tests use this constructor with a mock clock
+    /// (typically an `Arc<AtomicU64>` of "virtual milliseconds since
+    /// base") so the quiescent-window detector can be driven without
+    /// real `tokio::time::sleep`.
+    ///
+    /// **Contract for future maintainers:** every wall-clock "now"
+    /// read inside `RenderPlane` MUST route through `self.now` —
+    /// including the `Instant::elapsed()` comparison inside
+    /// [`Self::detect_ready`], which is really `Instant::now() -
+    /// last`. If a mock clock writes a virtual instant via `self.now`
+    /// but a comparison elsewhere reads `Instant::now()` directly, the
+    /// virtual and real time bases diverge and the detector either
+    /// fires instantly (real now ≫ virtual base) or never (real now
+    /// drifts past virtual deadline). Any new wall-clock call site you
+    /// add to this type must go through `self.now` or the test suite's
+    /// virtual-time guarantee is broken.
+    pub fn with_clock(
+        cols: u16,
+        rows: u16,
+        transcript_max_bytes: usize,
+        scrollback_max_lines: usize,
+        now: Box<dyn Fn() -> Instant + Send + Sync>,
     ) -> Self {
         Self {
             model: TerminalModel::new(cols, rows, scrollback_max_lines),
@@ -771,6 +817,7 @@ impl RenderPlane {
             last_emitted_render_rev: 0,
             last_rev_change_at: None,
             child_ready_fired: false,
+            now,
         }
     }
 
@@ -807,7 +854,7 @@ impl RenderPlane {
         //    state) leaves the timer alone — which is what we want:
         //    a child that's silently echoing nothing visible IS idle.
         if new_rev != prev_rev {
-            self.last_rev_change_at = Some(Instant::now());
+            self.last_rev_change_at = Some((self.now)());
         }
 
         vec![Effect::Broadcast(DaemonMsg::RenderPatch(RenderPatch {
@@ -839,7 +886,7 @@ impl RenderPlane {
             return None;
         }
         let last = self.last_rev_change_at?;
-        if last.elapsed() >= Duration::from_millis(CHILD_READY_QUIESCENT_MS) {
+        if (self.now)().duration_since(last) >= Duration::from_millis(CHILD_READY_QUIESCENT_MS) {
             self.child_ready_fired = true;
             return Some(Effect::Broadcast(DaemonMsg::ChildReady {
                 pty_seq: self.pty_seq,
