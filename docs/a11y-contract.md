@@ -187,13 +187,20 @@ Slice 1 (#61) put `jsx-a11y/recommended` in the build (`web/eslint.config.js:100
 
 Rules:
 
-- **Never write a bare `outline: none`.** Every `outline: none` in `web/src/calm.css` must be paired with a `:focus-visible` rule that re-establishes a visible focus indicator. Compliance audit lives in `web/src/calm.css`; current pairings:
-  - `.wave-title[role="button"]` (`calm.css:617-623`)
-  - `.wave-title-input` (`calm.css:627-638`)
-  - `.h-display-rename` (`calm.css:644-659`)
-  - `.cove-title-input` (`calm.css:663-668`)
-  - `.new-wave-input` (`calm.css:670-675`)
-  - `.wave-back`, `.wave-cove`, `.crumb-link` use solid `outline` + `outline-offset` (no `outline: none` to pair against).
+- **Never write a bare `outline: none`.** Every `outline: none` in `web/src/calm.css` must be paired with a `:focus-visible` rule (never bare `:focus`) that re-establishes a visible focus indicator. Inventory of `outline: none` rules in `web/src/calm.css` and their `:focus-visible` replacements:
+
+  | Selector | `outline: none` line | `:focus-visible` replacement |
+  | --- | --- | --- |
+  | `.side .cove-nav-edit input` | `calm.css:283` | `box-shadow: 0 0 0 2px var(--accent-soft)` (`calm.css:291-293`) |
+  | `.wave-title[role="button"]` | `calm.css:619` | `box-shadow: 0 0 0 2px var(--accent-soft)` (`calm.css:621-623`) |
+  | `.wave-title-input` | `calm.css:630` | `box-shadow: 0 0 0 2px var(--accent-soft)` (`calm.css:636-638`) |
+  | `.h-display-rename` | `calm.css:655` | `box-shadow: 0 0 0 2px var(--accent-soft)` (`calm.css:657-659`) |
+  | `.login-input` | `calm.css:2336` | `border-color: var(--accent)` + `box-shadow: 0 0 0 3px var(--accent-soft)` (`calm.css:2340-2343`) |
+  | `.wave-list-item` | `calm.css:2466` | `box-shadow: 0 0 0 2px var(--accent-soft)` (inset-feel ring at row boundary) + `border-radius: var(--r)` (`calm.css:2468-2475`) |
+
+  Additional focus-visible surfaces without `outline: none` (chrome stripped via inline styles or no chrome to strip): `.cove-title-input` (`calm.css:663-668`), `.new-wave-input` (`calm.css:670-675`). And `.wave-back`, `.wave-cove`, `.crumb-link` use a solid `outline` + `outline-offset` directly — they never strip default focus.
+
+  Adding a new `outline: none` rule without a matching `:focus-visible` replacement is a §6 violation and should fail review.
 - **Use `var(--accent-soft)` for soft rings, `var(--accent)` for hard ones.** The "soft" form is a 2px `box-shadow` — visually quieter, used for inline-edit surfaces. The "hard" form is a 2px outline + 2px offset, used for chrome buttons. Both forms must be visible against the panel background; we don't dim them theme-side.
 - **Don't rely on the global `*:focus { outline: none }`.** It doesn't exist (the calm reset is per-class). Adding one is forbidden — it would silently nuke browser default focus rings on every input we haven't styled.
 

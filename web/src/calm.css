@@ -2337,7 +2337,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   transition: border-color 0.1s, box-shadow 0.1s;
   margin-bottom: 12px;
 }
-.login-input:focus {
+.login-input:focus-visible {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
