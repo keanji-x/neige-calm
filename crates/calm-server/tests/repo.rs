@@ -793,5 +793,7 @@ async fn open_succeeds_on_fresh_and_current_db() {
     let tmp = tempfile::NamedTempFile::new().expect("tempfile");
     let url = format!("sqlite://{}?mode=rwc", tmp.path().display());
     let _ = SqlxRepo::open(&url).await.expect("first open");
-    let _ = SqlxRepo::open(&url).await.expect("reopen with current binary");
+    let _ = SqlxRepo::open(&url)
+        .await
+        .expect("reopen with current binary");
 }

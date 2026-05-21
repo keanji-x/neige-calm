@@ -85,11 +85,20 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert!(v["buildSha"].is_null() || v["buildSha"].is_string());
 
     // Source agreement.
-    assert_eq!(v["kernelVersion"].as_str().unwrap(), env!("CARGO_PKG_VERSION"));
-    assert_eq!(v["mcpProtocolVersion"].as_str().unwrap(), KERNEL_PROTOCOL_VERSION);
+    assert_eq!(
+        v["kernelVersion"].as_str().unwrap(),
+        env!("CARGO_PKG_VERSION")
+    );
+    assert_eq!(
+        v["mcpProtocolVersion"].as_str().unwrap(),
+        KERNEL_PROTOCOL_VERSION
+    );
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
     assert_eq!(v["apiVersion"].as_str().unwrap(), "1");
-    assert_eq!(v["syncEventVersion"].as_u64().unwrap(), SYNC_EVENT_VERSION as u64);
+    assert_eq!(
+        v["syncEventVersion"].as_u64().unwrap(),
+        SYNC_EVENT_VERSION as u64
+    );
     assert_eq!(v["syncEventVersion"].as_u64().unwrap(), 1);
 
     // minWebCompatVersion must echo the in-process constant — the whole

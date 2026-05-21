@@ -353,10 +353,9 @@ pub(crate) async fn install_plugin(
             manifest.min_kernel_version
         ))
     })?;
-    if let Err(err) = crate::plugin_host::check_min_kernel_version(
-        &crate::plugin_host::KERNEL_VERSION,
-        &required,
-    ) {
+    if let Err(err) =
+        crate::plugin_host::check_min_kernel_version(&crate::plugin_host::KERNEL_VERSION, &required)
+    {
         return Err(CalmError::PluginKernelTooOld(format!(
             "plugin `{}` requires kernel >= {}, this kernel is {}",
             manifest.id, err.required, err.actual,
@@ -657,10 +656,9 @@ pub(crate) async fn reload_plugin(
             manifest.min_kernel_version
         ))
     })?;
-    if let Err(err) = crate::plugin_host::check_min_kernel_version(
-        &crate::plugin_host::KERNEL_VERSION,
-        &required,
-    ) {
+    if let Err(err) =
+        crate::plugin_host::check_min_kernel_version(&crate::plugin_host::KERNEL_VERSION, &required)
+    {
         return Err(CalmError::PluginKernelTooOld(format!(
             "plugin `{id}` requires kernel >= {}, this kernel is {}",
             err.required, err.actual,
