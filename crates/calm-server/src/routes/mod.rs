@@ -8,6 +8,7 @@ use utoipa::OpenApi;
 
 pub mod cards;
 pub mod codex;
+pub mod codex_cards;
 pub mod coves;
 pub mod fs;
 pub mod overlays;
@@ -28,6 +29,7 @@ pub fn router() -> Router<AppState> {
         .merge(terminal::router())
         .merge(terminal_cards::router())
         .merge(codex::router())
+        .merge(codex_cards::router())
         .merge(fs::router())
         .merge(settings::router())
         .merge(version::router())

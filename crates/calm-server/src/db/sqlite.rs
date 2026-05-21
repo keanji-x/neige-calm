@@ -33,7 +33,9 @@ use super::{RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, WriteW
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventBus, SYNC_EVENT_VERSION};
 use crate::model::*;
-use crate::validation::{TERMINAL_PAYLOAD_SCHEMA_VERSION, validate_card_payload};
+use crate::validation::{
+    CODEX_PAYLOAD_SCHEMA_VERSION, TERMINAL_PAYLOAD_SCHEMA_VERSION, validate_card_payload,
+};
 
 pub struct SqlxRepo {
     pool: SqlitePool,
@@ -414,7 +416,19 @@ pub async fn wave_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Resul
     Ok(())
 }
 
-pub async fn card_create_tx(tx: &mut Transaction<'_, Sqlite>, p: NewCard) -> Result<Card> {
+/// Card-row insert that lets the caller pre-mint the row id.
+///
+/// Carved out from `card_create_tx` so atomic-card endpoints (terminal,
+/// codex) can stamp the soon-to-exist card id into per-card sidecar paths
+/// (e.g. `codex_homes_dir.join(card_id)`) *before* the row hits the DB,
+/// without re-fetching the row after insert. The standalone
+/// [`card_create_tx`] wrapper preserves the original "mint inside the
+/// helper" contract for every other caller.
+pub async fn card_create_with_id_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: String,
+    p: NewCard,
+) -> Result<Card> {
     let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM waves WHERE id = ?1")
         .bind(&p.wave_id)
         .fetch_optional(&mut **tx)
@@ -428,7 +442,6 @@ pub async fn card_create_tx(tx: &mut Transaction<'_, Sqlite>, p: NewCard) -> Res
         None => next_sort_scoped_in_tx(tx, "cards", "WHERE wave_id = ?1", Some(&p.wave_id)).await?,
     };
     let now = now_ms();
-    let id = new_id();
     let payload_text = serde_json::to_string(&p.payload)?;
     sqlx::query(
         r#"INSERT INTO cards (id, wave_id, kind, sort, payload, created_at, updated_at)
@@ -452,6 +465,10 @@ pub async fn card_create_tx(tx: &mut Transaction<'_, Sqlite>, p: NewCard) -> Res
         created_at: now,
         updated_at: now,
     })
+}
+
+pub async fn card_create_tx(tx: &mut Transaction<'_, Sqlite>, p: NewCard) -> Result<Card> {
+    card_create_with_id_tx(tx, new_id(), p).await
 }
 
 pub async fn card_update_tx(
@@ -633,6 +650,104 @@ pub async fn card_with_terminal_create_tx(
     //    composing inside the kernel means we run our own check rather than
     //    trusting a payload we built ourselves.
     validate_card_payload("terminal", &payload)?;
+
+    // 5. Re-stamp the card with the real payload.
+    let card = card_update_tx(
+        tx,
+        &card.id,
+        CardPatch {
+            kind: None,
+            sort: None,
+            payload: Some(payload),
+        },
+    )
+    .await?;
+
+    Ok((card, term))
+}
+
+/// Atomically create a `codex`-kind card AND its associated terminal row
+/// inside a single transaction, stamping `terminal_id` (+ optional `cwd`)
+/// onto the card's payload before returning.
+///
+/// Twin of [`card_with_terminal_create_tx`] for the codex-card flow (#117).
+/// Differs in two places from the terminal helper:
+///
+///   1. The caller pre-mints `card_id` (option C in the design doc) so the
+///      handler can derive per-card filesystem paths (`CODEX_HOME =
+///      <codex_homes_dir>/<card_id>/`) before the row hits the DB. The
+///      pre-mint avoids a post-commit "stamp env" round-trip that option B
+///      would have required, and keeps a single `card.added` envelope on
+///      the bus.
+///   2. The canonical payload carries `cwd` when non-empty — the frontend's
+///      `codex.tsx` placeholder reads it for status text while the daemon
+///      boots. Terminal cards have no such field.
+///
+/// `program` is hardwired to `"codex"`. The caller still owns env
+/// composition (CODEX_HOME / NEIGE_CARD_ID / proxy vars) since those
+/// require `AppState` and a settings snapshot that the db layer shouldn't
+/// see.
+///
+/// On any failure the surrounding transaction rolls back; a partial state
+/// (card without terminal, or terminal without payload link) is impossible.
+pub async fn card_with_codex_create_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card_id: String,
+    wave_id: String,
+    sort: Option<f64>,
+    cwd: String,
+    env: serde_json::Value,
+) -> Result<(Card, Terminal)> {
+    // 1. Card row with placeholder payload — the terminal_id, cwd, and
+    //    schemaVersion fields are stamped in step 5 once we have the
+    //    terminal row.
+    let card = card_create_with_id_tx(
+        tx,
+        card_id,
+        NewCard {
+            wave_id,
+            kind: "codex".into(),
+            sort,
+            payload: serde_json::Value::Null,
+        },
+    )
+    .await?;
+
+    // 2. Terminal row, parented to the card. `program == "codex"` always —
+    //    the codex CLI runs in the PTY directly (see `routes::codex_cards`).
+    let term = terminal_create_tx(
+        tx,
+        NewTerminal {
+            card_id: card.id.clone(),
+            program: "codex".into(),
+            cwd: cwd.clone(),
+            env,
+        },
+    )
+    .await?;
+
+    // 3. Build the canonical codex-card payload. `cwd` is omitted when the
+    //    caller passed an empty string — the frontend treats a missing
+    //    `cwd` as "show no path hint" rather than "show an empty path".
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "schemaVersion".into(),
+        serde_json::Value::from(CODEX_PAYLOAD_SCHEMA_VERSION),
+    );
+    payload.insert(
+        "terminal_id".into(),
+        serde_json::Value::String(term.id.clone()),
+    );
+    if !cwd.is_empty() {
+        payload.insert("cwd".into(), serde_json::Value::String(cwd));
+    }
+    let payload = serde_json::Value::Object(payload);
+
+    // 4. Defense-in-depth: payload validation. The boundary call in
+    //    `routes/cards.rs` enforces this for direct create; composing
+    //    inside the kernel means we re-run the check on the payload we
+    //    just built.
+    validate_card_payload("codex", &payload)?;
 
     // 5. Re-stamp the card with the real payload.
     let card = card_update_tx(

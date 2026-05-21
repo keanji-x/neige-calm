@@ -11,7 +11,6 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::Request;
 use calm_server::actor::actor_middleware;
-use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
@@ -84,72 +83,4 @@ async fn ingest_emits_codex_hook_event() {
         }
         other => panic!("expected CodexHook, got {other:?}"),
     }
-}
-
-#[tokio::test]
-async fn create_codex_rejects_non_codex_card() {
-    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    // Seed a cove + wave + terminal card so we can fail the kind check.
-    let cove = repo
-        .cove_create(calm_server::model::NewCove {
-            name: "c".into(),
-            color: "#000".into(),
-            sort: None,
-        })
-        .await
-        .unwrap();
-    let wave = repo
-        .wave_create(calm_server::model::NewWave {
-            cove_id: cove.id.clone(),
-            title: "w".into(),
-            sort: None,
-        })
-        .await
-        .unwrap();
-    let card = repo
-        .card_create(calm_server::model::NewCard {
-            wave_id: wave.id.clone(),
-            kind: "terminal".into(),
-            sort: None,
-            payload: serde_json::json!({}),
-        })
-        .await
-        .unwrap();
-
-    let state = AppState::from_parts(
-        repo.clone(),
-        EventBus::new(),
-        Arc::new(DaemonClient::new_stub()),
-        Arc::new(PluginHost::new_full(
-            Arc::new(PluginRegistry::empty()),
-            repo,
-            std::path::PathBuf::new(),
-            std::env::temp_dir().join("calm-plugins-data"),
-            Vec::new(),
-            EventBus::new(),
-        )),
-        Arc::new(CodexClient::new_stub()),
-    );
-    // Scope G: production wiring includes the actor middleware on the REST
-    // router; without it the `Actor` extractor returns 500 (its "middleware
-    // not applied" branch). Mirror main.rs.
-    let app = axum::Router::new()
-        .merge(routes::router())
-        .layer(axum::middleware::from_fn(actor_middleware))
-        .with_state(state);
-
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/cards/{}/codex", card.id))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({ "initial_prompt": "hi" }).to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 400);
 }

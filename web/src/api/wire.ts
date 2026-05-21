@@ -102,7 +102,7 @@ export type NewOverlayBody = Omit<Schemas['NewOverlay'], 'entity_kind' | 'payloa
 
 export type NewTerminalCardBody = Schemas['NewTerminalCardBody'];
 
-export type NewCodexBody = Schemas['NewCodexBody'];
+export type NewCodexCardBody = Schemas['NewCodexCardBody'];
 
 // ---------------- fs ----------------
 //

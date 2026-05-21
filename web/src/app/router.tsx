@@ -373,23 +373,15 @@ async function addCardWithValues(
   }
   try {
     dlog('addCardWithValues', 'codex create START', { waveId, values });
-    // Two-step: create an empty-payload codex card row, then have the
-    // codex route spawn the PTY daemon and stamp `terminal_id` back into
-    // the payload. The frontend never pre-populates the payload here —
-    // doing so risks racing the server's `card_update` and stomping the
-    // terminal_id field on the next refetch.
-    //
-    // Codex still emits two events (card.added then card.updated) — the
-    // server-side atomic-create work in #13 was scoped to terminal cards;
-    // a follow-up could collapse codex similarly. EventBridge invalidates
-    // both events immediately; TanStack Query coalesces the resulting
-    // refetches, so the user sees one converged render of the final state.
-    const card = await api.createCard(waveId, {
-      kind: 'codex',
-      payload: {},
-    });
-    await api.createCodex(card.id, {
+    // Atomic codex-card create (#117). One round-trip writes the card row,
+    // the linked terminal row, payload (with `terminal_id` + optional
+    // `cwd`), AND spawns the codex daemon. Server emits a single
+    // `card.added` event carrying the final payload — no intermediate
+    // empty-payload flash for the renderer's "Codex is starting…"
+    // placeholder to react to.
+    const card = await api.createCodexCard(waveId, {
       cwd: values.cwd || undefined,
+      initial_prompt: values.initialPrompt || undefined,
     });
     dlog('addCardWithValues', 'codex create DONE', { cardId: card.id });
   } catch (err) {

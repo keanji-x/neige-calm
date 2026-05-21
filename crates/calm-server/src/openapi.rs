@@ -17,7 +17,7 @@ use crate::model::{
     WaveDetail, WavePatch,
 };
 use crate::routes::cards::{CreateCardBody, ViaToolCall};
-use crate::routes::codex::NewCodexBody;
+use crate::routes::codex_cards::NewCodexCardBody;
 use crate::routes::fs::{DirEntry, ListdirResponse};
 use crate::routes::overlays::{OverlayDeleteBody, OverlayQuery};
 use crate::routes::plugins::{
@@ -61,7 +61,7 @@ use utoipa::OpenApi;
         crate::routes::terminal_cards::create_terminal_card,
         crate::routes::terminal::get_terminal_for_card,
         // ---- codex ----
-        crate::routes::codex::create_codex,
+        crate::routes::codex_cards::create_codex_card,
         // ---- fs ----
         crate::routes::fs::listdir,
         // ---- settings ----
@@ -104,7 +104,7 @@ use utoipa::OpenApi;
         CreateCardBody,
         ViaToolCall,
         NewTerminalCardBody,
-        NewCodexBody,
+        NewCodexCardBody,
         DirEntry,
         ListdirResponse,
         SettingsBag,

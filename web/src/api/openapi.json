@@ -9,78 +9,6 @@
     "version": "0.1.0"
   },
   "paths": {
-    "/api/cards/{card_id}/codex": {
-      "post": {
-        "tags": [
-          "codex"
-        ],
-        "operationId": "create_codex",
-        "parameters": [
-          {
-            "name": "card_id",
-            "in": "path",
-            "description": "Card id (must be a codex card)",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "description": "Codex spawn parameters",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/NewCodexBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "description": "Codex spawned; hook events stream over WS, TUI runs in the card's PTY",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Card"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Card is not a codex card",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Card not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Spawn failed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/cards/{card_id}/terminal": {
       "get": {
         "tags": [
@@ -1796,6 +1724,68 @@
         }
       }
     },
+    "/api/waves/{wave_id}/codex-cards": {
+      "post": {
+        "tags": [
+          "codex"
+        ],
+        "operationId": "create_codex_card",
+        "parameters": [
+          {
+            "name": "wave_id",
+            "in": "path",
+            "description": "Wave id to create the codex card under",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Optional body — empty means use defaults",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewCodexCardBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Card + linked terminal created atomically; codex daemon spawned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Card"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Wave not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Daemon spawn failed (rows are persisted; sweeper reaps within ~60s)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/waves/{wave_id}/terminal-cards": {
       "post": {
         "tags": [
@@ -2153,22 +2143,31 @@
           }
         }
       },
-      "NewCodexBody": {
+      "NewCodexCardBody": {
         "type": "object",
+        "description": "Body for `POST /api/waves/:wave_id/codex-cards`.\n\nDeliberately omits `kind` (always `\"codex\"`) and `payload` (the kernel\nstamps `{schemaVersion, terminal_id, cwd?}` itself). Empty `cwd` falls\nback to `$HOME` then the server's cwd. `initial_prompt` is accepted for\nforward-/backward-compatibility with older clients but ignored —\ninteractive codex uses its own slash-command UX for input.",
         "properties": {
           "cwd": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Working directory codex runs in. Defaults to `$HOME` if empty."
+            "description": "Working directory codex runs in. Empty string or missing → `$HOME`\n(then `cwd` of server)."
           },
           "initial_prompt": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Reserved field — interactive codex has slash-commands for the\nprompt; the API still accepts it for forward / backward\ncompatibility but does nothing with it. Kept so older clients keep\ngenerating valid OpenAPI requests."
+            "description": "Reserved field — accepted for compat; interactive codex uses its\nown slash-command UX for input. Logged at `debug` only when non-empty."
+          },
+          "sort": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Sort order within the wave. `None` defaults to \"append to end\"."
           }
         }
       },
