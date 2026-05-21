@@ -833,7 +833,9 @@ mod tests {
             }
         });
 
-        McpClient::connect_with_auth(k_r, k_w, None).await.expect("stub connect")
+        McpClient::connect_with_auth(k_r, k_w, None)
+            .await
+            .expect("stub connect")
     }
 
     impl Harness {

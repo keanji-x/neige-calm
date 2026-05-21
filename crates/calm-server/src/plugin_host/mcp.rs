@@ -1012,7 +1012,9 @@ mod tests {
             }
         });
 
-        let client = McpClient::connect_with_auth(k_r, k_w, None).await.expect("connect");
+        let client = McpClient::connect_with_auth(k_r, k_w, None)
+            .await
+            .expect("connect");
         let result = client
             .tools_call("make_status_card", json!({ "x": 1 }))
             .await
@@ -1099,7 +1101,9 @@ mod tests {
             }
         });
 
-        let client = McpClient::connect_with_auth(k_r, k_w, None).await.expect("connect");
+        let client = McpClient::connect_with_auth(k_r, k_w, None)
+            .await
+            .expect("connect");
         let result = client
             .resources_read("ui://stub/status")
             .await
@@ -1184,7 +1188,9 @@ mod tests {
             }
         });
 
-        let client = McpClient::connect_with_auth(k_r, k_w, None).await.expect("connect");
+        let client = McpClient::connect_with_auth(k_r, k_w, None)
+            .await
+            .expect("connect");
         let result = client.call("hello", json!({})).await.expect("call");
         assert_eq!(result["got"], "hello");
         drop(client);
@@ -1261,7 +1267,9 @@ mod tests {
             "serverInfo": { "name": "stub", "version": "0.0.0" },
             "capabilities": {}
         }));
-        let client = McpClient::connect_with_auth(k_r, k_w, None).await.expect("connect");
+        let client = McpClient::connect_with_auth(k_r, k_w, None)
+            .await
+            .expect("connect");
         // sanity: with empty capabilities, the kernel-callbacks predicate
         // returns false (capability absent).
         assert!(!client.has_kernel_callbacks_capability("test.plugin"));
@@ -1301,7 +1309,9 @@ mod tests {
                 }
             }
         }));
-        let client = McpClient::connect_with_auth(k_r, k_w, None).await.expect("connect");
+        let client = McpClient::connect_with_auth(k_r, k_w, None)
+            .await
+            .expect("connect");
         assert!(client.has_kernel_callbacks_capability("test.plugin"));
         drop(client);
         let _ = tokio::time::timeout(Duration::from_millis(200), task).await;
@@ -1322,7 +1332,9 @@ mod tests {
                 }
             }
         }));
-        let client = McpClient::connect_with_auth(k_r, k_w, None).await.expect("connect");
+        let client = McpClient::connect_with_auth(k_r, k_w, None)
+            .await
+            .expect("connect");
         assert!(!client.has_kernel_callbacks_capability("test.plugin"));
         drop(client);
         let _ = tokio::time::timeout(Duration::from_millis(200), task).await;
@@ -1340,7 +1352,9 @@ mod tests {
                 }
             }
         }));
-        let client = McpClient::connect_with_auth(k_r, k_w, None).await.expect("connect");
+        let client = McpClient::connect_with_auth(k_r, k_w, None)
+            .await
+            .expect("connect");
         assert!(!client.has_kernel_callbacks_capability("test.plugin"));
         drop(client);
         let _ = tokio::time::timeout(Duration::from_millis(200), task).await;
@@ -1356,7 +1370,9 @@ mod tests {
             "serverInfo": { "name": "stub", "version": "0.0.0" },
             "capabilities": {}
         }));
-        let client = McpClient::connect_with_auth(k_r, k_w, None).await.expect("connect");
+        let client = McpClient::connect_with_auth(k_r, k_w, None)
+            .await
+            .expect("connect");
         assert!(!client.has_kernel_callbacks_capability("test.plugin"));
         drop(client);
         let _ = tokio::time::timeout(Duration::from_millis(200), task).await;
