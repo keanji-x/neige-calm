@@ -88,12 +88,29 @@ pub struct NewCodexBody {
     /// Working directory codex runs in. Defaults to `$HOME` if empty.
     #[serde(default)]
     pub cwd: Option<String>,
-    /// Reserved field — interactive codex has slash-commands for the
-    /// prompt; the API still accepts it for forward / backward
-    /// compatibility but does nothing with it. Kept so older clients keep
-    /// generating valid OpenAPI requests.
+    /// Optional prompt to pre-fill the TUI's composer with. When set,
+    /// codex is spawned as `codex '<prompt>'` (positional `[PROMPT]`
+    /// arg, shell-single-quoted). Codex 0.132's TUI stores this on the
+    /// `ChatWidget` as `initial_user_message` and renders it in the
+    /// composer awaiting Enter; it does NOT auto-submit on its own
+    /// — pair with `auto_submit = true` for a fully hands-free spawn.
+    /// `None` (the default) leaves the launch unchanged so user-created
+    /// codex cards continue to land on an empty composer.
     #[serde(default)]
-    pub initial_prompt: Option<String>,
+    pub prompt: Option<String>,
+    /// When `true`, the kernel injects a single `\r` over the per-
+    /// terminal daemon socket ~600 ms after the codex `session_start`
+    /// hook fires, submitting whatever's currently in the composer.
+    /// Combined with `prompt` this gives a fully hands-free
+    /// "spawn → composer populated → submit" flow for caller-driven
+    /// agent spawns. Defaults to `false` so the existing user-initiated
+    /// spawn behavior (TUI lands, user types and presses Enter) is
+    /// preserved.
+    ///
+    /// This is the only persisted bit the auto-submit subscriber reads
+    /// off the card payload — see `codex_auto_submit.rs`.
+    #[serde(default)]
+    pub auto_submit: bool,
 }
 
 #[utoipa::path(
@@ -135,10 +152,12 @@ pub(crate) async fn create_codex(
 
 /// Persist a per-card `CODEX_HOME` under `data_dir/codex-homes/<card_id>/`
 /// (lives in the bind-mounted `$HOME`, so it survives container restarts),
-/// seed it from `$HOME/.codex` on first creation, write our hooks.json,
-/// create a Terminal row, and spawn the session daemon running interactive
-/// `codex`. Returns the updated Card with `payload.terminal_id` set so the
-/// frontend can attach the xterm.
+/// seed it from `$HOME/.codex` on first creation, write a per-spawn
+/// `config.toml` (silences codex's first-run trust/approval/sandbox
+/// modals so a `prompt`/`auto_submit` caller can run end-to-end without
+/// a user keystroke), create a Terminal row, and spawn the session
+/// daemon running interactive `codex`. Returns the updated Card with
+/// `payload.terminal_id` set so the frontend can attach the xterm.
 async fn spawn_codex_for(
     s: &AppState,
     actor: &Actor,
@@ -181,6 +200,21 @@ async fn spawn_codex_for(
         .filter(|s| !s.trim().is_empty())
         .map(String::from)
         .unwrap_or_else(default_cwd);
+
+    // 4a. Write per-spawn `config.toml` to silence codex's three blocking
+    //     first-run dialogs (trust / approval / sandbox). Without these
+    //     keys a fresh CODEX_HOME lands on the "Trust this directory?"
+    //     modal *before* the TUI's composer mounts, so a caller-supplied
+    //     `prompt` would never make it to the prompt area and an
+    //     `auto_submit = true` `\r` injection would land on the modal
+    //     instead. Writing config.toml on every spawn (not just `is_fresh`)
+    //     keeps the keys aligned with the current `cwd` if a caller
+    //     re-spawns into a different directory on the same card.
+    let config_toml = build_config_toml(&cwd);
+    let config_path = codex_home.join("config.toml");
+    std::fs::write(&config_path, config_toml).map_err(|e| {
+        CalmError::Internal(format!("write config.toml {}: {e}", config_path.display()))
+    })?;
 
     let codex_home_path = codex_home.to_string_lossy().to_string();
 
@@ -234,7 +268,20 @@ async fn spawn_codex_for(
     let env = serde_json::Value::Object(env_map);
 
     // 5. Persist the Terminal row.
-    let program = "codex".to_string();
+    //
+    //    Codex 0.132's TUI takes a positional `[PROMPT]` argument that
+    //    pre-fills the composer (does NOT auto-submit on its own — pair
+    //    with `auto_submit = true` and the `codex_auto_submit`
+    //    subscriber, which injects a `\r` after `session_start`). The
+    //    daemon execs `/bin/sh -c <program>`, so the prompt has to be
+    //    shell-quoted; `shell_single_quote` wraps in `'...'` and escapes
+    //    internal `'` as `'\''`.
+    let program = match p.prompt.as_deref() {
+        Some(prompt) if !prompt.is_empty() => {
+            format!("codex {}", shell_single_quote(prompt))
+        }
+        _ => "codex".to_string(),
+    };
     let term = s
         .repo
         .terminal_create(NewTerminal {
@@ -262,21 +309,26 @@ async fn spawn_codex_for(
     if !cwd.is_empty() {
         payload["cwd"] = serde_json::Value::String(cwd.clone());
     }
+    // Persist `auto_submit` so the bus subscriber (`codex_auto_submit`)
+    // can decide whether this card is eligible for a `\r` injection
+    // when its `session_start` hook fires. Only stamp when `true` so we
+    // don't pollute the payload of every user-initiated codex card with
+    // a `false` we'd then have to explain in the wire docs. (`prompt`
+    // is consumed by the spawn and intentionally NOT persisted — it
+    // shows up in the composer immediately and is then user-owned.)
+    if p.auto_submit {
+        payload["auto_submit"] = serde_json::Value::Bool(true);
+    }
     let updated = stamp_codex_terminal_payload(s, actor, card, payload).await?;
 
     tracing::info!(
         card_id = %card.id,
         terminal_id = %term.id,
         cwd = %cwd,
+        prompt = p.prompt.as_deref().unwrap_or(""),
+        auto_submit = p.auto_submit,
         "spawned interactive codex"
     );
-
-    // initial_prompt is intentionally ignored — interactive codex uses its
-    // own slash-command UX for input. We log it once for observability so
-    // older clients pushing prompts don't silently lose anything.
-    if let Some(ip) = p.initial_prompt.as_deref().filter(|s| !s.trim().is_empty()) {
-        tracing::debug!(card_id = %card.id, initial_prompt = %ip, "initial_prompt ignored in interactive mode");
-    }
 
     Ok(updated)
 }
@@ -410,6 +462,91 @@ fn copy_dir_recursive(src: &StdPath, dst: &StdPath) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Quote `s` for safe inclusion as a single argument inside a
+/// POSIX-`/bin/sh -c` command line.
+///
+/// Strategy is the canonical single-quote wrap: every char passes through
+/// uninterpreted *except* `'`, which can't appear inside a single-quoted
+/// string and is escaped via the well-known close-quote-then-escaped-
+/// quote-then-reopen idiom (`'\''`). The result is always safe regardless
+/// of what's in `s` (backslashes, dollar signs, double quotes, newlines —
+/// all literal under single quotes).
+fn shell_single_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        if c == '\'' {
+            // Close the current single-quoted run, emit an escaped
+            // literal quote, reopen the single quote.
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// Escape a string for a TOML basic string. We hand-roll this rather
+/// than pull a TOML serializer crate because the only thing we emit is
+/// a fixed shape of keys (paths + strings the caller hands us), and the
+/// escape set we actually need is small: backslash and double-quote
+/// inside a `"..."` string.
+fn toml_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Build the per-spawn `config.toml` codex reads at startup.
+///
+/// Sole purpose: silence the three blocking first-run dialogs codex
+/// would otherwise pop *before* its TUI composer mounts. The keys are
+/// chosen for the "agent should run end-to-end without a user keystroke"
+/// use case — a `prompt` + `auto_submit = true` spawn — and are
+/// deliberately permissive. Callers that want a more restrictive
+/// posture (e.g. require approval for shell commands) can layer their
+/// own MCP config or post-spawn configuration on top; this file is the
+/// *minimum* needed to unblock the spawn.
+///
+/// Keys, in order:
+///   - `approval_policy = "never"` — skip codex's per-command approval
+///     prompt.
+///   - `sandbox_mode = "workspace-write"` — skip the sandbox-mode
+///     first-run prompt; grant write access to the spawn cwd.
+///   - `[projects."<cwd>"] trust_level = "trusted"` — skip the per-
+///     directory "Trust this directory?" modal. The path MUST match the
+///     cwd codex actually spawns in, which is why `build_config_toml`
+///     takes it as a parameter rather than reading `$HOME` or similar.
+///
+/// Hooks come from `/etc/codex/requirements.toml` (the policy-managed
+/// file), NOT from here. MCP servers are intentionally out of scope: any
+/// caller that wants to expose tools to the agent layers its own MCP
+/// block on top of this file (or in their own spawn-time write); this
+/// PR's responsibility is the bare hands-free primitive.
+fn build_config_toml(trust_cwd: &str) -> String {
+    let mut s = String::with_capacity(192);
+    s.push_str("# Generated by neige-calm at codex spawn time.\n");
+    s.push_str("# Do not edit by hand — overwritten on every spawn.\n");
+    s.push('\n');
+    // Top-level keys MUST come before any `[table]` headers per TOML
+    // spec, otherwise they'd be parsed as members of the next table.
+    s.push_str("approval_policy = \"never\"\n");
+    s.push_str("sandbox_mode = \"workspace-write\"\n");
+    s.push('\n');
+    s.push_str(&format!("[projects.{}]\n", toml_quote(trust_cwd)));
+    s.push_str("trust_level = \"trusted\"\n");
+    s
+}
+
 /// Convert codex's `PascalCase` event names (`PreToolUse`) to snake.
 /// Keeps the same shape as Claude hook discriminators on the wire, so
 /// the frontend's pattern matching stays consistent across providers.
@@ -447,6 +584,64 @@ mod tests {
         assert_eq!(to_snake_case("Stop"), "stop");
         assert_eq!(to_snake_case("SessionStart"), "session_start");
         assert_eq!(to_snake_case("unknown"), "unknown");
+    }
+
+    #[test]
+    fn shell_single_quote_round_trip_under_sh() {
+        // Plain text: bare single-quoted wrap.
+        assert_eq!(shell_single_quote("hello"), "'hello'");
+        // Embedded single quote uses the close/escape/reopen idiom.
+        assert_eq!(shell_single_quote("don't"), "'don'\\''t'");
+        // Double quotes, backslashes, and dollar signs are literal under
+        // single quotes — no further escaping required.
+        assert_eq!(shell_single_quote(r#"a"b"#), "'a\"b'");
+        assert_eq!(shell_single_quote(r"a\b"), r"'a\b'");
+        assert_eq!(shell_single_quote("$HOME"), "'$HOME'");
+        // Empty string still yields a syntactically valid empty arg.
+        assert_eq!(shell_single_quote(""), "''");
+    }
+
+    #[test]
+    fn toml_quote_escapes_backslash_and_quote() {
+        assert_eq!(toml_quote("plain"), r#""plain""#);
+        assert_eq!(toml_quote("a\"b"), r#""a\"b""#);
+        assert_eq!(toml_quote("a\\b"), r#""a\\b""#);
+    }
+
+    #[test]
+    fn config_toml_silences_first_run_dialogs() {
+        let s = build_config_toml("/home/kenji");
+        assert!(s.contains(r#"approval_policy = "never""#));
+        assert!(s.contains(r#"sandbox_mode = "workspace-write""#));
+        assert!(s.contains(r#"[projects."/home/kenji"]"#));
+        assert!(s.contains(r#"trust_level = "trusted""#));
+        // Top-level keys must precede the first [table] header — otherwise
+        // TOML parses them as members of that table.
+        let approval_idx = s.find("approval_policy = ").unwrap();
+        let first_table_idx = s.find('[').unwrap();
+        assert!(
+            approval_idx < first_table_idx,
+            "approval_policy must appear before any [table] header"
+        );
+    }
+
+    #[test]
+    fn config_toml_projects_table_uses_passed_cwd() {
+        let s = build_config_toml("/var/lib/agent-cards/abc");
+        assert!(s.contains(r#"[projects."/var/lib/agent-cards/abc"]"#));
+        assert!(!s.contains(r#"[projects."/home/kenji"]"#));
+    }
+
+    #[test]
+    fn config_toml_does_not_write_mcp_block() {
+        // Out of scope for this PR — callers wanting MCP tools layer
+        // their own config on top.
+        let s = build_config_toml("/tmp/cwd");
+        assert!(
+            !s.contains("[mcp_servers"),
+            "build_config_toml must not emit any [mcp_servers.*] block; \
+             that's a caller concern. Got:\n{s}"
+        );
     }
 
     #[tokio::test]
