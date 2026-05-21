@@ -33,15 +33,17 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use clap::{Parser, ValueEnum};
-use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
+use portable_pty::{CommandBuilder, MasterPty, PtySize as PtPtySize, native_pty_system};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::process::{ChildStdin, Command};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use uuid::Uuid;
 
-use calm_session::terminal_session::{Effect, PtyBroadcaster, TerminalSessionState};
-use calm_session::{ClientMsg, DaemonMsg, read_frame, write_frame};
+use calm_session::terminal_session::{
+    Effect, OwnerRegistry, PtyBroadcaster, SessionContext, TerminalSessionState,
+};
+use calm_session::{ClientMsg, DaemonMsg, PtySize, read_frame, write_frame};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 enum Mode {
@@ -175,6 +177,7 @@ impl EventBuffer {
 type SharedBroadcaster = Arc<Mutex<PtyBroadcaster>>;
 type SharedEventBuffer = Arc<Mutex<EventBuffer>>;
 type SharedMaster = Arc<Mutex<Box<dyn MasterPty + Send>>>;
+type SharedOwnerRegistry = Arc<Mutex<OwnerRegistry>>;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -214,7 +217,7 @@ async fn main() -> anyhow::Result<()> {
 async fn run_terminal(cli: Cli) -> anyhow::Result<()> {
     // ---- PTY + child ----
     let pty_system = native_pty_system();
-    let pair = pty_system.openpty(PtySize {
+    let pair = pty_system.openpty(PtPtySize {
         rows: cli.rows,
         cols: cli.cols,
         pixel_width: 0,
@@ -243,6 +246,13 @@ async fn run_terminal(cli: Cli) -> anyhow::Result<()> {
     let broadcaster: SharedBroadcaster =
         Arc::new(Mutex::new(PtyBroadcaster::new(cli.buffer_bytes)));
     let master: SharedMaster = Arc::new(Mutex::new(pair.master));
+    // Daemon-level owner registry. Single instance shared across every
+    // accepted connection; the first successful handshake becomes Owner,
+    // later attaches default to Observer.
+    let owner_registry: SharedOwnerRegistry = Arc::new(Mutex::new(OwnerRegistry::new()));
+    // Session UUID that rolls on every daemon respawn. Surfaced to the
+    // client in `DaemonMsg::ServerHello.session_id`.
+    let session_id = Uuid::new_v4();
     // Broadcast channel carries the already-shaped DaemonMsg frames produced
     // by PtyBroadcaster::on_pty_chunk / on_child_exit. The handler tasks
     // forward those onto each client's socket verbatim.
@@ -269,6 +279,8 @@ async fn run_terminal(cli: Cli) -> anyhow::Result<()> {
     notify_ready(cli.ready_fd);
 
     // ---- Accept loop ----
+    let initial_cols = cli.cols;
+    let initial_rows = cli.rows;
     let accept_task = tokio::spawn(accept_loop(
         listener,
         event_tx.clone(),
@@ -276,6 +288,11 @@ async fn run_terminal(cli: Cli) -> anyhow::Result<()> {
         master.clone(),
         stdin_tx.clone(),
         killer.clone(),
+        owner_registry.clone(),
+        session_id,
+        cli.id.to_string(),
+        initial_cols,
+        initial_rows,
     ));
 
     // Block until the child exits.
@@ -478,6 +495,10 @@ fn apply_broadcaster_effects(tx: &broadcast::Sender<DaemonMsg>, effects: Vec<Eff
             | Effect::ResizePty { .. }
             | Effect::WriteToPty(_)
             | Effect::KillChild
+            | Effect::SendProtocolError { .. }
+            | Effect::CloseConnection
+            | Effect::AssignOwner(_)
+            | Effect::BroadcastOwnerChanged(_)
             | Effect::ProtocolViolation(_) => {
                 tracing::warn!(
                     "PtyBroadcaster emitted non-Broadcast effect; dropping (this is a bug)"
@@ -595,6 +616,7 @@ fn spawn_chat_stdin_writer(mut stdin: ChildStdin, mut rx: mpsc::UnboundedReceive
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn accept_loop(
     listener: UnixListener,
     event_tx: broadcast::Sender<DaemonMsg>,
@@ -602,18 +624,39 @@ async fn accept_loop(
     master: SharedMaster,
     stdin_tx: mpsc::UnboundedSender<Vec<u8>>,
     killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
+    owner_registry: SharedOwnerRegistry,
+    session_id: Uuid,
+    terminal_id: String,
+    initial_cols: u16,
+    initial_rows: u16,
 ) {
     loop {
         match listener.accept().await {
             Ok((sock, _)) => {
                 let event_rx = event_tx.subscribe();
+                let event_tx_inner = event_tx.clone();
                 let broadcaster = broadcaster.clone();
                 let master = master.clone();
                 let stdin_tx = stdin_tx.clone();
                 let killer = killer.clone();
+                let owner_registry = owner_registry.clone();
+                let terminal_id = terminal_id.clone();
                 tokio::spawn(async move {
-                    if let Err(e) =
-                        handle_client(sock, event_rx, broadcaster, master, stdin_tx, killer).await
+                    if let Err(e) = handle_client(
+                        sock,
+                        event_rx,
+                        event_tx_inner,
+                        broadcaster,
+                        master,
+                        stdin_tx,
+                        killer,
+                        owner_registry,
+                        session_id,
+                        terminal_id,
+                        initial_cols,
+                        initial_rows,
+                    )
+                    .await
                     {
                         tracing::debug!(error = %e, "client ended");
                     }
@@ -653,53 +696,101 @@ async fn accept_chat_loop(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_client(
     sock: UnixStream,
     mut event_rx: broadcast::Receiver<DaemonMsg>,
+    event_tx: broadcast::Sender<DaemonMsg>,
     broadcaster: SharedBroadcaster,
     master: SharedMaster,
     stdin_tx: mpsc::UnboundedSender<Vec<u8>>,
     killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
+    owner_registry: SharedOwnerRegistry,
+    session_id: Uuid,
+    terminal_id: String,
+    initial_cols: u16,
+    initial_rows: u16,
 ) -> anyhow::Result<()> {
     let (mut rd, mut wr) = sock.into_split();
     let mut state = TerminalSessionState::new();
 
-    // First frame must be Attach. We synchronously translate it into
-    // effects, then write `Hello { replay }` BEFORE spawning the broadcast
-    // fan-out task. That guarantees no PTY-chunk Stdout frame can land on
-    // the socket ahead of Hello — matching the pre-refactor ordering at
-    // daemon.rs:680-688.
+    // First frame must be ClientHello (v2). Synchronously translate it into
+    // effects, then write `ServerHello` BEFORE spawning the broadcast
+    // fan-out task. That guarantees no `RenderPatch` frame can land on the
+    // socket ahead of `ServerHello`.
     let first: ClientMsg = read_frame(&mut rd).await?;
-    let first_effects = {
+    let (first_effects, current_owner) = {
         let guard = broadcaster.lock().unwrap();
-        state.on_client_frame(first, guard.buffer())
+        let mut reg = owner_registry.lock().unwrap();
+        let ctx = SessionContext {
+            terminal_id: &terminal_id,
+            session_id,
+            pty_size: PtySize {
+                cols: initial_cols,
+                rows: initial_rows,
+                pixel_width: None,
+                pixel_height: None,
+            },
+            pty_seq_head: guard.pty_seq_head(),
+            pty_seq_tail: guard.pty_seq(),
+            render_rev: guard.render_rev(),
+        };
+        let eff = state.on_client_frame(first, guard.buffer(), &mut reg, &ctx);
+        (eff, reg.current_owner())
     };
+    let mut handshake_failed = false;
     for eff in first_effects {
         match eff {
             Effect::ResizePty { cols, rows } => apply_resize(&master, cols, rows),
             Effect::SendToClient(msg) => {
                 write_frame(&mut wr, &msg).await?;
             }
+            Effect::SendProtocolError {
+                code,
+                message,
+                expected_version,
+            } => {
+                // Best-effort write of the typed error frame, then close.
+                let _ = write_frame(
+                    &mut wr,
+                    &DaemonMsg::ProtocolError {
+                        code,
+                        message,
+                        expected_version,
+                    },
+                )
+                .await;
+                handshake_failed = true;
+            }
+            Effect::CloseConnection => {
+                handshake_failed = true;
+            }
             Effect::ProtocolViolation(reason) => {
                 anyhow::bail!("{reason}");
             }
-            // Other effects are not reachable from the initial Attach
-            // transition; if they ever are, the state machine is mis-
-            // configured.
-            Effect::Broadcast(_) | Effect::WriteToPty(_) | Effect::KillChild => {
+            // Other effects aren't reachable from the handshake transition.
+            Effect::Broadcast(_)
+            | Effect::WriteToPty(_)
+            | Effect::KillChild
+            | Effect::AssignOwner(_)
+            | Effect::BroadcastOwnerChanged(_) => {
                 tracing::warn!("unexpected effect on first frame; ignoring");
             }
         }
     }
+    if handshake_failed {
+        return Ok(());
+    }
+    let _ = current_owner; // currently unused post-handshake but kept for future hooks
 
     // Fan out events to this client. Identical control-flow shape to the
     // pre-refactor down_task: forward each broadcast frame and break out
-    // on ChildExited or channel close.
+    // on TerminalExited or channel close.
     let down_task = tokio::spawn(async move {
         loop {
             match event_rx.recv().await {
                 Ok(msg) => {
-                    let is_exit = matches!(msg, DaemonMsg::ChildExited { .. });
+                    let is_exit = matches!(msg, DaemonMsg::TerminalExited { .. });
                     if write_frame(&mut wr, &msg).await.is_err() {
                         break;
                     }
@@ -718,6 +809,7 @@ async fn handle_client(
     });
 
     // Read client → state machine → effects.
+    let client_id_for_disconnect = state.client_id();
     loop {
         let msg: ClientMsg = match read_frame(&mut rd).await {
             Ok(m) => m,
@@ -725,24 +817,36 @@ async fn handle_client(
         };
         let effects = {
             let guard = broadcaster.lock().unwrap();
-            state.on_client_frame(msg, guard.buffer())
+            let mut reg = owner_registry.lock().unwrap();
+            let ctx = SessionContext {
+                terminal_id: &terminal_id,
+                session_id,
+                pty_size: PtySize {
+                    cols: initial_cols,
+                    rows: initial_rows,
+                    pixel_width: None,
+                    pixel_height: None,
+                },
+                pty_seq_head: guard.pty_seq_head(),
+                pty_seq_tail: guard.pty_seq(),
+                render_rev: guard.render_rev(),
+            };
+            state.on_client_frame(msg, guard.buffer(), &mut reg, &ctx)
         };
 
         let mut closed = false;
         for eff in effects {
             match eff {
                 Effect::SendToClient(_) => {
-                    // Post-Attach, the state machine never emits this
-                    // today. If it ever does, we'd need to wire it onto
-                    // a writer that doesn't collide with down_task.
+                    // Post-handshake the state machine never emits
+                    // SendToClient today. If it ever does, we'd need a
+                    // separate writer that doesn't collide with down_task.
                     tracing::warn!(
-                        "TerminalSessionState emitted SendToClient post-attach; ignoring (bug)"
+                        "TerminalSessionState emitted SendToClient post-handshake; ignoring (bug)"
                     );
                 }
-                Effect::Broadcast(_) => {
-                    // Reserved for PtyBroadcaster; the client-frame state
-                    // machine doesn't reach this arm today.
-                    tracing::warn!("TerminalSessionState emitted Broadcast; ignoring (bug)");
+                Effect::Broadcast(msg) => {
+                    let _ = event_tx.send(msg);
                 }
                 Effect::ResizePty { cols, rows } => apply_resize(&master, cols, rows),
                 Effect::WriteToPty(b) => {
@@ -755,10 +859,40 @@ async fn handle_client(
                     tracing::info!("client requested Kill; signaling child");
                     kill_child(&master, &killer);
                 }
+                Effect::SendProtocolError {
+                    code,
+                    message,
+                    expected_version,
+                } => {
+                    // Broadcast through the event channel so it reaches
+                    // this client's down_task. Other observers will see it
+                    // too — which is fine; the message is informational
+                    // (e.g. NotOwner) and they can ignore frames not aimed
+                    // at them. A future PR can switch to a per-client
+                    // direct writer for these errors.
+                    let _ = event_tx.send(DaemonMsg::ProtocolError {
+                        code,
+                        message,
+                        expected_version,
+                    });
+                }
+                Effect::CloseConnection => {
+                    closed = true;
+                    break;
+                }
+                Effect::AssignOwner(_) => {
+                    // Bookkeeping-only intent; the registry state was
+                    // already updated inside on_client_frame. No socket
+                    // effect.
+                }
+                Effect::BroadcastOwnerChanged(owner) => {
+                    let _ = event_tx.send(DaemonMsg::OwnerChanged {
+                        owner_client_id: owner,
+                    });
+                }
                 Effect::ProtocolViolation(reason) => {
-                    // Post-attach we don't expect this (re-Attach is a
-                    // no-op, not a violation). If it ever fires, treat it
-                    // the same as the first-frame path.
+                    // Legacy path — new code uses SendProtocolError +
+                    // CloseConnection.
                     down_task.abort();
                     let _ = down_task.await;
                     anyhow::bail!("{reason}");
@@ -770,7 +904,20 @@ async fn handle_client(
         }
     }
 
-    // Client's read half closed; drop the sender side so down_task terminates.
+    // Client's read half closed; if this client held ownership, drop it
+    // so a future attach can take over.
+    if let Some(cid) = client_id_for_disconnect {
+        let changed = {
+            let mut reg = owner_registry.lock().unwrap();
+            reg.on_release(cid)
+        };
+        if changed {
+            let _ = event_tx.send(DaemonMsg::OwnerChanged {
+                owner_client_id: None,
+            });
+        }
+    }
+
     down_task.abort();
     let _ = down_task.await;
     Ok(())
@@ -784,11 +931,12 @@ async fn handle_chat_client(
 ) -> anyhow::Result<()> {
     let (mut rd, mut wr) = sock.into_split();
 
-    // First frame must be Attach. cols/rows are placeholder in chat mode.
+    // First frame must be ClientHello (v2). cols/rows in the desired_size
+    // field are placeholder in chat mode — chat has no PTY to resize.
     let first: ClientMsg = read_frame(&mut rd).await?;
     match first {
-        ClientMsg::Attach { .. } => {}
-        other => anyhow::bail!("expected Attach as first message, got {other:?}"),
+        ClientMsg::ClientHello { .. } => {}
+        other => anyhow::bail!("expected ClientHello as first message, got {other:?}"),
     }
 
     let replay = {
@@ -851,8 +999,8 @@ async fn handle_chat_client(
                     break;
                 }
             }
-            ClientMsg::Attach { .. } => {
-                // Ignore re-attach on a live connection.
+            ClientMsg::ClientHello { .. } => {
+                // Ignore re-handshake on a live connection.
             }
             ClientMsg::Kill => {
                 tracing::info!("client requested Kill in chat mode; closing runner stdin");
@@ -862,8 +1010,12 @@ async fn handle_chat_client(
                 drop(stdin_tx);
                 break;
             }
-            // Wrong-mode frames — quietly ignored.
-            ClientMsg::Stdin(_) | ClientMsg::Resize { .. } => {
+            // Terminal-mode-only frames — quietly ignored in chat mode.
+            ClientMsg::Input(_)
+            | ClientMsg::ResizeCommit { .. }
+            | ClientMsg::OwnerClaim
+            | ClientMsg::OwnerRelease
+            | ClientMsg::RenderAck { .. } => {
                 tracing::debug!("ignoring terminal-mode frame in chat mode");
             }
         }
@@ -909,7 +1061,7 @@ fn apply_resize(master: &SharedMaster, cols: u16, rows: u16) {
         return;
     }
     let m = master.lock().unwrap();
-    if let Err(e) = m.resize(PtySize {
+    if let Err(e) = m.resize(PtPtySize {
         cols,
         rows,
         pixel_width: 0,
