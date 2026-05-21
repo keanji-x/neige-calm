@@ -40,6 +40,7 @@ use tokio::process::{ChildStdin, Command};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use uuid::Uuid;
 
+use calm_session::terminal_session::{Effect, PtyBroadcaster, TerminalSessionState};
 use calm_session::{ClientMsg, DaemonMsg, read_frame, write_frame};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -128,13 +129,6 @@ struct Cli {
     cmd: Vec<String>,
 }
 
-/// Events fanned out to every attached client in terminal mode.
-#[derive(Clone, Debug)]
-enum Event {
-    Output(Vec<u8>),
-    Exit(Option<i32>),
-}
-
 /// Events fanned out in chat mode. Each `Event` here is one already-
 /// serialized `NeigeEvent` JSON line.
 #[derive(Clone, Debug)]
@@ -143,50 +137,8 @@ enum ChatEvt {
     Exit(Option<i32>),
 }
 
-/// Rolling byte ring used to seed the Hello replay for a new client in
-/// terminal mode.
-///
-/// Stored as a deque of chunks (each = one PTY read) so eviction is
-/// chunk-granular — we never split an escape sequence. When `total_bytes`
-/// exceeds `max_bytes` we drop chunks from the front, which can lose
-/// older context but keeps memory bounded.
-struct ByteBuffer {
-    chunks: VecDeque<Vec<u8>>,
-    total_bytes: usize,
-    max_bytes: usize,
-}
-
-impl ByteBuffer {
-    fn new(max_bytes: usize) -> Self {
-        Self {
-            chunks: VecDeque::new(),
-            total_bytes: 0,
-            max_bytes,
-        }
-    }
-
-    fn append(&mut self, bytes: Vec<u8>) {
-        self.total_bytes += bytes.len();
-        self.chunks.push_back(bytes);
-        while self.total_bytes > self.max_bytes && self.chunks.len() > 1 {
-            let dropped = self.chunks.pop_front().unwrap();
-            self.total_bytes -= dropped.len();
-        }
-    }
-
-    /// Concatenated copy of the current buffer — fed straight into the
-    /// `DaemonMsg::Hello { replay }` field. Cheap clone-out is fine here:
-    /// only happens on attach, not in the hot path.
-    fn snapshot(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.total_bytes);
-        for c in &self.chunks {
-            out.extend_from_slice(c);
-        }
-        out
-    }
-}
-
-/// Same chunk-granular eviction strategy as `ByteBuffer`, but each chunk is
+/// Same chunk-granular eviction strategy as the terminal-mode [`ByteRing`]
+/// (in `calm_session::terminal_session`), but each chunk is
 /// one serialized NeigeEvent JSON line. Used in chat mode.
 struct EventBuffer {
     events: VecDeque<String>,
@@ -217,7 +169,10 @@ impl EventBuffer {
     }
 }
 
-type SharedBuffer = Arc<Mutex<ByteBuffer>>;
+/// Shared PTY broadcaster. Holds the replay ring and turns PTY chunks /
+/// child-exit into [`Effect::Broadcast`]s; the IO shell pushes those onto
+/// `event_tx`.
+type SharedBroadcaster = Arc<Mutex<PtyBroadcaster>>;
 type SharedEventBuffer = Arc<Mutex<EventBuffer>>;
 type SharedMaster = Arc<Mutex<Box<dyn MasterPty + Send>>>;
 
@@ -285,14 +240,18 @@ async fn run_terminal(cli: Cli) -> anyhow::Result<()> {
         Arc::new(Mutex::new(child.clone_killer()));
     drop(pair.slave);
 
-    let buffer: SharedBuffer = Arc::new(Mutex::new(ByteBuffer::new(cli.buffer_bytes)));
+    let broadcaster: SharedBroadcaster =
+        Arc::new(Mutex::new(PtyBroadcaster::new(cli.buffer_bytes)));
     let master: SharedMaster = Arc::new(Mutex::new(pair.master));
-    let (event_tx, _) = broadcast::channel::<Event>(2048);
+    // Broadcast channel carries the already-shaped DaemonMsg frames produced
+    // by PtyBroadcaster::on_pty_chunk / on_child_exit. The handler tasks
+    // forward those onto each client's socket verbatim.
+    let (event_tx, _) = broadcast::channel::<DaemonMsg>(2048);
     let (stdin_tx, stdin_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
     // ---- PTY reader → buffer + broadcast ----
     let reader = master.lock().unwrap().try_clone_reader()?;
-    spawn_pty_reader(reader, buffer.clone(), event_tx.clone());
+    spawn_pty_reader(reader, broadcaster.clone(), event_tx.clone());
 
     // ---- PTY writer ← client stdin ----
     let writer = master.lock().unwrap().take_writer()?;
@@ -300,7 +259,7 @@ async fn run_terminal(cli: Cli) -> anyhow::Result<()> {
 
     // ---- Child-exit watcher ----
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-    spawn_child_waiter(child, event_tx.clone(), shutdown_tx);
+    spawn_child_waiter(child, broadcaster.clone(), event_tx.clone(), shutdown_tx);
 
     // ---- Socket ----
     let listener = bind_socket(&cli.sock)?;
@@ -313,7 +272,7 @@ async fn run_terminal(cli: Cli) -> anyhow::Result<()> {
     let accept_task = tokio::spawn(accept_loop(
         listener,
         event_tx.clone(),
-        buffer.clone(),
+        broadcaster.clone(),
         master.clone(),
         stdin_tx.clone(),
         killer.clone(),
@@ -470,10 +429,14 @@ fn notify_ready(fd: Option<i32>) {
     }
 }
 
+/// Drain PTY master stdout. Each chunk is pumped through
+/// [`PtyBroadcaster::on_pty_chunk`] which appends to the replay ring and
+/// returns an [`Effect::Broadcast`]; we forward the underlying [`DaemonMsg`]
+/// onto the broadcast channel for every attached client to see.
 fn spawn_pty_reader(
     mut reader: Box<dyn std::io::Read + Send>,
-    buffer: SharedBuffer,
-    event_tx: broadcast::Sender<Event>,
+    broadcaster: SharedBroadcaster,
+    event_tx: broadcast::Sender<DaemonMsg>,
 ) {
     std::thread::spawn(move || {
         let mut buf = [0u8; 8192];
@@ -482,10 +445,11 @@ fn spawn_pty_reader(
                 Ok(0) => break, // EOF; child closed stdout — child-waiter will signal exit
                 Ok(n) => {
                     let bytes = buf[..n].to_vec();
-                    if let Ok(mut b) = buffer.lock() {
-                        b.append(bytes.clone());
-                    }
-                    let _ = event_tx.send(Event::Output(bytes));
+                    let effects = match broadcaster.lock() {
+                        Ok(mut b) => b.on_pty_chunk(bytes),
+                        Err(_) => Vec::new(),
+                    };
+                    apply_broadcaster_effects(&event_tx, effects);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(e) => {
@@ -495,6 +459,32 @@ fn spawn_pty_reader(
             }
         }
     });
+}
+
+/// Translate a list of effects produced by [`PtyBroadcaster`] into broadcast
+/// channel sends. The PTY-byte plane never emits anything but
+/// [`Effect::Broadcast`] today, so the other arms are unreachable from this
+/// caller — but we match exhaustively so a future Effect addition is a
+/// compile error here rather than a silent drop.
+fn apply_broadcaster_effects(tx: &broadcast::Sender<DaemonMsg>, effects: Vec<Effect>) {
+    for eff in effects {
+        match eff {
+            Effect::Broadcast(msg) => {
+                let _ = tx.send(msg);
+            }
+            // PtyBroadcaster only emits Broadcast today; the other variants
+            // belong to the client-frame state machine.
+            Effect::SendToClient(_)
+            | Effect::ResizePty { .. }
+            | Effect::WriteToPty(_)
+            | Effect::KillChild
+            | Effect::ProtocolViolation(_) => {
+                tracing::warn!(
+                    "PtyBroadcaster emitted non-Broadcast effect; dropping (this is a bug)"
+                );
+            }
+        }
+    }
 }
 
 fn spawn_pty_writer(
@@ -514,14 +504,19 @@ fn spawn_pty_writer(
 
 fn spawn_child_waiter(
     mut child: Box<dyn portable_pty::Child + Send + Sync>,
-    event_tx: broadcast::Sender<Event>,
+    broadcaster: SharedBroadcaster,
+    event_tx: broadcast::Sender<DaemonMsg>,
     shutdown_tx: oneshot::Sender<()>,
 ) {
     tokio::task::spawn_blocking(move || {
         let status = child.wait().ok();
         let code = status.map(|s| s.exit_code() as i32);
         tracing::info!(?code, "child wait returned");
-        let _ = event_tx.send(Event::Exit(code));
+        let effects = match broadcaster.lock() {
+            Ok(mut b) => b.on_child_exit(code),
+            Err(_) => Vec::new(),
+        };
+        apply_broadcaster_effects(&event_tx, effects);
         let _ = shutdown_tx.send(());
     });
 }
@@ -602,8 +597,8 @@ fn spawn_chat_stdin_writer(mut stdin: ChildStdin, mut rx: mpsc::UnboundedReceive
 
 async fn accept_loop(
     listener: UnixListener,
-    event_tx: broadcast::Sender<Event>,
-    buffer: SharedBuffer,
+    event_tx: broadcast::Sender<DaemonMsg>,
+    broadcaster: SharedBroadcaster,
     master: SharedMaster,
     stdin_tx: mpsc::UnboundedSender<Vec<u8>>,
     killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
@@ -612,13 +607,13 @@ async fn accept_loop(
         match listener.accept().await {
             Ok((sock, _)) => {
                 let event_rx = event_tx.subscribe();
-                let buffer = buffer.clone();
+                let broadcaster = broadcaster.clone();
                 let master = master.clone();
                 let stdin_tx = stdin_tx.clone();
                 let killer = killer.clone();
                 tokio::spawn(async move {
                     if let Err(e) =
-                        handle_client(sock, event_rx, buffer, master, stdin_tx, killer).await
+                        handle_client(sock, event_rx, broadcaster, master, stdin_tx, killer).await
                     {
                         tracing::debug!(error = %e, "client ended");
                     }
@@ -660,45 +655,57 @@ async fn accept_chat_loop(
 
 async fn handle_client(
     sock: UnixStream,
-    mut event_rx: broadcast::Receiver<Event>,
-    buffer: SharedBuffer,
+    mut event_rx: broadcast::Receiver<DaemonMsg>,
+    broadcaster: SharedBroadcaster,
     master: SharedMaster,
     stdin_tx: mpsc::UnboundedSender<Vec<u8>>,
     killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
 ) -> anyhow::Result<()> {
     let (mut rd, mut wr) = sock.into_split();
+    let mut state = TerminalSessionState::new();
 
-    // First frame must be Attach.
+    // First frame must be Attach. We synchronously translate it into
+    // effects, then write `Hello { replay }` BEFORE spawning the broadcast
+    // fan-out task. That guarantees no PTY-chunk Stdout frame can land on
+    // the socket ahead of Hello — matching the pre-refactor ordering at
+    // daemon.rs:680-688.
     let first: ClientMsg = read_frame(&mut rd).await?;
-    let (cols, rows) = match first {
-        ClientMsg::Attach { cols, rows } => (cols, rows),
-        other => anyhow::bail!("expected Attach as first message, got {other:?}"),
+    let first_effects = {
+        let guard = broadcaster.lock().unwrap();
+        state.on_client_frame(first, guard.buffer())
     };
+    for eff in first_effects {
+        match eff {
+            Effect::ResizePty { cols, rows } => apply_resize(&master, cols, rows),
+            Effect::SendToClient(msg) => {
+                write_frame(&mut wr, &msg).await?;
+            }
+            Effect::ProtocolViolation(reason) => {
+                anyhow::bail!("{reason}");
+            }
+            // Other effects are not reachable from the initial Attach
+            // transition; if they ever are, the state machine is mis-
+            // configured.
+            Effect::Broadcast(_) | Effect::WriteToPty(_) | Effect::KillChild => {
+                tracing::warn!("unexpected effect on first frame; ignoring");
+            }
+        }
+    }
 
-    // Resize PTY to this client's viewport (latest-attach-wins). No parser
-    // state to keep in sync — the snapshot is just the recent byte stream.
-    apply_resize(&master, cols, rows);
-
-    // Snapshot the recent PTY bytes; the client will feed them into xterm.js
-    // which interprets them and reproduces the screen state.
-    let replay = {
-        let b = buffer.lock().unwrap();
-        b.snapshot()
-    };
-    write_frame(&mut wr, &DaemonMsg::Hello { replay }).await?;
-
-    // Fan out events to this client.
+    // Fan out events to this client. Identical control-flow shape to the
+    // pre-refactor down_task: forward each broadcast frame and break out
+    // on ChildExited or channel close.
     let down_task = tokio::spawn(async move {
         loop {
             match event_rx.recv().await {
-                Ok(Event::Output(b)) => {
-                    if write_frame(&mut wr, &DaemonMsg::Stdout(b)).await.is_err() {
+                Ok(msg) => {
+                    let is_exit = matches!(msg, DaemonMsg::ChildExited { .. });
+                    if write_frame(&mut wr, &msg).await.is_err() {
                         break;
                     }
-                }
-                Ok(Event::Exit(code)) => {
-                    let _ = write_frame(&mut wr, &DaemonMsg::ChildExited { code }).await;
-                    break;
+                    if is_exit {
+                        break;
+                    }
                 }
                 // Slow client — skip dropped frames rather than tear down.
                 Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -710,35 +717,56 @@ async fn handle_client(
         }
     });
 
-    // Read client → PTY.
+    // Read client → state machine → effects.
     loop {
         let msg: ClientMsg = match read_frame(&mut rd).await {
             Ok(m) => m,
             Err(_) => break,
         };
-        match msg {
-            ClientMsg::Stdin(b) => {
-                if stdin_tx.send(b).is_err() {
-                    break;
+        let effects = {
+            let guard = broadcaster.lock().unwrap();
+            state.on_client_frame(msg, guard.buffer())
+        };
+
+        let mut closed = false;
+        for eff in effects {
+            match eff {
+                Effect::SendToClient(_) => {
+                    // Post-Attach, the state machine never emits this
+                    // today. If it ever does, we'd need to wire it onto
+                    // a writer that doesn't collide with down_task.
+                    tracing::warn!(
+                        "TerminalSessionState emitted SendToClient post-attach; ignoring (bug)"
+                    );
+                }
+                Effect::Broadcast(_) => {
+                    // Reserved for PtyBroadcaster; the client-frame state
+                    // machine doesn't reach this arm today.
+                    tracing::warn!("TerminalSessionState emitted Broadcast; ignoring (bug)");
+                }
+                Effect::ResizePty { cols, rows } => apply_resize(&master, cols, rows),
+                Effect::WriteToPty(b) => {
+                    if stdin_tx.send(b).is_err() {
+                        closed = true;
+                        break;
+                    }
+                }
+                Effect::KillChild => {
+                    tracing::info!("client requested Kill; signaling child");
+                    kill_child(&master, &killer);
+                }
+                Effect::ProtocolViolation(reason) => {
+                    // Post-attach we don't expect this (re-Attach is a
+                    // no-op, not a violation). If it ever fires, treat it
+                    // the same as the first-frame path.
+                    down_task.abort();
+                    let _ = down_task.await;
+                    anyhow::bail!("{reason}");
                 }
             }
-            ClientMsg::Resize { cols, rows } => {
-                apply_resize(&master, cols, rows);
-            }
-            ClientMsg::Attach { .. } => {
-                // Ignore re-attach on a live connection.
-            }
-            ClientMsg::Kill => {
-                tracing::info!("client requested Kill; signaling child");
-                kill_child(&master, &killer);
-            }
-            ClientMsg::ChatUserMessage { .. }
-            | ClientMsg::ChatStop
-            | ClientMsg::AnswerQuestion { .. } => {
-                // Wrong mode — ignore quietly. Server should never send chat-
-                // mode frames to a terminal-mode daemon.
-                tracing::debug!("ignoring chat-mode frame in terminal mode");
-            }
+        }
+        if closed {
+            break;
         }
     }
 
