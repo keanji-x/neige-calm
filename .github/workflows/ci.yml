@@ -69,8 +69,12 @@ jobs:
         run: cargo test --workspace --locked
 
   web:
-    name: web (build + test)
+    name: web (build + test + a11y)
     runs-on: ubuntu-latest
+    # a11y suite locally takes ~10s; cold cargo build for the replay binary
+    # is the dominant factor (~25-60s with cache, longer cold). 20 minutes
+    # is comfortable headroom without masking a genuinely stuck run.
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: web
@@ -82,6 +86,16 @@ jobs:
           node-version: "20"
           cache: npm
           cache-dependency-path: web/package-lock.json
+
+      # Rust toolchain + cache — needed so the Playwright `replay-setup`
+      # project (issue #56 slice 5) can `cargo run --bin replay --serve`.
+      # See `web/e2e/_setup/replay-server.setup.ts`. Reuses the shared
+      # workspace cache populated by the `rust` job above.
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace
 
       # TODO(#2): drop --legacy-peer-deps once the TypeScript downgrade lands
       # on main. The current pin (`typescript: ~6.0.2`) is ahead of what
@@ -96,6 +110,40 @@ jobs:
 
       - name: npm run test
         run: npm run test
+
+      # Pre-build the replay binary so the cargo invocation inside the
+      # Playwright setup hook (`replay-server.setup.ts`) is effectively a
+      # no-op rather than a cold compile that may bump up against the 60s
+      # READY_TIMEOUT_MS banner-wait. --locked matches the `rust` job.
+      - name: cargo build --bin replay
+        working-directory: .
+        run: cargo build -p calm-server --bin replay --locked
+
+      # Playwright browsers aren't bundled with `@playwright/test`; the
+      # binary must be downloaded once per runner. `--with-deps` also
+      # installs the system libraries chromium needs on ubuntu-latest.
+      - name: install playwright chromium
+        run: npx playwright install --with-deps chromium
+
+      # The a11y gate — issue #56 acceptance criterion 5. Runs
+      # `lint && a11y:e2e && a11y:axe`. The replay binary + Vite dev
+      # server are spawned automatically by playwright.config.ts
+      # (`replay-setup` project + `webServer` block respectively).
+      - name: npm run a11y
+        run: npm run a11y
+        env:
+          CI: "true"
+
+      # Surfaces the Playwright HTML report on failure so the user can
+      # download traces / screenshots from the run page instead of
+      # repro'ing locally.
+      - name: upload playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: web/playwright-report/
+          retention-days: 7
 
   openapi-drift:
     name: openapi drift (cargo emit-openapi == checked-in spec)
