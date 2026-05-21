@@ -129,10 +129,15 @@ export type WaveCardData =
  * per-kind zod schema. We keep this slot type separate from `WaveCardData`
  * so the discriminated union stays clean: every `WaveCardData` is a card
  * we know how to render, and the fallback path lives one layer up.
+ *
+ * `sort` mirrors the kernel `Card.sort` value. It's plumbed through so the
+ * list view (Slice 9 of issue #56) can compute a new `sort` for the swap
+ * mutation when the user presses Alt+ArrowUp/Down. Optional so older code
+ * paths constructing a slot in tests don't have to fabricate one.
  */
 export type WaveCardSlot =
-  | { kind: 'card'; card: WaveCardData }
-  | { kind: 'unknown'; id: string; kernelKind: string };
+  | { kind: 'card'; card: WaveCardData; sort?: number }
+  | { kind: 'unknown'; id: string; kernelKind: string; sort?: number };
 
 export interface Wave {
   id: string;

@@ -18,6 +18,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, act, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import type { ReactNode } from 'react';
 import { WavePage } from './Wave';
 import type { Cove, Wave } from '../types';
 
@@ -28,11 +30,42 @@ vi.mock('../WaveGrid', () => ({
   WaveGrid: () => <div data-testid="wave-grid-stub" />,
 }));
 
+// WaveList (Slice 9) is lazy-loaded via React.lazy and only used when the
+// per-wave view-mode overlay says `list`. The rename tests run in the
+// default grid mode, so we stub for completeness only.
+vi.mock('../WaveList', () => ({
+  WaveList: () => <div data-testid="wave-list-stub" />,
+}));
+
 // AddPanel pulls in the full card registry and a heavy menu DOM tree; we
 // don't need its internals for rename-keyboard testing.
 vi.mock('../shared/components/AddPanel', () => ({
   AddPanel: () => <div data-testid="add-panel-stub" />,
 }));
+
+// Mock the calm-server REST client so the view-mode overlay query that
+// `WavePage` now mounts (Slice 9) doesn't hit the network in jsdom. It
+// resolves to "no overlay rows", which puts the page in its default
+// grid mode — matching every existing test's expectation.
+vi.mock('../api/calm', () => ({
+  listOverlays: vi.fn().mockResolvedValue([]),
+  upsertOverlay: vi.fn().mockResolvedValue({}),
+}));
+
+// `WavePage` calls `useOverlayState` for the per-wave view-mode toggle
+// (Slice 9 of issue #56). The hook reads `useQueryClient()` — without a
+// QueryClientProvider every render throws. Wrap each rendered tree.
+function makeClient(): QueryClient {
+  return new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, gcTime: 0, staleTime: 0 },
+      mutations: { retry: false },
+    },
+  });
+}
+function withClient(ui: ReactNode): ReactNode {
+  return <QueryClientProvider client={makeClient()}>{ui}</QueryClientProvider>;
+}
 
 function makeCove(): Cove {
   return { id: 'c1', name: 'Atlas', subtitle: '', color: '#5a9' };
@@ -55,14 +88,16 @@ function makeWave(overrides: Partial<Wave> = {}): Wave {
 describe('WavePage rename keyboard entry', () => {
   it('exposes the wave title as a focusable button with Rename label', () => {
     render(
-      <WavePage
-        wave={makeWave()}
-        cove={makeCove()}
-        onGo={() => {}}
-        onAddCard={() => {}}
-        onRemoveCard={() => {}}
-        onRenameWave={() => {}}
-      />,
+      withClient(
+        <WavePage
+          wave={makeWave()}
+          cove={makeCove()}
+          onGo={() => {}}
+          onAddCard={() => {}}
+          onRemoveCard={() => {}}
+          onRenameWave={() => {}}
+        />,
+      ),
     );
     const title = screen.getByRole('button', { name: /Rename wave: Migrate auth/i });
     expect(title).toHaveAttribute('tabindex', '0');
@@ -70,14 +105,16 @@ describe('WavePage rename keyboard entry', () => {
 
   it('drops the keyboard affordance entirely when onRenameWave is absent', () => {
     render(
-      <WavePage
-        wave={makeWave()}
-        cove={makeCove()}
-        onGo={() => {}}
-        onAddCard={() => {}}
-        onRemoveCard={() => {}}
-        // no onRenameWave
-      />,
+      withClient(
+        <WavePage
+          wave={makeWave()}
+          cove={makeCove()}
+          onGo={() => {}}
+          onAddCard={() => {}}
+          onRemoveCard={() => {}}
+          // no onRenameWave
+        />,
+      ),
     );
     // Title still renders as plain text, but it shouldn't be a button.
     expect(screen.getByText('Migrate auth')).not.toHaveAttribute('role', 'button');
@@ -86,14 +123,16 @@ describe('WavePage rename keyboard entry', () => {
   it('Enter on the title span opens rename mode and focuses the input', async () => {
     const user = userEvent.setup();
     render(
-      <WavePage
-        wave={makeWave()}
-        cove={makeCove()}
-        onGo={() => {}}
-        onAddCard={() => {}}
-        onRemoveCard={() => {}}
-        onRenameWave={() => {}}
-      />,
+      withClient(
+        <WavePage
+          wave={makeWave()}
+          cove={makeCove()}
+          onGo={() => {}}
+          onAddCard={() => {}}
+          onRemoveCard={() => {}}
+          onRenameWave={() => {}}
+        />,
+      ),
     );
     const title = screen.getByRole('button', { name: /Rename wave/i });
     title.focus();
@@ -111,14 +150,16 @@ describe('WavePage rename keyboard entry', () => {
   it('F2 on the title span opens rename mode (parity with Enter)', async () => {
     const user = userEvent.setup();
     render(
-      <WavePage
-        wave={makeWave()}
-        cove={makeCove()}
-        onGo={() => {}}
-        onAddCard={() => {}}
-        onRemoveCard={() => {}}
-        onRenameWave={() => {}}
-      />,
+      withClient(
+        <WavePage
+          wave={makeWave()}
+          cove={makeCove()}
+          onGo={() => {}}
+          onAddCard={() => {}}
+          onRemoveCard={() => {}}
+          onRenameWave={() => {}}
+        />,
+      ),
     );
     const title = screen.getByRole('button', { name: /Rename wave/i });
     title.focus();
@@ -130,14 +171,16 @@ describe('WavePage rename keyboard entry', () => {
     const user = userEvent.setup();
     const onRename = vi.fn();
     render(
-      <WavePage
-        wave={makeWave()}
-        cove={makeCove()}
-        onGo={() => {}}
-        onAddCard={() => {}}
-        onRemoveCard={() => {}}
-        onRenameWave={onRename}
-      />,
+      withClient(
+        <WavePage
+          wave={makeWave()}
+          cove={makeCove()}
+          onGo={() => {}}
+          onAddCard={() => {}}
+          onRemoveCard={() => {}}
+          onRenameWave={onRename}
+        />,
+      ),
     );
     const title = screen.getByRole('button', { name: /Rename wave/i });
     title.focus();
@@ -159,14 +202,16 @@ describe('WavePage rename keyboard entry', () => {
     const user = userEvent.setup();
     const onRename = vi.fn();
     render(
-      <WavePage
-        wave={makeWave()}
-        cove={makeCove()}
-        onGo={() => {}}
-        onAddCard={() => {}}
-        onRemoveCard={() => {}}
-        onRenameWave={onRename}
-      />,
+      withClient(
+        <WavePage
+          wave={makeWave()}
+          cove={makeCove()}
+          onGo={() => {}}
+          onAddCard={() => {}}
+          onRemoveCard={() => {}}
+          onRenameWave={onRename}
+        />,
+      ),
     );
     const title = screen.getByRole('button', { name: /Rename wave/i });
     title.focus();

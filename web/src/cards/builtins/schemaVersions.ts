@@ -27,6 +27,9 @@ export const OVERLAY_ETA_SCHEMA_VERSION = 1;
 export const OVERLAY_NOW_SCHEMA_VERSION = 1;
 /** `schemaVersion` for `kind: "layout"` overlay payloads. */
 export const OVERLAY_LAYOUT_SCHEMA_VERSION = 1;
+/** `schemaVersion` for `kind: "view-mode"` overlay payloads (Slice 9 of
+ *  issue #56 — per-wave view-mode preference: grid vs list). */
+export const OVERLAY_VIEW_MODE_SCHEMA_VERSION = 1;
 
 /**
  * Read `schemaVersion` from a kernel-owned payload. Returns `1` when the

@@ -213,6 +213,28 @@ test.describe('a11y · axe', () => {
     expect(violations, formatViolations(violations)).toEqual([]);
   });
 
+  // Slice 9: the list-view alternative to WaveGrid. Same role/name
+  // hygiene applies — labels, roles, landmark structure should come
+  // out clean. The role="switch" toggle is the new control we want
+  // covered along with the list itself.
+  test('Wave list view · no violations', async ({ page }) => {
+    const { waveId } = await ids(page);
+    await page.goto(`/calm/wave/${waveId}?trace=1`);
+    await waitForBootstrap(page);
+    // Wait for the wave page to fully render before flipping the
+    // toggle — WaveGrid is lazy-loaded.
+    await expect(page.getByRole('button', { name: /\+\s*add/i })).toBeVisible();
+    const toggle = page.getByRole('switch', { name: /switch wave to list view/i });
+    await expect(toggle).toBeVisible();
+    await toggle.click();
+    // List mode lazily mounts; wait for the <ul> before the scan.
+    await expect(page.getByRole('list', { name: /wave cards/i })).toBeVisible({
+      timeout: 5_000,
+    });
+    const { violations } = await axe(page).analyze();
+    expect(violations, formatViolations(violations)).toEqual([]);
+  });
+
   test('Modal open · no violations on dialog', async ({ page }) => {
     const { waveId } = await ids(page);
     await page.goto(`/calm/wave/${waveId}?trace=1`);
