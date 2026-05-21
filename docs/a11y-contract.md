@@ -117,7 +117,7 @@ Layout-change semantics (Slice 9): grid view is mouse-only for drag/resize by de
 
 ### 3.3 Escape
 
-- **Modal**: closes the modal. If a child view is pushed, the child's `onEscape` runs first (or the view pops if no handler). See `web/src/shared/components/Modal.tsx:152-160`.
+- **Dialog**: closes the dialog. If a child view is pushed, the child's `onEscape` runs first (or the view pops if no handler). See `web/src/ui/Dialog/Dialog.tsx:152-160`.
 - **AddPanel popover**: closes the menu and returns focus to the trigger button. Owned by `useRovingTabindex`'s `onEscape` callback (`web/src/hooks/useRovingTabindex.ts`); AddPanel routes that callback through `closeAndRestoreFocus`.
 - **Rename edit input**: cancels the edit, restoring focus to the display element. See `web/src/pages/Wave.tsx:138-141` and `web/src/pages/Cove.tsx:226-229`.
 - **Inline NewWave / NewCove input**: blur-commits (the input's `onBlur` calls `submit()`); Escape is wired to `close` which dumps the draft.
@@ -137,12 +137,12 @@ Layout-change semantics (Slice 9): grid view is mouse-only for drag/resize by de
 
 ---
 
-## 4. Modal contract
+## 4. Dialog contract
 
-Slice 2 (#63). The public API lives in `web/src/shared/components/Modal.tsx:41-56`:
+Slice 2 (#63), extracted into the `Dialog` primitive by [#93](https://github.com/keanji-x/neige-calm/pull/93). The public API lives in `web/src/ui/Dialog/Dialog.tsx:41-56`:
 
 ```ts
-interface ModalProps {
+export interface DialogProps {
   open: boolean;
   onClose: () => void;
   title?: string;
@@ -155,13 +155,13 @@ interface ModalProps {
 
 Behavior contract while `open` is true:
 
-1. **Initial focus.** One animation frame after open, focus moves into the panel. Resolution order: caller's `initialFocusRef.current` → first focusable inside the panel → the panel itself (which has `tabIndex={-1}` as a fallback). Source: `web/src/shared/components/Modal.tsx:174-200`.
-2. **Focus trap.** Tab / Shift+Tab cycle inside the panel; reaching either end wraps to the other. The focusables list is re-queried on every Tab keydown so dynamic child content (e.g. a pushed view) is picked up automatically. Source: `web/src/shared/components/Modal.tsx:275-300`.
-3. **Background inert.** Every direct child of `document.body` *except* the portal root gets `inert` + `aria-hidden="true"` while the modal is up; prior values are restored exactly on close. Source: `web/src/shared/components/Modal.tsx:220-252`.
-4. **Focus restore.** On close, focus returns to `restoreFocusRef.current` if provided, else to whatever element had focus when the modal opened. Detached nodes are skipped silently. Source: `web/src/shared/components/Modal.tsx:201-212`.
-5. **Escape.** Esc closes the modal. When a child view is up (via `useModalView().pushView(...)`), Esc goes to the view first (its `onEscape` handler), so a `DirectoryBrowser` can cancel its own browse-mode without closing the whole modal. Source: `web/src/shared/components/Modal.tsx:148-169`.
-6. **Click outside.** Mousedown on the overlay (not the panel) closes — except while a child view is up, where overlay-click is disabled to prevent losing half-filled form state behind it. Source: `web/src/shared/components/Modal.tsx:313-321`.
-7. **Role + name.** The panel is `role="dialog" aria-modal="true"` and uses the `title` prop (if string) as `aria-label`. Source: `web/src/shared/components/Modal.tsx:338-341`.
+1. **Initial focus.** One animation frame after open, focus moves into the panel. Resolution order: caller's `initialFocusRef.current` → first focusable inside the panel → the panel itself (which has `tabIndex={-1}` as a fallback). Source: `web/src/ui/Dialog/Dialog.tsx:223-249`.
+2. **Focus trap.** Tab / Shift+Tab cycle inside the panel; reaching either end wraps to the other. The focusables list is re-queried on every Tab keydown so dynamic child content (e.g. a pushed view) is picked up automatically. Source: `web/src/ui/Dialog/Dialog.tsx:285-310`.
+3. **Background inert.** Every direct child of `document.body` *except* the portal root gets `inert` + `aria-hidden="true"` while the dialog is up; prior values are restored exactly on close. Source: `web/src/ui/Dialog/Dialog.tsx:181-213`.
+4. **Focus restore.** On close, focus returns to `restoreFocusRef.current` if provided, else to whatever element had focus when the dialog opened. Detached nodes are skipped silently. Source: `web/src/ui/Dialog/Dialog.tsx:250-261`.
+5. **Escape.** Esc closes the dialog. When a child view is up (via `useModalView().pushView(...)`), Esc goes to the view first (its `onEscape` handler), so a `DirectoryBrowser` can cancel its own browse-mode without closing the whole dialog. Source: `web/src/ui/Dialog/Dialog.tsx:148-169`.
+6. **Click outside.** Mousedown on the overlay (not the panel) closes — except while a child view is up, where overlay-click is disabled to prevent losing half-filled form state behind it. Source: `web/src/ui/Dialog/Dialog.tsx:323-330`.
+7. **Role + name.** The panel is `role="dialog" aria-modal="true"` and uses the `title` prop (if string) as `aria-label`. Source: `web/src/ui/Dialog/Dialog.tsx:348-350`.
 
 We deliberately do **not** use the platform `<dialog>` element. Cross-theme styling of the native dialog is unreasonable (UA defaults override our tokens); the cost of hand-rolling the focus trap is documented in the file header and reaffirmed in §10.
 
@@ -253,7 +253,7 @@ The replay binary is spawned exclusively by the `replay-setup` setup project, wh
 
 ### 8.4 Test naming
 
-Tests for a11y / role-name contracts go under `web/e2e/`. Tests that touch the replay fixture must use the `a11y` project. The convention is one spec per surface (one for the modal contract, one for the rename contract, etc.); cross-surface coverage is fine to scope inside a single `describe`.
+Tests for a11y / role-name contracts go under `web/e2e/`. Tests that touch the replay fixture must use the `a11y` project. The convention is one spec per surface (one for the dialog contract, one for the rename contract, etc.); cross-surface coverage is fine to scope inside a single `describe`.
 
 ### 8.5 ARIA snapshots: deferred
 
@@ -268,7 +268,7 @@ Catalogued so a maintainer reading this doc doesn't think the gap is undiscovere
 - ~~**AddPanel full menu keyboard semantics (Slice 7, pending).**~~ **Resolved** by Slice 7 — see §3.4 above and `web/src/hooks/useRovingTabindex.ts`.
 - ~~**WaveGrid keyboard reorder/resize (Slice 9, deferred).**~~ **Resolved** by Slice 9, **via Path C** (separate list-view component) — see §2.2 "Two view modes" and §3.4 "WaveList". Grid view itself remains mouse-only by design; keyboard / AT users flip the per-wave view-mode toggle to switch to list view, which is the keyboard-canonical mode. List view supports reorder (`Alt+ArrowUp` / `Alt+ArrowDown` → `card.sort` swap via the existing optimistic mutation) and remove (`Delete`); resize is out of scope (cards in list view self-size to intrinsic content).
 - ~~**Heading-nav narration noise on rename buttons.**~~ **Resolved** (#56 followup): both WavePage's title span and CovePage's `EditableTitle` now carry `aria-label={value}` only; the rename verb is moved to a visually-hidden sibling span referenced via `aria-describedby`. Heading-nav (`H` in screen readers) now announces "Atlas, heading level 1" without a "Rename cove name:" prefix while AT still verbalizes the action as the button's description when focused. See §5 for the canonical pattern.
-- **`Modal.tsx:111-117` comment about `:focus-visible` filtering.** Captured during Slice 2 review — the comment is technically incorrect (it claims `:focus-visible` matches against display:none, which it doesn't in practice). Latent fragility if DOM order shifts but no behavior bug today. Worth a follow-up cleanup pass.
+- **`Dialog.tsx:111-117` comment about `:focus-visible` filtering.** Captured during Slice 2 review (originally written when the primitive still lived in `Modal.tsx`); carried over verbatim by [#93](https://github.com/keanji-x/neige-calm/pull/93). The comment is technically incorrect (it claims `:focus-visible` matches against display:none, which it doesn't in practice). Latent fragility if DOM order shifts but no behavior bug today. Worth a follow-up cleanup pass.
 - **Sidebar skip-link.** No skip-to-main link today. Sidebar is short enough that it hasn't been raised; reconsider if a sidebar section grows large.
 - **xterm.js inner a11y.** Out of scope — the renderer owns its own contract. We don't intercept keys at the React boundary.
 
@@ -276,13 +276,13 @@ Catalogued so a maintainer reading this doc doesn't think the gap is undiscovere
 
 ## 10. When to introduce a headless UI library
 
-The current stance: **hand-roll until pain forces a library**. The Modal focus trap (Slice 2) was the borderline case — hand-rolling it took ~150 lines and one round of review feedback, which is roughly the threshold for "one more of these and we should reconsider".
+The current stance: **hand-roll until pain forces a library**. The Dialog focus trap (Slice 2) was the borderline case — hand-rolling it took ~150 lines and one round of review feedback, which is roughly the threshold for "one more of these and we should reconsider".
 
 Triggers for revisiting:
 
-1. The disclosure-widget inventory grows past ~5 widgets in active maintenance. Today we have Modal + AddPanel popover (with full menu semantics post-Slice 7); that's still well under 5.
+1. The disclosure-widget inventory grows past ~5 widgets in active maintenance. Today we have Dialog + AddPanel popover (with full menu semantics post-Slice 7); that's still well under 5.
 2. A new widget category lands that needs keyboard semantics we can't reasonably hand-roll. Combobox is the most likely candidate (autocomplete + arrow keys + value binding is hard to get right without a reference impl). A command palette would be another.
-3. Two or more existing hand-rolled widgets drift apart in their focus-management code — i.e. we've forked the same logic and it's diverged. Today the only shared logic is "focus restore on close", duplicated across Modal, the rename surfaces, and the AddPanel popover in a way that's still readable.
+3. Two or more existing hand-rolled widgets drift apart in their focus-management code — i.e. we've forked the same logic and it's diverged. Today the only shared logic is "focus restore on close", duplicated across Dialog, the rename surfaces, and the AddPanel popover in a way that's still readable.
 
 Candidates evaluated when this question comes up:
 
@@ -291,7 +291,7 @@ Candidates evaluated when this question comes up:
 - **React Aria** — most rigorous a11y-wise but its component shape doesn't always match our preferences (a lot of "use this hook" instead of "render this component").
 - **Ark UI** — newer, Zag-machine-based; appealing but less battle-tested in production.
 
-**Slice 7 verdict — stay hand-rolled.** The full WAI-ARIA menu keyboard contract (arrow keys + Home/End + typeahead + roving tabindex + focus restore) fit in ~290 LOC of hook + ~30 LOC of integration. Painful edge cases were one (1): React 19 StrictMode double-effect surfacing a latent effect-ordering bug in Modal's inert blanket vs focus restore (fixed by re-declaring the inert effect before the focus effect — see `Modal.tsx`). No round of review feedback was burned on the hook shape itself. The library question remains "no" — re-evaluate at the next disclosure-widget addition.
+**Slice 7 verdict — stay hand-rolled.** The full WAI-ARIA menu keyboard contract (arrow keys + Home/End + typeahead + roving tabindex + focus restore) fit in ~290 LOC of hook + ~30 LOC of integration. Painful edge cases were one (1): React 19 StrictMode double-effect surfacing a latent effect-ordering bug in Dialog's inert blanket vs focus restore (fixed by re-declaring the inert effect before the focus effect — see `Dialog.tsx`). No round of review feedback was burned on the hook shape itself. The library question remains "no" — re-evaluate at the next disclosure-widget addition.
 
 ---
 
