@@ -13,6 +13,7 @@
 //! reconnect epochs etc. all live in the daemon (Hello.replay) or are handled
 //! at the daemon attach layer. Calm-server just shuttles frames.
 
+use crate::db::{RepoOutOfDomain, RouteRepo};
 use crate::error::Result;
 use crate::routes::terminal::spawn_daemon_for;
 use crate::state::AppState;
@@ -27,7 +28,7 @@ use axum::{
 };
 use calm_session::{ClientMsg, DaemonMsg, FrameError, read_frame, write_frame};
 use futures::{SinkExt, StreamExt};
-use std::path::PathBuf;
+use std::path::{Path as StdPath, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UnixStream;
@@ -71,7 +72,8 @@ async fn upgrade(
         Ok(p) => p,
         Err(e) => return e.into_response(),
     };
-    ws.on_upgrade(move |socket| handle(socket, sock, id))
+    let repo = s.repo.clone();
+    ws.on_upgrade(move |socket| handle(socket, sock, id, repo))
         .into_response()
 }
 
@@ -119,7 +121,7 @@ async fn resolve_live_sock(s: &AppState, id: &str) -> Result<PathBuf> {
     Ok(PathBuf::from(handle))
 }
 
-async fn handle(socket: WebSocket, sock: PathBuf, terminal_id: String) {
+async fn handle(socket: WebSocket, sock: PathBuf, terminal_id: String, repo: Arc<dyn RouteRepo>) {
     let stream = match UnixStream::connect(&sock).await {
         Ok(s) => s,
         Err(e) => {
@@ -127,7 +129,82 @@ async fn handle(socket: WebSocket, sock: PathBuf, terminal_id: String) {
             return;
         }
     };
-    pump(socket, stream, terminal_id, PING_INTERVAL, PONG_TIMEOUT).await
+    let outcome = pump(
+        socket,
+        stream,
+        terminal_id.clone(),
+        PING_INTERVAL,
+        PONG_TIMEOUT,
+    )
+    .await;
+    if let PumpOutcome::FramingSkew { error } = outcome {
+        // Stale daemon binary still bound to this socket. Clear the row's
+        // `daemon_handle` and unlink the socket file so the next attach hits
+        // `resolve_live_sock`'s spawn path with a clean slate. The old daemon
+        // process exits on its own when its accept loop sees the socket gone
+        // (no PID bookkeeping needed here).
+        tracing::warn!(
+            terminal_id = %terminal_id,
+            sock = ?sock,
+            error = %error,
+            "framing skew — clearing stale daemon_handle and unlinking socket"
+        );
+        cleanup_stale_daemon(repo.as_ref(), &terminal_id, &sock).await;
+    }
+}
+
+/// Drop the stale daemon's footprint after a framing-skew close: clear the
+/// terminal row's `daemon_handle` and remove the socket file on disk. Pulled
+/// into a free function so it can be exercised by a focused unit test
+/// without standing up a full WS round-trip.
+///
+/// Errors are downgraded to warn-log: a row that's already been deleted
+/// concurrently, or a socket file that another path already removed, are
+/// both benign — the next attach will respawn either way.
+pub(crate) async fn cleanup_stale_daemon(
+    repo: &dyn RepoOutOfDomain,
+    terminal_id: &str,
+    sock: &StdPath,
+) {
+    if let Err(e) = repo.terminal_set_handle(terminal_id, None).await {
+        tracing::warn!(
+            terminal_id = %terminal_id,
+            error = %e,
+            "clearing daemon_handle after framing skew failed"
+        );
+    }
+    match std::fs::remove_file(sock) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            tracing::warn!(
+                terminal_id = %terminal_id,
+                sock = ?sock,
+                error = %e,
+                "unlinking stale daemon socket failed"
+            );
+        }
+    }
+}
+
+/// Outcome reported by [`pump`] when it returns. Lets [`handle`] decide
+/// whether to perform stale-daemon cleanup (clear `daemon_handle`, unlink
+/// the socket) before the connection fully tears down. Keeping the side
+/// effects in `handle` (rather than threading the repo into `pump`) leaves
+/// `pump` purely I/O-bound and easy to test against in-memory transports.
+#[derive(Debug)]
+pub(crate) enum PumpOutcome {
+    /// Connection ended cleanly: client closed, daemon emitted
+    /// `ChildExited`, heartbeat timed out, or one of the WS arms hit EOF.
+    /// No socket-level cleanup is needed — the daemon either already exited
+    /// (ChildExited) or is still healthy (client just walked away).
+    Clean,
+    /// The daemon read-half produced a framing error (bad magic or
+    /// unsupported version). This means the bytes on the kernel↔daemon
+    /// socket aren't from a current-protocol `calm-session-daemon`, so the
+    /// row's `daemon_handle` is stale and must be cleared before the next
+    /// attach.
+    FramingSkew { error: FrameError },
 }
 
 /// Daemon transport abstraction. The WS bridge only needs the
@@ -169,9 +246,16 @@ pub(crate) async fn pump<T: DaemonTransport>(
     terminal_id: String,
     ping_interval: Duration,
     pong_timeout: Duration,
-) {
+) -> PumpOutcome {
     let (mut rd, mut wr) = tokio::io::split(daemon);
     let (ws_tx, mut ws_rx) = ws.split();
+
+    // Single-shot channel for the down arm to surface a `FramingSkew`
+    // outcome up to the caller. The `Clean` case is the default — if no
+    // arm sends, `try_recv` after the `select!` falls through to
+    // `PumpOutcome::Clean`. Only the down arm uses the sender (it's the
+    // only place that can observe a `FrameError`).
+    let (outcome_tx, mut outcome_rx) = tokio::sync::oneshot::channel::<PumpOutcome>();
 
     // Share the write half across the three tasks (down-stream, ping, and
     // the heartbeat close path) behind a mutex. Contention here is trivial:
@@ -223,6 +307,7 @@ pub(crate) async fn pump<T: DaemonTransport>(
     let ws_tx_down = ws_tx.clone();
     let terminal_id_down = terminal_id.clone();
     let down = async move {
+        let mut outcome_tx = Some(outcome_tx);
         loop {
             let msg: DaemonMsg = match read_frame(&mut rd).await {
                 Ok(m) => m,
@@ -232,13 +317,16 @@ pub(crate) async fn pump<T: DaemonTransport>(
                     // `calm-session` schema. Log loudly with the daemon
                     // identity (terminal id + socket path) so an operator
                     // can correlate to the deploy that introduced the skew,
-                    // then fall through to the connection-close path below.
-                    //
-                    // We intentionally do NOT flag `needs_restart` on the
-                    // terminal row here: that field doesn't exist on the
-                    // current `Terminal` model and plumbing one through the
-                    // repo trait is out of scope for the framing PR. Tracked
-                    // as a follow-up in the PR description for #45.
+                    // then surface the skew up to `handle` (via
+                    // `PumpOutcome::FramingSkew`) so it can clear the
+                    // row's `daemon_handle` + unlink the socket file. The
+                    // next attach to this terminal will then go through
+                    // `resolve_live_sock`'s spawn path and start a fresh
+                    // daemon binary.
+                    let framing_skew = matches!(
+                        &e,
+                        FrameError::BadMagic { .. } | FrameError::UnsupportedFrameVersion { .. }
+                    );
                     match &e {
                         FrameError::BadMagic { got, expected } => {
                             tracing::error!(
@@ -266,6 +354,14 @@ pub(crate) async fn pump<T: DaemonTransport>(
                                 "daemon read_frame ended"
                             );
                         }
+                    }
+                    if framing_skew && let Some(tx) = outcome_tx.take() {
+                        // Receiver lives in the outer `pump` body and is
+                        // always polled after `select!` returns, so a
+                        // send error here would mean the receiver was
+                        // dropped — not possible without a programming
+                        // bug. Discard the error for forward-compat.
+                        let _ = tx.send(PumpOutcome::FramingSkew { error: e });
                     }
                     break;
                 }
@@ -308,6 +404,15 @@ pub(crate) async fn pump<T: DaemonTransport>(
         _ = up => {}
         _ = down => {}
         _ = heartbeat => {}
+    }
+
+    // Down arm is the only sender; everything else (up, heartbeat, EOF)
+    // leaves the channel empty and `try_recv` yields
+    // `Err(Empty)` → `Clean`. `Closed` (sender dropped without sending)
+    // also maps to `Clean` for the same reason.
+    match outcome_rx.try_recv() {
+        Ok(outcome) => outcome,
+        Err(_) => PumpOutcome::Clean,
     }
 }
 
@@ -494,29 +599,53 @@ mod pump_tests {
 
     /// Bring up a one-route axum app whose WS handler invokes [`pump`] with
     /// the supplied `daemon_side` of a duplex pair. Returns the bound
-    /// address; the caller then connects with `tokio_tungstenite`.
+    /// address paired with a oneshot receiver that resolves to the
+    /// [`PumpOutcome`] once `pump` returns; existing tests ignore the
+    /// receiver, the framing-skew tests await it to assert on the outcome
+    /// variant directly.
     ///
     /// Each call creates a fresh listener on `127.0.0.1:0` so concurrent
     /// tests don't share state. The server task is spawned and lives until
     /// the test ends; no cleanup needed because the runtime tears it down.
-    async fn boot_pump(daemon_side: DuplexStream, ping: Duration, pong: Duration) -> SocketAddr {
+    async fn boot_pump(
+        daemon_side: DuplexStream,
+        ping: Duration,
+        pong: Duration,
+    ) -> (SocketAddr, tokio::sync::oneshot::Receiver<PumpOutcome>) {
         // Wrap the DuplexStream in a Mutex<Option<…>> so the closure given
         // to `Router::route` can `take` it the first time the route is
         // hit. `on_upgrade` consumes the value by move; the option dance
         // is just to satisfy `Fn` (not `FnOnce`) while only firing once.
         let slot = Arc::new(Mutex::new(Some(daemon_side)));
+        // Likewise for the outcome sender — `on_upgrade` is `FnOnce`-shaped
+        // (consumes its captures) but `Router::route` needs `Fn`, so we
+        // gate the move behind a `Mutex<Option<_>>` and `take` it the
+        // first time the route fires.
+        let (outcome_tx, outcome_rx) = tokio::sync::oneshot::channel();
+        let outcome_slot = Arc::new(Mutex::new(Some(outcome_tx)));
         let app = Router::new().route(
             "/pump",
             get(move |upgrade: WebSocketUpgrade| {
                 let slot = slot.clone();
+                let outcome_slot = outcome_slot.clone();
                 async move {
                     let daemon = slot
                         .lock()
                         .await
                         .take()
                         .expect("pump route called more than once");
+                    let outcome_tx = outcome_slot
+                        .lock()
+                        .await
+                        .take()
+                        .expect("pump route called more than once");
                     let terminal_id = "test-terminal-1".to_string();
-                    upgrade.on_upgrade(move |socket| pump(socket, daemon, terminal_id, ping, pong))
+                    upgrade.on_upgrade(move |socket| async move {
+                        let outcome = pump(socket, daemon, terminal_id, ping, pong).await;
+                        // Receiver may have been dropped if the test exited
+                        // before the pump did — that's fine, just discard.
+                        let _ = outcome_tx.send(outcome);
+                    })
                 }
             }),
         );
@@ -527,7 +656,7 @@ mod pump_tests {
         });
         // Tiny breathing room — same idiom as tests/ws_events.rs.
         tokio::time::sleep(Duration::from_millis(50)).await;
-        addr
+        (addr, outcome_rx)
     }
 
     /// Big enough to never wake during a test. We don't want the heartbeat
@@ -543,7 +672,7 @@ mod pump_tests {
     async fn down_translates_daemon_frame_to_ws_text() {
         let (mut daemon_side, server_side) = tokio::io::duplex(8192);
         let (ping, pong) = long_window();
-        let addr = boot_pump(server_side, ping, pong).await;
+        let (addr, _outcome) = boot_pump(server_side, ping, pong).await;
 
         let url = format!("ws://{}/pump", addr);
         let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
@@ -577,7 +706,7 @@ mod pump_tests {
     async fn up_translates_ws_text_to_daemon_frame() {
         let (mut daemon_side, server_side) = tokio::io::duplex(8192);
         let (ping, pong) = long_window();
-        let addr = boot_pump(server_side, ping, pong).await;
+        let (addr, _outcome) = boot_pump(server_side, ping, pong).await;
 
         let url = format!("ws://{}/pump", addr);
         let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
@@ -607,7 +736,7 @@ mod pump_tests {
     async fn child_exited_closes_ws_and_pump_returns() {
         let (mut daemon_side, server_side) = tokio::io::duplex(8192);
         let (ping, pong) = long_window();
-        let addr = boot_pump(server_side, ping, pong).await;
+        let (addr, _outcome) = boot_pump(server_side, ping, pong).await;
 
         let url = format!("ws://{}/pump", addr);
         let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
@@ -668,7 +797,7 @@ mod pump_tests {
     async fn bad_json_does_not_kill_pump() {
         let (mut daemon_side, server_side) = tokio::io::duplex(8192);
         let (ping, pong) = long_window();
-        let addr = boot_pump(server_side, ping, pong).await;
+        let (addr, _outcome) = boot_pump(server_side, ping, pong).await;
 
         let url = format!("ws://{}/pump", addr);
         let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
@@ -722,7 +851,7 @@ mod pump_tests {
 
         let (mut daemon_side, server_side) = tokio::io::duplex(8192);
         let (ping, pong) = long_window();
-        let addr = boot_pump(server_side, ping, pong).await;
+        let (addr, _outcome) = boot_pump(server_side, ping, pong).await;
 
         let url = format!("ws://{}/pump", addr);
         let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
@@ -767,7 +896,7 @@ mod pump_tests {
 
         let (mut daemon_side, server_side) = tokio::io::duplex(8192);
         let (ping, pong) = long_window();
-        let addr = boot_pump(server_side, ping, pong).await;
+        let (addr, _outcome) = boot_pump(server_side, ping, pong).await;
 
         let url = format!("ws://{}/pump", addr);
         let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
@@ -804,6 +933,272 @@ mod pump_tests {
             end.is_none() || matches!(end, Some(Err(_))),
             "expected stream end after Close, got {:?}",
             end
+        );
+    }
+
+    /// Bad magic on the daemon side: `pump` must return
+    /// `PumpOutcome::FramingSkew { error: FrameError::BadMagic { .. } }`
+    /// so the caller (`handle`) can clear the stale `daemon_handle` and
+    /// unlink the socket. We assert on the variant + the wrapped
+    /// `FrameError` shape; `bad_magic_breaks_pump_cleanly` above asserts
+    /// the WS-side semantics (Close frame + stream end).
+    #[tokio::test]
+    async fn pump_returns_framing_skew_on_bad_magic() {
+        use tokio::io::AsyncWriteExt;
+
+        let (mut daemon_side, server_side) = tokio::io::duplex(8192);
+        let (ping, pong) = long_window();
+        let (addr, outcome) = boot_pump(server_side, ping, pong).await;
+
+        let url = format!("ws://{}/pump", addr);
+        let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        // Push 4 bytes that aren't `NEIG`. `read_frame` consumes magic
+        // first, so this drives BadMagic deterministically.
+        daemon_side.write_all(b"XXXX").await.unwrap();
+        daemon_side.flush().await.unwrap();
+
+        // Drop the client so the up arm sees `None` from `ws_rx.next()`
+        // and exits — otherwise `pump`'s `select!` could linger waiting on
+        // the up arm even after the down arm broke out on BadMagic.
+        drop(ws);
+
+        let got = tokio::time::timeout(Duration::from_secs(2), outcome)
+            .await
+            .expect("pump did not return within timeout")
+            .expect("outcome sender dropped without sending");
+        match got {
+            PumpOutcome::FramingSkew { error } => {
+                assert!(
+                    matches!(
+                        error,
+                        FrameError::BadMagic {
+                            got: [b'X', b'X', b'X', b'X'],
+                            expected: _,
+                        }
+                    ),
+                    "expected BadMagic with got=b\"XXXX\", got {:?}",
+                    error
+                );
+            }
+            other => panic!("expected FramingSkew, got {:?}", other),
+        }
+    }
+
+    /// Unsupported framing version: `pump` must return
+    /// `PumpOutcome::FramingSkew { error: FrameError::UnsupportedFrameVersion { got: 2, supported: 1 } }`.
+    #[tokio::test]
+    async fn pump_returns_framing_skew_on_unsupported_version() {
+        use tokio::io::AsyncWriteExt;
+
+        let (mut daemon_side, server_side) = tokio::io::duplex(8192);
+        let (ping, pong) = long_window();
+        let (addr, outcome) = boot_pump(server_side, ping, pong).await;
+
+        let url = format!("ws://{}/pump", addr);
+        let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        // Valid magic + version=2 + length=0. Magic check passes, version
+        // check fails. We never touch the (empty) payload region.
+        let mut wire = Vec::with_capacity(10);
+        wire.extend_from_slice(b"NEIG");
+        wire.extend_from_slice(&2u16.to_be_bytes());
+        wire.extend_from_slice(&0u32.to_be_bytes());
+        daemon_side.write_all(&wire).await.unwrap();
+        daemon_side.flush().await.unwrap();
+
+        drop(ws);
+
+        let got = tokio::time::timeout(Duration::from_secs(2), outcome)
+            .await
+            .expect("pump did not return within timeout")
+            .expect("outcome sender dropped without sending");
+        match got {
+            PumpOutcome::FramingSkew { error } => {
+                assert!(
+                    matches!(
+                        error,
+                        FrameError::UnsupportedFrameVersion {
+                            got: 2,
+                            supported: 1,
+                        }
+                    ),
+                    "expected UnsupportedFrameVersion {{ got: 2, supported: 1 }}, got {:?}",
+                    error
+                );
+            }
+            other => panic!("expected FramingSkew, got {:?}", other),
+        }
+    }
+
+    /// Normal close path (daemon sends `ChildExited`): `pump` must return
+    /// `PumpOutcome::Clean`. The kernel must NOT clear `daemon_handle` in
+    /// this case — the daemon process exits on its own and a fresh attach
+    /// will see the empty handle and respawn through the cold path; we
+    /// just don't want to *force* cleanup on every healthy exit.
+    #[tokio::test]
+    async fn pump_returns_clean_on_child_exited() {
+        let (mut daemon_side, server_side) = tokio::io::duplex(8192);
+        let (ping, pong) = long_window();
+        let (addr, outcome) = boot_pump(server_side, ping, pong).await;
+
+        let url = format!("ws://{}/pump", addr);
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        write_frame(&mut daemon_side, &DaemonMsg::ChildExited { code: Some(0) })
+            .await
+            .unwrap();
+        drop(daemon_side);
+
+        // Drain WS to let the up arm exit (drop the client → up sees None).
+        // Read both frames so the close handshake completes.
+        let _ = tokio::time::timeout(Duration::from_secs(2), ws.next()).await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), ws.next()).await;
+        drop(ws);
+
+        let got = tokio::time::timeout(Duration::from_secs(2), outcome)
+            .await
+            .expect("pump did not return within timeout")
+            .expect("outcome sender dropped without sending");
+        assert!(
+            matches!(got, PumpOutcome::Clean),
+            "expected Clean on ChildExited, got {:?}",
+            got
+        );
+    }
+}
+
+#[cfg(test)]
+mod cleanup_tests {
+    //! Unit tests for [`cleanup_stale_daemon`], the helper `handle` calls
+    //! after a framing-skew pump exit. We exercise the success path
+    //! against a real in-memory `SqlxRepo` and a real socket file on
+    //! disk: the framing-skew path's whole point is to leave the next
+    //! attach with `daemon_handle = None` + socket file gone, so the
+    //! `resolve_live_sock` cold path can respawn.
+    use super::*;
+    use crate::db::sqlite::SqlxRepo;
+    use crate::model::NewTerminal;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    /// Seed a cove + wave + card + terminal, stamp a fake daemon_handle
+    /// onto the terminal row, drop a placeholder file at that path so
+    /// `cleanup_stale_daemon` has something to unlink. Returns
+    /// `(repo, terminal_id, sock_path)`. The repo is wrapped in `Arc`
+    /// because the helper signature wants `&dyn RepoOutOfDomain` and
+    /// `SqlxRepo: RepoOutOfDomain`.
+    async fn seed_terminal_with_stale_handle() -> (Arc<SqlxRepo>, String, PathBuf) {
+        use crate::db::prelude::*;
+        use crate::model::{NewCard, NewCove, NewWave};
+
+        let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+        let cove = repo
+            .cove_create(NewCove {
+                name: "c".into(),
+                color: "#000".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let wave = repo
+            .wave_create(NewWave {
+                cove_id: cove.id,
+                title: "w".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let card = repo
+            .card_create(NewCard {
+                wave_id: wave.id,
+                kind: "terminal".into(),
+                sort: None,
+                payload: json!({}),
+            })
+            .await
+            .unwrap();
+        let term = repo
+            .terminal_create(NewTerminal {
+                card_id: card.id,
+                program: "/bin/true".into(),
+                cwd: "/tmp".into(),
+                env: json!({}),
+            })
+            .await
+            .unwrap();
+
+        // Materialize a fake socket file under tempdir + stamp its path
+        // onto the row. The cleanup helper unlinks the file by path; it
+        // doesn't care that the file isn't a real Unix socket.
+        let dir = tempfile::tempdir().unwrap().keep();
+        let sock = dir.join(format!("{}.sock", term.id));
+        std::fs::write(&sock, b"stub").unwrap();
+        let sock_str = sock.to_string_lossy().to_string();
+        repo.terminal_set_handle(&term.id, Some(&sock_str))
+            .await
+            .unwrap();
+
+        (repo, term.id, sock)
+    }
+
+    /// Happy path: cleanup clears `daemon_handle` and unlinks the socket
+    /// file. After the call:
+    ///   * `terminal_get(id).daemon_handle == None`
+    ///   * the socket file no longer exists on disk
+    /// This is exactly the post-state the next `resolve_live_sock` needs
+    /// to take the spawn path instead of the probe-and-reuse path.
+    #[tokio::test]
+    async fn cleanup_stale_daemon_clears_handle_and_unlinks_socket() {
+        use crate::db::prelude::*;
+        let (repo, id, sock) = seed_terminal_with_stale_handle().await;
+
+        // Sanity: pre-state has a handle + the file on disk.
+        let before = repo.terminal_get(&id).await.unwrap().unwrap();
+        assert!(
+            before.daemon_handle.is_some(),
+            "seed did not stamp daemon_handle"
+        );
+        assert!(sock.exists(), "seed did not materialize the socket file");
+
+        // Act.
+        cleanup_stale_daemon(repo.as_ref(), &id, &sock).await;
+
+        // Assert: row's daemon_handle is cleared.
+        let after = repo.terminal_get(&id).await.unwrap().unwrap();
+        assert!(
+            after.daemon_handle.is_none(),
+            "expected daemon_handle = None after cleanup, got {:?}",
+            after.daemon_handle
+        );
+        // Assert: the on-disk socket file is gone.
+        assert!(
+            !sock.exists(),
+            "expected socket file at {:?} to be unlinked",
+            sock
+        );
+    }
+
+    /// Idempotent on missing socket: if the file has already been removed
+    /// (concurrent sweeper run, manual cleanup, etc.), the helper must
+    /// still clear `daemon_handle` and not panic. ErrorKind::NotFound on
+    /// `remove_file` is swallowed by the helper.
+    #[tokio::test]
+    async fn cleanup_stale_daemon_tolerates_missing_socket() {
+        use crate::db::prelude::*;
+        let (repo, id, sock) = seed_terminal_with_stale_handle().await;
+        // Pre-delete the socket file so the helper's remove_file call
+        // hits NotFound.
+        std::fs::remove_file(&sock).unwrap();
+        assert!(!sock.exists());
+
+        cleanup_stale_daemon(repo.as_ref(), &id, &sock).await;
+
+        let after = repo.terminal_get(&id).await.unwrap().unwrap();
+        assert!(
+            after.daemon_handle.is_none(),
+            "expected daemon_handle = None after cleanup, got {:?}",
+            after.daemon_handle
         );
     }
 }
