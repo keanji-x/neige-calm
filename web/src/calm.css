@@ -2464,3 +2464,29 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   background: oklch(26% 0.02 145);
   border-color: oklch(36% 0.03 145);
 }
+
+/* ---------------------------------------------------------------------------
+ * Reduced-motion override (#56 slice 4)
+ *
+ * Respect users with `prefers-reduced-motion: reduce` set at the OS level.
+ * For vestibular disorders, decorative motion can trigger physical symptoms.
+ *
+ * Strategy: universal nuke. Every animation/transition in this stylesheet is
+ * decorative (live-dot/codex pulses, terminal/clock cursor blinks, hover
+ * fades, etc.) — none drive layout or signal load state via motion alone
+ * (loading uses "Loading…" text, not a spinner). No JS code in `web/src/`
+ * listens for `animationend`/`transitionend`, so collapsing duration to
+ * 0.01ms is safe — events still fire (just immediately).
+ *
+ * `!important` is required to win against inline `animation:` shorthand.
+ * ------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
