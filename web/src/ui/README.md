@@ -187,11 +187,30 @@ deleting a wave, removing a cove, dropping a card, anything that
 mutates state irreversibly. The contract makes Enter-on-open a no-op,
 which `window.confirm()` does not.
 
-Existing destructive flows in the app have not yet been migrated to
-ConfirmDialog; that work is tracked separately and out of scope for the
-PR that introduced this primitive. New destructive flows added after
-this point MUST use ConfirmDialog rather than `window.confirm` or an
-ad hoc inline confirmation.
+Migrated flows (slice 1, PR #97 followup):
+
+- **Delete cove (CovePage header)** —
+  [`pages/_shared.tsx`](../pages/_shared.tsx) (`DeleteButton`), used at
+  [`pages/Cove.tsx`](../pages/Cove.tsx). Pattern A: stay-open-while-pending —
+  the dialog stays mounted during the async `onDelete`, with the
+  Confirm button disabled via `confirmDisabled` so a second click or
+  Enter can't re-fire the delete. Cancel remains enabled mid-await.
+- **Delete wave (WavePage header)** —
+  same `DeleteButton`, used at [`pages/Wave.tsx`](../pages/Wave.tsx).
+  Inherits Pattern A from DeleteButton.
+- **Delete wave (CovePage per-row ×)** —
+  [`pages/Cove.tsx`](../pages/Cove.tsx) (`pendingDeleteWave` state +
+  one page-level `<ConfirmDialog>` driven by all three `WaveRow`
+  delete affordances). Pattern B: close-then-await — the dialog
+  closes on Confirm and the parent's promise resolves out-of-band.
+  The wave row vanishing from the list on completion is the
+  user-visible "succeeded" signal.
+
+New destructive flows added after this point MUST use ConfirmDialog
+rather than `window.confirm` or an ad hoc inline confirmation. The
+`confirmDisabled` prop (added alongside the DeleteButton migration)
+is the canonical way to support an in-flight async confirm without
+giving up the Cancel-safe default contract.
 
 ## Menu
 

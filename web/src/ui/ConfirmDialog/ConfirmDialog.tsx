@@ -24,8 +24,17 @@
 // - No focus trap of its own — inherited from Dialog.
 // - No Esc handler of its own — inherited from Dialog.
 // - No new CSS — uses existing `go` / `go warn` / `go outline` classes.
-// - No async / loading state — call sites that need a spinner can layer
-//   that into their `onConfirm` or render their own inline indicator.
+// - No built-in spinner or pending visual — call sites that want one can
+//   layer it into `description` or compose it next to the dialog.
+//
+// What this primitive opts INTO for the "stay open while pending" pattern
+// -----------------------------------------------------------------------
+// The `confirmDisabled` prop lets a call site keep the dialog mounted
+// during an in-flight async confirm without exposing a window where the
+// user can fire Confirm again. Cancel stays enabled — the Cancel-safe
+// default contract continues to hold even mid-await. The call site is
+// still responsible for actually awaiting its handler and flipping
+// `confirmDisabled` back to false (or closing) when the work resolves.
 //
 // See `web/src/ui/README.md` for the Visual / A11y / Test contracts and
 // `ConfirmDialog.contract.test.tsx` for the executable behavior spec.
@@ -54,6 +63,14 @@ export interface ConfirmDialogProps {
    *  styling (`go warn`). Set to false for non-destructive confirmations
    *  where the primary action should not look dangerous. */
   destructive?: boolean;
+  /** When true, the Confirm button is disabled. Intended for the
+   *  "stay open while pending" pattern: a call site can set this to
+   *  `true` after the user clicks Confirm, keep the dialog mounted, and
+   *  flip it back to `false` (or close the dialog) once the async work
+   *  resolves. Cancel remains enabled — the Cancel-safe default contract
+   *  is preserved during the pending window so the user can still back
+   *  out. Defaults to `false`. */
+  confirmDisabled?: boolean;
 }
 
 export function ConfirmDialog({
@@ -65,6 +82,7 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
   destructive = true,
+  confirmDisabled = false,
 }: ConfirmDialogProps) {
   // Cancel-safe default: initial focus lands here, so Enter on open
   // dismisses the dialog rather than firing the destructive action.
@@ -105,6 +123,7 @@ export function ConfirmDialog({
           type="button"
           className={destructive ? 'go warn' : 'go'}
           onClick={onConfirm}
+          disabled={confirmDisabled}
         >
           {confirmLabel}
         </button>
