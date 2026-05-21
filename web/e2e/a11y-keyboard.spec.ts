@@ -1,10 +1,19 @@
-// Keyboard-only end-to-end coverage for issue #56 — the a11y contract.
+// Keyboard-driven end-to-end coverage for issue #56 — the a11y contract.
 //
-// Every action below uses only keyboard input (Tab, Shift+Tab, Enter,
-// Space, Escape, F2, Arrow keys). No `.click()`, no `.fill()`, no
-// pointer/mouse APIs. The point is to prove an AI agent (or any
-// keyboard-only user, screen-reader user, etc.) can drive every flow the
-// product cares about using role/name and key events alone.
+// Once on the test surface, navigation is keyboard-only: Tab, Shift+Tab,
+// Enter, Space, Escape, F2, Arrow keys. The point is to prove an AI agent
+// (or any keyboard-only user, screen-reader user, etc.) can drive every
+// flow the product cares about using role/name and key events alone.
+//
+// The one carve-out is entry-point setup (sidebar → cove → wave) in the
+// list-view reorder test: that test clicks its way to the wave surface to
+// sidestep `tabUntil` brittleness across test runs that accumulate waves.
+// Sidebar / cove navigation has its own dedicated keyboard coverage
+// elsewhere in this suite — the plumbing clicks there are not the
+// contract under test. Every such click carries an inline comment.
+//
+// No `.fill()` — all text input goes through `keyboard.type()` so the
+// input handlers fire the same way they would for a real keyboard user.
 //
 // The suite runs under the Playwright `a11y` project — see
 // `playwright.config.ts`. That project starts a Vite dev server in front
@@ -499,12 +508,12 @@ test.describe('a11y · keyboard-only navigation', () => {
   test('Wave: toggle to list view, reorder with Alt+Arrow, persist across reload', async ({
     page,
   }) => {
-    // Click directly into the wave rather than keyboard-tabbing into it.
-    // The Scratch cove and its auto-created Today wave are the stable
-    // entrypoints; this test exercises the list-view toggle + Alt+Arrow
-    // reorder contract, not the sidebar / cove navigation (those are
-    // covered by their own specs). Clicking sidesteps a tabUntil
-    // step-count brittleness when previous tests accumulate waves.
+    // Click (not keyboard) into the wave: skips tabUntil to avoid tab-count
+    // brittleness when previous tests accumulate waves. The Scratch cove
+    // and its auto-created Today wave are the stable entrypoints; this
+    // test exercises the list-view toggle + Alt+Arrow reorder contract,
+    // not the sidebar / cove navigation (those have their own keyboard
+    // coverage elsewhere in this suite).
     await page
       .locator('aside.side button.cove-nav')
       .filter({ hasText: /scratch/i })
@@ -516,20 +525,32 @@ test.describe('a11y · keyboard-only navigation', () => {
     // test 7's rename mutates the bootstrap wave's title in place —
     // any wave-row will do for the toggle/reorder contract we're
     // exercising here.
+    // Click (not keyboard): same rationale as the cove-nav click above —
+    // skip tabUntil to avoid tab-count brittleness across accumulating waves.
     await page.locator('.wave-row').first().click();
     await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
     const waveUrl = page.url();
 
     // Add a second card so the reorder test has two list items to swap.
     // The bootstrap path creates one terminal card; we add a second so
-    // Alt+ArrowDown has a neighbor to swap with. Click-driven (vs the
-    // keyboard path in other tests) because card creation isn't the
-    // contract under test here.
+    // Alt+ArrowDown has a neighbor to swap with. Keyboard-driven (focus
+    // + Enter on the trigger, then Enter on the focused menuitem) to
+    // keep the suite honest about its keyboard-only claim — card
+    // creation isn't the contract under test here, but it's still
+    // reachable from the keyboard and the rest of this test depends on
+    // the menu activating, so we exercise it via key events.
     const addBtn = page.getByRole('button', { name: /\+\s*add/i });
-    await addBtn.click();
+    await addBtn.focus();
+    await page.keyboard.press('Enter');
     const menu = page.getByRole('menu');
     await expect(menu).toBeVisible();
-    await page.getByRole('menuitem', { name: /terminal/i }).first().click();
+    // The Menu primitive moves focus to the first menuitem on open
+    // (`initialIndex: 0`) — see Menu.tsx. Terminal is registered first
+    // in the cards registry (registerBuiltins in cards/builtins/index.ts),
+    // so it's already focused; Enter activates it without an ArrowDown.
+    const terminalItem = page.getByRole('menuitem', { name: /terminal/i }).first();
+    await expect(terminalItem).toBeFocused();
+    await page.keyboard.press('Enter');
     // Give the new card a moment to land. The replay binary lacks a
     // calm-session-daemon so the terminal create may surface a console
     // error, but the kernel Card row is still inserted (the daemon
