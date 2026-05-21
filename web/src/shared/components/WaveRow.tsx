@@ -35,7 +35,7 @@ export function WaveRow({
   // is invalid HTML and trips axe's `nested-interactive`. The wrapper
   // owns `position: relative` so the absolutely-positioned delete can
   // sit on top of the row; CSS rules out it as a visible overlap by
-  // reserving a 36px right gutter inside `.wave-row` and hover/focus-
+  // reserving a 32px right gutter inside `.wave-row` and hover/focus-
   // within on the wrapper controls the reveal. When `onDelete` is
   // absent the row stands alone — same wrapper, no sibling.
   //
