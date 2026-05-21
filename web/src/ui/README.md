@@ -121,6 +121,78 @@ outer title and leaves the pre-push focusables intact. Deferred to e2e:
 the axe scan on the rendered dialog (lives in `web/e2e/a11y-axe.spec.ts`)
 and visual regression of the panel chrome.
 
+## ConfirmDialog
+
+A small opinionated wrapper around [`Dialog`](./Dialog/Dialog.tsx) for
+destructive-action confirmations (delete wave, remove cove, etc.).
+Source: [`ConfirmDialog.tsx`](./ConfirmDialog/ConfirmDialog.tsx). Tests:
+[`ConfirmDialog.test.tsx`](./ConfirmDialog/ConfirmDialog.test.tsx),
+[`ConfirmDialog.contract.test.tsx`](./ConfirmDialog/ConfirmDialog.contract.test.tsx).
+Added by PR
+[#97](https://github.com/keanji-x/neige-calm/pull/97) (slice 1, PR3).
+
+### Visual
+
+Reuses Dialog's chrome (`.modal-overlay` / `.modal-panel` / `.modal-head`
+/ `.modal-body`) verbatim — no new dialog CSS. The Confirm button uses
+the existing `.go.warn` ruleset in `web/src/calm.css` when `destructive`
+is true (the default), pairing the standard `.go` button shape with the
+`--warn` token for color. Cancel uses `.go.outline`. The action row is
+laid out with a small inline `display: flex; justify-content: flex-end;
+gap` — no new class is introduced. Buttons sit Cancel-left, Confirm-right.
+
+### Accessibility
+
+Inherits the full a11y contract from Dialog: `role="dialog"
+aria-modal="true"`, accessible name from the `title` prop, focus trap on
+Tab/Shift+Tab, Escape closes, focus restored to the previously-focused
+element on close, background siblings inerted. See
+[`docs/a11y-contract.md` §4](../../../docs/a11y-contract.md) for the
+canonical spec.
+
+ConfirmDialog adds **one** primitive-specific rule on top:
+
+- **Cancel-safe default focus.** When the dialog opens, focus lands on
+  the Cancel button — never Confirm. A user mashing Enter on the dialog
+  appearing dismisses it, not the destructive action behind it.
+  Implemented by handing Dialog its `initialFocusRef` pointed at Cancel.
+
+The primitive also wires Dialog's `onClose` to the caller's `onCancel`,
+so Esc, overlay click, and the header X all route through `onCancel`.
+Call sites get one dismissal callback, not two.
+
+### Test
+
+Selected via `getByRole('dialog', { name: title })`; the action buttons
+via `getByRole('button', { name: 'Cancel' | 'Confirm' })` (or the
+caller's custom label).
+[`ConfirmDialog.test.tsx`](./ConfirmDialog/ConfirmDialog.test.tsx)
+covers rendering: title + description, default and custom button
+labels, the `go warn` class on Confirm when destructive (and its
+absence when `destructive={false}`), and that nothing renders when
+`open={false}`.
+[`ConfirmDialog.contract.test.tsx`](./ConfirmDialog/ConfirmDialog.contract.test.tsx)
+locks the six behavioral guarantees: (A) default focus on Cancel; (B)
+Esc → `onCancel`; (C) overlay click → `onCancel`; (D) Enter on focused
+Cancel → `onCancel`; (E) Enter on focused Confirm → `onConfirm`; (F)
+rapid-Enter on initial focus never reaches `onConfirm`. Deferred to e2e:
+the axe scan on the rendered dialog (already covered for Dialog in
+`web/e2e/a11y-axe.spec.ts`) and visual regression of the warn-button
+treatment.
+
+### Adoption
+
+ConfirmDialog SHOULD be used for any destructive action in the app —
+deleting a wave, removing a cove, dropping a card, anything that
+mutates state irreversibly. The contract makes Enter-on-open a no-op,
+which `window.confirm()` does not.
+
+Existing destructive flows in the app have not yet been migrated to
+ConfirmDialog; that work is tracked separately and out of scope for the
+PR that introduced this primitive. New destructive flows added after
+this point MUST use ConfirmDialog rather than `window.confirm` or an
+ad hoc inline confirmation.
+
 ## Reserved
 
 Stub headings for upcoming primitives. Filled in by the PRs noted below.
@@ -128,7 +200,3 @@ Stub headings for upcoming primitives. Filled in by the PRs noted below.
 ### Menu
 
 TODO: filled in by PR #XXX (slice 2, Menu extraction from `AddPanel`).
-
-### ConfirmDialog
-
-TODO: filled in by PR #XXX (slice 3, ConfirmDialog primitive).
