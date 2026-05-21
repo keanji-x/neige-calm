@@ -9,6 +9,8 @@ import { SchemaForm } from '../shared/components/SchemaForm';
 import { DirectoryBrowser } from '../shared/components/DirectoryPicker';
 import { CardStatusDot } from '../shared/components/CardStatusDot';
 import { DeleteButton } from './_shared';
+import { useOverlayState } from '../hooks/useOverlayState';
+import { OVERLAY_VIEW_MODE_SCHEMA_VERSION } from '../cards/builtins/schemaVersions';
 
 // WaveGrid pulls in `react-grid-layout` (~50 KB minified) and is the
 // heaviest single dependency on this page. Loading it lazily keeps the
@@ -18,6 +20,30 @@ import { DeleteButton } from './_shared';
 const WaveGrid = lazy(() =>
   import('../WaveGrid').then((m) => ({ default: m.WaveGrid })),
 );
+
+// WaveList is the keyboard-canonical alternative — much lighter (no RGL).
+// Lazy-loaded for symmetry with WaveGrid and so that grid-mode users
+// don't pay for it. The toggle below decides which to mount.
+const WaveList = lazy(() =>
+  import('../WaveList').then((m) => ({ default: m.WaveList })),
+);
+
+/** View-mode overlay shape — Slice 9 of issue #56. Persisted at
+ *  `(plugin_id='kernel', entity_kind='view', entity_id=<waveId>, kind='view-mode')`.
+ *  Kept separate from the layout overlay so users in list-only mode never
+ *  have to mint a layout row just to flip the toggle. */
+type ViewMode = 'grid' | 'list';
+interface ViewModeOverlay {
+  schemaVersion?: number;
+  mode: ViewMode;
+}
+const VIEW_MODE_DEFAULT: ViewModeOverlay = { mode: 'grid' };
+
+/** True when `s` is a recognized view mode. Hardens against an unknown
+ *  string drifting in from a future server schema. */
+function isViewMode(s: unknown): s is ViewMode {
+  return s === 'grid' || s === 'list';
+}
 
 /** Short verb for each FSM state — used by the wave-header status pill. */
 function fsmVerb(s: FsmState): string {
@@ -144,6 +170,27 @@ export function WavePage({
   const showEtaPill = !!wave.eta;
   const showPct = wave.progress > 0 && wave.progress < 1.0;
 
+  // Per-wave view-mode preference. Defaults to grid (no breaking change
+  // for mouse users); the toggle in the wave-header flips it and the
+  // overlay persists across reloads. The hook handles optimistic update,
+  // WS replay, and IndexedDB rehydration the same way the layout
+  // overlay does.
+  const [viewModeOverlay, setViewModeOverlay] = useOverlayState<ViewModeOverlay>({
+    entity_kind: 'view',
+    entity_id: wave.id,
+    kind: 'view-mode',
+    default: VIEW_MODE_DEFAULT,
+  });
+  const viewMode: ViewMode = isViewMode(viewModeOverlay.mode)
+    ? viewModeOverlay.mode
+    : 'grid';
+  const toggleViewMode = () => {
+    setViewModeOverlay({
+      schemaVersion: OVERLAY_VIEW_MODE_SCHEMA_VERSION,
+      mode: viewMode === 'grid' ? 'list' : 'grid',
+    });
+  };
+
   return (
     <div className="workbench">
       <header className="wave-header">
@@ -209,6 +256,32 @@ export function WavePage({
           )}
         </span>
         <span className="wave-meta">
+          {/* View-mode toggle (Slice 9 of issue #56). Two-state button —
+              `role="switch"` + `aria-checked` so AT announces the bound
+              state ("Grid view, switch, on" vs "List view, switch, off").
+              The accessible name carries the layout vocabulary so a
+              keyboard / screen-reader user knows what the control
+              switches between; the visible label flips with the state.
+              Pressed visually matches AddPanel — dashed border swap. */}
+          <button
+            type="button"
+            role="switch"
+            aria-checked={viewMode === 'list'}
+            className={'view-toggle' + (viewMode === 'list' ? ' is-list' : '')}
+            onClick={toggleViewMode}
+            title={
+              viewMode === 'list'
+                ? 'Switch to grid view'
+                : 'Switch to list view (keyboard-friendly)'
+            }
+            aria-label={
+              viewMode === 'list'
+                ? 'Switch wave to grid view'
+                : 'Switch wave to list view'
+            }
+          >
+            {viewMode === 'list' ? 'List' : 'Grid'}
+          </button>
           <AddPanel onSelect={beginAdd} />
           {/* 6-state FSM dot + verb. Rendered whenever the kernel `card_fsm`
               has assigned a state to this wave (only happens when at least
@@ -253,12 +326,26 @@ export function WavePage({
       </header>
 
       <main className="workbench-main">
-        <Suspense fallback={<div className="synth">Loading grid…</div>}>
-          <WaveGrid
-            waveId={wave.id}
-            cards={cards}
-            onRemoveCard={(idx) => onRemoveCard(wave.id, idx)}
-          />
+        <Suspense
+          fallback={
+            <div className="synth">
+              {viewMode === 'list' ? 'Loading list…' : 'Loading grid…'}
+            </div>
+          }
+        >
+          {viewMode === 'list' ? (
+            <WaveList
+              waveId={wave.id}
+              cards={cards}
+              onRemoveCard={(idx) => onRemoveCard(wave.id, idx)}
+            />
+          ) : (
+            <WaveGrid
+              waveId={wave.id}
+              cards={cards}
+              onRemoveCard={(idx) => onRemoveCard(wave.id, idx)}
+            />
+          )}
         </Suspense>
       </main>
       {/* Shortcut: when a kind's createSchema is just one `directory` field,

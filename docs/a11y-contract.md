@@ -25,6 +25,7 @@ Slices that have shipped against this contract:
 - Slice 6 (#71): Keyboard-only E2E suite + axe scans + `npm run a11y*` scripts.
 - Slice 7: AddPanel full menu keyboard semantics (arrow keys, Home/End, type-ahead, focus restore) via `useRovingTabindex`.
 - Slice 8 (#67): this document.
+- Slice 9: WaveGrid keyboard alternative — `WaveList` component, per-wave grid/list view-mode toggle persisted via overlay.
 
 ---
 
@@ -48,6 +49,10 @@ A task thread / unit of work belonging to a cove.
 - **WaveRow** (CovePage list): a `<div role="button">` with `tabIndex={0}` and an Enter/Space handler. Accessible name is computed from the inner text (wave title + optional working-count badge + optional now/eta strings). The per-row × is a child `<button aria-label="Delete \"<title>\"">` that stops propagation. Source: `web/src/shared/components/WaveRow.tsx:36-117`.
 - **WavePage header crumb**: an `<h1>`-equivalent breadcrumb with the wave title rendered as `<span role="button" tabIndex={0} aria-label="Rename wave: <title>">` when rename is enabled, or a plain `<span>` when read-only. Source: `web/src/pages/Wave.tsx:185-208`.
 - **Wave status pill**: `<span className="status-pill">` displaying the FSM verb ("Working", "Waiting on you", "Idle", ...). The `<CardStatusDot>` inside carries its own `aria-label="status <state>"` so the dot is announced even when the verb text is identical. Source: `web/src/pages/Wave.tsx:218-243` + `web/src/shared/components/CardStatusDot.tsx:48-79`.
+- **View-mode toggle**: a `role="switch"` button in the wave-header `.wave-meta` cluster with `aria-checked={mode === 'list'}` and an accessible name of "Switch wave to list view" / "Switch wave to grid view". Source: `web/src/pages/Wave.tsx` (look for `.view-toggle`). Each wave persists its view mode independently via an overlay (`entity_kind: 'view'`, `kind: 'view-mode'`); see §2.7 for the overlay shape. Grid is the default for new waves so mouse-only users see no behavior change.
+- **Two view modes**. WavePage renders one of two body components based on the per-wave view-mode overlay:
+  - **Grid view** (default): `WaveGrid` from `web/src/WaveGrid.tsx`. RGL-powered, mouse-only for layout changes (drag via `.card-drag-handle`, resize via SE corner). Cards are individually Tab-reachable for their inner content; the layout itself has no keyboard story by design.
+  - **List view** (Slice 9): `WaveList` from `web/src/WaveList.tsx`. Semantic `<ul>` of cards in `card.sort` order, with full keyboard navigation. **This is the keyboard-canonical mode** — keyboard users, screen-reader users, and AI agents driving the UI should switch a wave to list view to manipulate layout. The toggle is reachable from the wave-header and lives one Tab stop away from the AddPanel.
 
 ### 2.3 Card (generic)
 
@@ -87,6 +92,7 @@ Not a UI element — overlays are a **state mechanism**. The kernel publishes `o
 
 - The 6-state card FSM surfaces as `<CardStatusDot>` (see `web/src/shared/components/CardStatusDot.tsx`) with `aria-label="status <state>"`. The same dot drives both per-card status bars and the wave-level glyph (`web/src/shared/components/WaveRow.tsx:50-58`), so the same accessible-name format reaches both surfaces.
 - Codex's live-status string is surfaced via the `aria-live="polite"` region noted in §2.5. Other overlay kinds may want their own live region — match this pattern (polite, narrow scope) when adding one.
+- **View-mode overlay** (Slice 9): per-wave preference for grid vs list layout. Persisted at `(plugin_id='kernel', entity_kind='view', entity_id=<waveId>, kind='view-mode')` with payload `{ schemaVersion: 1, mode: 'grid' | 'list' }`. Kept distinct from the existing `kind: 'layout'` overlay so list-mode users (who don't drag) never have to mint a layout row just to flip the toggle. New schema constant `OVERLAY_VIEW_MODE_SCHEMA_VERSION` lives alongside the layout one in `web/src/cards/builtins/schemaVersions.ts`. Kernel-side: no validator entry needed — unknown overlay kinds fall through the catch-all `_ => Ok(())` in `validate_overlay_payload`.
 
 ---
 
@@ -98,9 +104,9 @@ Pages should be Tab-traversable end-to-end. Concrete shape today:
 
 - **Sidebar → main**: the sidebar renders a flat sequence of `<button>` elements, so Tab walks Today → waiting-on-you waves → coves → New cove → main content. No skip-link yet; the sidebar is short enough that this hasn't been raised as a pain point, but if we add another sidebar section we should reconsider.
 - **CovePage**: title (rename button if available) → section rows (each `<div role="button">`) → `+ New wave` ghost button. Section headers are not tab stops.
-- **WavePage**: back button → cove crumb button → wave title rename button → Add panel → delete button → cards in the grid. Cards' internal focus stops depend on the kind (xterm grabs focus once activated; plugin iframes own their own internal sequence).
+- **WavePage**: back button → cove crumb button → wave title rename button → view-mode toggle → Add panel → delete button → cards in the grid (grid view) or list (list view). Cards' internal focus stops depend on the kind (xterm grabs focus once activated; plugin iframes own their own internal sequence).
 
-Known gap: **WaveGrid keyboard reorder/resize** is deferred to Slice 9. Today the grid is mouse-only for layout changes; cards are still Tab-reachable for their own content. See `web/src/WaveGrid.tsx:405` — `dragConfig.handle = '.card-drag-handle'` keeps the rest of the card keyboard-usable, but the handle itself has no keyboard activation path.
+Layout-change semantics (Slice 9): grid view is mouse-only for drag/resize by design; the per-wave view-mode toggle (one Tab stop before AddPanel) flips the wave to list view, where reorder is keyboard-driven via `Alt+ArrowUp` / `Alt+ArrowDown` on the focused row. See §3.4 for the full list-view contract.
 
 ### 3.2 Activation
 
@@ -118,7 +124,14 @@ Known gap: **WaveGrid keyboard reorder/resize** is deferred to Slice 9. Today th
 
 ### 3.4 Arrow keys
 
-- **WaveGrid**: no keyboard reorder yet (Slice 9, deferred).
+- **WaveGrid**: no keyboard reorder. By design — the grid stays mouse-only; keyboard users switch the wave to list view via the wave-header toggle.
+- **WaveList** (Slice 9): the keyboard-canonical alternative. Each card is rendered inside an `<li>` participating in a roving tabindex (`useRovingTabindex`). Bindings:
+  - **ArrowUp / ArrowDown** — move focus between cards (wraps).
+  - **Home / End** — jump to first / last card.
+  - **Alt+ArrowUp / Alt+ArrowDown** — reorder the focused card up / down by swapping `sort` values via `useUpdateCardMutation` (which is optimistic for `sort`). The trace ring buffer picks up the resulting `card.updated` events.
+  - **Delete / Backspace** — remove the focused card (same as the `×` button; no confirmation, matching grid view's affordance).
+  - **Tab** — exits the list to whatever follows; Shift+Tab returns to the wave-header.
+  - Each `<li>` carries `aria-keyshortcuts="ArrowUp ArrowDown Alt+ArrowUp Alt+ArrowDown Home End Delete"` so the contract is discoverable from AT alone.
 - **AddPanel menu** (Slice 7): full WAI-ARIA menu keyboard contract via `useRovingTabindex` (`web/src/hooks/useRovingTabindex.ts`). ArrowDown/Up cycle with wrap, Home/End jump, single-letter typeahead jumps to first match, Enter/Space activate, Escape closes. Roving `tabIndex` keeps the menu out of the Tab order — only the active item is in the page sequence. On open, the first item is focused; on close (Escape, activation, outside click), focus returns to the trigger.
 - **xterm.js** owns arrow keys inside terminal/codex bodies — they're forwarded to the PTY.
 
@@ -242,7 +255,7 @@ Tests for a11y / role-name contracts go under `web/e2e/`. Tests that touch the r
 Catalogued so a maintainer reading this doc doesn't think the gap is undiscovered.
 
 - ~~**AddPanel full menu keyboard semantics (Slice 7, pending).**~~ **Resolved** by Slice 7 — see §3.4 above and `web/src/hooks/useRovingTabindex.ts`.
-- **WaveGrid keyboard reorder/resize (Slice 9, deferred).** Drag uses `.card-drag-handle` mouse only. A keyboard alternative would need to (1) make the handle keyboard-focusable, (2) define key bindings for move/resize, (3) integrate with the overlay-persisted layout state. Not on the current roadmap.
+- ~~**WaveGrid keyboard reorder/resize (Slice 9, deferred).**~~ **Resolved** by Slice 9, **via Path C** (separate list-view component) — see §2.2 "Two view modes" and §3.4 "WaveList". Grid view itself remains mouse-only by design; keyboard / AT users flip the per-wave view-mode toggle to switch to list view, which is the keyboard-canonical mode. List view supports reorder (`Alt+ArrowUp` / `Alt+ArrowDown` → `card.sort` swap via the existing optimistic mutation) and remove (`Delete`); resize is out of scope (cards in list view self-size to intrinsic content).
 - **Heading-nav narration noise on rename buttons.** Both WavePage's title span and CovePage's `EditableTitle` carry `aria-label` strings beginning with "Rename:". A screen reader using heading-nav (`H` key) will read "Rename: Atlas" instead of "Atlas." This is the right tradeoff today — keyboard users hear the action available — but a future cleanup could use `aria-describedby` for the verb instead.
 - **`Modal.tsx:111-117` comment about `:focus-visible` filtering.** Captured during Slice 2 review — the comment is technically incorrect (it claims `:focus-visible` matches against display:none, which it doesn't in practice). Latent fragility if DOM order shifts but no behavior bug today. Worth a follow-up cleanup pass.
 - **Sidebar skip-link.** No skip-to-main link today. Sidebar is short enough that it hasn't been raised; reconsider if a sidebar section grows large.
@@ -282,7 +295,8 @@ Candidates evaluated when this question comes up:
   - #66 — Event-trace exposure + Playwright `a11y` project.
   - #67 — this document (Slice 8).
   - #71 — Slice 6, Keyboard E2E + axe scans + `npm run a11y*` scripts.
-  - Slice 7 — AddPanel menu keyboard semantics + `useRovingTabindex` (this slice).
+  - #73 — Slice 7, AddPanel menu keyboard semantics + `useRovingTabindex`.
+  - Slice 9 — WaveGrid keyboard alternative (`WaveList` + per-wave view-mode toggle).
 - `web/playwright.config.ts` — top-of-file comment documents the two-project layout.
 - `web/e2e/README.md` — running the test suites locally.
 - `web/e2e/helpers/trace.ts` — the event-trace helper API used by `a11y` specs.

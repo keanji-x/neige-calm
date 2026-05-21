@@ -295,8 +295,8 @@ function WaveComponent() {
   const uiWave = adaptWave(detail.wave, detail.overlays);
   uiWave.cards = detail.cards.map((k): WaveCardSlot => {
     const adapted = adaptCard(k);
-    if (adapted) return { kind: 'card', card: adapted };
-    return { kind: 'unknown', id: k.id, kernelKind: k.kind };
+    if (adapted) return { kind: 'card', card: adapted, sort: k.sort };
+    return { kind: 'unknown', id: k.id, kernelKind: k.kind, sort: k.sort };
   });
 
   return (

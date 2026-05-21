@@ -459,6 +459,149 @@ test.describe('a11y · keyboard-only navigation', () => {
     await expect(display).toBeFocused();
   });
 
+  // Slice 9 — list-view alternative to the WaveGrid. The wave-header
+  // carries a `role="switch"` toggle that flips the per-wave view-mode
+  // overlay between `grid` (default) and `list`. List view replaces the
+  // RGL grid with a semantic `<ul>` whose `<li>` items use roving
+  // tabindex; Alt+ArrowUp / Alt+ArrowDown reorder the focused card by
+  // swapping `card.sort` via the existing optimistic mutation.
+  test('Wave: toggle to list view, reorder with Alt+Arrow, persist across reload', async ({
+    page,
+  }) => {
+    // Click directly into the wave rather than keyboard-tabbing into it.
+    // The Scratch cove and its auto-created Today wave are the stable
+    // entrypoints; this test exercises the list-view toggle + Alt+Arrow
+    // reorder contract, not the sidebar / cove navigation (those are
+    // covered by their own specs). Clicking sidesteps a tabUntil
+    // step-count brittleness when previous tests accumulate waves.
+    await page
+      .locator('aside.side button.cove-nav')
+      .filter({ hasText: /scratch/i })
+      .click();
+    await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
+    // Click into the first available wave row. The cove page lists
+    // every wave (auto-bootstrapped "Today" plus any waves created by
+    // earlier specs in this run). We don't filter by title because
+    // test 7's rename mutates the bootstrap wave's title in place —
+    // any wave-row will do for the toggle/reorder contract we're
+    // exercising here.
+    await page.locator('.wave-row').first().click();
+    await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
+    const waveUrl = page.url();
+
+    // Add a second card so the reorder test has two list items to swap.
+    // The bootstrap path creates one terminal card; we add a second so
+    // Alt+ArrowDown has a neighbor to swap with. Click-driven (vs the
+    // keyboard path in other tests) because card creation isn't the
+    // contract under test here.
+    const addBtn = page.getByRole('button', { name: /\+\s*add/i });
+    await addBtn.click();
+    const menu = page.getByRole('menu');
+    await expect(menu).toBeVisible();
+    await page.getByRole('menuitem', { name: /terminal/i }).first().click();
+    // Give the new card a moment to land. The replay binary lacks a
+    // calm-session-daemon so the terminal create may surface a console
+    // error, but the kernel Card row is still inserted (the daemon
+    // spawn happens asynchronously after the card lands); the card
+    // body just falls back to its non-live rendering.
+    await page.waitForTimeout(500);
+
+    // The toggle is a role="switch" with an accessible name like
+    // "Switch wave to list view" (default state = grid).
+    const toggle = page.getByRole('switch', { name: /switch wave to list view/i });
+    await expect(toggle).toBeVisible();
+    await expect(toggle).toHaveAttribute('aria-checked', 'false');
+
+    // Flip via keyboard: focus + Space (the native button activation).
+    await toggle.focus();
+    await page.keyboard.press(' ');
+
+    // Same DOM node now exposes the opposite accessible name + a flipped
+    // aria-checked. We re-query rather than caching the locator because
+    // the accessible name changed.
+    const toggleNow = page.getByRole('switch', { name: /switch wave to grid view/i });
+    await expect(toggleNow).toBeVisible();
+    await expect(toggleNow).toHaveAttribute('aria-checked', 'true');
+
+    // List view: cards now render as semantic <li>. Wait for the list
+    // to mount (it's lazy-loaded — same chunk pattern as WaveGrid).
+    const list = page.getByRole('list', { name: /wave cards/i });
+    await expect(list).toBeVisible({ timeout: 5_000 });
+    const items = page.getByRole('listitem');
+    // Poll until at least two items have *both* mounted AND have their
+    // data-card-id stamped — the kernel ack for the new card has to
+    // land before the second <li> gets a stable id we can address by.
+    await expect
+      .poll(
+        async () => {
+          const ids = await items.evaluateAll((els) =>
+            els.map((e) => (e as HTMLElement).dataset.cardId ?? ''),
+          );
+          return ids.filter((s) => s.length > 0).length;
+        },
+        { timeout: 10_000 },
+      )
+      .toBeGreaterThanOrEqual(2);
+
+    // Capture the initial order via the data-card-id we stamp on each
+    // <li>. Reorder is then verified by checking the order flipped.
+    const initialIds = await items.evaluateAll((els) =>
+      els.map((e) => (e as HTMLElement).dataset.cardId ?? ''),
+    );
+    expect(initialIds.length).toBeGreaterThanOrEqual(2);
+
+    // Focus the first item and press Alt+ArrowDown to swap it with the
+    // second. We clear the trace first so the assertion can be specific
+    // about the events caused by this gesture.
+    await clearEventTrace(page);
+    await items.first().focus();
+    await page.keyboard.press('Alt+ArrowDown');
+
+    // The optimistic-sort mutation is synchronous in the cache; the
+    // server ack and `card.updated` arrive asynchronously. Wait for
+    // both halves so the assertion is order-independent. The poll
+    // tolerates a longer settle time than the default (10s vs 5s) to
+    // absorb the round-trip on a busy CI worker; the swap itself is
+    // optimistic so locally it lands in a single frame.
+    await waitForEvent(page, 'card.updated');
+    await expect
+      .poll(
+        async () => {
+          const ids = await items.evaluateAll((els) =>
+            els.map((e) => (e as HTMLElement).dataset.cardId ?? ''),
+          );
+          return ids[0] === initialIds[1] && ids[1] === initialIds[0];
+        },
+        { timeout: 10_000 },
+      )
+      .toBe(true);
+
+    // Home jumps to first; End jumps to last. We assert on the
+    // resulting `.is-active` class — applied to whichever item the
+    // roving-tabindex hook selected — rather than `toBeFocused`,
+    // because the close button inside the active item can briefly
+    // capture focus after the optimistic-rerender of the list (the
+    // `:focus-within` styling rule exposes the × at full opacity,
+    // and an interim re-mount can leave the browser pointing at the
+    // child). The `is-active` flag and `aria-checked` state are
+    // what AT (and our own assertion contract) consume.
+    await items.last().focus();
+    await page.keyboard.press('Home');
+    await expect(items.first()).toHaveClass(/is-active/);
+    await page.keyboard.press('End');
+    await expect(items.last()).toHaveClass(/is-active/);
+
+    // Reload — the view-mode overlay must persist, so the page comes
+    // back in list view.
+    await page.goto(waveUrl);
+    const listAfter = page.getByRole('list', { name: /wave cards/i });
+    await expect(listAfter).toBeVisible({ timeout: 5_000 });
+    const toggleAfter = page.getByRole('switch', {
+      name: /switch wave to grid view/i,
+    });
+    await expect(toggleAfter).toHaveAttribute('aria-checked', 'true');
+  });
+
   test('Settings page: all controls reachable and labeled', async ({ page }) => {
     // Tab to the TitleBar's "Open settings" button (the gear icon). Its
     // accessible name is set explicitly by aria-label.

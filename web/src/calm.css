@@ -850,6 +850,34 @@ input, textarea { font: inherit; color: inherit; }
 .add-panel:hover { color: var(--text); border-color: var(--text-3); }
 .add-panel[aria-expanded="true"] { color: var(--text); border-color: var(--text-3); }
 
+/* View-mode toggle — Slice 9 of issue #56. Visually matches the AddPanel
+   trigger (same height, same dashed border vocabulary) so the two header
+   controls read as a small cluster, not competing affordances. The
+   `is-list` modifier swaps to a solid border so the bound state is
+   distinguishable for low-vision users who can't rely on the label
+   change alone (the role="switch" + aria-checked carries the same
+   signal to AT). */
+.view-toggle {
+  height: 28px; padding: 0 12px;
+  border: 1.5px dashed var(--hairline-strong);
+  border-radius: var(--r);
+  color: var(--text-3);
+  font-size: 12.5px;
+  font-weight: 500;
+  background: transparent;
+  transition: color 0.1s, border-color 0.1s, background 0.1s;
+}
+.view-toggle:hover { color: var(--text); border-color: var(--text-3); }
+.view-toggle.is-list {
+  border-style: solid;
+  color: var(--text);
+  border-color: var(--text-3);
+}
+.view-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .add-panel-menu {
   position: absolute;
   top: calc(100% + 4px);
@@ -2404,6 +2432,125 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 .react-resizable-handle:hover {
   color: var(--accent);
+}
+
+/* ============================================================
+   WaveList — keyboard-canonical alternative to WaveGrid.
+   Slice 9 of issue #56 (Path C). The list view drops RGL's
+   absolutely-positioned cells and lays cards out as a semantic
+   `<ul>` flowing top-to-bottom. Visual density is similar to
+   the stacked-card look the app used pre-RGL; the
+   `.wave-list-item` carries the card chrome instead of an
+   inner `.card-slot`.
+   ============================================================ */
+.wave-list-wrap {
+  margin-bottom: 16px;
+}
+.wave-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.wave-list-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  /* Cards in list view self-size to intrinsic content. xterm-based cards
+     carry their own `min-height` (see `.xterm-view` below); other kinds
+     are naturally fluid. We don't enforce a `min-height` here so a
+     fully-content-empty card (e.g. a freshly-spawned terminal before
+     any output) collapses to its header. */
+  outline: none;
+}
+.wave-list-item:focus-visible {
+  /* Soft accent ring on the focused row — matches the rename-button
+     `:focus-visible` pattern from Slice 3. Inset shadow rather than
+     outline so a tall card with internal padding still shows the
+     indicator at the row boundary. */
+  box-shadow: 0 0 0 2px var(--accent-soft);
+  border-radius: var(--r);
+}
+/* Inside a list item, cards stretch to fill the row's width and
+   their bodies obey their own min-height contracts. The grid view
+   uses `.card-slot > ...` selectors; we mirror them here. */
+.wave-list-item > .term,
+.wave-list-item > .doc,
+.wave-list-item > .git,
+.wave-list-item > .diff,
+.wave-list-item > .plan-card,
+.wave-list-item > .note,
+.wave-list-item > .codex-card,
+.wave-list-item > .plugin-iframe-card,
+.wave-list-item > .card-unknown {
+  margin: 0;
+  width: 100%;
+}
+/* xterm-based cards (terminal, codex) self-size in list view to a
+   reasonable default. The grid view enforces dimensions via RGL row
+   heights; in list view there's no parent grid, so we pin a height
+   so the PTY's character-cell grid has enough room to be useful
+   without dominating the page on a wave with several cards. */
+.wave-list-item > .codex-card {
+  height: 400px;
+}
+.wave-list-item > .term.live {
+  height: 400px;
+}
+/* Plugin iframe cards: cap the width on wide viewports so a fluid
+   iframe doesn't render edge-to-edge in list view. 800px reads as
+   a comfortable column for a reading-focused plugin while still
+   letting an iframe that wants to be wider stretch the wave page
+   width itself. */
+.wave-list-item > .plugin-iframe-card {
+  max-width: 800px;
+  height: 400px;
+}
+
+/* Per-row × button. Same hover-reveal pattern as `.card-grid-close` but
+   without the absolute-positioning conflict against RGL transforms —
+   the list item is statically positioned, so we offset from its
+   top-right. */
+.card-list-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--text-3);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.1s, color 0.1s;
+  z-index: 4;
+}
+.wave-list-item:hover .card-list-close,
+.wave-list-item:focus-within .card-list-close,
+.wave-list-item.is-active .card-list-close {
+  opacity: 1;
+}
+.card-list-close:hover {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.card-list-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  opacity: 1;
+}
+
+.wave-list-empty {
+  color: var(--text-3);
+  font-size: 13px;
+  margin: 8px 0;
 }
 
 /* ===== Settings page ============================================
