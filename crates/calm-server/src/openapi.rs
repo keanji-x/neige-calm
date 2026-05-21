@@ -26,6 +26,7 @@ use crate::routes::plugins::{
 };
 use crate::routes::settings::{SettingsBag, SettingsPutBody};
 use crate::routes::terminal::NewTerminalBody;
+use crate::routes::version::VersionInfo;
 use utoipa::OpenApi;
 
 #[derive(OpenApi)]
@@ -80,6 +81,8 @@ use utoipa::OpenApi;
         crate::routes::plugins::list_plugin_views,
         crate::routes::plugins::get_plugin_view_html,
         crate::routes::plugins::plugin_tool_call,
+        // ---- version ----
+        crate::routes::version::get_version,
     ),
     components(schemas(
         // domain models
@@ -115,6 +118,7 @@ use utoipa::OpenApi;
         ToolCallBody,
         ViewCatalogEntry,
         ViewSizeWire,
+        VersionInfo,
         // shared error response
         ErrorBody,
     )),
@@ -128,6 +132,7 @@ use utoipa::OpenApi;
         (name = "fs", description = "Read-only host filesystem helpers (directory listing for path pickers)"),
         (name = "settings", description = "App-global settings (HTTP proxy override, etc.)"),
         (name = "plugins", description = "Plugin lifecycle, config, MCP fan-out"),
+        (name = "version", description = "Kernel, REST, sync, and MCP protocol versions"),
     ),
 )]
 pub struct ApiDoc;
