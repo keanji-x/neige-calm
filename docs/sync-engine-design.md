@@ -519,9 +519,22 @@ Existing tests pass; add §6.1 atomicity tests and the §6.4 microbench gate. Fr
 
 New hook file, ESLint rule + brand type, `persistQueryClient` in `providers.tsx`, WaveGrid migrated per §5. New tests: §6.2's round-trip, type-test, fixture-based replay tests for the layout overlay. First visible feature: layouts sync across devices and survive reload with no flash.
 
-### Phase 4+ — Incremental migrations
+### Phase 4+ — New persistent view state defaults to `useOverlayState`
 
-Order by friction-to-value: (1) Cove ordering prefs (sidebar `useState`), (2) per-Cove filter/search state, (3) card-local UI state (collapse, scroll), (4) plugin settings panels (today raw fetch — convert to `useOverlayState`). The retention pruner cron is wired in Phase 1 but stays inert under the forever default (§2.3); no phase turns it on — an operator turns it on by setting `config.events_retention_days` to a finite value.
+The Phase 1-3 push (PRs #18-#28, #37-#43) shipped the full infrastructure: `useOverlayState`, `Persistent<T>` brand, ESLint rule, validation, replay, capability-split traits, actor-through-envelope. The first migration target (WaveGrid layout) is live (§5).
+
+Earlier drafts of this doc enumerated a forecasted candidate list for Phase 4+ (cove ordering, sidebar collapse, card folding, per-wave filters, plugin settings). A May 2026 audit (PR-29 close-out) found that **most of those candidates don't actually exist as client-side state**:
+
+- Cove ordering is a backend `Cove.sort` field — not view state.
+- Sidebar collapse, card folding, per-wave filter — these UI features haven't been built. They're forward-looking guesses, not pending migrations.
+- Plugin settings panels are already routed through `useSettingsQuery` / `useUpdateSettingsMutation` (TanStack Query), not raw `fetch`.
+- Theme (light/dark) is `useState<'light' \| 'dark'>` in `CalmApp.tsx` and resets on reload; a separate design (issue #22) covers ThemeProvider + iframe sync + system-mode + Settings UI, which subsumes any naïve overlay migration.
+
+The principle going forward, in lieu of a candidate list:
+
+**Any new persistable client-side state defaults to `useOverlayState({ entity_kind: 'view', ... })`.** Opting back to `useState` for transient/ephemeral UI (modal-open, input drafts, hover) is fine. Opting to `localStorage` for new state requires a reason (sync-engine-internal cursors are the precedent). The ESLint + `Persistent<T>` brand make this enforceable at the type level the moment a `Persistent` value enters the picture.
+
+The retention pruner cron is wired in Phase 1 but stays inert under the forever default (§2.3); no phase turns it on — an operator turns it on by setting `config.events_retention_days` to a finite value. Per-actor retention is forward-looking (issue #33).
 
 ---
 
