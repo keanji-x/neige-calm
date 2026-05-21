@@ -167,9 +167,13 @@ pub fn load_fixture_from_path(path: &Path) -> Result<Fixture, String> {
 pub async fn boot_in_memory() -> anyhow::Result<(Arc<SqlxRepo>, EventBus, AppState)> {
     let events = EventBus::new();
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await?);
-    let plugin = Arc::new(PluginHost::new(
+    let plugin = Arc::new(PluginHost::new_full(
         Arc::new(PluginRegistry::empty()),
         repo.clone(),
+        std::path::PathBuf::new(),
+        std::env::temp_dir().join("calm-plugins-data"),
+        Vec::new(),
+        events.clone(),
     ));
     let state = AppState::from_parts(
         repo.clone(),

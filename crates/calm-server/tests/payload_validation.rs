@@ -55,7 +55,14 @@ async fn boot() -> (AppState, String) {
         repo.clone(),
         EventBus::new(),
         Arc::new(DaemonClient::new_stub()),
-        Arc::new(PluginHost::new(Arc::new(PluginRegistry::empty()), repo)),
+        Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            repo,
+            std::path::PathBuf::new(),
+            std::env::temp_dir().join("calm-plugins-data"),
+            Vec::new(),
+            EventBus::new(),
+        )),
         Arc::new(calm_server::state::CodexClient::new_stub()),
     );
     (state, wave.id)
