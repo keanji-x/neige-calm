@@ -222,14 +222,108 @@ test.describe('a11y · keyboard-only navigation', () => {
     await expect(menu).toBeHidden();
   });
 
-  // Slice 7 will add full WAI-ARIA menu keyboard semantics to AddPanel:
-  // ArrowDown/Up to move between menuitems, Home/End to jump to first/last,
-  // type-ahead to focus by first letter, and focus restored to the trigger
-  // on close. Today the menu opens, but the menuitems aren't keyboard-
-  // navigable from inside the menu — Tab leaks back out into the page.
-  test.skip('AddPanel: arrow keys move between menuitems (Slice 7)', async () => {
-    // Intentionally skipped — see comment above; this becomes runnable
-    // once Slice 7 lands the menu keyboard contract.
+  // Slice 7 wires the full WAI-ARIA menu keyboard contract on AddPanel:
+  // ArrowDown/Up cycle through menuitems (with wrap), Home/End jump to
+  // first/last, single letters typeahead-jump to the first match, Escape
+  // closes and returns focus to the trigger, and activation closes plus
+  // returns focus to the trigger before the onSelect handler runs.
+  test('AddPanel: arrow keys, Home/End, typeahead, focus restore', async ({
+    page,
+  }) => {
+    // Navigate to a wave page via keyboard. We use the auto-created
+    // "Today" wave under the Scratch cove — the only one that exists at
+    // bootstrap time on the replay fixture.
+    await tabUntil(page, (info) => info.name?.toLowerCase().includes('scratch') === true);
+    await page.keyboard.press('Enter');
+    await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
+    await tabUntil(
+      page,
+      (info) => info.tag === 'div' && info.role === 'button' && /today/i.test(info.name ?? ''),
+    );
+    await page.keyboard.press('Enter');
+    await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
+
+    // Tab to the "+ Add" trigger and capture it for the focus-restore
+    // assertion at the end of the spec.
+    await tabUntil(page, (info) => /add card/i.test(info.name ?? '') || /\+\s*add/i.test(info.name ?? ''));
+    const trigger = page.getByRole('button', { name: /\+\s*add/i });
+    await expect(trigger).toBeFocused();
+    await page.keyboard.press('Enter');
+    const menu = page.getByRole('menu');
+    await expect(menu).toBeVisible();
+
+    // On open the hook focuses the first menuitem. The order depends on
+    // which builtins register, but the fixture today gives us at least
+    // "New terminal" + "New codex" (registered in that order in
+    // `cards/builtins/index.ts`).
+    const items = page.getByRole('menuitem');
+    const itemCount = await items.count();
+    expect(itemCount).toBeGreaterThanOrEqual(2);
+
+    // Initial focus on the first item.
+    await expect(items.nth(0)).toBeFocused();
+
+    // ArrowDown moves to the second item.
+    await page.keyboard.press('ArrowDown');
+    await expect(items.nth(1)).toBeFocused();
+
+    // ArrowUp moves back. From the first, ArrowUp wraps to the last.
+    await page.keyboard.press('ArrowUp');
+    await expect(items.nth(0)).toBeFocused();
+    await page.keyboard.press('ArrowUp');
+    await expect(items.nth(itemCount - 1)).toBeFocused();
+
+    // End jumps to the last (already there — exercise the keybind anyway).
+    await page.keyboard.press('Home');
+    await expect(items.nth(0)).toBeFocused();
+    await page.keyboard.press('End');
+    await expect(items.nth(itemCount - 1)).toBeFocused();
+
+    // Typeahead: capture each item's first letter and exercise it.
+    // "New terminal" starts with 'N' — every entry today starts with 'N'
+    // ("New …"), so a single 'n' should cycle through them. We assert
+    // that two distinct 'n' presses focus two different items.
+    await page.keyboard.press('Home');
+    await expect(items.nth(0)).toBeFocused();
+    const firstItemText = (await items.nth(0).textContent())?.trim() ?? '';
+    // Pull the first character of the LAST item — its initial letter
+    // gives us a deterministic typeahead target distinct from item 0
+    // when labels differ. If all items share a first letter (the "new
+    // …" case), single-letter typeahead cycles past the current focus
+    // — that's still a valid keyboard contract test.
+    const lastItemText = (await items.nth(itemCount - 1).textContent())?.trim() ?? '';
+    if (firstItemText && lastItemText && firstItemText[0] !== lastItemText[0]) {
+      // Distinct first letters: pressing the last item's first letter
+      // should jump straight to it.
+      await page.keyboard.press(lastItemText[0]!.toLowerCase());
+      await expect(items.nth(itemCount - 1)).toBeFocused();
+    } else if (firstItemText) {
+      // Shared first letter ("New X"): one press from item 0 cycles to
+      // item 1 (next match).
+      await page.keyboard.press(firstItemText[0]!.toLowerCase());
+      await expect(items.nth(1)).toBeFocused();
+    }
+
+    // Escape closes the menu and returns focus to the trigger.
+    await page.keyboard.press('Escape');
+    await expect(menu).toBeHidden();
+    await expect(trigger).toBeFocused();
+
+    // Re-open via the trigger, then activate the first menuitem with
+    // Enter. The menu closes; focus restores to the trigger.
+    await page.keyboard.press('Enter');
+    await expect(menu).toBeVisible();
+    await expect(items.nth(0)).toBeFocused();
+    // First item is "New terminal" (zero-config) — Enter creates a
+    // card immediately and closes the menu. Other entries open a
+    // SchemaForm; either way the AddPanel itself is gone.
+    await page.keyboard.press('Enter');
+    await expect(menu).toBeHidden();
+    // Focus is restored to the trigger button regardless of whether
+    // onSelect opened a modal (modal restore is a separate layer).
+    // The terminal create path doesn't open a modal, so the trigger
+    // should be focused directly.
+    await expect(trigger).toBeFocused();
   });
 
   test('Modal: opens with Enter, traps Tab, Escape closes and restores focus', async ({
@@ -264,11 +358,15 @@ test.describe('a11y · keyboard-only navigation', () => {
     const hasCodex = (await codexItem.count()) > 0;
     test.skip(!hasCodex, 'codex card kind not registered in this fixture');
 
-    // Until Slice 7's keyboard semantics for the menu land we activate
-    // the menuitem via `.press('Enter')` on the located item — the press
-    // is still a keyboard event, just sent via Playwright's locator API
-    // (no `.click()` underneath).
-    await codexItem.press('Enter');
+    // Slice 7 wires real menu-keyboard semantics. The menu's first item
+    // ("New terminal") gets initial focus on open; we navigate down to
+    // "New codex" via ArrowDown (its registry position) before pressing
+    // Enter. We could also type 'c' (typeahead) — both paths satisfy the
+    // contract; ArrowDown is the more universal choice since it doesn't
+    // depend on label spelling.
+    await page.keyboard.press('ArrowDown');
+    await expect(codexItem).toBeFocused();
+    await page.keyboard.press('Enter');
 
     // Modal mounts with role="dialog" + aria-modal="true"; the panel is
     // focused initially (or its first focusable child, depending on what
@@ -305,20 +403,16 @@ test.describe('a11y · keyboard-only navigation', () => {
       }),
     ).toBe(true);
 
-    // Escape closes the modal. Slice 2's restore returns focus to
-    // whatever was focused right before the modal opened — which is the
-    // menuitem (now unmounted). When the previously-focused element is
-    // gone Modal silently noops, so focus falls to <body>. Restoring up
-    // through the AddPanel trigger needs AddPanel to manage its own
-    // focus restore on menu close — that's Slice 7's job. Until then we
-    // just assert the modal really closed and `trigger` is reachable
-    // again (i.e. focusable from script).
+    // Escape closes the modal. With Slice 7's menu-close focus restore
+    // in place, the chain is now: AddPanel's `closeAndRestoreFocus` runs
+    // BEFORE the modal opens (it fires synchronously inside `activate`
+    // when Enter activates the menuitem). So by the time Modal captures
+    // `previouslyFocusedRef`, the trigger button is already the active
+    // element — and Modal's own restore on close returns focus straight
+    // to the trigger. The combined effect: Escape on the modal → focus
+    // back on the AddPanel trigger.
     await page.keyboard.press('Escape');
     await expect(dialog).toBeHidden();
-    // The trigger should be reachable again — proves the modal-open
-    // inert blanket lifted. We can't yet assert `toBeFocused()` because
-    // Slice 7 will own the AddPanel-trigger-restore part of the chain.
-    await trigger.focus();
     await expect(trigger).toBeFocused();
   });
 

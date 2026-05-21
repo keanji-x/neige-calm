@@ -168,9 +168,58 @@ export function Modal({
     };
   }, [open, onClose, view]);
 
+  // Background inert. We mark every direct child of `document.body`
+  // *except* the portal root as `inert` + `aria-hidden="true"` so
+  // assistive tech and Tab cannot reach the page underneath. Declared
+  // *before* the focus-restore effect so React's effect-cleanup ordering
+  // (declaration order, not reverse) runs the inert removal first; the
+  // focus restore that follows can then land on an element whose
+  // ancestors are no longer inert. (Slice 7 surfaced this — when the
+  // previously-focused element is a sibling of the modal portal, like
+  // the AddPanel trigger, focusing it while the inert blanket is still
+  // applied silently fails.)
+  useEffect(() => {
+    if (!open) return;
+    const panel = panelRef.current;
+    // The portal mounts into document.body; the modal-overlay div is the
+    // direct child to skip. We walk up from the panel until we hit a
+    // direct child of body, which gives us the overlay element even if
+    // some future refactor adds an extra wrapper.
+    let portalRoot: HTMLElement | null = panel;
+    while (portalRoot && portalRoot.parentElement !== document.body) {
+      portalRoot = portalRoot.parentElement;
+    }
+    const siblings = Array.from(document.body.children).filter(
+      (el): el is HTMLElement =>
+        el instanceof HTMLElement && el !== portalRoot,
+    );
+    // Remember each sibling's prior state so we can restore exactly.
+    const prior = siblings.map((el) => ({
+      el,
+      hadInert: el.hasAttribute('inert'),
+      hadAriaHidden: el.getAttribute('aria-hidden'),
+    }));
+    for (const el of siblings) {
+      el.setAttribute('inert', '');
+      el.setAttribute('aria-hidden', 'true');
+    }
+    return () => {
+      for (const { el, hadInert, hadAriaHidden } of prior) {
+        if (!hadInert) el.removeAttribute('inert');
+        if (hadAriaHidden === null) el.removeAttribute('aria-hidden');
+        else el.setAttribute('aria-hidden', hadAriaHidden);
+      }
+    };
+  }, [open]);
+
   // Initial focus + focus restore. We split this from the Esc effect so
   // the dependencies stay minimal — re-running this on every `view`
   // change would yank focus around when the user pushes a sub-view.
+  //
+  // Declared AFTER the inert effect (above) on purpose: React runs
+  // effect cleanups in declaration order on unmount, so the inert
+  // blanket is removed first and the focus restore below can succeed
+  // even when the restore target is a sibling of the portal root.
   useEffect(() => {
     if (!open) return;
     // Capture the element that owned focus before we opened. Used in the
@@ -211,45 +260,6 @@ export function Modal({
       }
     };
   }, [open, initialFocusRef, restoreFocusRef]);
-
-  // Background inert. We mark every direct child of `document.body`
-  // *except* the portal root as `inert` + `aria-hidden="true"` so
-  // assistive tech and Tab cannot reach the page underneath. Done as a
-  // separate effect from the focus / Esc ones because the cleanup needs
-  // to fire whenever `open` flips false, regardless of which dep changed.
-  useEffect(() => {
-    if (!open) return;
-    const panel = panelRef.current;
-    // The portal mounts into document.body; the modal-overlay div is the
-    // direct child to skip. We walk up from the panel until we hit a
-    // direct child of body, which gives us the overlay element even if
-    // some future refactor adds an extra wrapper.
-    let portalRoot: HTMLElement | null = panel;
-    while (portalRoot && portalRoot.parentElement !== document.body) {
-      portalRoot = portalRoot.parentElement;
-    }
-    const siblings = Array.from(document.body.children).filter(
-      (el): el is HTMLElement =>
-        el instanceof HTMLElement && el !== portalRoot,
-    );
-    // Remember each sibling's prior state so we can restore exactly.
-    const prior = siblings.map((el) => ({
-      el,
-      hadInert: el.hasAttribute('inert'),
-      hadAriaHidden: el.getAttribute('aria-hidden'),
-    }));
-    for (const el of siblings) {
-      el.setAttribute('inert', '');
-      el.setAttribute('aria-hidden', 'true');
-    }
-    return () => {
-      for (const { el, hadInert, hadAriaHidden } of prior) {
-        if (!hadInert) el.removeAttribute('inert');
-        if (hadAriaHidden === null) el.removeAttribute('aria-hidden');
-        else el.setAttribute('aria-hidden', hadAriaHidden);
-      }
-    };
-  }, [open]);
 
   const ctx = useMemo<ModalViewCtx>(
     () => ({

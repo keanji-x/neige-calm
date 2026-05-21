@@ -225,7 +225,14 @@ test.describe('a11y · axe', () => {
     const codexItem = page.getByRole('menuitem', { name: /codex/i });
     const hasCodex = (await codexItem.count()) > 0;
     test.skip(!hasCodex, 'codex card kind not registered in this fixture');
-    await codexItem.press('Enter');
+    // Slice 7's roving-tabindex menu: ArrowDown from the (focused) first
+    // menuitem to land on codex, then Enter activates *that* item.
+    // `codexItem.press('Enter')` would fire keydown on the codex button
+    // but the hook reads its internal `activeIndex` to decide which item
+    // to activate — keyboard navigation has to walk to it first.
+    await page.keyboard.press('ArrowDown');
+    await expect(codexItem).toBeFocused();
+    await page.keyboard.press('Enter');
     // The "New codex" entry opens a Modal panel whose body wraps a
     // DirectoryBrowser. Both wrap their content in role="dialog" — the
     // Modal panel is the outer one (aria-label = title) and the nested

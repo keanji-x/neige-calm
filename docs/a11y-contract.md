@@ -22,8 +22,9 @@ Slices that have shipped against this contract:
 - Slice 3 (#64): Implicit keyboard entry (Enter / F2) to rename.
 - Slice 4 (#65): `prefers-reduced-motion` universal CSS override.
 - Slice 5 (#66): Event-trace exposure (`window.__neigeEvents__`) + Playwright `a11y` project with `cargo run --bin replay --serve`.
-
-Slice 6 (E2E suite + axe + npm scripts) and Slice 7 (AddPanel menu keyboard semantics) are in flight; this doc will be amended as they land.
+- Slice 6 (#71): Keyboard-only E2E suite + axe scans + `npm run a11y*` scripts.
+- Slice 7: AddPanel full menu keyboard semantics (arrow keys, Home/End, type-ahead, focus restore) via `useRovingTabindex`.
+- Slice 8 (#67): this document.
 
 ---
 
@@ -111,14 +112,14 @@ Known gap: **WaveGrid keyboard reorder/resize** is deferred to Slice 9. Today th
 ### 3.3 Escape
 
 - **Modal**: closes the modal. If a child view is pushed, the child's `onEscape` runs first (or the view pops if no handler). See `web/src/shared/components/Modal.tsx:152-160`.
-- **AddPanel popover**: closes the menu. See `web/src/shared/components/AddPanel.tsx:45-47`.
+- **AddPanel popover**: closes the menu and returns focus to the trigger button. Owned by `useRovingTabindex`'s `onEscape` callback (`web/src/hooks/useRovingTabindex.ts`); AddPanel routes that callback through `closeAndRestoreFocus`.
 - **Rename edit input**: cancels the edit, restoring focus to the display element. See `web/src/pages/Wave.tsx:138-141` and `web/src/pages/Cove.tsx:226-229`.
 - **Inline NewWave / NewCove input**: blur-commits (the input's `onBlur` calls `submit()`); Escape is wired to `close` which dumps the draft.
 
 ### 3.4 Arrow keys
 
 - **WaveGrid**: no keyboard reorder yet (Slice 9, deferred).
-- **AddPanel menu**: arrow-key navigation between menu items is the subject of Slice 7. Today the menu is a `<ul role="menu">` with `<button role="menuitem">` children (`web/src/shared/components/AddPanel.tsx:68-86`) but no arrow handling — Tab walks the items and Enter activates. This is technically WCAG-incomplete for a menu role; Slice 7 closes the gap.
+- **AddPanel menu** (Slice 7): full WAI-ARIA menu keyboard contract via `useRovingTabindex` (`web/src/hooks/useRovingTabindex.ts`). ArrowDown/Up cycle with wrap, Home/End jump, single-letter typeahead jumps to first match, Enter/Space activate, Escape closes. Roving `tabIndex` keeps the menu out of the Tab order — only the active item is in the page sequence. On open, the first item is focused; on close (Escape, activation, outside click), focus returns to the trigger.
 - **xterm.js** owns arrow keys inside terminal/codex bodies — they're forwarded to the PTY.
 
 ---
@@ -240,7 +241,7 @@ Tests for a11y / role-name contracts go under `web/e2e/`. Tests that touch the r
 
 Catalogued so a maintainer reading this doc doesn't think the gap is undiscovered.
 
-- **AddPanel full menu keyboard semantics (Slice 7, pending).** Arrow Up/Down to move, Home/End to jump, type-ahead to focus by first-letter, Esc to close, Enter to activate. Today the menu is a `<ul role="menu">` with no arrow handling; Tab walks it. WCAG-incomplete for the menu role.
+- ~~**AddPanel full menu keyboard semantics (Slice 7, pending).**~~ **Resolved** by Slice 7 — see §3.4 above and `web/src/hooks/useRovingTabindex.ts`.
 - **WaveGrid keyboard reorder/resize (Slice 9, deferred).** Drag uses `.card-drag-handle` mouse only. A keyboard alternative would need to (1) make the handle keyboard-focusable, (2) define key bindings for move/resize, (3) integrate with the overlay-persisted layout state. Not on the current roadmap.
 - **Heading-nav narration noise on rename buttons.** Both WavePage's title span and CovePage's `EditableTitle` carry `aria-label` strings beginning with "Rename:". A screen reader using heading-nav (`H` key) will read "Rename: Atlas" instead of "Atlas." This is the right tradeoff today — keyboard users hear the action available — but a future cleanup could use `aria-describedby` for the verb instead.
 - **`Modal.tsx:111-117` comment about `:focus-visible` filtering.** Captured during Slice 2 review — the comment is technically incorrect (it claims `:focus-visible` matches against display:none, which it doesn't in practice). Latent fragility if DOM order shifts but no behavior bug today. Worth a follow-up cleanup pass.
@@ -255,9 +256,9 @@ The current stance: **hand-roll until pain forces a library**. The Modal focus t
 
 Triggers for revisiting:
 
-1. The disclosure-widget inventory grows past ~5 widgets in active maintenance. Today we have Modal + AddPanel popover; Slice 7 will add full menu semantics; that's still well under 5.
+1. The disclosure-widget inventory grows past ~5 widgets in active maintenance. Today we have Modal + AddPanel popover (with full menu semantics post-Slice 7); that's still well under 5.
 2. A new widget category lands that needs keyboard semantics we can't reasonably hand-roll. Combobox is the most likely candidate (autocomplete + arrow keys + value binding is hard to get right without a reference impl). A command palette would be another.
-3. Two or more existing hand-rolled widgets drift apart in their focus-management code — i.e. we've forked the same logic and it's diverged. Today the only shared logic is "focus restore on close", duplicated across Modal and the rename surfaces in a way that's still readable.
+3. Two or more existing hand-rolled widgets drift apart in their focus-management code — i.e. we've forked the same logic and it's diverged. Today the only shared logic is "focus restore on close", duplicated across Modal, the rename surfaces, and the AddPanel popover in a way that's still readable.
 
 Candidates evaluated when this question comes up:
 
@@ -266,7 +267,7 @@ Candidates evaluated when this question comes up:
 - **React Aria** — most rigorous a11y-wise but its component shape doesn't always match our preferences (a lot of "use this hook" instead of "render this component").
 - **Ark UI** — newer, Zag-machine-based; appealing but less battle-tested in production.
 
-**Decision deferred to Slice 7 outcome.** If AddPanel full menu semantics feels reasonable to hand-roll, we stay hand-rolled. If it's painful, the library question goes from "no" to "evaluate concretely" — and Radix is the front-runner.
+**Slice 7 verdict — stay hand-rolled.** The full WAI-ARIA menu keyboard contract (arrow keys + Home/End + typeahead + roving tabindex + focus restore) fit in ~290 LOC of hook + ~30 LOC of integration. Painful edge cases were one (1): React 19 StrictMode double-effect surfacing a latent effect-ordering bug in Modal's inert blanket vs focus restore (fixed by re-declaring the inert effect before the focus effect — see `Modal.tsx`). No round of review feedback was burned on the hook shape itself. The library question remains "no" — re-evaluate at the next disclosure-widget addition.
 
 ---
 
@@ -279,7 +280,9 @@ Candidates evaluated when this question comes up:
   - #64 — Rename keyboard entry.
   - #65 — `prefers-reduced-motion`.
   - #66 — Event-trace exposure + Playwright `a11y` project.
-  - Slice 6 — Keyboard E2E + axe scans + a11y npm scripts (in flight; PR number to be filled in when it lands).
+  - #67 — this document (Slice 8).
+  - #71 — Slice 6, Keyboard E2E + axe scans + `npm run a11y*` scripts.
+  - Slice 7 — AddPanel menu keyboard semantics + `useRovingTabindex` (this slice).
 - `web/playwright.config.ts` — top-of-file comment documents the two-project layout.
 - `web/e2e/README.md` — running the test suites locally.
 - `web/e2e/helpers/trace.ts` — the event-trace helper API used by `a11y` specs.
