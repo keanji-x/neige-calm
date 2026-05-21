@@ -21,7 +21,15 @@
 // duplicating the assertions Slice 6 will own.
 
 import { test, expect } from '@playwright/test';
+import { resetReplayServer } from './helpers/reset';
 import { getEventTrace, waitForEvent } from './helpers/trace';
+
+test.beforeEach(async ({ request }) => {
+  // Hermetic per-test state — see `helpers/reset.ts` for the rationale.
+  // The smoke assertion below pins the exact fixture event sequence, so
+  // any accumulated mutations from an earlier spec would break it.
+  await resetReplayServer(request);
+});
 
 // Sequence the wave-grid-layout-trace fixture seeds, in order. Pinned
 // here so a fixture edit causes a noisy failure — the smoke test's whole

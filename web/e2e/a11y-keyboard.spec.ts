@@ -21,6 +21,7 @@
 // the test proves both halves of the role/name + event contract from #56.
 
 import { test, expect, type Page } from '@playwright/test';
+import { resetReplayServer } from './helpers/reset';
 import { clearEventTrace, getEventTrace, waitForEvent } from './helpers/trace';
 
 interface FocusInfo {
@@ -119,7 +120,14 @@ async function waitForBootstrap(page: Page): Promise<void> {
 }
 
 test.describe('a11y · keyboard-only navigation', () => {
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async ({ page, request }) => {
+    // Reset the replay binary's in-memory repo + event log first, so the
+    // page navigation below mounts against a hermetic starting state
+    // regardless of what an earlier spec did. The endpoint is mounted
+    // only by `replay --serve` (see `crates/calm-server/src/bin/replay.rs`).
+    // Without this hook, accumulating cove/wave/card mutations across
+    // tests cause flakes — see issue #56 followup.
+    await resetReplayServer(request);
     // Every spec opens the app with the trace ring buffer enabled so that
     // event assertions can read `window.__neigeEvents__`. baseURL is set
     // by the `a11y` project, so we just append the param.
