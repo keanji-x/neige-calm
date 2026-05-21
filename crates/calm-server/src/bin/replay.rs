@@ -88,6 +88,23 @@ async fn main() -> anyhow::Result<()> {
         return run_assert(&repo, &fixture, &args, last_id).await;
     }
 
+    // Mirror `main.rs`: honor `RECORD_SESSION=<path>` so a developer can
+    // boot `--serve`, drive a few writes from a browser or curl, and
+    // capture the resulting event stream into a new fixture file.
+    //
+    // Subscribed **after** `seed_events` so the recorded file contains
+    // only operator-driven events, not the seeded fixture's. The
+    // operator-driven session is the interesting artifact — the seed
+    // is already on disk in the source file.
+    //
+    // `--assert` mode skips this branch: assertion runs are pure reads
+    // after seed and emit nothing new; recording would produce an
+    // empty file. (Recorder is only meaningful while the server is
+    // being driven through REST/WS, which is `--serve`-only.)
+    if let Ok(path) = std::env::var("RECORD_SESSION") {
+        replay::spawn_session_recorder(&state.events, path.into());
+    }
+
     run_serve(state, &fixture, &args, ids.len(), last_id).await
 }
 
@@ -141,13 +158,22 @@ async fn run_serve(
     // about letting a developer / Playwright session poke the seeded
     // state interactively, so every read-side endpoint must be live.
     //
-    // We skip the actor middleware + CORS layers that `main.rs` adds
-    // — `--serve` is a single-developer debugging tool, not an
-    // externally reachable surface. Any external poke would still need
-    // to send a `X-Calm-Actor` header to write through the REST routes,
-    // but reads (the common case for replay debugging) don't.
+    // REST handlers extract `Actor` via `FromRequestParts`, which reads
+    // a request extension that the `actor_middleware` layer populates.
+    // Without that layer, any REST *write* (curl POST /api/coves, etc.)
+    // 500s with "actor middleware not applied" — so we mirror main.rs
+    // and attach the middleware to the REST sub-router. Callers that
+    // want non-default attribution still pass `X-Calm-Actor`; absent
+    // header → default `user` actor per the middleware contract.
+    //
+    // CORS is intentionally still skipped — `--serve` is a single-
+    // developer debugging tool, not an externally reachable surface,
+    // and binding the same `4040` port as the real server means the
+    // dev frontend (same-origin) doesn't need CORS anyway.
+    let rest_routes = calm_server::routes::router()
+        .layer(axum::middleware::from_fn(calm_server::actor::actor_middleware));
     let app = axum::Router::new()
-        .merge(calm_server::routes::router())
+        .merge(rest_routes)
         .merge(calm_server::ws::router())
         .with_state(state);
 

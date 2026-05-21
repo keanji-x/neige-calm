@@ -88,9 +88,66 @@ pub struct FixtureExpected {
 /// Read + parse a fixture from disk. Returns a descriptive error on
 /// missing file or malformed JSON — the binary surfaces these straight
 /// to stderr.
+///
+/// Accepts **two** on-disk shapes so RECORD_SESSION output is directly
+/// replayable (round-trip invariant — design doc §6.3):
+///
+///   1. Curated fixture object: `{name, description, events, expected}` —
+///      the format `tests/fixtures/events/*.events.json` ships.
+///   2. NDJSON session recording: one `{"kind","actor","payload"}` object
+///      per line — the shape `spawn_session_recorder` writes.
+///
+/// Detection: read the first non-blank line and check whether it parses
+/// as a `FixtureEvent` (i.e. has a top-level `kind` field). If so, the
+/// whole file is treated as NDJSON and a synthetic `Fixture` is
+/// constructed with `name` derived from the filename, an empty
+/// `expected` block, and the events in append order. Otherwise we fall
+/// back to parsing the entire file as a single `Fixture` JSON object.
+///
+/// This is a pure shape sniff; nothing reads ahead beyond the first line
+/// before committing to a branch.
 pub fn load_fixture_from_path(path: &Path) -> Result<Fixture, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("read fixture {}: {}", path.display(), e))?;
+
+    // Sniff: first non-blank line. If it parses as a `FixtureEvent`,
+    // we're looking at NDJSON. Curated fixtures start `{` followed by
+    // `"name"` / whitespace; that line on its own does not parse as
+    // FixtureEvent (no `kind` field), so the sniff is unambiguous.
+    let first_line = text.lines().find(|l| !l.trim().is_empty());
+    if let Some(line) = first_line {
+        if serde_json::from_str::<FixtureEvent>(line).is_ok() {
+            // NDJSON branch — every non-blank line is a FixtureEvent.
+            let mut events = Vec::new();
+            for (lineno, raw) in text.lines().enumerate() {
+                if raw.trim().is_empty() {
+                    continue;
+                }
+                let ev: FixtureEvent = serde_json::from_str(raw).map_err(|e| {
+                    format!(
+                        "parse fixture {} (line {}): {}",
+                        path.display(),
+                        lineno + 1,
+                        e
+                    )
+                })?;
+                events.push(ev);
+            }
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("recorded-session")
+                .to_string();
+            return Ok(Fixture {
+                name,
+                description: "recorded session (NDJSON)".to_string(),
+                events,
+                expected: FixtureExpected::default(),
+            });
+        }
+    }
+
+    // Object branch — single JSON fixture object.
     serde_json::from_str(&text).map_err(|e| format!("parse fixture {}: {}", path.display(), e))
 }
 
@@ -268,30 +325,59 @@ pub async fn assert_expected(repo: &SqlxRepo, fixture: &Fixture) -> anyhow::Resu
 
 /// Fold the persisted event log to derive the current `view/layout`
 /// positions map for `wave_id`. Returns `None` if no `overlay.set` for
-/// `(view, wave_id, layout)` has been observed. The fold mirrors what
-/// `useOverlayState` does on the frontend: later events for the same
-/// `(plugin_id, entity_kind, entity_id, kind)` quad overwrite earlier
-/// ones.
-async fn derive_layout_positions(
+/// `(view, wave_id, layout)` has been observed (or the most recent
+/// event for that overlay was an `overlay.deleted`). The fold mirrors
+/// what `useOverlayState` does on the frontend: later events for the
+/// same `(plugin_id, entity_kind, entity_id, kind)` quad overwrite
+/// earlier ones, and `overlay.deleted` clears state.
+///
+/// Made `pub` so the integration test in `tests/replay_fixtures.rs`
+/// can exercise the fold directly (a 3-step set/delete/set sequence is
+/// easier to drive without a full WS round-trip). Not part of any
+/// stable surface; treat as test-helper-shape.
+pub async fn derive_layout_positions(
     repo: &SqlxRepo,
     wave_id: &str,
 ) -> anyhow::Result<Option<serde_json::Map<String, serde_json::Value>>> {
     let log = repo.events_since(0, None).await?;
+    Ok(fold_layout_positions(log.into_iter().map(|(_id, ev)| ev), wave_id))
+}
+
+/// Pure fold used by `derive_layout_positions` — exposed so tests can
+/// feed a hand-built event sequence without touching the repo. Walks
+/// events in caller-provided order and tracks the running `view/layout`
+/// state for `wave_id`: `overlay.set` upserts, `overlay.deleted` clears.
+pub fn fold_layout_positions<I>(
+    events: I,
+    wave_id: &str,
+) -> Option<serde_json::Map<String, serde_json::Value>>
+where
+    I: IntoIterator<Item = Event>,
+{
     let mut current: Option<serde_json::Map<String, serde_json::Value>> = None;
-    for (_id, ev) in log {
-        if let Event::OverlaySet(o) = ev
-            && o.entity_kind == "view"
-            && o.entity_id == wave_id
-            && o.kind == "layout"
-        {
-            current = o
-                .payload
-                .get("positions")
-                .and_then(|v| v.as_object().cloned())
-                .or(current);
+    for ev in events {
+        match ev {
+            Event::OverlaySet(o)
+                if o.entity_kind == "view" && o.entity_id == wave_id && o.kind == "layout" =>
+            {
+                current = o
+                    .payload
+                    .get("positions")
+                    .and_then(|v| v.as_object().cloned())
+                    .or(current);
+            }
+            Event::OverlayDeleted {
+                entity_kind,
+                entity_id,
+                kind,
+                ..
+            } if entity_kind == "view" && entity_id == wave_id && kind == "layout" => {
+                current = None;
+            }
+            _ => {}
         }
     }
-    Ok(current)
+    current
 }
 
 /// Best-effort: find the wave id the fixture's `view/layout` overlay
@@ -323,17 +409,18 @@ fn infer_wave_id(fixture: &Fixture) -> Option<String> {
 /// Honored by `calm-server` when `RECORD_SESSION=<path>` is set in the
 /// environment. The resulting file is directly playable by `replay --file`.
 ///
-/// Limitations (design doc §6.3 calls this out, full follow-up tracked
-/// separately):
+/// Limitations (design doc §6.3 calls this out):
 ///   - Actor is not currently threaded through `BroadcastEnvelope`, so
 ///     every recorded event lands with `actor: "unknown"`. Replaying the
 ///     trace produces the same `events.kind` rows; the actor field can be
-///     hand-edited if it matters for the assertion.
-///   - The leading entity snapshot mentioned in §6.3 is deferred to a
-///     follow-up: a snapshot would let a fixture target a non-empty
-///     starting state without re-seeding from scratch, but the existing
-///     §6.3 fixtures (and the wave-grid trace) already start from empty,
-///     so this gap doesn't block the headline workflow.
+///     hand-edited if it matters for the assertion. Follow-up tracked
+///     in issue #39 (`[sync-engine] Thread actor through
+///     BroadcastEnvelope so RECORD_SESSION captures real actors`).
+///   - The leading entity snapshot mentioned in §6.3 is deferred: a
+///     snapshot would let a fixture target a non-empty starting state
+///     without re-seeding from scratch, but the existing §6.3 fixtures
+///     (and the wave-grid trace) already start from empty, so this gap
+///     doesn't block the headline workflow.
 pub fn spawn_session_recorder(bus: &EventBus, path: std::path::PathBuf) {
     let mut rx = bus.subscribe();
     tokio::spawn(async move {
