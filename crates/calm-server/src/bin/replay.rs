@@ -170,8 +170,9 @@ async fn run_serve(
     // developer debugging tool, not an externally reachable surface,
     // and binding the same `4040` port as the real server means the
     // dev frontend (same-origin) doesn't need CORS anyway.
-    let rest_routes = calm_server::routes::router()
-        .layer(axum::middleware::from_fn(calm_server::actor::actor_middleware));
+    let rest_routes = calm_server::routes::router().layer(axum::middleware::from_fn(
+        calm_server::actor::actor_middleware,
+    ));
     let app = axum::Router::new()
         .merge(rest_routes)
         .merge(calm_server::ws::router())

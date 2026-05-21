@@ -304,8 +304,7 @@ async fn record_session_roundtrips_through_loader() {
     // so a future regression that silently swaps the branches surfaces.
     assert_eq!(fixture.name, "recorded.events");
     assert!(
-        fixture.expected.last_event_kind.is_none()
-            && fixture.expected.layout_positions.is_empty(),
+        fixture.expected.last_event_kind.is_none() && fixture.expected.layout_positions.is_empty(),
         "NDJSON branch produces an empty expected block"
     );
 }
@@ -350,8 +349,9 @@ fn fold_layout_positions_respects_overlay_deleted() {
 
     // Set → Delete → Set: end state is set_b alone (the delete cleared
     // set_a's contribution before set_b overwrote).
-    let got = replay::fold_layout_positions([set_a.clone(), delete.clone(), set_b.clone()], wave_id)
-        .expect("set after delete still produces Some");
+    let got =
+        replay::fold_layout_positions([set_a.clone(), delete.clone(), set_b.clone()], wave_id)
+            .expect("set after delete still produces Some");
     assert_eq!(got.len(), 1, "delete cleared set_a before set_b");
     assert!(got.contains_key("card_9"));
     assert!(!got.contains_key("card_1"));
@@ -372,9 +372,8 @@ fn fold_layout_positions_respects_overlay_deleted() {
         entity_id: "wave-other".into(),
         kind: "layout".into(),
     };
-    let got =
-        replay::fold_layout_positions([set_a.clone(), delete_other, set_b.clone()], wave_id)
-            .expect("unrelated delete must not clear");
+    let got = replay::fold_layout_positions([set_a.clone(), delete_other, set_b.clone()], wave_id)
+        .expect("unrelated delete must not clear");
     // set_a's positions merged with set_b via the `.or(current)` fold —
     // this is the existing upsert semantics and not in scope of the
     // delete-fix, but assert the post-state is non-empty.

@@ -340,7 +340,10 @@ pub async fn derive_layout_positions(
     wave_id: &str,
 ) -> anyhow::Result<Option<serde_json::Map<String, serde_json::Value>>> {
     let log = repo.events_since(0, None).await?;
-    Ok(fold_layout_positions(log.into_iter().map(|(_id, ev)| ev), wave_id))
+    Ok(fold_layout_positions(
+        log.into_iter().map(|(_id, ev)| ev),
+        wave_id,
+    ))
 }
 
 /// Pure fold used by `derive_layout_positions` — exposed so tests can
