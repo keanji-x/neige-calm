@@ -52,6 +52,7 @@ fn hello(client_id: Uuid, terminal_id: &str) -> ClientMsg {
             supports_scrollback: false,
             supports_sixel: false,
             supports_images: false,
+            kernel_originated_input: false,
         },
     }
 }
@@ -644,4 +645,151 @@ fn byte_ring_evicts_oldest_chunk_when_over_budget() {
     let snap = ring.snapshot();
     assert!(snap.len() <= 100, "snapshot was {} bytes", snap.len());
     assert_eq!(snap, vec![b'b'; 80]);
+}
+
+// ---- kernel_originated_input capability --------------------------------
+//
+// PR-2.5: an observer that advertises `kernel_originated_input = true` in
+// its ClientHello is allowed to send `Input` frames as if it were owner.
+// Other owner-gated frames (ResizeCommit, Kill) stay owner-only.
+
+/// Drive a fresh state through a handshake as Observer, with the
+/// `kernel_originated_input` flag turned on. Returns the attached state
+/// + the broadcaster used. Caller must have already pre-registered an
+///   owner in `registry` so this attach defaults to Observer.
+fn attached_observer_with_kernel_input(
+    registry: &mut OwnerRegistry,
+    client_id: Uuid,
+) -> (TerminalSessionState, PtyBroadcaster) {
+    let broadcaster = PtyBroadcaster::new(1024);
+    let mut state = TerminalSessionState::new();
+    let session_id = Uuid::new_v4();
+    let hello = hello_with(client_id, |m| {
+        if let ClientMsg::ClientHello { capabilities, .. } = m {
+            capabilities.kernel_originated_input = true;
+        }
+    });
+    let effects = state.on_client_frame(
+        hello,
+        broadcaster.buffer(),
+        registry,
+        &ctx(&broadcaster, session_id),
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::SendToClient(DaemonMsg::ServerHello { .. }))),
+        "expected ServerHello in handshake effects, got {effects:?}"
+    );
+    assert!(state.is_attached());
+    (state, broadcaster)
+}
+
+#[test]
+fn observer_with_kernel_input_capability_can_send_input() {
+    let mut registry = OwnerRegistry::new();
+    // Pre-register the original owner so the kernel client attaches as
+    // Observer.
+    let _ = registry.on_attach(Uuid::new_v4(), None);
+
+    let (mut state, broadcaster) =
+        attached_observer_with_kernel_input(&mut registry, Uuid::new_v4());
+    assert_eq!(state.role(), Some(Role::Observer));
+    let session_id = Uuid::new_v4();
+
+    let effects = state.on_client_frame(
+        ClientMsg::Input(b"keys".to_vec()),
+        broadcaster.buffer(),
+        &mut registry,
+        &ctx(&broadcaster, session_id),
+    );
+
+    // MUST route the bytes to the PTY...
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::WriteToPty(b) if b == b"keys")),
+        "kernel-input observer Input should produce WriteToPty, got {effects:?}"
+    );
+    // ...and MUST NOT emit a NotOwner error.
+    assert!(
+        !effects.iter().any(|e| matches!(
+            e,
+            Effect::SendProtocolError {
+                code: ProtocolErrorCode::NotOwner,
+                ..
+            }
+        )),
+        "kernel-input observer Input must not raise NotOwner, got {effects:?}"
+    );
+}
+
+#[test]
+fn observer_with_kernel_input_capability_still_blocked_on_resize_commit() {
+    let mut registry = OwnerRegistry::new();
+    let _ = registry.on_attach(Uuid::new_v4(), None);
+
+    let (mut state, broadcaster) =
+        attached_observer_with_kernel_input(&mut registry, Uuid::new_v4());
+    let session_id = Uuid::new_v4();
+
+    let effects = state.on_client_frame(
+        ClientMsg::ResizeCommit {
+            epoch: 1,
+            cols: 100,
+            rows: 30,
+        },
+        broadcaster.buffer(),
+        &mut registry,
+        &ctx(&broadcaster, session_id),
+    );
+
+    assert!(
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::SendProtocolError {
+                code: ProtocolErrorCode::NotOwner,
+                ..
+            }
+        )),
+        "ResizeCommit with kernel_originated_input must still raise NotOwner, got {effects:?}"
+    );
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::ResizePty { .. })),
+        "ResizeCommit with kernel_originated_input must not actually resize, got {effects:?}"
+    );
+}
+
+#[test]
+fn observer_with_kernel_input_capability_still_blocked_on_kill() {
+    let mut registry = OwnerRegistry::new();
+    let _ = registry.on_attach(Uuid::new_v4(), None);
+
+    let (mut state, broadcaster) =
+        attached_observer_with_kernel_input(&mut registry, Uuid::new_v4());
+    let session_id = Uuid::new_v4();
+
+    let effects = state.on_client_frame(
+        ClientMsg::Kill,
+        broadcaster.buffer(),
+        &mut registry,
+        &ctx(&broadcaster, session_id),
+    );
+
+    assert!(
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::SendProtocolError {
+                code: ProtocolErrorCode::NotOwner,
+                ..
+            }
+        )),
+        "Kill with kernel_originated_input must still raise NotOwner, got {effects:?}"
+    );
+    assert!(
+        !effects.iter().any(|e| matches!(e, Effect::KillChild)),
+        "Kill with kernel_originated_input must not actually KillChild, got {effects:?}"
+    );
 }

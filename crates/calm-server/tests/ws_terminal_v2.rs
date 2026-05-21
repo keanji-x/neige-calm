@@ -84,6 +84,7 @@ fn hello() -> ClientMsg {
             supports_scrollback: false,
             supports_sixel: false,
             supports_images: false,
+            kernel_originated_input: false,
         },
     }
 }

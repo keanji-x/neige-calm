@@ -93,6 +93,7 @@ async fn protocol_error_targets_offending_client_only() {
             supports_scrollback: false,
             supports_sixel: false,
             supports_images: false,
+            kernel_originated_input: false,
         },
     };
     write_frame(&mut owner_wr, &owner_hello).await.unwrap();
@@ -129,6 +130,7 @@ async fn protocol_error_targets_offending_client_only() {
             supports_scrollback: false,
             supports_sixel: false,
             supports_images: false,
+            kernel_originated_input: false,
         },
     };
     write_frame(&mut observer_wr, &observer_hello)

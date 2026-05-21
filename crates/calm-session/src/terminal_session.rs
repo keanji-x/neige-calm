@@ -43,14 +43,24 @@
 //!   follow-up.
 
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
 use uuid::Uuid;
 
 use crate::terminal_model::{ScrollbackLimit, TerminalModel};
 use crate::{
-    ClientMsg, DaemonMsg, PROTOCOL_VERSION, ProtocolErrorCode, PtySize, RenderEncoding,
-    RenderPatch, RenderSnapshot, Role,
+    ClientCapabilities, ClientMsg, DaemonMsg, PROTOCOL_VERSION, ProtocolErrorCode, PtySize,
+    RenderEncoding, RenderPatch, RenderSnapshot, Role,
 };
+
+/// How long `render_rev` must remain stable (no further bumps) after at
+/// least one PTY chunk has been observed before [`RenderPlane`] reports
+/// the child as input-ready. Tuned for typical shell prompts which paint
+/// PS1 in a single CSI burst and then idle; agent CLIs (Claude / codex /
+/// gemini) also tend to render their startup banner in one go then wait
+/// for input. 100ms is long enough to coalesce a multi-chunk paint
+/// without making the kernel wait noticeably before injecting stdin.
+pub const CHILD_READY_QUIESCENT_MS: u64 = 100;
 
 /// Side-effects emitted by the protocol layer for the IO shell to enact.
 ///
@@ -268,6 +278,11 @@ pub struct TerminalSessionState {
     /// for back-pressure decisions in this PR (a follow-up wires it into
     /// `Backpressure` emission).
     last_render_acked_rev: Option<u32>,
+    /// Capabilities the client advertised in its `ClientHello`. Cached
+    /// here so post-handshake frame handlers can branch on flags like
+    /// `kernel_originated_input` without rethreading the original hello.
+    /// `None` pre-handshake.
+    capabilities: Option<ClientCapabilities>,
 }
 
 impl TerminalSessionState {
@@ -278,6 +293,7 @@ impl TerminalSessionState {
             role: None,
             resize_epoch: 0,
             last_render_acked_rev: None,
+            capabilities: None,
         }
     }
 
@@ -344,10 +360,26 @@ impl TerminalSessionState {
 
         match msg {
             ClientMsg::Input(b) => {
-                if self.role == Some(Role::Owner) {
+                // Two paths can authorize input:
+                // (1) Owner role — the default.
+                // (2) kernel_originated_input capability — only set by
+                //     the kernel's own DaemonClient over the
+                //     kernel-private unix socket (see field docs in
+                //     `crate::ClientCapabilities`). NOT extended to
+                //     ResizeCommit / Kill on purpose; the kernel relays
+                //     input but is not the source of truth for viewport
+                //     / lifecycle.
+                let kernel_input = self
+                    .capabilities
+                    .as_ref()
+                    .map(|c| c.kernel_originated_input)
+                    .unwrap_or(false);
+                if self.role == Some(Role::Owner) || kernel_input {
                     vec![Effect::WriteToPty(b)]
                 } else {
-                    vec![not_owner_error("Input requires owner role")]
+                    vec![not_owner_error(
+                        "Input requires owner role or kernel_originated_input capability",
+                    )]
                 }
             }
             ClientMsg::ResizeCommit { epoch, cols, rows } => {
@@ -501,6 +533,9 @@ impl TerminalSessionState {
                 self.attached = true;
                 self.client_id = Some(client_id);
                 self.role = Some(role);
+                // Cache capabilities for post-handshake gating
+                // (kernel_originated_input on Input frames, etc.).
+                self.capabilities = Some(capabilities.clone());
 
                 // In this PR the render plane is byte-passthrough: the
                 // snapshot's `data` is the ring's full content (raw PTY
@@ -704,6 +739,20 @@ pub struct RenderPlane {
     /// Backstop: tracks the previous `render_rev` we emitted so each
     /// `RenderPatch.prev_render_rev` is correctly chained.
     last_emitted_render_rev: u32,
+    /// Wall-clock instant of the most recent `render_rev` increase.
+    /// `None` until the first PTY chunk has been observed; reset on
+    /// every subsequent chunk that bumps the model's `rev()`. Drives
+    /// the [`detect_ready`] quiescent-window check.
+    ///
+    /// [`detect_ready`]: RenderPlane::detect_ready
+    last_rev_change_at: Option<Instant>,
+    /// `true` once [`detect_ready`] has fired `ChildReady`; suppresses
+    /// duplicate emissions. One-shot per session by design (the kernel
+    /// only needs the first ready signal — subsequent quiescent windows
+    /// are normal shell idle, not interesting).
+    ///
+    /// [`detect_ready`]: RenderPlane::detect_ready
+    child_ready_fired: bool,
 }
 
 impl RenderPlane {
@@ -720,6 +769,8 @@ impl RenderPlane {
             cols,
             rows,
             last_emitted_render_rev: 0,
+            last_rev_change_at: None,
+            child_ready_fired: false,
         }
     }
 
@@ -728,7 +779,15 @@ impl RenderPlane {
     /// and emit a `Broadcast(RenderPatch{ encoding: Vt, data: raw bytes,
     /// render_rev: model.rev(), prev_render_rev: previous,
     /// pty_seq: bumped })`.
+    ///
+    /// Also bookkeeps [`Self::last_rev_change_at`] for the `ChildReady`
+    /// quiescent-window detector — whenever the model's `rev()` actually
+    /// bumps, the timer resets to "now", which keeps
+    /// [`Self::detect_ready`] from firing while the prompt is still
+    /// being painted.
     pub fn on_pty_chunk(&mut self, bytes: Vec<u8>) -> Vec<Effect> {
+        let prev_rev = self.model.rev();
+
         // 1. Feed model. `rev()` may or may not bump.
         self.model.feed(&bytes);
 
@@ -741,6 +800,16 @@ impl RenderPlane {
         let prev = self.last_emitted_render_rev;
         self.last_emitted_render_rev = new_rev;
 
+        // 4. ChildReady quiescent timer: reset whenever the model's
+        //    `rev()` actually bumped. `detect_ready` then fires once
+        //    the timer has been idle for `CHILD_READY_QUIESCENT_MS`.
+        //    A no-op chunk (pure C0/SGR that flips back to the same
+        //    state) leaves the timer alone — which is what we want:
+        //    a child that's silently echoing nothing visible IS idle.
+        if new_rev != prev_rev {
+            self.last_rev_change_at = Some(Instant::now());
+        }
+
         vec![Effect::Broadcast(DaemonMsg::RenderPatch(RenderPatch {
             render_rev: new_rev,
             prev_render_rev: prev,
@@ -748,6 +817,45 @@ impl RenderPlane {
             encoding: RenderEncoding::Vt,
             data: bytes,
         }))]
+    }
+
+    /// Poll for the one-shot `ChildReady` signal. Returns `Some(Effect)`
+    /// the *first* time the quiescent window has elapsed since the last
+    /// `render_rev` change AND at least one PTY chunk has been observed;
+    /// returns `None` on every subsequent call (or before the window
+    /// elapses).
+    ///
+    /// Driver: the daemon shell calls this on a 50ms `tokio::time::interval`
+    /// in terminal mode. Chat mode never calls it. The poll-based shape
+    /// avoids spawning a deadline task per chunk (which would race the
+    /// next chunk's reset of `last_rev_change_at`).
+    ///
+    /// Returns `Effect::Broadcast(DaemonMsg::ChildReady { ... })` carrying
+    /// the snapshot of `pty_seq` and `render_rev` at the moment of
+    /// detection — the client can correlate against its own cursors to
+    /// know exactly what state the child reached "ready" in.
+    pub fn detect_ready(&mut self) -> Option<Effect> {
+        if self.child_ready_fired {
+            return None;
+        }
+        let last = self.last_rev_change_at?;
+        if last.elapsed() >= Duration::from_millis(CHILD_READY_QUIESCENT_MS) {
+            self.child_ready_fired = true;
+            return Some(Effect::Broadcast(DaemonMsg::ChildReady {
+                pty_seq: self.pty_seq,
+                render_rev: self.model.rev(),
+            }));
+        }
+        None
+    }
+
+    /// Whether `ChildReady` has already been fired this session.
+    /// Production code shouldn't branch on this — call
+    /// [`Self::detect_ready`] and act on the returned `Option`; the
+    /// accessor is here for acceptance tests that want to assert the
+    /// one-shot state machine without polling the channel.
+    pub fn child_ready_fired(&self) -> bool {
+        self.child_ready_fired
     }
 
     /// Child exited. Emit `TerminalExited` carrying current cursors so
