@@ -102,8 +102,22 @@ export function WavePage({
   const [editingTitle, setEditingTitle] = useState(false);
   const [draftTitle, setDraftTitle] = useState(wave.title);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
+  // Keep a ref on the display span so we can return focus to it when
+  // edit mode exits — both for the Escape-cancel path and the
+  // Enter/blur-commit path. Without this, focus would drop to body
+  // after the input unmounts and the keyboard user would lose place.
+  const titleDisplayRef = useRef<HTMLSpanElement | null>(null);
+  // When a commit/cancel restores focus to the display span we set
+  // this flag so the effect can run once the unmount has flushed.
+  const restoreTitleFocus = useRef(false);
   useEffect(() => {
-    if (!editingTitle) setDraftTitle(wave.title);
+    if (!editingTitle) {
+      setDraftTitle(wave.title);
+      if (restoreTitleFocus.current) {
+        restoreTitleFocus.current = false;
+        titleDisplayRef.current?.focus();
+      }
+    }
   }, [editingTitle, wave.title]);
   const startRename = () => {
     if (!onRenameWave) return;
@@ -116,9 +130,14 @@ export function WavePage({
   };
   const commitRename = async () => {
     const trimmed = draftTitle.trim();
+    restoreTitleFocus.current = true;
     setEditingTitle(false);
     if (!trimmed || trimmed === wave.title || !onRenameWave) return;
     await onRenameWave(wave.id, trimmed);
+  };
+  const cancelRename = () => {
+    restoreTitleFocus.current = true;
+    setEditingTitle(false);
   };
 
   // Show eta pill only when there's text to show.
@@ -153,23 +172,37 @@ export function WavePage({
               onChange={(e) => setDraftTitle(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') void commitRename();
-                else if (e.key === 'Escape') setEditingTitle(false);
+                else if (e.key === 'Escape') cancelRename();
               }}
               onBlur={() => void commitRename()}
               aria-label="Wave title"
             />
           ) : (
-            // TODO(a11y-#56-slice-3): give the click-to-rename title a
-            // proper keyboard entry path (button or role+tabIndex+keyDown)
-            // so rename mode is reachable without a pointer. Slice 1 only
-            // adds the focus indicator to the input that appears once
-            // editing has started.
-            // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- deferred to slice 3 (see TODO above)
+            // Keyboard entry: the span is tab-stop + role=button so Enter/F2
+            // open rename mode without needing a pointer. The visual styling
+            // is unchanged (cursor: text); only the focus-visible ring shows
+            // to keyboard users. See calm.css `.wave-title[role="button"]`.
             <span
+              ref={titleDisplayRef}
               className="wave-title"
               onClick={onRenameWave ? startRename : undefined}
+              onKeyDown={
+                onRenameWave
+                  ? (e) => {
+                      if (e.key === 'Enter' || e.key === 'F2') {
+                        e.preventDefault();
+                        startRename();
+                      }
+                    }
+                  : undefined
+              }
               style={onRenameWave ? { cursor: 'text' } : undefined}
               title={onRenameWave ? 'Click to rename' : undefined}
+              role={onRenameWave ? 'button' : undefined}
+              tabIndex={onRenameWave ? 0 : undefined}
+              aria-label={
+                onRenameWave ? `Rename wave: ${wave.title}` : undefined
+              }
             >
               {wave.title}
             </span>

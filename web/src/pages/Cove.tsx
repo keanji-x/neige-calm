@@ -197,11 +197,22 @@ function EditableTitle({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  // Display-mode button ref so we can return focus to it when edit mode
+  // exits (Escape-cancel or Enter/blur-commit). Without this, focus
+  // drops to body and the keyboard user loses their place.
+  const displayRef = useRef<HTMLButtonElement | null>(null);
+  const restoreDisplayFocus = useRef(false);
 
   // External value changes (e.g. WS event from another tab) should not
   // clobber an in-flight edit; only sync `draft` when not editing.
   useEffect(() => {
-    if (!editing) setDraft(value);
+    if (!editing) {
+      setDraft(value);
+      if (restoreDisplayFocus.current) {
+        restoreDisplayFocus.current = false;
+        displayRef.current?.focus();
+      }
+    }
   }, [editing, value]);
 
   const enter = () => {
@@ -212,9 +223,13 @@ function EditableTitle({
       inputRef.current?.select();
     });
   };
-  const cancel = () => setEditing(false);
+  const cancel = () => {
+    restoreDisplayFocus.current = true;
+    setEditing(false);
+  };
   const save = async () => {
     const trimmed = draft.trim();
+    restoreDisplayFocus.current = true;
     setEditing(false);
     if (!trimmed || trimmed === value) return;
     await onSave(trimmed);
@@ -247,20 +262,32 @@ function EditableTitle({
   }
   // Click-to-edit: no pencil affordance — the title itself is the
   // affordance. `cursor: text` is the hint; click → enter edit mode.
-  // TODO(a11y-#56-slice-3): give the click-to-rename heading a proper
-  // keyboard entry path (Enter/Space to enter edit mode, role+tabIndex, or
-  // a dedicated pencil button) so the rename flow is reachable without a
-  // pointer. Slice 1 only sets up the focus indicator on the input that
-  // appears once editing has started.
+  //
+  // Keyboard entry: rendered as a real <button> so the role is intrinsic
+  // (Enter/Space activate it for free) and screen readers announce it as
+  // an actionable control. We add F2 explicitly for the Windows rename
+  // convention, and call `preventDefault` on both to suppress the native
+  // button click that Space/Enter would synthesize. The <h1> wraps the
+  // button so heading-level navigation still lands on "the title" without
+  // sacrificing the interactive semantics.
   return (
-    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- deferred to slice 3 (see TODO above)
-    <h1
-      className="h-display"
-      style={{ flex: 1, margin: 0, cursor: 'text' }}
-      onClick={enter}
-      title="Click to rename"
-    >
-      {value}.
+    <h1 className="h-display" style={{ flex: 1, margin: 0 }}>
+      <button
+        ref={displayRef}
+        type="button"
+        className="h-display-rename"
+        onClick={enter}
+        onKeyDown={(e) => {
+          if (e.key === 'F2') {
+            e.preventDefault();
+            enter();
+          }
+        }}
+        title="Click to rename"
+        aria-label={`Rename ${ariaLabel.toLowerCase()}: ${value}`}
+      >
+        {value}.
+      </button>
     </h1>
   );
 }
