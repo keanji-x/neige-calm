@@ -468,19 +468,33 @@ input, textarea { font: inherit; color: inherit; }
 .waves {
   display: flex; flex-direction: column;
 }
+/* WaveRow is a real <button> (Slice 9 follow-up to #56/#60). The wrapper
+   owns `position: relative` so the sibling hover-reveal × delete button
+   can sit absolutely-positioned over the row's right edge without
+   nesting interactive elements (which would trip axe's
+   `nested-interactive` rule). */
+.wave-row-wrapper { position: relative; }
 .wave-row {
   display: grid;
   grid-template-columns: 26px 1fr auto;
   gap: 14px;
   align-items: center;
-  padding: 18px 4px;
+  /* Right padding leaves room for the hover-reveal × so it doesn't
+     overlap the eta/progress cluster on the right. */
+  padding: 18px 32px 18px 4px;
+  border: none;
   border-bottom: 1px solid var(--hairline);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  width: 100%;
   text-align: left;
   transition: background 0.1s;
   cursor: pointer;
 }
-.wave-row:hover { background: oklch(0% 0 0 / 0.018); }
-[data-theme="dark"] .wave-row:hover { background: oklch(100% 0 0 / 0.025); }
+.wave-row:disabled { cursor: default; }
+.wave-row:hover:not(:disabled) { background: oklch(0% 0 0 / 0.018); }
+[data-theme="dark"] .wave-row:hover:not(:disabled) { background: oklch(100% 0 0 / 0.025); }
 .wave-row .glyph {
   width: 26px; height: 26px;
   display: grid; place-items: center;
@@ -515,9 +529,11 @@ input, textarea { font: inherit; color: inherit; }
 
 /* Per-row delete affordance — hidden until the row is hovered or
    keyboard-focused. Sits absolutely so it doesn't push the existing
-   eta/progress cluster around when it appears. */
-.wave-row { position: relative; }
-.wave-row .wave-row-delete {
+   eta/progress cluster around when it appears. The delete is a SIBLING
+   of the row button inside `.wave-row-wrapper`, never nested inside the
+   row — see WaveRow.tsx. Hover-reveal therefore keys off the wrapper,
+   not the row. */
+.wave-row-wrapper .wave-row-delete {
   position: absolute;
   right: 6px;
   top: 50%;
@@ -535,9 +551,9 @@ input, textarea { font: inherit; color: inherit; }
   opacity: 0;
   transition: opacity 0.12s, color 0.12s, background 0.12s;
 }
-.wave-row:hover .wave-row-delete,
-.wave-row:focus-within .wave-row-delete { opacity: 1; }
-.wave-row .wave-row-delete:hover {
+.wave-row-wrapper:hover .wave-row-delete,
+.wave-row-wrapper:focus-within .wave-row-delete { opacity: 1; }
+.wave-row-wrapper .wave-row-delete:hover {
   background: var(--warn-soft);
   color: var(--warn);
 }
