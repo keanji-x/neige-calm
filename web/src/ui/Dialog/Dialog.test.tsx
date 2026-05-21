@@ -210,4 +210,69 @@ describe('Dialog focus contract', () => {
     // restoreFocusRef wins over the captured trigger.
     expect(document.activeElement).toBe(screen.getByTestId('restore-target'));
   });
+
+  // Regression guard for the bug surfaced in PR #73 (slice 7 of #56) and
+  // folded into this followup from issue/PR #75:
+  //
+  // The Dialog declares two `useEffect`s gated on `open` — first the
+  // background-inert effect, then the focus-restore effect. React runs
+  // effect cleanups in declaration order on the same render pass, so on
+  // close the inert blanket is removed BEFORE focus is restored. If a
+  // future refactor flipped the declaration order, focus-restore would
+  // run first and target an element whose ancestor is still `inert`,
+  // which silently no-ops in real browsers (jsdom does not model this
+  // exactly, so we observe the inert *attribute* directly).
+  //
+  // Strategy: render the trigger as a sibling of the portal root, spy
+  // on its `focus()` method, and capture whether the sibling still has
+  // `inert` set at the moment focus is restored. With the correct
+  // declaration order it must be removed already.
+  it('removes background inert before restoring focus on close', async () => {
+    // Sibling subtree under document.body — same shape as the AddPanel
+    // trigger that surfaced the original bug.
+    const sibling = document.createElement('div');
+    sibling.id = 'app-root';
+    document.body.appendChild(sibling);
+
+    const { rerender, unmount } = render(
+      <ClosedThenOpen open={false} onClose={() => {}} />,
+      // Mount inside the sibling so the modal's overlay portal is a
+      // *separate* direct child of document.body — only then does the
+      // inert effect mark `sibling` as inert.
+      { container: sibling },
+    );
+    const trigger = screen.getByTestId('trigger');
+    trigger.focus();
+    expect(document.activeElement).toBe(trigger);
+
+    rerender(<ClosedThenOpen open onClose={() => {}} />);
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+    // Sanity: inert is applied while open.
+    expect(sibling.hasAttribute('inert')).toBe(true);
+
+    // Spy on the trigger's focus() — record whether `sibling` still has
+    // `inert` set at the moment focus-restore runs.
+    let inertAtFocusRestore: boolean | null = null;
+    const realFocus = trigger.focus.bind(trigger);
+    trigger.focus = () => {
+      inertAtFocusRestore = sibling.hasAttribute('inert');
+      realFocus();
+    };
+
+    // Close. React runs effect cleanups in declaration order:
+    //   1. inert cleanup → removes `inert` from sibling
+    //   2. focus-restore cleanup → calls trigger.focus()
+    // If the declarations were ever flipped, step 2 would run first and
+    // observe inert=true.
+    rerender(<ClosedThenOpen open={false} onClose={() => {}} />);
+
+    expect(inertAtFocusRestore).toBe(false);
+    // And focus actually landed back on the trigger (matches the
+    // existing restore-on-close test, but worth pinning here too).
+    expect(document.activeElement).toBe(trigger);
+
+    unmount();
+  });
 });
