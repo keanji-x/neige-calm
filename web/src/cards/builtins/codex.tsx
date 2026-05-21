@@ -83,6 +83,8 @@ function CodexCardImpl({ card }: { card: CodexCardData }) {
     if (!cardId) return;
     const stream = sharedEventStream();
     stream.addTopic(`card:${cardId}`);
+    // Second arg is the envelope `EventMeta` ({id, eventVersion}); codex
+    // only cares about the payload, so we ignore it.
     const off = stream.on((ev) => {
       if (ev.ev === 'codex.hook' && ev.data.card_id === cardId) {
         const payload = (ev.data.payload ?? {}) as Record<string, unknown>;

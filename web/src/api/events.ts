@@ -40,7 +40,34 @@
 import type { WireEvent } from './wire';
 import { wireEventSchema } from './schemas';
 
-type Listener = (ev: WireEvent) => void;
+/**
+ * Per-frame envelope metadata the server stamps onto every broadcast.
+ *
+ *   * `id` — `events.id` of the persisted row this broadcast came from
+ *     (Scope D's cursor protocol). `0` is reserved for synthetic emits
+ *     and never produced by the auto-increment, so it's safe to use as a
+ *     "no persisted row" sentinel if a listener needs to discriminate
+ *     (today, only the cursor advancer does — see `advanceCursor`).
+ *   * `eventVersion` — value of the `event_version` column on the
+ *     persisted row (migration 0006). Pre-sync rows backfill to `1`;
+ *     fresh writes carry `SYNC_EVENT_VERSION`. Exposed here so test
+ *     traces can pin the wire-protocol contract they captured against.
+ *
+ * Option α (two-arg callback) was picked over Option β (widen `WireEvent`)
+ * because the validated `WireEvent` type is generated from the Rust
+ * `Event` enum via ts-rs — that's a closed payload schema that doesn't
+ * include envelope-level routing fields. Stuffing `_id` / `eventVersion`
+ * into it would either fork the generated type or require a wrapper
+ * shape; keeping the meta as a separate argument lets callers ignore it
+ * when they don't care (most do today) without touching the event
+ * shape's semantics.
+ */
+export interface EventMeta {
+  id: number;
+  eventVersion: number;
+}
+
+type Listener = (ev: WireEvent, meta: EventMeta) => void;
 type ReplayCompleteListener = () => void;
 type SnapshotRequiredListener = () => void;
 
@@ -182,7 +209,7 @@ export class EventStream {
       console.warn('event bus: non-object payload', raw);
       return;
     }
-    const envelope = json as { _id?: unknown; ev?: unknown };
+    const envelope = json as { _id?: unknown; eventVersion?: unknown; ev?: unknown };
 
     // ---- control frames first -----------------------------------------
     if (envelope.ev === REPLAY_COMPLETE_EV) {
@@ -214,7 +241,19 @@ export class EventStream {
       return;
     }
     const parsed: WireEvent = result.data as WireEvent;
-    for (const fn of this.listeners) fn(parsed);
+    // Envelope meta: `_id` and `eventVersion` aren't in the discriminated-
+    // union schema (they live on the routing envelope, not the kernel
+    // event payload). Tolerate missing / wrong-typed values gracefully —
+    // synthetic emissions can omit them, and a malformed envelope still
+    // gets a `0` so the trace shape stays uniform for test helpers.
+    const meta: EventMeta = {
+      id: typeof envelope._id === 'number' && Number.isFinite(envelope._id) ? envelope._id : 0,
+      eventVersion:
+        typeof envelope.eventVersion === 'number' && Number.isFinite(envelope.eventVersion)
+          ? envelope.eventVersion
+          : 0,
+    };
+    for (const fn of this.listeners) fn(parsed, meta);
   }
 
   /** Maybe-advance `lastEventId` from a wire `_id`. Tolerates missing,

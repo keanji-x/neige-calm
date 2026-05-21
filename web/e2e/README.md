@@ -42,6 +42,34 @@ boot the server (see the `webServer` comment in
   `Scratch` cove navigates to `/calm/cove/$id`. Just enough to
   catch a broken router or a broken `/api/coves` route.
 
+- `a11y-trace-smoke.spec.ts` — smoke test for the event-trace
+  exposure plumbing (issue #56 slice 5). Runs under the separate
+  `a11y` Playwright project (see "Projects" below). Slice 6 will
+  add the real a11y assertions on top of the same helpers.
+
 Add more specs as flows stabilize — keep them as narrowly scoped as
 the golden path so a single broken seed doesn't take the whole
 suite down.
+
+## Projects
+
+`playwright.config.ts` defines two test projects with different
+backends:
+
+- **`chromium`** (default): targets the developer `make dev` stack
+  on `:4040`. Use for any test that exercises the real seeded
+  MockRepo. Specs: `golden-path.spec.ts`, `wave-create.spec.ts`.
+  Run with `npx playwright test --project=chromium`.
+
+- **`a11y`**: targets the `cargo run --bin replay --serve` binary
+  spawned by `_setup/replay-server.setup.ts`, preloaded with a
+  curated event-trace fixture from
+  `crates/calm-server/tests/fixtures/events/`. Each test starts
+  from a hermetic, known-state server, and tests can read the
+  event trace via `helpers/trace.ts` (`window.__neigeEvents__`).
+  Run with `npx playwright test --project=a11y`. Requires `cargo`
+  on PATH; default fixture override via `NEIGE_FIXTURE=<path>`.
+
+The default `npx playwright test` (no `--project=`) runs both —
+which means cargo must be available. CI does not currently invoke
+Playwright; e2e specs are run locally only.
