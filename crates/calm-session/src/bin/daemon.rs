@@ -2,13 +2,15 @@
 //!
 //! Two modes share the same binary, socket, and framing:
 //!
-//! - **Terminal mode** (default): spawn the user's program under a PTY,
-//!   broadcast raw PTY output to every attached client, keep a small ring
-//!   buffer of recent bytes for replay. The daemon does NO terminal-state
-//!   parsing — cursor / scrollback / cell-grid interpretation lives on the
-//!   client side (xterm.js). This trades a slightly larger reattach payload
-//!   (~1 MiB instead of a single-screen snapshot) for never having a
-//!   server-side vt100 parser to maintain or hit edge cases on.
+//! - **Terminal mode** (default): spawn the user's program under a PTY.
+//!   PR-2 introduced a server-side VT model (`RenderPlane` →
+//!   `TerminalModel` in `calm-session/src/terminal_model.rs`) that
+//!   parses every PTY byte into a cell grid + scrollback, and emits
+//!   geometry-bound `RenderSnapshot` / `RenderPatch` frames on
+//!   `ClientHello` and PTY chunks respectively. Patch `data` is still
+//!   the raw PTY bytes (`encoding = Vt`) so xterm.js can drive its own
+//!   grid; the snapshot is the model's serialized viewport at the
+//!   client's `desired_size`. Resizes broadcast a fresh `RenderSnapshot`.
 //!
 //! - **Chat mode** (`--mode chat`): spawn the Node sidecar runner
 //!   (`runners/neige-chat-runner/cli.js`) under
@@ -40,8 +42,9 @@ use tokio::process::{ChildStdin, Command};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use uuid::Uuid;
 
+use calm_session::terminal_model::ScrollbackLimit;
 use calm_session::terminal_session::{
-    Effect, OwnerRegistry, PtyBroadcaster, SessionContext, TerminalSessionState,
+    Effect, OwnerRegistry, RenderPlane, SessionContext, TerminalSessionState,
 };
 use calm_session::{ClientMsg, DaemonMsg, PtySize, read_frame, write_frame};
 
@@ -171,13 +174,20 @@ impl EventBuffer {
     }
 }
 
-/// Shared PTY broadcaster. Holds the replay ring and turns PTY chunks /
-/// child-exit into [`Effect::Broadcast`]s; the IO shell pushes those onto
-/// `event_tx`.
-type SharedBroadcaster = Arc<Mutex<PtyBroadcaster>>;
+/// Shared render plane. Owns the server-side [`TerminalModel`] (VT-driven
+/// grid + scrollback) and the transcript byte ring. Each PTY chunk feeds
+/// the model and produces an [`Effect::Broadcast`] carrying a
+/// `RenderPatch{ encoding: Vt, data: raw bytes, render_rev: model.rev() }`.
+/// The IO shell pushes those onto `event_tx`.
+type SharedRenderPlane = Arc<Mutex<RenderPlane>>;
 type SharedEventBuffer = Arc<Mutex<EventBuffer>>;
 type SharedMaster = Arc<Mutex<Box<dyn MasterPty + Send>>>;
 type SharedOwnerRegistry = Arc<Mutex<OwnerRegistry>>;
+
+/// Default scrollback line cap for the terminal model. Mirrors xterm's
+/// vanilla default. Surfaced as a constant so we can parameterize later
+/// without re-threading through every call site.
+const SCROLLBACK_MAX_LINES: usize = 2000;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -243,8 +253,12 @@ async fn run_terminal(cli: Cli) -> anyhow::Result<()> {
         Arc::new(Mutex::new(child.clone_killer()));
     drop(pair.slave);
 
-    let broadcaster: SharedBroadcaster =
-        Arc::new(Mutex::new(PtyBroadcaster::new(cli.buffer_bytes)));
+    let render_plane: SharedRenderPlane = Arc::new(Mutex::new(RenderPlane::new(
+        cli.cols,
+        cli.rows,
+        cli.buffer_bytes,
+        SCROLLBACK_MAX_LINES,
+    )));
     let master: SharedMaster = Arc::new(Mutex::new(pair.master));
     // Daemon-level owner registry. Single instance shared across every
     // accepted connection; the first successful handshake becomes Owner,
@@ -254,14 +268,14 @@ async fn run_terminal(cli: Cli) -> anyhow::Result<()> {
     // client in `DaemonMsg::ServerHello.session_id`.
     let session_id = Uuid::new_v4();
     // Broadcast channel carries the already-shaped DaemonMsg frames produced
-    // by PtyBroadcaster::on_pty_chunk / on_child_exit. The handler tasks
-    // forward those onto each client's socket verbatim.
+    // by `RenderPlane::on_pty_chunk` / `on_child_exit` / `on_resize`. The
+    // handler tasks forward those onto each client's socket verbatim.
     let (event_tx, _) = broadcast::channel::<DaemonMsg>(2048);
     let (stdin_tx, stdin_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
     // ---- PTY reader → buffer + broadcast ----
     let reader = master.lock().unwrap().try_clone_reader()?;
-    spawn_pty_reader(reader, broadcaster.clone(), event_tx.clone());
+    spawn_pty_reader(reader, render_plane.clone(), event_tx.clone());
 
     // ---- PTY writer ← client stdin ----
     let writer = master.lock().unwrap().take_writer()?;
@@ -269,7 +283,7 @@ async fn run_terminal(cli: Cli) -> anyhow::Result<()> {
 
     // ---- Child-exit watcher ----
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-    spawn_child_waiter(child, broadcaster.clone(), event_tx.clone(), shutdown_tx);
+    spawn_child_waiter(child, render_plane.clone(), event_tx.clone(), shutdown_tx);
 
     // ---- Socket ----
     let listener = bind_socket(&cli.sock)?;
@@ -279,20 +293,16 @@ async fn run_terminal(cli: Cli) -> anyhow::Result<()> {
     notify_ready(cli.ready_fd);
 
     // ---- Accept loop ----
-    let initial_cols = cli.cols;
-    let initial_rows = cli.rows;
     let accept_task = tokio::spawn(accept_loop(
         listener,
         event_tx.clone(),
-        broadcaster.clone(),
+        render_plane.clone(),
         master.clone(),
         stdin_tx.clone(),
         killer.clone(),
         owner_registry.clone(),
         session_id,
         cli.id.to_string(),
-        initial_cols,
-        initial_rows,
     ));
 
     // Block until the child exits.
@@ -447,12 +457,14 @@ fn notify_ready(fd: Option<i32>) {
 }
 
 /// Drain PTY master stdout. Each chunk is pumped through
-/// [`PtyBroadcaster::on_pty_chunk`] which appends to the replay ring and
-/// returns an [`Effect::Broadcast`]; we forward the underlying [`DaemonMsg`]
-/// onto the broadcast channel for every attached client to see.
+/// [`RenderPlane::on_pty_chunk`] which feeds the VT model (bumping
+/// `render_rev` on visible state change), appends to the transcript ring,
+/// and returns an [`Effect::Broadcast`] carrying a `RenderPatch`. We
+/// forward the underlying [`DaemonMsg`] onto the broadcast channel for
+/// every attached client to see.
 fn spawn_pty_reader(
     mut reader: Box<dyn std::io::Read + Send>,
-    broadcaster: SharedBroadcaster,
+    render_plane: SharedRenderPlane,
     event_tx: broadcast::Sender<DaemonMsg>,
 ) {
     std::thread::spawn(move || {
@@ -462,8 +474,8 @@ fn spawn_pty_reader(
                 Ok(0) => break, // EOF; child closed stdout — child-waiter will signal exit
                 Ok(n) => {
                     let bytes = buf[..n].to_vec();
-                    let effects = match broadcaster.lock() {
-                        Ok(mut b) => b.on_pty_chunk(bytes),
+                    let effects = match render_plane.lock() {
+                        Ok(mut rp) => rp.on_pty_chunk(bytes),
                         Err(_) => Vec::new(),
                     };
                     apply_broadcaster_effects(&event_tx, effects);
@@ -478,18 +490,18 @@ fn spawn_pty_reader(
     });
 }
 
-/// Translate a list of effects produced by [`PtyBroadcaster`] into broadcast
-/// channel sends. The PTY-byte plane never emits anything but
-/// [`Effect::Broadcast`] today, so the other arms are unreachable from this
-/// caller — but we match exhaustively so a future Effect addition is a
-/// compile error here rather than a silent drop.
+/// Translate a list of effects produced by [`RenderPlane`] (or, in older
+/// chat-mode paths, [`PtyBroadcaster`]) into broadcast channel sends.
+/// The render plane only emits `Effect::Broadcast` today; the other arms
+/// are unreachable from this caller — we match exhaustively so a future
+/// `Effect` addition is a compile error here rather than a silent drop.
 fn apply_broadcaster_effects(tx: &broadcast::Sender<DaemonMsg>, effects: Vec<Effect>) {
     for eff in effects {
         match eff {
             Effect::Broadcast(msg) => {
                 let _ = tx.send(msg);
             }
-            // PtyBroadcaster only emits Broadcast today; the other variants
+            // RenderPlane only emits Broadcast today; the other variants
             // belong to the client-frame state machine.
             Effect::SendToClient(_)
             | Effect::ResizePty { .. }
@@ -501,7 +513,7 @@ fn apply_broadcaster_effects(tx: &broadcast::Sender<DaemonMsg>, effects: Vec<Eff
             | Effect::BroadcastOwnerChanged(_)
             | Effect::ProtocolViolation(_) => {
                 tracing::warn!(
-                    "PtyBroadcaster emitted non-Broadcast effect; dropping (this is a bug)"
+                    "RenderPlane emitted non-Broadcast effect; dropping (this is a bug)"
                 );
             }
         }
@@ -525,7 +537,7 @@ fn spawn_pty_writer(
 
 fn spawn_child_waiter(
     mut child: Box<dyn portable_pty::Child + Send + Sync>,
-    broadcaster: SharedBroadcaster,
+    render_plane: SharedRenderPlane,
     event_tx: broadcast::Sender<DaemonMsg>,
     shutdown_tx: oneshot::Sender<()>,
 ) {
@@ -533,8 +545,8 @@ fn spawn_child_waiter(
         let status = child.wait().ok();
         let code = status.map(|s| s.exit_code() as i32);
         tracing::info!(?code, "child wait returned");
-        let effects = match broadcaster.lock() {
-            Ok(mut b) => b.on_child_exit(code),
+        let effects = match render_plane.lock() {
+            Ok(mut rp) => rp.on_child_exit(code),
             Err(_) => Vec::new(),
         };
         apply_broadcaster_effects(&event_tx, effects);
@@ -620,22 +632,20 @@ fn spawn_chat_stdin_writer(mut stdin: ChildStdin, mut rx: mpsc::UnboundedReceive
 async fn accept_loop(
     listener: UnixListener,
     event_tx: broadcast::Sender<DaemonMsg>,
-    broadcaster: SharedBroadcaster,
+    render_plane: SharedRenderPlane,
     master: SharedMaster,
     stdin_tx: mpsc::UnboundedSender<Vec<u8>>,
     killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
     owner_registry: SharedOwnerRegistry,
     session_id: Uuid,
     terminal_id: String,
-    initial_cols: u16,
-    initial_rows: u16,
 ) {
     loop {
         match listener.accept().await {
             Ok((sock, _)) => {
                 let event_rx = event_tx.subscribe();
                 let event_tx_inner = event_tx.clone();
-                let broadcaster = broadcaster.clone();
+                let render_plane = render_plane.clone();
                 let master = master.clone();
                 let stdin_tx = stdin_tx.clone();
                 let killer = killer.clone();
@@ -646,15 +656,13 @@ async fn accept_loop(
                         sock,
                         event_rx,
                         event_tx_inner,
-                        broadcaster,
+                        render_plane,
                         master,
                         stdin_tx,
                         killer,
                         owner_registry,
                         session_id,
                         terminal_id,
-                        initial_cols,
-                        initial_rows,
                     )
                     .await
                     {
@@ -699,50 +707,89 @@ async fn accept_chat_loop(
 #[allow(clippy::too_many_arguments)]
 async fn handle_client(
     sock: UnixStream,
-    mut event_rx: broadcast::Receiver<DaemonMsg>,
+    event_rx: broadcast::Receiver<DaemonMsg>,
     event_tx: broadcast::Sender<DaemonMsg>,
-    broadcaster: SharedBroadcaster,
+    render_plane: SharedRenderPlane,
     master: SharedMaster,
     stdin_tx: mpsc::UnboundedSender<Vec<u8>>,
     killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
     owner_registry: SharedOwnerRegistry,
     session_id: Uuid,
     terminal_id: String,
-    initial_cols: u16,
-    initial_rows: u16,
 ) -> anyhow::Result<()> {
     let (mut rd, mut wr) = sock.into_split();
     let mut state = TerminalSessionState::new();
+
+    // Per-connection direct-message channel. Used for:
+    //   - `Effect::SendProtocolError` post-handshake (so NotOwner errors
+    //     only reach the offending client — fixes PR-1 review nit #1).
+    //   - `Effect::SendToClient` post-handshake (currently unused, but
+    //     routed here for symmetry).
+    //   - Backpressure: `SnapshotRequired` + fresh `RenderSnapshot` after
+    //     a broadcast lag.
+    //
+    // Channel is unbounded — these messages are rare and small.
+    let (per_client_tx, mut per_client_rx) = mpsc::unbounded_channel::<DaemonMsg>();
 
     // First frame must be ClientHello (v2). Synchronously translate it into
     // effects, then write `ServerHello` BEFORE spawning the broadcast
     // fan-out task. That guarantees no `RenderPatch` frame can land on the
     // socket ahead of `ServerHello`.
     let first: ClientMsg = read_frame(&mut rd).await?;
-    let (first_effects, current_owner) = {
-        let guard = broadcaster.lock().unwrap();
+    // Capture geometry / scrollback request from the hello before the
+    // state machine consumes it — needed to rebuild a geometry-bound
+    // snapshot below.
+    let (desired_size, scrollback_request) = match &first {
+        ClientMsg::ClientHello {
+            desired_size,
+            initial_scrollback,
+            ..
+        } => (
+            Some(*desired_size),
+            Some(scrollback_request(*initial_scrollback)),
+        ),
+        _ => (None, None),
+    };
+
+    let (first_effects, current_owner, current_pty_size) = {
+        let guard = render_plane.lock().unwrap();
         let mut reg = owner_registry.lock().unwrap();
+        let current_pty_size = guard.current_size();
         let ctx = SessionContext {
             terminal_id: &terminal_id,
             session_id,
-            pty_size: PtySize {
-                cols: initial_cols,
-                rows: initial_rows,
-                pixel_width: None,
-                pixel_height: None,
-            },
+            pty_size: current_pty_size,
             pty_seq_head: guard.pty_seq_head(),
             pty_seq_tail: guard.pty_seq(),
             render_rev: guard.render_rev(),
         };
-        let eff = state.on_client_frame(first, guard.buffer(), &mut reg, &ctx);
-        (eff, reg.current_owner())
+        let eff = state.on_client_frame(first, guard.transcript(), &mut reg, &ctx);
+        (eff, reg.current_owner(), current_pty_size)
     };
     let mut handshake_failed = false;
     for eff in first_effects {
         match eff {
-            Effect::ResizePty { cols, rows } => apply_resize(&master, cols, rows),
+            Effect::ResizePty { cols, rows } => {
+                apply_resize(&master, cols, rows);
+                if let Ok(mut rp) = render_plane.lock() {
+                    // Also resize the model so its grid matches the new PTY
+                    // geometry. We swallow the broadcast effect this
+                    // produces — it would fire a `RenderSnapshot` on every
+                    // attach, which is redundant with the ServerHello
+                    // snapshot we're about to send.
+                    let _ = rp.on_resize(cols, rows);
+                }
+            }
             Effect::SendToClient(msg) => {
+                // Rebuild ServerHello's snapshot bound to the client's
+                // desired geometry — this is the core geometry-binding
+                // promise of PR-2.
+                let msg = rebuild_server_hello_snapshot(
+                    msg,
+                    &render_plane,
+                    desired_size,
+                    scrollback_request,
+                );
                 write_frame(&mut wr, &msg).await?;
             }
             Effect::SendProtocolError {
@@ -751,6 +798,8 @@ async fn handle_client(
                 expected_version,
             } => {
                 // Best-effort write of the typed error frame, then close.
+                // We haven't spawned `down_task` yet so `wr` is local —
+                // direct write is fine.
                 let _ = write_frame(
                     &mut wr,
                     &DaemonMsg::ProtocolError {
@@ -782,28 +831,78 @@ async fn handle_client(
         return Ok(());
     }
     let _ = current_owner; // currently unused post-handshake but kept for future hooks
+    let _ = current_pty_size;
 
-    // Fan out events to this client. Identical control-flow shape to the
-    // pre-refactor down_task: forward each broadcast frame and break out
-    // on TerminalExited or channel close.
+    // Fan out events to this client. `down_task` selects on the broadcast
+    // receiver (RenderPatch / RenderSnapshot / OwnerChanged / ...) AND
+    // the per-client mpsc (ProtocolError targeted at this client + on-
+    // demand RenderSnapshot after a Lagged event).
+    let down_render_plane = render_plane.clone();
+    let mut down_event_rx = event_rx;
     let down_task = tokio::spawn(async move {
+        // Track last-known geometry so backpressure snapshots are bound to
+        // the right size. Starts at the render-plane's initial geometry
+        // (the daemon's CLI cols/rows) and gets re-read from the render
+        // plane each Lagged event, so we always rebuild at the freshest
+        // PTY size.
         loop {
-            match event_rx.recv().await {
-                Ok(msg) => {
-                    let is_exit = matches!(msg, DaemonMsg::TerminalExited { .. });
-                    if write_frame(&mut wr, &msg).await.is_err() {
-                        break;
+            tokio::select! {
+                broadcast = down_event_rx.recv() => match broadcast {
+                    Ok(msg) => {
+                        let is_exit = matches!(msg, DaemonMsg::TerminalExited { .. });
+                        if write_frame(&mut wr, &msg).await.is_err() {
+                            break;
+                        }
+                        if is_exit {
+                            break;
+                        }
                     }
-                    if is_exit {
+                    // Lagged: this client missed N frames. Issue a typed
+                    // SnapshotRequired (so the client knows to wipe its
+                    // local state) then immediately push a fresh
+                    // RenderSnapshot bound to the current PTY geometry.
+                    // This is the only backpressure policy we implement in
+                    // PR-2; `BackpressurePolicy::LatestOnly` / `Close` are
+                    // wire-only.
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(lagged = n, "client lagged; sending SnapshotRequired + fresh snapshot");
+                        let snap = {
+                            let rp = down_render_plane.lock().unwrap();
+                            let sz = rp.current_size();
+                            rp.build_snapshot(sz.cols, sz.rows, ScrollbackLimit::None)
+                        };
+                        let required = DaemonMsg::SnapshotRequired {
+                            reason: format!("broadcast lagged by {n} frames"),
+                        };
+                        if write_frame(&mut wr, &required).await.is_err() {
+                            break;
+                        }
+                        if write_frame(&mut wr, &DaemonMsg::RenderSnapshot(snap))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                },
+                direct = per_client_rx.recv() => match direct {
+                    Some(msg) => {
+                        let is_exit = matches!(msg, DaemonMsg::TerminalExited { .. });
+                        if write_frame(&mut wr, &msg).await.is_err() {
+                            break;
+                        }
+                        if is_exit {
+                            break;
+                        }
+                    }
+                    None => {
+                        // Per-client sender dropped → up-loop has exited → down_task
+                        // is no longer useful. Broadcast forwarding terminates with us.
                         break;
                     }
                 }
-                // Slow client — skip dropped frames rather than tear down.
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!(lagged = n, "client lagged; dropping frames");
-                    continue;
-                }
-                Err(broadcast::error::RecvError::Closed) => break,
             }
         }
     });
@@ -816,39 +915,44 @@ async fn handle_client(
             Err(_) => break,
         };
         let effects = {
-            let guard = broadcaster.lock().unwrap();
+            let guard = render_plane.lock().unwrap();
             let mut reg = owner_registry.lock().unwrap();
             let ctx = SessionContext {
                 terminal_id: &terminal_id,
                 session_id,
-                pty_size: PtySize {
-                    cols: initial_cols,
-                    rows: initial_rows,
-                    pixel_width: None,
-                    pixel_height: None,
-                },
+                pty_size: guard.current_size(),
                 pty_seq_head: guard.pty_seq_head(),
                 pty_seq_tail: guard.pty_seq(),
                 render_rev: guard.render_rev(),
             };
-            state.on_client_frame(msg, guard.buffer(), &mut reg, &ctx)
+            state.on_client_frame(msg, guard.transcript(), &mut reg, &ctx)
         };
 
         let mut closed = false;
         for eff in effects {
             match eff {
-                Effect::SendToClient(_) => {
+                Effect::SendToClient(msg) => {
                     // Post-handshake the state machine never emits
-                    // SendToClient today. If it ever does, we'd need a
-                    // separate writer that doesn't collide with down_task.
-                    tracing::warn!(
-                        "TerminalSessionState emitted SendToClient post-handshake; ignoring (bug)"
-                    );
+                    // SendToClient today, but route it through the
+                    // per-client mpsc for symmetry.
+                    let _ = per_client_tx.send(msg);
                 }
                 Effect::Broadcast(msg) => {
                     let _ = event_tx.send(msg);
                 }
-                Effect::ResizePty { cols, rows } => apply_resize(&master, cols, rows),
+                Effect::ResizePty { cols, rows } => {
+                    apply_resize(&master, cols, rows);
+                    if let Ok(mut rp) = render_plane.lock() {
+                        let resize_effects = rp.on_resize(cols, rows);
+                        // RenderPlane::on_resize emits a Broadcast(RenderSnapshot)
+                        // so every attached client repaints at the new size.
+                        for re in resize_effects {
+                            if let Effect::Broadcast(m) = re {
+                                let _ = event_tx.send(m);
+                            }
+                        }
+                    }
+                }
                 Effect::WriteToPty(b) => {
                     if stdin_tx.send(b).is_err() {
                         closed = true;
@@ -864,13 +968,11 @@ async fn handle_client(
                     message,
                     expected_version,
                 } => {
-                    // Broadcast through the event channel so it reaches
-                    // this client's down_task. Other observers will see it
-                    // too — which is fine; the message is informational
-                    // (e.g. NotOwner) and they can ignore frames not aimed
-                    // at them. A future PR can switch to a per-client
-                    // direct writer for these errors.
-                    let _ = event_tx.send(DaemonMsg::ProtocolError {
+                    // Per-client direct send — fixes the PR-1 nit where
+                    // post-handshake errors were broadcast to every client.
+                    // Observer-typed NotOwner now goes only to the
+                    // offending observer; the owner sees nothing.
+                    let _ = per_client_tx.send(DaemonMsg::ProtocolError {
                         code,
                         message,
                         expected_version,
@@ -918,9 +1020,85 @@ async fn handle_client(
         }
     }
 
+    // Dropping `per_client_tx` (going out of scope below) signals the
+    // direct-message half of `down_task` to wind down on its own.
+    drop(per_client_tx);
     down_task.abort();
     let _ = down_task.await;
     Ok(())
+}
+
+fn scrollback_request(req: calm_session::InitialScrollback) -> ScrollbackLimit {
+    match req {
+        calm_session::InitialScrollback::None => ScrollbackLimit::None,
+        calm_session::InitialScrollback::All => ScrollbackLimit::All,
+        calm_session::InitialScrollback::Lines(n) => ScrollbackLimit::Lines(n),
+    }
+}
+
+/// Replace `ServerHello.snapshot` with a fresh snapshot built by the
+/// render plane at the client's desired geometry. The state machine
+/// produces a raw-byte-transcript snapshot by default (for unit-test
+/// parity); PR-2 swaps it for a server-rendered ANSI stream bound to
+/// `desired_size`.
+///
+/// `desired_size = None` means the incoming frame isn't a ServerHello —
+/// just pass through.
+fn rebuild_server_hello_snapshot(
+    msg: DaemonMsg,
+    render_plane: &SharedRenderPlane,
+    desired_size: Option<PtySize>,
+    scrollback: Option<ScrollbackLimit>,
+) -> DaemonMsg {
+    match msg {
+        DaemonMsg::ServerHello {
+            protocol_version,
+            terminal_id,
+            session_id,
+            client_role,
+            owner_client_id,
+            pty_size,
+            pty_seq_head,
+            pty_seq_tail,
+            render_rev,
+            snapshot: _,
+            history_gap,
+        } => {
+            let (cols, rows) = desired_size
+                .map(|s| (s.cols, s.rows))
+                .unwrap_or((pty_size.cols, pty_size.rows));
+            let limit = scrollback.unwrap_or(ScrollbackLimit::None);
+            let snapshot = match render_plane.lock() {
+                Ok(rp) => rp.build_snapshot(cols, rows, limit),
+                Err(_) => {
+                    tracing::warn!("render_plane lock poisoned; sending empty snapshot");
+                    calm_session::RenderSnapshot {
+                        render_rev,
+                        pty_seq: pty_seq_tail,
+                        cols,
+                        rows,
+                        encoding: calm_session::RenderEncoding::Vt,
+                        data: Vec::new(),
+                        scrollback: None,
+                    }
+                }
+            };
+            DaemonMsg::ServerHello {
+                protocol_version,
+                terminal_id,
+                session_id,
+                client_role,
+                owner_client_id,
+                pty_size,
+                pty_seq_head,
+                pty_seq_tail,
+                render_rev,
+                snapshot,
+                history_gap,
+            }
+        }
+        other => other,
+    }
 }
 
 async fn handle_chat_client(

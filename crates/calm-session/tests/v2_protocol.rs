@@ -330,6 +330,15 @@ fn observer_input_yields_not_owner() {
         )),
         "expected NotOwner, got {effects:?}"
     );
+    // PR-1 review nit #3: rejection must NOT also fire any of the
+    // side-effecting effects — observers' input/resize/kill must be inert.
+    assert!(
+        !effects.iter().any(|e| matches!(
+            e,
+            Effect::WriteToPty(_) | Effect::ResizePty { .. } | Effect::KillChild
+        )),
+        "observer rejection must not emit IO effects, got {effects:?}"
+    );
 }
 
 #[test]
@@ -367,6 +376,13 @@ fn observer_resize_commit_yields_not_owner() {
         )),
         "expected NotOwner for observer resize, got {effects:?}"
     );
+    assert!(
+        !effects.iter().any(|e| matches!(
+            e,
+            Effect::WriteToPty(_) | Effect::ResizePty { .. } | Effect::KillChild
+        )),
+        "observer ResizeCommit must not emit IO effects, got {effects:?}"
+    );
 }
 
 #[test]
@@ -399,6 +415,13 @@ fn observer_kill_yields_not_owner() {
             }
         )),
         "expected NotOwner for observer kill, got {effects:?}"
+    );
+    assert!(
+        !effects.iter().any(|e| matches!(
+            e,
+            Effect::WriteToPty(_) | Effect::ResizePty { .. } | Effect::KillChild
+        )),
+        "observer Kill must not emit IO effects, got {effects:?}"
     );
 }
 

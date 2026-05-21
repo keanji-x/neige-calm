@@ -11,10 +11,14 @@
 //! ownership / ack frames upstream and [`DaemonMsg::RenderPatch`] /
 //! [`ResizeApplied`] / [`TerminalExited`] frames downstream.
 //!
-//! In this PR the render plane is still byte-passthrough: `RenderSnapshot.data`
-//! / `RenderPatch.data` carry raw PTY bytes with `encoding = Vt`. A future PR
-//! introduces a server-side VT model so patches become cell-grid diffs rather
-//! than raw escape sequences.
+//! As of PR-2 the daemon runs a server-side VT model
+//! (`calm-session::terminal_model::TerminalModel`):
+//! - `RenderSnapshot.data` is the model's serialized ANSI representation
+//!   of the visible viewport, bound to the client's `desired_size`.
+//! - `RenderPatch.data` is the raw PTY chunk that triggered the rev
+//!   bump (still `encoding = Vt`); xterm.js applies it client-side.
+//!
+//! Cell-grid diff encoding is a follow-up; not in this PR.
 //!
 //! Framing: `[magic (4) = b"NEIG"] [version (u16 BE) = 2] [length (u32 BE)]
 //! [payload (bincode)]`.
@@ -25,6 +29,7 @@
 //! instead of silently misinterpreting the bincode discriminants that follow.
 
 pub mod stream_json;
+pub mod terminal_model;
 pub mod terminal_session;
 
 use std::collections::HashMap;
@@ -309,13 +314,14 @@ pub enum DaemonMsg {
         history_gap: Option<HistoryGap>,
     },
     /// Standalone snapshot — sent when the daemon decided the client needs
-    /// a hard re-sync mid-stream. Not used in this PR's daemon code but
-    /// the wire shape is fixed now so future PRs can emit it without
-    /// another schema bump.
+    /// a hard re-sync mid-stream. PR-2 emits this on PTY resize and on
+    /// broadcast lag (after a `SnapshotRequired`). Geometry-bound to the
+    /// requesting client's `desired_size`; `data` is the server-rendered
+    /// ANSI byte stream from `TerminalModel::snapshot_vt`.
     RenderSnapshot(RenderSnapshot),
-    /// Incremental render-plane update. In this PR the `data` field is
-    /// the raw PTY chunk that produced the rev bump; PR-2 swaps it for
-    /// cell-grid diffs.
+    /// Incremental render-plane update. `data` is the raw PTY chunk that
+    /// triggered the rev bump (`encoding = Vt`); xterm.js applies it
+    /// directly to its own grid. Cell-grid diff encoding is a follow-up.
     RenderPatch(RenderPatch),
     /// Confirms an owner-issued [`ClientMsg::ResizeCommit`] took effect.
     /// `epoch` echoes the request so the owner can correlate.

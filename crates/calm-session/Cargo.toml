@@ -28,3 +28,7 @@ anyhow = "1"
 thiserror = "1"
 nix = { version = "0.29", features = ["fs", "term"] }
 libc = "0.2"
+# VT parser for the server-side `TerminalModel`. We only use the
+# lower-level `Parser` + `Perform` API (no built-in grid — we maintain
+# our own in `src/terminal_model.rs`).
+vte = { version = "0.13", default-features = false }
