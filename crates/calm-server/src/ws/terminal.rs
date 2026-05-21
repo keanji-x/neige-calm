@@ -25,7 +25,7 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
-use calm_session::{ClientMsg, DaemonMsg, read_frame, write_frame};
+use calm_session::{ClientMsg, DaemonMsg, FrameError, read_frame, write_frame};
 use futures::{SinkExt, StreamExt};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -71,7 +71,7 @@ async fn upgrade(
         Ok(p) => p,
         Err(e) => return e.into_response(),
     };
-    ws.on_upgrade(move |socket| handle(socket, sock))
+    ws.on_upgrade(move |socket| handle(socket, sock, id))
         .into_response()
 }
 
@@ -119,7 +119,7 @@ async fn resolve_live_sock(s: &AppState, id: &str) -> Result<PathBuf> {
     Ok(PathBuf::from(handle))
 }
 
-async fn handle(socket: WebSocket, sock: PathBuf) {
+async fn handle(socket: WebSocket, sock: PathBuf, terminal_id: String) {
     let stream = match UnixStream::connect(&sock).await {
         Ok(s) => s,
         Err(e) => {
@@ -178,11 +178,54 @@ async fn handle(socket: WebSocket, sock: PathBuf) {
 
     // Daemon → WS: read framed bincode DaemonMsg, ship as JSON text.
     let ws_tx_down = ws_tx.clone();
+    let terminal_id_down = terminal_id.clone();
     let down = async move {
         loop {
             let msg: DaemonMsg = match read_frame(&mut rd).await {
                 Ok(m) => m,
-                Err(_) => break,
+                Err(e) => {
+                    // Version-skew on the kernel↔daemon Unix socket: this
+                    // means a daemon binary was started against a stale
+                    // `calm-session` schema. Log loudly with the daemon
+                    // identity (terminal id + socket path) so an operator
+                    // can correlate to the deploy that introduced the skew,
+                    // then fall through to the connection-close path below.
+                    //
+                    // We intentionally do NOT flag `needs_restart` on the
+                    // terminal row here: that field doesn't exist on the
+                    // current `Terminal` model and plumbing one through the
+                    // repo trait is out of scope for the framing PR. Tracked
+                    // as a follow-up in the PR description for #45.
+                    match &e {
+                        FrameError::BadMagic { got, expected } => {
+                            tracing::error!(
+                                terminal_id = %terminal_id_down,
+                                got = ?got,
+                                expected = ?expected,
+                                "daemon framing magic mismatch — closing WS"
+                            );
+                        }
+                        FrameError::UnsupportedFrameVersion { got, supported } => {
+                            tracing::error!(
+                                terminal_id = %terminal_id_down,
+                                got,
+                                supported,
+                                "daemon framing version mismatch — closing WS"
+                            );
+                        }
+                        // Oversize / decode / io are the existing failure
+                        // modes; debug-log to avoid spamming on normal
+                        // peer-close paths (EOF shows up as Io here).
+                        other => {
+                            tracing::debug!(
+                                terminal_id = %terminal_id_down,
+                                error = %other,
+                                "daemon read_frame ended"
+                            );
+                        }
+                    }
+                    break;
+                }
             };
             let exit = matches!(msg, DaemonMsg::ChildExited { .. });
             let text = match serde_json::to_string(&msg) {
