@@ -21,6 +21,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::routing::post;
+use calm_server::db::sqlite::SqlxRepo;
+use calm_server::event::EventBus;
 use calm_server::replay;
 use clap::Parser;
 
@@ -88,6 +93,14 @@ async fn main() -> anyhow::Result<()> {
         return run_assert(&repo, &fixture, &args, last_id).await;
     }
 
+    // Wrap the fixture in `Arc` so the `/dev/reset` handler holds its own
+    // cheap reference. We keep the fixture in memory (the binary is dev-
+    // only and fixtures are KB-scale) rather than re-reading from disk
+    // on reset — `--file` may have been edited or deleted between boot
+    // and reset, and we want reset to be deterministic w.r.t. whatever
+    // the original `--serve` boot loaded. See `DevResetState`.
+    let fixture = Arc::new(fixture);
+
     // Mirror `main.rs`: honor `RECORD_SESSION=<path>` so a developer can
     // boot `--serve`, drive a few writes from a browser or curl, and
     // capture the resulting event stream into a new fixture file.
@@ -105,7 +118,7 @@ async fn main() -> anyhow::Result<()> {
         replay::spawn_session_recorder(&state.events, path.into());
     }
 
-    run_serve(state, &fixture, &args, ids.len(), last_id).await
+    run_serve(state, repo, bus, fixture, &args, ids.len(), last_id).await
 }
 
 async fn run_assert(
@@ -149,7 +162,9 @@ async fn run_assert(
 
 async fn run_serve(
     state: calm_server::state::AppState,
-    fixture: &replay::Fixture,
+    repo: Arc<SqlxRepo>,
+    bus: EventBus,
+    fixture: Arc<replay::Fixture>,
     args: &Args,
     seeded_count: usize,
     last_id: i64,
@@ -173,10 +188,28 @@ async fn run_serve(
     let rest_routes = calm_server::routes::router().layer(axum::middleware::from_fn(
         calm_server::actor::actor_middleware,
     ));
+    // Dev-only `POST /dev/reset` sub-router. Lives outside the REST
+    // sub-router so it (a) doesn't pick up the actor middleware (the
+    // reset is conceptually a fresh boot, not an audited write), and
+    // (b) carries its own `(repo, bus, fixture)` state independent of
+    // `AppState`. The handler itself reseeds the in-memory repo from
+    // the fixture loaded at `--serve` startup. See `replay::reset_from_fixture`
+    // for the wipe + reseed contract. Only mounted in `--serve` (this
+    // binary is itself dev-only — design doc §6.3); production
+    // `calm-server` never sees this route.
+    let dev_state = DevResetState {
+        repo,
+        bus,
+        fixture: fixture.clone(),
+    };
+    let dev_routes = axum::Router::new()
+        .route("/dev/reset", post(dev_reset))
+        .with_state(dev_state);
     let app = axum::Router::new()
         .merge(rest_routes)
         .merge(calm_server::ws::router())
-        .with_state(state);
+        .with_state(state)
+        .merge(dev_routes);
 
     let addr = format!("127.0.0.1:{}", args.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -205,4 +238,60 @@ async fn run_serve(
 
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `POST /dev/reset` — dev-only, `--serve` mode only.
+//
+// Why this exists: the Playwright `a11y` project spawns one replay
+// binary that serves every test in the suite. Without a reset hook,
+// per-test mutations (new waves, new cards, rename edits, view-mode
+// toggles, …) accumulate across tests in the same run, which makes
+// previously-green specs flake when their predicates collide with
+// state seeded by an earlier spec. The endpoint reseeds the in-memory
+// repo from the same `Fixture` the binary booted with, restoring the
+// "fresh boot" starting state. Each `a11y` spec calls it from
+// `beforeEach`.
+//
+// Scope: this binary is itself dev-only (design doc §6.3 — it has
+// `--serve` and `--assert` modes, both meant for developer drives /
+// CI). No additional feature flag is needed because production
+// `calm-server` (the real entrypoint via `src/main.rs`) doesn't share
+// this binary's routes. If we ever needed a similar surface on the
+// real server it would be gated behind a `--dev` flag, not exposed
+// here.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct DevResetState {
+    repo: Arc<SqlxRepo>,
+    bus: EventBus,
+    fixture: Arc<replay::Fixture>,
+}
+
+async fn dev_reset(State(s): State<DevResetState>) -> (StatusCode, axum::Json<serde_json::Value>) {
+    match replay::reset_from_fixture(&s.repo, &s.bus, &s.fixture).await {
+        Ok(ids) => (
+            StatusCode::OK,
+            axum::Json(serde_json::json!({
+                "ok": true,
+                "seeded": ids.len(),
+                "last_id": ids.last().copied().unwrap_or(0),
+            })),
+        ),
+        Err(e) => {
+            // Reset failure is unexpected (in-memory sqlite, no I/O) but
+            // surface a structured error so the Playwright `beforeEach`
+            // can fail loudly rather than continue against a half-reset
+            // repo.
+            tracing::error!(error = %e, "POST /dev/reset failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({
+                    "ok": false,
+                    "error": e.to_string(),
+                })),
+            )
+        }
+    }
 }

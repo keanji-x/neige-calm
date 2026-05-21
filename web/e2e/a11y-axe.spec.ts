@@ -27,6 +27,7 @@
 
 import { test, expect, type Page } from '@playwright/test';
 import { AxeBuilder } from '@axe-core/playwright';
+import { resetReplayServer } from './helpers/reset';
 
 // Wait for the auto-bootstrap to land. `useTodayTerminal` runs on first
 // paint of the Today page and creates "Scratch / Today / <terminal>"
@@ -152,6 +153,15 @@ async function ids(page: Page): Promise<{ coveId: string; waveId: string }> {
 }
 
 test.describe('a11y · axe', () => {
+  test.beforeEach(async ({ request }) => {
+    // Hermetic per-test state — see `helpers/reset.ts`. Axe scans don't
+    // mutate state themselves, but `ids(page)` clicks through "+ Add" /
+    // codex modals in some tests and we don't want their residue (extra
+    // cards, opened modals' overlay payloads) leaking into the next
+    // spec's DOM.
+    await resetReplayServer(request);
+  });
+
   test('Today page · no violations', async ({ page }) => {
     await page.goto('/?trace=1');
     await waitForBootstrap(page);

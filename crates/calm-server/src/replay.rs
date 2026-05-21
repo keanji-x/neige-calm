@@ -204,6 +204,66 @@ pub async fn seed_events(
     Ok(out)
 }
 
+/// Wipe every row from the in-memory repo and re-seed the fixture's event
+/// stream. Used exclusively by `--serve` mode's `POST /dev/reset`
+/// endpoint to give the Playwright `a11y` suite a hermetic starting
+/// point per test (issue #56 followup).
+///
+/// **Dev-only.** This bypasses the audited write path on purpose — the
+/// reset is conceptually a fresh boot of the in-memory kernel, not a
+/// business mutation. To keep parity with `boot_in_memory()` we delete
+/// every domain row + the entire event log + the `sqlite_sequence` rows
+/// (so re-seeding starts at `events.id = 1` like a cold boot would). The
+/// re-seed then runs through the normal `seed_events` path, emitting
+/// envelopes on the bus exactly as the initial boot did.
+///
+/// Tables wiped match the schema declared by `migrations/0001..0004`:
+/// `events`, `overlays`, `cards`, `waves`, `coves`, `terminals`,
+/// `plugins`, `plugin_kv`, `plugin_tokens`, `settings`. Migration rows
+/// (`_sqlx_migrations`) are preserved — wiping them would force a
+/// re-migrate that we don't need for a stateful reset.
+///
+/// Returns the assigned `events.id`s of the freshly-seeded events.
+pub async fn reset_from_fixture(
+    repo: &SqlxRepo,
+    bus: &EventBus,
+    fixture: &Fixture,
+) -> anyhow::Result<Vec<i64>> {
+    // Delete order respects FK chains: cards → waves → coves, overlays
+    // before their referenced entities, terminals are independent. The
+    // SqlxRepo opens with `PRAGMA foreign_keys = ON`, so an out-of-order
+    // delete would surface as a constraint error — explicit order avoids
+    // depending on `ON DELETE CASCADE` declarations we'd otherwise have
+    // to audit migration-by-migration.
+    let pool = repo.pool();
+    let mut tx = pool.begin().await?;
+    for stmt in [
+        "DELETE FROM events",
+        "DELETE FROM overlays",
+        "DELETE FROM cards",
+        "DELETE FROM waves",
+        "DELETE FROM coves",
+        "DELETE FROM terminals",
+        "DELETE FROM plugin_kv",
+        "DELETE FROM plugin_tokens",
+        "DELETE FROM plugins",
+        "DELETE FROM settings",
+        // Reset all AUTOINCREMENT counters so re-seeded events start at
+        // id=1 (matching a cold `boot_in_memory()`). Without this, a
+        // fixture's `expected.last_event_kind` would still pass — the
+        // assertion only looks at the tip — but any WS replay client
+        // that recorded a cursor between resets would see id-skips,
+        // which is exactly the determinism break this endpoint exists
+        // to prevent.
+        "DELETE FROM sqlite_sequence",
+    ] {
+        sqlx::query(stmt).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+
+    seed_events(repo, bus, fixture).await
+}
+
 // ---------------------------------------------------------------------------
 // Assertion helpers used by `--assert`
 // ---------------------------------------------------------------------------

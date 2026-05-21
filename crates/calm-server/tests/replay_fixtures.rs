@@ -379,3 +379,89 @@ fn fold_layout_positions_respects_overlay_deleted() {
     // delete-fix, but assert the post-state is non-empty.
     assert!(got.contains_key("card_9"));
 }
+
+// ---------------------------------------------------------------------------
+// `reset_from_fixture` — wipe + reseed contract
+// ---------------------------------------------------------------------------
+//
+// Issue #56 followup: the `POST /dev/reset` endpoint in `bin/replay.rs`
+// calls into `reset_from_fixture` to give the Playwright `a11y` project
+// a hermetic per-test starting state. The test below locks the contract:
+//
+//   1. Seed a fixture once; verify the event log has `N` rows.
+//   2. Mutate the repo via the eventized write path (drop in a new
+//      `log_pure_event` for an `overlay.set`) so the log grows past
+//      what the fixture seeded.
+//   3. Call `reset_from_fixture`; verify the log is back to exactly
+//      the fixture's events, in fixture order, and the highest event
+//      id is back to `N` (the `sqlite_sequence` reset path).
+#[tokio::test]
+async fn reset_from_fixture_wipes_and_reseeds() {
+    let fixture = load_fixture("wave-grid-layout-trace.events.json");
+    let (repo, bus, _state) = replay::boot_in_memory()
+        .await
+        .expect("boot in-memory replay state");
+
+    let initial_ids = replay::seed_events(&repo, &bus, &fixture)
+        .await
+        .expect("initial seed");
+    let n = fixture.events.len() as i64;
+    assert_eq!(initial_ids.len() as i64, n);
+    assert_eq!(
+        *initial_ids.last().expect("non-empty"),
+        n,
+        "initial seed assigns ids 1..=N because sqlite_sequence starts fresh"
+    );
+
+    // Mutate via the eventized write path: drop in one extra
+    // `overlay.set` so the event log grows past the fixture tip.
+    let extra = Event::OverlaySet(Overlay {
+        id: "ov-extra".into(),
+        plugin_id: "core".into(),
+        entity_kind: "view".into(),
+        entity_id: "wave-extra".into(),
+        kind: "layout".into(),
+        payload: serde_json::json!({"positions": {}}),
+        updated_at: 99,
+    });
+    let extra_id = repo
+        .log_pure_event("user", None, &bus, extra)
+        .await
+        .expect("log extra event");
+    assert_eq!(extra_id, n + 1, "extra event sits at id=N+1");
+
+    // Reset: drop everything, reseed from the fixture, assert ids
+    // re-start at 1 and the log carries exactly the fixture again.
+    let reseeded = replay::reset_from_fixture(&repo, &bus, &fixture)
+        .await
+        .expect("reset succeeds");
+    assert_eq!(
+        reseeded.len() as i64,
+        n,
+        "reseeded event count matches fixture"
+    );
+    assert_eq!(
+        *reseeded.first().expect("non-empty"),
+        1,
+        "reset wipes sqlite_sequence — first event id is 1"
+    );
+    assert_eq!(
+        *reseeded.last().expect("non-empty"),
+        n,
+        "reset wipes sqlite_sequence — last event id is N (no carry-over from the extra)"
+    );
+
+    // Verify the persisted log shape matches the fixture.
+    let log = repo
+        .events_since(0, None)
+        .await
+        .expect("events_since after reset");
+    assert_eq!(log.len() as i64, n, "log has only the reseeded events");
+    for ((_id, _ver, ev), fix_ev) in log.iter().zip(fixture.events.iter()) {
+        assert_eq!(
+            ev.kind_tag(),
+            fix_ev.kind,
+            "reseeded log preserves fixture event order"
+        );
+    }
+}
