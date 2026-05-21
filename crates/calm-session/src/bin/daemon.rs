@@ -801,6 +801,12 @@ async fn handle_client(
             pty_seq_head: guard.pty_seq_head(),
             pty_seq_tail: guard.pty_seq(),
             render_rev: guard.render_rev(),
+            // Deterministic snapshot of the one-shot ChildReady state.
+            // `child_ready_fired()` is a non-consuming read on
+            // `RenderPlane` — it does NOT advance the one-shot, so late
+            // joiners after `detect_ready()` already fired still see a
+            // truthful `true` here without re-emitting the broadcast.
+            is_child_ready: guard.child_ready_fired(),
         };
         let eff = state.on_client_frame(first, guard.transcript(), &mut reg, &ctx);
         (eff, reg.current_owner(), current_pty_size)
@@ -963,6 +969,11 @@ async fn handle_client(
                 pty_seq_head: guard.pty_seq_head(),
                 pty_seq_tail: guard.pty_seq(),
                 render_rev: guard.render_rev(),
+                // Post-handshake frames never produce ServerHello, so
+                // this value is currently inert. Still snapshot it for
+                // symmetry — a future state-machine path that re-emits
+                // ServerHello on resync will need an accurate read.
+                is_child_ready: guard.child_ready_fired(),
             };
             state.on_client_frame(msg, guard.transcript(), &mut reg, &ctx)
         };
@@ -1102,6 +1113,7 @@ fn rebuild_server_hello_snapshot(
             render_rev,
             snapshot: _,
             history_gap,
+            is_child_ready,
         } => {
             let (cols, rows) = desired_size
                 .map(|s| (s.cols, s.rows))
@@ -1134,6 +1146,7 @@ fn rebuild_server_hello_snapshot(
                 render_rev,
                 snapshot,
                 history_gap,
+                is_child_ready,
             }
         }
         other => other,

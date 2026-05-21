@@ -29,6 +29,10 @@ fn ctx<'a>(broadcaster: &PtyBroadcaster, session_id: Uuid) -> SessionContext<'a>
         pty_seq_head: broadcaster.pty_seq_head(),
         pty_seq_tail: broadcaster.pty_seq(),
         render_rev: broadcaster.render_rev(),
+        // PtyBroadcaster doesn't track child-readiness — the legacy
+        // unit-test fixture defaults to `false`, matching the safe
+        // wait-for-ready posture an older serializer would produce.
+        is_child_ready: false,
     }
 }
 
