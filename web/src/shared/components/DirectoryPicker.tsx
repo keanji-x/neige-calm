@@ -176,14 +176,15 @@ export function DirectoryBrowser({ initialPath, onCancel, onSelect, selectLabel 
   const goTo = (path: string) => setBrowsePath(path);
 
   return (
-    // TODO(#60): migrate this hand-rolled dialog onto the `<Dialog>` primitive
-    // (`web/src/ui/Dialog`) so it gets the standard focus trap, Escape, and
-    // focus-restore contracts. The `useModalView()` integration above means the
-    // picker often renders *inside* an outer Dialog already; the takeover path
-    // needs its own design before this can be a mechanical swap. Tracked as
-    // unfinished slice-1 cleanup in issue #60 (no-raw-primitive-role survey).
-    // eslint-disable-next-line neige-calm/no-raw-primitive-role
-    <div className="dirpicker-browser" role="dialog" aria-label="Choose a directory">
+    // No `role="dialog"` here: every in-app caller renders this browser
+    // inside an outer `<Dialog>` — either pushed via `useModalView()` (which
+    // swaps the dialog's title to "Choose a directory") or as the direct
+    // child of a `<Dialog title=...>` (the codex "create here" shortcut in
+    // Wave.tsx). Nested ARIA dialogs are not allowed; the outer Dialog
+    // already provides the accessible name and the modal semantics. The
+    // fallback inline path in DirectoryPicker also lands here, but it is
+    // not modal, so a dialog role would be a lie in that case too.
+    <div className="dirpicker-browser">
       <div className="dirpicker-browser-head">
         <button
           type="button"

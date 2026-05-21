@@ -95,7 +95,9 @@ describe('RefreshRequiredOverlay', () => {
     const server = makeServerInfo({ minWebCompatVersion: WEB_COMPAT_VERSION + 5 });
     render(<RefreshRequiredOverlay server={server} />);
 
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    // Accessible name comes from the shared `<Dialog>` primitive's title
+    // (Slice 1 of #60: the overlay no longer hand-rolls its own role+label).
+    expect(screen.getByRole('dialog', { name: 'Please refresh' })).toBeInTheDocument();
     expect(screen.getByText('Please refresh')).toBeInTheDocument();
     // The user needs to see both numbers so an operator-style log of
     // "compat v3 vs v1" is obvious.
