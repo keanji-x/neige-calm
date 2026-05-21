@@ -21,6 +21,7 @@ fn document_contains_every_annotated_path() {
         "/api/waves/{wave_id}/cards",
         "/api/cards/{id}",
         "/api/cards/{card_id}/terminal",
+        "/api/waves/{wave_id}/terminal-cards",
         "/api/overlays",
         "/api/overlays/delete",
         "/api/plugins",
@@ -72,7 +73,7 @@ fn document_contains_every_wire_model() {
         // route-local DTOs
         "CreateCardBody",
         "ViaToolCall",
-        "NewTerminalBody",
+        "NewTerminalCardBody",
         "OverlayQuery",
         "OverlayDeleteBody",
         "InstallBody",

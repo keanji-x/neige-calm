@@ -14,6 +14,7 @@ pub mod overlays;
 pub mod plugins;
 pub mod settings;
 pub mod terminal;
+pub mod terminal_cards;
 pub mod version;
 pub mod waves;
 
@@ -25,6 +26,7 @@ pub fn router() -> Router<AppState> {
         .merge(overlays::router())
         .merge(plugins::router())
         .merge(terminal::router())
+        .merge(terminal_cards::router())
         .merge(codex::router())
         .merge(fs::router())
         .merge(settings::router())

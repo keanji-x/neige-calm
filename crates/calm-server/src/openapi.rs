@@ -25,7 +25,7 @@ use crate::routes::plugins::{
     ViewSizeWire,
 };
 use crate::routes::settings::{SettingsBag, SettingsPutBody};
-use crate::routes::terminal::NewTerminalBody;
+use crate::routes::terminal_cards::NewTerminalCardBody;
 use crate::routes::version::VersionInfo;
 use utoipa::OpenApi;
 
@@ -58,7 +58,7 @@ use utoipa::OpenApi;
         crate::routes::overlays::upsert_overlay,
         crate::routes::overlays::delete_overlay,
         // ---- terminals ----
-        crate::routes::terminal::create_terminal,
+        crate::routes::terminal_cards::create_terminal_card,
         crate::routes::terminal::get_terminal_for_card,
         // ---- codex ----
         crate::routes::codex::create_codex,
@@ -103,7 +103,7 @@ use utoipa::OpenApi;
         // route-local DTOs
         CreateCardBody,
         ViaToolCall,
-        NewTerminalBody,
+        NewTerminalCardBody,
         NewCodexBody,
         DirEntry,
         ListdirResponse,
