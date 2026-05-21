@@ -69,8 +69,8 @@ const BUS_CAPACITY: usize = 1024;
 /// bump this and ship a new migration that defaults to the new value.
 ///
 /// Surfaced on the wire under the camelCase key `eventVersion` (see
-/// `ws::events::render_envelope`), and re-exported through `GET /api/version`
-/// as `syncEventVersion` so the web client can refuse to replay a log it
+/// `ws::events::render_envelope`), and surfaced via `GET /api/version` as
+/// `syncEventVersion` so the web client can refuse to replay a log it
 /// doesn't understand. Sync event log is a Tier-A persistence contract per
 /// `docs/upgrade-stability.md`.
 pub const SYNC_EVENT_VERSION: u32 = 1;
