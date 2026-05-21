@@ -15,7 +15,7 @@ import type {
   NewCodexBody,
   NewCoveBody,
   NewOverlayBody,
-  NewTerminalBody,
+  NewTerminalCardBody,
   NewWaveBody,
   SettingsBag,
   SettingsPutBody,
@@ -132,10 +132,20 @@ export const deleteOverlay = (b: {
 
 // ---------------- terminals ----------------
 
-export const createTerminal = (cardId: string, b: NewTerminalBody = {}) =>
-  request<KernelTerminal>(
+/**
+ * Atomic terminal-card create. Single round-trip writes the card row, its
+ * linked terminal row, AND spawns the `calm-session-daemon`. Server emits a
+ * single `card.added` event carrying the final payload — no intermediate
+ * `payload=null` flash for EventBridge to swallow. See `routes::terminal_cards`
+ * and issue #13.
+ *
+ * 500 response means the daemon spawn failed; the persisted rows stay (the
+ * orphan-terminal sweeper reaps them within ~60s).
+ */
+export const createTerminalCard = (waveId: string, b: NewTerminalCardBody = {}) =>
+  request<KernelCard>(
     'POST',
-    `/api/cards/${encodeURIComponent(cardId)}/terminal`,
+    `/api/waves/${encodeURIComponent(waveId)}/terminal-cards`,
     b,
   );
 

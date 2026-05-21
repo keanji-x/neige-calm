@@ -54,8 +54,6 @@ import { useQueryClient, useQueries } from '@tanstack/react-query';
 import { queryKeys } from '../api/queries';
 import { queryClient } from './providers';
 import { dlog } from '../util/debug';
-import { suppressCardEvents } from './eventBridge';
-import { TERMINAL_PAYLOAD_SCHEMA_VERSION } from '../cards/builtins/schemaVersions';
 import type { Cove, Wave, WaveCardSlot } from '../types';
 import type { AddPanelKind } from '../shared/components/AddPanel';
 
@@ -373,7 +371,6 @@ async function addCardWithValues(
     // so this is defensive only.
     return addCardOfKind(qc, waveId, type);
   }
-  const release = suppressCardEvents(waveId);
   try {
     dlog('addCardWithValues', 'codex create START', { waveId, values });
     // Two-step: create an empty-payload codex card row, then have the
@@ -381,6 +378,12 @@ async function addCardWithValues(
     // the payload. The frontend never pre-populates the payload here —
     // doing so risks racing the server's `card_update` and stomping the
     // terminal_id field on the next refetch.
+    //
+    // Codex still emits two events (card.added then card.updated) — the
+    // server-side atomic-create work in #13 was scoped to terminal cards;
+    // a follow-up could collapse codex similarly. EventBridge invalidates
+    // both events immediately; TanStack Query coalesces the resulting
+    // refetches, so the user sees one converged render of the final state.
     const card = await api.createCard(waveId, {
       kind: 'codex',
       payload: {},
@@ -391,48 +394,28 @@ async function addCardWithValues(
     dlog('addCardWithValues', 'codex create DONE', { cardId: card.id });
   } catch (err) {
     console.warn('[Calm] codex create failed:', err);
-  } finally {
-    release();
-    void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
   }
 }
 
 async function addCardOfKind(
-  qc: ReturnType<typeof useQueryClient>,
+  _qc: ReturnType<typeof useQueryClient>,
   waveId: string,
   _type: AddPanelKind,
 ): Promise<void> {
-  // Suppress this wave's WS card events for the duration of the 3-step
-  // create. Without this, the kernel's intermediate emissions (card.added
-  // with payload=null, before the terminal_id patch) would race the
-  // mutation chain through EventBridge → invalidate → refetch and the UI
-  // would render the half-built card before snapping to the final state.
-  // See PR #12 + issue #13 for the underlying CRUD-API design problem.
-  const releaseSuppression = suppressCardEvents(waveId);
+  // Atomic terminal-card create (#13). One round-trip handles card + linked
+  // terminal row + daemon spawn, and emits a single `card.added` carrying
+  // the final payload. The pre-#13 wire was a 3-step recipe with mutation
+  // suppression + manual invalidate to mask the intermediate `payload=null`
+  // state; that whole scaffolding is gone — the bridge picks up the one
+  // event and the cache converges naturally.
   try {
-    dlog('addCardOfKind', 'step 1: createCard START', { waveId });
-    const card = await api.createCard(waveId, { kind: 'terminal' });
-    dlog('addCardOfKind', 'step 1: createCard DONE', { cardId: card.id, payload: card.payload });
-    dlog('addCardOfKind', 'step 2: createTerminal START');
-    const term = await api.createTerminal(card.id, {});
-    dlog('addCardOfKind', 'step 2: createTerminal DONE', { termId: term.id });
-    dlog('addCardOfKind', 'step 3: updateCard START');
-    // Tier A: kernel-owned card payloads carry a per-kind `schemaVersion`
-    // (see `web/src/cards/builtins/schemaVersions.ts`). The kernel
-    // validator treats absent as v1, so older clients still work; new
-    // writes stamp it explicitly.
-    await api.updateCard(card.id, {
-      payload: { schemaVersion: TERMINAL_PAYLOAD_SCHEMA_VERSION, terminal_id: term.id },
+    dlog('addCardOfKind', 'createTerminalCard START', { waveId });
+    const card = await api.createTerminalCard(waveId, {});
+    dlog('addCardOfKind', 'createTerminalCard DONE', {
+      cardId: card.id,
+      payload: card.payload,
     });
-    dlog('addCardOfKind', 'step 3: updateCard DONE');
   } catch (err) {
     console.warn('[Calm] terminal create failed:', err);
-  } finally {
-    releaseSuppression();
-    // Single, post-flow refresh — the only WS-equivalent the UI sees for
-    // this mutation. Wave detail refetches once with the fully-formed
-    // card (terminal_id present), so no intermediate-state flash.
-    dlog('addCardOfKind', 'MANUAL invalidate (post-flow)', { waveId });
-    void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
   }
 }
