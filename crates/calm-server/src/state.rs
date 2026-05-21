@@ -126,6 +126,16 @@ impl AppState {
         // for waves. See `card_fsm` module docs for the scope rationale.
         crate::card_fsm::spawn(repo.clone(), events.clone());
 
+        // Hands-free codex auto-submit. Subscribes to the same bus and,
+        // when a `hook.codex.session_start` event fires for a card whose
+        // `payload.auto_submit == true`, injects a `\r` into the daemon
+        // socket ~600 ms later so codex's composer pre-fill submits
+        // itself. Separate from `card_fsm` because it's a side-effecting
+        // subscriber, not a projector. See `codex_auto_submit` module
+        // docs for the trust model and v2-protocol interaction.
+        let daemon = Arc::new(DaemonClient::new(cfg));
+        crate::codex_auto_submit::spawn(repo.clone(), daemon.clone(), events.clone());
+
         let plugin = Arc::new(PluginHost::new_full(
             Arc::new(registry),
             repo.clone(),
@@ -147,7 +157,7 @@ impl AppState {
         let state = Self {
             repo: route_repo,
             events,
-            daemon: Arc::new(DaemonClient::new(cfg)),
+            daemon,
             plugin,
             codex: Arc::new(CodexClient::new(cfg)),
             raw: repo,
@@ -219,6 +229,103 @@ impl DaemonClient {
     pub fn sock_path(&self, terminal_id: &str) -> PathBuf {
         self.data_dir.join(format!("{terminal_id}.sock"))
     }
+
+    /// Inject raw bytes into a live terminal's PTY stdin over its daemon
+    /// socket, as if a keyboard had typed them.
+    ///
+    /// This is the kernel's privileged write path — used by
+    /// `codex_auto_submit` to submit a hands-free agent's pre-filled
+    /// prompt with a `\r`. The trust contract is enforced by the
+    /// daemon's protocol layer via
+    /// [`calm_session::ClientCapabilities::kernel_originated_input`]:
+    ///
+    ///   1. We open the per-terminal Unix socket (kernel-private — never
+    ///      crosses a network boundary, so the capability is honest).
+    ///   2. Frame a [`ClientMsg::ClientHello`] with `capabilities.
+    ///      kernel_originated_input = true` and `role_hint = Observer`
+    ///      (we are NOT trying to steal the browser's Owner role —
+    ///      coexisting is the whole point).
+    ///   3. Frame a [`ClientMsg::Input`] with the requested bytes.
+    ///   4. Drop the connection. The daemon disposes of the per-client
+    ///      `TerminalSessionState` and the browser's Owner connection
+    ///      (still attached separately) is undisturbed.
+    ///
+    /// The daemon's owner-only gate on `Input` accepts our write because
+    /// of the `kernel_originated_input` capability (see
+    /// `crates/calm-session/src/terminal_session.rs` `on_client_frame`).
+    /// The WS bridge strips this flag on every browser-originated
+    /// `ClientHello`, so the trust model is intact: only callers reaching
+    /// the daemon directly over its private Unix socket can set it.
+    ///
+    /// `terminal_id` MUST match the value the daemon was launched with,
+    /// in hyphenated UUID form — daemons compare via `Uuid::Display`,
+    /// which is always hyphenated. Callers that have the raw 32-hex
+    /// `model::new_id` form should `Uuid::parse_str(..).to_string()`
+    /// first; this method takes whatever it's given and forwards it
+    /// verbatim.
+    pub async fn inject_stdin(
+        &self,
+        sock_path: &std::path::Path,
+        terminal_id: &str,
+        bytes: &[u8],
+    ) -> std::io::Result<()> {
+        use calm_session::{
+            ClientCapabilities, ClientMsg, InitialScrollback, PROTOCOL_VERSION, PtySize,
+            RenderEncoding, Role, write_frame,
+        };
+        use tokio::net::UnixStream;
+
+        let mut stream = UnixStream::connect(sock_path).await?;
+
+        // ClientHello: `Observer` hint + `kernel_originated_input: true`.
+        // The Observer hint matters because if the browser dropped its
+        // own connection in the meantime we'd otherwise grab Owner — we
+        // want to be passive in every case so we never need to remember
+        // to release it.
+        let hello = ClientMsg::ClientHello {
+            protocol_version: PROTOCOL_VERSION,
+            terminal_id: terminal_id.to_string(),
+            client_id: uuid::Uuid::new_v4(),
+            desired_size: PtySize {
+                cols: 80,
+                rows: 24,
+                pixel_width: None,
+                pixel_height: None,
+            },
+            cell_size: None,
+            initial_scrollback: InitialScrollback::None,
+            resume_from: None,
+            role_hint: Some(Role::Observer),
+            capabilities: ClientCapabilities {
+                render_encodings: vec![RenderEncoding::Vt],
+                supports_scrollback: false,
+                supports_sixel: false,
+                supports_images: false,
+                kernel_originated_input: true,
+            },
+        };
+        write_frame(&mut stream, &hello).await.map_err(io_other)?;
+
+        // Input: the bytes we want the daemon to forward to PTY stdin.
+        let input = ClientMsg::Input(bytes.to_vec());
+        write_frame(&mut stream, &input).await.map_err(io_other)?;
+
+        // Best-effort shutdown so the daemon sees EOF promptly instead of
+        // waiting on the read half to time out. Drop alone would do the
+        // same thing eventually but flushing explicitly is friendlier.
+        use tokio::io::AsyncWriteExt;
+        let _ = stream.shutdown().await;
+        Ok(())
+    }
+}
+
+/// Promote a `FrameError` (or any error type whose `Display` makes sense
+/// in a transport-error log line) into an `io::Error`. We give up the
+/// typed error here — `inject_stdin`'s caller is `codex_auto_submit`,
+/// which only logs at `warn` and continues, so a single error enum is
+/// enough.
+fn io_other<E: std::fmt::Display>(e: E) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
 }
 
 /// Prefer a sibling of the running executable (works for `cargo run` and
