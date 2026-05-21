@@ -31,3 +31,6 @@ web/playwright/.cache/
 # Claude Code working files (agent worktrees, memory, transcripts).
 # Per-session, machine-local; never belongs in version control.
 .claude/
+
+# Local reference checkouts
+external/
