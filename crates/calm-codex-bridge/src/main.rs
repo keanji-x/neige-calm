@@ -47,9 +47,15 @@ fn main() {
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(3))
         .build();
+    // Scope β — declare the actor for every hook the bridge forwards.
+    // The kernel's `actor_middleware` reads `X-Calm-Actor`, validates it,
+    // and stamps the resulting event row with `actor = "ai:codex"`. Without
+    // this header the middleware falls back to its `"user"` default, which
+    // would misattribute codex's own lifecycle signal as a human write.
     match agent
         .post(&url)
         .set("content-type", "application/json")
+        .set("X-Calm-Actor", "ai:codex")
         .send_string(&body)
     {
         Ok(_) => {}

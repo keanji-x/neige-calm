@@ -185,9 +185,11 @@ function PluginIframeCard({ card }: { card: PluginCardData }) {
           };
         }
         try {
+          // Mint a per-call id so resulting kernel writes carry `correlation = user_tool_call:<id>`, enabling audit-log threading.
           const result = (await toolCallFromIframe(plugin_id, {
             name: params.name,
             arguments: (params.arguments ?? {}) as Record<string, unknown>,
+            call_id: crypto.randomUUID(),
           })) as Record<string, unknown> | null;
           // The kernel dispatcher returns the inner `neige.*` handler's
           // value (e.g. `{ ok: true }`). Surface it under `structuredContent`

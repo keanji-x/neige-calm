@@ -546,6 +546,13 @@ impl PluginHost {
     /// already enforces the `neige.*` prefix per migration doc §7.6 row 5;
     /// the plugin process is never asked.
     ///
+    /// `call_id` is the optional caller-supplied tracing handle from
+    /// `ToolCallBody.call_id`. When set, every event the dispatch writes
+    /// lands in `events.correlation` as `user_tool_call:<call_id>`. The
+    /// plugin's inbound MCP router (which calls `callbacks::dispatch`
+    /// directly, not via this method) passes `None` — plugin-initiated
+    /// writes don't carry user-facing tracing yet.
+    ///
     /// Returns `RpcError::Custom(-32002, ...)` if the plugin isn't currently
     /// running.
     pub async fn dispatch_neige_callback(
@@ -553,6 +560,7 @@ impl PluginHost {
         plugin_id: &str,
         method: &str,
         params: serde_json::Value,
+        call_id: Option<&str>,
     ) -> Result<serde_json::Value, RpcError> {
         let (mcp, subscriptions) = {
             let map = self.processes.lock().await;
@@ -572,6 +580,7 @@ impl PluginHost {
             registry: Arc::clone(&self.registry),
             mcp,
             subscriptions,
+            call_id,
         };
         callbacks::dispatch(&ctx, method, params).await
     }
@@ -771,6 +780,10 @@ fn spawn_neige_router(
                 registry: Arc::clone(&registry),
                 mcp: Arc::clone(&mcp),
                 subscriptions: Arc::clone(&subscriptions),
+                // Plugin-initiated inbound requests have no caller-side
+                // tracing id (the route layer is where `call_id` enters);
+                // resulting event rows get `correlation = NULL`.
+                call_id: None,
             };
             let outcome = callbacks::dispatch(&ctx, &req.method, req.params).await;
             // If the responder is gone (plugin disconnected mid-call), drop

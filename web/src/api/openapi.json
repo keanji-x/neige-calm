@@ -2513,13 +2513,20 @@
       },
       "ToolCallBody": {
         "type": "object",
-        "description": "M5: AppBridge → kernel tool-call wire body. Mirrors the JSON-RPC\n`tools/call` params shape so the web-calm helper can hand it through\nverbatim from the iframe-side `app.callServerTool({ name, arguments })`.",
+        "description": "M5: AppBridge → kernel tool-call wire body. Mirrors the JSON-RPC\n`tools/call` params shape so the web-calm helper can hand it through\nverbatim from the iframe-side `app.callServerTool({ name, arguments })`.\n\nScope β: an optional `call_id` is threaded through to every event the\nkernel writes while servicing this call. Each downstream `events.row`\nrecords `correlation = \"user_tool_call:<call_id>\"` so multi-step\ndispatches (e.g. a plugin tool that issues several overlay writes) can\nbe grouped after the fact (design doc §9). The frontend mints the id;\nthe kernel never inspects its content beyond formatting it into the\ncorrelation string.",
         "required": [
           "name"
         ],
         "properties": {
           "arguments": {
             "type": "object"
+          },
+          "call_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional caller-supplied tracing id. Omitted on legacy callers; the\nresulting events still write but with `correlation = NULL`."
           },
           "name": {
             "type": "string"

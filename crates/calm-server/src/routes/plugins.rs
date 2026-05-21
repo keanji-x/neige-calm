@@ -192,12 +192,24 @@ pub struct LogQuery {
 /// M5: AppBridge → kernel tool-call wire body. Mirrors the JSON-RPC
 /// `tools/call` params shape so the web-calm helper can hand it through
 /// verbatim from the iframe-side `app.callServerTool({ name, arguments })`.
+///
+/// Scope β: an optional `call_id` is threaded through to every event the
+/// kernel writes while servicing this call. Each downstream `events.row`
+/// records `correlation = "user_tool_call:<call_id>"` so multi-step
+/// dispatches (e.g. a plugin tool that issues several overlay writes) can
+/// be grouped after the fact (design doc §9). The frontend mints the id;
+/// the kernel never inspects its content beyond formatting it into the
+/// correlation string.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ToolCallBody {
     pub name: String,
     #[serde(default = "default_arguments")]
     #[schema(value_type = Object)]
     pub arguments: Value,
+    /// Optional caller-supplied tracing id. Omitted on legacy callers; the
+    /// resulting events still write but with `correlation = NULL`.
+    #[serde(default)]
+    pub call_id: Option<String>,
 }
 
 fn default_arguments() -> Value {
@@ -901,9 +913,14 @@ pub(crate) async fn plugin_tool_call(
             .into_response();
     }
 
+    // Empty-string call_id is normalized to absent so we never write the
+    // useless `correlation = "user_tool_call:"` row. A legacy/buggy client
+    // that sends `call_id: ""` behaves identically to one that omits the
+    // field — see scope-β review feedback on PR #37.
+    let call_id = body.call_id.as_deref().filter(|s| !s.is_empty());
     match s
         .plugin
-        .dispatch_neige_callback(&id, &body.name, body.arguments)
+        .dispatch_neige_callback(&id, &body.name, body.arguments, call_id)
         .await
     {
         Ok(value) => (StatusCode::OK, Json(value)).into_response(),

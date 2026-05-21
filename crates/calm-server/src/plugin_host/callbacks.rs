@@ -52,6 +52,22 @@ pub struct CallbackCtx<'a> {
     /// Per-(plugin, sub_id) join-handle table. Lives on `PluginHost` so
     /// `stop()` can abort all subscriptions for a plugin.
     pub subscriptions: Arc<Mutex<Vec<SubscriptionRecord>>>,
+    /// Scope β — caller-supplied tracing id. Set when the dispatch enters
+    /// from `routes::plugins::plugin_tool_call` (iframe AppBridge), `None`
+    /// when the plugin's own inbound MCP request triggers the callback.
+    /// Threaded into every `write_with_event_typed` / `log_pure_event`
+    /// call site as `correlation = Some("user_tool_call:<id>")`.
+    pub call_id: Option<&'a str>,
+}
+
+impl<'a> CallbackCtx<'a> {
+    /// Format the call_id as the `events.correlation` string. Returns an
+    /// owned `Option<String>` so callers can borrow into the
+    /// `Option<&str>` shape `write_with_event_typed`/`log_pure_event`
+    /// expect. Allocation is skipped entirely when `call_id` is None.
+    fn correlation(&self) -> Option<String> {
+        self.call_id.map(|c| format!("user_tool_call:{c}"))
+    }
 }
 
 /// One live subscription. Held by `PluginHost`'s subscription table so the
@@ -216,10 +232,11 @@ async fn overlay_set(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         payload: p.payload,
     };
     let actor = format!("plugin:{}", ctx.plugin_id);
+    let correlation = ctx.correlation();
     let (stored, _id) = write_with_event_typed(
         ctx.repo.as_ref(),
         &actor,
-        None,
+        correlation.as_deref(),
         ctx.event_bus.as_ref(),
         move |tx| {
             Box::pin(async move {
@@ -258,6 +275,7 @@ async fn overlay_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, R
     // Scope strictly to this plugin's overlays — repo enforces by passing the
     // server-known plugin_id.
     let actor = format!("plugin:{}", ctx.plugin_id);
+    let correlation = ctx.correlation();
     let plugin_id_owned = ctx.plugin_id.to_string();
     let entity_kind = p.entity_kind.clone();
     let entity_id = p.entity_id.clone();
@@ -265,7 +283,7 @@ async fn overlay_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, R
     let result = write_with_event_typed(
         ctx.repo.as_ref(),
         &actor,
-        None,
+        correlation.as_deref(),
         ctx.event_bus.as_ref(),
         move |tx| {
             Box::pin(async move {
@@ -332,10 +350,11 @@ async fn card_create(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         payload,
     };
     let actor = format!("plugin:{}", ctx.plugin_id);
+    let correlation = ctx.correlation();
     let (stored, _id) = write_with_event_typed(
         ctx.repo.as_ref(),
         &actor,
-        None,
+        correlation.as_deref(),
         ctx.event_bus.as_ref(),
         move |tx| {
             Box::pin(async move {
@@ -402,11 +421,12 @@ async fn card_update(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         payload: p.payload,
     };
     let actor = format!("plugin:{}", ctx.plugin_id);
+    let correlation = ctx.correlation();
     let card_id = p.card_id.clone();
     let (updated, _id) = write_with_event_typed(
         ctx.repo.as_ref(),
         &actor,
-        None,
+        correlation.as_deref(),
         ctx.event_bus.as_ref(),
         move |tx| {
             Box::pin(async move {
@@ -446,10 +466,11 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
     let wave_id = card.wave_id.clone();
     let card_id = p.card_id.clone();
     let actor = format!("plugin:{}", ctx.plugin_id);
+    let correlation = ctx.correlation();
     let _ = write_with_event_typed(
         ctx.repo.as_ref(),
         &actor,
-        None,
+        correlation.as_deref(),
         ctx.event_bus.as_ref(),
         move |tx| {
             Box::pin(async move {
@@ -870,6 +891,7 @@ mod tests {
                 registry: Arc::clone(&self.ctx_storage.registry),
                 mcp: Arc::clone(&self.ctx_storage.mcp),
                 subscriptions: Arc::clone(&self.ctx_storage.subs),
+                call_id: None,
             }
         }
     }
