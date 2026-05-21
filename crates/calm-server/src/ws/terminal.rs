@@ -303,10 +303,33 @@ pub async fn pump<T: DaemonTransport>(
                     // doc for the full trust model.
                     if let ClientMsg::ClientHello {
                         ref mut capabilities,
+                        ref mut terminal_id,
                         ..
                     } = parsed
                     {
                         capabilities.kernel_originated_input = false;
+                        // CORRECTNESS: normalize terminal_id to hyphenated
+                        // form so the daemon's byte-level handshake match
+                        // succeeds regardless of which form the client
+                        // sent. `model::new_id` returns the *simple* form
+                        // (32 hex, no dashes) and the API response leaks
+                        // that verbatim to the browser; `daemon.rs` renders
+                        // its own `cli.id` via `Uuid` `Display`, which is
+                        // always hyphenated, then does a string-equality
+                        // check against the incoming `ClientHello.terminal_id`.
+                        // Without this normalization, every browser hello
+                        // would fail with `BadHandshake` — see the e2e test
+                        // `crates/calm-server/tests/ws_terminal_e2e.rs` and
+                        // the `ws_normalizes_terminal_id_to_hyphenated`
+                        // regression test below.
+                        //
+                        // If the id isn't a valid UUID we leave it as-is and
+                        // let the daemon reject it as `BadHandshake` — that
+                        // is the correct fail-loud behavior for malformed
+                        // input.
+                        if let Ok(uuid) = uuid::Uuid::parse_str(terminal_id) {
+                            *terminal_id = uuid.to_string();
+                        }
                     }
                     if write_frame(&mut wr, &parsed).await.is_err() {
                         break;

@@ -305,13 +305,19 @@ async fn v2_full_chain_happy_path() {
             .expect("ws connect failed");
 
     // ---- 3. ClientHello -------------------------------------------------
-    // The daemon validates `ClientHello.terminal_id == cli.id.to_string()`
-    // where `cli.id` is a `Uuid` (clap-parsed). `Uuid::to_string()` is
-    // hyphenated, while `model::new_id()` returns `simple()` (no dashes).
-    // Round-trip through `Uuid` so the hello matches what the daemon sees.
-    let hello_terminal_id = Uuid::parse_str(&raw_terminal_id)
-        .expect("terminal id is a uuid")
-        .to_string();
+    // `terminal_id` comes from `POST /api/cards/{id}/terminal` as the
+    // *simple* UUID form (no dashes): `model::new_id()` uses
+    // `Uuid::simple()` and the response leaks that string verbatim. The
+    // daemon, on the other hand, validates against
+    // `cli.id.to_string()` which is hyphenated (`Uuid` `Display`). The
+    // WS bridge in `crates/calm-server/src/ws/terminal.rs` normalizes
+    // `ClientHello.terminal_id` to hyphenated form before forwarding to
+    // the daemon, so we deliberately pass the raw response value here:
+    // this test then exercises the full chain (browser → API response →
+    // ClientHello → WS bridge normalization → daemon handshake) and
+    // would regress to `BadHandshake` if the normalization were ever
+    // removed.
+    let hello_terminal_id = raw_terminal_id.clone();
     let hello = ClientMsg::ClientHello {
         protocol_version: PROTOCOL_VERSION,
         terminal_id: hello_terminal_id.clone(),
@@ -342,6 +348,15 @@ async fn v2_full_chain_happy_path() {
         .unwrap();
 
     // ---- 4. ServerHello -------------------------------------------------
+    // The daemon stamps `terminal_id` into the ServerHello via
+    // `cli.id.to_string()` (`Uuid` `Display`, always hyphenated), so the
+    // ServerHello we receive is hyphenated — even though `hello_terminal_id`
+    // (the *simple* form returned by the API) is what we sent. Compare
+    // against the hyphenated form to assert the WS-bridge normalization
+    // ran successfully end-to-end.
+    let expected_terminal_id = Uuid::parse_str(&raw_terminal_id)
+        .expect("terminal id is a uuid")
+        .to_string();
     let server_hello = recv_daemon_frame(&mut ws).await;
     let (client_role, snapshot_len) = match server_hello {
         DaemonMsg::ServerHello {
@@ -352,7 +367,7 @@ async fn v2_full_chain_happy_path() {
             ..
         } => {
             assert_eq!(protocol_version, PROTOCOL_VERSION);
-            assert_eq!(terminal_id, hello_terminal_id);
+            assert_eq!(terminal_id, expected_terminal_id);
             (client_role, snapshot.data.len())
         }
         DaemonMsg::ProtocolError {
