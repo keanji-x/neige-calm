@@ -37,6 +37,16 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState::new(&cfg, repo).await?;
 
+    // Optional session-recording — when `RECORD_SESSION=<path>` is set,
+    // every event broadcast on the bus is appended to that file as
+    // line-delimited JSON in the replay-fixture per-event shape. The
+    // result is directly playable by `cargo run --bin replay`. See
+    // `calm_server::replay::spawn_session_recorder` for caveats
+    // (notably: actor is recorded as `"unknown"`, see design doc §6.3).
+    if let Ok(path) = std::env::var("RECORD_SESSION") {
+        calm_server::replay::spawn_session_recorder(&state.events, path.into());
+    }
+
     let cors = CorsLayer::new()
         .allow_origin(
             cfg.allowed_origin

@@ -47,46 +47,20 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use calm_server::db::Repo;
 use calm_server::db::sqlite::SqlxRepo;
-use calm_server::event::{Event, EventBus};
-use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::state::{AppState, DaemonClient};
+use calm_server::event::EventBus;
+use calm_server::replay::{self, Fixture};
 use calm_server::ws;
 use futures_util::{SinkExt, StreamExt};
-use serde::Deserialize;
 use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message as TMessage;
 
 // ---------------------------------------------------------------------------
-// Fixture shape
+// Fixture loader — fixture types + parser live in `calm_server::replay`
+// so the `replay` bin and this test share one definition. This file
+// only adds the per-test "load by relative name under tests/fixtures/events".
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-struct Fixture {
-    #[allow(dead_code)]
-    name: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    description: String,
-    events: Vec<FixtureEvent>,
-    expected: FixtureExpected,
-}
-
-#[derive(Debug, Deserialize)]
-struct FixtureEvent {
-    kind: String,
-    actor: String,
-    payload: serde_json::Value,
-}
-
-#[derive(Debug, Deserialize)]
-struct FixtureExpected {
-    last_event_kind: String,
-    #[serde(default)]
-    layout_positions: serde_json::Map<String, serde_json::Value>,
-}
 
 fn load_fixture(name: &str) -> Fixture {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -94,38 +68,19 @@ fn load_fixture(name: &str) -> Fixture {
     path.push("fixtures");
     path.push("events");
     path.push(name);
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read fixture {}: {}", path.display(), e));
-    serde_json::from_str(&text)
-        .unwrap_or_else(|e| panic!("parse fixture {}: {}", path.display(), e))
+    replay::load_fixture_from_path(&path).expect("load fixture")
 }
 
 // ---------------------------------------------------------------------------
-// In-memory server boot
+// In-memory server boot — WS-only router. The full-router variant lives
+// in `src/bin/replay.rs`; this test only asserts on WS replay so we keep
+// the surface narrow.
 // ---------------------------------------------------------------------------
 
-/// Boot a minimal axum app exposing the WS events router with a fresh
-/// in-memory `SqlxRepo` and `EventBus`. Mirrors `ws_replay.rs::boot` —
-/// kept duplicated rather than abstracted because the test-harness shape
-/// is what changes most often, and a shared helper would invite
-/// pre-emptive parameterization.
 async fn boot() -> (std::net::SocketAddr, Arc<SqlxRepo>, EventBus) {
-    let events = EventBus::new();
-    let repo = Arc::new(
-        SqlxRepo::open("sqlite::memory:")
-            .await
-            .expect("open in-memory sqlite repo"),
-    );
-    let state = AppState {
-        repo: repo.clone(),
-        events: events.clone(),
-        daemon: Arc::new(DaemonClient::new_stub()),
-        plugin: Arc::new(PluginHost::new(
-            Arc::new(PluginRegistry::empty()),
-            repo.clone(),
-        )),
-        codex: Arc::new(calm_server::state::CodexClient::new_stub()),
-    };
+    let (repo, events, state) = replay::boot_in_memory()
+        .await
+        .expect("boot in-memory replay state");
     let app = axum::Router::new().merge(ws::router()).with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -139,26 +94,10 @@ async fn boot() -> (std::net::SocketAddr, Arc<SqlxRepo>, EventBus) {
     (addr, repo, events)
 }
 
-/// Raw-insert fixture events into the `events` table via the public
-/// `Repo::log_pure_event` path. That helper persists + broadcasts each
-/// event with the commit-then-emit invariant intact, returning the
-/// assigned `events.id` — exactly what we need to reconstruct a known
-/// event log for replay assertions. The integration-test boundary
-/// can't reach the `#[cfg(test)]`-gated raw `event_append_fixture`
-/// helper, so we go through the public path; the net effect is the
-/// same since we only seed events without any entity-table tendrils.
 async fn raw_insert_fixture_events(repo: &SqlxRepo, bus: &EventBus, fixture: &Fixture) -> Vec<i64> {
-    let mut out = Vec::with_capacity(fixture.events.len());
-    for ev in &fixture.events {
-        let event = Event::from_kind_and_payload(&ev.kind, ev.payload.clone())
-            .unwrap_or_else(|e| panic!("reconstruct event {}: {}", ev.kind, e));
-        let id = repo
-            .log_pure_event(&ev.actor, None, bus, event)
-            .await
-            .expect("log_pure_event");
-        out.push(id);
-    }
-    out
+    replay::seed_events(repo, bus, fixture)
+        .await
+        .expect("seed fixture events")
 }
 
 async fn recv_json<S>(ws: &mut S) -> serde_json::Value
@@ -236,11 +175,15 @@ async fn replay_wave_grid_layout_trace() {
     }
 
     // Last replayed event matches the fixture's `expected.last_event_kind`.
+    // The shared `FixtureExpected.last_event_kind` is `Option<String>` so
+    // partial fixtures can omit it; this fixture has it set.
     let last_kind = &received.last().expect("at least one frame").1;
-    assert_eq!(
-        last_kind, &fixture.expected.last_event_kind,
-        "last event kind"
-    );
+    let expected_last_kind = fixture
+        .expected
+        .last_event_kind
+        .as_ref()
+        .expect("fixture sets last_event_kind");
+    assert_eq!(last_kind, expected_last_kind, "last event kind");
 
     // Final layout-overlay payload (after replaying both `overlay.set`
     // frames) carries the expected positions. The second `overlay.set`

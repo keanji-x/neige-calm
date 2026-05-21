@@ -443,9 +443,26 @@ This is the unit-scale dry run of the e2e test that lives in `web/e2e/`.
 }
 ```
 
-**Loader.** New binary `crates/calm-server/src/bin/replay.rs`. `cargo run --bin replay <file>` starts an in-memory server, raw-inserts the events (seed is seed — no validation, no FSM), and either (a) `--serve` keeps it running on a fixed port for a parallel playwright run, or (b) `--assert` (CI default) renders via the `vitest-jsdom` harness and compares against `expected_state`.
+**Loader.** Binary `crates/calm-server/src/bin/replay.rs` (shipped — scope γ, issue #31). `cargo run --bin replay -- --file <path>` boots an in-memory `calm-server` and raw-inserts the fixture's events via `Repo::log_pure_event` (seed is seed — no validation, no FSM). Exactly one of:
 
-**Recording.** Env flag `record_session=path/to/out.events.json` causes every emitted event to also be written line-delimited with a leading entity snapshot. Bug report = file + one `replay` command. Bugs become reproducible artifacts — this is the headline capability.
+  * `--serve` — keep the full REST + WS router running on a fixed port (`--port`, default `4040`, matches the regular server) so a developer / Playwright session can poke the seeded state interactively. The REST entity-table reads will be empty (the loader bypasses write handlers by design); the WS `/api/events?since=0` replay returns the full seeded log, which is how `useOverlayState` and the rest of the frontend consume it.
+  * `--assert` — verify the fixture's `expected` block (`last_event_kind`, `layout_positions`) by folding the persisted event log; exits 0 on match, non-zero on mismatch.
+
+```text
+$ cargo run --bin replay -- --file crates/calm-server/tests/fixtures/events/wave-grid-layout-trace.events.json --serve
+calm-server (replay mode) listening on http://127.0.0.1:4040
+  loaded 7 events from wave-grid-layout-trace.events.json
+  last event: overlay.set at id=7
+
+$ cargo run --bin replay -- --file crates/calm-server/tests/fixtures/events/wave-grid-layout-trace.events.json --assert
+OK: 2/2 assertions matched (7 events seeded, last id=7, ...)
+  ok: last_event_kind == overlay.set
+  ok: layout_positions (3 entries) match
+```
+
+The boot + seed pipeline lives in `calm_server::replay` and is shared with the `tests/replay_fixtures.rs` integration test, so the test harness and the binary cannot drift.
+
+**Recording.** `RECORD_SESSION=<path>` (env var honored by the regular `calm-server` `main.rs`) appends every bus-emitted event to `<path>` as line-delimited JSON in the fixture's per-event shape (`{"kind", "actor", "payload"}`). Bug report = file + one `replay --assert` command. Bugs become reproducible artifacts — this is the headline capability. Caveat: the broadcast envelope does not yet carry actor (the wrapper that knows actor — `write_with_event` / `log_pure_event` — does, but `BroadcastEnvelope` doesn't surface it), so recorded events land with `actor: "unknown"`; replaying the trace still produces the same event-log shape. Threading actor through the envelope is a follow-up issue.
 
 ### 6.4 Performance / load
 
