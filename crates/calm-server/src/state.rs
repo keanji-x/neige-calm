@@ -4,22 +4,82 @@
 //! reference-counted internally.
 
 use crate::config::Config;
-use crate::db::Repo;
+use crate::db::{Repo, RouteRepo};
 use crate::event::EventBus;
 use crate::plugin_host::{PluginHost, PluginRegistry};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// Route-facing handle: the trait object `AppState::repo` exposes. Excludes
+/// `RepoSyncDomainRaw` — see `db/mod.rs` module doc for the capability split.
+///
+/// `Arc<dyn RouteRepo>` is what handlers see; integration tests that need
+/// to seed fixtures reach `&dyn Repo` via [`AppState::raw_repo`], which
+/// is gated behind the `fixtures` cargo feature (only enabled for the
+/// `tests/*.rs` integration crates via the self-loop dev-dep). No
+/// production module reaches for `raw_repo` today.
 #[derive(Clone)]
 pub struct AppState {
-    pub repo: Arc<dyn Repo>,
+    /// Narrow trait object: reads + eventized writes + out-of-domain writes.
+    /// Sync-domain raw writes (`cove_create`, `wave_update`, `card_delete`,
+    /// `overlay_upsert`, etc.) are unreachable from this handle — handlers
+    /// must funnel them through `db::write_with_event_typed`.
+    pub repo: Arc<dyn RouteRepo>,
     pub events: EventBus,
     pub daemon: Arc<DaemonClient>,
     pub plugin: Arc<PluginHost>,
     pub codex: Arc<CodexClient>,
+    /// Full-capability handle. Held separately from `repo` so the gate at
+    /// `AppState::repo` survives even though the underlying concrete impl
+    /// is the same `SqlxRepo`. Kept private — callers must go through
+    /// [`AppState::raw_repo`] (only visible under `--features fixtures`).
+    /// `allow(dead_code)` because in non-`fixtures` builds (the production
+    /// binary, the `replay` lib, etc.) nothing reads this field — it's
+    /// stored so the `fixtures`-only accessor still has something to hand
+    /// out, but the production build keeps the field opaque on purpose.
+    #[allow(dead_code)]
+    raw: Arc<dyn Repo>,
 }
 
 impl AppState {
+    /// Bypass the sync-domain gate. **For test-fixture seeding only** —
+    /// production code MUST go through `write_with_event_typed` /
+    /// `log_pure_event`. Gated behind the `fixtures` cargo feature so
+    /// production builds (the binary, `routes/*`, `plugin_host/*`,
+    /// `terminal_sweeper`, and the `replay` lib) physically cannot reach
+    /// this method — invoking it from a production module fails at
+    /// compile time with E0599 (`no method named raw_repo`). Integration
+    /// tests pick up the feature automatically via the `[dev-dependencies]`
+    /// self-loop in `Cargo.toml`.
+    #[cfg(feature = "fixtures")]
+    pub fn raw_repo(&self) -> &dyn Repo {
+        self.raw.as_ref()
+    }
+
+    /// Test / replay-lib hatch: build an `AppState` from already-constructed
+    /// pieces, skipping the boot-time plugin registry load + background
+    /// task spawn that `new` does. Public so `replay::boot_in_memory` and
+    /// integration tests can compose the struct without bypassing the
+    /// `raw` field's privacy (which is what guards the capability split
+    /// from external `AppState { ... }` literals).
+    pub fn from_parts(
+        repo: Arc<dyn Repo>,
+        events: EventBus,
+        daemon: Arc<DaemonClient>,
+        plugin: Arc<PluginHost>,
+        codex: Arc<CodexClient>,
+    ) -> Self {
+        let route_repo: Arc<dyn RouteRepo> = repo.clone();
+        Self {
+            repo: route_repo,
+            events,
+            daemon,
+            plugin,
+            codex,
+            raw: repo,
+        }
+    }
+
     /// Real boot-time constructor. Loads the plugin manifest registry from
     /// `cfg.plugins_dir`, creating the directory if it doesn't exist (fresh
     /// install path), wires up `DaemonClient` + `EventBus` + `PluginHost`,
@@ -80,12 +140,17 @@ impl AppState {
         // the rest of the boot path.
         plugin.autospawn_enabled().await;
 
+        // Upcast the full `Arc<dyn Repo>` to the narrow `Arc<dyn RouteRepo>`
+        // exposed via `AppState::repo`. Stable trait-object upcasting (Rust
+        // 1.86+) gives us this for free because `Repo: RouteRepo`.
+        let route_repo: Arc<dyn RouteRepo> = repo.clone();
         let state = Self {
-            repo,
+            repo: route_repo,
             events,
             daemon: Arc::new(DaemonClient::new(cfg)),
             plugin,
             codex: Arc::new(CodexClient::new(cfg)),
+            raw: repo,
         };
 
         // Orphan-terminal sweeper (Scope C). Ticks every 30s, reaps

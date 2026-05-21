@@ -73,7 +73,7 @@
 //!     the client falls back to a cold refetch.
 //!   * Keep the subscription set in a local `HashSet<String>` per connection.
 
-use crate::db::Repo;
+use crate::db::RepoEventWrite;
 use crate::event;
 use crate::event::BroadcastEnvelope;
 use crate::state::AppState;
@@ -234,7 +234,7 @@ enum ReplayOutcome {
 /// pass at the top of the main loop's `bus.recv()` branch.
 async fn run_replay<S>(
     tx: &mut S,
-    repo: &dyn Repo,
+    repo: &dyn RepoEventWrite,
     subs: &HashSet<String>,
     since: i64,
 ) -> ReplayOutcome

@@ -141,7 +141,10 @@ impl Settings {
 }
 
 /// Async helper used by `routes::codex` — pulls the snapshot in one shot.
-pub async fn load_settings(repo: &dyn crate::db::Repo) -> Result<Settings> {
+/// Bound on the narrow `RepoRead` trait so the helper can be invoked from
+/// route handlers via the `AppState::repo` handle (which is a `RouteRepo`,
+/// transitively a `RepoRead`).
+pub async fn load_settings(repo: &dyn crate::db::RepoRead) -> Result<Settings> {
     let pairs = repo.settings_get_all().await?;
     Ok(Settings::from_pairs(pairs))
 }

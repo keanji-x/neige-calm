@@ -22,8 +22,9 @@ use std::sync::Arc;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use calm_server::actor::actor_middleware;
+use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, overlay_upsert_tx};
-use calm_server::db::{Repo, write_with_event_typed};
+use calm_server::db::write_with_event_typed;
 use calm_server::event::{Event, EventBus};
 use calm_server::model::{NewCove, NewOverlay, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
@@ -38,13 +39,13 @@ async fn boot() -> (axum::Router, Arc<SqlxRepo>, AppState) {
     let concrete = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let repo: Arc<dyn Repo> = concrete.clone();
     let events = EventBus::new();
-    let state = AppState {
-        repo: repo.clone(),
+    let state = AppState::from_parts(
+        repo.clone(),
         events,
-        daemon: Arc::new(DaemonClient::new_stub()),
-        plugin: Arc::new(PluginHost::new(Arc::new(PluginRegistry::empty()), repo)),
-        codex: Arc::new(CodexClient::new_stub()),
-    };
+        Arc::new(DaemonClient::new_stub()),
+        Arc::new(PluginHost::new(Arc::new(PluginRegistry::empty()), repo)),
+        Arc::new(CodexClient::new_stub()),
+    );
     // Same shape as main.rs: middleware sits on the REST router only.
     let app = axum::Router::new()
         .merge(routes::router())

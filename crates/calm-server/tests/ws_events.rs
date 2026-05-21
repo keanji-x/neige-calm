@@ -32,16 +32,16 @@ async fn boot() -> (std::net::SocketAddr, EventBus) {
             .await
             .expect("open in-memory sqlite repo"),
     );
-    let state = AppState {
-        repo: repo.clone(),
-        events: events.clone(),
-        daemon: Arc::new(DaemonClient::new_stub()),
-        plugin: Arc::new(PluginHost::new(
+    let state = AppState::from_parts(
+        repo.clone(),
+        events.clone(),
+        Arc::new(DaemonClient::new_stub()),
+        Arc::new(PluginHost::new(
             Arc::new(calm_server::plugin_host::PluginRegistry::empty()),
             repo,
         )),
-        codex: Arc::new(calm_server::state::CodexClient::new_stub()),
-    };
+        Arc::new(calm_server::state::CodexClient::new_stub()),
+    );
     let app = axum::Router::new().merge(ws::router()).with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

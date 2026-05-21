@@ -7,6 +7,19 @@ default-run = "calm-server"
 [lib]
 path = "src/lib.rs"
 
+[features]
+default = []
+# Gates access to test-fixture-only escape hatches on `AppState`.
+# Currently controls `AppState::raw_repo()`, the bypass for the
+# `RouteRepo` sync-domain gate (see `state.rs` and `db/mod.rs`
+# §1.4.1). Production builds — the `calm-server` binary, every
+# `routes/*` handler, `plugin_host/*`, `terminal_sweeper`, and the
+# `replay` lib — MUST NOT enable this feature; they go through
+# `write_with_event_typed` / `log_pure_event` instead. Integration
+# tests under `tests/*.rs` auto-enable this via the `[dev-dependencies]`
+# self-loop below.
+fixtures = []
+
 [[bin]]
 name = "calm-server"
 path = "src/main.rs"
@@ -124,6 +137,14 @@ calm-session = { path = "../calm-session" }
 nix = { version = "0.29", features = ["signal"] }
 
 [dev-dependencies]
+# Self-loop to auto-enable the `fixtures` feature when building
+# integration tests (`tests/*.rs`). Each integration test is its own
+# crate that depends on `calm-server`; this dev-dep entry tells Cargo to
+# unify the test-side dependency graph with `fixtures` enabled, exposing
+# `AppState::raw_repo()` to the test crates without ever enabling it for
+# the production binary or any non-test consumer. See `state.rs` doc on
+# `raw_repo` and the `fixtures` feature definition above.
+calm-server = { path = ".", features = ["fixtures"] }
 # Route integration tests drive the Router via `tower::ServiceExt::oneshot`
 # without bringing up a TCP listener. `tower` itself is already a normal dep
 # (used by axum) but the `oneshot` helper lives behind the `util` feature.

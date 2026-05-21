@@ -71,7 +71,7 @@ The middleware is layered on the REST router only; WebSocket endpoints (`/api/ev
 
 ### 1.4 Where `event_append` lives in `Repo`
 
-The **only** public path that writes events is `Repo::write_with_event`. The raw `event_append` insert is private to the `SqlxRepo` impl (or `#[cfg(test)]`-gated for replay-loader / fixture-seeding use cases). The signature on `Repo` is the wrapper:
+The **only** public path that writes events is `RepoEventWrite::write_with_event`. The raw `event_append` insert is private to the `SqlxRepo` impl (or `#[cfg(test)]`-gated for replay-loader / fixture-seeding use cases). The signature is the wrapper:
 
 ```text
 async fn write_with_event<F, R>(
@@ -86,7 +86,7 @@ where
 It opens a transaction, runs the closure (entity statements), executes `INSERT INTO events ... RETURNING id` in the same txn, commits, then emits the `Event` on the bus stamped with the returned id:
 
 ```text
-repo.write_with_event(actor, |tx| async move {
+write_with_event_typed(repo, actor, None, &bus, |tx| async move {
     let card = card_create_tx(tx, p).await?;
     Ok((card.clone(), Event::CardAdded(card)))
 })
@@ -95,6 +95,33 @@ repo.write_with_event(actor, |tx| async move {
 Handlers stop calling `s.events.emit(...)` directly; the wrapper emits *after* commit succeeds. Partial-failure semantics: if either insert fails the txn rolls back; neither row exists.
 
 **Rationale for not exposing the raw form.** Two parallel paths invite handlers to drift back to the raw form, bypassing the transaction guarantee. Tightening later is hard; opening up later (if a justified use case emerges) is trivial. The `card_fsm` projector at `crates/calm-server/src/card_fsm.rs` writes overlays — overlays ARE entity writes, so the FSM goes through `write_with_event` like every other writer.
+
+#### 1.4.1 Trait capability split (Scope α)
+
+After Scope α (PR #21), `Repo` is split into four sub-traits along the *capability* axis. The split converts the "no route handler reaches a raw sync-domain write" rule from grep-time discipline into a compile-time gate:
+
+- **`RepoRead`** — universal read surface (`coves_list`, `wave_get`, `overlays_for`, `plugins_list_all`, `terminal_get`, `settings_get_all`, `plugin_kv_get`, …). Anyone with a `&dyn RepoRead` can read anything; no writes.
+- **`RepoEventWrite: RepoRead`** — the audited write surface (`write_with_event`, `log_pure_event`, `events_since`, `events_earliest_id`).
+- **`RepoSyncDomainRaw: RepoRead`** — **gated.** Raw entity writes for the in-scope sync domain: `cove_*`, `wave_*`, `card_*`, `overlay_upsert`, `overlay_delete`. These exist on the trait because `SqlxRepo` is the canonical impl and the types must be addressable somewhere — but the `RouteRepo` trait object route handlers see does **not** include this supertrait.
+- **`RepoOutOfDomain: RepoRead`** — operational writes the kernel deliberately keeps off the sync engine: `terminal_*`, `plugin_*` (install/enable/config/KV/tokens), `settings_*`. These do **not** emit events; they are server-private state that no other peer needs to replicate. Routes see them — they are part of the normal REST surface for plugin install, settings PUT, etc.
+
+`Repo` is the marker that combines all four (used internally and in tests). `RouteRepo` is `RepoEventWrite + RepoOutOfDomain` (transitively `RepoRead`); that's what `AppState::repo` exposes to handlers. Trait-object upcasting (Rust 1.86+) makes `Arc<dyn Repo>` → `Arc<dyn RouteRepo>` cheap and infallible at the trait-object boundary, which is what lets `AppState::new` hold a single concrete `SqlxRepo` and hand out the narrow view to handlers without a parallel struct.
+
+A handler that types `s.repo.cove_create(...)` now fails to compile:
+
+```text
+error[E0599]: no method named `cove_create` found for struct
+              `Arc<(dyn RouteRepo + 'static)>` in the current scope
+   --> crates/calm-server/src/routes/coves.rs:NNN:NN
+note: `RepoSyncDomainRaw` defines an item `cove_create`, perhaps you need
+      to implement it
+```
+
+The error message is the gate: future contributors learn the rule from the type system, not from a comment.
+
+**Sync-domain vs out-of-domain.** Sync-domain == the per-user / per-AI co-edit shared state defined by the engine: coves, waves, cards, overlays. Every write here is audit-logged and replicated. Out-of-domain == server-private operational state: terminal lifecycle (the daemon process is local), plugin install/config (per-instance), settings (per-instance). Adding these to the event log would be possible but not yet motivated — Phase 1 deliberately leaves them as plain repo writes.
+
+**Escape hatch.** `AppState::raw_repo() -> &dyn Repo` is the deliberately-named accessor reserved for integration-test fixture seeding. **Currently used only by integration tests** (`tests/terminal_sweeper.rs`, `tests/plugin_routes.rs`, `tests/payload_validation.rs`); no production module reaches for `raw_repo()` — `terminal_sweeper.rs` and the `replay` lib funnel through `write_with_event_typed` / `log_pure_event` like everything else. To enforce this in the type system the method is **gated behind the `fixtures` cargo feature** (`crates/calm-server/Cargo.toml`): production builds (the binary, every `routes/*`, `plugin_host/*`, `terminal_sweeper`, the `replay` lib) compile without the feature and therefore physically cannot reach `raw_repo` — invoking it fails at compile time with `E0599: no method named raw_repo`. Integration tests get the feature automatically via a `[dev-dependencies]` self-loop (`calm-server = { path = ".", features = ["fixtures"] }`). If a future production module needs raw access, the access pattern is to extend the feature gate (and justify the case in code review), not to drop the gate. CI also runs a grep guard against `raw_repo` appearing in any production file as a soft backstop.
 
 ---
 
