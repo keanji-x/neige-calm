@@ -302,7 +302,30 @@ pub enum ClientMsg {
     },
     /// Raw bytes from the client keyboard → PTY stdin. Owner-only;
     /// observers receive [`ProtocolErrorCode::NotOwner`].
-    Input(Vec<u8>),
+    ///
+    /// `input_seq` is a per-connection monotonic counter chosen by the
+    /// client. When `input_seq > 0`, the daemon emits
+    /// [`DaemonMsg::InputAck`] carrying the same `input_seq` *after* the
+    /// PTY master write returns successfully, so the sender can wait on a
+    /// deterministic delivery confirmation. `input_seq == 0` (the wire
+    /// default for older / browser clients that don't care) signals "no
+    /// ack requested" — the daemon writes the bytes and stays silent. The
+    /// daemon never validates ordering or uniqueness; it just echoes
+    /// whatever non-zero seq arrived on each Input frame. Matching acks
+    /// to outstanding requests is the client's responsibility.
+    ///
+    /// Wire shape: `#[serde(default)]` on `input_seq` so a JSON frame
+    /// missing the field (older browser clients, hand-rolled callers)
+    /// decodes as `input_seq: 0` and behaves identically to "no ack
+    /// requested". The bincode kernel↔daemon hop always upgrades the
+    /// `calm-session` crate in lockstep, so the tuple-→-struct variant
+    /// migration that introduced this field does not need a bincode
+    /// back-compat shim — same posture as `ServerHello.is_child_ready`.
+    Input {
+        data: Vec<u8>,
+        #[serde(default)]
+        input_seq: u64,
+    },
     /// Owner-driven viewport change. `epoch` is monotonic per-session and
     /// lets the daemon ignore stale resizes that arrive after a newer one
     /// has already been applied.
@@ -449,6 +472,33 @@ pub enum DaemonMsg {
     /// (the chat runner has its own ready signal via its first stream
     /// event).
     ChildReady { pty_seq: u32, render_rev: u32 },
+    /// Per-connection delivery acknowledgement for a previously-sent
+    /// [`ClientMsg::Input`]. Emitted to the originating connection — not
+    /// broadcast — after the PTY master write for that Input frame has
+    /// returned successfully. `input_seq` echoes the value the client
+    /// supplied on the corresponding `Input` frame.
+    ///
+    /// The daemon emits `InputAck` only when the originating frame had
+    /// `input_seq > 0`; `input_seq == 0` is the "no ack requested" wire
+    /// default and produces no ack frame. The daemon also does NOT emit
+    /// an ack if the PTY write fails (channel send error, writer thread
+    /// dead, ...) — in that failure case the client times out on its
+    /// outstanding seq, which is the correct semantics.
+    ///
+    /// Ordering: acks are emitted in the same order as the underlying
+    /// PTY writes complete on the daemon's blocking PTY-writer thread,
+    /// so two `Input` frames with seqs `N, N+1` from one connection will
+    /// produce `InputAck { N }` then `InputAck { N+1 }` in that order.
+    /// The daemon does not validate `input_seq` monotonicity — it just
+    /// echoes whatever arrived, in write-completion order.
+    ///
+    /// Intended consumer: the kernel-originated transient
+    /// `DaemonClient::inject_stdin` path (PR #110), which previously
+    /// guarded against a premature disconnect with a fixed
+    /// `tokio::time::sleep` and now awaits a matching `InputAck` instead.
+    /// Browser clients leave `input_seq` at 0 and don't observe this
+    /// frame.
+    InputAck { input_seq: u64 },
     /// Sent once right after the chat-mode handshake. `replay` is a list
     /// of already-serialized NeigeEvent JSON strings so a re-attaching
     /// client can rebuild conversation state without re-running the model.

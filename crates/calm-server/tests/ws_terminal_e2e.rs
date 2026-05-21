@@ -391,8 +391,14 @@ async fn v2_full_chain_happy_path() {
     );
 
     // ---- 5. Input "echo hello\r" ----------------------------------------
+    // `input_seq: 0` mirrors the browser path: no ack requested. This
+    // test asserts on `RenderPatch` echo, not on `InputAck` arrival.
     ws.send(TMessage::Text(
-        serde_json::to_string(&ClientMsg::Input(b"echo hello\r".to_vec())).unwrap(),
+        serde_json::to_string(&ClientMsg::Input {
+            data: b"echo hello\r".to_vec(),
+            input_seq: 0,
+        })
+        .unwrap(),
     ))
     .await
     .unwrap();

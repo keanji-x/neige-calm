@@ -150,7 +150,10 @@ fn first_frame_not_client_hello_yields_protocol_error_bad_handshake() {
     let session_id = Uuid::new_v4();
 
     let effects = state.on_client_frame(
-        ClientMsg::Input(b"oops".to_vec()),
+        ClientMsg::Input {
+            data: b"oops".to_vec(),
+            input_seq: 0,
+        },
         broadcaster.buffer(),
         &mut registry,
         &ctx(&broadcaster, session_id),
@@ -320,7 +323,10 @@ fn observer_input_yields_not_owner() {
     assert_eq!(state.role(), Some(Role::Observer));
 
     let effects = state.on_client_frame(
-        ClientMsg::Input(b"keys".to_vec()),
+        ClientMsg::Input {
+            data: b"keys".to_vec(),
+            input_seq: 0,
+        },
         broadcaster.buffer(),
         &mut registry,
         &ctx(&broadcaster, session_id),
@@ -340,7 +346,7 @@ fn observer_input_yields_not_owner() {
     assert!(
         !effects.iter().any(|e| matches!(
             e,
-            Effect::WriteToPty(_) | Effect::ResizePty { .. } | Effect::KillChild
+            Effect::WriteToPty { .. } | Effect::ResizePty { .. } | Effect::KillChild
         )),
         "observer rejection must not emit IO effects, got {effects:?}"
     );
@@ -384,7 +390,7 @@ fn observer_resize_commit_yields_not_owner() {
     assert!(
         !effects.iter().any(|e| matches!(
             e,
-            Effect::WriteToPty(_) | Effect::ResizePty { .. } | Effect::KillChild
+            Effect::WriteToPty { .. } | Effect::ResizePty { .. } | Effect::KillChild
         )),
         "observer ResizeCommit must not emit IO effects, got {effects:?}"
     );
@@ -424,7 +430,7 @@ fn observer_kill_yields_not_owner() {
     assert!(
         !effects.iter().any(|e| matches!(
             e,
-            Effect::WriteToPty(_) | Effect::ResizePty { .. } | Effect::KillChild
+            Effect::WriteToPty { .. } | Effect::ResizePty { .. } | Effect::KillChild
         )),
         "observer Kill must not emit IO effects, got {effects:?}"
     );
@@ -702,7 +708,10 @@ fn observer_with_kernel_input_capability_can_send_input() {
     let session_id = Uuid::new_v4();
 
     let effects = state.on_client_frame(
-        ClientMsg::Input(b"keys".to_vec()),
+        ClientMsg::Input {
+            data: b"keys".to_vec(),
+            input_seq: 0,
+        },
         broadcaster.buffer(),
         &mut registry,
         &ctx(&broadcaster, session_id),
@@ -712,7 +721,7 @@ fn observer_with_kernel_input_capability_can_send_input() {
     assert!(
         effects
             .iter()
-            .any(|e| matches!(e, Effect::WriteToPty(b) if b == b"keys")),
+            .any(|e| matches!(e, Effect::WriteToPty { data, .. } if data == b"keys")),
         "kernel-input observer Input should produce WriteToPty, got {effects:?}"
     );
     // ...and MUST NOT emit a NotOwner error.

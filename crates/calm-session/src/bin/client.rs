@@ -131,9 +131,19 @@ async fn main() -> anyhow::Result<()> {
             if bytes.contains(&0x1d) {
                 break;
             }
-            if write_frame(&mut wr, &ClientMsg::Input(bytes.to_vec()))
-                .await
-                .is_err()
+            // Standalone CLI client doesn't need ack tracking; leave
+            // input_seq at 0 ("no ack requested" — option (b) from
+            // issue #115). The daemon will write the bytes and stay
+            // silent.
+            if write_frame(
+                &mut wr,
+                &ClientMsg::Input {
+                    data: bytes.to_vec(),
+                    input_seq: 0,
+                },
+            )
+            .await
+            .is_err()
             {
                 break;
             }
@@ -196,8 +206,13 @@ async fn main() -> anyhow::Result<()> {
             | DaemonMsg::OwnerChanged { .. }
             | DaemonMsg::Backpressure { .. }
             | DaemonMsg::SnapshotRequired { .. }
-            | DaemonMsg::ChildReady { .. } => {
+            | DaemonMsg::ChildReady { .. }
+            | DaemonMsg::InputAck { .. } => {
                 // Informational frames the minimal CLI doesn't surface.
+                // `InputAck` never fires for this CLI because every
+                // Input frame it sends carries `input_seq: 0` ("no ack
+                // requested" — option (b)); the arm is here to keep
+                // `match msg` exhaustive.
             }
         }
     }

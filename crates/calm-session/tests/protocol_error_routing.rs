@@ -154,9 +154,15 @@ async fn protocol_error_targets_offending_client_only() {
     //
     // Observer sends illegal Input → daemon SHOULD respond with a
     // ProtocolError NotOwner only to the observer.
-    write_frame(&mut observer_wr, &ClientMsg::Input(b"x".to_vec()))
-        .await
-        .unwrap();
+    write_frame(
+        &mut observer_wr,
+        &ClientMsg::Input {
+            data: b"x".to_vec(),
+            input_seq: 0,
+        },
+    )
+    .await
+    .unwrap();
 
     // Observer must receive ProtocolError(NotOwner).
     let observer_frame: DaemonMsg = timeout(Duration::from_secs(2), read_frame(&mut observer_rd))
