@@ -2641,10 +2641,8 @@
       },
       "ViewCatalogEntry": {
         "type": "object",
-        "description": "One entry in the `/api/plugins/views` catalog. Used by Slice G's AddPanel.\n\nM3 (mcp-apps migration) adds `resource_uri` as the canonical\n`ui://<plugin>/<view>` identifier. `plugin_id` + `view_id` stay on the\nwire alongside it during the M3→M4 transition; M4's frontend pivots to\n`resource_uri` and a follow-up slice may drop the legacy pair.",
+        "description": "One entry in the `/api/plugins/views` catalog. Used by Slice G's AddPanel.\n\nThe canonical identifier is the MCP Apps `ui://<plugin>/<view>` URI in\n`resource_uri`. The frontend parses the `(plugin_id, view_id)` pair off\nit lazily via `parsePluginCardKind`.",
         "required": [
-          "plugin_id",
-          "view_id",
           "resource_uri",
           "title",
           "scope"
@@ -2666,9 +2664,6 @@
               "null"
             ]
           },
-          "plugin_id": {
-            "type": "string"
-          },
           "resource_uri": {
             "type": "string",
             "description": "Canonical MCP Apps URI: `ui://<plugin_id>/<view_id>`. Always present —\ncomputed kernel-side so the frontend doesn't have to redo the join."
@@ -2678,9 +2673,6 @@
             "description": "`\"card\"` for M3 — wave/cove are banned per design §10."
           },
           "title": {
-            "type": "string"
-          },
-          "view_id": {
             "type": "string"
           }
         }

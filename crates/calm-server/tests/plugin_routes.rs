@@ -487,13 +487,14 @@ async fn views_catalog_lists_enabled_plugin_views() {
     let arr = body_to_json(resp).await;
     let entries = arr.as_array().expect("array");
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0]["plugin_id"], "test.views");
-    assert_eq!(entries[0]["view_id"], "main");
-    // M3 (mcp-apps migration): `resource_uri` is the canonical ui:// form.
-    // `plugin_id`/`view_id` stay alongside it during the M3→M4 transition.
+    // `resource_uri` is the canonical MCP Apps identifier; the frontend
+    // parses (plugin_id, view_id) off it lazily.
     assert_eq!(entries[0]["resource_uri"], "ui://test.views/main");
     assert_eq!(entries[0]["scope"], "card");
     assert_eq!(entries[0]["default_size"]["w"], 4);
+    // Legacy `plugin_id` / `view_id` fields were dropped pre-prod (#89).
+    assert!(entries[0].get("plugin_id").is_none());
+    assert!(entries[0].get("view_id").is_none());
 
     let _ = post_json(
         app(state.clone()),

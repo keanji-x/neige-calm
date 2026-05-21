@@ -133,14 +133,11 @@ pub struct PluginDetail {
 
 /// One entry in the `/api/plugins/views` catalog. Used by Slice G's AddPanel.
 ///
-/// M3 (mcp-apps migration) adds `resource_uri` as the canonical
-/// `ui://<plugin>/<view>` identifier. `plugin_id` + `view_id` stay on the
-/// wire alongside it during the M3→M4 transition; M4's frontend pivots to
-/// `resource_uri` and a follow-up slice may drop the legacy pair.
+/// The canonical identifier is the MCP Apps `ui://<plugin>/<view>` URI in
+/// `resource_uri`. The frontend parses the `(plugin_id, view_id)` pair off
+/// it lazily via `parsePluginCardKind`.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ViewCatalogEntry {
-    pub plugin_id: String,
-    pub view_id: String,
     /// Canonical MCP Apps URI: `ui://<plugin_id>/<view_id>`. Always present —
     /// computed kernel-side so the frontend doesn't have to redo the join.
     pub resource_uri: String,
@@ -719,8 +716,6 @@ pub(crate) async fn list_plugin_views(
         for view in &manifest.views {
             let resource_uri = format!("ui://{}/{}", manifest.id, view.view_id);
             out.push(ViewCatalogEntry {
-                plugin_id: manifest.id.clone(),
-                view_id: view.view_id.clone(),
                 resource_uri,
                 title: view.title.clone(),
                 icon: view.icon.clone(),
