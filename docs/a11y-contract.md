@@ -255,6 +255,10 @@ The replay binary is spawned exclusively by the `replay-setup` setup project, wh
 
 Tests for a11y / role-name contracts go under `web/e2e/`. Tests that touch the replay fixture must use the `a11y` project. The convention is one spec per surface (one for the modal contract, one for the rename contract, etc.); cross-surface coverage is fine to scope inside a single `describe`.
 
+### 8.5 ARIA snapshots: deferred
+
+[#56](https://github.com/keanji-x/neige-calm/issues/56) listed "ARIA snapshots expose stable role/name targets that AI agents can operate against" as an acceptance criterion. The shipped contract is `getByRole(role, { name })` + axe scans + keyboard E2E (§8.1–§8.3) — not Playwright's `toMatchAriaSnapshot()`. Role/name assertions only break when the public contract (role, accessible name, focus path) changes; snapshots would re-block PRs on incidental DOM churn. The snapshot path remains open (Playwright ≥1.49) and can be added per major page state if the role tree starts drifting undetectably between PRs. Until then, treat this criterion as retired.
+
 ---
 
 ## 9. Deferred / known gaps
