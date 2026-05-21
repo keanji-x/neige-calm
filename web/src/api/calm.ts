@@ -210,7 +210,7 @@ export const putSettings = (b: SettingsPutBody) =>
  */
 export async function toolCallFromIframe(
   pluginId: string,
-  body: { name: string; arguments: Record<string, unknown> },
+  body: { name: string; arguments: Record<string, unknown>; call_id?: string },
 ): Promise<unknown> {
   return request<unknown>(
     'POST',

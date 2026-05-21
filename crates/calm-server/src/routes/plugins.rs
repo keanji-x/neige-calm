@@ -913,9 +913,14 @@ pub(crate) async fn plugin_tool_call(
             .into_response();
     }
 
+    // Empty-string call_id is normalized to absent so we never write the
+    // useless `correlation = "user_tool_call:"` row. A legacy/buggy client
+    // that sends `call_id: ""` behaves identically to one that omits the
+    // field — see scope-β review feedback on PR #37.
+    let call_id = body.call_id.as_deref().filter(|s| !s.is_empty());
     match s
         .plugin
-        .dispatch_neige_callback(&id, &body.name, body.arguments, body.call_id.as_deref())
+        .dispatch_neige_callback(&id, &body.name, body.arguments, call_id)
         .await
     {
         Ok(value) => (StatusCode::OK, Json(value)).into_response(),

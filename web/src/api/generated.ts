@@ -688,7 +688,14 @@ export interface components {
             daemon_handle?: string | null;
             env: Record<string, never>;
             id: string;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Daemon process id, captured by `spawn_daemon_for` after `cmd.spawn()`.
+             *     Used by the orphan-terminal sweeper (`terminal_sweeper`) as the
+             *     SIGTERM fallback target when the graceful `ClientMsg::Kill` path
+             *     fails. `None` for rows that predate Scope C or for which the spawn
+             *     returned no pid (kernel-level edge case).
+             */
             pid?: number | null;
             program: string;
         };
@@ -696,9 +703,22 @@ export interface components {
          * @description M5: AppBridge → kernel tool-call wire body. Mirrors the JSON-RPC
          *     `tools/call` params shape so the web-calm helper can hand it through
          *     verbatim from the iframe-side `app.callServerTool({ name, arguments })`.
+         *
+         *     Scope β: an optional `call_id` is threaded through to every event the
+         *     kernel writes while servicing this call. Each downstream `events.row`
+         *     records `correlation = "user_tool_call:<call_id>"` so multi-step
+         *     dispatches (e.g. a plugin tool that issues several overlay writes) can
+         *     be grouped after the fact (design doc §9). The frontend mints the id;
+         *     the kernel never inspects its content beyond formatting it into the
+         *     correlation string.
          */
         ToolCallBody: {
             arguments?: Record<string, never>;
+            /**
+             * @description Optional caller-supplied tracing id. Omitted on legacy callers; the
+             *     resulting events still write but with `correlation = NULL`.
+             */
+            call_id?: string | null;
             name: string;
         };
         ViaToolCall: {

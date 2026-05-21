@@ -439,3 +439,140 @@ async fn plugin_tool_call_without_call_id_leaves_correlation_null() {
 
     plugin_host.stop(plugin_id).await.ok();
 }
+
+// ---------------------------------------------------------------------------
+// Test 2c — empty-string call_id normalizes to absent
+// ---------------------------------------------------------------------------
+//
+// A buggy/legacy client that sends `call_id: ""` (e.g. an iframe that calls
+// `crypto.randomUUID()` in a context where it returned empty, or a manual
+// curl invocation) must not produce a dangling `correlation =
+// "user_tool_call:"` row. The route normalizes empty to absent before
+// threading into the callback ctx.
+
+#[tokio::test]
+async fn plugin_tool_call_treats_empty_call_id_as_absent() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let plugins_dir = tmp.path().join("plugins");
+    let plugins_data_dir = tmp.path().join("plugins-data");
+    let plugin_id = "test.empty-callid.overlay";
+    let install_dir = plugins_dir.join(plugin_id);
+    let bin_dir = install_dir.join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    std::fs::create_dir_all(&plugins_data_dir).unwrap();
+    std::os::unix::fs::symlink(Path::new(TOOLCALL_BIN), bin_dir.join("stub")).unwrap();
+
+    let repo: Arc<SqlxRepo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let cove = repo
+        .cove_create(NewCove {
+            name: "demo".into(),
+            color: "#fff".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo
+        .wave_create(NewWave {
+            cove_id: cove.id,
+            title: "w".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+
+    let manifest_json = json!({
+        "manifest_version": 1,
+        "id": plugin_id,
+        "version": "0.1.0",
+        "min_kernel_version": "0.0.1",
+        "display_name": "Empty-callid",
+        "entrypoint": { "command": "bin/stub" },
+        "permissions": {
+            "overlays_write": ["wave"],
+            "cards_create": false,
+            "cards_read_all": true,
+            "events_subscribe": []
+        }
+    });
+    let manifest: Manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest");
+
+    let registry = PluginRegistry::empty();
+    registry.insert(manifest, Some(install_dir.clone()));
+    let events = EventBus::new();
+    repo.plugin_install(calm_server::model::NewPlugin {
+        id: plugin_id.into(),
+        version: "0.1.0".into(),
+        install_path: install_dir.display().to_string(),
+        manifest: json!({}),
+        enabled: true,
+        user_config: json!({}),
+    })
+    .await
+    .expect("seed plugin row");
+    let plugin_host = Arc::new(PluginHost::new_full(
+        Arc::new(registry),
+        repo.clone() as Arc<dyn Repo>,
+        plugins_dir,
+        plugins_data_dir,
+        Vec::new(),
+        events.clone(),
+    ));
+
+    plugin_host.spawn(plugin_id).await.expect("spawn");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(s) = plugin_host.status(plugin_id).await
+            && matches!(s.status, PluginRuntimeStatus::Running)
+        {
+            break;
+        }
+        if Instant::now() > deadline {
+            panic!("plugin did not reach Running within 5s");
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+
+    let state = AppState {
+        repo: repo.clone() as Arc<dyn Repo>,
+        events,
+        daemon: Arc::new(DaemonClient::new_stub()),
+        plugin: plugin_host.clone(),
+        codex: Arc::new(CodexClient::new_stub()),
+    };
+
+    // Empty-string call_id — must be normalized to absent, NOT produce
+    // `correlation = "user_tool_call:"`.
+    let body = json!({
+        "name": "neige.overlay.set",
+        "arguments": {
+            "entity_kind": "wave",
+            "entity_id": wave.id,
+            "kind": "status",
+            "payload": { "state": "running" }
+        },
+        "call_id": ""
+    })
+    .to_string();
+
+    let resp = app(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/plugins/{plugin_id}/tool-call"))
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let id = last_event_id(&repo, "overlay.set").await;
+    let (_, correlation) = fetch_actor_correlation(&repo, id).await;
+    assert_eq!(
+        correlation, None,
+        "empty-string call_id must normalize to NULL — no dangling `user_tool_call:` rows"
+    );
+
+    plugin_host.stop(plugin_id).await.ok();
+}
