@@ -16,11 +16,40 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
-use calm_session::{ClientMsg, DaemonMsg, read_frame, write_frame};
+use calm_session::{
+    ClientCapabilities, ClientMsg, DaemonMsg, InitialScrollback, PROTOCOL_VERSION, PtySize,
+    RenderEncoding, read_frame, write_frame,
+};
 use tokio::net::UnixStream;
 use tokio::process::Command;
 use tokio::time::timeout;
 use uuid::Uuid;
+
+/// Minimal v2 ClientHello with no resume cursor — chat mode ignores
+/// everything except the variant tag, but we need a well-formed frame.
+fn chat_hello(terminal_id: &str) -> ClientMsg {
+    ClientMsg::ClientHello {
+        protocol_version: PROTOCOL_VERSION,
+        terminal_id: terminal_id.to_string(),
+        client_id: Uuid::new_v4(),
+        desired_size: PtySize {
+            cols: 80,
+            rows: 24,
+            pixel_width: None,
+            pixel_height: None,
+        },
+        cell_size: None,
+        initial_scrollback: InitialScrollback::None,
+        resume_from: None,
+        role_hint: None,
+        capabilities: ClientCapabilities {
+            render_encodings: vec![RenderEncoding::Vt],
+            supports_scrollback: false,
+            supports_sixel: false,
+            supports_images: false,
+        },
+    }
+}
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -101,8 +130,9 @@ async fn chat_user_message_round_trips_through_runner() {
     };
     let (mut rd, mut wr) = stream.into_split();
 
-    // Attach + HelloChat.
-    write_frame(&mut wr, &ClientMsg::Attach { cols: 80, rows: 24 })
+    // Handshake (ClientHello v2) + HelloChat. Chat mode only checks the
+    // variant tag; the inner fields are unused.
+    write_frame(&mut wr, &chat_hello(&id.to_string()))
         .await
         .unwrap();
     let hello = timeout(Duration::from_secs(5), read_frame::<DaemonMsg, _>(&mut rd))

@@ -5,13 +5,15 @@
 //! Frames carry the `calm_session::ClientMsg` / `DaemonMsg` enums encoded as
 //! JSON text. Each WS text frame is exactly one serde-JSON `ClientMsg` (going
 //! up) or `DaemonMsg` (coming down). Binary WS frames are not used in this
-//! bridge — the wave's own xterm.js client handles VT replay on top of
-//! `DaemonMsg::Hello.replay` / `DaemonMsg::Stdout` byte arrays delivered as
-//! JSON byte-arrays.
+//! bridge today — the wave's own xterm.js client handles VT replay on top of
+//! `DaemonMsg::ServerHello.snapshot.data` / subsequent `RenderPatch.data`
+//! byte arrays delivered as JSON byte-arrays. A future PR may introduce a
+//! binary-frame fast path for `Input`; the wire format is reserved.
 //!
 //! This is intentionally a *thin* bridge: history, replay, seq numbering,
-//! reconnect epochs etc. all live in the daemon (Hello.replay) or are handled
-//! at the daemon attach layer. Calm-server just shuttles frames.
+//! reconnect epochs etc. all live in the daemon (`ServerHello.snapshot` +
+//! `RenderPatch` cursors) or are handled at the daemon attach layer.
+//! Calm-server just shuttles frames.
 
 use crate::db::{RepoOutOfDomain, RouteRepo};
 use crate::error::Result;
@@ -193,7 +195,7 @@ pub(crate) async fn cleanup_stale_daemon(
 /// effects in `handle` (rather than threading the repo into `pump`) leaves
 /// `pump` purely I/O-bound and easy to test against in-memory transports.
 #[derive(Debug)]
-pub(crate) enum PumpOutcome {
+pub enum PumpOutcome {
     /// Connection ended cleanly: client closed, daemon emitted
     /// `ChildExited`, heartbeat timed out, or one of the WS arms hit EOF.
     /// No socket-level cleanup is needed — the daemon either already exited
@@ -215,7 +217,7 @@ pub(crate) enum PumpOutcome {
 ///
 /// A blanket impl covers any type with the right combination of bounds;
 /// callers don't need to opt in explicitly.
-pub(crate) trait DaemonTransport:
+pub trait DaemonTransport:
     tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static
 {
 }
@@ -240,7 +242,7 @@ impl<T> DaemonTransport for T where
 /// `tokio::io::DuplexStream`. The split-into-halves pattern requires
 /// `AsyncRead + AsyncWrite` on the concrete type, which the trait bound
 /// provides via [`tokio::io::split`].
-pub(crate) async fn pump<T: DaemonTransport>(
+pub async fn pump<T: DaemonTransport>(
     ws: WebSocket,
     daemon: T,
     terminal_id: String,
@@ -290,9 +292,8 @@ pub(crate) async fn pump<T: DaemonTransport>(
                         break;
                     }
                 }
-                // Binary frames could be used as an optimization for Stdin
-                // (skip JSON wrapping). Not part of the documented contract
-                // — drop for now, surface if the frontend wants it.
+                // Binary WS frames are reserved for a future Input fast
+                // path (PR-3). Today the pump drops them silently.
                 Message::Binary(_) => {}
                 Message::Close(_) => break,
                 // Ping/Pong: axum auto-responds to client Ping; client Pong
@@ -366,7 +367,13 @@ pub(crate) async fn pump<T: DaemonTransport>(
                     break;
                 }
             };
-            let exit = matches!(msg, DaemonMsg::ChildExited { .. });
+            // Both terminal-mode TerminalExited and chat-mode ChildExited
+            // signal end-of-session; the pump tears down the WS after
+            // either lands.
+            let exit = matches!(
+                msg,
+                DaemonMsg::TerminalExited { .. } | DaemonMsg::ChildExited { .. }
+            );
             let text = match serde_json::to_string(&msg) {
                 Ok(s) => s,
                 Err(e) => {
@@ -590,7 +597,9 @@ mod pump_tests {
     use axum::Router;
     use axum::extract::ws::WebSocketUpgrade;
     use axum::routing::get;
-    use calm_session::{ClientMsg, DaemonMsg, read_frame, write_frame};
+    use calm_session::{
+        ClientMsg, DaemonMsg, RenderEncoding, RenderPatch, read_frame, write_frame,
+    };
     use futures_util::{SinkExt, StreamExt};
     use std::net::SocketAddr;
     use tokio::io::DuplexStream;
@@ -607,8 +616,23 @@ mod pump_tests {
     /// Each call creates a fresh listener on `127.0.0.1:0` so concurrent
     /// tests don't share state. The server task is spawned and lives until
     /// the test ends; no cleanup needed because the runtime tears it down.
-    async fn boot_pump(
+    pub(crate) async fn boot_pump(
         daemon_side: DuplexStream,
+        ping: Duration,
+        pong: Duration,
+    ) -> (SocketAddr, tokio::sync::oneshot::Receiver<PumpOutcome>) {
+        boot_pump_with_terminal_id(daemon_side, "test-terminal-1", ping, pong).await
+    }
+
+    /// Variant of [`boot_pump`] that pins the terminal id used by the WS
+    /// route. Required for the v2 ClientHello round-trip test, which
+    /// needs the daemon to validate the handshake against a known id.
+    /// Returns the same `(addr, outcome_rx)` tuple as [`boot_pump`] so
+    /// callers that care about framing-skew outcomes have the receiver
+    /// available regardless of which variant they used to boot.
+    pub(crate) async fn boot_pump_with_terminal_id(
+        daemon_side: DuplexStream,
+        terminal_id: &str,
         ping: Duration,
         pong: Duration,
     ) -> (SocketAddr, tokio::sync::oneshot::Receiver<PumpOutcome>) {
@@ -623,11 +647,13 @@ mod pump_tests {
         // first time the route fires.
         let (outcome_tx, outcome_rx) = tokio::sync::oneshot::channel();
         let outcome_slot = Arc::new(Mutex::new(Some(outcome_tx)));
+        let terminal_id_str = terminal_id.to_string();
         let app = Router::new().route(
             "/pump",
             get(move |upgrade: WebSocketUpgrade| {
                 let slot = slot.clone();
                 let outcome_slot = outcome_slot.clone();
+                let tid = terminal_id_str.clone();
                 async move {
                     let daemon = slot
                         .lock()
@@ -639,9 +665,8 @@ mod pump_tests {
                         .await
                         .take()
                         .expect("pump route called more than once");
-                    let terminal_id = "test-terminal-1".to_string();
                     upgrade.on_upgrade(move |socket| async move {
-                        let outcome = pump(socket, daemon, terminal_id, ping, pong).await;
+                        let outcome = pump(socket, daemon, tid, ping, pong).await;
                         // Receiver may have been dropped if the test exited
                         // before the pump did — that's fine, just discard.
                         let _ = outcome_tx.send(outcome);
@@ -659,13 +684,30 @@ mod pump_tests {
         (addr, outcome_rx)
     }
 
+    /// Build a minimal v2 RenderPatch from raw bytes for the down-arm
+    /// translation test.
+    fn render_patch(bytes: &[u8]) -> DaemonMsg {
+        DaemonMsg::RenderPatch(RenderPatch {
+            render_rev: 1,
+            prev_render_rev: 0,
+            pty_seq: 1,
+            encoding: RenderEncoding::Vt,
+            data: bytes.to_vec(),
+        })
+    }
+
+    /// Build a minimal v2 ClientMsg::Input frame for the up-arm test.
+    fn client_input(bytes: &[u8]) -> ClientMsg {
+        ClientMsg::Input(bytes.to_vec())
+    }
+
     /// Big enough to never wake during a test. We don't want the heartbeat
     /// arm racing the assertions for up/down behavior.
     fn long_window() -> (Duration, Duration) {
         (Duration::from_secs(10), Duration::from_secs(60))
     }
 
-    /// daemon → WS: write a `DaemonMsg::Stdout` on the duplex; the WS
+    /// daemon → WS: write a `DaemonMsg::RenderPatch` on the duplex; the WS
     /// client must receive a JSON Text frame that round-trips back to the
     /// same `DaemonMsg`.
     #[tokio::test]
@@ -678,7 +720,7 @@ mod pump_tests {
         let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
         // Push one bincode frame from the "daemon" side.
-        write_frame(&mut daemon_side, &DaemonMsg::Stdout(b"world".to_vec()))
+        write_frame(&mut daemon_side, &render_patch(b"world"))
             .await
             .unwrap();
 
@@ -694,13 +736,13 @@ mod pump_tests {
         };
         let parsed: DaemonMsg = serde_json::from_str(&text).expect("valid DaemonMsg JSON");
         match parsed {
-            DaemonMsg::Stdout(bytes) => assert_eq!(bytes, b"world"),
-            other => panic!("expected Stdout(b\"world\"), got {:?}", other),
+            DaemonMsg::RenderPatch(p) => assert_eq!(p.data, b"world"),
+            other => panic!("expected RenderPatch(b\"world\"), got {:?}", other),
         }
     }
 
     /// WS → daemon: client pushes a Text frame containing
-    /// `ClientMsg::Stdin`; the daemon side must observe one bincode-framed
+    /// `ClientMsg::Input`; the daemon side must observe one bincode-framed
     /// `ClientMsg` matching it.
     #[tokio::test]
     async fn up_translates_ws_text_to_daemon_frame() {
@@ -711,8 +753,8 @@ mod pump_tests {
         let url = format!("ws://{}/pump", addr);
         let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-        let stdin = ClientMsg::Stdin(b"hello".to_vec());
-        let json = serde_json::to_string(&stdin).unwrap();
+        let input = client_input(b"hello");
+        let json = serde_json::to_string(&input).unwrap();
         ws.send(TMessage::Text(json)).await.unwrap();
 
         let got: ClientMsg = tokio::time::timeout(
@@ -723,12 +765,12 @@ mod pump_tests {
         .expect("daemon-side read timed out")
         .expect("daemon-side read failed");
         match got {
-            ClientMsg::Stdin(b) => assert_eq!(b, b"hello"),
-            other => panic!("expected Stdin(b\"hello\"), got {:?}", other),
+            ClientMsg::Input(b) => assert_eq!(b, b"hello"),
+            other => panic!("expected Input(b\"hello\"), got {:?}", other),
         }
     }
 
-    /// When the daemon emits `ChildExited`, the pump must (a) forward the
+    /// When the daemon emits `TerminalExited`, the pump must (a) forward the
     /// frame as JSON, (b) send a WS Close, and (c) return. Asserting on
     /// the stream draining to `None` is the test's proxy for "pump
     /// returned".
@@ -741,15 +783,21 @@ mod pump_tests {
         let url = format!("ws://{}/pump", addr);
         let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-        write_frame(&mut daemon_side, &DaemonMsg::ChildExited { code: Some(0) })
-            .await
-            .unwrap();
+        write_frame(
+            &mut daemon_side,
+            &DaemonMsg::TerminalExited {
+                code: Some(0),
+                pty_seq: 7,
+                render_rev: 7,
+            },
+        )
+        .await
+        .unwrap();
         // Drop our daemon-side writer so the down arm's read_frame would
-        // hit EOF if the ChildExited break didn't already trigger. Either
-        // way the pump must wind down.
+        // hit EOF if the TerminalExited break didn't already trigger.
         drop(daemon_side);
 
-        // 1) Text frame carrying the JSON ChildExited.
+        // 1) Text frame carrying the JSON TerminalExited.
         let msg = tokio::time::timeout(Duration::from_secs(2), ws.next())
             .await
             .expect("ws recv timed out")
@@ -761,8 +809,8 @@ mod pump_tests {
         };
         let parsed: DaemonMsg = serde_json::from_str(&text).unwrap();
         assert!(
-            matches!(parsed, DaemonMsg::ChildExited { code: Some(0) }),
-            "expected ChildExited, got {:?}",
+            matches!(parsed, DaemonMsg::TerminalExited { code: Some(0), .. }),
+            "expected TerminalExited, got {:?}",
             parsed
         );
 
@@ -789,10 +837,9 @@ mod pump_tests {
         );
     }
 
-    /// Bad JSON on the WS up path is logged + dropped (see daemon.rs:158
-    /// note in the original handler). The pump itself must keep running:
-    /// a following valid frame should arrive on the daemon side as if the
-    /// garbage was never there.
+    /// Bad JSON on the WS up path is logged + dropped. The pump itself
+    /// must keep running: a following valid frame should arrive on the
+    /// daemon side as if the garbage was never there.
     #[tokio::test]
     async fn bad_json_does_not_kill_pump() {
         let (mut daemon_side, server_side) = tokio::io::duplex(8192);
@@ -824,8 +871,8 @@ mod pump_tests {
 
         // 2) Subsequent valid frame must arrive — proves pump is still
         //    pumping.
-        let stdin = ClientMsg::Stdin(b"after-bad".to_vec());
-        ws.send(TMessage::Text(serde_json::to_string(&stdin).unwrap()))
+        let input = client_input(b"after-bad");
+        ws.send(TMessage::Text(serde_json::to_string(&input).unwrap()))
             .await
             .unwrap();
         let got: ClientMsg = tokio::time::timeout(
@@ -836,8 +883,8 @@ mod pump_tests {
         .expect("daemon-side read timed out after bad JSON")
         .expect("daemon-side read failed");
         match got {
-            ClientMsg::Stdin(b) => assert_eq!(b, b"after-bad"),
-            other => panic!("expected Stdin(b\"after-bad\"), got {:?}", other),
+            ClientMsg::Input(b) => assert_eq!(b, b"after-bad"),
+            other => panic!("expected Input(b\"after-bad\"), got {:?}", other),
         }
     }
 
@@ -887,8 +934,8 @@ mod pump_tests {
     }
 
     /// Daemon writes a syntactically well-formed framing prefix but with
-    /// version=2 (kernel only supports version=1). The down arm's
-    /// `read_frame` must return `FrameError::UnsupportedFrameVersion`,
+    /// a version the kernel doesn't support (FRAME_VERSION+1). The down
+    /// arm's `read_frame` must return `FrameError::UnsupportedFrameVersion`,
     /// which the pump translates to an error-log + Close + return.
     #[tokio::test]
     async fn unsupported_frame_version_breaks_pump_cleanly() {
@@ -901,13 +948,14 @@ mod pump_tests {
         let url = format!("ws://{}/pump", addr);
         let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-        // Magic `NEIG` (valid) + version=2 (big-endian, unsupported) +
-        // length=0. read_frame validates magic first, then version, so
-        // this drives the UnsupportedFrameVersion path before ever
-        // touching the length / payload.
+        // Magic `NEIG` (valid) + version=FRAME_VERSION+1 (big-endian,
+        // unsupported) + length=0. read_frame validates magic first, then
+        // version, so this drives the UnsupportedFrameVersion path before
+        // ever touching the length / payload.
+        let bogus_version = calm_session::FRAME_VERSION + 1;
         let mut wire = Vec::with_capacity(10);
         wire.extend_from_slice(b"NEIG");
-        wire.extend_from_slice(&2u16.to_be_bytes());
+        wire.extend_from_slice(&bogus_version.to_be_bytes());
         wire.extend_from_slice(&0u32.to_be_bytes());
         daemon_side.write_all(&wire).await.unwrap();
         daemon_side.flush().await.unwrap();
@@ -986,7 +1034,10 @@ mod pump_tests {
     }
 
     /// Unsupported framing version: `pump` must return
-    /// `PumpOutcome::FramingSkew { error: FrameError::UnsupportedFrameVersion { got: 2, supported: 1 } }`.
+    /// `PumpOutcome::FramingSkew { error: FrameError::UnsupportedFrameVersion { got: 1, supported: 2 } }`.
+    /// After PR #62, current `FRAME_VERSION` is 2, so pushing the legacy
+    /// v1 framing prefix exercises the skew path (older daemon binary still
+    /// bound to a row whose kernel has since upgraded).
     #[tokio::test]
     async fn pump_returns_framing_skew_on_unsupported_version() {
         use tokio::io::AsyncWriteExt;
@@ -998,11 +1049,12 @@ mod pump_tests {
         let url = format!("ws://{}/pump", addr);
         let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-        // Valid magic + version=2 + length=0. Magic check passes, version
-        // check fails. We never touch the (empty) payload region.
+        // Valid magic + version=1 (legacy, no longer supported) + length=0.
+        // Magic check passes, version check fails. We never touch the
+        // (empty) payload region.
         let mut wire = Vec::with_capacity(10);
         wire.extend_from_slice(b"NEIG");
-        wire.extend_from_slice(&2u16.to_be_bytes());
+        wire.extend_from_slice(&1u16.to_be_bytes());
         wire.extend_from_slice(&0u32.to_be_bytes());
         daemon_side.write_all(&wire).await.unwrap();
         daemon_side.flush().await.unwrap();
@@ -1019,11 +1071,11 @@ mod pump_tests {
                     matches!(
                         error,
                         FrameError::UnsupportedFrameVersion {
-                            got: 2,
-                            supported: 1,
+                            got: 1,
+                            supported: 2,
                         }
                     ),
-                    "expected UnsupportedFrameVersion {{ got: 2, supported: 1 }}, got {:?}",
+                    "expected UnsupportedFrameVersion {{ got: 1, supported: 2 }}, got {:?}",
                     error
                 );
             }

@@ -1,15 +1,22 @@
 //! Wire protocol + framing helpers shared between the daemon and its clients.
 //!
-//! A client (neige-server, or the standalone test CLI) opens the daemon's
-//! Unix socket, sends `ClientMsg::Attach {cols, rows}` as the first frame,
-//! then reads a `DaemonMsg::Hello { replay }` whose `replay` is the recent
-//! window of raw PTY bytes (kept in a server-side ring buffer). The client
-//! feeds those bytes straight into its own VT emulator (e.g. xterm.js) to
-//! repaint the screen. From there it's a duplex stream of `ClientMsg::Stdin`
-//! / `ClientMsg::Resize` upstream and `DaemonMsg::Stdout` /
-//! `DaemonMsg::ChildExited` downstream.
+//! As of v2 (issue #44) a client (neige-server, or the standalone test CLI)
+//! opens the daemon's Unix socket and sends [`ClientMsg::ClientHello`] as the
+//! first frame, carrying its `protocol_version`, `terminal_id`, `client_id`,
+//! desired viewport / cell metrics, optional resume cursor, role hint, and
+//! capability set. The daemon validates the handshake, assigns owner/observer
+//! role via a daemon-level `OwnerRegistry`, and replies with
+//! [`DaemonMsg::ServerHello`] including an initial [`RenderSnapshot`]. From
+//! there it's a duplex stream of [`ClientMsg::Input`] / [`ResizeCommit`] /
+//! ownership / ack frames upstream and [`DaemonMsg::RenderPatch`] /
+//! [`ResizeApplied`] / [`TerminalExited`] frames downstream.
 //!
-//! Framing: `[magic (4) = b"NEIG"] [version (u16 BE) = 1] [length (u32 BE)]
+//! In this PR the render plane is still byte-passthrough: `RenderSnapshot.data`
+//! / `RenderPatch.data` carry raw PTY bytes with `encoding = Vt`. A future PR
+//! introduces a server-side VT model so patches become cell-grid diffs rather
+//! than raw escape sequences.
+//!
+//! Framing: `[magic (4) = b"NEIG"] [version (u16 BE) = 2] [length (u32 BE)]
 //! [payload (bincode)]`.
 //!
 //! Magic + version were added in issue #45 so a daemon binary built against
@@ -39,7 +46,16 @@ pub const FRAME_MAGIC: [u8; 4] = *b"NEIG";
 /// unexpected version closes the connection cleanly via
 /// [`FrameError::UnsupportedFrameVersion`] rather than parsing the bytes
 /// against the wrong schema.
-pub const FRAME_VERSION: u16 = 1;
+///
+/// v2: `ClientMsg` / `DaemonMsg` terminal variants completely replaced (no
+/// v1 compatibility); chat variants unchanged. See issue #44.
+pub const FRAME_VERSION: u16 = 2;
+
+/// Application-layer protocol version carried in [`ClientMsg::ClientHello`]
+/// and [`DaemonMsg::ServerHello`]. Distinct from [`FRAME_VERSION`] because
+/// the wire envelope and the payload schema can move independently; today
+/// they happen to be in lockstep at 2/2.
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// Typed errors from the framing layer. The kernel↔daemon WS bridge in
 /// `calm-server` matches on [`FrameError::BadMagic`] /
@@ -61,25 +77,194 @@ pub enum FrameError {
     Oversize { len: u32, max: u32 },
 }
 
+// ---- v2 protocol value types -------------------------------------------
+
+/// Per-connection role assigned by the daemon's `OwnerRegistry`. The first
+/// successful handshake on a freshly-spawned daemon becomes the
+/// [`Role::Owner`]; subsequent clients default to [`Role::Observer`] and can
+/// promote themselves with [`ClientMsg::OwnerClaim`] (hostile takeover —
+/// the daemon never negotiates).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Role {
+    Owner,
+    Observer,
+}
+
+/// Render-plane payload encoding. Today the daemon only ever advertises
+/// [`RenderEncoding::Vt`] (raw escape-sequence bytes); the enum exists so
+/// later additions (cell-grid diffs, sixel images, ...) don't require a
+/// fresh `FRAME_VERSION` bump.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RenderEncoding {
+    Vt,
+}
+
+/// How much pre-attach history the client wants in the
+/// [`DaemonMsg::ServerHello`] snapshot. `None` = just the current viewport;
+/// `All` = everything the daemon still has; `Lines(n)` = up to n lines of
+/// scrollback (whole-chunk granularity in this PR, may tighten to
+/// line-granular when the VT model lands).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InitialScrollback {
+    None,
+    All,
+    Lines(u32),
+}
+
+/// PTY viewport dimensions plus an optional pixel-size hint. The pixel
+/// fields are only consulted by programs that draw inline images (sixel /
+/// kitty graphics); most clients leave them `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PtySize {
+    pub cols: u16,
+    pub rows: u16,
+    pub pixel_width: Option<u16>,
+    pub pixel_height: Option<u16>,
+}
+
+/// Single cell's pixel footprint as the client measured it. Sent only when
+/// it materially differs from the daemon-side default and the client wants
+/// pixel-accurate image alignment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CellSize {
+    pub width: u16,
+    pub height: u16,
+}
+
+/// Reconnect cursor — the latest `render_rev` and/or `pty_seq` the client
+/// already has. The daemon decides whether it can replay a delta from there
+/// or must send a fresh snapshot (in which case a
+/// [`HistoryGap`] is included in `ServerHello`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResumeFrom {
+    pub render_rev: Option<u32>,
+    pub pty_seq: Option<u32>,
+}
+
+/// What the client can decode / display. The daemon validates the
+/// intersection during handshake (e.g. no `Vt` in `render_encodings` →
+/// [`ProtocolErrorCode::UnsupportedEncoding`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientCapabilities {
+    pub render_encodings: Vec<RenderEncoding>,
+    pub supports_scrollback: bool,
+    pub supports_sixel: bool,
+    pub supports_images: bool,
+}
+
+/// Self-contained snapshot of the current render state. Sent inside
+/// [`DaemonMsg::ServerHello`] and as a standalone frame when the daemon
+/// decides the client needs a hard resync (typically because the requested
+/// resume cursor fell off the history window).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenderSnapshot {
+    pub render_rev: u32,
+    pub pty_seq: u32,
+    pub cols: u16,
+    pub rows: u16,
+    pub encoding: RenderEncoding,
+    pub data: Vec<u8>,
+    pub scrollback: Option<Vec<u8>>,
+}
+
+/// Incremental render-plane update. `prev_render_rev` lets the client
+/// detect a gap (its last-known `render_rev` doesn't match) and request a
+/// fresh [`RenderSnapshot`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenderPatch {
+    pub render_rev: u32,
+    pub prev_render_rev: u32,
+    pub pty_seq: u32,
+    pub encoding: RenderEncoding,
+    pub data: Vec<u8>,
+}
+
+/// Communicates to the client that its requested resume cursor was older
+/// than what the daemon still has buffered. `requires_snapshot` is always
+/// `true` in this PR (we always re-send the snapshot rather than a partial
+/// catch-up).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryGap {
+    pub requested_render_rev: Option<u32>,
+    pub requested_pty_seq: Option<u32>,
+    pub earliest_render_rev: u32,
+    pub earliest_pty_seq: u32,
+    pub requires_snapshot: bool,
+}
+
+/// Daemon-side back-pressure policy hint. The first wave only encodes the
+/// shape; nothing in this PR ever sends a `Backpressure` frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BackpressurePolicy {
+    LatestOnly,
+    SnapshotRequired,
+    Close,
+}
+
+/// Typed codes for [`DaemonMsg::ProtocolError`]. Distinct from a free-form
+/// string so the client can branch on the error class (e.g. show
+/// "upgrade required" for `UnsupportedVersion`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProtocolErrorCode {
+    UnsupportedVersion,
+    NotOwner,
+    BadSequence,
+    SnapshotMissing,
+    UnsupportedEncoding,
+    BadHandshake,
+}
+
+// ---- v2 ClientMsg / DaemonMsg ------------------------------------------
+
 // NOTE (D7 / issue #5): the kernel's `Event` enum in `calm-server` now drives
 // its TS counterpart via `ts-rs` (see `web/src/api/generated-events.ts`). The
-// same treatment could be applied to `ClientMsg` / `DaemonMsg` below to retire
-// the hand-mirror in `web/src/cards/builtins/terminal/*` — out of scope for
-// this PR but the path is clear: add `ts-rs = "12"` to this crate, derive `TS`,
-// add a second `export_to` target in the npm `gen:api` step.
+// same treatment is scheduled for `ClientMsg` / `DaemonMsg` in PR-3 of #44;
+// in the meantime `web/src/api/terminal-v2-handmirror.ts` mirrors these
+// types by hand.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClientMsg {
-    /// First message on every connection. Tells the daemon the client's
-    /// viewport so the PTY can be sized for it on first attach (latest-
-    /// attach-wins for subsequent clients).
-    Attach { cols: u16, rows: u16 },
-    /// Raw bytes from the client's keyboard → PTY stdin.
-    Stdin(Vec<u8>),
-    /// Viewport change after attach. Also latest-wins.
-    Resize { cols: u16, rows: u16 },
-    /// Ask the daemon to terminate the child (SIGHUP). The daemon's
-    /// child-waiter then broadcasts ChildExited and the daemon shuts
-    /// itself down.
+    /// First frame on every connection. Carries the application protocol
+    /// version, terminal identity, viewport / cell metrics, optional
+    /// resume cursor, role hint, and capability set. The daemon validates
+    /// (version match, terminal id match, encoding intersection non-empty)
+    /// and responds with [`DaemonMsg::ServerHello`] or
+    /// [`DaemonMsg::ProtocolError`].
+    ClientHello {
+        protocol_version: u16,
+        terminal_id: String,
+        client_id: Uuid,
+        desired_size: PtySize,
+        cell_size: Option<CellSize>,
+        initial_scrollback: InitialScrollback,
+        resume_from: Option<ResumeFrom>,
+        role_hint: Option<Role>,
+        capabilities: ClientCapabilities,
+    },
+    /// Raw bytes from the client keyboard → PTY stdin. Owner-only;
+    /// observers receive [`ProtocolErrorCode::NotOwner`].
+    Input(Vec<u8>),
+    /// Owner-driven viewport change. `epoch` is monotonic per-session and
+    /// lets the daemon ignore stale resizes that arrive after a newer one
+    /// has already been applied.
+    ResizeCommit { epoch: u32, cols: u16, rows: u16 },
+    /// Observer asking to be promoted to owner. Hostile takeover — the
+    /// daemon transfers ownership immediately (no negotiation, no consent
+    /// from the current owner) and broadcasts
+    /// [`DaemonMsg::OwnerChanged`] to all connected clients.
+    OwnerClaim,
+    /// Owner relinquishing ownership. Subsequent input is rejected with
+    /// [`ProtocolErrorCode::NotOwner`] until someone else claims.
+    OwnerRelease,
+    /// Client acknowledging it has rendered up through `render_rev`. Used
+    /// (in a later PR) to decide back-pressure policy.
+    RenderAck {
+        render_rev: u32,
+        pty_seq: Option<u32>,
+    },
+    /// Ask the daemon to terminate the child (SIGHUP). Owner-only in
+    /// terminal mode; in chat mode this still routes through the
+    /// chat-specific handler (closes the runner stdin so the SDK loop
+    /// exits cleanly).
     Kill,
     /// Chat-mode user message. The daemon serializes this onto the Node
     /// runner's stdin as `{"kind":"user_message","content":"..."}`. The
@@ -104,22 +289,77 @@ pub enum ClientMsg {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DaemonMsg {
-    /// Sent once right after `Attach` in terminal mode. `replay` is the
-    /// recent PTY byte window kept in the daemon's ring buffer — feed it
-    /// straight into the client's terminal emulator and it reproduces the
-    /// current screen.
-    Hello { replay: Vec<u8> },
-    /// Sent once right after `Attach` in chat mode. `replay` is a list of
-    /// already-serialized NeigeEvent JSON strings (one per buffered event)
-    /// so a re-attaching client can rebuild conversation state without
-    /// re-running the model.
+    /// Successful handshake response. Tells the client the daemon's
+    /// negotiated protocol version, the session id (rolls on each daemon
+    /// respawn), the role this client got assigned, the current owner (if
+    /// any), and the PTY/render head/tail cursors. The `snapshot` field
+    /// reproduces the current screen state; `history_gap` is set when the
+    /// client's `resume_from` cursor was older than what we still have.
+    ServerHello {
+        protocol_version: u16,
+        terminal_id: String,
+        session_id: Uuid,
+        client_role: Role,
+        owner_client_id: Option<Uuid>,
+        pty_size: PtySize,
+        pty_seq_head: u32,
+        pty_seq_tail: u32,
+        render_rev: u32,
+        snapshot: RenderSnapshot,
+        history_gap: Option<HistoryGap>,
+    },
+    /// Standalone snapshot — sent when the daemon decided the client needs
+    /// a hard re-sync mid-stream. Not used in this PR's daemon code but
+    /// the wire shape is fixed now so future PRs can emit it without
+    /// another schema bump.
+    RenderSnapshot(RenderSnapshot),
+    /// Incremental render-plane update. In this PR the `data` field is
+    /// the raw PTY chunk that produced the rev bump; PR-2 swaps it for
+    /// cell-grid diffs.
+    RenderPatch(RenderPatch),
+    /// Confirms an owner-issued [`ClientMsg::ResizeCommit`] took effect.
+    /// `epoch` echoes the request so the owner can correlate.
+    ResizeApplied {
+        epoch: u32,
+        pty_seq: u32,
+        render_rev: u32,
+        cols: u16,
+        rows: u16,
+    },
+    /// Owner registry transition. Sent to every connected client whenever
+    /// a successful [`ClientMsg::OwnerClaim`] / [`ClientMsg::OwnerRelease`]
+    /// changes who holds owner. `None` means no one currently owns the
+    /// session.
+    OwnerChanged { owner_client_id: Option<Uuid> },
+    /// Daemon is shedding load (lagged client, slow socket, ...). Wire
+    /// shape only in this PR; nothing in the daemon emits it yet.
+    Backpressure { policy: BackpressurePolicy },
+    /// Daemon needs the client to discard its local state and accept a
+    /// fresh [`Self::RenderSnapshot`]. Wire shape only in this PR.
+    SnapshotRequired { reason: String },
+    /// Terminal child exited; daemon is about to shut down. `pty_seq` and
+    /// `render_rev` pin the cursor so the client can confirm it didn't
+    /// miss any output between the last patch and the exit.
+    TerminalExited {
+        code: Option<i32>,
+        pty_seq: u32,
+        render_rev: u32,
+    },
+    /// Protocol-layer rejection. The shell closes the connection right
+    /// after delivering this frame.
+    ProtocolError {
+        code: ProtocolErrorCode,
+        message: String,
+        expected_version: Option<u16>,
+    },
+    /// Sent once right after the chat-mode handshake. `replay` is a list
+    /// of already-serialized NeigeEvent JSON strings so a re-attaching
+    /// client can rebuild conversation state without re-running the model.
     HelloChat { replay: Vec<String> },
-    /// Live PTY output, forwarded as it arrives.
-    Stdout(Vec<u8>),
-    /// One serialized NeigeEvent JSON line, emitted by the daemon for each
-    /// stream-json line that produced a unified event. Chat mode only.
+    /// One serialized NeigeEvent JSON line emitted by the chat runner.
     ChatEvent { json: String },
-    /// The child program exited. Daemon will shut down right after this.
+    /// Chat-mode child exited; daemon is about to shut down. Terminal
+    /// mode uses [`Self::TerminalExited`] instead.
     ChildExited { code: Option<i32> },
 }
 
@@ -237,6 +477,32 @@ mod framing_tests {
     use super::*;
     use std::io::Cursor;
 
+    /// Build a minimal `ClientHello` with default-everything for the
+    /// framing tests that don't care about handshake semantics.
+    fn sample_hello() -> ClientMsg {
+        ClientMsg::ClientHello {
+            protocol_version: PROTOCOL_VERSION,
+            terminal_id: "t-1".to_string(),
+            client_id: Uuid::nil(),
+            desired_size: PtySize {
+                cols: 80,
+                rows: 24,
+                pixel_width: None,
+                pixel_height: None,
+            },
+            cell_size: None,
+            initial_scrollback: InitialScrollback::None,
+            resume_from: None,
+            role_hint: None,
+            capabilities: ClientCapabilities {
+                render_encodings: vec![RenderEncoding::Vt],
+                supports_scrollback: false,
+                supports_sixel: false,
+                supports_images: false,
+            },
+        }
+    }
+
     /// Bincode-encode a payload exactly the way `write_frame` does, so we
     /// can build a wire buffer with a *valid* payload but a *deliberately
     /// wrong* header (mismatched version, etc.).
@@ -257,14 +523,12 @@ mod framing_tests {
 
     #[tokio::test]
     async fn round_trip_via_new_framing() {
-        let original = ClientMsg::Attach {
-            cols: 132,
-            rows: 50,
-        };
+        let original = sample_hello();
         let mut wire: Vec<u8> = Vec::new();
         write_frame(&mut wire, &original).await.expect("write");
 
-        // Sanity-check: header is exactly magic+version+len.
+        // Sanity-check: header is exactly magic+version+len, version is the
+        // current FRAME_VERSION (i.e. 2 post-#44).
         assert_eq!(&wire[0..4], &FRAME_MAGIC);
         assert_eq!(
             u16::from_be_bytes([wire[4], wire[5]]),
@@ -274,12 +538,38 @@ mod framing_tests {
 
         let mut cursor = Cursor::new(wire);
         let decoded: ClientMsg = read_frame(&mut cursor).await.expect("read");
-        match decoded {
-            ClientMsg::Attach { cols, rows } => {
-                assert_eq!(cols, 132);
-                assert_eq!(rows, 50);
+        assert_eq!(decoded, original);
+    }
+
+    #[tokio::test]
+    async fn framing_version_2_round_trip() {
+        // Locks the FRAME_VERSION=2 wire shape (issue #44). Hand-build the
+        // header so the version byte is asserted independently from
+        // FRAME_VERSION's value.
+        let payload = encode_payload(&ClientMsg::Kill);
+        let wire = build_frame(FRAME_MAGIC, 2, &payload);
+        let mut cursor = Cursor::new(wire);
+        let decoded: ClientMsg = read_frame(&mut cursor).await.expect("read v2");
+        assert_eq!(decoded, ClientMsg::Kill);
+    }
+
+    #[tokio::test]
+    async fn framing_version_1_payload_yields_unsupported_frame_version() {
+        // Bytes pretending to be v1: same magic, version=1, valid bincode.
+        // Post-#44 daemons MUST reject this — a v1 binary will never talk
+        // to a v2 binary without an explicit upgrade.
+        let payload = encode_payload(&ClientMsg::Kill);
+        let wire = build_frame(FRAME_MAGIC, 1, &payload);
+        let mut cursor = Cursor::new(wire);
+        let err = read_frame::<ClientMsg, _>(&mut cursor)
+            .await
+            .expect_err("must reject v1 framing");
+        match err {
+            FrameError::UnsupportedFrameVersion { got, supported } => {
+                assert_eq!(got, 1);
+                assert_eq!(supported, FRAME_VERSION);
             }
-            other => panic!("unexpected variant: {other:?}"),
+            other => panic!("expected UnsupportedFrameVersion, got {other:?}"),
         }
     }
 
@@ -303,15 +593,16 @@ mod framing_tests {
     #[tokio::test]
     async fn bad_version_is_typed_error() {
         let payload = encode_payload(&ClientMsg::Kill);
-        // Correct magic, version=2 (one ahead of current), valid payload.
-        let wire = build_frame(FRAME_MAGIC, 2, &payload);
+        // Correct magic, version=FRAME_VERSION+1 (one ahead of current),
+        // valid payload — the version mismatch fires before bincode parse.
+        let wire = build_frame(FRAME_MAGIC, FRAME_VERSION + 1, &payload);
         let mut cursor = Cursor::new(wire);
         let err = read_frame::<ClientMsg, _>(&mut cursor)
             .await
             .expect_err("must reject");
         match err {
             FrameError::UnsupportedFrameVersion { got, supported } => {
-                assert_eq!(got, 2);
+                assert_eq!(got, FRAME_VERSION + 1);
                 assert_eq!(supported, FRAME_VERSION);
             }
             other => panic!("expected UnsupportedFrameVersion, got {other:?}"),

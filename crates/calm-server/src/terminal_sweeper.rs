@@ -51,7 +51,11 @@ use crate::error::Result;
 use crate::event::Event;
 use crate::model::Terminal;
 use crate::state::AppState;
-use calm_session::{ClientMsg, write_frame};
+use calm_session::{
+    ClientCapabilities, ClientMsg, InitialScrollback, PROTOCOL_VERSION, PtySize, RenderEncoding,
+    write_frame,
+};
+use uuid::Uuid;
 
 /// Actor stamped on every event the sweeper produces. Distinct from
 /// `"user"` (REST) and `"plugin:<id>"`; matches the convention used by
@@ -121,7 +125,7 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
     if let Some(sock) = term.daemon_handle.as_deref() {
         match tokio::time::timeout(
             GRACEFUL_KILL_TIMEOUT,
-            graceful_kill_via_socket(Path::new(sock)),
+            graceful_kill_via_socket(Path::new(sock), &term.id),
         )
         .await
         {
@@ -211,16 +215,46 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
     Ok(())
 }
 
-/// Open the daemon's unix socket, send the required `Attach` then `Kill`
-/// frame, drop the connection. Bounded by the caller via `tokio::time::timeout`.
-async fn graceful_kill_via_socket(sock: &Path) -> std::io::Result<()> {
+/// Open the daemon's unix socket, send the required v2 `ClientHello`
+/// (so the daemon's handshake accepts us and routes the connection
+/// through `TerminalSessionState`), then a `Kill` frame, drop the
+/// connection. Bounded by the caller via `tokio::time::timeout`.
+///
+/// `ClientHello.role_hint` is left `None` so the sweeper is implicitly
+/// promoted to Owner when no live client holds ownership — which is the
+/// common case at reap time (the original client is long gone). If a live
+/// client *does* still hold ownership, our `Kill` is rejected as
+/// `NotOwner` and we fall through to the SIGTERM step. Either path lands
+/// at "daemon process gone" within the bounded timeout.
+async fn graceful_kill_via_socket(sock: &Path, terminal_id: &str) -> std::io::Result<()> {
     let stream = UnixStream::connect(sock).await?;
     let (_rd, mut wr) = stream.into_split();
-    // Daemon protocol requires Attach as the first frame; placeholder
-    // viewport since we're not going to read anything back.
-    write_frame(&mut wr, &ClientMsg::Attach { cols: 80, rows: 24 })
-        .await
-        .map_err(std::io::Error::other)?;
+    write_frame(
+        &mut wr,
+        &ClientMsg::ClientHello {
+            protocol_version: PROTOCOL_VERSION,
+            terminal_id: terminal_id.to_string(),
+            client_id: Uuid::new_v4(),
+            desired_size: PtySize {
+                cols: 80,
+                rows: 24,
+                pixel_width: None,
+                pixel_height: None,
+            },
+            cell_size: None,
+            initial_scrollback: InitialScrollback::None,
+            resume_from: None,
+            role_hint: None,
+            capabilities: ClientCapabilities {
+                render_encodings: vec![RenderEncoding::Vt],
+                supports_scrollback: false,
+                supports_sixel: false,
+                supports_images: false,
+            },
+        },
+    )
+    .await
+    .map_err(std::io::Error::other)?;
     write_frame(&mut wr, &ClientMsg::Kill)
         .await
         .map_err(std::io::Error::other)?;
