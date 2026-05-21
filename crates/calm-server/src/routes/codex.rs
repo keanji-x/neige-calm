@@ -19,9 +19,9 @@
 //! ## Flow
 //!
 //! 1. Validate the card exists and is `kind == "codex"`.
-//! 2. `mktemp -d` a per-spawn `CODEX_HOME`. **Seed it** from `~/.codex`
-//!    (auth.json / config.toml carry over) and overwrite `hooks.json` to
-//!    point every event at our bridge.
+//! 2. Per-card `CODEX_HOME` under `data_dir/codex-homes/<card_id>/`. Seeded
+//!    from `~/.codex` (auth.json / config.toml carry over) on first
+//!    creation; subsequent spawns reuse whatever codex itself wrote there.
 //! 3. Create a `Terminal` row whose `program = "codex"`, `cwd =
 //!    <user-supplied or $HOME>`, and `env` carries `CODEX_HOME`,
 //!    `NEIGE_CARD_ID`, `NEIGE_CALM_BASE_URL`. The daemon will forward all
@@ -31,8 +31,12 @@
 //!    the xterm via `/api/terminals/:id`.
 //!
 //! Hook events stay on the WS event bus (`card:<card_id>` → `codex.hook`)
-//! exactly as before — the codex CLI runs the bridge on every hook via the
-//! `hooks.json` we seed.
+//! exactly as before — the codex CLI runs the bridge on every hook. The
+//! hooks themselves are declared once, system-wide, in
+//! `/etc/codex/requirements.toml` (see `docker/codex-requirements.toml`)
+//! as policy-managed: codex's hook discovery returns `HookTrustStatus::
+//! Managed` for them, so they fire automatically with no per-card
+//! `hooks.json` write and no `/hooks` review-modal step.
 //!
 //! ## Tempdir lifetime
 //!
@@ -163,14 +167,11 @@ async fn spawn_codex_for(
         tracing::warn!(error = %e, src = %src.display(), "codex seed copy failed; continuing without it");
     }
 
-    // 3. Always (re)write hooks.json — even if the seed brought one in, or
-    //    a previous spawn wrote one with a stale bridge path. Cheap to
-    //    overwrite and ensures upgrades pick up the new path.
-    let bridge_path = s.codex.bridge_bin.to_string_lossy().to_string();
-    let hooks_json = build_hooks_json(&bridge_path);
-    let hooks_path = codex_home.join("hooks.json");
-    std::fs::write(&hooks_path, hooks_json)
-        .map_err(|e| CalmError::Internal(format!("write hooks.json: {e}")))?;
+    // 3. Hooks come from `/etc/codex/requirements.toml` (bind-mounted via
+    //    docker-compose) as policy-managed entries, so we no longer write
+    //    a per-card `$CODEX_HOME/hooks.json`. Managed hooks fire without a
+    //    `/hooks` review step; see the docker file's header for the
+    //    discovery-path rationale.
 
     // 4. Resolve cwd & assemble env that the daemon will forward to the
     //    PTY child. Interactive `codex` (no args) boots into its TUI.
@@ -409,28 +410,6 @@ fn copy_dir_recursive(src: &StdPath, dst: &StdPath) -> std::io::Result<()> {
     Ok(())
 }
 
-fn build_hooks_json(bridge: &str) -> String {
-    // Bridge command — the binary path resolved by `state::CodexClient`.
-    // Codex spec: each hook entry is `{"type":"command", "command":"<argv>"}`.
-    // We rely on PATH lookup if `bridge` is a bare name.
-    let cmd =
-        serde_json::to_string(bridge).unwrap_or_else(|_| String::from("\"neige-codex-bridge\""));
-    format!(
-        r#"{{
-  "hooks": {{
-    "SessionStart":     [{{ "hooks": [{{ "type": "command", "command": {c} }}] }}],
-    "PreToolUse":       [{{ "matcher": ".*", "hooks": [{{ "type": "command", "command": {c} }}] }}],
-    "PostToolUse":      [{{ "matcher": ".*", "hooks": [{{ "type": "command", "command": {c} }}] }}],
-    "PermissionRequest":[{{ "hooks": [{{ "type": "command", "command": {c} }}] }}],
-    "UserPromptSubmit": [{{ "hooks": [{{ "type": "command", "command": {c} }}] }}],
-    "Stop":             [{{ "hooks": [{{ "type": "command", "command": {c} }}] }}]
-  }}
-}}
-"#,
-        c = cmd
-    )
-}
-
 /// Convert codex's `PascalCase` event names (`PreToolUse`) to snake.
 /// Keeps the same shape as Claude hook discriminators on the wire, so
 /// the frontend's pattern matching stays consistent across providers.
@@ -468,13 +447,6 @@ mod tests {
         assert_eq!(to_snake_case("Stop"), "stop");
         assert_eq!(to_snake_case("SessionStart"), "session_start");
         assert_eq!(to_snake_case("unknown"), "unknown");
-    }
-
-    #[test]
-    fn hooks_json_is_valid() {
-        let s = build_hooks_json("/usr/local/bin/neige-codex-bridge");
-        let v: Value = serde_json::from_str(&s).expect("valid JSON");
-        assert!(v["hooks"]["PreToolUse"].is_array());
     }
 
     #[tokio::test]

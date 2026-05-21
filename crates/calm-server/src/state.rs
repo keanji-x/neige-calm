@@ -246,7 +246,11 @@ fn resolve_session_daemon_bin() -> PathBuf {
 pub struct CodexClient {
     /// `codex` CLI to spawn. Defaults to `codex` (PATH lookup).
     pub codex_bin: String,
-    /// `neige-codex-bridge` binary path written into hooks.json. Resolved
+    /// `neige-codex-bridge` binary path. The actual command codex invokes
+    /// is `/usr/local/bin/neige-codex-bridge` (declared in
+    /// `docker/codex-requirements.toml` as a policy-managed hook); this
+    /// field records the canonical local path so the binary lookup at
+    /// `cargo run` / packaging time picks up the workspace build. Resolved
     /// as a sibling of `calm-server` exe, falling back to bare name.
     pub bridge_bin: PathBuf,
     /// Loopback URL the bridge POSTs to (`http://127.0.0.1:<port>`).

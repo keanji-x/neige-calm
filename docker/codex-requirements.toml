@@ -9,23 +9,33 @@
 #
 #   Codex treats hooks declared in /etc/codex/requirements.toml as
 #   "managed by policy": trusted automatically, can't be disabled from
-#   /hooks. This is normally an enterprise MDM channel; we (the kernel)
-#   are the policy author for our own container.
+#   /hooks. Per codex-rs/hooks/src/engine/discovery.rs:557-571,
+#   `HookTrustStatus::Managed` is returned unconditionally for managed
+#   sources, so the TUI's `review_needed_count` is 0 and the "Hooks need
+#   review" startup modal is never shown. (Normally this is an
+#   enterprise MDM channel; we — the kernel — are the policy author for
+#   our own container.)
 #
 # Bridge binary: `/usr/local/bin/neige-codex-bridge` (bind-mounted in by
 # docker-compose). It reads stdin JSON, looks at NEIGE_CARD_ID +
 # NEIGE_CALM_BASE_URL in the env (injected per-spawn by routes/codex.rs),
 # and POSTs the event to calm-server's /internal/codex/hook endpoint.
 
-# Restored `[features].hooks = true` after upgrading codex CLI to
-# 0.130.0+ — without this toggle codex 0.130 lists our hooks as
-# untrusted/inactive and silently doesn't fire them. The older 0.117
-# rejected the field; if you ever roll back the codex binary, expect
-# the daemon to crash-loop again.
+# Belt-and-suspenders: also stops any stray user/project .codex/hooks.json
+# from re-arming the modal — only this file's hooks can fire. Honored
+# ONLY in requirements.toml (codex-rs config_requirements.rs:91,
+# 1407-1414), which is why it sits here and not in per-card config.toml.
+allow_managed_hooks_only = true
+
+# `[features].hooks = true` is required from codex CLI 0.130.0+ — without
+# this toggle codex 0.130+ lists our hooks as untrusted/inactive and
+# silently doesn't fire them. The older 0.117 rejected the field; if you
+# ever roll back the codex binary, expect the daemon to crash-loop again.
 [features]
 hooks = true
 
 [hooks]
+# Informational: shown in the /hooks UI as the source of these handlers.
 managed_dir = "/usr/local/bin"
 
 [[hooks.SessionStart]]
