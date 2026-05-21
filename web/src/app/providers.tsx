@@ -34,6 +34,7 @@ import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client
 import type { ReactNode } from 'react';
 import { EventBridge } from './eventBridge';
 import { buildPersistOptions, PERSIST_MAX_AGE_MS } from '../api/persistConfig';
+import { Dialog } from '../ui/Dialog/Dialog';
 import {
   WEB_COMPAT_VERSION,
   fetchServerVersion,
@@ -104,60 +105,25 @@ function ServerCompatGate({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
-/** Full-viewport modal that blocks interaction underneath and directs the
- *  user to refresh. Pure JSX — no modal library, no shadow DOM. */
+/** Hard-block modal directing the user to refresh after a backend skew is
+ *  detected. Built on the shared `<Dialog>` primitive so it inherits the
+ *  focus trap, Esc handling, background inert, and focus restore contracts
+ *  the rest of the app relies on. There is only one resolution path —
+ *  reload the page — so Esc and overlay-click route through the same
+ *  `Refresh now` handler. */
 export function RefreshRequiredOverlay({ server }: { server: ServerVersionInfo }) {
+  const refresh = () => window.location.reload();
   return (
-    // TODO(#60): migrate this overlay onto the `<Dialog>` primitive
-    // (`web/src/ui/Dialog`). The overlay deliberately runs *outside* the
-    // app's normal QueryClient / portal infrastructure (it's the
-    // refresh-required hard block) so the migration needs a story for
-    // standalone, infra-free Dialog mounting before it's safe. Tracked as
-    // unfinished slice-1 cleanup in issue #60 (no-raw-primitive-role survey).
-    <div
-      // eslint-disable-next-line neige-calm/no-raw-primitive-role
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="refresh-required-title"
-      style={{
-        position: 'fixed',
-        inset: 0,
-        zIndex: 9999,
-        background: 'rgba(0, 0, 0, 0.5)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: 16,
-      }}
-    >
-      <div
-        style={{
-          background: 'var(--bg, #fff)',
-          color: 'var(--fg, #111)',
-          padding: '24px 28px',
-          borderRadius: 8,
-          maxWidth: 420,
-          boxShadow: '0 8px 32px rgba(0, 0, 0, 0.25)',
-        }}
-      >
-        <h2 id="refresh-required-title" style={{ marginTop: 0 }}>
-          Please refresh
-        </h2>
-        <p>
-          A new version of neige-calm is running on the server (compat v
-          {server.minWebCompatVersion}). Your browser tab is loaded with an
-          older build (compat v{WEB_COMPAT_VERSION}). Refresh this page to
-          continue.
-        </p>
-        <button
-          type="button"
-          className="go"
-          onClick={() => window.location.reload()}
-          style={{ marginTop: 8 }}
-        >
-          Refresh now
-        </button>
-      </div>
-    </div>
+    <Dialog open onClose={refresh} title="Please refresh">
+      <p>
+        A new version of neige-calm is running on the server (compat v
+        {server.minWebCompatVersion}). Your browser tab is loaded with an
+        older build (compat v{WEB_COMPAT_VERSION}). Refresh this page to
+        continue.
+      </p>
+      <button type="button" className="go" onClick={refresh}>
+        Refresh now
+      </button>
+    </Dialog>
   );
 }
