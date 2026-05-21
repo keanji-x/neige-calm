@@ -11,8 +11,30 @@
 // detour. This keeps us to a *single* modal layer even when an inner
 // widget needs a fullscreen-feeling sub-flow; popover-in-modal nesting
 // was the structural mistake we're replacing here.
+//
+// Focus contract (Slice 2 of #56)
+// -------------------------------
+// While the modal is open it owns keyboard focus and screen-reader
+// reachability:
+//   1. **Focus trap.** Tab/Shift+Tab cycles within the panel; focus can
+//      never leak into background DOM.
+//   2. **Initial focus.** When `open` flips true, focus moves into the
+//      panel — either to a caller-provided `initialFocusRef`, or to the
+//      first focusable element, or to the panel itself if there are none.
+//   3. **Focus restore.** When the modal closes, focus returns to the
+//      element that owned it just before opening (typically the trigger
+//      button). Callers can override with `restoreFocusRef`.
+//   4. **Background inert.** Sibling top-level DOM under `document.body`
+//      gets `inert` + `aria-hidden="true"` while the modal is open;
+//      assistive tech cannot linearly traverse into the page underneath.
+//
+// The trap is hand-rolled rather than pulling a library — see the
+// architecture note in issue #56. Querying focusables fresh on every Tab
+// keypress keeps us correct across dynamic content (e.g. when a child
+// view swaps in).
 
-import { createContext, useContext, useEffect, useMemo } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef } from 'react';
+import type { RefObject } from 'react';
 import { useState } from '../state';
 import { createPortal } from 'react-dom';
 
@@ -25,6 +47,12 @@ export interface ModalProps {
    *  pushed child views get). Used when the modal's *direct* content is
    *  already a fullscreen-ish widget (e.g. a directory browser). */
   wide?: boolean;
+  /** Element to focus when the modal opens. Defaults to the first
+   *  focusable inside the panel (or the panel itself if none). */
+  initialFocusRef?: RefObject<HTMLElement | null>;
+  /** Element to focus when the modal closes. Defaults to whatever was
+   *  focused right before the modal opened (usually the trigger). */
+  restoreFocusRef?: RefObject<HTMLElement | null>;
 }
 
 /**
@@ -58,8 +86,57 @@ export function useModalView(): ModalViewCtx | null {
   return useContext(ModalViewContext);
 }
 
-export function Modal({ open, onClose, title, children, wide }: ModalProps) {
+// CSS selector matching everything we consider tabbable inside the
+// panel. The `[tabindex]:not([tabindex="-1"])` clause is intentional:
+// `tabIndex={-1}` means "programmatically focusable, but skipped by Tab"
+// — we want it focusable as a fallback target but not part of the trap
+// cycle. We further filter the matches with `isFocusable` below to drop
+// disabled / hidden elements that querySelector cannot exclude.
+const FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'area[href]',
+  'button:not([disabled])',
+  'input:not([disabled]):not([type="hidden"])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+  '[contenteditable="true"]',
+].join(',');
+
+function isFocusable(el: Element): el is HTMLElement {
+  if (!(el instanceof HTMLElement)) return false;
+  if (el.hasAttribute('disabled')) return false;
+  // `inert` (on the element or any ancestor) makes it untabbable.
+  if (el.closest('[inert]')) return false;
+  // We deliberately don't filter by visibility here. In a real browser
+  // hidden elements (`display:none`, `visibility:hidden`) are also
+  // unmatchable by `:focus-visible`, so cycling onto one is rare; in
+  // jsdom there's no layout at all, so visibility checks would
+  // false-negative every focusable in our tests. The selector itself
+  // (which excludes `disabled` and `tabindex="-1"`) is the primary
+  // filter; this hook only drops the obviously-bad cases.
+  return true;
+}
+
+function focusableElementsIn(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+    isFocusable,
+  );
+}
+
+export function Modal({
+  open,
+  onClose,
+  title,
+  children,
+  wide,
+  initialFocusRef,
+  restoreFocusRef,
+}: ModalProps) {
   const [view, setView] = useState<ModalChildView | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  // Captured at open time so we can restore focus on close.
+  const previouslyFocusedRef = useRef<HTMLElement | null>(null);
 
   // Clear any pushed view whenever the modal closes — opening again
   // should start from the normal children, not a stale browse view.
@@ -67,6 +144,7 @@ export function Modal({ open, onClose, title, children, wide }: ModalProps) {
     if (!open) setView(null);
   }, [open]);
 
+  // Esc + body scroll lock.
   useEffect(() => {
     if (!open) return;
     // Esc: if a child view is up, give it first refusal; otherwise close
@@ -90,6 +168,89 @@ export function Modal({ open, onClose, title, children, wide }: ModalProps) {
     };
   }, [open, onClose, view]);
 
+  // Initial focus + focus restore. We split this from the Esc effect so
+  // the dependencies stay minimal — re-running this on every `view`
+  // change would yank focus around when the user pushes a sub-view.
+  useEffect(() => {
+    if (!open) return;
+    // Capture the element that owned focus before we opened. Used in the
+    // cleanup below to restore it.
+    previouslyFocusedRef.current =
+      (document.activeElement as HTMLElement | null) ?? null;
+
+    // Defer the focus call by one frame so the panel is in the DOM and
+    // layout has settled. Without this, `panelRef.current` may be set
+    // but the focus call lands before the browser is ready to honor it.
+    const raf = requestAnimationFrame(() => {
+      const panel = panelRef.current;
+      if (!panel) return;
+      const explicit = initialFocusRef?.current;
+      if (explicit) {
+        explicit.focus();
+        return;
+      }
+      const first = focusableElementsIn(panel)[0];
+      if (first) {
+        first.focus();
+      } else {
+        // No focusable children — focus the panel itself so the trap
+        // has somewhere to anchor.
+        panel.focus();
+      }
+    });
+    return () => {
+      cancelAnimationFrame(raf);
+      // Restore on close. Caller override wins; otherwise return focus
+      // to wherever it lived before we opened.
+      const target = restoreFocusRef?.current ?? previouslyFocusedRef.current;
+      // The previously-focused element may have been removed from the
+      // DOM during the modal's lifetime (e.g. a re-render). Guard
+      // against focusing a detached node — silently noop instead.
+      if (target && document.contains(target)) {
+        target.focus();
+      }
+    };
+  }, [open, initialFocusRef, restoreFocusRef]);
+
+  // Background inert. We mark every direct child of `document.body`
+  // *except* the portal root as `inert` + `aria-hidden="true"` so
+  // assistive tech and Tab cannot reach the page underneath. Done as a
+  // separate effect from the focus / Esc ones because the cleanup needs
+  // to fire whenever `open` flips false, regardless of which dep changed.
+  useEffect(() => {
+    if (!open) return;
+    const panel = panelRef.current;
+    // The portal mounts into document.body; the modal-overlay div is the
+    // direct child to skip. We walk up from the panel until we hit a
+    // direct child of body, which gives us the overlay element even if
+    // some future refactor adds an extra wrapper.
+    let portalRoot: HTMLElement | null = panel;
+    while (portalRoot && portalRoot.parentElement !== document.body) {
+      portalRoot = portalRoot.parentElement;
+    }
+    const siblings = Array.from(document.body.children).filter(
+      (el): el is HTMLElement =>
+        el instanceof HTMLElement && el !== portalRoot,
+    );
+    // Remember each sibling's prior state so we can restore exactly.
+    const prior = siblings.map((el) => ({
+      el,
+      hadInert: el.hasAttribute('inert'),
+      hadAriaHidden: el.getAttribute('aria-hidden'),
+    }));
+    for (const el of siblings) {
+      el.setAttribute('inert', '');
+      el.setAttribute('aria-hidden', 'true');
+    }
+    return () => {
+      for (const { el, hadInert, hadAriaHidden } of prior) {
+        if (!hadInert) el.removeAttribute('inert');
+        if (hadAriaHidden === null) el.removeAttribute('aria-hidden');
+        else el.setAttribute('aria-hidden', hadAriaHidden);
+      }
+    };
+  }, [open]);
+
   const ctx = useMemo<ModalViewCtx>(
     () => ({
       pushView: (v) => setView(v),
@@ -107,6 +268,44 @@ export function Modal({ open, onClose, title, children, wide }: ModalProps) {
   // rendered as the modal's main content).
   const widePanel = showingView || !!wide;
 
+  // Focus trap: intercept Tab / Shift+Tab on the panel and wrap focus
+  // around the focusables list. We re-query on every keydown — the panel
+  // contents can change (e.g. when a child view pushes new body content)
+  // and a cached snapshot would go stale.
+  const onPanelKeyDown: React.KeyboardEventHandler<HTMLDivElement> = (e) => {
+    if (e.key !== 'Tab') return;
+    const panel = panelRef.current;
+    if (!panel) return;
+    const focusables = focusableElementsIn(panel);
+    if (focusables.length === 0) {
+      // Nothing to cycle through — pin focus on the panel itself.
+      e.preventDefault();
+      panel.focus();
+      return;
+    }
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const active = document.activeElement as HTMLElement | null;
+    if (e.shiftKey) {
+      if (active === first || !panel.contains(active)) {
+        e.preventDefault();
+        last.focus();
+      }
+    } else {
+      if (active === last || !panel.contains(active)) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  };
+
+  // NOTE on the child-view sub-mode: when a descendant calls
+  // `pushView(...)`, the panel re-renders with new body content but the
+  // outer trap stays mounted. Because `focusableElementsIn` runs on each
+  // Tab keypress, the trap automatically picks up the new focusables —
+  // the child view doesn't need its own focus management on top of this.
+  // Its `onEscape` still gets first refusal for Esc (see effect above).
+
   return createPortal(
     <ModalViewContext.Provider value={ctx}>
       <div
@@ -121,17 +320,27 @@ export function Modal({ open, onClose, title, children, wide }: ModalProps) {
         }}
         role="presentation"
       >
-        {/* TODO(a11y-#56-slice-2): replace the onMouseDown stopPropagation
-            dance with a proper focus-trap / Escape-to-close dialog. The
-            Modal is being rebuilt in Slice 2; the lint rule is suppressed
-            here so Slice 1 ships without dragging Modal work in. */}
-        {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- deferred to slice 2 (see TODO above) */}
+        {/* `jsx-a11y/no-noninteractive-element-interactions` flags this
+            because `role="dialog"` is a structural (non-interactive) ARIA
+            role and the panel has onMouseDown / onKeyDown listeners. Both
+            handlers are legitimate parts of the dialog contract that the
+            lint rule cannot model:
+              - onMouseDown stops click-through so clicks inside the panel
+                don't bubble to the overlay's close-on-click handler.
+              - onKeyDown implements the WAI-ARIA-mandated focus trap for
+                aria-modal dialogs.
+            Neither is a "fake button" — the disable is structural, not
+            deferred work. */}
+        {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- dialog focus trap + click-outside; see comment above */}
         <div
+          ref={panelRef}
           className={`modal-panel${widePanel ? ' modal-panel-wide' : ''}`}
           role="dialog"
           aria-modal="true"
           aria-label={typeof headerTitle === 'string' ? headerTitle : undefined}
+          tabIndex={-1}
           onMouseDown={(e) => e.stopPropagation()}
+          onKeyDown={onPanelKeyDown}
         >
           {headerTitle && (
             <div className="modal-head">

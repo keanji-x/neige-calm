@@ -1,0 +1,213 @@
+// Unit tests for `Modal`'s focus contract (Slice 2 of issue #56).
+//
+// Coverage (per the contract documented at the top of Modal.tsx):
+//
+//   1. Opening the modal moves focus into the panel (initial focus).
+//   2. Tab from the last focusable wraps to the first.
+//   3. Shift+Tab from the first focusable wraps to the last.
+//   4. Closing the modal restores focus to the previously-focused
+//      element (typically the trigger button).
+//   5. Background siblings of the portal root get `inert` +
+//      `aria-hidden` while the modal is open and have those cleared on
+//      close.
+//   6. A caller-provided `initialFocusRef` takes precedence over the
+//      default first-focusable behavior.
+//
+// The trap itself runs entirely client-side; no network mocks are
+// needed. jsdom doesn't honor `inert` reachability when computing
+// tab order, so for the wrap tests we synthesize `Tab` keydown events
+// directly rather than walking through every element with
+// `userEvent.tab()` — the production behavior we care about is the
+// handler's preventDefault + focus call, which we can observe exactly.
+
+import { describe, it, expect, beforeEach } from 'vitest';
+import { act, render, screen, cleanup } from '@testing-library/react';
+import { useRef } from 'react';
+import { Modal } from './Modal';
+
+// jsdom doesn't ship pointer/keyboard event interop for synthetic
+// React handlers in all versions — using `fireEvent.keyDown` on the
+// panel directly is the most reliable way to exercise the trap.
+import { fireEvent } from '@testing-library/react';
+
+beforeEach(() => {
+  // Each test mounts its own DOM; testing-library auto-cleans, but
+  // belt-and-suspenders for the body-children inspection tests.
+  cleanup();
+  document.body.innerHTML = '';
+});
+
+function ClosedThenOpen({ open, onClose }: { open: boolean; onClose: () => void }) {
+  return (
+    <>
+      <button data-testid="trigger">Trigger</button>
+      <Modal open={open} onClose={onClose} title="Test">
+        <button data-testid="first">First</button>
+        <button data-testid="middle">Middle</button>
+        <button data-testid="last">Last</button>
+      </Modal>
+    </>
+  );
+}
+
+describe('Modal focus contract', () => {
+  it('moves focus into the panel when it opens', async () => {
+    const { rerender } = render(<ClosedThenOpen open={false} onClose={() => {}} />);
+    // Trigger has focus before we open — simulates the user clicking a
+    // button that toggles the modal.
+    const trigger = screen.getByTestId('trigger');
+    trigger.focus();
+    expect(document.activeElement).toBe(trigger);
+
+    rerender(<ClosedThenOpen open onClose={() => {}} />);
+    // Initial focus is deferred behind requestAnimationFrame; flush it.
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+    // Close button comes first in DOM order (it's inside the header,
+    // which renders before the body children), so it should receive
+    // the default initial focus.
+    const closeBtn = screen.getByRole('button', { name: 'Close' });
+    expect(document.activeElement).toBe(closeBtn);
+  });
+
+  it('wraps Tab from last focusable back to the first', async () => {
+    render(<ClosedThenOpen open onClose={() => {}} />);
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+    const last = screen.getByTestId('last');
+    last.focus();
+    expect(document.activeElement).toBe(last);
+
+    const panel = screen.getByRole('dialog');
+    fireEvent.keyDown(panel, { key: 'Tab' });
+
+    // The first focusable inside the panel is the close button (DOM order:
+    // header close button → first/middle/last in the body).
+    const closeBtn = screen.getByRole('button', { name: 'Close' });
+    expect(document.activeElement).toBe(closeBtn);
+  });
+
+  it('wraps Shift+Tab from first focusable to the last', async () => {
+    render(<ClosedThenOpen open onClose={() => {}} />);
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+    const closeBtn = screen.getByRole('button', { name: 'Close' });
+    closeBtn.focus();
+    expect(document.activeElement).toBe(closeBtn);
+
+    const panel = screen.getByRole('dialog');
+    fireEvent.keyDown(panel, { key: 'Tab', shiftKey: true });
+
+    expect(document.activeElement).toBe(screen.getByTestId('last'));
+  });
+
+  it('restores focus to the previously-focused element when it closes', async () => {
+    const { rerender } = render(<ClosedThenOpen open={false} onClose={() => {}} />);
+    const trigger = screen.getByTestId('trigger');
+    trigger.focus();
+    expect(document.activeElement).toBe(trigger);
+
+    rerender(<ClosedThenOpen open onClose={() => {}} />);
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+    // Focus moved into the modal.
+    expect(document.activeElement).not.toBe(trigger);
+
+    rerender(<ClosedThenOpen open={false} onClose={() => {}} />);
+    // Restore happens in the effect cleanup synchronously when `open`
+    // flips false; no rAF needed here.
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('marks background siblings inert while open and restores on close', async () => {
+    // Set up a sibling under document.body that should be inerted.
+    const sibling = document.createElement('div');
+    sibling.id = 'app-root';
+    sibling.innerHTML = '<button>Background</button>';
+    document.body.appendChild(sibling);
+    expect(sibling.hasAttribute('inert')).toBe(false);
+
+    const { rerender, unmount } = render(
+      <ClosedThenOpen open onClose={() => {}} />,
+      {
+        // Mount the test tree inside our sibling so the portal's overlay
+        // is a *separate* direct child of document.body — that's the
+        // shape the inert effect expects in production.
+        container: sibling,
+      },
+    );
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+
+    // The portal target is document.body; one of body's direct children
+    // is our sibling (mount point), the other is the modal-overlay. The
+    // sibling should be inert.
+    expect(sibling.hasAttribute('inert')).toBe(true);
+    expect(sibling.getAttribute('aria-hidden')).toBe('true');
+
+    rerender(<ClosedThenOpen open={false} onClose={() => {}} />);
+    // After close, the inert attribute should be gone (it wasn't there
+    // before we opened).
+    expect(sibling.hasAttribute('inert')).toBe(false);
+    expect(sibling.hasAttribute('aria-hidden')).toBe(false);
+
+    unmount();
+  });
+
+  it('honors a custom initialFocusRef', async () => {
+    function Harness({ open }: { open: boolean }) {
+      const ref = useRef<HTMLButtonElement | null>(null);
+      return (
+        <Modal open={open} onClose={() => {}} title="X" initialFocusRef={ref}>
+          <button data-testid="first">First</button>
+          <button ref={ref} data-testid="target">
+            Target
+          </button>
+          <button data-testid="last">Last</button>
+        </Modal>
+      );
+    }
+    const { rerender } = render(<Harness open={false} />);
+    rerender(<Harness open />);
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+    expect(document.activeElement).toBe(screen.getByTestId('target'));
+  });
+
+  it('honors a custom restoreFocusRef on close', async () => {
+    function Harness({ open }: { open: boolean }) {
+      const ref = useRef<HTMLButtonElement | null>(null);
+      return (
+        <>
+          <button data-testid="trigger">Trigger</button>
+          <button ref={ref} data-testid="restore-target">
+            Restore here
+          </button>
+          <Modal open={open} onClose={() => {}} title="X" restoreFocusRef={ref}>
+            <button data-testid="inside">Inside</button>
+          </Modal>
+        </>
+      );
+    }
+    const { rerender } = render(<Harness open={false} />);
+    const trigger = screen.getByTestId('trigger');
+    trigger.focus();
+    expect(document.activeElement).toBe(trigger);
+
+    rerender(<Harness open />);
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+    expect(document.activeElement).not.toBe(trigger);
+
+    rerender(<Harness open={false} />);
+    // restoreFocusRef wins over the captured trigger.
+    expect(document.activeElement).toBe(screen.getByTestId('restore-target'));
+  });
+});
