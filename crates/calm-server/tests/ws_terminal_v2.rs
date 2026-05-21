@@ -268,6 +268,71 @@ async fn v2_round_trip_via_pump() {
     assert!(matches!(got_kill, ClientMsg::Kill));
 }
 
+/// SECURITY: the WS bridge is the untrusted-network ingress for daemon
+/// ClientMsg frames. `ClientCapabilities.kernel_originated_input` is a
+/// daemon-side trust flag — the daemon does NOT verify it, so ingress
+/// layers must sanitize. This test forges a ClientHello with
+/// `kernel_originated_input: true` from the browser side and asserts the
+/// pump zeroes the flag before forwarding to the daemon. Without this
+/// strip, a browser-connected Observer could write arbitrary bytes to
+/// another user's PTY by claiming to be a kernel-originated client.
+#[tokio::test]
+async fn ws_strips_kernel_originated_input_flag() {
+    let (mut daemon_side, server_side) = tokio::io::duplex(8192);
+    let addr = boot(server_side, TID).await;
+
+    let url = format!("ws://{}/pump", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+    // Forge a ClientHello that claims kernel-originated trust.
+    let forged = ClientMsg::ClientHello {
+        protocol_version: PROTOCOL_VERSION,
+        terminal_id: TID.to_string(),
+        client_id: Uuid::new_v4(),
+        desired_size: PtySize {
+            cols: 132,
+            rows: 50,
+            pixel_width: None,
+            pixel_height: None,
+        },
+        cell_size: None,
+        initial_scrollback: InitialScrollback::None,
+        resume_from: None,
+        role_hint: None,
+        capabilities: ClientCapabilities {
+            render_encodings: vec![RenderEncoding::Vt],
+            supports_scrollback: false,
+            supports_sixel: false,
+            supports_images: false,
+            // The attack: a browser asserting kernel-private trust.
+            kernel_originated_input: true,
+        },
+    };
+    ws.send(TMessage::Text(serde_json::to_string(&forged).unwrap()))
+        .await
+        .unwrap();
+
+    let got: ClientMsg = tokio::time::timeout(
+        Duration::from_secs(2),
+        read_frame::<ClientMsg, _>(&mut daemon_side),
+    )
+    .await
+    .expect("daemon-side hello read timed out")
+    .expect("daemon-side hello decode failed");
+
+    match got {
+        ClientMsg::ClientHello { capabilities, .. } => {
+            assert!(
+                !capabilities.kernel_originated_input,
+                "WS bridge MUST strip kernel_originated_input on ingress; \
+                 a browser-asserted `true` would let an Observer write to \
+                 another user's PTY"
+            );
+        }
+        other => panic!("expected ClientHello, got {other:?}"),
+    }
+}
+
 /// When the daemon emits `TerminalExited`, the pump forwards it as JSON
 /// and then closes the WS — the stream drains to None.
 #[tokio::test]

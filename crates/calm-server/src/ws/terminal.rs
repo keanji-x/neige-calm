@@ -281,13 +281,33 @@ pub async fn pump<T: DaemonTransport>(
             *last_seen_up.lock().await = Instant::now();
             match msg {
                 Message::Text(text) => {
-                    let parsed: ClientMsg = match serde_json::from_str(&text) {
+                    let mut parsed: ClientMsg = match serde_json::from_str(&text) {
                         Ok(m) => m,
                         Err(e) => {
                             tracing::warn!(error = %e, "unparseable ClientMsg JSON; dropping");
                             continue;
                         }
                     };
+                    // SECURITY: this WS bridge is the untrusted-network
+                    // ingress for daemon ClientMsg frames.
+                    // `ClientCapabilities.kernel_originated_input` is a
+                    // daemon-side trust flag that relaxes the owner-only
+                    // gate on `ClientMsg::Input`; the only legitimate
+                    // producer is a kernel-private `DaemonClient` speaking
+                    // over a kernel-private unix domain socket. Any value
+                    // arriving across this WS hop is, by definition,
+                    // browser-controlled — strip it unconditionally so a
+                    // forged ClientHello can't write to another user's
+                    // PTY as an Observer. See
+                    // `crates/calm-session/src/lib.rs` `ClientCapabilities`
+                    // doc for the full trust model.
+                    if let ClientMsg::ClientHello {
+                        ref mut capabilities,
+                        ..
+                    } = parsed
+                    {
+                        capabilities.kernel_originated_input = false;
+                    }
                     if write_frame(&mut wr, &parsed).await.is_err() {
                         break;
                     }
