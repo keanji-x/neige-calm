@@ -2490,3 +2490,44 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
     scroll-behavior: auto !important;
   }
 }
+
+/* terminal v2 role badge (#81) */
+.xterm-role {
+  position: absolute;
+  top: 8px;
+  left: 12px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.4;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  padding: 2px 8px;
+  border-radius: 999px;
+  pointer-events: none;
+  /* z-index 比 xterm 渲染高一点，避免被 canvas 遮 */
+  z-index: 2;
+}
+.xterm-role-owner {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+.xterm-role-observer {
+  background: oklch(95% 0.005 240);
+  color: var(--text-3);
+  border: 1px solid var(--hairline-strong);
+}
+.xterm-role-observer::before {
+  content: "◉ ";
+  opacity: 0.6;
+}
+[data-theme="dark"] .xterm-role-observer {
+  background: oklch(22% 0.008 245);
+}
+
+/* close-info appendix (existed in v1, now styled) */
+.xterm-close-info {
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
