@@ -58,6 +58,23 @@ use ts_rs::TS;
 /// resume via `since=<lastId>`).
 const BUS_CAPACITY: usize = 1024;
 
+/// Sync-engine event envelope version. Stamped onto every
+/// `BroadcastEnvelope` the kernel emits (both fresh writes and replay rows)
+/// and persisted on each `events` row via the `event_version` column added
+/// in migration `0006_events_version.sql`. Old rows that predate the
+/// migration backfill to `1` automatically via the column default.
+///
+/// The matching migration default and this constant must move together —
+/// when the envelope wire shape evolves in a way replicas need to gate on,
+/// bump this and ship a new migration that defaults to the new value.
+///
+/// Surfaced on the wire under the camelCase key `eventVersion` (see
+/// `ws::events::render_envelope`), and surfaced via `GET /api/version` as
+/// `syncEventVersion` so the web client can refuse to replay a log it
+/// doesn't understand. Sync event log is a Tier-A persistence contract per
+/// `docs/upgrade-stability.md`.
+pub const SYNC_EVENT_VERSION: u32 = 1;
+
 /// The full set of WS event envelopes the kernel emits on `/api/events`.
 ///
 /// `ts-rs` derives a matching TypeScript discriminated union, written to
@@ -292,6 +309,12 @@ pub struct BroadcastEnvelope {
     /// the design doc names; any future emitter that bypasses the wrapper
     /// will surface as `_id: 0` on the wire, which is a useful canary.
     pub id: i64,
+    /// Sync-engine envelope version stamp. Mirrors the `event_version`
+    /// column on the persisted `events` row (migration 0006). Always set
+    /// to `SYNC_EVENT_VERSION` for fresh writes; replay-path envelopes
+    /// carry the value read back from the row (old rows backfill to `1`
+    /// via the column default). Surfaced on the WS frame as `eventVersion`.
+    pub event_version: u32,
     /// Declared producer identity, matching the `actor` column on the
     /// persisted `events` row. Same grammar as `write_with_event`'s `actor`
     /// argument: `"user"`, `"kernel"`, `"plugin:<id>"`, `"ai:<id>"`. Used by
@@ -347,6 +370,7 @@ impl EventBus {
     pub fn emit(&self, actor: &str, ev: Event) {
         let _ = self.tx.send(BroadcastEnvelope {
             id: 0,
+            event_version: SYNC_EVENT_VERSION,
             actor: actor.to_string(),
             event: ev,
         });

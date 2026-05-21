@@ -31,7 +31,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
 use super::{RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, WriteWithEventFn};
 use crate::error::{CalmError, Result};
-use crate::event::{BroadcastEnvelope, Event, EventBus};
+use crate::event::{BroadcastEnvelope, Event, EventBus, SYNC_EVENT_VERSION};
 use crate::model::*;
 
 pub struct SqlxRepo {
@@ -118,8 +118,8 @@ impl SqlxRepo {
         let payload_text = serde_json::to_string(&payload)?;
         let at = now_ms();
         let row = sqlx::query(
-            r#"INSERT INTO events (kind, payload, actor, at, correlation)
-               VALUES (?1, ?2, ?3, ?4, ?5)
+            r#"INSERT INTO events (kind, payload, actor, at, correlation, event_version)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                RETURNING id"#,
         )
         .bind(kind)
@@ -127,6 +127,7 @@ impl SqlxRepo {
         .bind(actor)
         .bind(at)
         .bind(correlation)
+        .bind(SYNC_EVENT_VERSION)
         .fetch_one(&mut **tx)
         .await?;
         let id: i64 = row.try_get("id")?;
@@ -1286,6 +1287,7 @@ impl RepoEventWrite for SqlxRepo {
         // Commit-then-emit invariant: now (and only now) do we broadcast.
         bus.emit_envelope(BroadcastEnvelope {
             id: event_id,
+            event_version: SYNC_EVENT_VERSION,
             actor: actor.to_string(),
             event,
         });
@@ -1310,19 +1312,30 @@ impl RepoEventWrite for SqlxRepo {
         tx.commit().await?;
         bus.emit_envelope(BroadcastEnvelope {
             id: event_id,
+            event_version: SYNC_EVENT_VERSION,
             actor: actor.to_string(),
             event,
         });
         Ok(event_id)
     }
 
-    async fn events_since(&self, since_id: i64, limit: Option<i64>) -> Result<Vec<(i64, Event)>> {
+    async fn events_since(
+        &self,
+        since_id: i64,
+        limit: Option<i64>,
+    ) -> Result<Vec<(i64, u32, Event)>> {
         // `LIMIT -1` is sqlite's "no limit" sentinel; using `?` binding lets
         // us keep one SQL string regardless of caller intent. Callers that
         // pass `None` want every row > since_id.
         let cap = limit.unwrap_or(-1);
-        let rows: Vec<(i64, String, String)> = sqlx::query_as(
-            r#"SELECT id, kind, payload
+        // `event_version` is selected so the replay path can stamp the
+        // envelope with the version persisted on the row, not the current
+        // `SYNC_EVENT_VERSION` constant — old rows that predate migration
+        // 0006 backfill to `1` via the column default, and any future row
+        // written under a newer envelope schema must round-trip its own
+        // version, not the kernel's.
+        let rows: Vec<(i64, String, String, u32)> = sqlx::query_as(
+            r#"SELECT id, kind, payload, event_version
                FROM events
                WHERE id > ?1
                ORDER BY id ASC
@@ -1334,7 +1347,7 @@ impl RepoEventWrite for SqlxRepo {
         .await?;
 
         let mut out = Vec::with_capacity(rows.len());
-        for (id, kind, payload_text) in rows {
+        for (id, kind, payload_text, event_version) in rows {
             let payload: serde_json::Value = match serde_json::from_str(&payload_text) {
                 Ok(v) => v,
                 Err(e) => {
@@ -1346,7 +1359,7 @@ impl RepoEventWrite for SqlxRepo {
                 }
             };
             match Event::from_kind_and_payload(&kind, payload) {
-                Ok(ev) => out.push((id, ev)),
+                Ok(ev) => out.push((id, event_version, ev)),
                 Err(e) => {
                     tracing::error!(
                         id, kind = %kind, error = %e,

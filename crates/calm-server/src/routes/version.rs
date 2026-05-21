@@ -28,6 +28,7 @@
 //!   `option_env!("NEIGE_BUILD_SHA")`. `null` for local `cargo build` runs;
 //!   release CI sets the env var.
 
+use crate::event::SYNC_EVENT_VERSION;
 use crate::plugin_host::mcp::KERNEL_PROTOCOL_VERSION;
 use crate::state::AppState;
 use axum::{Json, Router, routing::get};
@@ -37,11 +38,6 @@ use utoipa::ToSchema;
 /// REST contract version. Bumped by hand when the wire shape changes in a
 /// way the web client needs to gate on; independent of `CARGO_PKG_VERSION`.
 pub const API_VERSION: &str = "1";
-
-/// Sync-engine event envelope version. Threaded into `BroadcastEnvelope` in
-/// a later PR; exposed here so the web client can refuse to replay a log it
-/// doesn't understand.
-pub const SYNC_EVENT_VERSION: u32 = 1;
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/api/version", get(get_version))

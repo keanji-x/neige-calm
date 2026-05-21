@@ -247,7 +247,18 @@ pub trait RepoEventWrite: RepoRead {
     /// Rows whose payload fails to deserialize back into an `Event` variant
     /// are logged + skipped, not propagated as an error — corrupt history
     /// shouldn't strand otherwise-connected clients.
-    async fn events_since(&self, since_id: i64, limit: Option<i64>) -> Result<Vec<(i64, Event)>>;
+    ///
+    /// Each tuple is `(events.id, event_version, Event)`. The
+    /// `event_version` is the value persisted on the row (migration 0006);
+    /// rows that predate the migration backfill to `1` via the column
+    /// default. The replay path stamps this onto the `BroadcastEnvelope`
+    /// so frame consumers see the version the row was written under, not
+    /// the kernel's current `SYNC_EVENT_VERSION`.
+    async fn events_since(
+        &self,
+        since_id: i64,
+        limit: Option<i64>,
+    ) -> Result<Vec<(i64, u32, Event)>>;
 
     /// Lowest live `events.id`, or `None` if the table is empty.
     ///

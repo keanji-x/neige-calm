@@ -75,7 +75,7 @@
 
 use crate::db::RepoEventWrite;
 use crate::event;
-use crate::event::BroadcastEnvelope;
+use crate::event::{BroadcastEnvelope, SYNC_EVENT_VERSION};
 use crate::state::AppState;
 use axum::{
     Router,
@@ -279,7 +279,7 @@ where
     };
 
     let mut last_id = since;
-    for (id, ev) in rows {
+    for (id, event_version, ev) in rows {
         // Topic filter applies to replayed frames too: a cursor-aware
         // client that just changed waves shouldn't suddenly see history
         // for a wave it didn't subscribe to.
@@ -289,13 +289,17 @@ where
             last_id = id;
             continue;
         }
-        // The replay path reconstructs an envelope from `(id, ev)` rows in
-        // the `events` table. `events_since` does not currently return the
-        // `actor` column (replay is read-only and the wire format omits
-        // actor — see `render_envelope`), so we synthesize an empty actor
-        // here. This branch never feeds the `RECORD_SESSION` recorder.
+        // The replay path reconstructs an envelope from
+        // `(id, event_version, ev)` rows in the `events` table.
+        // `events_since` does not return the `actor` column (replay is
+        // read-only and the wire format omits actor — see
+        // `render_envelope`), so we synthesize an empty actor here. This
+        // branch never feeds the `RECORD_SESSION` recorder. `event_version`
+        // is round-tripped from the row's `event_version` column — old
+        // rows backfill to `1` via the migration default.
         let env = BroadcastEnvelope {
             id,
+            event_version,
             actor: String::new(),
             event: ev,
         };
@@ -323,19 +327,34 @@ where
     ReplayOutcome::Streamed(last_id)
 }
 
-/// `{ "_id": <id>, "ev": "_replay_complete" }`. Hand-crafted to keep the
-/// control frame off the typed `Event` enum (which ts-rs exports — adding
-/// underscore-prefixed variants would muddy the client's discriminated
-/// union for no win).
+/// `{ "_id": <id>, "eventVersion": <n>, "ev": "_replay_complete" }`.
+/// Hand-crafted to keep the control frame off the typed `Event` enum
+/// (which ts-rs exports — adding underscore-prefixed variants would muddy
+/// the client's discriminated union for no win).
+///
+/// Control frames are kernel-emitted and carry `SYNC_EVENT_VERSION` for
+/// shape consistency with persisted-event frames — clients can treat
+/// `eventVersion` as load-bearing on every frame they receive, not "only
+/// on the replayed ones". They don't sit in the `events` table, so they
+/// don't have a row-level version to round-trip; the constant is the
+/// right source.
 fn replay_complete_frame(last_id: i64) -> String {
-    serde_json::json!({ "_id": last_id, "ev": "_replay_complete" }).to_string()
+    serde_json::json!({
+        "_id": last_id,
+        "eventVersion": SYNC_EVENT_VERSION,
+        "ev": "_replay_complete",
+    })
+    .to_string()
 }
 
-/// `{ "_id": <earliest>, "ev": "_snapshot_required", "data": { "earliest_id": <id> } }`.
-/// Server-only control frame; design §2.3.
+/// `{ "_id": <earliest>, "eventVersion": <n>, "ev": "_snapshot_required",
+///    "data": { "earliest_id": <id> } }`.
+/// Server-only control frame; design §2.3. Carries `SYNC_EVENT_VERSION`
+/// for the same consistency reason as `_replay_complete`.
 fn snapshot_required_frame(earliest: i64) -> String {
     serde_json::json!({
         "_id": earliest,
+        "eventVersion": SYNC_EVENT_VERSION,
         "ev": "_snapshot_required",
         "data": { "earliest_id": earliest },
     })
@@ -343,15 +362,22 @@ fn snapshot_required_frame(earliest: i64) -> String {
 }
 
 /// Serialize a `BroadcastEnvelope` into the wire form
-/// `{"_id": <id>, "ev": <tag>, "data": <payload>}`.
+/// `{"_id": <id>, "eventVersion": <n>, "ev": <tag>, "data": <payload>}`.
 ///
 /// The `Event` enum already serializes to `{"ev": ..., "data": ...}` via
-/// its `#[serde(tag, content)]` attributes; we splice `_id` in alongside.
-/// Doing it this way (rather than a sibling `Serialize` impl on
-/// `BroadcastEnvelope`) keeps the ts-rs generated TS type for `Event`
-/// authoritative — the envelope shape is a transport concern, not a
-/// domain one. See design doc §2.4 for the rationale on `_id` living
-/// outside the `Event` namespace.
+/// its `#[serde(tag, content)]` attributes; we splice `_id` and
+/// `eventVersion` in alongside. Doing it this way (rather than a sibling
+/// `Serialize` impl on `BroadcastEnvelope`) keeps the ts-rs generated TS
+/// type for `Event` authoritative — the envelope shape is a transport
+/// concern, not a domain one. See design doc §2.4 for the rationale on
+/// `_id` living outside the `Event` namespace.
+///
+/// `eventVersion` is camelCase to match the rest of the WS / REST wire
+/// surface (`_id` is the documented exception — the leading underscore
+/// signals "envelope, not payload"). The value is round-tripped from the
+/// `events.event_version` column on the replay path and stamped from the
+/// `SYNC_EVENT_VERSION` constant on fresh writes; clients use it to refuse
+/// to replay a log they don't understand.
 ///
 /// Key ordering on the wire is alphabetical (serde_json default); the
 /// frontend's zod schemas parse by name, so the order doesn't matter
@@ -360,6 +386,10 @@ fn render_envelope(env: &BroadcastEnvelope) -> Result<String, serde_json::Error>
     let mut value = serde_json::to_value(&env.event)?;
     if let serde_json::Value::Object(ref mut map) = value {
         map.insert("_id".to_string(), serde_json::Value::from(env.id));
+        map.insert(
+            "eventVersion".to_string(),
+            serde_json::Value::from(env.event_version),
+        );
     }
     serde_json::to_string(&value)
 }
@@ -385,17 +415,19 @@ mod tests {
     fn render_envelope_has_id_and_keeps_event_shape() {
         let env = BroadcastEnvelope {
             id: 42,
+            event_version: SYNC_EVENT_VERSION,
             actor: "user".into(),
             event: Event::CoveUpdated(sample_cove()),
         };
         let s = render_envelope(&env).expect("render");
         // Key ordering on the wire is implementation-defined (serde_json
         // sorts alphabetically by default); the contract we care about
-        // is that `_id`, `ev`, and `data` are all present at the top level
-        // with the right values. Frontend `zod` parsing is by key name,
-        // not position, so this is what matters.
+        // is that `_id`, `eventVersion`, `ev`, and `data` are all present
+        // at the top level with the right values. Frontend `zod` parsing
+        // is by key name, not position, so this is what matters.
         let v: serde_json::Value = serde_json::from_str(&s).unwrap();
         assert_eq!(v["_id"], 42);
+        assert_eq!(v["eventVersion"], SYNC_EVENT_VERSION);
         assert_eq!(v["ev"], "cove.updated");
         assert_eq!(v["data"]["id"], "c-1");
         assert_eq!(v["data"]["name"], "n");
@@ -409,6 +441,7 @@ mod tests {
         // persisted row yet" (see `BroadcastEnvelope` docs).
         let env = BroadcastEnvelope {
             id: 0,
+            event_version: SYNC_EVENT_VERSION,
             actor: "kernel".into(),
             event: Event::CoveUpdated(sample_cove()),
         };
@@ -417,10 +450,29 @@ mod tests {
     }
 
     #[test]
+    fn render_envelope_carries_event_version() {
+        // Replay path round-trips the row's `event_version` value into the
+        // envelope — assert that a non-default version survives serialization
+        // unchanged. Today the kernel only ever writes `SYNC_EVENT_VERSION`,
+        // but the replay path must not collapse to it; it has to surface
+        // whatever the persisted row carried.
+        let env = BroadcastEnvelope {
+            id: 7,
+            event_version: 99,
+            actor: String::new(),
+            event: Event::CoveUpdated(sample_cove()),
+        };
+        let s = render_envelope(&env).expect("render");
+        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(v["eventVersion"], 99);
+    }
+
+    #[test]
     fn replay_complete_frame_shape() {
         let s = replay_complete_frame(1234);
         let v: serde_json::Value = serde_json::from_str(&s).unwrap();
         assert_eq!(v["_id"], 1234);
+        assert_eq!(v["eventVersion"], SYNC_EVENT_VERSION);
         assert_eq!(v["ev"], "_replay_complete");
         // No `data` field — the frame is purely a terminator.
         assert!(v.get("data").is_none());
@@ -431,6 +483,7 @@ mod tests {
         let s = snapshot_required_frame(50000);
         let v: serde_json::Value = serde_json::from_str(&s).unwrap();
         assert_eq!(v["_id"], 50000);
+        assert_eq!(v["eventVersion"], SYNC_EVENT_VERSION);
         assert_eq!(v["ev"], "_snapshot_required");
         assert_eq!(v["data"]["earliest_id"], 50000);
     }

@@ -241,7 +241,7 @@ pub async fn assert_expected(repo: &SqlxRepo, fixture: &Fixture) -> anyhow::Resu
         // throughput target is 10k events per §6.4).
         let log = repo.events_since(0, None).await?;
         match log.last() {
-            Some((_, ev)) => {
+            Some((_, _, ev)) => {
                 let actual = ev.kind_tag();
                 if actual == expected_kind {
                     matched.push(format!("last_event_kind == {expected_kind}"));
@@ -341,7 +341,7 @@ pub async fn derive_layout_positions(
 ) -> anyhow::Result<Option<serde_json::Map<String, serde_json::Value>>> {
     let log = repo.events_since(0, None).await?;
     Ok(fold_layout_positions(
-        log.into_iter().map(|(_id, ev)| ev),
+        log.into_iter().map(|(_id, _ver, ev)| ev),
         wave_id,
     ))
 }
