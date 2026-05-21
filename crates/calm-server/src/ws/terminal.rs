@@ -127,7 +127,7 @@ async fn handle(socket: WebSocket, sock: PathBuf, terminal_id: String) {
             return;
         }
     };
-    pump(socket, stream, PING_INTERVAL, PONG_TIMEOUT).await
+    pump(socket, stream, terminal_id, PING_INTERVAL, PONG_TIMEOUT).await
 }
 
 /// Daemon transport abstraction. The WS bridge only needs the
@@ -166,6 +166,7 @@ impl<T> DaemonTransport for T where
 pub(crate) async fn pump<T: DaemonTransport>(
     ws: WebSocket,
     daemon: T,
+    terminal_id: String,
     ping_interval: Duration,
     pong_timeout: Duration,
 ) {
@@ -514,7 +515,8 @@ mod pump_tests {
                         .await
                         .take()
                         .expect("pump route called more than once");
-                    upgrade.on_upgrade(move |socket| pump(socket, daemon, ping, pong))
+                    let terminal_id = "test-terminal-1".to_string();
+                    upgrade.on_upgrade(move |socket| pump(socket, daemon, terminal_id, ping, pong))
                 }
             }),
         );
@@ -708,5 +710,100 @@ mod pump_tests {
             ClientMsg::Stdin(b) => assert_eq!(b, b"after-bad"),
             other => panic!("expected Stdin(b\"after-bad\"), got {:?}", other),
         }
+    }
+
+    /// Daemon writes bytes whose first 4 don't match `NEIG` framing magic.
+    /// The down arm's `read_frame` must return `FrameError::BadMagic`, which
+    /// the pump translates to an error-log + Close + return. We assert the
+    /// WS client sees the Close and the stream drains to None.
+    #[tokio::test]
+    async fn bad_magic_breaks_pump_cleanly() {
+        use tokio::io::AsyncWriteExt;
+
+        let (mut daemon_side, server_side) = tokio::io::duplex(8192);
+        let (ping, pong) = long_window();
+        let addr = boot_pump(server_side, ping, pong).await;
+
+        let url = format!("ws://{}/pump", addr);
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        // Garbage magic: anything that isn't `NEIG`. Four bytes is the
+        // exact width `read_frame` consumes before checking magic, so the
+        // BadMagic branch fires deterministically without us having to
+        // worry about partial-read interleaving.
+        daemon_side.write_all(b"XXXX").await.unwrap();
+        daemon_side.flush().await.unwrap();
+
+        // Down arm should hit BadMagic, error-log, break, then send Close.
+        let close = tokio::time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("ws recv (close) timed out")
+            .expect("ws closed without sending Close")
+            .expect("ws error");
+        assert!(
+            matches!(close, TMessage::Close(_)),
+            "expected Close frame, got {:?}",
+            close
+        );
+
+        // Stream drains — pump returned.
+        let end = tokio::time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("stream did not end after Close");
+        assert!(
+            end.is_none() || matches!(end, Some(Err(_))),
+            "expected stream end after Close, got {:?}",
+            end
+        );
+    }
+
+    /// Daemon writes a syntactically well-formed framing prefix but with
+    /// version=2 (kernel only supports version=1). The down arm's
+    /// `read_frame` must return `FrameError::UnsupportedFrameVersion`,
+    /// which the pump translates to an error-log + Close + return.
+    #[tokio::test]
+    async fn unsupported_frame_version_breaks_pump_cleanly() {
+        use tokio::io::AsyncWriteExt;
+
+        let (mut daemon_side, server_side) = tokio::io::duplex(8192);
+        let (ping, pong) = long_window();
+        let addr = boot_pump(server_side, ping, pong).await;
+
+        let url = format!("ws://{}/pump", addr);
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        // Magic `NEIG` (valid) + version=2 (big-endian, unsupported) +
+        // length=0. read_frame validates magic first, then version, so
+        // this drives the UnsupportedFrameVersion path before ever
+        // touching the length / payload.
+        let mut wire = Vec::with_capacity(10);
+        wire.extend_from_slice(b"NEIG");
+        wire.extend_from_slice(&2u16.to_be_bytes());
+        wire.extend_from_slice(&0u32.to_be_bytes());
+        daemon_side.write_all(&wire).await.unwrap();
+        daemon_side.flush().await.unwrap();
+
+        // Down arm should hit UnsupportedFrameVersion, error-log, break,
+        // then send Close.
+        let close = tokio::time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("ws recv (close) timed out")
+            .expect("ws closed without sending Close")
+            .expect("ws error");
+        assert!(
+            matches!(close, TMessage::Close(_)),
+            "expected Close frame, got {:?}",
+            close
+        );
+
+        // Stream drains — pump returned.
+        let end = tokio::time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("stream did not end after Close");
+        assert!(
+            end.is_none() || matches!(end, Some(Err(_))),
+            "expected stream end after Close, got {:?}",
+            end
+        );
     }
 }
