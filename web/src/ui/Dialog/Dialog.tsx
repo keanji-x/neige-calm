@@ -250,7 +250,14 @@ export function Dialog({
     return () => {
       cancelAnimationFrame(raf);
       // Restore on close. Caller override wins; otherwise return focus
-      // to wherever it lived before we opened.
+      // to wherever it lived before we opened. Both refs are read at
+      // cleanup time intentionally — we want the *latest* override the
+      // caller has supplied (and `previouslyFocusedRef` is a closure
+      // ref written above in the same effect), not a snapshot from
+      // mount. The react-hooks rule warns about `.current` in cleanups
+      // because the ref's target may have changed; here that's exactly
+      // what we rely on.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
       const target = restoreFocusRef?.current ?? previouslyFocusedRef.current;
       // The previously-focused element may have been removed from the
       // DOM during the dialog's lifetime (e.g. a re-render). Guard

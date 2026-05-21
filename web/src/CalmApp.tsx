@@ -32,6 +32,7 @@ import {
   useOverlaysByKindQuery,
 } from './api/queries';
 import { useGo } from './app/navigation';
+import type { KernelOverlay } from './api/wire';
 import type { Cove, Route as AppRoute, Wave } from './types';
 
 export function CalmApp() {
@@ -60,7 +61,12 @@ export function CalmApp() {
   // a single-cove invalidation only refetches that cove's wave list.
 
   const covesQ = useCovesQuery();
-  const kernelCoves = covesQ.data ?? [];
+  // Memoise the fallback to a stable empty array — without this, the
+  // `?? []` allocates a fresh `[]` on every render, which would make
+  // `kernelCoves` (and any downstream memo keyed on it) change identity
+  // every render. The eslint-plugin-react-hooks `exhaustive-deps` check
+  // explicitly flags this pattern.
+  const kernelCoves = useMemo(() => covesQ.data ?? [], [covesQ.data]);
 
   const waveQueries = useQueries({
     queries: kernelCoves.map((c) => ({
@@ -80,7 +86,7 @@ export function CalmApp() {
   const waveOverlaysQ = useOverlaysByKindQuery('wave');
 
   const overlaysByWaveId = useMemo(() => {
-    const m = new Map<string, typeof waveOverlaysQ.data>();
+    const m = new Map<string, KernelOverlay[]>();
     for (const o of waveOverlaysQ.data ?? []) {
       if (o.entity_kind !== 'wave') continue;
       const cur = m.get(o.entity_id);

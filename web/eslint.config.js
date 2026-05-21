@@ -14,27 +14,21 @@
 //     App code must compose the Neige `<Dialog>` / `<Menu>` primitives
 //     rather than hand-rolling the role. See
 //     `eslint-rules/no-raw-primitive-role.cjs`.
-//
-// Wider linting (style, hooks, exhaustive-deps, etc.) is not in this PR.
-// Only the rules that the sync-engine design (`docs/sync-engine-design.md`
-// §4.2) calls out are configured here; everything else is intentionally
-// left for a future "lint pass" PR so this one stays reviewable.
+//   - `react-hooks/rules-of-hooks` + `react-hooks/exhaustive-deps`
+//     (eslint-plugin-react-hooks) — the two classic hooks-correctness
+//     checks. Both at `error` so CI gates on drift. We deliberately do
+//     NOT pull in the plugin's `recommended-latest` config (which also
+//     enables the React-compiler rule pack); that's a separate scope.
 
 import tseslint from 'typescript-eslint';
 import tsParser from '@typescript-eslint/parser';
 import jsxA11y from 'eslint-plugin-jsx-a11y';
+import reactHooks from 'eslint-plugin-react-hooks';
 import neigeCalm from './eslint-rules/index.cjs';
 
-// Empty shim plugin: pre-existing `eslint-disable-next-line
-// react-hooks/exhaustive-deps` comments reference a rule that this PR does
-// not install (react-hooks plugin is out of scope). Without the
-// declaration here ESLint errors with "Definition for rule ... not
-// found". A future "lint pass" PR replaces this with the real plugin.
-const reactHooksShim = {
-  rules: {
-    'exhaustive-deps': { meta: { schema: [] }, create: () => ({}) },
-    'rules-of-hooks': { meta: { schema: [] }, create: () => ({}) },
-  },
+const reactHooksRules = {
+  'react-hooks/rules-of-hooks': 'error',
+  'react-hooks/exhaustive-deps': 'error',
 };
 
 const restrictedReactImports = {
@@ -65,20 +59,24 @@ export default tseslint.config(
   },
   // Un-installed rule shims. Pre-existing `eslint-disable-next-line
   // <rule>` comments in the codebase reference rule names from plugins
-  // that this PR does not introduce (react-hooks, @typescript-eslint
-  // strict subset). Defining them as 'off' avoids "rule definition not
-  // found" errors without adopting those plugins inside Scope B. A future
-  // lint-pass PR can replace the shims with real configurations.
+  // that this PR does not introduce (@typescript-eslint strict subset).
+  // Defining them as 'off' avoids "rule definition not found" errors
+  // without adopting those plugins. A future lint-pass PR can replace
+  // the shims with real configurations.
+  //
+  // `react-hooks/*` rules are configured below — the real plugin is now
+  // installed, no shim needed.
   {
     rules: {
-      'react-hooks/exhaustive-deps': 'off',
       '@typescript-eslint/no-explicit-any': 'off',
       'no-console': 'off',
     },
   },
-  // Be lenient about unused disable directives. Without this, every
-  // pre-existing inline disable that we shimmed above lights up as a
-  // warning, which is just noise in CI output.
+  // Leave unused-disable reporting off. Several pre-existing inline
+  // disables target rules that are still 'off' (no-console,
+  // no-restricted-imports in some contexts); flagging those as unused
+  // would balloon this PR beyond the react-hooks scope. A future
+  // lint-pass PR that adopts those rules can flip this on.
   {
     linterOptions: {
       reportUnusedDisableDirectives: 'off',
@@ -101,12 +99,13 @@ export default tseslint.config(
     },
     plugins: {
       'neige-calm': neigeCalm,
-      'react-hooks': reactHooksShim,
+      'react-hooks': reactHooks,
       'jsx-a11y': jsxA11y,
     },
     rules: {
       ...restrictedReactImports,
       ...jsxA11y.configs.recommended.rules,
+      ...reactHooksRules,
       'neige-calm/no-react-state-hook-members': 'error',
       'neige-calm/no-persistent-in-usestate': 'error',
       'neige-calm/no-raw-primitive-role': 'error',
@@ -135,10 +134,11 @@ export default tseslint.config(
     },
     plugins: {
       'neige-calm': neigeCalm,
-      'react-hooks': reactHooksShim,
+      'react-hooks': reactHooks,
     },
     rules: {
       ...restrictedReactImports,
+      ...reactHooksRules,
       'neige-calm/no-react-state-hook-members': 'error',
       'neige-calm/no-persistent-in-usestate': 'error',
       'neige-calm/no-raw-primitive-role': 'error',

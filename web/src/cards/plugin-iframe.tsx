@@ -20,7 +20,7 @@
 // (`onreadresource`, `onlistresources`, …) stay default-empty so AppBridge
 // returns `MethodNotFound` for them, which is the right answer.
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useState } from '../shared/state';
 
 import type { CardEntry } from './registry';
@@ -105,7 +105,13 @@ function detectTheme(): 'light' | 'dark' {
  * of the wave keeps rendering.
  */
 function PluginIframeCard({ card }: { card: PluginCardData }) {
-  const parsed = parsePluginCardKind(card.resource_uri);
+  // Memoise the parse so the setup effect can depend on the whole
+  // `parsed` object without `parsePluginCardKind` re-allocating it every
+  // render (which would re-fire the effect spuriously).
+  const parsed = useMemo(
+    () => parsePluginCardKind(card.resource_uri),
+    [card.resource_uri],
+  );
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -247,7 +253,7 @@ function PluginIframeCard({ card }: { card: PluginCardData }) {
     // Re-mount the bridge if the underlying URI changes — usually only on
     // initial mount, but a card whose `resource_uri` was mutated server-side
     // should get a fresh iframe.
-  }, [card.id, card.resource_uri, parsed?.plugin_id, parsed?.view_id]);
+  }, [card.id, card.resource_uri, parsed]);
 
   if (!parsed) {
     return (
