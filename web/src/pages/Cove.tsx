@@ -141,47 +141,58 @@ export function CovePage({
         </div>
       )}
 
-      {waiting.length > 0 && (
-        <Section label="Waiting on you" labelWarn>
-          {waiting.map((w) => (
-            <WaveRow
-              key={w.id}
-              wave={w}
-              cove={cove}
-              showCove={false}
-              onClick={() => onGo({ name: 'wave', id: w.id })}
-              onDelete={onDeleteWave ? () => openDeleteWaveDialog(w) : undefined}
-            />
-          ))}
-        </Section>
-      )}
-      {running.length > 0 && (
-        <Section label="Running">
-          {running.map((w) => (
-            <WaveRow
-              key={w.id}
-              wave={w}
-              cove={cove}
-              showCove={false}
-              onClick={() => onGo({ name: 'wave', id: w.id })}
-              onDelete={onDeleteWave ? () => openDeleteWaveDialog(w) : undefined}
-            />
-          ))}
-        </Section>
-      )}
-      {idle.length > 0 && (
-        <Section label="Idle">
-          {idle.map((w) => (
-            <WaveRow
-              key={w.id}
-              wave={w}
-              cove={cove}
-              showCove={false}
-              onClick={() => onGo({ name: 'wave', id: w.id })}
-              onDelete={onDeleteWave ? () => openDeleteWaveDialog(w) : undefined}
-            />
-          ))}
-        </Section>
+      {/* All wave sections live inside a single `aria-label`-ed region so
+          role-scoped locators (axe scans + Playwright `getByRole('region',
+          { name: 'Waves' })`) can disambiguate WaveRow buttons from the
+          sidebar's "Today" nav button and the cove crumb-link. Three name-
+          colliding buttons would otherwise share the document; the
+          landmark gives tests a clean scope. See §2.2 of
+          `docs/a11y-contract.md`. */}
+      {(waiting.length > 0 || running.length > 0 || idle.length > 0) && (
+        <section aria-label="Waves">
+          {waiting.length > 0 && (
+            <Section label="Waiting on you" labelWarn>
+              {waiting.map((w) => (
+                <WaveRow
+                  key={w.id}
+                  wave={w}
+                  cove={cove}
+                  showCove={false}
+                  onClick={() => onGo({ name: 'wave', id: w.id })}
+                  onDelete={onDeleteWave ? () => openDeleteWaveDialog(w) : undefined}
+                />
+              ))}
+            </Section>
+          )}
+          {running.length > 0 && (
+            <Section label="Running">
+              {running.map((w) => (
+                <WaveRow
+                  key={w.id}
+                  wave={w}
+                  cove={cove}
+                  showCove={false}
+                  onClick={() => onGo({ name: 'wave', id: w.id })}
+                  onDelete={onDeleteWave ? () => openDeleteWaveDialog(w) : undefined}
+                />
+              ))}
+            </Section>
+          )}
+          {idle.length > 0 && (
+            <Section label="Idle">
+              {idle.map((w) => (
+                <WaveRow
+                  key={w.id}
+                  wave={w}
+                  cove={cove}
+                  showCove={false}
+                  onClick={() => onGo({ name: 'wave', id: w.id })}
+                  onDelete={onDeleteWave ? () => openDeleteWaveDialog(w) : undefined}
+                />
+              ))}
+            </Section>
+          )}
+        </section>
       )}
 
       {onCreateWave && (

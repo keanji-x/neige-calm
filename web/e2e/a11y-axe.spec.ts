@@ -54,18 +54,19 @@ async function waitForBootstrap(page: Page): Promise<void> {
 //     for normal text. Pre-existing from the M0 design port. Bumping
 //     these affects every page — schedule as a dedicated design-system
 //     pass (#56 slice 9 candidate).
-//   - nested-interactive: WaveRow is a `<div role="button">` that hosts
-//     a hover-reveal `<button>×</button>` delete control. The component
-//     comment in `WaveRow.tsx` calls this out — going back to a real
-//     <button> requires moving the delete control elsewhere. Slice 9
-//     ergonomic pass.
 //
 // Until the follow-ups land, we exclude these rules so the rest of the
 // axe surface (which catches *new* regressions on labels, focus
 // management, ARIA misuse, …) stays a reliable signal.
+//
+// Notable resolved rules (kept here for archaeology):
+//   - region (PR #122): TitleBar promoted to `<header>` so the chrome
+//     sits inside an implicit `banner` landmark.
+//   - nested-interactive (this PR): fixed by the WaveRow refactor — the
+//     row is now a real `<button>` with a sibling delete `<button>`
+//     inside a `.wave-row-wrapper`.
 const DEFERRED_RULES = [
   'color-contrast',
-  'nested-interactive',
 ];
 
 // Default Axe builder used by every scan. `withTags` pins the rule set to
@@ -108,11 +109,11 @@ function formatViolations(
 //
 // The locator scoping matters: the Sidebar has its own "Today" button
 // (the nav-item back to /), and the cove page renders a WaveRow whose
-// title is also "Today" (the auto-bootstrapped wave). WaveRow is a
-// <div role="button"> while the sidebar nav and the CovePage Crumbs
-// "Today" link are real <button>s — so a `div[role="button"]` locator
-// lands on the wave row uniquely. This is the same disambiguation rule
-// used by `tabUntil` predicates in `a11y-keyboard.spec.ts`.
+// title is also "Today" (the auto-bootstrapped wave). With the WaveRow
+// real-button refactor (#56/#60 follow-up) all three are now real
+// <button>s sharing the name "Today" — so we scope the wave row by the
+// `<section aria-label="Waves">` landmark that CovePage wraps around
+// the wave lists. See §2.2 of `docs/a11y-contract.md`.
 async function ids(page: Page): Promise<{ coveId: string; waveId: string }> {
   await page.goto('/?trace=1');
   await waitForBootstrap(page);
@@ -122,10 +123,15 @@ async function ids(page: Page): Promise<{ coveId: string; waveId: string }> {
     .click();
   await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
   const coveId = new URL(page.url()).pathname.split('/').pop()!;
-  // WaveRow is a <div role="button"> with the wave title as its
-  // accessible name (see WaveRow.tsx:36-117). Filter by hasText to land
-  // on the "Today" row specifically.
-  await page.locator('div[role="button"]').filter({ hasText: /today/i }).first().click();
+  // WaveRow is now a real <button> (see WaveRow.tsx). The "Waves"
+  // region landmark on CovePage lets us scope past the colliding
+  // sidebar Today nav button and the Crumbs Today link without
+  // resorting to DOM-tag selectors.
+  await page
+    .getByRole('region', { name: 'Waves' })
+    .getByRole('button', { name: /today/i })
+    .first()
+    .click();
   await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
   const waveId = new URL(page.url()).pathname.split('/').pop()!;
   return { coveId, waveId };
