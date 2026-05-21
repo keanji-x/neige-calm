@@ -199,7 +199,7 @@ The popover-menu primitive — a button trigger that opens a list of
 menuitems. Source: [`Menu.tsx`](./Menu/Menu.tsx). Tests:
 [`Menu.test.tsx`](./Menu/Menu.test.tsx),
 [`Menu.contract.test.tsx`](./Menu/Menu.contract.test.tsx). Extracted from
-`shared/components/AddPanel` in PR #XXX (slice 2 of #60); AddPanel is
+`shared/components/AddPanel` in PR [#99](https://github.com/keanji-x/neige-calm/pull/99) (slice 2 of #60); AddPanel is
 now a thin wrapper that maps registry entries to `MenuItem`s and
 forwards selection back to its caller. The shared in-composite key
 handling (`useRovingTabindex`) lives at
