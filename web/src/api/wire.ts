@@ -100,7 +100,7 @@ export type NewOverlayBody = Omit<Schemas['NewOverlay'], 'entity_kind' | 'payloa
   payload: unknown;
 };
 
-export type NewTerminalBody = Schemas['NewTerminalBody'];
+export type NewTerminalCardBody = Schemas['NewTerminalCardBody'];
 
 export type NewCodexBody = Schemas['NewCodexBody'];
 

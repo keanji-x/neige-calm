@@ -131,76 +131,6 @@
             }
           }
         }
-      },
-      "post": {
-        "tags": [
-          "terminals"
-        ],
-        "operationId": "create_terminal",
-        "parameters": [
-          {
-            "name": "card_id",
-            "in": "path",
-            "description": "Card id (must be a terminal card)",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "description": "Optional body — empty means use defaults",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/NewTerminalBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "Terminal created and daemon spawned",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Terminal"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Card is not a terminal card",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Card not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Daemon spawn failed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        }
       }
     },
     "/api/cards/{id}": {
@@ -1865,6 +1795,68 @@
           }
         }
       }
+    },
+    "/api/waves/{wave_id}/terminal-cards": {
+      "post": {
+        "tags": [
+          "terminals"
+        ],
+        "operationId": "create_terminal_card",
+        "parameters": [
+          {
+            "name": "wave_id",
+            "in": "path",
+            "description": "Wave id to create the terminal card under",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Optional body — empty means use defaults",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewTerminalCardBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Card + linked terminal created atomically; daemon spawned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Card"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Wave not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Daemon spawn failed (rows are persisted; sweeper reaps within ~60s)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2230,8 +2222,9 @@
           }
         }
       },
-      "NewTerminalBody": {
+      "NewTerminalCardBody": {
         "type": "object",
+        "description": "Body for `POST /api/waves/:wave_id/terminal-cards`.\n\nDeliberately omits `kind` (always `\"terminal\"`) and `payload` (the kernel\nstamps `{schemaVersion, terminal_id}` itself). Empty `program` falls back\nto `$SHELL` then `/bin/sh`; empty `cwd` falls back to `$HOME` then the\nserver's cwd. `env` is merged into the daemon's environment as additional\nvars on top of `TERM` / `COLORTERM` / inherited.",
         "properties": {
           "cwd": {
             "type": "string",
@@ -2244,6 +2237,14 @@
           "program": {
             "type": "string",
             "description": "Empty string or missing → `$SHELL` (then `/bin/sh`)."
+          },
+          "sort": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Sort order within the wave. `None` defaults to \"append to end\"."
           }
         }
       },

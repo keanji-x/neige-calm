@@ -25,7 +25,6 @@ import { useState } from '../shared/state';
 import { useQueryClient } from '@tanstack/react-query';
 import * as api from '../api/calm';
 import { queryKeys } from '../api/queries';
-import { TERMINAL_PAYLOAD_SCHEMA_VERSION } from '../cards/builtins/schemaVersions';
 
 const STORAGE_KEY = 'calm.todayCardId';
 const SCRATCH_COVE_NAME = 'Scratch';
@@ -108,18 +107,14 @@ export function useTodayTerminal(): UseTodayTerminalResult {
         }
       }
 
-      const card = await api.createCard(wave.id, { kind: 'terminal' });
-      const term = await api.createTerminal(card.id, {});
-      const patched = await api.updateCard(card.id, {
-        // Tier A: stamp the kernel-owned `schemaVersion` on every write.
-        payload: {
-          schemaVersion: TERMINAL_PAYLOAD_SCHEMA_VERSION,
-          terminal_id: term.id,
-        },
-      });
-      void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(wave.id) });
-      localStorage.setItem(STORAGE_KEY, patched.id);
-      setToday({ cardId: patched.id, terminalId: term.id });
+      // Atomic create (#13) — one round-trip writes the card row, the
+      // linked terminal row, AND spawns the daemon. The kernel stamps the
+      // `schemaVersion` + `terminal_id` payload itself, and a single
+      // `card.added` event drives the cache invalidate via EventBridge.
+      const card = await api.createTerminalCard(wave.id, {});
+      const terminalId = (card.payload as { terminal_id: string }).terminal_id;
+      localStorage.setItem(STORAGE_KEY, card.id);
+      setToday({ cardId: card.id, terminalId });
     } catch (e) {
       setError(e as Error);
     } finally {

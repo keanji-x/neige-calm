@@ -263,22 +263,13 @@ async fn wait_for(
 async fn v2_full_chain_happy_path() {
     let (addr, app, wave_id, _tmp) = boot_full().await;
 
-    // ---- 1a. POST card --------------------------------------------------
-    let (status, card) = rest_post(
-        app.clone(),
-        format!("/api/waves/{wave_id}/cards"),
-        json!({ "kind": "terminal", "payload": null, "sort": 1.0 }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "create card: body={card:?}");
-    let card_id = card["id"]
-        .as_str()
-        .expect("card.id is a string")
-        .to_string();
-
-    // ---- 1b. POST terminal (spawns real daemon, blocks ~3s polling its
-    // socket). The handler returns 201 only after the daemon is accepting
-    // connections, so step 2 doesn't need to retry.
+    // ---- 1. POST atomic terminal-card -----------------------------------
+    //
+    // One round-trip creates the card row, the linked terminal row, AND
+    // spawns the daemon (the handler returns 201 only after the daemon is
+    // accepting connections). The pre-#13 wire was a 3-step recipe
+    // (POST card → POST /terminal → PATCH payload); the atomic endpoint
+    // collapsed it to one call. See `routes::terminal_cards`.
     //
     // Force `/bin/sh` (not the user's `$SHELL`). The default-program path
     // would otherwise pick up zsh/fish/whatever from the host env, and
@@ -287,20 +278,20 @@ async fn v2_full_chain_happy_path() {
     // `sh -c sh` cuts the worst-case from 8s+ down to sub-second
     // consistently. The wire-level v2 contract doesn't depend on the
     // shell choice.
-    let (status, term) = rest_post(
+    let (status, card) = rest_post(
         app.clone(),
-        format!("/api/cards/{card_id}/terminal"),
-        json!({ "program": "/bin/sh", "cwd": "", "env": {} }),
+        format!("/api/waves/{wave_id}/terminal-cards"),
+        json!({ "program": "/bin/sh", "cwd": "", "env": {}, "sort": 1.0 }),
     )
     .await;
     assert_eq!(
         status,
         StatusCode::CREATED,
-        "create terminal: body={term:?}"
+        "create terminal-card: body={card:?}"
     );
-    let raw_terminal_id = term["id"]
+    let raw_terminal_id = card["payload"]["terminal_id"]
         .as_str()
-        .expect("terminal.id is a string")
+        .expect("card.payload.terminal_id is a string")
         .to_string();
 
     // ---- 2. WS upgrade --------------------------------------------------
