@@ -1,14 +1,14 @@
-// Unit tests for `Modal`'s focus contract (Slice 2 of issue #56).
+// Unit tests for `Dialog`'s focus contract (Slice 2 of issue #56).
 //
-// Coverage (per the contract documented at the top of Modal.tsx):
+// Coverage (per the contract documented at the top of Dialog.tsx):
 //
-//   1. Opening the modal moves focus into the panel (initial focus).
+//   1. Opening the dialog moves focus into the panel (initial focus).
 //   2. Tab from the last focusable wraps to the first.
 //   3. Shift+Tab from the first focusable wraps to the last.
-//   4. Closing the modal restores focus to the previously-focused
+//   4. Closing the dialog restores focus to the previously-focused
 //      element (typically the trigger button).
 //   5. Background siblings of the portal root get `inert` +
-//      `aria-hidden` while the modal is open and have those cleared on
+//      `aria-hidden` while the dialog is open and have those cleared on
 //      close.
 //   6. A caller-provided `initialFocusRef` takes precedence over the
 //      default first-focusable behavior.
@@ -23,7 +23,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { act, render, screen, cleanup } from '@testing-library/react';
 import { useRef } from 'react';
-import { Modal } from './Modal';
+import { Dialog } from './Dialog';
 
 // jsdom doesn't ship pointer/keyboard event interop for synthetic
 // React handlers in all versions — using `fireEvent.keyDown` on the
@@ -41,20 +41,20 @@ function ClosedThenOpen({ open, onClose }: { open: boolean; onClose: () => void 
   return (
     <>
       <button data-testid="trigger">Trigger</button>
-      <Modal open={open} onClose={onClose} title="Test">
+      <Dialog open={open} onClose={onClose} title="Test">
         <button data-testid="first">First</button>
         <button data-testid="middle">Middle</button>
         <button data-testid="last">Last</button>
-      </Modal>
+      </Dialog>
     </>
   );
 }
 
-describe('Modal focus contract', () => {
+describe('Dialog focus contract', () => {
   it('moves focus into the panel when it opens', async () => {
     const { rerender } = render(<ClosedThenOpen open={false} onClose={() => {}} />);
     // Trigger has focus before we open — simulates the user clicking a
-    // button that toggles the modal.
+    // button that toggles the dialog.
     const trigger = screen.getByTestId('trigger');
     trigger.focus();
     expect(document.activeElement).toBe(trigger);
@@ -114,7 +114,7 @@ describe('Modal focus contract', () => {
     await act(async () => {
       await new Promise((r) => requestAnimationFrame(() => r(null)));
     });
-    // Focus moved into the modal.
+    // Focus moved into the dialog.
     expect(document.activeElement).not.toBe(trigger);
 
     rerender(<ClosedThenOpen open={false} onClose={() => {}} />);
@@ -163,13 +163,13 @@ describe('Modal focus contract', () => {
     function Harness({ open }: { open: boolean }) {
       const ref = useRef<HTMLButtonElement | null>(null);
       return (
-        <Modal open={open} onClose={() => {}} title="X" initialFocusRef={ref}>
+        <Dialog open={open} onClose={() => {}} title="X" initialFocusRef={ref}>
           <button data-testid="first">First</button>
           <button ref={ref} data-testid="target">
             Target
           </button>
           <button data-testid="last">Last</button>
-        </Modal>
+        </Dialog>
       );
     }
     const { rerender } = render(<Harness open={false} />);
@@ -189,9 +189,9 @@ describe('Modal focus contract', () => {
           <button ref={ref} data-testid="restore-target">
             Restore here
           </button>
-          <Modal open={open} onClose={() => {}} title="X" restoreFocusRef={ref}>
+          <Dialog open={open} onClose={() => {}} title="X" restoreFocusRef={ref}>
             <button data-testid="inside">Inside</button>
-          </Modal>
+          </Dialog>
         </>
       );
     }

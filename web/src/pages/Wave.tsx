@@ -4,7 +4,7 @@ import { Icon } from '../Icon';
 import { AddPanel, type AddPanelKind } from '../shared/components/AddPanel';
 import type { AddPanelMenuItem } from '../shared/components/AddPanel';
 import type { Cove, FsmState, Route, Wave, WaveCardSlot } from '../types';
-import { Modal } from '../shared/components/Modal';
+import { Dialog } from '../ui/Dialog/Dialog';
 import { SchemaForm } from '../shared/components/SchemaForm';
 import { DirectoryBrowser } from '../shared/components/DirectoryPicker';
 import { CardStatusDot } from '../shared/components/CardStatusDot';
@@ -359,7 +359,7 @@ export function WavePage({
           fields.length === 1 && fields[0].type === 'directory' ? fields[0] : null;
         if (soleDir) {
           return (
-            <Modal
+            <Dialog
               open
               onClose={closeModal}
               title={`New ${modalItem.label.replace(/^New\s+/i, '')}`}
@@ -371,11 +371,11 @@ export function WavePage({
                 onSelect={(path) => submitModal({ [soleDir.key]: path })}
                 selectLabel="Create here"
               />
-            </Modal>
+            </Dialog>
           );
         }
         return (
-          <Modal
+          <Dialog
             open
             onClose={closeModal}
             title={`New ${modalItem.label.replace(/^New\s+/i, '')}`}
@@ -388,7 +388,7 @@ export function WavePage({
                 onCancel={closeModal}
               />
             )}
-          </Modal>
+          </Dialog>
         );
       })()}
     </div>

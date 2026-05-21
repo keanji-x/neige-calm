@@ -1,31 +1,31 @@
-// Reusable modal — Portal-mounted overlay + centered card. Styled to
+// Reusable dialog — Portal-mounted overlay + centered card. Styled to
 // match the rest of the app (rounded card, app shadow, blurred overlay);
 // deliberately not <dialog> because the browser defaults are unstyleable
 // across themes.
 //
-// Modal also exposes a tiny **child-view stack** through React context.
+// Dialog also exposes a tiny **child-view stack** through React context.
 // A descendant (today: DirectoryPicker's browse view) can call
-// `pushView(node)` to take over the modal body — the title bar swaps to
+// `pushView(node)` to take over the dialog body — the title bar swaps to
 // the view's own title and a back button, the original children stay
 // mounted but visually hidden so their state is preserved across the
-// detour. This keeps us to a *single* modal layer even when an inner
+// detour. This keeps us to a *single* dialog layer even when an inner
 // widget needs a fullscreen-feeling sub-flow; popover-in-modal nesting
 // was the structural mistake we're replacing here.
 //
 // Focus contract (Slice 2 of #56)
 // -------------------------------
-// While the modal is open it owns keyboard focus and screen-reader
+// While the dialog is open it owns keyboard focus and screen-reader
 // reachability:
 //   1. **Focus trap.** Tab/Shift+Tab cycles within the panel; focus can
 //      never leak into background DOM.
 //   2. **Initial focus.** When `open` flips true, focus moves into the
 //      panel — either to a caller-provided `initialFocusRef`, or to the
 //      first focusable element, or to the panel itself if there are none.
-//   3. **Focus restore.** When the modal closes, focus returns to the
+//   3. **Focus restore.** When the dialog closes, focus returns to the
 //      element that owned it just before opening (typically the trigger
 //      button). Callers can override with `restoreFocusRef`.
 //   4. **Background inert.** Sibling top-level DOM under `document.body`
-//      gets `inert` + `aria-hidden="true"` while the modal is open;
+//      gets `inert` + `aria-hidden="true"` while the dialog is open;
 //      assistive tech cannot linearly traverse into the page underneath.
 //
 // The trap is hand-rolled rather than pulling a library — see the
@@ -35,29 +35,29 @@
 
 import { createContext, useContext, useEffect, useMemo, useRef } from 'react';
 import type { RefObject } from 'react';
-import { useState } from '../state';
+import { useState } from '../../shared/state';
 import { createPortal } from 'react-dom';
 
-export interface ModalProps {
+export interface DialogProps {
   open: boolean;
   onClose: () => void;
   title?: string;
   children?: React.ReactNode;
-  /** Render the modal with the wider/taller panel variant (same sizing
-   *  pushed child views get). Used when the modal's *direct* content is
+  /** Render the dialog with the wider/taller panel variant (same sizing
+   *  pushed child views get). Used when the dialog's *direct* content is
    *  already a fullscreen-ish widget (e.g. a directory browser). */
   wide?: boolean;
-  /** Element to focus when the modal opens. Defaults to the first
+  /** Element to focus when the dialog opens. Defaults to the first
    *  focusable inside the panel (or the panel itself if none). */
   initialFocusRef?: RefObject<HTMLElement | null>;
-  /** Element to focus when the modal closes. Defaults to whatever was
-   *  focused right before the modal opened (usually the trigger). */
+  /** Element to focus when the dialog closes. Defaults to whatever was
+   *  focused right before the dialog opened (usually the trigger). */
   restoreFocusRef?: RefObject<HTMLElement | null>;
 }
 
 /**
- * A view pushed onto the modal's child-view stack. Renders in place of
- * the modal's normal `children`, claiming the full body area + replacing
+ * A view pushed onto the dialog's child-view stack. Renders in place of
+ * the dialog's normal `children`, claiming the full body area + replacing
  * the header title. The view is responsible for calling `pop()` when
  * done (Cancel / Select / Esc inside the view).
  */
@@ -78,8 +78,8 @@ interface ModalViewCtx {
 const ModalViewContext = createContext<ModalViewCtx | null>(null);
 
 /**
- * Hook for descendants of `<Modal>` to take over the modal body with a
- * sub-view. Returns `null` outside a Modal — callers should fall back to
+ * Hook for descendants of `<Dialog>` to take over the dialog body with a
+ * sub-view. Returns `null` outside a Dialog — callers should fall back to
  * an inline rendering path.
  */
 export function useModalView(): ModalViewCtx | null {
@@ -124,7 +124,7 @@ function focusableElementsIn(root: HTMLElement): HTMLElement[] {
   );
 }
 
-export function Modal({
+export function Dialog({
   open,
   onClose,
   title,
@@ -132,13 +132,13 @@ export function Modal({
   wide,
   initialFocusRef,
   restoreFocusRef,
-}: ModalProps) {
+}: DialogProps) {
   const [view, setView] = useState<ModalChildView | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   // Captured at open time so we can restore focus on close.
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
 
-  // Clear any pushed view whenever the modal closes — opening again
+  // Clear any pushed view whenever the dialog closes — opening again
   // should start from the normal children, not a stale browse view.
   useEffect(() => {
     if (!open) setView(null);
@@ -148,7 +148,7 @@ export function Modal({
   useEffect(() => {
     if (!open) return;
     // Esc: if a child view is up, give it first refusal; otherwise close
-    // the modal. Matches AddPanel + browser-wide modal expectations.
+    // the dialog. Matches AddPanel + browser-wide modal expectations.
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       if (view) {
@@ -159,7 +159,7 @@ export function Modal({
       onClose();
     };
     document.addEventListener('keydown', onKey);
-    // Lock scroll on the page underneath while modal is up.
+    // Lock scroll on the page underneath while dialog is up.
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     return () => {
@@ -175,7 +175,7 @@ export function Modal({
   // (declaration order, not reverse) runs the inert removal first; the
   // focus restore that follows can then land on an element whose
   // ancestors are no longer inert. (Slice 7 surfaced this — when the
-  // previously-focused element is a sibling of the modal portal, like
+  // previously-focused element is a sibling of the dialog portal, like
   // the AddPanel trigger, focusing it while the inert blanket is still
   // applied silently fails.)
   useEffect(() => {
@@ -253,7 +253,7 @@ export function Modal({
       // to wherever it lived before we opened.
       const target = restoreFocusRef?.current ?? previouslyFocusedRef.current;
       // The previously-focused element may have been removed from the
-      // DOM during the modal's lifetime (e.g. a re-render). Guard
+      // DOM during the dialog's lifetime (e.g. a re-render). Guard
       // against focusing a detached node — silently noop instead.
       if (target && document.contains(target)) {
         target.focus();
@@ -275,7 +275,7 @@ export function Modal({
   const headerTitle = showingView ? view.title : title;
   // Wide if a child view is up OR caller explicitly asked for it (direct
   // children that benefit from the larger panel, e.g. a DirectoryBrowser
-  // rendered as the modal's main content).
+  // rendered as the dialog's main content).
   const widePanel = showingView || !!wide;
 
   // Focus trap: intercept Tab / Shift+Tab on the panel and wrap focus
@@ -365,7 +365,7 @@ export function Modal({
               </button>
             </div>
           )}
-          {/* Both panes are always mounted while the modal is open:
+          {/* Both panes are always mounted while the dialog is open:
               when a child view is showing we hide the normal children
               (display:none) but keep their state intact — closing the
               view returns the user to their half-filled form. */}

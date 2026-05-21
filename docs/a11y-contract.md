@@ -284,6 +284,12 @@ Candidates evaluated when this question comes up:
 
 ---
 
+## 10a. Primitive layer
+
+Per-primitive contracts (visual, accessibility, test) live in [`web/src/ui/README.md`](../web/src/ui/README.md), introduced by [#60](https://github.com/keanji-x/neige-calm/issues/60). That README is the canonical home for the contract of each primitive in `web/src/ui/` (currently `Dialog`; `Menu` and `ConfirmDialog` follow in subsequent slices). This document remains the canonical home for cross-cutting rules (object semantics, keyboard contracts, locator rules, motion policy) — primitive-specific contracts are intentionally not duplicated here.
+
+---
+
 ## 11. References
 
 - Issue [#56 — frontend a11y contracts](https://github.com/keanji-x/neige-calm/issues/56). Top-level issue this work hangs off.
