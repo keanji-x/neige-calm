@@ -15,7 +15,7 @@
     "a11y:e2e": "playwright test --project=a11y e2e/a11y-keyboard.spec.ts",
     "a11y:axe": "playwright test --project=a11y e2e/a11y-axe.spec.ts",
     "a11y": "npm run lint && npm run a11y:e2e && npm run a11y:axe",
-    "gen:api": "cargo test --quiet --manifest-path ../Cargo.toml -p calm-server export_bindings_ && cargo run --quiet --manifest-path ../Cargo.toml --bin emit-openapi > src/api/openapi.json && openapi-typescript src/api/openapi.json -o src/api/generated.ts"
+    "gen:api": "cargo test --quiet --manifest-path ../Cargo.toml -p calm-server export_bindings_ && cargo test --quiet --manifest-path ../Cargo.toml -p calm-session export_bindings_ && cargo run --quiet --manifest-path ../Cargo.toml --bin emit-openapi > src/api/openapi.json && openapi-typescript src/api/openapi.json -o src/api/generated.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "^1.7.2",

@@ -4,6 +4,12 @@ import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { dlog } from './util/debug';
+import type {
+  ClientMsg,
+  DaemonMsg,
+  ProtocolErrorCode,
+  Role,
+} from './api/generated-terminal';
 
 // Cool-neutral light xterm theme matching Calm's palette. Same numbers as
 // the previous useTerminalCore-backed version; only the wire below changed.
@@ -53,25 +59,72 @@ interface CloseInfo {
   reason: string;
 }
 
+/** Wire version the frontend speaks. Must match
+ *  `crates/calm-session/src/lib.rs::PROTOCOL_VERSION`. A mismatch surfaces
+ *  via `DaemonMsg::ProtocolError(UnsupportedVersion)` and the overlay below. */
+const PROTOCOL_VERSION = 2;
+
 /**
- * Direct bridge to calm-server's `/api/terminals/:id` WS endpoint. Frames
- * are JSON-encoded `ClientMsg` / `DaemonMsg` from the `calm-session`
- * Rust crate; bytes ride as plain JS arrays of u8 values.
+ * UI status for the v2 terminal protocol. Slimmed-down state machine
+ * compared to v1: a clean break is fine (compat is gated by
+ * `WEB_COMPAT_VERSION`) so we don't carry transitional states.
+ *
+ *   connecting    — WebSocket opening
+ *   handshaking   — WebSocket open, awaiting `ServerHello`
+ *   connected     — `ServerHello` received, streaming
+ *   closed        — WS closed (or errored) before exit
+ *   exited        — daemon sent `TerminalExited` (terminal mode child exited)
+ *   protocol-error — daemon sent `ProtocolError`; connection terminated
+ */
+type Status =
+  | 'connecting'
+  | 'handshaking'
+  | 'connected'
+  | 'closed'
+  | 'exited'
+  | 'protocol-error';
+
+interface ProtocolError {
+  code: ProtocolErrorCode;
+  message: string;
+}
+
+interface ExitInfo {
+  code: number | null;
+}
+
+/**
+ * Direct bridge to calm-server's `/api/terminals/:id` WS endpoint, speaking
+ * the v2 terminal protocol (issue #44). Frames are JSON-encoded `ClientMsg`
+ * / `DaemonMsg` from the `calm-session` Rust crate (TS types regenerated
+ * via `npm run gen:api`). `Vec<u8>` rides as a plain JS `Array<number>`.
+ *
+ * Roles: this component always sends `role_hint: 'Owner'` — the browser is
+ * the user's primary interaction surface. The daemon's `OwnerRegistry` may
+ * still assign `Observer` (e.g. another client already holds owner), in
+ * which case `Input` frames are rejected with `NotOwner`. Surfacing the
+ * assigned role to the UI is intentionally minimal in this PR (small badge
+ * in the corner). `kernel_originated_input` would never apply to a browser
+ * tab so we leave it out of the capability set.
  */
 export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const [status, setStatus] = useState<'connecting' | 'open' | 'closed'>(
-    'connecting',
-  );
+  const [status, setStatus] = useState<Status>('connecting');
   const [closeInfo, setCloseInfo] = useState<CloseInfo | null>(null);
+  const [protocolError, setProtocolError] = useState<ProtocolError | null>(null);
+  const [exitInfo, setExitInfo] = useState<ExitInfo | null>(null);
+  const [role, setRole] = useState<Role | null>(null);
   // Bumping this re-runs the WS effect, which rebuilds the WS and re-attaches
   // to the daemon. The daemon survives WS disconnects (it owns the PTY and a
-  // replay buffer), so reconnect is usually enough; if the daemon also died,
-  // the server's `resolve_live_sock` respawns it transparently.
+  // replay buffer / render rev), so reconnect is usually enough; if the
+  // daemon also died, the server's `resolve_live_sock` respawns it.
   const [reconnectKey, setReconnectKey] = useState(0);
   const reconnect = () => {
     setStatus('connecting');
     setCloseInfo(null);
+    setProtocolError(null);
+    setExitInfo(null);
+    setRole(null);
     setReconnectKey((k) => k + 1);
   };
 
@@ -113,57 +166,184 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
     }/api/terminals/${encodeURIComponent(terminalId)}`;
     const ws = new WebSocket(wsUrl);
 
-    const send = (msg: unknown) => {
+    const send = (msg: ClientMsg) => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(msg));
       }
     };
 
+    // Per-connection client id. The daemon's `OwnerRegistry` keys on this
+    // so the same browser tab survives WS reconnects without losing
+    // ownership. `crypto.randomUUID()` is available in every browser that
+    // supports xterm.js + WebSocket.
+    const clientId = crypto.randomUUID();
+    // Monotonic resize epoch. Bumped on every `ResizeCommit` so a
+    // `ResizeApplied` echo can be matched to its request (and stale
+    // applies from a previous epoch ignored).
+    let resizeEpoch = 0;
+    let lastCols = term.cols;
+    let lastRows = term.rows;
+    // Track the latest render_rev / pty_seq the daemon emitted. Future
+    // PRs use these to send `RenderAck` for back-pressure; today we just
+    // keep them current for the (unimplemented) resume path.
+    let renderRev = 0;
+    let ptySeq = 0;
+
     // Liveness detection is owned server-side (ws/terminal.rs: 10s ping,
-    // 30s pong_timeout — closes with 1011 on timeout). The browser's
-    // WS impl handles TCP-level death itself and fires onclose/onerror.
-    // We previously kept a 40s client-side timer here too, but it only
-    // observed JS-level `onmessage` (Text/Binary), NOT browser auto-pongs
-    // — so a healthy WS attached to an idle codex prompt (no PTY output
-    // for 40s) would false-positive close as code 1006. Server-side
-    // heartbeat already covers the real failure modes; the client-side
-    // timer was redundant and harmful.
+    // 30s pong_timeout — closes with 1011 on timeout). The browser's WS
+    // impl handles TCP-level death itself and fires onclose/onerror. We
+    // previously kept a 40s client-side timer too, but it only observed
+    // JS-level `onmessage` (Text/Binary), NOT browser auto-pongs — so a
+    // healthy WS attached to an idle codex prompt (no PTY output for 40s)
+    // would false-positive close as code 1006. Server-side heartbeat
+    // already covers the real failure modes; the client-side timer was
+    // redundant and harmful.
 
     ws.onopen = () => {
-      setStatus('open');
-      send({ Attach: { cols: term.cols, rows: term.rows } });
+      setStatus('handshaking');
+      send({
+        ClientHello: {
+          protocol_version: PROTOCOL_VERSION,
+          terminal_id: terminalId,
+          client_id: clientId,
+          desired_size: {
+            cols: term.cols,
+            rows: term.rows,
+            pixel_width: null,
+            pixel_height: null,
+          },
+          cell_size: null,
+          // None = just current viewport. We deliberately don't ask for
+          // history yet — the server-side scrollback story (CellGrid
+          // patches, line-granular replay) lands in a follow-up PR.
+          initial_scrollback: 'None',
+          resume_from: null,
+          // The browser is the user's primary interaction surface, so we
+          // hint Owner. The daemon may still hand us Observer if someone
+          // else (CLI client, another tab) already owns the session.
+          role_hint: 'Owner',
+          capabilities: {
+            render_encodings: ['Vt'],
+            supports_scrollback: true,
+            supports_sixel: false,
+            supports_images: false,
+          },
+        },
+      });
     };
+
     ws.onmessage = (e) => {
-      let msg: Record<string, unknown>;
+      let msg: DaemonMsg;
       try {
-        msg = JSON.parse(typeof e.data === 'string' ? e.data : '');
+        msg = JSON.parse(typeof e.data === 'string' ? e.data : '') as DaemonMsg;
       } catch {
         return;
       }
-      // DaemonMsg variants from neige-session: `Hello`, `Stdout`,
-      // `HelloChat`, `ChatEvent`, `ChildExited`. Only the terminal-mode
-      // ones matter here.
-      if ('Hello' in msg) {
-        const replay = (msg.Hello as { replay: number[] }).replay;
-        term.write(Uint8Array.from(replay));
+      // Dispatch over the externally-tagged enum. Each branch narrows the
+      // payload via TypeScript's discriminated-union rules; this is why
+      // `DaemonMsg` is sourced from `generated-terminal.ts`.
+      if ('ServerHello' in msg) {
+        const sh = msg.ServerHello;
+        setRole(sh.client_role);
+        setStatus('connected');
+        // Snapshot may be bigger or smaller than the viewport we opened
+        // with; resize the local terminal to match before writing the
+        // replay so the cursor lines up.
+        if (sh.snapshot.cols !== term.cols || sh.snapshot.rows !== term.rows) {
+          term.resize(sh.snapshot.cols, sh.snapshot.rows);
+          lastCols = sh.snapshot.cols;
+          lastRows = sh.snapshot.rows;
+        }
+        if (sh.snapshot.scrollback) {
+          term.write(Uint8Array.from(sh.snapshot.scrollback));
+        }
+        term.write(Uint8Array.from(sh.snapshot.data));
+        renderRev = sh.snapshot.render_rev;
+        ptySeq = sh.snapshot.pty_seq;
         return;
       }
-      if ('Stdout' in msg) {
-        const bytes = msg.Stdout as number[];
-        term.write(Uint8Array.from(bytes));
+      if ('RenderPatch' in msg) {
+        const p = msg.RenderPatch;
+        if (p.encoding === 'Vt') {
+          term.write(Uint8Array.from(p.data));
+        }
+        renderRev = p.render_rev;
+        ptySeq = p.pty_seq;
         return;
       }
-      if ('ChildExited' in msg) {
-        const code = (msg.ChildExited as { code: number | null }).code;
+      if ('RenderSnapshot' in msg) {
+        // Standalone snapshot — daemon decided we need a hard re-sync
+        // (typically because a `ResizeCommit` triggered a model reframe).
+        const s = msg.RenderSnapshot;
+        if (s.cols !== term.cols || s.rows !== term.rows) {
+          term.resize(s.cols, s.rows);
+          lastCols = s.cols;
+          lastRows = s.rows;
+        }
+        term.clear();
+        term.write(Uint8Array.from(s.data));
+        renderRev = s.render_rev;
+        ptySeq = s.pty_seq;
+        return;
+      }
+      if ('ResizeApplied' in msg) {
+        const r = msg.ResizeApplied;
+        // Stale-epoch guard: a `ResizeApplied` from a previous request
+        // (out-of-order on a slow network) shouldn't clobber the now-newer
+        // local geometry. We track epoch monotonically below.
+        if (r.epoch < resizeEpoch) return;
+        lastCols = r.cols;
+        lastRows = r.rows;
+        renderRev = r.render_rev;
+        ptySeq = r.pty_seq;
+        return;
+      }
+      if ('SnapshotRequired' in msg) {
+        // Daemon is about to send a fresh snapshot. Clear local state and
+        // wait — the `RenderSnapshot` will arrive next.
+        term.clear();
+        return;
+      }
+      if ('TerminalExited' in msg) {
+        const t = msg.TerminalExited;
+        setExitInfo({ code: t.code });
+        setStatus('exited');
         term.writeln(
-          `\r\n\x1b[2m[process exited${code != null ? ` (code ${code})` : ''}]\x1b[0m`,
+          `\r\n\x1b[2m[process exited${
+            t.code != null ? ` (code ${t.code})` : ''
+          }]\x1b[0m`,
         );
-        ws.close();
         return;
       }
-      // Hello/Chat events: ignored — calm-server doesn't use chat mode for
-      // built-in terminal cards.
+      if ('ProtocolError' in msg) {
+        setProtocolError({
+          code: msg.ProtocolError.code,
+          message: msg.ProtocolError.message,
+        });
+        setStatus('protocol-error');
+        return;
+      }
+      if ('OwnerChanged' in msg) {
+        // Observer-side notification — owner moved to a different client.
+        // We don't surface this in the UI yet, but logging it makes a
+        // multi-client debug session readable. Once we add an "owner
+        // here" / "observing" badge, this is the dispatch point.
+        dlog('XtermView', 'OwnerChanged', msg.OwnerChanged);
+        return;
+      }
+      if ('Backpressure' in msg) {
+        // Wire shape only in this PR — the daemon never emits it yet, but
+        // log if it ever shows up so we can debug. Future work: implement
+        // policy-aware throttling.
+        dlog('XtermView', 'Backpressure', msg.Backpressure);
+        return;
+      }
+      // Chat-mode variants (`HelloChat`, `ChatEvent`, `ChildExited`) never
+      // reach the terminal card path — the kernel routes them through the
+      // codex card instead. We ignore them silently here for forwards-
+      // compatibility against a misconfigured backend.
     };
+
     ws.onclose = (e) => {
       // Capture close code/reason so the gray "disconnected" overlay can
       // tell us what kind of disconnect this was without devtools.
@@ -171,17 +351,28 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
       // 1011 = server-side heartbeat trip (see ws/terminal.rs PONG_TIMEOUT).
       // 1001 = endpoint going away (server restart, page navigation).
       setCloseInfo({ code: e.code, reason: e.reason || '' });
-      dlog('XtermView', 'WS close', { code: e.code, reason: e.reason, wasClean: e.wasClean });
-      setStatus('closed');
+      dlog('XtermView', 'WS close', {
+        code: e.code,
+        reason: e.reason,
+        wasClean: e.wasClean,
+      });
+      // Don't clobber a more-specific terminal state (`exited`,
+      // `protocol-error`) — those overlays carry richer information than
+      // the generic close code.
+      setStatus((prev) =>
+        prev === 'exited' || prev === 'protocol-error' ? prev : 'closed',
+      );
     };
     ws.onerror = (e) => {
       dlog('XtermView', 'WS error', e);
-      setStatus('closed');
+      setStatus((prev) =>
+        prev === 'exited' || prev === 'protocol-error' ? prev : 'closed',
+      );
     };
 
     const dataSub = term.onData((d) => {
       const bytes = Array.from(new TextEncoder().encode(d));
-      send({ Stdin: bytes });
+      send({ Input: bytes });
     });
 
     // Batch resize work to one tick per animation frame and skip cases
@@ -190,8 +381,6 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
     // the terminal re-fits and re-renders constantly, which shows up as a
     // 1-2px shake on the inner canvas.
     let pending = false;
-    let lastCols = term.cols;
-    let lastRows = term.rows;
     const onResize = () => {
       if (pending) return;
       pending = true;
@@ -209,14 +398,29 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
             containerW: container.offsetWidth,
             containerH: container.offsetHeight,
           });
-          lastCols = term.cols;
-          lastRows = term.rows;
-          send({ Resize: { cols: term.cols, rows: term.rows } });
+          // Bump epoch on every commit so the daemon can ignore stale
+          // applies. `lastCols/Rows` stay at their previous value until
+          // `ResizeApplied` confirms — otherwise a debounce / coalesce
+          // could swallow a subsequent intentional resize back to the
+          // same size.
+          resizeEpoch += 1;
+          send({
+            ResizeCommit: {
+              epoch: resizeEpoch,
+              cols: term.cols,
+              rows: term.rows,
+            },
+          });
         }
       });
     };
     const ro = new ResizeObserver(onResize);
     ro.observe(container);
+
+    // Surface ack ref so future tests / devtools can inspect; unused at
+    // runtime so the variable doesn't trip TS's no-unused warning.
+    void renderRev;
+    void ptySeq;
 
     return () => {
       ro.disconnect();
@@ -233,8 +437,50 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
   return (
     <div className="xterm-view">
       <div ref={containerRef} className="xterm-container" />
+      {role && status === 'connected' && (
+        <div className={`xterm-role xterm-role-${role.toLowerCase()}`}>
+          {role === 'Owner' ? 'owner' : 'observing'}
+        </div>
+      )}
       {status === 'connecting' && (
         <div className="xterm-status">connecting…</div>
+      )}
+      {status === 'handshaking' && (
+        <div className="xterm-status">handshaking…</div>
+      )}
+      {status === 'exited' && (
+        <div className="xterm-status xterm-status-closed">
+          <span>
+            process exited
+            {exitInfo?.code != null && (
+              <span className="xterm-close-info"> (code {exitInfo.code})</span>
+            )}
+          </span>
+          <button onClick={reconnect} className="xterm-restart">
+            Restart
+          </button>
+        </div>
+      )}
+      {status === 'protocol-error' && protocolError && (
+        <div
+          className="xterm-status xterm-status-closed"
+          role="alert"
+          aria-live="assertive"
+        >
+          <span>
+            protocol error: {protocolError.code}
+            {protocolError.message ? ` — ${protocolError.message}` : ''}
+            {protocolError.code === 'UnsupportedVersion'
+              ? ' (refresh required for protocol v2)'
+              : ''}
+          </span>
+          <button
+            onClick={() => location.reload()}
+            className="xterm-restart"
+          >
+            Refresh
+          </button>
+        </div>
       )}
       {status === 'closed' && (
         <div className="xterm-status xterm-status-closed">

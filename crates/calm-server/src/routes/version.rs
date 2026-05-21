@@ -44,7 +44,17 @@ pub const API_VERSION: &str = "1";
 /// changes are incompatible with older frontends. Frontend's
 /// `WEB_COMPAT_VERSION` must be kept in lockstep — see
 /// `docs/upgrade-stability.md`.
-pub const WEB_COMPAT_VERSION: u32 = 1;
+///
+/// Version history:
+/// * `1` — initial. Terminal protocol v1 (`ClientMsg::Attach` / `Stdin` /
+///   `Resize`, `DaemonMsg::Hello` / `Stdout`).
+/// * `2` — terminal protocol v2 (issue #44). Renames every wire frame
+///   under `/api/terminals/:id` (ClientHello/ServerHello, Input,
+///   ResizeCommit/ResizeApplied, RenderSnapshot/Patch, OwnerClaim/Release/
+///   Changed, ProtocolError, TerminalExited). A v1 frontend hitting a v2
+///   kernel will fail its first frame and be hard-refreshed by the compat
+///   modal — clean break, no backwards compatibility shim.
+pub const WEB_COMPAT_VERSION: u32 = 2;
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/api/version", get(get_version))
