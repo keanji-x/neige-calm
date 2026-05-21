@@ -14,7 +14,7 @@ export function TitleBar({
   onOpenSettings?: () => void;
 }) {
   return (
-    <div className="bar">
+    <header className="bar">
       <div className="name">Neige</div>
       <div className="right">
         {onOpenSettings && (
@@ -38,6 +38,6 @@ export function TitleBar({
           <Icon n={theme === 'dark' ? 'sun' : 'moon'} s={14} />
         </button>
       </div>
-    </div>
+    </header>
   );
 }
