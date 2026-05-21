@@ -48,7 +48,7 @@
 // architecture note + `docs/a11y-contract.md` §10.
 
 import { useCallback, useEffect, useRef } from 'react';
-import { useState } from '../shared/state';
+import { useState } from '../../shared/state';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 
 export interface UseRovingTabindexOptions {
