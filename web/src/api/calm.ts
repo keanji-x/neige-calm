@@ -12,7 +12,7 @@ import type {
   KernelWaveDetail,
   ListdirResponse,
   NewCardBody,
-  NewCodexBody,
+  NewCodexCardBody,
   NewCoveBody,
   NewOverlayBody,
   NewTerminalCardBody,
@@ -159,14 +159,22 @@ export const getTerminalForCard = (cardId: string) =>
 // ---------------- codex ----------------
 
 /**
- * Spawn the codex CLI bound to this card. Server returns the card row;
- * hook events stream over the WS event bus on `card:<card_id>` as
- * `codex.hook` envelopes.
+ * Atomic codex-card create (#117). Single round-trip writes the card row,
+ * its linked terminal row, AND spawns the codex daemon. Server emits a
+ * single `card.added` event carrying the final payload (with
+ * `terminal_id` + optional `cwd`) — no intermediate `payload=null` flash,
+ * no follow-up `card.updated`. Hook events still stream over the WS event
+ * bus on `card:<card_id>` as `codex.hook` envelopes. See
+ * `routes::codex_cards`.
+ *
+ * 500 response means the codex daemon spawn failed; the persisted rows
+ * stay (the orphan-terminal sweeper reaps them within ~60s), matching
+ * the terminal-card endpoint's contract.
  */
-export const createCodex = (cardId: string, b: NewCodexBody) =>
+export const createCodexCard = (waveId: string, b: NewCodexCardBody = {}) =>
   request<KernelCard>(
     'POST',
-    `/api/cards/${encodeURIComponent(cardId)}/codex`,
+    `/api/waves/${encodeURIComponent(waveId)}/codex-cards`,
     b,
   );
 

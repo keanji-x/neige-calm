@@ -4,22 +4,6 @@
  */
 
 export interface paths {
-    "/api/cards/{card_id}/codex": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["create_codex"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/cards/{card_id}/terminal": {
         parameters: {
             query?: never;
@@ -425,6 +409,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/waves/{wave_id}/codex-cards": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_codex_card"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/waves/{wave_id}/terminal-cards": {
         parameters: {
             query?: never;
@@ -571,16 +571,31 @@ export interface components {
              */
             wave_id?: string;
         };
-        NewCodexBody: {
-            /** @description Working directory codex runs in. Defaults to `$HOME` if empty. */
+        /**
+         * @description Body for `POST /api/waves/:wave_id/codex-cards`.
+         *
+         *     Deliberately omits `kind` (always `"codex"`) and `payload` (the kernel
+         *     stamps `{schemaVersion, terminal_id, cwd?}` itself). Empty `cwd` falls
+         *     back to `$HOME` then the server's cwd. `initial_prompt` is accepted for
+         *     forward-/backward-compatibility with older clients but ignored —
+         *     interactive codex uses its own slash-command UX for input.
+         */
+        NewCodexCardBody: {
+            /**
+             * @description Working directory codex runs in. Empty string or missing → `$HOME`
+             *     (then `cwd` of server).
+             */
             cwd?: string | null;
             /**
-             * @description Reserved field — interactive codex has slash-commands for the
-             *     prompt; the API still accepts it for forward / backward
-             *     compatibility but does nothing with it. Kept so older clients keep
-             *     generating valid OpenAPI requests.
+             * @description Reserved field — accepted for compat; interactive codex uses its
+             *     own slash-command UX for input. Logged at `debug` only when non-empty.
              */
             initial_prompt?: string | null;
+            /**
+             * Format: double
+             * @description Sort order within the wave. `None` defaults to "append to end".
+             */
+            sort?: number | null;
         };
         NewCove: {
             color: string;
@@ -857,61 +872,6 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    create_codex: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Card id (must be a codex card) */
-                card_id: string;
-            };
-            cookie?: never;
-        };
-        /** @description Codex spawn parameters */
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["NewCodexBody"];
-            };
-        };
-        responses: {
-            /** @description Codex spawned; hook events stream over WS, TUI runs in the card's PTY */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Card"];
-                };
-            };
-            /** @description Card is not a codex card */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Card not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Spawn failed */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
     get_terminal_for_card: {
         parameters: {
             query?: never;
@@ -2294,6 +2254,52 @@ export interface operations {
             };
             /** @description Plugin tool call failed */
             502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_codex_card: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Wave id to create the codex card under */
+                wave_id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Optional body — empty means use defaults */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewCodexCardBody"];
+            };
+        };
+        responses: {
+            /** @description Card + linked terminal created atomically; codex daemon spawned */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Card"];
+                };
+            };
+            /** @description Wave not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Daemon spawn failed (rows are persisted; sweeper reaps within ~60s) */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
