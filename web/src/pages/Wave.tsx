@@ -334,6 +334,8 @@ export function WavePage({
           {onDeleteWave && (
             <DeleteButton
               label={`Delete wave "${wave.title}"`}
+              confirmTitle="Delete wave?"
+              confirmLabel="Delete wave"
               confirmMessage={`Delete wave "${wave.title}"? Its cards (including any terminals) go too. This cannot be undone.`}
               onDelete={() => onDeleteWave(wave.id)}
             />

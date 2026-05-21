@@ -179,6 +179,44 @@ describe('ConfirmDialog behavioral contract', () => {
     expect(onCancel).not.toHaveBeenCalled();
   });
 
+  it('G. confirmDisabled blocks onConfirm but leaves Cancel functional', async () => {
+    // The "stay open while pending" pattern relies on this: a call site
+    // can keep the dialog mounted during an in-flight async confirm and
+    // know that (1) a second click on the disabled Confirm button does
+    // nothing, and (2) the user can still bail out via Cancel — the
+    // Cancel-safe default contract is preserved even mid-await.
+    const user = userEvent.setup();
+    const onConfirm = vi.fn();
+    const onCancel = vi.fn();
+    render(
+      <ConfirmDialog
+        open
+        title="Delete wave"
+        confirmDisabled
+        onConfirm={onConfirm}
+        onCancel={onCancel}
+      />,
+    );
+
+    await flushInitialFocus();
+
+    const confirm = screen.getByRole('button', { name: 'Confirm' });
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
+
+    expect((confirm as HTMLButtonElement).disabled).toBe(true);
+
+    // Clicking the disabled Confirm must not fire onConfirm. userEvent
+    // respects pointer-events / disabled semantics, so the click is a
+    // no-op at the framework level — exactly what we want from prod.
+    await user.click(confirm);
+    expect(onConfirm).not.toHaveBeenCalled();
+
+    // Cancel must still work — it is the user's escape hatch during a
+    // pending confirm.
+    await user.click(cancel);
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
   it('F. rapid Enter mashing on initial focus is safe (onConfirm never called)', async () => {
     const user = userEvent.setup();
     const onConfirm = vi.fn();

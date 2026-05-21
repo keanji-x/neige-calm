@@ -3,6 +3,7 @@ import { useState } from '../shared/state';
 import { Crumbs } from '../shared/components/Crumbs';
 import { WaveRow } from '../shared/components/WaveRow';
 import type { Cove, Route, Wave } from '../types';
+import { ConfirmDialog } from '../ui/ConfirmDialog/ConfirmDialog';
 import { DeleteButton } from './_shared';
 
 // ============================================================
@@ -47,18 +48,32 @@ export function CovePage({
   onCreateWave?: (coveId: string, title: string) => void | Promise<void>;
   /** Called from the inline rename input on the header. */
   onRenameCove?: (coveId: string, name: string) => void | Promise<void>;
-  /** Called from the × button on the header. CovePage shows its own
-   *  `window.confirm`, so callers don't need to double-prompt. */
+  /** Called from the × button on the header. CovePage renders a
+   *  ConfirmDialog inside `DeleteButton`, so callers don't need to
+   *  double-prompt. */
   onDeleteCove?: (coveId: string) => void | Promise<void>;
-  /** Called from a per-row × on hover. Same confirm-then-delete pattern. */
+  /** Called from a per-row × on hover. CovePage renders a single
+   *  ConfirmDialog at the page level (driven by `pendingDeleteWave`)
+   *  and routes confirmed deletes to this callback. */
   onDeleteWave?: (waveId: string) => void | Promise<void>;
 }) {
-  const deleteWaveWithConfirm = (w: Wave) => {
+  // Per-row delete uses Pattern B (close-then-await): the dialog closes
+  // on Confirm and the parent's onDeleteWave promise runs without UI
+  // gating. The wave row already vanishes from the list on completion
+  // (the parent removes it from `waves`), which acts as its own
+  // "succeeded" signal — gating the dialog with `confirmDisabled` would
+  // duplicate that affordance. Cancel-safe default focus is inherited
+  // from ConfirmDialog.
+  const [pendingDeleteWave, setPendingDeleteWave] = useState<Wave | null>(null);
+  const openDeleteWaveDialog = (w: Wave) => {
     if (!onDeleteWave) return;
-    const sure = window.confirm(
-      `Delete wave "${w.title}"? Its cards (including any terminals) go too. This cannot be undone.`,
-    );
-    if (!sure) return;
+    setPendingDeleteWave(w);
+  };
+  const cancelDeleteWave = () => setPendingDeleteWave(null);
+  const confirmDeleteWave = () => {
+    const w = pendingDeleteWave;
+    setPendingDeleteWave(null);
+    if (!w || !onDeleteWave) return;
     void onDeleteWave(w.id);
   };
   const running = waves.filter((w) => w.status === 'running');
@@ -107,6 +122,8 @@ export function CovePage({
         {onDeleteCove && (
           <DeleteButton
             label={`Delete cove "${cove.name}"`}
+            confirmTitle="Delete cove?"
+            confirmLabel="Delete cove"
             confirmMessage={`Delete cove "${cove.name}"? Its waves and cards go too. This cannot be undone.`}
             onDelete={() => onDeleteCove(cove.id)}
           />
@@ -133,7 +150,7 @@ export function CovePage({
               cove={cove}
               showCove={false}
               onClick={() => onGo({ name: 'wave', id: w.id })}
-              onDelete={onDeleteWave ? () => deleteWaveWithConfirm(w) : undefined}
+              onDelete={onDeleteWave ? () => openDeleteWaveDialog(w) : undefined}
             />
           ))}
         </Section>
@@ -147,7 +164,7 @@ export function CovePage({
               cove={cove}
               showCove={false}
               onClick={() => onGo({ name: 'wave', id: w.id })}
-              onDelete={onDeleteWave ? () => deleteWaveWithConfirm(w) : undefined}
+              onDelete={onDeleteWave ? () => openDeleteWaveDialog(w) : undefined}
             />
           ))}
         </Section>
@@ -161,7 +178,7 @@ export function CovePage({
               cove={cove}
               showCove={false}
               onClick={() => onGo({ name: 'wave', id: w.id })}
-              onDelete={onDeleteWave ? () => deleteWaveWithConfirm(w) : undefined}
+              onDelete={onDeleteWave ? () => openDeleteWaveDialog(w) : undefined}
             />
           ))}
         </Section>
@@ -172,6 +189,25 @@ export function CovePage({
           onSubmit={(title) => onCreateWave(cove.id, title)}
         />
       )}
+
+      {/* Page-level wave-delete confirmation. One dialog instance per
+          page; `pendingDeleteWave` carries the wave being confirmed so
+          the title row text reflects the actual wave name. Mounted
+          unconditionally with `open` driven by the pending state so
+          Dialog's focus restore on close lands us back where we were. */}
+      <ConfirmDialog
+        open={pendingDeleteWave !== null}
+        title="Delete wave?"
+        description={
+          pendingDeleteWave
+            ? `Delete wave "${pendingDeleteWave.title}"? Its cards (including any terminals) go too. This cannot be undone.`
+            : null
+        }
+        confirmLabel="Delete wave"
+        cancelLabel="Cancel"
+        onConfirm={confirmDeleteWave}
+        onCancel={cancelDeleteWave}
+      />
     </div>
   );
 }

@@ -5,13 +5,27 @@
 // restore) but renders as a styled <h1> instead of a plain span.
 
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, act, fireEvent } from '@testing-library/react';
+import { render, screen, act, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { CovePage } from './Cove';
-import type { Cove } from '../types';
+import type { Cove, Wave } from '../types';
 
 function makeCove(): Cove {
   return { id: 'c1', name: 'Atlas', subtitle: '', color: '#5a9' };
+}
+
+function makeWave(overrides: Partial<Wave> = {}): Wave {
+  return {
+    id: 'w1',
+    coveId: 'c1',
+    title: 'Migrate auth',
+    status: 'idle',
+    progress: 0,
+    eta: '',
+    now: '',
+    cards: [],
+    ...overrides,
+  };
 }
 
 describe('CovePage EditableTitle keyboard entry', () => {
@@ -142,5 +156,213 @@ describe('CovePage EditableTitle keyboard entry', () => {
     expect(onRename).toHaveBeenCalledWith('c1', 'Beacon');
     const restored = screen.getByRole('button', { name: 'Atlas' });
     expect(document.activeElement).toBe(restored);
+  });
+});
+
+// ============================================================
+// ConfirmDialog adoption tests (#60 followup).
+//
+// These tests pin down the migration from window.confirm() to the
+// <ConfirmDialog> primitive for the two destructive flows on this page:
+//   - Cove × button (DeleteButton) → onDeleteCove. Pattern A: dialog
+//     stays open while the async delete is in flight, Confirm is
+//     disabled mid-await.
+//   - Per-row × on a WaveRow → onDeleteWave. Pattern B: dialog closes
+//     on Confirm, parent's promise resolves out-of-band.
+//
+// We deliberately don't re-test Cancel-safe default focus, Esc routing,
+// or overlay-click here — that's locked in
+// `ui/ConfirmDialog/ConfirmDialog.contract.test.tsx` and is the same
+// implementation under the hood.
+// ============================================================
+
+describe('CovePage delete-cove ConfirmDialog (Pattern A)', () => {
+  it('clicking the × opens a ConfirmDialog with the cove name in the body', async () => {
+    const user = userEvent.setup();
+    render(
+      <CovePage
+        cove={makeCove()}
+        waves={[]}
+        onGo={() => {}}
+        onDeleteCove={() => {}}
+      />,
+    );
+    // Dialog is not open yet — the trigger button is the only delete
+    // affordance present.
+    expect(screen.queryByRole('dialog', { name: 'Delete cove?' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Delete cove "Atlas"' }));
+    const dialog = screen.getByRole('dialog', { name: 'Delete cove?' });
+    expect(dialog).toBeInTheDocument();
+    expect(dialog).toHaveTextContent('Delete cove "Atlas"?');
+    expect(within(dialog).getByRole('button', { name: 'Delete cove' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+  });
+
+  it('Cancel closes the dialog without invoking onDeleteCove', async () => {
+    const user = userEvent.setup();
+    const onDeleteCove = vi.fn();
+    render(
+      <CovePage
+        cove={makeCove()}
+        waves={[]}
+        onGo={() => {}}
+        onDeleteCove={onDeleteCove}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Delete cove "Atlas"' }));
+    const dialog = screen.getByRole('dialog', { name: 'Delete cove?' });
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog', { name: 'Delete cove?' })).toBeNull();
+    expect(onDeleteCove).not.toHaveBeenCalled();
+  });
+
+  it('Confirm fires onDeleteCove exactly once and closes the dialog', async () => {
+    const user = userEvent.setup();
+    const onDeleteCove = vi.fn().mockResolvedValue(undefined);
+    render(
+      <CovePage
+        cove={makeCove()}
+        waves={[]}
+        onGo={() => {}}
+        onDeleteCove={onDeleteCove}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Delete cove "Atlas"' }));
+    const dialog = screen.getByRole('dialog', { name: 'Delete cove?' });
+    await user.click(within(dialog).getByRole('button', { name: 'Delete cove' }));
+    expect(onDeleteCove).toHaveBeenCalledTimes(1);
+    expect(onDeleteCove).toHaveBeenCalledWith('c1');
+    // Resolves with undefined immediately; DeleteButton closes the
+    // dialog in its `finally` block after the await resolves.
+    expect(screen.queryByRole('dialog', { name: 'Delete cove?' })).toBeNull();
+  });
+
+  it('Confirm is disabled while onDeleteCove is in flight (stay-open-while-pending)', async () => {
+    const user = userEvent.setup();
+    // Hold the promise open so we can observe the pending state. We
+    // resolve it manually at the end of the test, then flush.
+    let resolve: () => void = () => {};
+    const pending = new Promise<void>((r) => { resolve = r; });
+    const onDeleteCove = vi.fn().mockReturnValue(pending);
+    render(
+      <CovePage
+        cove={makeCove()}
+        waves={[]}
+        onGo={() => {}}
+        onDeleteCove={onDeleteCove}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Delete cove "Atlas"' }));
+    const dialog = screen.getByRole('dialog', { name: 'Delete cove?' });
+    const confirm = within(dialog).getByRole('button', { name: 'Delete cove' });
+    const cancel = within(dialog).getByRole('button', { name: 'Cancel' });
+    expect((confirm as HTMLButtonElement).disabled).toBe(false);
+    await user.click(confirm);
+    // Mid-await: Confirm disabled, Cancel still enabled (Cancel-safe
+    // default holds even during a pending confirm).
+    expect((confirm as HTMLButtonElement).disabled).toBe(true);
+    expect((cancel as HTMLButtonElement).disabled).toBe(false);
+    expect(onDeleteCove).toHaveBeenCalledTimes(1);
+
+    // Resolve and flush — dialog should close after the await.
+    await act(async () => {
+      resolve();
+      await pending;
+    });
+    expect(screen.queryByRole('dialog', { name: 'Delete cove?' })).toBeNull();
+  });
+});
+
+describe('CovePage delete-wave ConfirmDialog (Pattern B)', () => {
+  it('clicking the row × opens a ConfirmDialog with the wave title in the body', async () => {
+    const user = userEvent.setup();
+    render(
+      <CovePage
+        cove={makeCove()}
+        waves={[makeWave({ title: 'Ship checkout' })]}
+        onGo={() => {}}
+        onDeleteWave={() => {}}
+      />,
+    );
+    expect(screen.queryByRole('dialog', { name: 'Delete wave?' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Delete "Ship checkout"' }));
+    const dialog = screen.getByRole('dialog', { name: 'Delete wave?' });
+    expect(dialog).toBeInTheDocument();
+    expect(dialog).toHaveTextContent('Delete wave "Ship checkout"?');
+    expect(within(dialog).getByRole('button', { name: 'Delete wave' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+  });
+
+  it('Cancel closes the dialog without invoking onDeleteWave', async () => {
+    const user = userEvent.setup();
+    const onDeleteWave = vi.fn();
+    render(
+      <CovePage
+        cove={makeCove()}
+        waves={[makeWave({ title: 'Ship checkout' })]}
+        onGo={() => {}}
+        onDeleteWave={onDeleteWave}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Delete "Ship checkout"' }));
+    const dialog = screen.getByRole('dialog', { name: 'Delete wave?' });
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog', { name: 'Delete wave?' })).toBeNull();
+    expect(onDeleteWave).not.toHaveBeenCalled();
+  });
+
+  it('Confirm closes the dialog and invokes onDeleteWave with the wave id', async () => {
+    const user = userEvent.setup();
+    const onDeleteWave = vi.fn();
+    render(
+      <CovePage
+        cove={makeCove()}
+        waves={[makeWave({ id: 'w-checkout', title: 'Ship checkout' })]}
+        onGo={() => {}}
+        onDeleteWave={onDeleteWave}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Delete "Ship checkout"' }));
+    const dialog = screen.getByRole('dialog', { name: 'Delete wave?' });
+    await user.click(within(dialog).getByRole('button', { name: 'Delete wave' }));
+    // Pattern B: dialog closes immediately on Confirm; parent's promise
+    // resolves on its own time.
+    expect(screen.queryByRole('dialog', { name: 'Delete wave?' })).toBeNull();
+    expect(onDeleteWave).toHaveBeenCalledTimes(1);
+    expect(onDeleteWave).toHaveBeenCalledWith('w-checkout');
+  });
+
+  it('reopening after Cancel targets the most recently clicked wave', async () => {
+    const user = userEvent.setup();
+    const onDeleteWave = vi.fn();
+    render(
+      <CovePage
+        cove={makeCove()}
+        waves={[
+          makeWave({ id: 'w-a', title: 'Ship checkout' }),
+          makeWave({ id: 'w-b', title: 'Migrate auth', status: 'running' }),
+        ]}
+        onGo={() => {}}
+        onDeleteWave={onDeleteWave}
+      />,
+    );
+    // First flow: open + Cancel.
+    await user.click(screen.getByRole('button', { name: 'Delete "Ship checkout"' }));
+    await user.click(
+      within(screen.getByRole('dialog', { name: 'Delete wave?' })).getByRole('button', {
+        name: 'Cancel',
+      }),
+    );
+    expect(onDeleteWave).not.toHaveBeenCalled();
+
+    // Second flow: open on the OTHER wave + Confirm. The description
+    // should now reflect the new wave's title, and the id passed to
+    // onDeleteWave should be the new wave's id.
+    await user.click(screen.getByRole('button', { name: 'Delete "Migrate auth"' }));
+    const dialog = screen.getByRole('dialog', { name: 'Delete wave?' });
+    expect(dialog).toHaveTextContent('Delete wave "Migrate auth"?');
+    await user.click(within(dialog).getByRole('button', { name: 'Delete wave' }));
+    expect(onDeleteWave).toHaveBeenCalledTimes(1);
+    expect(onDeleteWave).toHaveBeenCalledWith('w-b');
   });
 });

@@ -111,4 +111,31 @@ describe('ConfirmDialog rendering', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Confirm' })).toBeNull();
   });
+
+  it('Confirm is enabled by default; disabled when confirmDisabled=true', () => {
+    const { rerender } = render(
+      <ConfirmDialog
+        open
+        title="Delete wave"
+        onConfirm={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    expect(
+      (screen.getByRole('button', { name: 'Confirm' }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+
+    rerender(
+      <ConfirmDialog
+        open
+        title="Delete wave"
+        confirmDisabled
+        onConfirm={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    expect(
+      (screen.getByRole('button', { name: 'Confirm' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
 });
