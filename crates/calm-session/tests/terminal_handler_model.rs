@@ -99,3 +99,47 @@ fn carriage_return_resets_column() {
     m.carriage_return();
     assert_eq!(m.cursor(), Cursor { row: 0, col: 0 });
 }
+
+#[test]
+fn split_csi_across_feeds_parses_as_single_action() {
+    // Regression for the `mem::replace` design in `TerminalModel::feed`:
+    // the parser is taken out, advanced over `bytes`, then put back, so a
+    // multi-byte CSI that straddles two PTY chunks must still resolve to a
+    // single trait call. `vte::Parser` is byte-at-a-time and holds the
+    // in-progress CSI state, so the second `feed` must see that state.
+    //
+    // Wire: `ESC [ 5 ; 1 0 H` split as `ESC [` then `5;10H` — CUP to
+    // 1-indexed (5, 10), which the parser converts to 0-indexed (4, 9).
+    let mut m = TerminalModel::new(20, 5, 100);
+    m.feed(b"\x1b[");
+    // Partial CSI: cursor must not have moved yet.
+    assert_eq!(
+        m.cursor(),
+        Cursor { row: 0, col: 0 },
+        "partial CSI must not produce any handler call",
+    );
+    m.feed(b"5;10H");
+    assert_eq!(
+        m.cursor(),
+        Cursor { row: 4, col: 9 },
+        "CSI split across two feeds must resolve to a single CUP",
+    );
+}
+
+#[test]
+fn split_sgr_across_feeds_applies_combined_attrs() {
+    // Sibling regression for `split_csi_across_feeds_parses_as_single_action`:
+    // SGR is also a CSI sequence, so the same `mem::replace` contract must
+    // hold for `ESC [ 1 ; 3 1 m` split across three feeds. We then print a
+    // character and assert the snapshot contains the red-fg SGR param `31`
+    // — same liberal check the in-file `set_sgr_bold_red_then_print_*`
+    // test uses, since the serializer may emit `1;31`, `31;1`, etc.
+    let mut m = TerminalModel::new(10, 1, 100);
+    m.feed(b"\x1b[1;");
+    m.feed(b"31m");
+    m.feed(b"R");
+    let snap = m.snapshot_vt(10, 1);
+    let s = String::from_utf8_lossy(&snap);
+    assert!(s.contains("31"), "snapshot missing red SGR: {s:?}");
+    assert!(s.contains('R'), "snapshot missing 'R': {s:?}");
+}

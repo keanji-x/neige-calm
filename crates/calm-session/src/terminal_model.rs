@@ -362,9 +362,17 @@ pub trait TerminalHandler {
     /// DECSET 1049 — enter alternate screen. Currently a noop; the
     /// method exists so a future PR can fill it in without touching the
     /// parser/trait boundary again.
+    ///
+    /// Invariant: noop implementations MUST NOT bump the render rev — the
+    /// current `TerminalModel` impl is a noop and produces no visible
+    /// state change, so `rev()` must remain unchanged across this call.
+    /// A future real implementation with its own alt-screen grid would
+    /// bump rev only when the visible viewport actually changes.
     fn enter_alt_screen(&mut self);
 
     /// DECRST 1049 — exit alternate screen. Currently a noop.
+    ///
+    /// Same no-bump-rev invariant as [`Self::enter_alt_screen`].
     fn exit_alt_screen(&mut self);
 }
 
