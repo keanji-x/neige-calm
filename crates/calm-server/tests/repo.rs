@@ -531,6 +531,187 @@ async fn terminal_create_rejects_duplicate_card_id() {
     assert!(repo.terminal_get(&t.id).await.unwrap().is_none());
 }
 
+// ------------------------------------------- atomic terminal-card helpers ----
+//
+// Coverage for `terminal_create_tx` and `card_with_terminal_create_tx`, the
+// new transactional helpers added for #13 PR1. These tests open transactions
+// directly off the pool (like `write_with_event`'s closure does) to exercise
+// the `_tx` surface without going through the pool-wrapping wrappers.
+
+#[tokio::test]
+async fn card_with_terminal_create_tx_atomic_writes_card_terminal_and_payload_link() {
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "C").await;
+    let w = make_wave(&repo, &c.id, "W").await;
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    let (card, term) = calm_server::db::sqlite::card_with_terminal_create_tx(
+        &mut tx,
+        w.id.clone(),
+        None,
+        "bash".into(),
+        "/tmp".into(),
+        json!({"FOO": "bar"}),
+    )
+    .await
+    .expect("atomic create");
+    tx.commit().await.unwrap();
+
+    // Card persisted with kind=terminal and the canonical payload link.
+    let got_card = repo.card_get(&card.id).await.unwrap().expect("card row");
+    assert_eq!(got_card.kind, "terminal");
+    assert_eq!(got_card.payload["terminal_id"], json!(term.id));
+    assert_eq!(got_card.payload["schemaVersion"], json!(1));
+
+    // Terminal persisted and parented to the card.
+    let got_term = repo
+        .terminal_get_by_card(&card.id)
+        .await
+        .unwrap()
+        .expect("terminal row");
+    assert_eq!(got_term.id, term.id);
+    assert_eq!(got_term.program, "bash");
+    assert_eq!(got_term.cwd, "/tmp");
+    assert_eq!(got_term.env, json!({"FOO": "bar"}));
+}
+
+#[tokio::test]
+async fn card_with_terminal_create_tx_rolls_back_on_invalid_wave() {
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "C").await;
+    let w = make_wave(&repo, &c.id, "W").await;
+
+    // Sanity: wave has no cards yet, and no orphan terminals exist.
+    assert!(repo.cards_by_wave(&w.id).await.unwrap().is_empty());
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    let err = calm_server::db::sqlite::card_with_terminal_create_tx(
+        &mut tx,
+        "wave-that-does-not-exist".into(),
+        None,
+        "bash".into(),
+        "/tmp".into(),
+        json!({}),
+    )
+    .await
+    .expect_err("unknown wave must error");
+    // Explicit rollback so the txn doesn't linger; would be implicit on drop
+    // but we make the intent visible.
+    tx.rollback().await.unwrap();
+
+    assert!(matches!(err, CalmError::NotFound(_)));
+
+    // No card was left behind in the valid wave (it never had any), and no
+    // terminal row exists at all — direct sqlx count against the table.
+    let cards_in_w = repo.cards_by_wave(&w.id).await.unwrap();
+    assert!(
+        cards_in_w.is_empty(),
+        "no card rows should have leaked from the rolled-back txn"
+    );
+    let term_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM terminals")
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(term_count.0, 0, "no terminal rows should have been written");
+}
+
+#[tokio::test]
+async fn card_with_terminal_create_tx_uses_caller_supplied_sort() {
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "C").await;
+    let w = make_wave(&repo, &c.id, "W").await;
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    let (card, _term) = calm_server::db::sqlite::card_with_terminal_create_tx(
+        &mut tx,
+        w.id.clone(),
+        Some(42.0),
+        "bash".into(),
+        "/tmp".into(),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(card.sort, 42.0);
+    let got = repo.card_get(&card.id).await.unwrap().unwrap();
+    assert_eq!(got.sort, 42.0);
+}
+
+#[tokio::test]
+async fn card_with_terminal_create_tx_defaults_sort_when_none() {
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "C").await;
+    let w = make_wave(&repo, &c.id, "W").await;
+
+    // Pre-seed two cards so the next sort default lands at 3.0 — same
+    // assertion shape as `sort_defaulting_is_scoped_per_wave_for_cards`.
+    let _c1 = make_card(&repo, &w.id, "terminal").await;
+    let _c2 = make_card(&repo, &w.id, "terminal").await;
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    let (card, _term) = calm_server::db::sqlite::card_with_terminal_create_tx(
+        &mut tx,
+        w.id.clone(),
+        None,
+        "bash".into(),
+        "/tmp".into(),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(card.sort, 3.0);
+}
+
+#[tokio::test]
+async fn terminal_create_tx_enforces_unique_card_id() {
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "C").await;
+    let w = make_wave(&repo, &c.id, "W").await;
+    let card = make_card(&repo, &w.id, "terminal").await;
+    let _seeded = make_terminal(&repo, &card.id).await;
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    let err = calm_server::db::sqlite::terminal_create_tx(
+        &mut tx,
+        NewTerminal {
+            card_id: card.id.clone(),
+            program: "zsh".into(),
+            cwd: "/tmp".into(),
+            env: json!({}),
+        },
+    )
+    .await
+    .expect_err("duplicate terminal for same card must conflict");
+    tx.rollback().await.unwrap();
+
+    assert!(matches!(err, CalmError::Conflict(_)));
+}
+
+#[tokio::test]
+async fn terminal_create_tx_rejects_unknown_card_id() {
+    let repo = fresh_repo().await;
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    let err = calm_server::db::sqlite::terminal_create_tx(
+        &mut tx,
+        NewTerminal {
+            card_id: "no-such-card".into(),
+            program: "bash".into(),
+            cwd: "/tmp".into(),
+            env: json!({}),
+        },
+    )
+    .await
+    .expect_err("unknown card must error");
+    tx.rollback().await.unwrap();
+
+    assert!(matches!(err, CalmError::NotFound(_)));
+}
+
 // ---------------------------------------------------------------- plugins ----
 
 fn sample_new_plugin(id: &str, enabled: bool) -> NewPlugin {

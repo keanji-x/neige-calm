@@ -33,6 +33,7 @@ use super::{RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, WriteW
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventBus, SYNC_EVENT_VERSION};
 use crate::model::*;
+use crate::validation::{TERMINAL_PAYLOAD_SCHEMA_VERSION, validate_card_payload};
 
 pub struct SqlxRepo {
     pool: SqlitePool,
@@ -513,6 +514,139 @@ pub async fn terminal_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> R
         return Err(CalmError::NotFound(format!("terminal {id}")));
     }
     Ok(())
+}
+
+/// Transactional terminal-row insert. Structural twin of the `terminal_create`
+/// method on `SqlxRepo` — same parent-card-exists and per-card uniqueness
+/// pre-checks, same `NotFound` / `Conflict` mapping — but composable inside
+/// `Repo::write_with_event` closures alongside the card write.
+///
+/// Currently only invoked from `card_with_terminal_create_tx`; the standalone
+/// `RepoOutOfDomain::terminal_create` path still talks to the pool directly so
+/// the existing `POST /api/cards/:id/terminal` recipe keeps its behavior
+/// untouched until #13 PR2 swaps it out.
+pub async fn terminal_create_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    p: NewTerminal,
+) -> Result<Terminal> {
+    // Parent card must exist; surface as NotFound to mirror MockRepo.
+    let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM cards WHERE id = ?1")
+        .bind(&p.card_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    if exists.is_none() {
+        return Err(CalmError::NotFound(format!("card {}", p.card_id)));
+    }
+    // Per-card uniqueness — surface as Conflict to mirror MockRepo
+    // (the schema also enforces this via UNIQUE on terminals.card_id).
+    let dup: Option<(String,)> = sqlx::query_as("SELECT id FROM terminals WHERE card_id = ?1")
+        .bind(&p.card_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    if dup.is_some() {
+        return Err(CalmError::Conflict(format!(
+            "terminal already exists for card {}",
+            p.card_id
+        )));
+    }
+
+    let now = now_ms();
+    let id = new_id();
+    let env_text = serde_json::to_string(&p.env)?;
+    sqlx::query(
+        r#"INSERT INTO terminals
+               (id, card_id, program, cwd, env, daemon_handle, pid, created_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6)"#,
+    )
+    .bind(&id)
+    .bind(&p.card_id)
+    .bind(&p.program)
+    .bind(&p.cwd)
+    .bind(&env_text)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+    Ok(Terminal {
+        id,
+        card_id: p.card_id,
+        program: p.program,
+        cwd: p.cwd,
+        env: p.env,
+        daemon_handle: None,
+        pid: None,
+        created_at: now,
+    })
+}
+
+/// Atomically create a `terminal`-kind card AND its associated terminal row
+/// inside a single transaction, stamping the terminal id onto the card's
+/// payload before returning.
+///
+/// This is the kernel side of #13's plan to collapse today's 3-step
+/// terminal-card recipe (card-add → terminal-create → card-update) into one
+/// atomic db helper. PR1 just lands this helper; PR2 will wire it to a new
+/// `POST /api/waves/:id/terminal-cards` endpoint and delete the old recipe.
+///
+/// On any failure the surrounding transaction rolls back, so partial state
+/// (card without terminal, or terminal without payload link) is impossible.
+pub async fn card_with_terminal_create_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    wave_id: String,
+    sort: Option<f64>,
+    program: String,
+    cwd: String,
+    env: serde_json::Value,
+) -> Result<(Card, Terminal)> {
+    // 1. Card row with placeholder payload — the terminal_id and schemaVersion
+    //    are stamped in step 5 once we have the terminal row.
+    let card = card_create_tx(
+        tx,
+        NewCard {
+            wave_id,
+            kind: "terminal".into(),
+            sort,
+            payload: serde_json::Value::Null,
+        },
+    )
+    .await?;
+
+    // 2. Terminal row, parented to the card.
+    let term = terminal_create_tx(
+        tx,
+        NewTerminal {
+            card_id: card.id.clone(),
+            program,
+            cwd,
+            env,
+        },
+    )
+    .await?;
+
+    // 3. Build the canonical terminal-card payload.
+    let payload = serde_json::json!({
+        "schemaVersion": TERMINAL_PAYLOAD_SCHEMA_VERSION,
+        "terminal_id": term.id,
+    });
+
+    // 4. Defense-in-depth: payload validation. The boundary call in
+    //    `routes/cards.rs:141` already enforces this for direct create, but
+    //    composing inside the kernel means we run our own check rather than
+    //    trusting a payload we built ourselves.
+    validate_card_payload("terminal", &payload)?;
+
+    // 5. Re-stamp the card with the real payload.
+    let card = card_update_tx(
+        tx,
+        &card.id,
+        CardPatch {
+            kind: None,
+            sort: None,
+            payload: Some(payload),
+        },
+    )
+    .await?;
+
+    Ok((card, term))
 }
 
 pub async fn overlay_upsert_tx(tx: &mut Transaction<'_, Sqlite>, p: NewOverlay) -> Result<Overlay> {
