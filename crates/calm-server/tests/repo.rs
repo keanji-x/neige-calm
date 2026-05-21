@@ -704,3 +704,94 @@ async fn plugin_kv_prefix_escapes_glob_chars() {
     let keys: Vec<&str> = listed.iter().map(|(k, _)| k.as_str()).collect();
     assert_eq!(keys, vec!["100%/a"]);
 }
+
+// ----- Upgrade stability: refuse-to-boot on unknown future migration --------
+//
+// `docs/upgrade-stability.md` (Tier A, DB schema): "old binary reading new
+// DB → refuses boot with: 'database has migration X applied that this
+// binary doesn't know about — refusing to boot; downgrade is not
+// supported'". `SqlxRepo::open` enforces this before the embedded migrator
+// gets to apply anything.
+
+/// Simulate an "older binary reading newer DB": open a fresh repo (which
+/// migrates the schema to the binary's current set), inject a synthetic
+/// future-version row into `_sqlx_migrations`, then reopen and assert the
+/// open is rejected.
+///
+/// Uses an on-disk tempfile so the second `SqlxRepo::open` actually
+/// observes the row we wrote — `sqlite::memory:` would give us a fresh DB
+/// the second time around.
+#[tokio::test]
+async fn open_refuses_unknown_future_migration() {
+    let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+    let url = format!("sqlite://{}?mode=rwc", tmp.path().display());
+
+    // First open: runs migrations to current; `_sqlx_migrations` now exists
+    // and contains rows 0001..=0005 (all known versions).
+    {
+        let repo = SqlxRepo::open(&url).await.expect("initial open");
+        // Inject a synthetic future migration row. sqlx's expected schema:
+        // (version, description, installed_on, success, checksum, execution_time).
+        // The values are arbitrary — only `version` matters for the guard.
+        sqlx::query(
+            r#"INSERT INTO _sqlx_migrations
+                   (version, description, installed_on, success, checksum, execution_time)
+               VALUES (?1, ?2, CURRENT_TIMESTAMP, 1, ?3, 0)"#,
+        )
+        .bind(99_999_999_i64)
+        .bind("synthetic future migration")
+        .bind(b"\0\0\0\0".as_slice())
+        .execute(repo.pool())
+        .await
+        .expect("insert synthetic future migration row");
+        // Drop `repo` so its pool releases the file lock before reopen.
+    }
+
+    // Second open: must refuse with the typed error + agreed wording.
+    // `SqlxRepo` isn't `Debug`, so `expect_err` is unavailable — match.
+    let err = match SqlxRepo::open(&url).await {
+        Ok(_) => panic!("reopen must refuse on unknown future migration"),
+        Err(e) => e,
+    };
+    let msg = err.to_string();
+    assert!(
+        matches!(err, CalmError::Internal(_)),
+        "expected CalmError::Internal, got: {err:?}",
+    );
+    assert!(
+        msg.contains("99999999"),
+        "error message should name the unknown version 99999999: {msg}",
+    );
+    assert!(
+        msg.contains("refusing to boot"),
+        "error message should contain 'refusing to boot': {msg}",
+    );
+    assert!(
+        msg.contains("downgrade is not supported"),
+        "error message should contain 'downgrade is not supported': {msg}",
+    );
+    assert!(
+        msg.contains("doesn't know about"),
+        "error message should contain 'doesn't know about': {msg}",
+    );
+}
+
+/// Brand-new DB (no `_sqlx_migrations` row yet) and "current binary on
+/// current DB" both open cleanly. Belt-and-braces against a regression
+/// where the guard would mis-flag a known applied version, or fail when
+/// the table doesn't exist yet.
+#[tokio::test]
+async fn open_succeeds_on_fresh_and_current_db() {
+    // Fresh in-memory DB: `_sqlx_migrations` doesn't exist before the
+    // migrator's first `run()`. The guard must tolerate that.
+    let _ = SqlxRepo::open("sqlite::memory:")
+        .await
+        .expect("fresh in-memory open succeeds");
+
+    // Tempfile DB, opened twice: the second open sees all known versions
+    // already applied and must still succeed.
+    let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+    let url = format!("sqlite://{}?mode=rwc", tmp.path().display());
+    let _ = SqlxRepo::open(&url).await.expect("first open");
+    let _ = SqlxRepo::open(&url).await.expect("reopen with current binary");
+}
