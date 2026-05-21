@@ -1,4 +1,4 @@
-// Component-level tests for `WaveGrid` after the Scope E migration.
+// Component-level tests for `WaveGrid` (overlay-backed layout).
 //
 // What we lock in here:
 //
@@ -8,10 +8,6 @@
 //   2. **Drag end fires a single POST.** RGL's `onLayoutChange` is the
 //      drag-time firehose; the rAF-coalesced setter inside WaveGrid
 //      must collapse a burst into one mutation per visual frame.
-//   3. **localStorage → overlay migration.** When `listOverlays` returns
-//      empty but `localStorage['calm:layout:<waveId>']` carries legacy
-//      positions, the first mount POSTs an overlay carrying them and
-//      removes the localStorage key.
 //
 // We mock `api/calm.ts` wholesale (same pattern as the queries tests) and
 // stub `react-grid-layout` to capture the `layout` prop + expose the
@@ -109,7 +105,6 @@ beforeEach(() => {
   grid.layout = [];
   grid.onLayoutChange = null;
   cleanup();
-  localStorage.clear();
 });
 
 describe('WaveGrid — overlay-backed layout', () => {
@@ -197,73 +192,4 @@ describe('WaveGrid — overlay-backed layout', () => {
     });
   });
 
-  it('migrates legacy localStorage layout on first mount', async () => {
-    // No overlay row yet → migration path triggers.
-    (api.listOverlays as ReturnType<typeof vi.fn>).mockResolvedValue([]);
-    (api.upsertOverlay as ReturnType<typeof vi.fn>).mockResolvedValue(
-      layoutOverlay({ 'card-a': { x: 1, y: 1, w: 4, h: 3 } }),
-    );
-    localStorage.setItem(
-      'calm:layout:w1',
-      JSON.stringify({ 'card-a': { x: 1, y: 1, w: 4, h: 3 } }),
-    );
-
-    const client = makeClient();
-    render(
-      <Wrapper client={client}>
-        <WaveGrid
-          waveId="w1"
-          cards={[card('card-a')]}
-          onRemoveCard={() => {}}
-        />
-      </Wrapper>,
-    );
-
-    // The migration helper POSTs the parsed positions and then removes
-    // the localStorage key. We assert both.
-    await waitFor(() => expect(api.upsertOverlay).toHaveBeenCalled());
-    expect(api.upsertOverlay).toHaveBeenCalledWith({
-      plugin_id: 'kernel',
-      entity_kind: 'view',
-      entity_id: 'w1',
-      kind: 'layout',
-      payload: {
-        // See above re Tier A `schemaVersion` stamping.
-        schemaVersion: 1,
-        positions: { 'card-a': { x: 1, y: 1, w: 4, h: 3 } },
-      },
-    });
-    await waitFor(() =>
-      expect(localStorage.getItem('calm:layout:w1')).toBeNull(),
-    );
-  });
-
-  it('does not migrate when overlay row already exists', async () => {
-    (api.listOverlays as ReturnType<typeof vi.fn>).mockResolvedValue([
-      layoutOverlay({ 'card-a': { x: 0, y: 0, w: 4, h: 3 } }),
-    ]);
-    localStorage.setItem(
-      'calm:layout:w1',
-      JSON.stringify({ 'card-a': { x: 9, y: 9, w: 1, h: 1 } }),
-    );
-
-    const client = makeClient();
-    render(
-      <Wrapper client={client}>
-        <WaveGrid
-          waveId="w1"
-          cards={[card('card-a')]}
-          onRemoveCard={() => {}}
-        />
-      </Wrapper>,
-    );
-
-    // Wait for the GET to resolve so the migration effect has a chance
-    // to run. It should NOT call upsertOverlay — the overlay row is
-    // already authoritative.
-    await waitFor(() => expect(api.listOverlays).toHaveBeenCalled());
-    // A small grace tick for the effect to settle.
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(api.upsertOverlay).not.toHaveBeenCalled();
-  });
 });

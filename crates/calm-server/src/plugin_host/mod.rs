@@ -199,23 +199,6 @@ impl PluginHost {
         }
     }
 
-    /// Slice A-shaped constructor retained for back-compat with callers that
-    /// just need a host wired to a registry + repo (tests). No event bus, no
-    /// supervision — `spawn` will still work, but events won't be emitted.
-    pub fn new(registry: Arc<PluginRegistry>, repo: Arc<dyn RouteRepo>) -> Self {
-        Self {
-            registry,
-            repo,
-            plugins_dir: PathBuf::new(),
-            plugins_data_dir: std::env::temp_dir().join("calm-plugins-data"),
-            plugins_disabled: Vec::new(),
-            events: None,
-            // Private bus so dispatch can still emit; nobody subscribes.
-            events_arc: Arc::new(EventBus::new()),
-            processes: Mutex::new(HashMap::new()),
-        }
-    }
-
     /// Convenience accessor — most call sites only need the registry handle.
     pub fn registry(&self) -> &Arc<PluginRegistry> {
         &self.registry

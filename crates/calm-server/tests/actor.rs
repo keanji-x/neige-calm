@@ -41,9 +41,16 @@ async fn boot() -> (axum::Router, Arc<SqlxRepo>, AppState) {
     let events = EventBus::new();
     let state = AppState::from_parts(
         repo.clone(),
-        events,
+        events.clone(),
         Arc::new(DaemonClient::new_stub()),
-        Arc::new(PluginHost::new(Arc::new(PluginRegistry::empty()), repo)),
+        Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            repo,
+            std::path::PathBuf::new(),
+            std::env::temp_dir().join("calm-plugins-data"),
+            Vec::new(),
+            events,
+        )),
         Arc::new(CodexClient::new_stub()),
     );
     // Same shape as main.rs: middleware sits on the REST router only.

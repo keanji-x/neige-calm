@@ -279,25 +279,16 @@ impl McpClient {
     /// `ChildStdin` respectively, but we keep them `dyn` so tests can wire in
     /// `tokio::io::duplex` halves without spawning a real process.
     ///
-    /// Back-compat shim: pre-Slice-H callers want no auth handshake. Slice H's
-    /// `connect_with_auth` adds the echo-token round-trip.
-    pub async fn connect<R, W>(read: R, write: W) -> Result<Arc<Self>, McpError>
-    where
-        R: AsyncRead + Send + Unpin + 'static,
-        W: AsyncWrite + Send + Unpin + 'static,
-    {
-        Self::connect_with_auth(read, write, None).await
-    }
-
-    /// Slice H (post-M1): when `expected_echo` is `Some(raw_token)`, the kernel
-    /// embeds the raw token in `initialize.params._meta["dev.neige/auth"]
-    /// .expected_echo` and requires the plugin to mirror it back in
+    /// When `expected_echo` is `Some(raw_token)`, the kernel embeds the raw
+    /// token in `initialize.params._meta["dev.neige/auth"].expected_echo` and
+    /// requires the plugin to mirror it back in
     /// `initialize.result._meta["dev.neige/auth"].echoed_token`. Mismatch
     /// surfaces as `McpError::Framing("auth mismatch")` so callers
     /// (`PluginHost::spawn`) can translate to `HostError::AuthMismatch` and
     /// skip respawn.
     ///
-    /// `None` skips the check entirely (legacy / Slice B test paths).
+    /// `None` skips the check entirely — only used by unit tests that wire a
+    /// plain duplex stub. Production always passes the per-process token.
     pub async fn connect_with_auth<R, W>(
         read: R,
         write: W,
@@ -349,17 +340,14 @@ impl McpClient {
     /// `serverInfo` field — just confirm a `protocolVersion` echo and that the
     /// response is shaped like an object.
     ///
-    /// **M1 hard cut** (migration doc §7.6 row 2): the auth-echo lives at
+    /// Auth handshake (migration doc §7.6 row 2): the auth-echo lives at
     /// `params._meta["dev.neige/auth"].expected_echo` and the plugin must
-    /// mirror it back at `result._meta["dev.neige/auth"].echoed_token`. The
-    /// legacy `clientInfo.expected_echo` / `serverInfo.echoed_token` shape is
-    /// no longer accepted — no dual-accept.
+    /// mirror it back at `result._meta["dev.neige/auth"].echoed_token`.
     ///
     /// When `expected_echo` is `Some(raw)`, we inline the raw token under
-    /// `_meta` and demand the plugin echo it back. This is the wire half of
-    /// the Slice H process-token check; the kernel-side raw-vs-raw equality
-    /// is fine here because the token is full-entropy and the mismatch path
-    /// kills the process immediately.
+    /// `_meta` and demand the plugin echo it back. The kernel-side raw-vs-raw
+    /// equality is fine here because the token is full-entropy and the
+    /// mismatch path kills the process immediately.
     async fn initialize(self: &Arc<Self>, expected_echo: Option<&str>) -> Result<(), McpError> {
         let mut params = json!({
             "protocolVersion": KERNEL_PROTOCOL_VERSION,
@@ -1024,7 +1012,9 @@ mod tests {
             }
         });
 
-        let client = McpClient::connect(k_r, k_w).await.expect("connect");
+        let client = McpClient::connect_with_auth(k_r, k_w, None)
+            .await
+            .expect("connect");
         let result = client
             .tools_call("make_status_card", json!({ "x": 1 }))
             .await
@@ -1111,7 +1101,9 @@ mod tests {
             }
         });
 
-        let client = McpClient::connect(k_r, k_w).await.expect("connect");
+        let client = McpClient::connect_with_auth(k_r, k_w, None)
+            .await
+            .expect("connect");
         let result = client
             .resources_read("ui://stub/status")
             .await
@@ -1196,7 +1188,9 @@ mod tests {
             }
         });
 
-        let client = McpClient::connect(k_r, k_w).await.expect("connect");
+        let client = McpClient::connect_with_auth(k_r, k_w, None)
+            .await
+            .expect("connect");
         let result = client.call("hello", json!({})).await.expect("call");
         assert_eq!(result["got"], "hello");
         drop(client);
@@ -1206,7 +1200,7 @@ mod tests {
     /// Issue #45 test helper: spawn a stub plugin that replies to `initialize`
     /// with a caller-supplied `result` payload, then echoes any further
     /// requests as `{"echo": method}`. Returns the duplex halves the kernel
-    /// side should hand to `McpClient::connect`, plus the JoinHandle so tests
+    /// side should hand to `McpClient::connect_with_auth`, plus the JoinHandle so tests
     /// can drain it on shutdown.
     fn spawn_init_stub(
         init_result: Value,
@@ -1273,7 +1267,9 @@ mod tests {
             "serverInfo": { "name": "stub", "version": "0.0.0" },
             "capabilities": {}
         }));
-        let client = McpClient::connect(k_r, k_w).await.expect("connect");
+        let client = McpClient::connect_with_auth(k_r, k_w, None)
+            .await
+            .expect("connect");
         // sanity: with empty capabilities, the kernel-callbacks predicate
         // returns false (capability absent).
         assert!(!client.has_kernel_callbacks_capability("test.plugin"));
@@ -1290,7 +1286,7 @@ mod tests {
             "serverInfo": { "name": "stub", "version": "0.0.0" },
             "capabilities": {}
         }));
-        match McpClient::connect(k_r, k_w).await {
+        match McpClient::connect_with_auth(k_r, k_w, None).await {
             Ok(_) => panic!("handshake should fail on protocol mismatch"),
             Err(McpError::ProtocolVersionMismatch { kernel, plugin }) => {
                 assert_eq!(kernel, KERNEL_PROTOCOL_VERSION);
@@ -1313,7 +1309,9 @@ mod tests {
                 }
             }
         }));
-        let client = McpClient::connect(k_r, k_w).await.expect("connect");
+        let client = McpClient::connect_with_auth(k_r, k_w, None)
+            .await
+            .expect("connect");
         assert!(client.has_kernel_callbacks_capability("test.plugin"));
         drop(client);
         let _ = tokio::time::timeout(Duration::from_millis(200), task).await;
@@ -1334,7 +1332,9 @@ mod tests {
                 }
             }
         }));
-        let client = McpClient::connect(k_r, k_w).await.expect("connect");
+        let client = McpClient::connect_with_auth(k_r, k_w, None)
+            .await
+            .expect("connect");
         assert!(!client.has_kernel_callbacks_capability("test.plugin"));
         drop(client);
         let _ = tokio::time::timeout(Duration::from_millis(200), task).await;
@@ -1352,7 +1352,9 @@ mod tests {
                 }
             }
         }));
-        let client = McpClient::connect(k_r, k_w).await.expect("connect");
+        let client = McpClient::connect_with_auth(k_r, k_w, None)
+            .await
+            .expect("connect");
         assert!(!client.has_kernel_callbacks_capability("test.plugin"));
         drop(client);
         let _ = tokio::time::timeout(Duration::from_millis(200), task).await;
@@ -1368,7 +1370,9 @@ mod tests {
             "serverInfo": { "name": "stub", "version": "0.0.0" },
             "capabilities": {}
         }));
-        let client = McpClient::connect(k_r, k_w).await.expect("connect");
+        let client = McpClient::connect_with_auth(k_r, k_w, None)
+            .await
+            .expect("connect");
         assert!(!client.has_kernel_callbacks_capability("test.plugin"));
         drop(client);
         let _ = tokio::time::timeout(Duration::from_millis(200), task).await;

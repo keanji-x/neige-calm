@@ -27,7 +27,14 @@ async fn ingest_emits_codex_hook_event() {
         repo.clone(),
         events.clone(),
         Arc::new(DaemonClient::new_stub()),
-        Arc::new(PluginHost::new(Arc::new(PluginRegistry::empty()), repo)),
+        Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            repo,
+            std::path::PathBuf::new(),
+            std::env::temp_dir().join("calm-plugins-data"),
+            Vec::new(),
+            events.clone(),
+        )),
         Arc::new(CodexClient::new_stub()),
     );
     // Scope β: the actor middleware must be present — the `ingest_hook`
@@ -113,7 +120,14 @@ async fn create_codex_rejects_non_codex_card() {
         repo.clone(),
         EventBus::new(),
         Arc::new(DaemonClient::new_stub()),
-        Arc::new(PluginHost::new(Arc::new(PluginRegistry::empty()), repo)),
+        Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            repo,
+            std::path::PathBuf::new(),
+            std::env::temp_dir().join("calm-plugins-data"),
+            Vec::new(),
+            EventBus::new(),
+        )),
         Arc::new(CodexClient::new_stub()),
     );
     // Scope G: production wiring includes the actor middleware on the REST

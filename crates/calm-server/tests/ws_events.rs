@@ -36,9 +36,13 @@ async fn boot() -> (std::net::SocketAddr, EventBus) {
         repo.clone(),
         events.clone(),
         Arc::new(DaemonClient::new_stub()),
-        Arc::new(PluginHost::new(
+        Arc::new(PluginHost::new_full(
             Arc::new(calm_server::plugin_host::PluginRegistry::empty()),
             repo,
+            std::path::PathBuf::new(),
+            std::env::temp_dir().join("calm-plugins-data"),
+            Vec::new(),
+            events.clone(),
         )),
         Arc::new(calm_server::state::CodexClient::new_stub()),
     );

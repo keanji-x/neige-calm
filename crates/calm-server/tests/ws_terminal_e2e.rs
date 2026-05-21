@@ -123,7 +123,14 @@ async fn boot_full() -> (std::net::SocketAddr, axum::Router, String, TempDir) {
         repo.clone(),
         EventBus::new(),
         daemon,
-        Arc::new(PluginHost::new(Arc::new(PluginRegistry::empty()), repo)),
+        Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            repo,
+            PathBuf::new(),
+            std::env::temp_dir().join("calm-plugins-data"),
+            Vec::new(),
+            EventBus::new(),
+        )),
         Arc::new(CodexClient::new_stub()),
     );
 

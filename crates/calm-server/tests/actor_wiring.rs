@@ -72,11 +72,15 @@ async fn last_event_id(repo: &SqlxRepo, kind: &str) -> i64 {
 fn base_state(repo: Arc<SqlxRepo>, events: EventBus) -> AppState {
     AppState::from_parts(
         repo.clone(),
-        events,
+        events.clone(),
         Arc::new(DaemonClient::new_stub()),
-        Arc::new(PluginHost::new(
+        Arc::new(PluginHost::new_full(
             Arc::new(PluginRegistry::empty()),
             repo.clone(),
+            std::path::PathBuf::new(),
+            std::env::temp_dir().join("calm-plugins-data"),
+            Vec::new(),
+            events,
         )),
         Arc::new(CodexClient::new_stub()),
     )

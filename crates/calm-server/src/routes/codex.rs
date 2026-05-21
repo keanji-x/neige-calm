@@ -481,9 +481,13 @@ mod tests {
     async fn codex_terminal_payload_stamp_persists_and_broadcasts_card_updated() {
         let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let events = EventBus::new();
-        let plugin = Arc::new(PluginHost::new(
+        let plugin = Arc::new(PluginHost::new_full(
             Arc::new(PluginRegistry::empty()),
             repo.clone(),
+            std::path::PathBuf::new(),
+            std::env::temp_dir().join("calm-plugins-data"),
+            Vec::new(),
+            events.clone(),
         ));
         let state = AppState::from_parts(
             repo.clone(),
