@@ -25,9 +25,14 @@
  * `crates/calm-server/src/routes/version.rs` whenever a REST/WS contract
  * change makes older frontends incompatible.
  *
+ * Version history:
+ * * `1` — initial. Terminal protocol v1.
+ * * `2` — terminal protocol v2 (issue #44). XtermView speaks the new
+ *   ClientHello/ServerHello + RenderSnapshot/Patch framing.
+ *
  * See `docs/upgrade-stability.md` (Tier B — cross-process negotiation).
  */
-export const WEB_COMPAT_VERSION = 1;
+export const WEB_COMPAT_VERSION = 2;
 
 /**
  * Shape of the JSON document returned by `GET /api/version`. Kept here

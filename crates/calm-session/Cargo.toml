@@ -32,3 +32,11 @@ libc = "0.2"
 # lower-level `Parser` + `Perform` API (no built-in grid — we maintain
 # our own in `src/terminal_model.rs`).
 vte = { version = "0.13", default-features = false }
+# TypeScript bindings for the v2 wire types (`ClientMsg`, `DaemonMsg`, and
+# their helper structs/enums). `cargo test export_bindings_` regenerates
+# `web/src/api/generated-terminal.ts` from the `#[derive(TS)]` annotations
+# in `src/lib.rs` (driven by `npm run gen:api`). Feature flags match
+# calm-server's setup: `serde-json-impl` lets `serde_json::Value` implement
+# `TS`; `no-serde-warnings` silences serde-default lint chatter on derives
+# we don't control.
+ts-rs = { version = "12", features = ["serde-json-impl", "no-serde-warnings"] }

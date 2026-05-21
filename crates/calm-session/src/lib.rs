@@ -36,6 +36,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use ts_rs::TS;
 use uuid::Uuid;
 
 /// Cap on a single frame. Anything larger is either a bug or hostile.
@@ -89,7 +90,8 @@ pub enum FrameError {
 /// [`Role::Owner`]; subsequent clients default to [`Role::Observer`] and can
 /// promote themselves with [`ClientMsg::OwnerClaim`] (hostile takeover —
 /// the daemon never negotiates).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub enum Role {
     Owner,
     Observer,
@@ -99,7 +101,8 @@ pub enum Role {
 /// [`RenderEncoding::Vt`] (raw escape-sequence bytes); the enum exists so
 /// later additions (cell-grid diffs, sixel images, ...) don't require a
 /// fresh `FRAME_VERSION` bump.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub enum RenderEncoding {
     Vt,
 }
@@ -109,7 +112,8 @@ pub enum RenderEncoding {
 /// `All` = everything the daemon still has; `Lines(n)` = up to n lines of
 /// scrollback (whole-chunk granularity in this PR, may tighten to
 /// line-granular when the VT model lands).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub enum InitialScrollback {
     None,
     All,
@@ -119,7 +123,8 @@ pub enum InitialScrollback {
 /// PTY viewport dimensions plus an optional pixel-size hint. The pixel
 /// fields are only consulted by programs that draw inline images (sixel /
 /// kitty graphics); most clients leave them `None`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub struct PtySize {
     pub cols: u16,
     pub rows: u16,
@@ -130,7 +135,8 @@ pub struct PtySize {
 /// Single cell's pixel footprint as the client measured it. Sent only when
 /// it materially differs from the daemon-side default and the client wants
 /// pixel-accurate image alignment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub struct CellSize {
     pub width: u16,
     pub height: u16,
@@ -140,7 +146,8 @@ pub struct CellSize {
 /// already has. The daemon decides whether it can replay a delta from there
 /// or must send a fresh snapshot (in which case a
 /// [`HistoryGap`] is included in `ServerHello`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub struct ResumeFrom {
     pub render_rev: Option<u32>,
     pub pty_seq: Option<u32>,
@@ -149,7 +156,8 @@ pub struct ResumeFrom {
 /// What the client can decode / display. The daemon validates the
 /// intersection during handshake (e.g. no `Vt` in `render_encodings` →
 /// [`ProtocolErrorCode::UnsupportedEncoding`]).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub struct ClientCapabilities {
     pub render_encodings: Vec<RenderEncoding>,
     pub supports_scrollback: bool,
@@ -161,7 +169,8 @@ pub struct ClientCapabilities {
 /// [`DaemonMsg::ServerHello`] and as a standalone frame when the daemon
 /// decides the client needs a hard resync (typically because the requested
 /// resume cursor fell off the history window).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub struct RenderSnapshot {
     pub render_rev: u32,
     pub pty_seq: u32,
@@ -175,7 +184,8 @@ pub struct RenderSnapshot {
 /// Incremental render-plane update. `prev_render_rev` lets the client
 /// detect a gap (its last-known `render_rev` doesn't match) and request a
 /// fresh [`RenderSnapshot`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub struct RenderPatch {
     pub render_rev: u32,
     pub prev_render_rev: u32,
@@ -188,7 +198,8 @@ pub struct RenderPatch {
 /// than what the daemon still has buffered. `requires_snapshot` is always
 /// `true` in this PR (we always re-send the snapshot rather than a partial
 /// catch-up).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub struct HistoryGap {
     pub requested_render_rev: Option<u32>,
     pub requested_pty_seq: Option<u32>,
@@ -199,7 +210,8 @@ pub struct HistoryGap {
 
 /// Daemon-side back-pressure policy hint. The first wave only encodes the
 /// shape; nothing in this PR ever sends a `Backpressure` frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub enum BackpressurePolicy {
     LatestOnly,
     SnapshotRequired,
@@ -209,7 +221,8 @@ pub enum BackpressurePolicy {
 /// Typed codes for [`DaemonMsg::ProtocolError`]. Distinct from a free-form
 /// string so the client can branch on the error class (e.g. show
 /// "upgrade required" for `UnsupportedVersion`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub enum ProtocolErrorCode {
     UnsupportedVersion,
     NotOwner,
@@ -221,12 +234,16 @@ pub enum ProtocolErrorCode {
 
 // ---- v2 ClientMsg / DaemonMsg ------------------------------------------
 
-// NOTE (D7 / issue #5): the kernel's `Event` enum in `calm-server` now drives
-// its TS counterpart via `ts-rs` (see `web/src/api/generated-events.ts`). The
-// same treatment is scheduled for `ClientMsg` / `DaemonMsg` in PR-3 of #44;
-// in the meantime `web/src/api/terminal-v2-handmirror.ts` mirrors these
-// types by hand.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// NOTE (D7 / issue #5): the kernel's `Event` enum in `calm-server` drives
+// its TS counterpart via `ts-rs` (see `web/src/api/generated-events.ts`).
+// As of PR-3 of #44, `ClientMsg` / `DaemonMsg` + all helper types here
+// follow the same pattern: `#[derive(TS)]` + `#[ts(export, export_to =
+// "../../web/src/api/generated-terminal.ts")]`, regenerated by `cargo test
+// export_bindings_` (driven by `npm run gen:api`). The hand-mirror
+// `web/src/api/terminal-v2-handmirror.ts` has been retired in favor of
+// the generated file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub enum ClientMsg {
     /// First frame on every connection. Carries the application protocol
     /// version, terminal identity, viewport / cell metrics, optional
@@ -237,6 +254,7 @@ pub enum ClientMsg {
     ClientHello {
         protocol_version: u16,
         terminal_id: String,
+        #[ts(type = "string")]
         client_id: Uuid,
         desired_size: PtySize,
         cell_size: Option<CellSize>,
@@ -287,12 +305,14 @@ pub enum ClientMsg {
     /// `{"kind":"answer_question","question_id":"<uuid>","answers": {...}}`
     /// to the runner. Ignored in terminal mode.
     AnswerQuestion {
+        #[ts(type = "string")]
         question_id: Uuid,
         answers: HashMap<String, String>,
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub enum DaemonMsg {
     /// Successful handshake response. Tells the client the daemon's
     /// negotiated protocol version, the session id (rolls on each daemon
@@ -303,8 +323,10 @@ pub enum DaemonMsg {
     ServerHello {
         protocol_version: u16,
         terminal_id: String,
+        #[ts(type = "string")]
         session_id: Uuid,
         client_role: Role,
+        #[ts(type = "string | null")]
         owner_client_id: Option<Uuid>,
         pty_size: PtySize,
         pty_seq_head: u32,
@@ -336,7 +358,10 @@ pub enum DaemonMsg {
     /// a successful [`ClientMsg::OwnerClaim`] / [`ClientMsg::OwnerRelease`]
     /// changes who holds owner. `None` means no one currently owns the
     /// session.
-    OwnerChanged { owner_client_id: Option<Uuid> },
+    OwnerChanged {
+        #[ts(type = "string | null")]
+        owner_client_id: Option<Uuid>,
+    },
     /// Daemon is shedding load (lagged client, slow socket, ...). Wire
     /// shape only in this PR; nothing in the daemon emits it yet.
     Backpressure { policy: BackpressurePolicy },
