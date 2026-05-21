@@ -44,12 +44,37 @@ boot the server (see the `webServer` comment in
 
 - `a11y-trace-smoke.spec.ts` — smoke test for the event-trace
   exposure plumbing (issue #56 slice 5). Runs under the separate
-  `a11y` Playwright project (see "Projects" below). Slice 6 will
-  add the real a11y assertions on top of the same helpers.
+  `a11y` Playwright project (see "Projects" below).
+
+- `a11y-keyboard.spec.ts` — keyboard-only e2e flows (issue #56
+  slice 6). Tab / Enter / Space / Escape / F2 only — proves the
+  app is drivable by an AI agent or any keyboard-only user. Pairs
+  UI assertions with `window.__neigeEvents__` trace assertions
+  where it matters. Runs under the `a11y` project.
+
+- `a11y-axe.spec.ts` — axe-core scans (issue #56 slice 6) for
+  Today / Cove / Wave / Settings + the AddPanel and Modal open
+  states. Tagged to WCAG 2.1 A + AA + best-practice; any
+  violation on a common page fails the spec. Runs under the
+  `a11y` project.
 
 Add more specs as flows stabilize — keep them as narrowly scoped as
 the golden path so a single broken seed doesn't take the whole
 suite down.
+
+## A11y scripts
+
+The keyboard + axe suites come with their own npm scripts, all of
+which run under the `a11y` Playwright project (requires `cargo`):
+
+```sh
+npm run a11y:e2e   # keyboard-only flows (a11y-keyboard.spec.ts)
+npm run a11y:axe   # axe scans       (a11y-axe.spec.ts)
+npm run a11y       # lint + keyboard + axe in sequence
+```
+
+`npm run a11y` is the local gate for a11y-touching PRs. CI does
+not yet invoke any Playwright project — these are run locally.
 
 ## Projects
 
