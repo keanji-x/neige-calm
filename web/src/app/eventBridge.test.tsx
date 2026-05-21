@@ -22,6 +22,7 @@ import { render, cleanup } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import type { WireEvent } from '../api/wire';
+import type { EventMeta } from '../api/events';
 
 // --- fake event stream -------------------------------------------------
 //
@@ -30,7 +31,12 @@ import type { WireEvent } from '../api/wire';
 // because we drive emits directly), and `on(fn)` registers a listener and
 // returns an unsubscribe. `emit(ev)` is test-only and synchronously calls
 // every listener — simulates the WS frame arrival path.
-type Listener = (ev: WireEvent) => void;
+//
+// The listener takes `(ev, meta)` since slice 5 (issue #56): meta carries
+// the envelope `_id` / `eventVersion` so the trace ring buffer can stamp
+// them. Tests that only care about the payload pass a synthetic `meta`
+// — see `emit()` below for the default.
+type Listener = (ev: WireEvent, meta: EventMeta) => void;
 type ControlListener = () => void;
 const fakeStream = {
   listeners: new Set<Listener>(),
@@ -55,8 +61,8 @@ const fakeStream = {
       this.snapshotRequiredListeners.delete(fn);
     };
   },
-  emit(ev: WireEvent) {
-    for (const fn of this.listeners) fn(ev);
+  emit(ev: WireEvent, meta: EventMeta = { id: 0, eventVersion: 1 }) {
+    for (const fn of this.listeners) fn(ev, meta);
   },
   emitReplayComplete() {
     for (const fn of this.replayCompleteListeners) fn();
@@ -440,5 +446,153 @@ describe('EventBridge', () => {
     expect(() => fakeStream.emit(unmapped)).not.toThrow();
     expect(invalidate).not.toHaveBeenCalled();
     cleanup();
+  });
+
+  // ---- Issue #56 slice 5: event trace ring buffer ---------------------
+  //
+  // The bridge mirrors each WS frame into `window.__neigeEvents__` when
+  // the dev build is loaded with `?trace=1`. Playwright reads that buffer
+  // to make assertions about the event sequence that produced a UI state.
+  // We test the gate (URL param + DEV flag) and the ring shape; the
+  // helper-side surface lives under `web/e2e/helpers/trace.ts` and is
+  // covered by the e2e smoke test.
+  //
+  // jsdom's `window.location` is read-only; we mutate it via
+  // `window.history.replaceState` which jsdom honors, restoring the
+  // empty search after each test so other specs in this file (which
+  // don't expect the buffer to exist) aren't affected.
+  describe('trace ring buffer', () => {
+    function setTraceUrl(on: boolean): void {
+      // `replaceState` updates `window.location.search` in-place under
+      // jsdom — cleaner than redefining the `location` property and
+      // doesn't leak across tests (we reset to `/` in afterEach).
+      window.history.replaceState({}, '', on ? '/?trace=1' : '/');
+    }
+    function resetTraceGlobals(): void {
+      delete window.__neigeEvents__;
+      delete window.__neigeClearEvents__;
+    }
+
+    beforeEach(() => {
+      resetTraceGlobals();
+    });
+
+    function renderBridge() {
+      const client = makeClient();
+      const Wrapper = wrap(client);
+      render(
+        <Wrapper>
+          <EventBridge />
+        </Wrapper>,
+      );
+      return client;
+    }
+
+    it('does not populate the buffer when `?trace=1` is absent', () => {
+      setTraceUrl(false);
+      renderBridge();
+      fakeStream.emit({
+        ev: 'cove.updated',
+        data: {
+          id: 'cove_x',
+          name: 'X',
+          color: '#fff',
+          sort: 0,
+          created_at: 1,
+          updated_at: 1,
+        },
+      });
+      expect(window.__neigeEvents__).toBeUndefined();
+      cleanup();
+      setTraceUrl(false);
+    });
+
+    it('captures events into the ring buffer when `?trace=1` is set', () => {
+      setTraceUrl(true);
+      renderBridge();
+      fakeStream.emit(
+        {
+          ev: 'cove.updated',
+          data: {
+            id: 'cove_a',
+            name: 'A',
+            color: '#aaa',
+            sort: 0,
+            created_at: 1,
+            updated_at: 1,
+          },
+        },
+        { id: 17, eventVersion: 1 },
+      );
+      const buf = window.__neigeEvents__;
+      expect(buf).toBeDefined();
+      expect(buf!.length).toBe(1);
+      expect(buf![0]).toMatchObject({
+        id: 17,
+        eventVersion: 1,
+        ev: 'cove.updated',
+      });
+      expect(typeof buf![0].ts).toBe('number');
+      cleanup();
+      setTraceUrl(false);
+    });
+
+    it('caps the buffer at 200 entries and drops the oldest', () => {
+      setTraceUrl(true);
+      renderBridge();
+      // Emit 205 events with monotonically increasing ids so we can
+      // identify which were dropped. The shape doesn't matter as long
+      // as it dispatches without throwing.
+      for (let i = 1; i <= 205; i++) {
+        fakeStream.emit(
+          {
+            ev: 'cove.updated',
+            data: {
+              id: `cove_${i}`,
+              name: 'n',
+              color: '#000',
+              sort: 0,
+              created_at: 1,
+              updated_at: 1,
+            },
+          },
+          { id: i, eventVersion: 1 },
+        );
+      }
+      const buf = window.__neigeEvents__!;
+      expect(buf.length).toBe(200);
+      // First entry should be id=6 (1..5 were ringed out), last id=205.
+      expect(buf[0].id).toBe(6);
+      expect(buf[buf.length - 1].id).toBe(205);
+      cleanup();
+      setTraceUrl(false);
+    });
+
+    it('exposes a clear function that empties the buffer in place', () => {
+      setTraceUrl(true);
+      renderBridge();
+      fakeStream.emit({
+        ev: 'cove.updated',
+        data: {
+          id: 'c',
+          name: 'n',
+          color: '#000',
+          sort: 0,
+          created_at: 1,
+          updated_at: 1,
+        },
+      });
+      const before = window.__neigeEvents__;
+      expect(before!.length).toBe(1);
+      // Same reference must remain valid post-clear — the Playwright
+      // helper holds onto the array reference across page.evaluate calls.
+      const clearFn = window.__neigeClearEvents__;
+      expect(typeof clearFn).toBe('function');
+      clearFn!();
+      expect(window.__neigeEvents__).toBe(before);
+      expect(window.__neigeEvents__!.length).toBe(0);
+      cleanup();
+      setTraceUrl(false);
+    });
   });
 });

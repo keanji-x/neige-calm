@@ -38,10 +38,112 @@
 
 import { useEffect } from 'react';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
-import { sharedEventStream } from '../api/events';
+import { sharedEventStream, type EventMeta } from '../api/events';
 import { queryKeys } from '../api/queries';
 import { dlog } from '../util/debug';
 import type { KernelWaveDetail, WireEvent } from '../api/wire';
+
+// ---------------------------------------------------------------------------
+// Event trace exposure (issue #56 slice 5).
+//
+// When the app boots under a dev build with `?trace=1` in the URL, we mirror
+// every event the WS layer surfaces into a window-scoped ring buffer. Playwright
+// (and a curious dev poking DevTools) reads it via `window.__neigeEvents__` to
+// assert "the event sequence that produced this UI state" alongside whatever
+// ARIA / role state the test was already checking.
+//
+// Double-gated by `import.meta.env.DEV` AND the URL param so:
+//   - production bundles tree-shake the buffer code (Vite folds `import.meta.env.DEV`
+//     to a literal `false` at build time, so the whole branch becomes dead code);
+//   - even in dev, browsing without `?trace=1` keeps `window.__neigeEvents__`
+//     undefined — no accidental memory growth across long-running dev sessions.
+//
+// Ring-buffer cap is 200 events: comfortably more than any single Playwright
+// scenario emits while still bounded enough that a forgotten dev tab can't
+// balloon memory.
+const TRACE_RING_CAP = 200;
+
+/**
+ * Shape captured into `window.__neigeEvents__` under the trace gate.
+ * Exported so Playwright helpers can import the type and stay in sync
+ * with what the bridge actually writes (no parallel duck-typed shape
+ * floating around the e2e suite).
+ */
+export interface TraceEvent {
+  id: number;
+  eventVersion: number;
+  ev: WireEvent['ev'];
+  data: WireEvent['data'];
+  ts: number;
+}
+
+// `Window` augmentation for the trace globals. Tiny, colocated with the
+// only code that writes the buffer, so it doesn't pull a separate
+// `types/` dir into the tree. Both fields are optional because they're
+// only present under the dev + `?trace=1` gate.
+declare global {
+  interface Window {
+    __neigeEvents__?: TraceEvent[];
+    __neigeClearEvents__?: () => void;
+  }
+}
+
+/** Read `?trace=1` (or any truthy value of the `trace` URL param). Tolerant of
+ *  the SSR-ish "no window" path that vitest sometimes simulates — returns
+ *  `false` rather than throwing. */
+function traceFlagFromUrl(): boolean {
+  if (typeof window === 'undefined' || typeof window.location === 'undefined') return false;
+  try {
+    return new URLSearchParams(window.location.search).has('trace');
+  } catch {
+    return false;
+  }
+}
+
+/** Decide once per module load whether the ring buffer is active for this
+ *  session. We don't reevaluate on navigation — the contract is "set ?trace=1
+ *  on the initial page load" (matches how Playwright opens the app).
+ *
+ *  NOTE: callers should inline the `import.meta.env.DEV` short-circuit at the
+ *  call site (not just rely on this fn returning false in prod) so Vite/terser
+ *  can fold the entire trace branch — including the call to this function and
+ *  to `ensureTraceBuffer` / `pushTraceEvent` — into dead code. See the
+ *  `useEffect` body below for the canonical pattern. */
+function isTraceEnabled(): boolean {
+  return import.meta.env.DEV && traceFlagFromUrl();
+}
+
+/** Lazily install the buffer + clear function on `window` exactly once.
+ *  Called from the EventBridge effect under the trace gate. Idempotent: a
+ *  second call (e.g. hot-reload) reuses the existing buffer so test snapshots
+ *  taken before the reload are still readable. */
+function ensureTraceBuffer(): TraceEvent[] {
+  if (!window.__neigeEvents__) {
+    window.__neigeEvents__ = [];
+  }
+  if (!window.__neigeClearEvents__) {
+    window.__neigeClearEvents__ = () => {
+      const buf = window.__neigeEvents__;
+      if (buf) buf.length = 0;
+    };
+  }
+  return window.__neigeEvents__;
+}
+
+function pushTraceEvent(buf: TraceEvent[], ev: WireEvent, meta: EventMeta): void {
+  buf.push({
+    id: meta.id,
+    eventVersion: meta.eventVersion,
+    ev: ev.ev,
+    data: ev.data,
+    ts: Date.now(),
+  });
+  if (buf.length > TRACE_RING_CAP) {
+    // Drop the oldest. `shift` is O(n) but n <= 201; a busy stream pays
+    // a few microseconds per frame for the ergonomic ring shape.
+    buf.shift();
+  }
+}
 
 /** Debounce window for card-event invalidations, keyed by wave_id. Tuned
  *  to comfortably swallow the ~10-20ms gap between the kernel's
@@ -96,8 +198,18 @@ export function EventBridge() {
     // Per-wave timer so bursts on different waves don't suppress each other.
     const pendingCardInvalidations = new Map<string, ReturnType<typeof setTimeout>>();
 
-    const off = stream.on((ev) => {
+    // Resolve the trace gate once per mount. We literally short-circuit
+    // on `import.meta.env.DEV` HERE (not just inside `isTraceEnabled`)
+    // so Vite/terser folds the whole right-hand side — including the
+    // calls to `ensureTraceBuffer` / `pushTraceEvent` — into dead code
+    // in production. Don't refactor this into a single fn call without
+    // re-verifying with `grep __neigeEvents__ web/dist/assets/*.js`.
+    const traceBuf: TraceEvent[] | null =
+      import.meta.env.DEV && isTraceEnabled() ? ensureTraceBuffer() : null;
+
+    const off = stream.on((ev, meta) => {
       dlog('eventBridge', 'RX', ev.ev, ev.data);
+      if (traceBuf) pushTraceEvent(traceBuf, ev, meta);
       dispatch(queryClient, ev, pendingCardInvalidations);
     });
 
