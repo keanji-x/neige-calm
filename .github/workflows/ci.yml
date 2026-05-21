@@ -36,6 +36,29 @@ jobs:
       - name: cargo fmt --all --check
         run: cargo fmt --all --check
 
+      # Soft backstop alongside the cargo-feature gate on
+      # `AppState::raw_repo` (see `state.rs` and design doc §1.4.1).
+      # The compile gate already blocks production builds from reaching
+      # raw sync-domain writes; if a contributor turns on
+      # `--features fixtures` for a production module they could
+      # re-expose it. This grep catches that case at CI time. Tests
+      # under `tests/*.rs` are the legitimate consumers and are not
+      # scanned.
+      - name: sanity — no raw_repo escape in production
+        run: |
+          set -euo pipefail
+          if grep -rn "raw_repo" \
+              crates/calm-server/src/routes/ \
+              crates/calm-server/src/plugin_host/ \
+              crates/calm-server/src/card_fsm.rs \
+              crates/calm-server/src/terminal_sweeper.rs \
+              crates/calm-server/src/replay.rs \
+              2>/dev/null; then
+            echo "::error::raw_repo() used in production module — must go through write_with_event"
+            exit 1
+          fi
+          echo "OK: no raw_repo escape in production"
+
       - name: cargo clippy --workspace --all-targets -- -D warnings
         run: cargo clippy --workspace --all-targets -- -D warnings
 

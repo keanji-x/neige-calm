@@ -13,9 +13,11 @@ use std::sync::Arc;
 /// Route-facing handle: the trait object `AppState::repo` exposes. Excludes
 /// `RepoSyncDomainRaw` — see `db/mod.rs` module doc for the capability split.
 ///
-/// `Arc<dyn RouteRepo>` is what handlers see; internal callers that
-/// legitimately need the wider surface (db helpers, replay lib,
-/// terminal_sweeper, tests) reach `&dyn Repo` via `AppState::raw_repo()`.
+/// `Arc<dyn RouteRepo>` is what handlers see; integration tests that need
+/// to seed fixtures reach `&dyn Repo` via [`AppState::raw_repo`], which
+/// is gated behind the `fixtures` cargo feature (only enabled for the
+/// `tests/*.rs` integration crates via the self-loop dev-dep). No
+/// production module reaches for `raw_repo` today.
 #[derive(Clone)]
 pub struct AppState {
     /// Narrow trait object: reads + eventized writes + out-of-domain writes.
@@ -30,16 +32,26 @@ pub struct AppState {
     /// Full-capability handle. Held separately from `repo` so the gate at
     /// `AppState::repo` survives even though the underlying concrete impl
     /// is the same `SqlxRepo`. Kept private — callers must go through
-    /// [`AppState::raw_repo`].
+    /// [`AppState::raw_repo`] (only visible under `--features fixtures`).
+    /// `allow(dead_code)` because in non-`fixtures` builds (the production
+    /// binary, the `replay` lib, etc.) nothing reads this field — it's
+    /// stored so the `fixtures`-only accessor still has something to hand
+    /// out, but the production build keeps the field opaque on purpose.
+    #[allow(dead_code)]
     raw: Arc<dyn Repo>,
 }
 
 impl AppState {
-    /// Escape hatch for callers that legitimately need raw sync-domain
-    /// access (db-internal helpers, replay lib, terminal_sweeper, tests).
-    /// The deliberately-ugly name is the signal: if you're typing this in
-    /// a route handler you're probably doing the wrong thing — convert the
-    /// write to `db::write_with_event_typed` instead.
+    /// Bypass the sync-domain gate. **For test-fixture seeding only** —
+    /// production code MUST go through `write_with_event_typed` /
+    /// `log_pure_event`. Gated behind the `fixtures` cargo feature so
+    /// production builds (the binary, `routes/*`, `plugin_host/*`,
+    /// `terminal_sweeper`, and the `replay` lib) physically cannot reach
+    /// this method — invoking it from a production module fails at
+    /// compile time with E0599 (`no method named raw_repo`). Integration
+    /// tests pick up the feature automatically via the `[dev-dependencies]`
+    /// self-loop in `Cargo.toml`.
+    #[cfg(feature = "fixtures")]
     pub fn raw_repo(&self) -> &dyn Repo {
         self.raw.as_ref()
     }
