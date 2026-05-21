@@ -20,10 +20,17 @@
 //! - [`OwnerRegistry`] — single instance per daemon. Tracks the current
 //!   owner across all connected clients. Concurrent-safe access is the
 //!   shell's responsibility (typically a `Mutex` wrapper).
-//! - [`PtyBroadcaster`] — single global instance per daemon. Owns the
-//!   [`ByteRing`] and produces the broadcast effects for raw PTY chunks
-//!   and for `TerminalExited`. Maintains the `pty_seq` and (in this PR,
-//!   identically) the `render_rev` counters.
+//! - [`RenderPlane`] (PR-2) — single global instance per terminal-mode
+//!   daemon. Owns the [`TerminalModel`] (VT-driven grid + scrollback) and
+//!   the [`ByteRing`] transcript. Produces `Broadcast(RenderPatch)` on
+//!   each PTY chunk, `Broadcast(RenderSnapshot)` on resize, and
+//!   `Broadcast(TerminalExited)` on child exit. Maintains `pty_seq`
+//!   independently of `render_rev` (the latter comes from the model).
+//! - [`PtyBroadcaster`] — legacy single global instance per daemon.
+//!   Replaced by [`RenderPlane`] for terminal-mode daemons in PR-2.
+//!   Retained as the test fixture for the protocol state machine
+//!   (`tests/v2_protocol.rs`); chat mode also still uses a parallel
+//!   buffer (`EventBuffer` in `bin/daemon.rs`).
 //! - [`ByteRing`] — chunk-granular ring of recent PTY output, sized in
 //!   bytes. Drops whole chunks (never splits an escape sequence) from the
 //!   front when over budget.
@@ -31,13 +38,15 @@
 //! ## Non-goals
 //!
 //! - No tokio types. No OS resources. No `Arc`/`Mutex`.
-//! - No VT model — `RenderPatch.data` is still raw PTY bytes in this PR
-//!   (a future PR introduces a server-side VT parser).
+//! - `RenderPatch.data` remains raw PTY bytes (`encoding = Vt`) so
+//!   xterm.js can drive its own grid; cell-grid diff encoding is a
+//!   follow-up.
 
 use std::collections::VecDeque;
 
 use uuid::Uuid;
 
+use crate::terminal_model::{ScrollbackLimit, TerminalModel};
 use crate::{
     ClientMsg, DaemonMsg, PROTOCOL_VERSION, ProtocolErrorCode, PtySize, RenderEncoding,
     RenderPatch, RenderSnapshot, Role,
@@ -657,5 +666,172 @@ impl PtyBroadcaster {
 
     pub fn render_rev(&self) -> u32 {
         self.render_rev
+    }
+}
+
+// ---- Render plane (PR-2) ------------------------------------------------
+
+/// Server-side render plane: owns the [`TerminalModel`] (VT-driven grid +
+/// scrollback) plus the byte-passthrough transcript ring. Replaces
+/// [`PtyBroadcaster`] for terminal-mode daemons in PR-2; chat mode and
+/// the existing protocol unit tests keep using `PtyBroadcaster`.
+///
+/// ## `pty_seq` vs `render_rev` (PR-2 divergence)
+///
+/// - `pty_seq` is bumped **once per PTY chunk**. It tracks bytes
+///   delivered, regardless of whether they changed anything visible.
+/// - `render_rev` comes from `TerminalModel::rev()`. It only bumps when
+///   the grid / cursor / SGR actually changed.
+///
+/// Consequences:
+/// - A no-op chunk (e.g. pure SGR toggle that flips back, or DECSET that
+///   we treat as noop) bumps `pty_seq` but may leave `render_rev`
+///   unchanged.
+/// - A `resize` bumps `render_rev` (the model considers any geometry
+///   change a state change) but doesn't touch `pty_seq`.
+///
+/// Each emitted `RenderPatch` carries both cursors; clients can resync
+/// against whichever is more useful.
+pub struct RenderPlane {
+    model: TerminalModel,
+    transcript: ByteRing,
+    pty_seq: u32,
+    /// Latest viewport (cols, rows) the daemon believes the PTY is at.
+    /// Updated by `on_resize`; surfaced to clients in `RenderSnapshot`
+    /// when their `desired_size` is `None`-equivalent.
+    cols: u16,
+    rows: u16,
+    /// Backstop: tracks the previous `render_rev` we emitted so each
+    /// `RenderPatch.prev_render_rev` is correctly chained.
+    last_emitted_render_rev: u32,
+}
+
+impl RenderPlane {
+    pub fn new(
+        cols: u16,
+        rows: u16,
+        transcript_max_bytes: usize,
+        scrollback_max_lines: usize,
+    ) -> Self {
+        Self {
+            model: TerminalModel::new(cols, rows, scrollback_max_lines),
+            transcript: ByteRing::new(transcript_max_bytes),
+            pty_seq: 0,
+            cols,
+            rows,
+            last_emitted_render_rev: 0,
+        }
+    }
+
+    /// One PTY chunk arrived. Feed the model (which updates the grid +
+    /// bumps `rev` if anything visible changed), append to transcript,
+    /// and emit a `Broadcast(RenderPatch{ encoding: Vt, data: raw bytes,
+    /// render_rev: model.rev(), prev_render_rev: previous,
+    /// pty_seq: bumped })`.
+    pub fn on_pty_chunk(&mut self, bytes: Vec<u8>) -> Vec<Effect> {
+        // 1. Feed model. `rev()` may or may not bump.
+        self.model.feed(&bytes);
+
+        // 2. Transcript bookkeeping (mirrors v1 `ByteRing::append`).
+        self.transcript.append(bytes.clone());
+
+        // 3. Cursors.
+        self.pty_seq = self.pty_seq.saturating_add(1);
+        let new_rev = self.model.rev();
+        let prev = self.last_emitted_render_rev;
+        self.last_emitted_render_rev = new_rev;
+
+        vec![Effect::Broadcast(DaemonMsg::RenderPatch(RenderPatch {
+            render_rev: new_rev,
+            prev_render_rev: prev,
+            pty_seq: self.pty_seq,
+            encoding: RenderEncoding::Vt,
+            data: bytes,
+        }))]
+    }
+
+    /// Child exited. Emit `TerminalExited` carrying current cursors so
+    /// the client can confirm it didn't drop output between the last
+    /// patch and the exit.
+    pub fn on_child_exit(&mut self, code: Option<i32>) -> Vec<Effect> {
+        vec![Effect::Broadcast(DaemonMsg::TerminalExited {
+            code,
+            pty_seq: self.pty_seq,
+            render_rev: self.model.rev(),
+        })]
+    }
+
+    /// PTY (and model) was resized. Updates internal cols/rows and feeds
+    /// the model so the grid re-shapes (bumping `rev`). Emits a fresh
+    /// `RenderSnapshot` broadcast: clients use it to repaint at the new
+    /// geometry instead of accumulating mis-sized patches.
+    pub fn on_resize(&mut self, cols: u16, rows: u16) -> Vec<Effect> {
+        self.cols = cols;
+        self.rows = rows;
+        self.model.resize(cols, rows);
+        let snap = self.build_snapshot(cols, rows, ScrollbackLimit::None);
+        self.last_emitted_render_rev = snap.render_rev;
+        vec![Effect::Broadcast(DaemonMsg::RenderSnapshot(snap))]
+    }
+
+    /// Build a snapshot bound to the client's desired geometry. Called
+    /// at `ClientHello` time and whenever the daemon decides to issue a
+    /// hard resync (e.g. broadcast Lagged → `SnapshotRequired`).
+    pub fn build_snapshot(
+        &self,
+        target_cols: u16,
+        target_rows: u16,
+        scrollback: ScrollbackLimit,
+    ) -> RenderSnapshot {
+        let data = self.model.snapshot_vt(target_cols, target_rows);
+        let scrollback_bytes = match scrollback {
+            ScrollbackLimit::None => None,
+            other => {
+                let bytes = self.model.scrollback_vt(other);
+                if bytes.is_empty() { None } else { Some(bytes) }
+            }
+        };
+        RenderSnapshot {
+            render_rev: self.model.rev(),
+            pty_seq: self.pty_seq,
+            cols: target_cols,
+            rows: target_rows,
+            encoding: RenderEncoding::Vt,
+            data,
+            scrollback: scrollback_bytes,
+        }
+    }
+
+    pub fn pty_seq(&self) -> u32 {
+        self.pty_seq
+    }
+
+    pub fn pty_seq_head(&self) -> u32 {
+        // Transcript ring runs without per-chunk seq tracking in PR-2;
+        // history-gap detection on the wire side stays "always full snapshot"
+        // (`HistoryGap::requires_snapshot = true`). Surface 0 here — the
+        // wire field is still populated in `ServerHello.pty_seq_head` for
+        // schema compatibility.
+        0
+    }
+
+    pub fn render_rev(&self) -> u32 {
+        self.model.rev()
+    }
+
+    pub fn current_size(&self) -> PtySize {
+        PtySize {
+            cols: self.cols,
+            rows: self.rows,
+            pixel_width: None,
+            pixel_height: None,
+        }
+    }
+
+    /// Read-only handle on the transcript ring (for parity with
+    /// [`PtyBroadcaster::buffer`]; legacy callers that still want raw
+    /// bytes can use this. New code goes through `build_snapshot`.).
+    pub fn transcript(&self) -> &ByteRing {
+        &self.transcript
     }
 }
