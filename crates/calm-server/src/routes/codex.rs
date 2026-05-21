@@ -58,6 +58,7 @@ use crate::model::{Card, CardPatch, NewTerminal};
 use crate::routes::settings::load_settings;
 use crate::routes::terminal::spawn_daemon_for;
 use crate::state::AppState;
+use crate::validation::CODEX_PAYLOAD_SCHEMA_VERSION;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -253,6 +254,9 @@ async fn spawn_codex_for(
     if !payload.is_object() {
         payload = serde_json::json!({});
     }
+    // Tier A persistence contract: kernel-owned card payloads carry an
+    // explicit per-kind `schemaVersion`. See `docs/upgrade-stability.md`.
+    payload["schemaVersion"] = serde_json::Value::from(CODEX_PAYLOAD_SCHEMA_VERSION);
     payload["terminal_id"] = serde_json::Value::String(term.id.clone());
     if !cwd.is_empty() {
         payload["cwd"] = serde_json::Value::String(cwd.clone());

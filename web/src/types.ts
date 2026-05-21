@@ -73,6 +73,11 @@ export interface TerminalCardData {
   // `Terminal.id`). When set, the card hosts a live xterm/PTY rather than
   // rendering the static `lines`.
   terminalId?: string;
+  // When the payload's `schemaVersion` is newer than what this build of
+  // the frontend understands, the adapter still produces a card so the
+  // grid layout doesn't collapse — but the component renders a fallback
+  // pointing the user at refresh. See Tier A upgrade-stability policy.
+  unsupportedVersion?: number;
 }
 
 /**
@@ -108,6 +113,8 @@ export interface CodexCardData {
   /** Optional pointer at the PTY row spawned for this card. */
   terminalId?: string;
   cwd?: string;
+  /** See `TerminalCardData.unsupportedVersion`. */
+  unsupportedVersion?: number;
 }
 
 export type WaveCardData =

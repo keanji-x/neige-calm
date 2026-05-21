@@ -1,4 +1,4 @@
-//! Per-kind payload validators (D4).
+//! Per-kind payload validators (D4) and per-kind schema versions.
 //!
 //! The kernel persists two opaque-by-default JSON columns: `Card.payload` and
 //! `Overlay.payload`. The architectural invariant is that plugin-defined kinds
@@ -16,6 +16,7 @@
 //! | Field | Kind | Shape |
 //! |---|---|---|
 //! | `Card.payload`    | `"terminal"`  | `{ terminal_id?: String }` (optional — freshly-created cards may not yet have one) |
+//! | `Card.payload`    | `"codex"`     | object or null (opaque diagnostic blob) |
 //! | `Overlay.payload` | `"status"`    | `{ state: String }` |
 //! | `Overlay.payload` | `"progress"`  | `{ value: f64 }` |
 //! | `Overlay.payload` | `"eta"`       | `{ text: String }` |
@@ -28,11 +29,101 @@
 //! `Plugin.user_config` and `ToolCallBody.arguments` are intentionally NOT
 //! covered: those carry per-plugin / per-tool semantics that the kernel has
 //! no schema for.
+//!
+//! ## `schemaVersion` (Tier A — upgrade-stability policy)
+//!
+//! Per `docs/upgrade-stability.md`, kernel-owned card and overlay payloads
+//! are a Tier A persistence contract. Each kernel-owned kind carries a
+//! `schemaVersion: u32` constant; at write time the validator enforces:
+//!
+//!   * absent `schemaVersion` → accepted, treated as version 1 (the only
+//!     version that has ever existed for any of these kinds today, so
+//!     historical rows written before this field was introduced are
+//!     backward-compatible without a DB migration);
+//!   * present and matching the per-kind constant → accepted;
+//!   * present and any other value → rejected with `CalmError::BadRequest`
+//!     carrying a "kernel supports N, got M" message so old binaries refuse
+//!     to silently process payloads from future ones.
+//!
+//! Plugin-owned overlay payloads are explicitly **not** inspected for a
+//! `schemaVersion` — they pass through opaquely (no version policy from us).
 
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::error::{CalmError, Result};
+
+// ---------------- Per-kind schema versions (Tier A) ----------------
+//
+// One constant per kernel-owned kind. Bumping these is a Tier A breaking
+// change: the same PR that bumps a version must add the migrator helper
+// for older rows in `payload_schema_version`'s neighborhood (see the
+// comment there). All start at `1` — the only shape any of these kinds
+// has ever had.
+
+/// `schemaVersion` for `Card.payload` when `kind == "terminal"`.
+pub const TERMINAL_PAYLOAD_SCHEMA_VERSION: u32 = 1;
+/// `schemaVersion` for `Card.payload` when `kind == "codex"`.
+pub const CODEX_PAYLOAD_SCHEMA_VERSION: u32 = 1;
+/// `schemaVersion` for `Overlay.payload` when `kind == "status"`.
+pub const OVERLAY_STATUS_SCHEMA_VERSION: u32 = 1;
+/// `schemaVersion` for `Overlay.payload` when `kind == "progress"`.
+pub const OVERLAY_PROGRESS_SCHEMA_VERSION: u32 = 1;
+/// `schemaVersion` for `Overlay.payload` when `kind == "eta"`.
+pub const OVERLAY_ETA_SCHEMA_VERSION: u32 = 1;
+/// `schemaVersion` for `Overlay.payload` when `kind == "now"`.
+pub const OVERLAY_NOW_SCHEMA_VERSION: u32 = 1;
+/// `schemaVersion` for `Overlay.payload` when `kind == "layout"`.
+pub const OVERLAY_LAYOUT_SCHEMA_VERSION: u32 = 1;
+
+/// Read the `schemaVersion` field from a payload, defaulting to `1` when
+/// the field is absent or unparsable.
+///
+/// Treating absent-as-1 means rows written before this field existed
+/// keep reading correctly with no DB migration — every kernel-owned kind
+/// only has version 1 today, so the missing field is unambiguous.
+///
+/// `// migrators will live here when v2 is introduced` — once any kind
+/// gets a v2, the rule shifts from "absent → 1" to "absent → 1, then
+/// run the v1→current migrator on the parsed shape". That migrator lives
+/// adjacent to this helper, not behind it; the helper itself stays a
+/// trivial reader.
+pub fn payload_schema_version(payload: &Value) -> u32 {
+    payload
+        .get("schemaVersion")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as u32)
+        .unwrap_or(1)
+}
+
+/// Enforce the `schemaVersion` rule for a kernel-owned kind:
+///
+///   * absent → accept (treated as `expected`);
+///   * present and `== expected` → accept;
+///   * any other value → `BadRequest`.
+fn check_schema_version(kind: &str, payload: &Value, expected: u32) -> Result<()> {
+    // Non-object payloads (null, scalar, array) can't carry a
+    // `schemaVersion` field by construction — the kind-specific validator
+    // owns whether those are accepted; this check stays out of the way.
+    if !payload.is_object() {
+        return Ok(());
+    }
+    let Some(raw) = payload.get("schemaVersion") else {
+        return Ok(());
+    };
+    let Some(version) = raw.as_u64() else {
+        return Err(CalmError::BadRequest(format!(
+            "invalid schemaVersion for kind `{kind}`: expected u32, got {raw}"
+        )));
+    };
+    if version as u32 == expected {
+        Ok(())
+    } else {
+        Err(CalmError::BadRequest(format!(
+            "unsupported schemaVersion {version} for kind `{kind}`; this kernel supports {expected}"
+        )))
+    }
+}
 
 /// Validate a `Card.payload` for a given `kind`.
 ///
@@ -53,6 +144,7 @@ pub fn validate_card_payload(kind: &str, payload: &Value) -> Result<()> {
             if payload.is_null() {
                 return Ok(());
             }
+            check_schema_version(kind, payload, TERMINAL_PAYLOAD_SCHEMA_VERSION)?;
             serde_json::from_value::<TerminalPayload>(payload.clone())
                 .map(|_| ())
                 .map_err(|e| CalmError::BadRequest(format!("invalid terminal payload: {e}")))
@@ -62,13 +154,15 @@ pub fn validate_card_payload(kind: &str, payload: &Value) -> Result<()> {
             // params (initial_prompt, model, cwd) for diagnostics/replay.
             // We don't pin a strict shape — the route reads the body
             // separately, the payload is purely for the UI.
-            if payload.is_null() || payload.is_object() {
-                Ok(())
-            } else {
-                Err(CalmError::BadRequest(
-                    "codex payload must be an object or null".into(),
-                ))
+            if payload.is_null() {
+                return Ok(());
             }
+            if !payload.is_object() {
+                return Err(CalmError::BadRequest(
+                    "codex payload must be an object or null".into(),
+                ));
+            }
+            check_schema_version(kind, payload, CODEX_PAYLOAD_SCHEMA_VERSION)
         }
         // Plugin-defined kinds are opaque per architectural invariant.
         _ => Ok(()),
@@ -87,6 +181,7 @@ pub fn validate_overlay_payload(kind: &str, payload: &Value) -> Result<()> {
             struct StatusPayload {
                 state: String,
             }
+            check_schema_version(kind, payload, OVERLAY_STATUS_SCHEMA_VERSION)?;
             serde_json::from_value::<StatusPayload>(payload.clone())
                 .map(|_| ())
                 .map_err(|e| CalmError::BadRequest(format!("invalid status payload: {e}")))
@@ -97,6 +192,7 @@ pub fn validate_overlay_payload(kind: &str, payload: &Value) -> Result<()> {
             struct ProgressPayload {
                 value: f64,
             }
+            check_schema_version(kind, payload, OVERLAY_PROGRESS_SCHEMA_VERSION)?;
             serde_json::from_value::<ProgressPayload>(payload.clone())
                 .map(|_| ())
                 .map_err(|e| CalmError::BadRequest(format!("invalid progress payload: {e}")))
@@ -107,6 +203,7 @@ pub fn validate_overlay_payload(kind: &str, payload: &Value) -> Result<()> {
             struct EtaPayload {
                 text: String,
             }
+            check_schema_version(kind, payload, OVERLAY_ETA_SCHEMA_VERSION)?;
             serde_json::from_value::<EtaPayload>(payload.clone())
                 .map(|_| ())
                 .map_err(|e| CalmError::BadRequest(format!("invalid eta payload: {e}")))
@@ -117,11 +214,15 @@ pub fn validate_overlay_payload(kind: &str, payload: &Value) -> Result<()> {
             struct NowPayload {
                 text: String,
             }
+            check_schema_version(kind, payload, OVERLAY_NOW_SCHEMA_VERSION)?;
             serde_json::from_value::<NowPayload>(payload.clone())
                 .map(|_| ())
                 .map_err(|e| CalmError::BadRequest(format!("invalid now payload: {e}")))
         }
-        "layout" => validate_layout_payload(payload),
+        "layout" => {
+            check_schema_version(kind, payload, OVERLAY_LAYOUT_SCHEMA_VERSION)?;
+            validate_layout_payload(payload)
+        }
         // Plugin-defined overlay kinds stay opaque.
         _ => Ok(()),
     }
@@ -153,10 +254,18 @@ const LAYOUT_GRID_COLS: u32 = 12;
 ///   * `x + w <= LAYOUT_GRID_COLS` (`= 12`)
 ///   * card_id keys must be non-empty
 fn validate_layout_payload(payload: &Value) -> Result<()> {
+    // `deny_unknown_fields` stays on so a typo in the writer (e.g. a stray
+    // `positoins` key) is caught at the boundary. We allow `schemaVersion`
+    // explicitly because every kernel-owned payload now carries it on
+    // write; per-kind value enforcement happens in `check_schema_version`
+    // before we get here.
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
+    #[allow(dead_code)]
     struct LayoutPayload {
         positions: std::collections::BTreeMap<String, LayoutPos>,
+        #[serde(default, rename = "schemaVersion")]
+        schema_version: Option<u32>,
     }
 
     // `y` is parsed (to enforce the `u32` non-negativity bound + the
@@ -482,5 +591,178 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, CalmError::BadRequest(ref m) if m.contains("non-empty card id")));
+    }
+
+    // ---------------- schemaVersion: payload_schema_version helper ----------------
+
+    #[test]
+    fn payload_schema_version_defaults_to_one_when_absent() {
+        assert_eq!(payload_schema_version(&json!({})), 1);
+        assert_eq!(payload_schema_version(&json!({ "other": "field" })), 1);
+        assert_eq!(payload_schema_version(&Value::Null), 1);
+    }
+
+    #[test]
+    fn payload_schema_version_returns_value_when_present() {
+        assert_eq!(payload_schema_version(&json!({ "schemaVersion": 1 })), 1);
+        assert_eq!(payload_schema_version(&json!({ "schemaVersion": 7 })), 7);
+    }
+
+    #[test]
+    fn payload_schema_version_defaults_when_wrong_type() {
+        // Non-integer values are not migration markers — fall back to 1 so
+        // downstream code can still read the (mis-typed) payload while the
+        // validator rejects it on the write boundary.
+        assert_eq!(payload_schema_version(&json!({ "schemaVersion": "1" })), 1);
+        assert_eq!(payload_schema_version(&json!({ "schemaVersion": null })), 1);
+    }
+
+    // ---------------- schemaVersion: card validators ----------------
+
+    #[test]
+    fn terminal_accepts_missing_schema_version() {
+        validate_card_payload("terminal", &json!({ "terminal_id": "t1" })).unwrap();
+    }
+
+    #[test]
+    fn terminal_accepts_matching_schema_version() {
+        validate_card_payload(
+            "terminal",
+            &json!({ "schemaVersion": 1, "terminal_id": "t1" }),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn terminal_rejects_unknown_schema_version() {
+        let err = validate_card_payload(
+            "terminal",
+            &json!({ "schemaVersion": 2, "terminal_id": "t1" }),
+        )
+        .unwrap_err();
+        let CalmError::BadRequest(msg) = err else {
+            panic!("expected BadRequest");
+        };
+        assert!(msg.contains("schemaVersion"), "msg = {msg}");
+        assert!(msg.contains("terminal"), "msg = {msg}");
+        assert!(msg.contains('2'), "msg = {msg}");
+    }
+
+    #[test]
+    fn codex_accepts_missing_schema_version() {
+        validate_card_payload("codex", &json!({ "any": "thing" })).unwrap();
+    }
+
+    #[test]
+    fn codex_accepts_matching_schema_version() {
+        validate_card_payload("codex", &json!({ "schemaVersion": 1, "any": "thing" })).unwrap();
+    }
+
+    #[test]
+    fn codex_rejects_unknown_schema_version() {
+        let err =
+            validate_card_payload("codex", &json!({ "schemaVersion": 99, "any": "thing" }))
+                .unwrap_err();
+        let CalmError::BadRequest(msg) = err else {
+            panic!("expected BadRequest");
+        };
+        assert!(msg.contains("codex"), "msg = {msg}");
+    }
+
+    // ---------------- schemaVersion: overlay validators ----------------
+
+    #[test]
+    fn status_accepts_matching_schema_version() {
+        validate_overlay_payload(
+            "status",
+            &json!({ "schemaVersion": 1, "state": "running" }),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn status_rejects_unknown_schema_version() {
+        let err = validate_overlay_payload(
+            "status",
+            &json!({ "schemaVersion": 99, "state": "running" }),
+        )
+        .unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(ref m) if m.contains("status")));
+    }
+
+    #[test]
+    fn progress_accepts_matching_schema_version() {
+        validate_overlay_payload("progress", &json!({ "schemaVersion": 1, "value": 0.5 })).unwrap();
+    }
+
+    #[test]
+    fn progress_rejects_unknown_schema_version() {
+        let err =
+            validate_overlay_payload("progress", &json!({ "schemaVersion": 2, "value": 0.5 }))
+                .unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(ref m) if m.contains("schemaVersion")));
+    }
+
+    #[test]
+    fn eta_accepts_matching_schema_version() {
+        validate_overlay_payload("eta", &json!({ "schemaVersion": 1, "text": "5m" })).unwrap();
+    }
+
+    #[test]
+    fn now_accepts_matching_schema_version() {
+        validate_overlay_payload("now", &json!({ "schemaVersion": 1, "text": "writing" })).unwrap();
+    }
+
+    #[test]
+    fn layout_accepts_matching_schema_version() {
+        validate_overlay_payload(
+            "layout",
+            &json!({
+                "schemaVersion": 1,
+                "positions": { "c": { "x": 0, "y": 0, "w": 4, "h": 3 } }
+            }),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn layout_rejects_unknown_schema_version() {
+        let err = validate_overlay_payload(
+            "layout",
+            &json!({ "schemaVersion": 9, "positions": {} }),
+        )
+        .unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(ref m) if m.contains("schemaVersion")));
+    }
+
+    // ---------------- schemaVersion: plugin-owned overlay passthrough ----------------
+
+    #[test]
+    fn plugin_overlay_passthrough_with_arbitrary_schema_version() {
+        // A plugin-defined overlay kind carries whatever payload its author
+        // chose — we don't inspect `schemaVersion` for these, even if the
+        // value would be rejected on a kernel-owned kind.
+        validate_overlay_payload(
+            "custom-plugin-kind",
+            &json!({ "schemaVersion": 999, "anything": true }),
+        )
+        .unwrap();
+        validate_overlay_payload(
+            "ui://example/view",
+            &json!({ "schemaVersion": "totally a string", "x": 1 }),
+        )
+        .unwrap();
+    }
+
+    // ---------------- schemaVersion: invalid type ----------------
+
+    #[test]
+    fn rejects_non_integer_schema_version_on_kernel_kinds() {
+        let err = validate_overlay_payload(
+            "status",
+            &json!({ "schemaVersion": "1", "state": "running" }),
+        )
+        .unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(ref m) if m.contains("schemaVersion")));
     }
 }

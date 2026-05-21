@@ -23,6 +23,10 @@ import type { CodexCardData, FsmState } from '../../types';
 import { sharedEventStream } from '../../api/events';
 import { CardStatusDot } from '../../shared/components/CardStatusDot';
 import type { CardEntry } from '../registry';
+import {
+  CODEX_PAYLOAD_SCHEMA_VERSION,
+  payloadSchemaVersion,
+} from './schemaVersions';
 
 // Lazy-load xterm.js + addon — same pattern as the Terminal card so the
 // two cards share a single code-split chunk for the renderer.
@@ -37,7 +41,33 @@ const codexPayloadSchema = z.object({
   cwd: z.string().optional(),
 });
 
+function UnsupportedCodexCard({ version }: { version: number }) {
+  return (
+    <div className="codex-card codex-card-unsupported-version">
+      <div className="codex-card-head card-drag-handle">
+        <span className="codex-card-title">Codex</span>
+      </div>
+      <div className="codex-card-pty">
+        <div className="codex-card-empty">
+          Unsupported card payload version (got {version}, kernel supports{' '}
+          {CODEX_PAYLOAD_SCHEMA_VERSION}); please refresh.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CodexCard({ card }: { card: CodexCardData }) {
+  // Early bail-out for unsupported versions. Split into its own component
+  // so React's rules-of-hooks stay satisfied — the hook calls below only
+  // run on the supported path.
+  if (card.unsupportedVersion !== undefined) {
+    return <UnsupportedCodexCard version={card.unsupportedVersion} />;
+  }
+  return <CodexCardImpl card={card} />;
+}
+
+function CodexCardImpl({ card }: { card: CodexCardData }) {
   const cardId = card.id;
   // FSM state owned by the kernel `card_fsm` task. Defaults to "Starting"
   // until the first overlay.set lands (the kernel writes one on the
@@ -159,6 +189,20 @@ export const CodexEntry: CardEntry<CodexCardData> = {
   fromKernel: (k) => {
     if (k.kind !== 'codex') return null;
     const candidate = k.payload ?? {};
+    // Tier A schemaVersion check; see TerminalEntry for the full rationale.
+    const version = payloadSchemaVersion(candidate);
+    if (version > CODEX_PAYLOAD_SCHEMA_VERSION) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[cards] codex payload schemaVersion=${version} unsupported (frontend supports ${CODEX_PAYLOAD_SCHEMA_VERSION}); please refresh`,
+        { id: k.id },
+      );
+      return {
+        type: 'codex',
+        id: k.id,
+        unsupportedVersion: version,
+      };
+    }
     const parsed = codexPayloadSchema.safeParse(candidate);
     if (!parsed.success) {
       // eslint-disable-next-line no-console
