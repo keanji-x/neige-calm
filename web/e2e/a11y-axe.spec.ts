@@ -38,7 +38,7 @@ import { resetReplayServer } from './helpers/reset';
 // connect, so we can't anchor on the fixture's `overlay.set` directly.
 async function waitForBootstrap(page: Page): Promise<void> {
   await expect(
-    page.locator('aside.side button.cove-nav').filter({ hasText: /scratch/i }),
+    page.locator('aside.side').getByRole('button', { name: /scratch/i }),
   ).toBeVisible({ timeout: 15_000 });
 }
 
@@ -116,21 +116,24 @@ function formatViolations(
 //
 // The locator scoping matters: the Sidebar has its own "Today" button
 // (the nav-item back to /), and the cove page renders a WaveRow whose
-// title is also "Today" (the auto-bootstrapped wave). We anchor on the
-// `.wave-row` class to disambiguate — that's the only place where the
-// wave's title is the row's accessible name.
+// title is also "Today" (the auto-bootstrapped wave). WaveRow is a
+// <div role="button"> while the sidebar nav and the CovePage Crumbs
+// "Today" link are real <button>s — so a `div[role="button"]` locator
+// lands on the wave row uniquely. This is the same disambiguation rule
+// used by `tabUntil` predicates in `a11y-keyboard.spec.ts`.
 async function ids(page: Page): Promise<{ coveId: string; waveId: string }> {
   await page.goto('/?trace=1');
   await waitForBootstrap(page);
   await page
-    .locator('aside.side button.cove-nav')
-    .filter({ hasText: /scratch/i })
+    .locator('aside.side')
+    .getByRole('button', { name: /scratch/i })
     .click();
   await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
   const coveId = new URL(page.url()).pathname.split('/').pop()!;
-  // WaveRow lives at `.wave-row` (role=button). Filter by hasText to
-  // pick the "Today" row specifically.
-  await page.locator('.wave-row').filter({ hasText: /today/i }).first().click();
+  // WaveRow is a <div role="button"> with the wave title as its
+  // accessible name (see WaveRow.tsx:36-117). Filter by hasText to land
+  // on the "Today" row specifically.
+  await page.locator('div[role="button"]').filter({ hasText: /today/i }).first().click();
   await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
   const waveId = new URL(page.url()).pathname.split('/').pop()!;
   return { coveId, waveId };

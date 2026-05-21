@@ -18,7 +18,10 @@ test('loads the calm shell and navigates into the Scratch cove', async ({ page }
   await expect(page.getByRole('button', { name: /today/i })).toBeVisible();
 
   // Find the seeded "Scratch" cove row in the sidebar and click it.
-  const scratch = page.locator('button.cove-nav', { hasText: 'Scratch' });
+  // The Sidebar button's accessible name is the cove name (plus an
+  // optional " <N>" wave-count suffix when waves exist) — see
+  // Sidebar.tsx:62-77. A regex tolerates the suffix.
+  const scratch = page.getByRole('button', { name: /scratch/i });
   await expect(scratch).toBeVisible();
   await scratch.click();
 

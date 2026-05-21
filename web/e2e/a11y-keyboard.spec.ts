@@ -135,7 +135,7 @@ async function tabUntil(
 // stable end-state regardless of which background queries settle first.
 async function waitForBootstrap(page: Page): Promise<void> {
   await expect(
-    page.locator('aside.side button.cove-nav').filter({ hasText: /scratch/i }),
+    page.locator('aside.side').getByRole('button', { name: /scratch/i }),
   ).toBeVisible({ timeout: 15_000 });
   // Also wait for the trace buffer to come into existence so subsequent
   // `clearEventTrace` / `waitForEvent` calls have a buffer to read.
@@ -515,19 +515,20 @@ test.describe('a11y · keyboard-only navigation', () => {
     // not the sidebar / cove navigation (those have their own keyboard
     // coverage elsewhere in this suite).
     await page
-      .locator('aside.side button.cove-nav')
-      .filter({ hasText: /scratch/i })
+      .locator('aside.side')
+      .getByRole('button', { name: /scratch/i })
       .click();
     await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
-    // Click into the first available wave row. The cove page lists
-    // every wave (auto-bootstrapped "Today" plus any waves created by
-    // earlier specs in this run). We don't filter by title because
-    // test 7's rename mutates the bootstrap wave's title in place —
-    // any wave-row will do for the toggle/reorder contract we're
-    // exercising here.
+    // Click into the auto-bootstrapped "Today" wave row. WaveRow is a
+    // <div role="button"> with the wave title as its accessible name
+    // (see WaveRow.tsx:36-117). The same disambiguation rule used by
+    // `tabUntil` predicates above (`tag === 'div' && role === 'button'`)
+    // applies here as a locator: the sidebar "Today" nav button and the
+    // CovePage's "Today" crumb-link are real <button>s, so filtering on
+    // div[role="button"] lands on the WaveRow only.
     // Click (not keyboard): same rationale as the cove-nav click above —
     // skip tabUntil to avoid tab-count brittleness across accumulating waves.
-    await page.locator('.wave-row').first().click();
+    await page.locator('div[role="button"]').filter({ hasText: /today/i }).first().click();
     await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
     const waveUrl = page.url();
 
