@@ -186,6 +186,10 @@ describe('WaveGrid — overlay-backed layout', () => {
       entity_id: 'w1',
       kind: 'layout',
       payload: {
+        // Tier A: kernel-owned overlay payloads carry a per-kind
+        // `schemaVersion` on every write. The validator treats absent
+        // as v1, so older clients still work; new writes stamp it.
+        schemaVersion: 1,
         positions: {
           'card-a': { x: 3, y: 2, w: 4, h: 3 },
         },
@@ -223,7 +227,11 @@ describe('WaveGrid — overlay-backed layout', () => {
       entity_kind: 'view',
       entity_id: 'w1',
       kind: 'layout',
-      payload: { positions: { 'card-a': { x: 1, y: 1, w: 4, h: 3 } } },
+      payload: {
+        // See above re Tier A `schemaVersion` stamping.
+        schemaVersion: 1,
+        positions: { 'card-a': { x: 1, y: 1, w: 4, h: 3 } },
+      },
     });
     await waitFor(() =>
       expect(localStorage.getItem('calm:layout:w1')).toBeNull(),

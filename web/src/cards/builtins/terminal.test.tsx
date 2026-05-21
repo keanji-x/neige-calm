@@ -77,4 +77,34 @@ describe('TerminalEntry.fromKernel', () => {
     expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(String(warnSpy.mock.calls[0]![0])).toContain('terminal payload invalid');
   });
+
+  it('accepts a payload that carries the matching schemaVersion', () => {
+    const k = makeKernelCard({
+      payload: { schemaVersion: 1, terminal_id: 'term_v1' },
+    });
+    const card = TerminalEntry.fromKernel!(k);
+    expect(card).not.toBeNull();
+    expect(card!.terminalId).toBe('term_v1');
+    expect(card!.unsupportedVersion).toBeUndefined();
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('flags an unsupported future schemaVersion with a warning + fallback card', () => {
+    // A future kernel rolling out v2 against an older frontend: we still
+    // produce a card (so the grid layout keeps its slot) but mark it as
+    // unsupported so the component renders a fallback.
+    const k = makeKernelCard({
+      payload: { schemaVersion: 99, terminal_id: 'term_future' },
+    });
+    const card = TerminalEntry.fromKernel!(k);
+    expect(card).not.toBeNull();
+    expect(card!.type).toBe('terminal');
+    expect(card!.unsupportedVersion).toBe(99);
+    // Terminal id is intentionally not surfaced — we don't trust the
+    // future shape past the version mismatch.
+    expect(card!.terminalId).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(String(warnSpy.mock.calls[0]![0])).toContain('schemaVersion=99');
+    expect(String(warnSpy.mock.calls[0]![0])).toContain('please refresh');
+  });
 });

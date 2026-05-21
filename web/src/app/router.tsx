@@ -55,6 +55,7 @@ import { queryKeys } from '../api/queries';
 import { queryClient } from './providers';
 import { dlog } from '../util/debug';
 import { suppressCardEvents } from './eventBridge';
+import { TERMINAL_PAYLOAD_SCHEMA_VERSION } from '../cards/builtins/schemaVersions';
 import type { Cove, Wave, WaveCardSlot } from '../types';
 import type { AddPanelKind } from '../shared/components/AddPanel';
 
@@ -416,7 +417,13 @@ async function addCardOfKind(
     const term = await api.createTerminal(card.id, {});
     dlog('addCardOfKind', 'step 2: createTerminal DONE', { termId: term.id });
     dlog('addCardOfKind', 'step 3: updateCard START');
-    await api.updateCard(card.id, { payload: { terminal_id: term.id } });
+    // Tier A: kernel-owned card payloads carry a per-kind `schemaVersion`
+    // (see `web/src/cards/builtins/schemaVersions.ts`). The kernel
+    // validator treats absent as v1, so older clients still work; new
+    // writes stamp it explicitly.
+    await api.updateCard(card.id, {
+      payload: { schemaVersion: TERMINAL_PAYLOAD_SCHEMA_VERSION, terminal_id: term.id },
+    });
     dlog('addCardOfKind', 'step 3: updateCard DONE');
   } catch (err) {
     console.warn('[Calm] terminal create failed:', err);

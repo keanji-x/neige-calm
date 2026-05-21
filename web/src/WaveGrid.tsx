@@ -19,6 +19,7 @@ import {
   useOverlayState,
 } from './hooks/useOverlayState';
 import { upsertOverlay } from './api/calm';
+import { OVERLAY_LAYOUT_SCHEMA_VERSION } from './cards/builtins/schemaVersions';
 
 const COLS = 12;
 const ROW_HEIGHT = 40;
@@ -68,6 +69,11 @@ interface StoredEntry {
 }
 
 interface LayoutOverlayValue {
+  /** Tier A persistence contract — see
+   *  `web/src/cards/builtins/schemaVersions.ts`. Optional on read because
+   *  rows written before this field existed are treated as v1; new writes
+   *  set it explicitly. */
+  schemaVersion?: number;
   positions: Record<string, StoredEntry>;
 }
 
@@ -232,7 +238,11 @@ function useLocalStorageMigration(waveId: string): void {
       entity_kind: 'view',
       entity_id: waveId,
       kind: 'layout',
-      payload: { positions: legacy },
+      // Tier A: stamp the kernel-owned `schemaVersion` on this write.
+      payload: {
+        schemaVersion: OVERLAY_LAYOUT_SCHEMA_VERSION,
+        positions: legacy,
+      },
     })
       .then(() => {
         try {
@@ -357,7 +367,10 @@ export function WaveGrid({
         const latched = pendingRef.current;
         pendingRef.current = null;
         if (!latched) return;
-        setLayoutValue({ positions: layoutToPositions(latched) });
+        setLayoutValue({
+          schemaVersion: OVERLAY_LAYOUT_SCHEMA_VERSION,
+          positions: layoutToPositions(latched),
+        });
       });
     },
     [setLayoutValue],

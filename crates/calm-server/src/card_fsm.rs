@@ -53,6 +53,7 @@ use crate::db::sqlite::overlay_upsert_tx;
 use crate::db::{RepoEventWrite, write_with_event_typed};
 use crate::event::{Event, EventBus};
 use crate::model::NewOverlay;
+use crate::validation::OVERLAY_STATUS_SCHEMA_VERSION;
 
 /// Actor tag stamped on every event the FSM produces. Kernel-internal
 /// projector — distinct from `"user"` / `"plugin:<id>"` / `"ai:<id>"`.
@@ -304,7 +305,14 @@ impl Inner {
         // 1. Card overlay. Goes through write_with_event so the overlay
         //    row and the events row land in the same transaction; the bus
         //    broadcast (with `_id` stamped) is emitted on commit success.
-        let card_payload = json!({ "state": state.wire_name() });
+        // `schemaVersion` is the Tier A persistence contract from
+        // `docs/upgrade-stability.md` — kernel-owned overlay payloads
+        // stamp the version explicitly so an older binary can refuse a
+        // v2 row from a newer one rather than silently mis-interpreting.
+        let card_payload = json!({
+            "schemaVersion": OVERLAY_STATUS_SCHEMA_VERSION,
+            "state": state.wire_name(),
+        });
         let new_overlay = NewOverlay {
             plugin_id: KERNEL_PLUGIN_ID.to_string(),
             entity_kind: "card".to_string(),
@@ -368,6 +376,7 @@ impl Inner {
 
         let final_state = union.unwrap_or(State::Idle);
         let payload = json!({
+            "schemaVersion": OVERLAY_STATUS_SCHEMA_VERSION,
             "state": final_state.wire_name(),
             "counts": {
                 "working": working,

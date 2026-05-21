@@ -25,6 +25,7 @@ import { useState } from '../shared/state';
 import { useQueryClient } from '@tanstack/react-query';
 import * as api from '../api/calm';
 import { queryKeys } from '../api/queries';
+import { TERMINAL_PAYLOAD_SCHEMA_VERSION } from '../cards/builtins/schemaVersions';
 
 const STORAGE_KEY = 'calm.todayCardId';
 const SCRATCH_COVE_NAME = 'Scratch';
@@ -110,7 +111,11 @@ export function useTodayTerminal(): UseTodayTerminalResult {
       const card = await api.createCard(wave.id, { kind: 'terminal' });
       const term = await api.createTerminal(card.id, {});
       const patched = await api.updateCard(card.id, {
-        payload: { terminal_id: term.id },
+        // Tier A: stamp the kernel-owned `schemaVersion` on every write.
+        payload: {
+          schemaVersion: TERMINAL_PAYLOAD_SCHEMA_VERSION,
+          terminal_id: term.id,
+        },
       });
       void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(wave.id) });
       localStorage.setItem(STORAGE_KEY, patched.id);
