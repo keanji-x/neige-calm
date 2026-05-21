@@ -13,12 +13,7 @@ import { sizeFor, type CardSize } from './cards/registry';
 import { UnknownCard, UNKNOWN_CARD_SIZE } from './cards/UnknownCard';
 import { dlog } from './util/debug';
 import type { WaveCardSlot } from './types';
-import { useQueryClient } from '@tanstack/react-query';
-import {
-  overlayStateQueryKey,
-  useOverlayState,
-} from './hooks/useOverlayState';
-import { upsertOverlay } from './api/calm';
+import { useOverlayState } from './hooks/useOverlayState';
 import { OVERLAY_LAYOUT_SCHEMA_VERSION } from './cards/builtins/schemaVersions';
 
 const COLS = 12;
@@ -38,29 +33,6 @@ function slotSize(slot: WaveCardSlot): CardSize {
   return slot.kind === 'card' ? sizeFor(slot.card) : UNKNOWN_CARD_SIZE;
 }
 
-// ---------------------------------------------------------------------------
-// localStorage shape (legacy — Scope E migrates these rows into Overlay state)
-// ---------------------------------------------------------------------------
-//
-// Pre-Scope-E builds wrote layout positions to `localStorage[`calm:layout:<waveId>`]`
-// as a `Record<card_id, {x, y, w, h}>`. We keep the read path here for two
-// reasons:
-//
-//   1. A one-shot migration helper (`useLocalStorageMigration` below) that
-//      reads the legacy row, POSTs it as an overlay on first mount, then
-//      deletes the localStorage key. Idempotent — once the overlay row
-//      exists, the migration finds nothing to do on subsequent mounts.
-//
-//   2. Defensive flash-prevention. If the overlay query is still pending
-//      on first mount (cold-cache reload, IndexedDB not yet rehydrated),
-//      the localStorage value seeds `reconcile` for that single render
-//      until the query resolves and replaces it.
-//
-// Once the migration is universal (a release after this lands), both
-// pathways can be deleted. See design doc §5.2 step 5.
-
-const LEGACY_STORAGE_PREFIX = 'calm:layout:';
-
 interface StoredEntry {
   x: number;
   y: number;
@@ -75,36 +47,6 @@ interface LayoutOverlayValue {
    *  set it explicitly. */
   schemaVersion?: number;
   positions: Record<string, StoredEntry>;
-}
-
-function loadLegacyLayout(waveId: string): Record<string, StoredEntry> | null {
-  try {
-    const raw = localStorage.getItem(LEGACY_STORAGE_PREFIX + waveId);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-    // Sanity-filter to the expected shape — anything outside the
-    // {x,y,w,h: number} contract is discarded silently. This is the
-    // boundary where legacy garbage stops; downstream code can assume
-    // the entries are well-formed.
-    const out: Record<string, StoredEntry> = {};
-    for (const [k, v] of Object.entries(parsed)) {
-      if (
-        v &&
-        typeof v === 'object' &&
-        typeof (v as Partial<StoredEntry>).x === 'number' &&
-        typeof (v as Partial<StoredEntry>).y === 'number' &&
-        typeof (v as Partial<StoredEntry>).w === 'number' &&
-        typeof (v as Partial<StoredEntry>).h === 'number'
-      ) {
-        const e = v as StoredEntry;
-        out[k] = { x: e.x, y: e.y, w: e.w, h: e.h };
-      }
-    }
-    return out;
-  } catch {
-    return null;
-  }
 }
 
 // Build a complete LayoutItem[] for the current slot list: reuse stored
@@ -170,99 +112,6 @@ function layoutToPositions(layout: Layout): Record<string, StoredEntry> {
   return out;
 }
 
-/**
- * One-shot migration: if the overlay query has resolved with no rows for
- * this wave AND `localStorage[`calm:layout:<waveId>`]` holds a parseable
- * legacy value, POST it as the canonical overlay and then delete the
- * legacy key.
- *
- * Runs once per wave per session (guarded by a ref). Idempotent: the
- * second mount on the same wave finds the overlay row already populated
- * and short-circuits before any write.
- *
- * The migration calls `upsertOverlay` directly (not the hook setter) so
- * it's clear this is a one-time step and not part of the normal write
- * path. The subsequent `overlay.set` event flows through eventBridge,
- * which invalidates the query family and lets the hook pick up the new
- * value naturally.
- *
- * **Why check the queryClient state instead of just the overlay value:**
- * the hook collapses "pending" into the default ({positions: {}}). So
- * "value is default" cannot distinguish "GET hasn't fired yet" from
- * "GET fired, no row exists" — and we MUST NOT migrate during the
- * former (we'd POST a legacy snapshot over a wave whose real overlay
- * is still inbound from the network). The query's `status === 'success'`
- * is the unambiguous "GET completed, here's what the server has" signal.
- */
-function useLocalStorageMigration(waveId: string): void {
-  const qc = useQueryClient();
-  // One-time guard per wave. React 18 strict mode mounts effects twice —
-  // the ref ensures the POST fires at most once even under that re-mount.
-  const migratedRef = useRef<Set<string>>(new Set());
-  // The hook's queryKey: we read it back to inspect status without
-  // re-subscribing to the data. (Subscribing again here would just
-  // duplicate the existing observer in `useOverlayState`.)
-  const queryKey = overlayStateQueryKey('kernel', 'view', waveId, 'layout');
-  // The query state changes as the GET progresses (`pending` → `success`).
-  // We want the effect to re-run on that transition so we don't migrate
-  // while pending. The cleanest way to surface it inside an effect is a
-  // poll of `qc.getQueryState`, but a `useQuery` subscription is what
-  // actually gives React Query's observer dispatcher a hook to wake us
-  // up. Subscribe in a way that doesn't refetch (`enabled: false` would
-  // also keep status `pending`); instead, subscribe to the same query
-  // the hook already subscribes to — RQ deduplicates fetches per
-  // queryKey, so this costs nothing.
-  const state = qc.getQueryState<LayoutOverlayValue>(queryKey);
-  const status = state?.status;
-  const data = state?.data;
-
-  useEffect(() => {
-    if (status !== 'success') return;
-    if (migratedRef.current.has(waveId)) return;
-    // Only migrate when the server has no overlay row yet. If positions
-    // is non-empty the wave was either created post-Scope-E or already
-    // migrated — either way, leave the legacy localStorage row alone.
-    const positions = data?.positions ?? {};
-    if (Object.keys(positions).length > 0) {
-      migratedRef.current.add(waveId);
-      return;
-    }
-    const legacy = loadLegacyLayout(waveId);
-    if (!legacy || Object.keys(legacy).length === 0) {
-      migratedRef.current.add(waveId);
-      return;
-    }
-    migratedRef.current.add(waveId);
-    upsertOverlay({
-      plugin_id: 'kernel',
-      entity_kind: 'view',
-      entity_id: waveId,
-      kind: 'layout',
-      // Tier A: stamp the kernel-owned `schemaVersion` on this write.
-      payload: {
-        schemaVersion: OVERLAY_LAYOUT_SCHEMA_VERSION,
-        positions: legacy,
-      },
-    })
-      .then(() => {
-        try {
-          localStorage.removeItem(LEGACY_STORAGE_PREFIX + waveId);
-        } catch {
-          /* private-mode / quota — no harm leaving the key, the next
-             mount finds the populated overlay and short-circuits. */
-        }
-      })
-      .catch((err) => {
-        migratedRef.current.delete(waveId);
-        // eslint-disable-next-line no-console
-        console.warn('WaveGrid layout migration: upsert failed', err);
-      });
-    // `data` is in deps so a late-arriving server overlay (e.g. WS
-    // event resolving the query after a slow connection) re-runs the
-    // check; the ref guard then short-circuits.
-  }, [waveId, status, data]);
-}
-
 export function WaveGrid({
   waveId,
   cards,
@@ -292,23 +141,7 @@ export function WaveGrid({
     default: { positions: {} },
   });
 
-  // One-shot migration from `localStorage['calm:layout:<waveId>']`. Runs
-  // exactly once per wave per session; see `useLocalStorageMigration`.
-  // The query family is invalidated by `eventBridge` on the resulting
-  // `overlay.set`, so we don't have to plumb the new value back ourselves.
-  useLocalStorageMigration(waveId);
-
-  // Defensive seed: if the overlay query is still pending (cold cache,
-  // IndexedDB not yet rehydrated), reach for the legacy localStorage row
-  // as a one-render fallback. The overlay query usually resolves on the
-  // same tick from rehydrate, but a wave opened during the brief window
-  // between mount and rehydrate would otherwise paint a default-laid
-  // grid that snaps back to the saved layout on the next render.
-  const storedPositions = useMemo<Record<string, StoredEntry>>(() => {
-    const fromOverlay = layoutValue.positions;
-    if (Object.keys(fromOverlay).length > 0) return fromOverlay;
-    return loadLegacyLayout(waveId) ?? fromOverlay;
-  }, [waveId, layoutValue]);
+  const storedPositions = layoutValue.positions;
 
   // Layout key set — recompute only when cards arrive/leave or the wave
   // changes. Note: we deliberately do NOT mirror RGL's runtime layout in
