@@ -47,10 +47,7 @@ pub struct KernelTooOld {
 /// `min_kernel_version` is an inclusive lower bound, matching how semver
 /// "minimum compatible version" comparators (`>=`) work in Cargo and the
 /// broader ecosystem.
-pub fn check_min_kernel_version(
-    kernel: &Version,
-    required: &Version,
-) -> Result<(), KernelTooOld> {
+pub fn check_min_kernel_version(kernel: &Version, required: &Version) -> Result<(), KernelTooOld> {
     if kernel >= required {
         Ok(())
     } else {

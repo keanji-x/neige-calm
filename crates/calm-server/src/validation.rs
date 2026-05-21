@@ -660,9 +660,8 @@ mod tests {
 
     #[test]
     fn codex_rejects_unknown_schema_version() {
-        let err =
-            validate_card_payload("codex", &json!({ "schemaVersion": 99, "any": "thing" }))
-                .unwrap_err();
+        let err = validate_card_payload("codex", &json!({ "schemaVersion": 99, "any": "thing" }))
+            .unwrap_err();
         let CalmError::BadRequest(msg) = err else {
             panic!("expected BadRequest");
         };
@@ -673,11 +672,8 @@ mod tests {
 
     #[test]
     fn status_accepts_matching_schema_version() {
-        validate_overlay_payload(
-            "status",
-            &json!({ "schemaVersion": 1, "state": "running" }),
-        )
-        .unwrap();
+        validate_overlay_payload("status", &json!({ "schemaVersion": 1, "state": "running" }))
+            .unwrap();
     }
 
     #[test]
@@ -727,11 +723,9 @@ mod tests {
 
     #[test]
     fn layout_rejects_unknown_schema_version() {
-        let err = validate_overlay_payload(
-            "layout",
-            &json!({ "schemaVersion": 9, "positions": {} }),
-        )
-        .unwrap_err();
+        let err =
+            validate_overlay_payload("layout", &json!({ "schemaVersion": 9, "positions": {} }))
+                .unwrap_err();
         assert!(matches!(err, CalmError::BadRequest(ref m) if m.contains("schemaVersion")));
     }
 

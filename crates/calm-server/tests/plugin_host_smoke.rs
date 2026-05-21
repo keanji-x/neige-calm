@@ -22,7 +22,9 @@ use std::time::Duration;
 
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::plugin_host::{HostError, Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
+use calm_server::plugin_host::{
+    HostError, Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus,
+};
 use serde_json::json;
 use tempfile::TempDir;
 use tokio::time::{Instant, sleep};
@@ -277,8 +279,7 @@ async fn crash_loop_disables_after_threshold() {
 /// `Running` / `Spawning` (the spawn aborts upstream of the processes map).
 #[tokio::test]
 async fn spawn_refuses_plugin_requiring_newer_kernel() {
-    let (host, _tmp, _events) =
-        boot_host_with_min_kernel("test.toonew", ECHO_BIN, "99.0.0").await;
+    let (host, _tmp, _events) = boot_host_with_min_kernel("test.toonew", ECHO_BIN, "99.0.0").await;
     let err = host
         .spawn("test.toonew")
         .await
