@@ -28,7 +28,7 @@ import { useState } from '../state';
 import * as api from '../../api/calm';
 import { CalmApiError } from '../../api/calm';
 import type { ListdirResponse } from '../../api/wire';
-import { useModalView } from './Modal';
+import { useModalView } from '../../ui/Dialog/Dialog';
 
 export interface DirectoryPickerProps {
   value: string;
