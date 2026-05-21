@@ -253,6 +253,16 @@ pub struct SessionContext<'a> {
     pub pty_seq_tail: u32,
     /// Current render revision (mirrors `pty_seq_tail` in this PR).
     pub render_rev: u32,
+    /// Snapshot of `RenderPlane::child_ready_fired()` captured at the
+    /// moment the daemon built this context. Threaded into
+    /// `DaemonMsg::ServerHello.is_child_ready` so a late-joining client
+    /// (e.g. the kernel's transient input-injection connection) knows
+    /// whether the one-shot `ChildReady` broadcast has already fired.
+    ///
+    /// Defaults to `false` (the safe "wait for ready" assumption) on
+    /// call sites that don't track child-readiness — notably the legacy
+    /// [`PtyBroadcaster`]-backed unit tests in `tests/v2_protocol.rs`.
+    pub is_child_ready: bool,
 }
 
 /// Single-client protocol state machine. One instance per accepted socket.
@@ -568,6 +578,7 @@ impl TerminalSessionState {
                     render_rev: ctx.render_rev,
                     snapshot,
                     history_gap: None,
+                    is_child_ready: ctx.is_child_ready,
                 };
 
                 // We also need to push the requested PTY size through to

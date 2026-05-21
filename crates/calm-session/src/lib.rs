@@ -357,6 +357,17 @@ pub enum DaemonMsg {
     /// any), and the PTY/render head/tail cursors. The `snapshot` field
     /// reproduces the current screen state; `history_gap` is set when the
     /// client's `resume_from` cursor was older than what we still have.
+    ///
+    /// `is_child_ready` is a deterministic snapshot of whether the
+    /// `ChildReady` one-shot has already fired by the time of this attach.
+    /// Late-joining transient connections (notably the kernel's own
+    /// `DaemonClient` used for input injection) use this to decide whether
+    /// to wait for a subsequent `ChildReady` broadcast or to send input
+    /// immediately. The `ChildReady` broadcast remains one-shot per
+    /// session — clients that arrive *after* it fired only see the
+    /// snapshot here. `#[serde(default)]` for backward compat: older
+    /// peers that don't serialize this field decode as `false`, which
+    /// is the safe (wait-for-ready) default.
     ServerHello {
         protocol_version: u16,
         terminal_id: String,
@@ -371,6 +382,8 @@ pub enum DaemonMsg {
         render_rev: u32,
         snapshot: RenderSnapshot,
         history_gap: Option<HistoryGap>,
+        #[serde(default)]
+        is_child_ready: bool,
     },
     /// Standalone snapshot — sent when the daemon decided the client needs
     /// a hard re-sync mid-stream. PR-2 emits this on PTY resize and on

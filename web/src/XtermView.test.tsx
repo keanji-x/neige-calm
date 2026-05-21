@@ -196,6 +196,7 @@ function serverHello(over: Record<string, unknown> = {}): unknown {
         scrollback: null,
       },
       history_gap: null,
+      is_child_ready: false,
       ...over,
     },
   };

@@ -151,6 +151,7 @@ async fn v2_round_trip_via_pump() {
         render_rev: 0,
         snapshot: empty_snapshot(),
         history_gap: None,
+        is_child_ready: false,
     };
     write_frame(&mut daemon_side, &server_hello).await.unwrap();
     let msg = tokio::time::timeout(Duration::from_secs(2), ws.next())
