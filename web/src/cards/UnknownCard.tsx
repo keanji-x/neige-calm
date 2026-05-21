@@ -23,7 +23,7 @@ export function UnknownCard({ kernelKind }: { kernelKind: string }) {
     <div
       className="card-unknown"
       style={{
-        border: '1px dashed var(--card-border, #ccc)',
+        border: '1px dashed var(--hairline-strong)',
         padding: 8,
         height: '100%',
         boxSizing: 'border-box',

@@ -254,7 +254,7 @@ function PluginIframeCard({ card }: { card: PluginCardData }) {
       <div
         className="plugin-iframe-card plugin-iframe-error"
         style={{
-          border: '1px solid var(--card-border, #ddd)',
+          border: '1px solid var(--hairline)',
           padding: 8,
           height: '100%',
           boxSizing: 'border-box',
@@ -273,7 +273,7 @@ function PluginIframeCard({ card }: { card: PluginCardData }) {
     <div
       className="plugin-iframe-card"
       style={{
-        border: '1px solid var(--card-border, #ddd)',
+        border: '1px solid var(--hairline)',
         display: 'flex',
         flexDirection: 'column',
         height: '100%',
@@ -287,7 +287,7 @@ function PluginIframeCard({ card }: { card: PluginCardData }) {
           opacity: 0.7,
           padding: '4px 8px',
           userSelect: 'none',
-          borderBottom: '1px solid var(--card-border, #eee)',
+          borderBottom: '1px solid var(--hairline)',
         }}
       >
         Plugin: {parsed.plugin_id}:{parsed.view_id}
@@ -295,7 +295,7 @@ function PluginIframeCard({ card }: { card: PluginCardData }) {
       {error ? (
         <div
           className="plugin-iframe-error-body"
-          style={{ padding: 8, fontSize: 13, color: 'var(--error-fg, #b00)' }}
+          style={{ padding: 8, fontSize: 13, color: 'var(--warn)' }}
         >
           {error}
         </div>

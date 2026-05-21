@@ -1018,6 +1018,15 @@ input, textarea { font: inherit; color: inherit; }
   background: var(--paper);
   color: var(--text);
 }
+/* Focus-visible per a11y-contract §6. Mirrors .login-input's pattern
+   (calm.css:2356-2359): soft tinted ring + border-color promotion so the
+   input visibly "lights up" on keyboard focus without stripping the
+   default outline elsewhere. */
+.schema-form-input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
 textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .schema-form-actions {
   display: flex; justify-content: flex-end; gap: 8px;
