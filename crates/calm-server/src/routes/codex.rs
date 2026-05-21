@@ -450,7 +450,7 @@ fn to_snake_case(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::Repo;
+    use crate::db::RepoSyncDomainRaw;
     use crate::db::sqlite::SqlxRepo;
     use crate::event::EventBus;
     use crate::model::{NewCard, NewCove, NewWave};
@@ -477,16 +477,17 @@ mod tests {
     async fn codex_terminal_payload_stamp_persists_and_broadcasts_card_updated() {
         let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let events = EventBus::new();
-        let state = AppState {
-            repo: repo.clone(),
-            events: events.clone(),
-            daemon: Arc::new(DaemonClient::new_stub()),
-            plugin: Arc::new(PluginHost::new(
-                Arc::new(PluginRegistry::empty()),
-                repo.clone(),
-            )),
-            codex: Arc::new(CodexClient::new_stub()),
-        };
+        let plugin = Arc::new(PluginHost::new(
+            Arc::new(PluginRegistry::empty()),
+            repo.clone(),
+        ));
+        let state = AppState::from_parts(
+            repo.clone(),
+            events.clone(),
+            Arc::new(DaemonClient::new_stub()),
+            plugin,
+            Arc::new(CodexClient::new_stub()),
+        );
 
         let cove = repo
             .cove_create(NewCove {

@@ -29,7 +29,7 @@ use sqlx::SqlitePool;
 use sqlx::Transaction;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
-use super::{Repo, WriteWithEventFn};
+use super::{RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, WriteWithEventFn};
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventBus};
 use crate::model::*;
@@ -482,12 +482,15 @@ pub async fn overlay_delete_tx(
 }
 
 // ---------------------------------------------------------------------------
-// Repo impl — thin pool-wrapping wrappers around the `_tx` helpers, plus
-// the read-side methods that don't need transaction composition.
+// Sub-trait impls — thin pool-wrapping wrappers around the `_tx` helpers,
+// plus the read-side methods that don't need transaction composition.
+//
+// `Repo` (and `RouteRepo`) are picked up via the blanket impls in `db/mod`
+// once all four sub-traits are implemented.
 // ---------------------------------------------------------------------------
 
 #[async_trait]
-impl Repo for SqlxRepo {
+impl RepoRead for SqlxRepo {
     // ---------------------------------------------------------------- coves
     async fn coves_list(&self) -> Result<Vec<Cove>> {
         let rows = sqlx::query_as::<_, Cove>(
@@ -508,27 +511,6 @@ impl Repo for SqlxRepo {
         .fetch_optional(&self.pool)
         .await?;
         Ok(row)
-    }
-
-    async fn cove_create(&self, p: NewCove) -> Result<Cove> {
-        let mut tx = self.pool.begin().await?;
-        let out = cove_create_tx(&mut tx, p).await?;
-        tx.commit().await?;
-        Ok(out)
-    }
-
-    async fn cove_update(&self, id: &str, p: CovePatch) -> Result<Cove> {
-        let mut tx = self.pool.begin().await?;
-        let out = cove_update_tx(&mut tx, id, p).await?;
-        tx.commit().await?;
-        Ok(out)
-    }
-
-    async fn cove_delete(&self, id: &str) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
-        cove_delete_tx(&mut tx, id).await?;
-        tx.commit().await?;
-        Ok(())
     }
 
     // ---------------------------------------------------------------- waves
@@ -597,27 +579,6 @@ impl Repo for SqlxRepo {
         }))
     }
 
-    async fn wave_create(&self, p: NewWave) -> Result<Wave> {
-        let mut tx = self.pool.begin().await?;
-        let out = wave_create_tx(&mut tx, p).await?;
-        tx.commit().await?;
-        Ok(out)
-    }
-
-    async fn wave_update(&self, id: &str, p: WavePatch) -> Result<Wave> {
-        let mut tx = self.pool.begin().await?;
-        let out = wave_update_tx(&mut tx, id, p).await?;
-        tx.commit().await?;
-        Ok(out)
-    }
-
-    async fn wave_delete(&self, id: &str) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
-        wave_delete_tx(&mut tx, id).await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
     // ---------------------------------------------------------------- cards
     async fn cards_by_wave(&self, wave_id: &str) -> Result<Vec<Card>> {
         let rows = sqlx::query_as::<_, Card>(
@@ -641,6 +602,220 @@ impl Repo for SqlxRepo {
         Ok(row)
     }
 
+    // -------------------------------------------------------------- overlays
+    async fn overlays_for(&self, entity_kind: &str, entity_id: &str) -> Result<Vec<Overlay>> {
+        let rows = sqlx::query_as::<_, Overlay>(
+            r#"SELECT id, plugin_id, entity_kind, entity_id, kind, payload, updated_at
+               FROM overlays WHERE entity_kind = ?1 AND entity_id = ?2"#,
+        )
+        .bind(entity_kind)
+        .bind(entity_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    async fn overlays_by_kind(&self, entity_kind: &str) -> Result<Vec<Overlay>> {
+        let rows = sqlx::query_as::<_, Overlay>(
+            r#"SELECT id, plugin_id, entity_kind, entity_id, kind, payload, updated_at
+               FROM overlays WHERE entity_kind = ?1"#,
+        )
+        .bind(entity_kind)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    // ------------------------------------------------------------- terminals
+    async fn terminal_get(&self, id: &str) -> Result<Option<Terminal>> {
+        let row = sqlx::query_as::<_, Terminal>(
+            r#"SELECT id, card_id, program, cwd, env, daemon_handle, pid, created_at
+               FROM terminals WHERE id = ?1"#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    async fn terminal_get_by_card(&self, card_id: &str) -> Result<Option<Terminal>> {
+        let row = sqlx::query_as::<_, Terminal>(
+            r#"SELECT id, card_id, program, cwd, env, daemon_handle, pid, created_at
+               FROM terminals WHERE card_id = ?1"#,
+        )
+        .bind(card_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    async fn terminals_orphaned(&self, grace_seconds: i64) -> Result<Vec<Terminal>> {
+        // Orphan: no card.payload.terminal_id references this terminal row,
+        // AND the row was created more than `grace_seconds` ago (absorbs the
+        // 3-step terminal-card create race in `eventBridge.tsx:60-70`).
+        //
+        // `created_at` is unix ms; the grace bound is `now_ms - grace_seconds * 1000`.
+        let cutoff = now_ms() - grace_seconds.saturating_mul(1000);
+        let rows = sqlx::query_as::<_, Terminal>(
+            r#"SELECT t.id, t.card_id, t.program, t.cwd, t.env,
+                      t.daemon_handle, t.pid, t.created_at
+               FROM terminals t
+               WHERE NOT EXISTS (
+                   SELECT 1 FROM cards c
+                   WHERE json_extract(c.payload, '$.terminal_id') = t.id
+               )
+               AND t.created_at < ?1"#,
+        )
+        .bind(cutoff)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    // --------------------------------------------------------------- plugins
+    async fn plugins_list(&self) -> Result<Vec<Plugin>> {
+        self.plugins_list_all().await
+    }
+
+    async fn plugins_list_all(&self) -> Result<Vec<Plugin>> {
+        let rows = sqlx::query_as::<_, Plugin>(
+            r#"SELECT id, version, install_path, manifest, enabled, user_config,
+                      installed_at, updated_at
+               FROM plugins
+               ORDER BY id ASC"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    async fn plugin_get_by_id(&self, id: &str) -> Result<Option<Plugin>> {
+        let row = sqlx::query_as::<_, Plugin>(
+            r#"SELECT id, version, install_path, manifest, enabled, user_config,
+                      installed_at, updated_at
+               FROM plugins WHERE id = ?1"#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    async fn plugin_token_get(&self, plugin_id: &str) -> Result<Option<(String, i64)>> {
+        let row: Option<(String, i64)> = sqlx::query_as(
+            r#"SELECT hashed_token, expires_at FROM plugin_tokens WHERE plugin_id = ?1"#,
+        )
+        .bind(plugin_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    async fn plugin_kv_get(&self, plugin_id: &str, key: &str) -> Result<Option<serde_json::Value>> {
+        let row: Option<(String,)> =
+            sqlx::query_as(r#"SELECT value FROM plugin_kv WHERE plugin_id = ?1 AND key = ?2"#)
+                .bind(plugin_id)
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await?;
+        match row {
+            Some((text,)) => Ok(Some(serde_json::from_str(&text)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn plugin_kv_list(
+        &self,
+        plugin_id: &str,
+        prefix: &str,
+    ) -> Result<Vec<(String, serde_json::Value)>> {
+        let mut escaped = String::with_capacity(prefix.len() + 2);
+        for ch in prefix.chars() {
+            if ch == '%' || ch == '_' || ch == '\\' {
+                escaped.push('\\');
+            }
+            escaped.push(ch);
+        }
+        escaped.push('%');
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            r#"SELECT key, value FROM plugin_kv
+               WHERE plugin_id = ?1 AND key LIKE ?2 ESCAPE '\'
+               ORDER BY key ASC"#,
+        )
+        .bind(plugin_id)
+        .bind(&escaped)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (k, v) in rows {
+            out.push((k, serde_json::from_str(&v)?));
+        }
+        Ok(out)
+    }
+
+    // -------------------------------------------------------------- settings
+    async fn settings_get_all(&self) -> Result<Vec<(String, String)>> {
+        let rows: Vec<(String, String)> =
+            sqlx::query_as(r#"SELECT key, value FROM settings ORDER BY key ASC"#)
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RepoSyncDomainRaw — raw entity writes for the in-scope sync domain.
+// Gated: not reachable via the `RouteRepo` trait object that handlers see;
+// only callable via the explicit `AppState::raw_repo()` escape hatch.
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl RepoSyncDomainRaw for SqlxRepo {
+    // ---------------------------------------------------------------- coves
+    async fn cove_create(&self, p: NewCove) -> Result<Cove> {
+        let mut tx = self.pool.begin().await?;
+        let out = cove_create_tx(&mut tx, p).await?;
+        tx.commit().await?;
+        Ok(out)
+    }
+
+    async fn cove_update(&self, id: &str, p: CovePatch) -> Result<Cove> {
+        let mut tx = self.pool.begin().await?;
+        let out = cove_update_tx(&mut tx, id, p).await?;
+        tx.commit().await?;
+        Ok(out)
+    }
+
+    async fn cove_delete(&self, id: &str) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        cove_delete_tx(&mut tx, id).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------- waves
+    async fn wave_create(&self, p: NewWave) -> Result<Wave> {
+        let mut tx = self.pool.begin().await?;
+        let out = wave_create_tx(&mut tx, p).await?;
+        tx.commit().await?;
+        Ok(out)
+    }
+
+    async fn wave_update(&self, id: &str, p: WavePatch) -> Result<Wave> {
+        let mut tx = self.pool.begin().await?;
+        let out = wave_update_tx(&mut tx, id, p).await?;
+        tx.commit().await?;
+        Ok(out)
+    }
+
+    async fn wave_delete(&self, id: &str) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        wave_delete_tx(&mut tx, id).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------- cards
     async fn card_create(&self, p: NewCard) -> Result<Card> {
         let mut tx = self.pool.begin().await?;
         let out = card_create_tx(&mut tx, p).await?;
@@ -682,30 +857,16 @@ impl Repo for SqlxRepo {
         tx.commit().await?;
         Ok(())
     }
+}
 
-    async fn overlays_for(&self, entity_kind: &str, entity_id: &str) -> Result<Vec<Overlay>> {
-        let rows = sqlx::query_as::<_, Overlay>(
-            r#"SELECT id, plugin_id, entity_kind, entity_id, kind, payload, updated_at
-               FROM overlays WHERE entity_kind = ?1 AND entity_id = ?2"#,
-        )
-        .bind(entity_kind)
-        .bind(entity_id)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows)
-    }
+// ---------------------------------------------------------------------------
+// RepoOutOfDomain — operational writes that intentionally bypass the event
+// log: terminal lifecycle, plugin install/config, app-global settings. See
+// db/mod.rs module doc for the sync-domain vs. out-of-domain split.
+// ---------------------------------------------------------------------------
 
-    async fn overlays_by_kind(&self, entity_kind: &str) -> Result<Vec<Overlay>> {
-        let rows = sqlx::query_as::<_, Overlay>(
-            r#"SELECT id, plugin_id, entity_kind, entity_id, kind, payload, updated_at
-               FROM overlays WHERE entity_kind = ?1"#,
-        )
-        .bind(entity_kind)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows)
-    }
-
+#[async_trait]
+impl RepoOutOfDomain for SqlxRepo {
     // ------------------------------------------------------------- terminals
     async fn terminal_create(&self, p: NewTerminal) -> Result<Terminal> {
         // Parent card must exist; surface as NotFound to mirror MockRepo.
@@ -757,28 +918,6 @@ impl Repo for SqlxRepo {
         })
     }
 
-    async fn terminal_get(&self, id: &str) -> Result<Option<Terminal>> {
-        let row = sqlx::query_as::<_, Terminal>(
-            r#"SELECT id, card_id, program, cwd, env, daemon_handle, pid, created_at
-               FROM terminals WHERE id = ?1"#,
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row)
-    }
-
-    async fn terminal_get_by_card(&self, card_id: &str) -> Result<Option<Terminal>> {
-        let row = sqlx::query_as::<_, Terminal>(
-            r#"SELECT id, card_id, program, cwd, env, daemon_handle, pid, created_at
-               FROM terminals WHERE card_id = ?1"#,
-        )
-        .bind(card_id)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row)
-    }
-
     async fn terminal_set_handle(&self, id: &str, handle: Option<&str>) -> Result<()> {
         let res = sqlx::query("UPDATE terminals SET daemon_handle = ?1 WHERE id = ?2")
             .bind(handle)
@@ -805,29 +944,6 @@ impl Repo for SqlxRepo {
         Ok(())
     }
 
-    async fn terminals_orphaned(&self, grace_seconds: i64) -> Result<Vec<Terminal>> {
-        // Orphan: no card.payload.terminal_id references this terminal row,
-        // AND the row was created more than `grace_seconds` ago (absorbs the
-        // 3-step terminal-card create race in `eventBridge.tsx:60-70`).
-        //
-        // `created_at` is unix ms; the grace bound is `now_ms - grace_seconds * 1000`.
-        let cutoff = now_ms() - grace_seconds.saturating_mul(1000);
-        let rows = sqlx::query_as::<_, Terminal>(
-            r#"SELECT t.id, t.card_id, t.program, t.cwd, t.env,
-                      t.daemon_handle, t.pid, t.created_at
-               FROM terminals t
-               WHERE NOT EXISTS (
-                   SELECT 1 FROM cards c
-                   WHERE json_extract(c.payload, '$.terminal_id') = t.id
-               )
-               AND t.created_at < ?1"#,
-        )
-        .bind(cutoff)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows)
-    }
-
     async fn terminal_delete(&self, id: &str) -> Result<()> {
         let res = sqlx::query("DELETE FROM terminals WHERE id = ?1")
             .bind(id)
@@ -840,34 +956,6 @@ impl Repo for SqlxRepo {
     }
 
     // --------------------------------------------------------------- plugins
-    async fn plugins_list(&self) -> Result<Vec<Plugin>> {
-        self.plugins_list_all().await
-    }
-
-    async fn plugins_list_all(&self) -> Result<Vec<Plugin>> {
-        let rows = sqlx::query_as::<_, Plugin>(
-            r#"SELECT id, version, install_path, manifest, enabled, user_config,
-                      installed_at, updated_at
-               FROM plugins
-               ORDER BY id ASC"#,
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows)
-    }
-
-    async fn plugin_get_by_id(&self, id: &str) -> Result<Option<Plugin>> {
-        let row = sqlx::query_as::<_, Plugin>(
-            r#"SELECT id, version, install_path, manifest, enabled, user_config,
-                      installed_at, updated_at
-               FROM plugins WHERE id = ?1"#,
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row)
-    }
-
     async fn plugin_install(&self, p: NewPlugin) -> Result<Plugin> {
         let manifest_text = serde_json::to_string(&p.manifest)?;
         let user_config_text = serde_json::to_string(&p.user_config)?;
@@ -1007,16 +1095,6 @@ impl Repo for SqlxRepo {
         Ok(())
     }
 
-    async fn plugin_token_get(&self, plugin_id: &str) -> Result<Option<(String, i64)>> {
-        let row: Option<(String, i64)> = sqlx::query_as(
-            r#"SELECT hashed_token, expires_at FROM plugin_tokens WHERE plugin_id = ?1"#,
-        )
-        .bind(plugin_id)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row)
-    }
-
     async fn plugin_token_delete(&self, plugin_id: &str) -> Result<()> {
         sqlx::query("DELETE FROM plugin_tokens WHERE plugin_id = ?1")
             .bind(plugin_id)
@@ -1026,19 +1104,6 @@ impl Repo for SqlxRepo {
     }
 
     // -------------------------------------------------------- plugin kv
-    async fn plugin_kv_get(&self, plugin_id: &str, key: &str) -> Result<Option<serde_json::Value>> {
-        let row: Option<(String,)> =
-            sqlx::query_as(r#"SELECT value FROM plugin_kv WHERE plugin_id = ?1 AND key = ?2"#)
-                .bind(plugin_id)
-                .bind(key)
-                .fetch_optional(&self.pool)
-                .await?;
-        match row {
-            Some((text,)) => Ok(Some(serde_json::from_str(&text)?)),
-            None => Ok(None),
-        }
-    }
-
     async fn plugin_kv_set(
         &self,
         plugin_id: &str,
@@ -1063,35 +1128,6 @@ impl Repo for SqlxRepo {
         Ok(())
     }
 
-    async fn plugin_kv_list(
-        &self,
-        plugin_id: &str,
-        prefix: &str,
-    ) -> Result<Vec<(String, serde_json::Value)>> {
-        let mut escaped = String::with_capacity(prefix.len() + 2);
-        for ch in prefix.chars() {
-            if ch == '%' || ch == '_' || ch == '\\' {
-                escaped.push('\\');
-            }
-            escaped.push(ch);
-        }
-        escaped.push('%');
-        let rows: Vec<(String, String)> = sqlx::query_as(
-            r#"SELECT key, value FROM plugin_kv
-               WHERE plugin_id = ?1 AND key LIKE ?2 ESCAPE '\'
-               ORDER BY key ASC"#,
-        )
-        .bind(plugin_id)
-        .bind(&escaped)
-        .fetch_all(&self.pool)
-        .await?;
-        let mut out = Vec::with_capacity(rows.len());
-        for (k, v) in rows {
-            out.push((k, serde_json::from_str(&v)?));
-        }
-        Ok(out)
-    }
-
     async fn plugin_kv_delete(&self, plugin_id: &str, key: &str) -> Result<()> {
         sqlx::query("DELETE FROM plugin_kv WHERE plugin_id = ?1 AND key = ?2")
             .bind(plugin_id)
@@ -1102,14 +1138,6 @@ impl Repo for SqlxRepo {
     }
 
     // -------------------------------------------------------------- settings
-    async fn settings_get_all(&self) -> Result<Vec<(String, String)>> {
-        let rows: Vec<(String, String)> =
-            sqlx::query_as(r#"SELECT key, value FROM settings ORDER BY key ASC"#)
-                .fetch_all(&self.pool)
-                .await?;
-        Ok(rows)
-    }
-
     async fn settings_upsert(&self, key: &str, value: &str) -> Result<()> {
         let now = now_ms();
         sqlx::query(
@@ -1134,8 +1162,17 @@ impl Repo for SqlxRepo {
             .await?;
         Ok(())
     }
+}
 
-    // ---- sync engine -----------------------------------------------------
+// ---------------------------------------------------------------------------
+// RepoEventWrite — the eventized write path. Every public write that the
+// sync engine cares about lands here: `write_with_event` (atomic entity-
+// write + event-log), `log_pure_event` (entity-less event log), and the
+// `events_*` cursor queries used by replay.
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl RepoEventWrite for SqlxRepo {
     async fn write_with_event(
         &self,
         actor: &str,

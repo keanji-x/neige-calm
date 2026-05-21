@@ -45,7 +45,7 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use crate::db::Repo;
+use crate::db::RepoEventWrite;
 use crate::db::sqlite::SqlxRepo;
 use crate::event::{Event, EventBus};
 use crate::plugin_host::{PluginHost, PluginRegistry};
@@ -171,13 +171,13 @@ pub async fn boot_in_memory() -> anyhow::Result<(Arc<SqlxRepo>, EventBus, AppSta
         Arc::new(PluginRegistry::empty()),
         repo.clone(),
     ));
-    let state = AppState {
-        repo: repo.clone(),
-        events: events.clone(),
-        daemon: Arc::new(DaemonClient::new_stub()),
+    let state = AppState::from_parts(
+        repo.clone(),
+        events.clone(),
+        Arc::new(DaemonClient::new_stub()),
         plugin,
-        codex: Arc::new(CodexClient::new_stub()),
-    };
+        Arc::new(CodexClient::new_stub()),
+    );
     Ok((repo, events, state))
 }
 

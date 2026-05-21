@@ -30,7 +30,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use calm_server::db::Repo;
+use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus};
 use calm_server::model::{CardPatch, NewCard, NewCove, NewTerminal, NewWave};
@@ -47,16 +47,16 @@ use serde_json::json;
 async fn fresh_state() -> (AppState, Arc<SqlxRepo>) {
     let concrete = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let repo: Arc<dyn Repo> = concrete.clone();
-    let state = AppState {
-        repo: repo.clone(),
-        events: EventBus::new(),
-        daemon: Arc::new(DaemonClient::new_stub()),
-        plugin: Arc::new(PluginHost::new(
+    let state = AppState::from_parts(
+        repo.clone(),
+        EventBus::new(),
+        Arc::new(DaemonClient::new_stub()),
+        Arc::new(PluginHost::new(
             Arc::new(PluginRegistry::empty()),
             repo.clone(),
         )),
-        codex: Arc::new(CodexClient::new_stub()),
-    };
+        Arc::new(CodexClient::new_stub()),
+    );
     (state, concrete)
 }
 
@@ -66,7 +66,7 @@ async fn fresh_state() -> (AppState, Arc<SqlxRepo>) {
 /// terminal-card create completes (see `eventBridge.tsx:60-70`).
 async fn seed_linked_pair(state: &AppState) -> (String, String) {
     let cove = state
-        .repo
+        .raw_repo()
         .cove_create(NewCove {
             name: "c".into(),
             color: "#000".into(),
@@ -75,7 +75,7 @@ async fn seed_linked_pair(state: &AppState) -> (String, String) {
         .await
         .unwrap();
     let wave = state
-        .repo
+        .raw_repo()
         .wave_create(NewWave {
             cove_id: cove.id.clone(),
             title: "w".into(),
@@ -84,7 +84,7 @@ async fn seed_linked_pair(state: &AppState) -> (String, String) {
         .await
         .unwrap();
     let card = state
-        .repo
+        .raw_repo()
         .card_create(NewCard {
             wave_id: wave.id.clone(),
             kind: "terminal".into(),
@@ -107,7 +107,7 @@ async fn seed_linked_pair(state: &AppState) -> (String, String) {
     // create. This is what makes the pair "linked"; without it the terminal
     // would be an orphan.
     state
-        .repo
+        .raw_repo()
         .card_update(
             &card.id,
             CardPatch {
@@ -126,7 +126,7 @@ async fn seed_linked_pair(state: &AppState) -> (String, String) {
 /// condition `terminals_orphaned` looks for.
 async fn unlink_card(state: &AppState, card_id: &str) {
     state
-        .repo
+        .raw_repo()
         .card_update(
             card_id,
             CardPatch {

@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::Request;
-use calm_server::db::Repo;
+use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
@@ -24,16 +24,16 @@ use tower::ServiceExt;
 
 async fn fresh_state() -> (AppState, Arc<SqlxRepo>) {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let state = AppState {
-        repo: repo.clone(),
-        events: EventBus::new(),
-        daemon: Arc::new(DaemonClient::new_stub()),
-        plugin: Arc::new(PluginHost::new(
+    let state = AppState::from_parts(
+        repo.clone(),
+        EventBus::new(),
+        Arc::new(DaemonClient::new_stub()),
+        Arc::new(PluginHost::new(
             Arc::new(PluginRegistry::empty()),
             repo.clone(),
         )),
-        codex: Arc::new(CodexClient::new_stub()),
-    };
+        Arc::new(CodexClient::new_stub()),
+    );
     (state, repo)
 }
 

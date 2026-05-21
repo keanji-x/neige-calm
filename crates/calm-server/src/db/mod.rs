@@ -41,6 +41,50 @@
 //! `sqlite.rs::SqlxRepo::event_append_in_tx`). Exposing two parallel
 //! write paths on the trait would invite handlers to drift back to a
 //! bare insert and bypass the commit-then-emit guarantee.
+//!
+//! ## Trait capability split (Scope α)
+//!
+//! `Repo` is split into four sub-traits along the *capability* axis. The
+//! goal is to make "no route handler can reach a raw sync-domain write"
+//! a compile-time invariant, not a grep-time one:
+//!
+//!   * [`RepoRead`] — universal read surface (`coves_list`, `wave_get`,
+//!     `overlays_for`, `plugins_list_all`, `terminal_get`, …). Anyone
+//!     with a `&dyn RepoRead` can fetch anything; no writes.
+//!   * [`RepoEventWrite`] — the audited write surface
+//!     (`write_with_event`, `log_pure_event`, `events_since`,
+//!     `events_earliest_id`). Supertrait `RepoRead` because every audited
+//!     write closure typically needs to read a parent row first.
+//!   * [`RepoSyncDomainRaw`] — **gated.** Raw entity writes for the
+//!     in-scope sync domain: coves, waves, cards, overlays. These exist
+//!     on the trait because `SqlxRepo` is the canonical impl and the
+//!     types must be addressable somewhere — but the `RouteRepo` trait
+//!     object route handlers see does **not** include this supertrait,
+//!     so a handler that types `s.repo.cove_create(...)` fails to
+//!     compile. The only legitimate consumers are db-internal helpers,
+//!     tests, and fixtures.
+//!   * [`RepoOutOfDomain`] — operational writes the kernel deliberately
+//!     keeps off the sync engine: `terminal_*` (server-side process
+//!     lifecycle), `plugin_*` (install/enable/config/KV/tokens),
+//!     `settings_*` (app-global config). These do **not** emit events;
+//!     they are server-private state that no other peer needs to
+//!     replicate. Routes see them — they are part of the normal REST
+//!     surface for plugin install, settings PUT, etc.
+//!
+//! [`Repo`] is the marker that requires all four — implemented blanket
+//! for any `T: RepoEventWrite + RepoSyncDomainRaw + RepoOutOfDomain`,
+//! so `SqlxRepo` picks it up automatically once it implements the four
+//! sub-traits.
+//!
+//! [`RouteRepo`] is the *narrow* trait object `AppState::repo` exposes
+//! to handlers: `RepoEventWrite + RepoOutOfDomain` (which transitively
+//! grants `RepoRead`). It deliberately excludes `RepoSyncDomainRaw` —
+//! that's the whole point.
+//!
+//! Internal callers that legitimately need raw access (db-private
+//! helpers, replay lib, terminal_sweeper, tests) reach `&dyn Repo` via
+//! `AppState::raw_repo()` — the ugly name is a deliberate signal that
+//! you're stepping outside the gate.
 
 use crate::error::Result;
 use crate::event::Event;
@@ -71,165 +115,76 @@ pub type WriteWithEventFn<'a> = Box<
         + 'a,
 >;
 
+// ---------------------------------------------------------------------------
+// Sub-trait split. See the "Trait capability split" section in the module
+// docs for the rationale. Each sub-trait carries `Send + Sync + 'static` so
+// the resulting trait objects can live in `Arc<dyn ...>`.
+//
+// One implementation note: every sub-trait below uses `#[async_trait]` and
+// is dyn-compatible (no generic methods, no `Self` in return types). The
+// `RouteRepo` alias is also dyn-compatible because the only methods it
+// "carries" are inherited via supertraits — `dyn RouteRepo` upcasts to
+// `dyn RepoEventWrite` (and from there to `dyn RepoRead`) via the same
+// vtable, since trait objects with supertrait constraints have a single
+// merged vtable layout.
+// ---------------------------------------------------------------------------
+
+/// Universal read surface. Anything that can hand out a `&dyn RepoRead`
+/// permits arbitrary reads; no writes are reachable from here.
 #[async_trait]
-pub trait Repo: Send + Sync + 'static {
+pub trait RepoRead: Send + Sync + 'static {
     // ---- coves
     async fn coves_list(&self) -> Result<Vec<Cove>>;
     async fn cove_get(&self, id: &str) -> Result<Option<Cove>>;
-    async fn cove_create(&self, p: NewCove) -> Result<Cove>;
-    async fn cove_update(&self, id: &str, p: CovePatch) -> Result<Cove>;
-    async fn cove_delete(&self, id: &str) -> Result<()>;
 
     // ---- waves
     async fn waves_by_cove(&self, cove_id: &str) -> Result<Vec<Wave>>;
     async fn wave_get(&self, id: &str) -> Result<Option<Wave>>;
     async fn wave_detail(&self, id: &str) -> Result<Option<WaveDetail>>;
-    async fn wave_create(&self, p: NewWave) -> Result<Wave>;
-    async fn wave_update(&self, id: &str, p: WavePatch) -> Result<Wave>;
-    async fn wave_delete(&self, id: &str) -> Result<()>;
 
     // ---- cards
     async fn cards_by_wave(&self, wave_id: &str) -> Result<Vec<Card>>;
     async fn card_get(&self, id: &str) -> Result<Option<Card>>;
-    async fn card_create(&self, p: NewCard) -> Result<Card>;
-    async fn card_update(&self, id: &str, p: CardPatch) -> Result<Card>;
-    async fn card_delete(&self, id: &str) -> Result<()>;
 
     // ---- overlays
-    /// Upserts on the `(plugin_id, entity_kind, entity_id, kind)` unique tuple.
-    async fn overlay_upsert(&self, p: NewOverlay) -> Result<Overlay>;
-    async fn overlay_delete(
-        &self,
-        plugin_id: &str,
-        entity_kind: &str,
-        entity_id: &str,
-        kind: &str,
-    ) -> Result<()>;
     async fn overlays_for(&self, entity_kind: &str, entity_id: &str) -> Result<Vec<Overlay>>;
     /// List every overlay attached to entities of the given `entity_kind`
     /// (e.g. `"wave"`), regardless of `entity_id`. Used by the sidebar so
     /// wave status indicators stay accurate without per-wave detail fetches.
     async fn overlays_by_kind(&self, entity_kind: &str) -> Result<Vec<Overlay>>;
 
-    // ---- terminals
-    async fn terminal_create(&self, p: NewTerminal) -> Result<Terminal>;
+    // ---- terminals (read-only)
     async fn terminal_get(&self, id: &str) -> Result<Option<Terminal>>;
     async fn terminal_get_by_card(&self, card_id: &str) -> Result<Option<Terminal>>;
-    async fn terminal_set_handle(&self, id: &str, handle: Option<&str>) -> Result<()>;
-    /// Persist the daemon PID captured by `routes::terminal::spawn_daemon_for`
-    /// (and the WS-side revive path). The orphan-terminal sweeper uses this
-    /// as a SIGTERM fallback target when graceful `ClientMsg::Kill` fails.
-    async fn terminal_set_pid(&self, id: &str, pid: Option<u32>) -> Result<()>;
     /// Return every terminal row that has no card pointing at it via
     /// `cards.payload.terminal_id`, and whose `created_at` is older than
     /// `grace_seconds` ago. The grace window absorbs the 3-step
     /// terminal-card create race (see `web/src/app/eventBridge.tsx:60-70`).
     /// Used exclusively by the `terminal_sweeper` background task.
     async fn terminals_orphaned(&self, grace_seconds: i64) -> Result<Vec<Terminal>>;
-    /// Remove a terminal row by id. Sibling to `card_delete` etc.; surfaced
-    /// on the trait so the sweeper can call it from inside its
-    /// `write_with_event` closure via the `_tx`-suffixed helper.
-    async fn terminal_delete(&self, id: &str) -> Result<()>;
 
-    // ---- plugins
-    //
-    // M3 (Slice A) surface: install / enable / get-by-id / delete / list-all.
-    // `plugins_list` is kept as a thin alias around `plugins_list_all` so
-    // Slice D's REST handler (and the existing stub) can keep calling it.
+    // ---- plugins (read-only)
     async fn plugins_list(&self) -> Result<Vec<Plugin>>;
     async fn plugins_list_all(&self) -> Result<Vec<Plugin>>;
     async fn plugin_get_by_id(&self, id: &str) -> Result<Option<Plugin>>;
-    /// Upsert by id. The repo stamps `installed_at` (preserving the existing
-    /// value on update) and `updated_at`. `enabled` defaults to false on the
-    /// install row — the user (or Slice D's enable endpoint) flips it later.
-    async fn plugin_install(&self, p: NewPlugin) -> Result<Plugin>;
-    async fn plugin_update_enabled(&self, id: &str, enabled: bool) -> Result<Plugin>;
-    /// Overwrite `user_config` (the opaque JSON blob the PATCH config route
-    /// writes). The repo stamps `updated_at`; everything else is preserved.
-    async fn plugin_update_user_config(
-        &self,
-        id: &str,
-        user_config: serde_json::Value,
-    ) -> Result<Plugin>;
-    /// Overwrite the persisted manifest blob. The reload route calls this
-    /// after re-reading manifest.json from disk so subsequent `GET
-    /// /api/plugins/:id` responses (which read from the DB row, not the
-    /// live registry) reflect on-disk reality.
-    async fn plugin_update_manifest(&self, id: &str, manifest: serde_json::Value)
-    -> Result<Plugin>;
-    async fn plugin_delete(&self, id: &str) -> Result<()>;
-
-    /// Drop every overlay owned by a plugin. Slice D's uninstall route fires
-    /// this so a deleted plugin's overlays don't render as ghosts. (Design
-    /// doc §2.7 calls this out as the default; the alternative — "keep for
-    /// forensics" — is what users have to opt into manually.)
-    async fn overlays_clear_by_plugin(&self, plugin_id: &str) -> Result<()>;
-
-    /// Drop every KV row owned by a plugin. Called from the uninstall path so
-    /// per-plugin KV doesn't outlive the install row.
-    async fn plugin_kv_clear(&self, plugin_id: &str) -> Result<()>;
-
-    // ---- per-plugin tokens (Slice H wires the lifecycle; Slice A just owns
-    // the storage). Hash is hex-encoded `SHA-256(raw_token)`; expires_at is
-    // unix millis (matches the rest of the kernel's `*_at` columns).
-    async fn plugin_token_set(
-        &self,
-        plugin_id: &str,
-        hashed_token: &str,
-        expires_at: i64,
-    ) -> Result<()>;
     async fn plugin_token_get(&self, plugin_id: &str) -> Result<Option<(String, i64)>>;
-    async fn plugin_token_delete(&self, plugin_id: &str) -> Result<()>;
-
-    // ---- per-plugin KV store (Slice C will surface to plugins via
-    // `neige.kv.*`; Slice A owns the bare CRUD). Values are arbitrary JSON;
-    // the kernel does not parse semantics, but it does enforce per-plugin
-    // namespacing at this trait layer (no method takes a global key).
     async fn plugin_kv_get(&self, plugin_id: &str, key: &str) -> Result<Option<serde_json::Value>>;
-    async fn plugin_kv_set(
-        &self,
-        plugin_id: &str,
-        key: &str,
-        value: &serde_json::Value,
-    ) -> Result<()>;
     async fn plugin_kv_list(
         &self,
         plugin_id: &str,
         prefix: &str,
     ) -> Result<Vec<(String, serde_json::Value)>>;
-    async fn plugin_kv_delete(&self, plugin_id: &str, key: &str) -> Result<()>;
 
-    // ---- app-global settings (Settings page, codex spawn proxy override).
-    //
-    // Tiny KV. `settings_get_all` returns every key/value pair the kernel
-    // owns; the Settings route just hands it back, and `routes::codex`
-    // reads the snapshot at spawn time to derive HTTP_PROXY env overrides.
-    // `settings_upsert` is per-key INSERT OR REPLACE; an empty string is
-    // treated as a delete on the *route* boundary (callers can still
-    // upsert an empty value if they have a reason to).
+    // ---- settings (read-only)
     async fn settings_get_all(&self) -> Result<Vec<(String, String)>>;
-    async fn settings_upsert(&self, key: &str, value: &str) -> Result<()>;
-    async fn settings_delete(&self, key: &str) -> Result<()>;
+}
 
-    // ---- sync engine (phase 1) ------------------------------------------
-    //
-    // `write_with_event` is the *only* public path that writes events to
-    // the kernel's persistent log. The raw `INSERT INTO events` lives
-    // privately on `SqlxRepo`; see `sqlite::SqlxRepo::event_append_in_tx`.
-    //
-    // Two reasons to keep the raw form off the trait:
-    //
-    //  1. Two parallel paths invite handlers to drift back to the raw
-    //     form, bypassing the `write_with_event` transaction guarantee.
-    //  2. Loosening the surface later (if a real use case shows up) is
-    //     trivial; tightening it after callers have spread is hard.
-    //
-    // `log_pure_event` is the sibling for events that don't have an
-    // associated entity write — `Event::PluginState`,
-    // `Event::CodexHook`. It runs its own minimal transaction (just the
-    // events insert) so every event still has a real `events.id` to
-    // stamp on the wire envelope.
-
+/// Eventized write surface. The **only** path that writes to the persistent
+/// event log + broadcasts on the bus. Carries `RepoRead` as a supertrait
+/// because every write closure typically needs to read a parent row first
+/// (and any read is also legal from inside the closure).
+#[async_trait]
+pub trait RepoEventWrite: RepoRead {
     /// Atomic write + event-log invariant: run the closure inside one
     /// sqlx transaction, then `INSERT INTO events ... RETURNING id` in
     /// the same txn, commit, and emit `BroadcastEnvelope { id, event }`
@@ -305,21 +260,185 @@ pub trait Repo: Send + Sync + 'static {
     async fn events_earliest_id(&self) -> Result<Option<i64>>;
 }
 
+/// Raw sync-domain entity writes. Gated: the trait object `RouteRepo` that
+/// `AppState::repo` exposes does **not** carry this supertrait, so route
+/// handlers cannot call these methods. They live on the trait so the
+/// concrete `SqlxRepo` impl can be addressed by db-internal helpers, the
+/// replay lib, and tests via `AppState::raw_repo()`.
+///
+/// Sync-domain == the per-user/per-AI co-edit shared state surface defined
+/// by the sync engine: coves, waves, cards, overlays. Any direct write here
+/// bypasses `write_with_event` and is therefore invisible to replicas — the
+/// whole reason this surface is gated.
+#[async_trait]
+pub trait RepoSyncDomainRaw: RepoRead {
+    // ---- coves
+    async fn cove_create(&self, p: NewCove) -> Result<Cove>;
+    async fn cove_update(&self, id: &str, p: CovePatch) -> Result<Cove>;
+    async fn cove_delete(&self, id: &str) -> Result<()>;
+
+    // ---- waves
+    async fn wave_create(&self, p: NewWave) -> Result<Wave>;
+    async fn wave_update(&self, id: &str, p: WavePatch) -> Result<Wave>;
+    async fn wave_delete(&self, id: &str) -> Result<()>;
+
+    // ---- cards
+    async fn card_create(&self, p: NewCard) -> Result<Card>;
+    async fn card_update(&self, id: &str, p: CardPatch) -> Result<Card>;
+    async fn card_delete(&self, id: &str) -> Result<()>;
+
+    // ---- overlays
+    /// Upserts on the `(plugin_id, entity_kind, entity_id, kind)` unique tuple.
+    async fn overlay_upsert(&self, p: NewOverlay) -> Result<Overlay>;
+    async fn overlay_delete(
+        &self,
+        plugin_id: &str,
+        entity_kind: &str,
+        entity_id: &str,
+        kind: &str,
+    ) -> Result<()>;
+}
+
+/// Out-of-sync-domain writes: terminal lifecycle, plugin install/config,
+/// app-global settings. Deliberately **not** event-sourced — these are
+/// server-private operational state, not shared co-edit state. Routes
+/// see this surface (plugin install REST, settings PUT, the terminal
+/// PID-persist sidecar).
+#[async_trait]
+pub trait RepoOutOfDomain: RepoRead {
+    // ---- terminals (writes)
+    async fn terminal_create(&self, p: NewTerminal) -> Result<Terminal>;
+    async fn terminal_set_handle(&self, id: &str, handle: Option<&str>) -> Result<()>;
+    /// Persist the daemon PID captured by `routes::terminal::spawn_daemon_for`
+    /// (and the WS-side revive path). The orphan-terminal sweeper uses this
+    /// as a SIGTERM fallback target when graceful `ClientMsg::Kill` fails.
+    async fn terminal_set_pid(&self, id: &str, pid: Option<u32>) -> Result<()>;
+    /// Remove a terminal row by id. Surfaced on the trait so the sweeper
+    /// can call it from inside its `write_with_event` closure via the
+    /// `_tx`-suffixed helper.
+    async fn terminal_delete(&self, id: &str) -> Result<()>;
+
+    // ---- plugins (writes)
+    //
+    // M3 (Slice A) surface: install / enable / get-by-id / delete / list-all.
+    /// Upsert by id. The repo stamps `installed_at` (preserving the existing
+    /// value on update) and `updated_at`. `enabled` defaults to false on the
+    /// install row — the user (or Slice D's enable endpoint) flips it later.
+    async fn plugin_install(&self, p: NewPlugin) -> Result<Plugin>;
+    async fn plugin_update_enabled(&self, id: &str, enabled: bool) -> Result<Plugin>;
+    /// Overwrite `user_config` (the opaque JSON blob the PATCH config route
+    /// writes). The repo stamps `updated_at`; everything else is preserved.
+    async fn plugin_update_user_config(
+        &self,
+        id: &str,
+        user_config: serde_json::Value,
+    ) -> Result<Plugin>;
+    /// Overwrite the persisted manifest blob. The reload route calls this
+    /// after re-reading manifest.json from disk so subsequent `GET
+    /// /api/plugins/:id` responses (which read from the DB row, not the
+    /// live registry) reflect on-disk reality.
+    async fn plugin_update_manifest(&self, id: &str, manifest: serde_json::Value)
+    -> Result<Plugin>;
+    async fn plugin_delete(&self, id: &str) -> Result<()>;
+
+    /// Drop every overlay owned by a plugin. Slice D's uninstall route fires
+    /// this so a deleted plugin's overlays don't render as ghosts. (Design
+    /// doc §2.7 calls this out as the default; the alternative — "keep for
+    /// forensics" — is what users have to opt into manually.)
+    async fn overlays_clear_by_plugin(&self, plugin_id: &str) -> Result<()>;
+
+    /// Drop every KV row owned by a plugin. Called from the uninstall path so
+    /// per-plugin KV doesn't outlive the install row.
+    async fn plugin_kv_clear(&self, plugin_id: &str) -> Result<()>;
+
+    // ---- per-plugin tokens (Slice H wires the lifecycle; Slice A just owns
+    // the storage). Hash is hex-encoded `SHA-256(raw_token)`; expires_at is
+    // unix millis (matches the rest of the kernel's `*_at` columns).
+    async fn plugin_token_set(
+        &self,
+        plugin_id: &str,
+        hashed_token: &str,
+        expires_at: i64,
+    ) -> Result<()>;
+    async fn plugin_token_delete(&self, plugin_id: &str) -> Result<()>;
+
+    // ---- per-plugin KV store (Slice C surfaces to plugins via `neige.kv.*`;
+    // Slice A owns the bare CRUD). Values are arbitrary JSON; the kernel
+    // does not parse semantics, but it does enforce per-plugin namespacing
+    // at this trait layer (no method takes a global key).
+    async fn plugin_kv_set(
+        &self,
+        plugin_id: &str,
+        key: &str,
+        value: &serde_json::Value,
+    ) -> Result<()>;
+    async fn plugin_kv_delete(&self, plugin_id: &str, key: &str) -> Result<()>;
+
+    // ---- app-global settings (Settings page, codex spawn proxy override).
+    //
+    // Tiny KV. `settings_upsert` is per-key INSERT OR REPLACE; an empty
+    // string is treated as a delete on the *route* boundary (callers can
+    // still upsert an empty value if they have a reason to).
+    async fn settings_upsert(&self, key: &str, value: &str) -> Result<()>;
+    async fn settings_delete(&self, key: &str) -> Result<()>;
+}
+
+/// Prelude module that re-exports every sub-trait + `Repo` itself so test
+/// modules and internal code can do `use calm_server::db::prelude::*` to
+/// bring all the method names into scope at once. Production code is
+/// expected to import the *narrowest* trait it actually needs (it
+/// reinforces the capability gate); the prelude exists because test code
+/// regularly seeds entity rows via every kind of write.
+pub mod prelude {
+    pub use super::{
+        Repo, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, RouteRepo,
+    };
+}
+
+/// The trait object route handlers actually see via `AppState::repo`.
+/// Excludes [`RepoSyncDomainRaw`] — that's the gate. Reads come in via
+/// the `RepoRead` supertrait, and the only writes reachable here are
+/// the event-sourced ones plus the out-of-domain operational writes.
+///
+/// Implemented blanket for any type that combines the two supertraits,
+/// so `SqlxRepo` (and any future repo impl) picks it up automatically.
+pub trait RouteRepo: RepoEventWrite + RepoOutOfDomain {}
+impl<T> RouteRepo for T where T: RepoEventWrite + RepoOutOfDomain + ?Sized {}
+
+/// Full repo capability. Declared as a supertrait of [`RouteRepo`] +
+/// [`RepoSyncDomainRaw`] so `Arc<dyn Repo>` upcasts to `Arc<dyn RouteRepo>`
+/// via stable trait-object upcasting (Rust 1.86+). The blanket impl picks
+/// up `SqlxRepo` automatically once it implements all four sub-traits.
+///
+/// `&dyn Repo` is the internal-access escape hatch used by db-internal
+/// helpers, the replay lib, terminal_sweeper, and tests. Production route
+/// handlers see the narrower [`RouteRepo`] trait object instead — see
+/// `AppState::repo`.
+pub trait Repo: RouteRepo + RepoSyncDomainRaw {}
+impl<T> Repo for T where T: RouteRepo + RepoSyncDomainRaw + ?Sized {}
+
 // ---------------------------------------------------------------------------
 // `write_with_event_typed` — ergonomic generic wrapper around the
 // dyn-compatible trait method.
 // ---------------------------------------------------------------------------
 
-/// Generic convenience wrapper over `Repo::write_with_event` for callers
-/// who want to return a typed row to their REST / plugin-host caller. The
-/// closure returns `(R, Event)`; we capture `R` in an outer mutex so the
-/// trait method's `WriteWithEventFn` (which only knows about `Event`) can
-/// stay dyn-compatible.
+/// Generic convenience wrapper over `RepoEventWrite::write_with_event` for
+/// callers who want to return a typed row to their REST / plugin-host
+/// caller. The closure returns `(R, Event)`; we capture `R` in an outer
+/// mutex so the trait method's `WriteWithEventFn` (which only knows about
+/// `Event`) can stay dyn-compatible.
+///
+/// The `&dyn RepoEventWrite` bound (rather than `&dyn Repo`) is the
+/// capability gate: a route handler whose `s.repo: Arc<dyn RouteRepo>`
+/// upcasts cleanly here, because `RouteRepo` is itself a `RepoEventWrite`.
+/// But the same handler can **not** reach raw sync-domain writes through
+/// `s.repo` — those live on `RepoSyncDomainRaw`, which `RouteRepo` does
+/// not extend.
 ///
 /// This is *purely sugar* — the underlying invariants (single transaction,
 /// commit-then-emit) come from the trait method.
 pub async fn write_with_event_typed<R, F>(
-    repo: &dyn Repo,
+    repo: &dyn RepoEventWrite,
     actor: &str,
     correlation: Option<&str>,
     bus: &crate::event::EventBus,

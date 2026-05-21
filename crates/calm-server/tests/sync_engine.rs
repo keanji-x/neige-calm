@@ -27,7 +27,7 @@
 
 use std::sync::Arc;
 
-use calm_server::db::Repo;
+use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, card_create_tx, cove_create_tx, overlay_upsert_tx, wave_create_tx,
 };

@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use calm_server::db::Repo;
+use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
 use calm_server::model::NewOverlay;
@@ -127,13 +127,13 @@ async fn boot_state() -> (AppState, TempDir, PathBuf) {
         Vec::new(),
         events.clone(),
     ));
-    let state = AppState {
+    let state = AppState::from_parts(
         repo,
         events,
-        daemon: Arc::new(DaemonClient::new_stub()),
+        Arc::new(DaemonClient::new_stub()),
         plugin,
-        codex: Arc::new(calm_server::state::CodexClient::new_stub()),
-    };
+        Arc::new(calm_server::state::CodexClient::new_stub()),
+    );
     (state, tmp, plugins_dir)
 }
 
@@ -405,7 +405,7 @@ async fn uninstall_cascades_satellites() {
         .await
         .unwrap();
     state
-        .repo
+        .raw_repo()
         .overlay_upsert(NewOverlay {
             plugin_id: "test.uninstall".into(),
             entity_kind: "wave".into(),

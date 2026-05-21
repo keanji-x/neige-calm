@@ -11,7 +11,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::Request;
 use calm_server::actor::actor_middleware;
-use calm_server::db::Repo;
+use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
@@ -23,13 +23,13 @@ use tower::ServiceExt;
 async fn ingest_emits_codex_hook_event() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let events = EventBus::new();
-    let state = AppState {
-        repo: repo.clone(),
-        events: events.clone(),
-        daemon: Arc::new(DaemonClient::new_stub()),
-        plugin: Arc::new(PluginHost::new(Arc::new(PluginRegistry::empty()), repo)),
-        codex: Arc::new(CodexClient::new_stub()),
-    };
+    let state = AppState::from_parts(
+        repo.clone(),
+        events.clone(),
+        Arc::new(DaemonClient::new_stub()),
+        Arc::new(PluginHost::new(Arc::new(PluginRegistry::empty()), repo)),
+        Arc::new(CodexClient::new_stub()),
+    );
     // Scope β: the actor middleware must be present — the `ingest_hook`
     // handler now extracts `Actor` from request extensions to honor the
     // `X-Calm-Actor` header the bridge sends. Without the middleware the
@@ -109,13 +109,13 @@ async fn create_codex_rejects_non_codex_card() {
         .await
         .unwrap();
 
-    let state = AppState {
-        repo: repo.clone(),
-        events: EventBus::new(),
-        daemon: Arc::new(DaemonClient::new_stub()),
-        plugin: Arc::new(PluginHost::new(Arc::new(PluginRegistry::empty()), repo)),
-        codex: Arc::new(CodexClient::new_stub()),
-    };
+    let state = AppState::from_parts(
+        repo.clone(),
+        EventBus::new(),
+        Arc::new(DaemonClient::new_stub()),
+        Arc::new(PluginHost::new(Arc::new(PluginRegistry::empty()), repo)),
+        Arc::new(CodexClient::new_stub()),
+    );
     // Scope G: production wiring includes the actor middleware on the REST
     // router; without it the `Actor` extractor returns 500 (its "middleware
     // not applied" branch). Mirror main.rs.

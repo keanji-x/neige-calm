@@ -23,7 +23,7 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use calm_server::actor::actor_middleware;
-use calm_server::db::Repo;
+use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
 use calm_server::model::{NewCove, NewWave};
@@ -70,16 +70,16 @@ async fn last_event_id(repo: &SqlxRepo, kind: &str) -> i64 {
 }
 
 fn base_state(repo: Arc<SqlxRepo>, events: EventBus) -> AppState {
-    AppState {
-        repo: repo.clone(),
+    AppState::from_parts(
+        repo.clone(),
         events,
-        daemon: Arc::new(DaemonClient::new_stub()),
-        plugin: Arc::new(PluginHost::new(
+        Arc::new(DaemonClient::new_stub()),
+        Arc::new(PluginHost::new(
             Arc::new(PluginRegistry::empty()),
             repo.clone(),
         )),
-        codex: Arc::new(CodexClient::new_stub()),
-    }
+        Arc::new(CodexClient::new_stub()),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -261,13 +261,13 @@ async fn plugin_tool_call_threads_call_id_as_correlation() {
         sleep(Duration::from_millis(25)).await;
     }
 
-    let state = AppState {
-        repo: repo.clone() as Arc<dyn Repo>,
+    let state = AppState::from_parts(
+        repo.clone() as Arc<dyn Repo>,
         events,
-        daemon: Arc::new(DaemonClient::new_stub()),
-        plugin: plugin_host.clone(),
-        codex: Arc::new(CodexClient::new_stub()),
-    };
+        Arc::new(DaemonClient::new_stub()),
+        plugin_host.clone(),
+        Arc::new(CodexClient::new_stub()),
+    );
 
     let body = json!({
         "name": "neige.overlay.set",
@@ -396,13 +396,13 @@ async fn plugin_tool_call_without_call_id_leaves_correlation_null() {
         sleep(Duration::from_millis(25)).await;
     }
 
-    let state = AppState {
-        repo: repo.clone() as Arc<dyn Repo>,
+    let state = AppState::from_parts(
+        repo.clone() as Arc<dyn Repo>,
         events,
-        daemon: Arc::new(DaemonClient::new_stub()),
-        plugin: plugin_host.clone(),
-        codex: Arc::new(CodexClient::new_stub()),
-    };
+        Arc::new(DaemonClient::new_stub()),
+        plugin_host.clone(),
+        Arc::new(CodexClient::new_stub()),
+    );
 
     // No call_id field at all — exercises serde default + "no allocation"
     // path of `CallbackCtx::correlation`.
@@ -532,13 +532,13 @@ async fn plugin_tool_call_treats_empty_call_id_as_absent() {
         sleep(Duration::from_millis(25)).await;
     }
 
-    let state = AppState {
-        repo: repo.clone() as Arc<dyn Repo>,
+    let state = AppState::from_parts(
+        repo.clone() as Arc<dyn Repo>,
         events,
-        daemon: Arc::new(DaemonClient::new_stub()),
-        plugin: plugin_host.clone(),
-        codex: Arc::new(CodexClient::new_stub()),
-    };
+        Arc::new(DaemonClient::new_stub()),
+        plugin_host.clone(),
+        Arc::new(CodexClient::new_stub()),
+    );
 
     // Empty-string call_id — must be normalized to absent, NOT produce
     // `correlation = "user_tool_call:"`.

@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use calm_server::db::Repo;
+use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
 use calm_server::model::{NewCard, NewCove, NewWave};
@@ -51,13 +51,13 @@ async fn boot() -> (AppState, String) {
         })
         .await
         .unwrap();
-    let state = AppState {
-        repo: repo.clone(),
-        events: EventBus::new(),
-        daemon: Arc::new(DaemonClient::new_stub()),
-        plugin: Arc::new(PluginHost::new(Arc::new(PluginRegistry::empty()), repo)),
-        codex: Arc::new(calm_server::state::CodexClient::new_stub()),
-    };
+    let state = AppState::from_parts(
+        repo.clone(),
+        EventBus::new(),
+        Arc::new(DaemonClient::new_stub()),
+        Arc::new(PluginHost::new(Arc::new(PluginRegistry::empty()), repo)),
+        Arc::new(calm_server::state::CodexClient::new_stub()),
+    );
     (state, wave.id)
 }
 
@@ -194,7 +194,7 @@ async fn patch_terminal_card_with_bad_payload_returns_400() {
     // Seed a terminal card directly via the repo so we can patch it.
     let (state, wave_id) = boot().await;
     let seeded = state
-        .repo
+        .raw_repo()
         .card_create(NewCard {
             wave_id: wave_id.clone(),
             kind: "terminal".into(),
@@ -220,7 +220,7 @@ async fn patch_ui_card_with_junk_payload_is_accepted() {
     // Patching a ui://* card must remain opaque too.
     let (state, wave_id) = boot().await;
     let seeded = state
-        .repo
+        .raw_repo()
         .card_create(NewCard {
             wave_id: wave_id.clone(),
             kind: "ui://example/view".into(),

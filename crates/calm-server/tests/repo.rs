@@ -5,7 +5,7 @@
 //! sort defaulting, `wave_detail` composition, overlay upsert idempotency,
 //! and terminal-per-card uniqueness.
 
-use calm_server::db::Repo;
+use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::error::CalmError;
 use calm_server::model::*;

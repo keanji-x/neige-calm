@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use calm_server::db::Repo;
+use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
 use calm_server::model::{NewCove, NewWave};
@@ -140,13 +140,13 @@ async fn boot(cfg: StubConfig<'_>) -> Fixture {
     plugin_host.spawn(cfg.plugin_id).await.expect("spawn");
     wait_for_running(&plugin_host, cfg.plugin_id).await;
 
-    let state = AppState {
+    let state = AppState::from_parts(
         repo,
         events,
-        daemon: Arc::new(DaemonClient::new_stub()),
-        plugin: plugin_host,
-        codex: Arc::new(calm_server::state::CodexClient::new_stub()),
-    };
+        Arc::new(DaemonClient::new_stub()),
+        plugin_host,
+        Arc::new(calm_server::state::CodexClient::new_stub()),
+    );
 
     Fixture {
         state,
