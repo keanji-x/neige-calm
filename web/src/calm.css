@@ -108,6 +108,18 @@ input, textarea { font: inherit; color: inherit; }
   background: oklch(98% 0.003 240);
 }
 [data-theme="dark"] .side { background: oklch(15% 0.008 245); }
+/* Sub-landmark wrappers (<nav>, <section>) inside the sidebar. They
+   exist for a11y scoping (see Sidebar.tsx + a11y-contract.md §2.2);
+   visually they're invisible — children should sit in the same flex
+   column as the outer .side, with the same gap. Matching the parent's
+   flex axis here is cheaper than `display: contents` and keeps Safari
+   ≤16.3 in the a11y-correct path. */
+.side .side-nav,
+.side .side-section {
+  display: flex; flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
 .side .nav-item {
   display: flex; align-items: center; gap: 10px;
   padding: 7px 10px;

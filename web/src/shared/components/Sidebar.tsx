@@ -22,17 +22,34 @@ export function Sidebar({
   onCreateCove?: (name: string, color: string) => void | Promise<void>;
 }) {
   const waitingWaves = waves.filter((w) => w.status === 'waiting');
+  // Sub-landmarks inside the outer <aside aria-label="Navigation">:
+  //   <nav aria-label="Sidebar navigation">  → Today button
+  //   <section aria-label="Waiting on you">  → side-wave rows (when any)
+  //   <nav aria-label="Coves">               → cove-nav buttons + New cove
+  // Two <nav>s rather than one because the "Waiting on you" section sits
+  // visually between Today and the cove list and reads as a third
+  // concern (waves needing attention) — folding the cove list into the
+  // top nav would either reorder the DOM or nest the section inside a
+  // nav. Both landmarks have unique accessible names so the
+  // `landmark-unique` axe rule stays green.
+  //
+  // Scoping role queries by these landmarks disambiguates buttons that
+  // share an accessible name across sections — e.g. a wave titled
+  // "Today" in the section vs. the Today nav button in the nav. See
+  // docs/a11y-contract.md §2.2.
   return (
     <aside className="side" aria-label="Navigation">
-      <button
-        className={'nav-item nav-today' + (route.name === 'today' ? ' active' : '')}
-        onClick={() => onGo({ name: 'today' })}
-      >
-        <span className="lbl">Today</span>
-      </button>
+      <nav className="side-nav" aria-label="Sidebar navigation">
+        <button
+          className={'nav-item nav-today' + (route.name === 'today' ? ' active' : '')}
+          onClick={() => onGo({ name: 'today' })}
+        >
+          <span className="lbl">Today</span>
+        </button>
+      </nav>
 
       {waitingWaves.length > 0 && (
-        <>
+        <section className="side-section" aria-label="Waiting on you">
           <div className="nav-label warn-text">Waiting on you</div>
           {waitingWaves.map((w) => {
             const cove = coves.find((c) => c.id === w.coveId);
@@ -49,42 +66,44 @@ export function Sidebar({
               </button>
             );
           })}
-        </>
+        </section>
       )}
 
-      <div className="nav-label">Coves</div>
-      {coves.map((cove) => {
-        const cw = waves.filter((w) => w.coveId === cove.id);
-        const running = cw.filter((w) => w.status === 'running').length;
-        const waiting = cw.filter((w) => w.status === 'waiting').length;
-        const active = route.name === 'cove' && route.coveId === cove.id;
-        return (
-          <button
-            key={cove.id}
-            className={'cove-nav' + (active ? ' active' : '')}
-            onClick={() => onGo({ name: 'cove', coveId: cove.id })}
-          >
-            <span className="swatch-wrap">
-              <span
-                className={'swatch' + (running > 0 ? ' pulse' : '')}
-                style={{ background: cove.color }}
-              />
-              {waiting > 0 && (
-                <span className="pip" aria-hidden="true">
-                  {waiting}
+      <nav className="side-nav" aria-label="Coves">
+        <div className="nav-label">Coves</div>
+        {coves.map((cove) => {
+          const cw = waves.filter((w) => w.coveId === cove.id);
+          const running = cw.filter((w) => w.status === 'running').length;
+          const waiting = cw.filter((w) => w.status === 'waiting').length;
+          const active = route.name === 'cove' && route.coveId === cove.id;
+          return (
+            <button
+              key={cove.id}
+              className={'cove-nav' + (active ? ' active' : '')}
+              onClick={() => onGo({ name: 'cove', coveId: cove.id })}
+            >
+              <span className="swatch-wrap">
+                <span
+                  className={'swatch' + (running > 0 ? ' pulse' : '')}
+                  style={{ background: cove.color }}
+                />
+                {waiting > 0 && (
+                  <span className="pip" aria-hidden="true">
+                    {waiting}
+                  </span>
+                )}
+              </span>
+              <span className="lbl">{cove.name}</span>
+              {cw.length > 0 && (
+                <span className="count" aria-hidden="true">
+                  {cw.length}
                 </span>
               )}
-            </span>
-            <span className="lbl">{cove.name}</span>
-            {cw.length > 0 && (
-              <span className="count" aria-hidden="true">
-                {cw.length}
-              </span>
-            )}
-          </button>
-        );
-      })}
-      {onCreateCove && <NewCoveButton onCreate={onCreateCove} />}
+            </button>
+          );
+        })}
+        {onCreateCove && <NewCoveButton onCreate={onCreateCove} />}
+      </nav>
 
       <span className="sp" />
       <div className="me-row">
