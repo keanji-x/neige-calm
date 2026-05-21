@@ -296,10 +296,15 @@ export class EventStream {
 
   private publishSub(): void {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
-    const payload: { sub: string[]; since?: number } = { sub: [...this.topics] };
-    if (this.lastEventId !== null) {
-      payload.since = this.lastEventId;
-    }
+    // Always send `since`: fresh clients (no cursor) request a full replay
+    // with `since: 0` so fixture-seeded events emitted before WS connect
+    // still reach the trace ring buffer. Server treats `since: 0` as
+    // "from the beginning of the event log" (see
+    // crates/calm-server/src/ws/events.rs).
+    const payload: { sub: string[]; since: number } = {
+      sub: [...this.topics],
+      since: this.lastEventId ?? 0,
+    };
     this.ws.send(JSON.stringify(payload));
   }
 }

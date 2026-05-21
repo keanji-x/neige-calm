@@ -195,16 +195,19 @@ describe('EventStream reconnect', () => {
     expect(last.since).toBe(17);
   });
 
-  it('omits `since` when no cursor is set (backward compat)', () => {
+  it('sends since=0 when no cursor is set (fresh client full replay)', () => {
     const s = new EventStream('ws://test/api/events');
     s.subscribe(['*']);
     s.start();
     const ws = currentWs();
     ws.open();
 
+    // Fresh client must request `since: 0` so the server replays the full
+    // event log — otherwise fixture-seeded events emitted before WS
+    // connect never reach the client trace ring buffer.
     const last = lastSentSub(ws);
     expect(last.sub).toEqual(['*']);
-    expect('since' in last).toBe(false);
+    expect(last.since).toBe(0);
   });
 
   it('cursor persists across reconnect and is sent on the next sub', async () => {
