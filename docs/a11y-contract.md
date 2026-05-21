@@ -37,9 +37,9 @@ Each domain object in Neige has a recommended role/name pattern. When you add a 
 
 A workspace cluster — the top-level grouping of work in the sidebar.
 
-- **Sidebar Cove nav item**: rendered as a `<button>` whose accessible name is the cove name (the swatch and count are visual decoration, not part of the name). Source: `web/src/shared/components/Sidebar.tsx:72-87`, wrapped in the `<nav aria-label="Coves">` sub-landmark. There is no `aria-label`; the visible text label inside `<span className="lbl">` *is* the accessible name, which is the right call — a screen reader reads "Atlas", not "Atlas 3" (we don't want the count count read as part of the name).
+- **Sidebar Cove nav item**: rendered as a `<button>` whose accessible name is the cove name (the swatch and count are visual decoration, not part of the name). Source: `web/src/shared/components/Sidebar.tsx:80-102`, wrapped in the `<nav aria-label="Coves">` sub-landmark. There is no `aria-label`; the visible text label inside `<span className="lbl">` *is* the accessible name, which is the right call — a screen reader reads "Atlas", not "Atlas 3" (we don't want the count count read as part of the name).
 - **CovePage heading**: `<h1 className="h-display">` wrapping a `<button>` (when rename is available) or a plain `<h1>` (when it's read-only). The rename button carries `aria-label={value}` (the cove name) so heading-nav (`H` key in screen readers) announces e.g. "Atlas, heading level 1" without a "Rename cove name:" prefix. The rename verb is carried by a visually-hidden sibling `<span className="sr-only">` placed *outside* the `<h1>` and referenced via `aria-describedby`; AT verbalizes "Rename cove name" as the button's *description* when the button is focused. Source: `web/src/pages/Cove.tsx:286-313`. Arrow-into-actionable lands on the inner button.
-- **New cove**: bootstrap-only sidebar affordance. Button with visible label "New cove". Source: `web/src/shared/components/Sidebar.tsx:143-152`, inside the `<nav aria-label="Coves">` sub-landmark.
+- **New cove**: bootstrap-only sidebar affordance. Button with visible label "New cove". Source: `web/src/shared/components/Sidebar.tsx:161-167`, inside the `<nav aria-label="Coves">` sub-landmark.
 
 ### 2.2 Wave
 
