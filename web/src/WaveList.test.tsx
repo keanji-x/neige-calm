@@ -220,8 +220,9 @@ describe('WaveList — reorder via Alt+ArrowUp/Down', () => {
     });
 
     // Two mutations: card 'a' gets sort 20 (was b's), card 'b' gets sort
-    // 10 (was a's). The order they're invoked in isn't guaranteed
-    // (Promise.all kicks both off concurrently); we assert on the set.
+    // 10 (was a's). Both must be invoked. The sequential-vs-concurrent
+    // contract is locked separately in the next test ("swap waits for the
+    // first mutation to resolve before firing the second").
     await waitFor(() =>
       expect((api.updateCard as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2),
     );
@@ -231,6 +232,70 @@ describe('WaveList — reorder via Alt+ArrowUp/Down', () => {
       seen[id as string] = (body as { sort: number }).sort;
     }
     expect(seen).toEqual({ a: 20, b: 10 });
+  });
+
+  it('swap waits for the first mutation to resolve before firing the second', async () => {
+    // The two updateCard calls MUST be sequential, not Promise.all. Concurrent
+    // mutations race their onMutate cache snapshots and the second optimistic
+    // write shadows the first, leaving a brief equal-sort UI rendering. A
+    // future refactor to Promise.all would silently re-introduce that race;
+    // this test fails loudly if anyone tries.
+    let resolveFirst: (value: unknown) => void = () => {};
+    const firstPending = new Promise((r) => {
+      resolveFirst = r;
+    });
+    (api.updateCard as ReturnType<typeof vi.fn>)
+      .mockImplementationOnce(() => firstPending)
+      .mockResolvedValueOnce({
+        id: 'b',
+        wave_id: 'w1',
+        kind: 'terminal',
+        sort: 10,
+        payload: null,
+        updated_at: Date.now(),
+        created_at: 0,
+      });
+
+    render(
+      <Wrapper client={makeClient()}>
+        <WaveList
+          waveId="w1"
+          cards={[slot('a', 10), slot('b', 20)]}
+          onRemoveCard={() => {}}
+        />
+      </Wrapper>,
+    );
+
+    const items = screen.getAllByRole('listitem');
+    items[0].focus();
+    act(() => {
+      fireEvent.keyDown(items[0], { key: 'ArrowDown', altKey: true });
+    });
+
+    // Let any synchronous + microtask work flush. Under Promise.all both
+    // mutations would already be invoked here; under sequential await only
+    // the first call is in flight.
+    await new Promise((r) => setTimeout(r, 20));
+    expect((api.updateCard as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
+    expect((api.updateCard as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe('a');
+
+    // Release the first mutation; the second should now fire.
+    act(() => {
+      resolveFirst({
+        id: 'a',
+        wave_id: 'w1',
+        kind: 'terminal',
+        sort: 20,
+        payload: null,
+        updated_at: Date.now(),
+        created_at: 0,
+      });
+    });
+
+    await waitFor(() =>
+      expect((api.updateCard as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2),
+    );
+    expect((api.updateCard as ReturnType<typeof vi.fn>).mock.calls[1][0]).toBe('b');
   });
 
   it('Alt+ArrowUp on the first card is a no-op (no mutations)', async () => {
