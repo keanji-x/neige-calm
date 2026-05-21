@@ -65,7 +65,21 @@ impl SqlxRepo {
             .connect_with(opts)
             .await?;
 
-        sqlx::migrate!("./migrations")
+        let migrator = sqlx::migrate!("./migrations");
+
+        // Tier-A upgrade stability boundary (`docs/upgrade-stability.md`):
+        // refuse to boot when the DB carries a migration row that this
+        // binary doesn't know about. Downgrade is unsupported — an older
+        // binary opening a newer DB must fail loudly here rather than
+        // continue against a schema it can't reason about. sqlx 0.8.x's
+        // own `run()` would also refuse (via `MigrateError::VersionMissing`
+        // unless `set_ignore_missing(true)` is set), but we check first so
+        // (a) the error message wording is owned by us, not sqlx, and (b)
+        // sqlx never gets a chance to apply any pending known migration
+        // before we've rejected the open.
+        check_no_unknown_future_migrations(&pool, &migrator).await?;
+
+        migrator
             .run(&pool)
             .await
             .map_err(|e| CalmError::Internal(format!("migrate: {e}")))?;
@@ -138,6 +152,73 @@ impl SqlxRepo {
 }
 
 // ---- helpers -----------------------------------------------------------------
+
+/// Tier-A upgrade stability guard: refuse to boot when `_sqlx_migrations`
+/// contains a `version` not known to the binary's embedded `Migrator`.
+///
+/// This is the "old binary reading new DB" case from
+/// `docs/upgrade-stability.md`. Downgrade is unsupported — once the user's
+/// data has been migrated forward, an older binary must not continue
+/// against a schema it can't reason about.
+///
+/// Behavior:
+///
+/// * The `_sqlx_migrations` table may not exist on a brand-new DB (sqlx
+///   creates it on first `run()`). Treat absence as "no applied migrations
+///   yet" — opens normally.
+/// * `success = false` rows are still included in the diff: their `version`
+///   is what matters for "binary doesn't know about". A half-applied future
+///   migration is still a future migration.
+/// * If multiple unknown versions exist, the error names the lowest one
+///   (most useful for debugging: it's the first row that drifted past
+///   what this binary knows). The remaining unknown versions are appended
+///   in parentheses so operators can see the full extent of the drift.
+async fn check_no_unknown_future_migrations(
+    pool: &SqlitePool,
+    migrator: &sqlx::migrate::Migrator,
+) -> Result<()> {
+    // Does `_sqlx_migrations` exist? `sqlite_master` is always present.
+    // We pre-check existence rather than catching the "no such table"
+    // error so we don't conflate it with a real driver failure.
+    let table_exists: Option<(String,)> = sqlx::query_as(
+        r#"SELECT name FROM sqlite_master
+           WHERE type = 'table' AND name = '_sqlx_migrations'"#,
+    )
+    .fetch_optional(pool)
+    .await?;
+    if table_exists.is_none() {
+        return Ok(());
+    }
+
+    let applied: Vec<(i64,)> =
+        sqlx::query_as(r#"SELECT version FROM _sqlx_migrations ORDER BY version ASC"#)
+            .fetch_all(pool)
+            .await?;
+
+    let known: std::collections::HashSet<i64> = migrator.iter().map(|m| m.version).collect();
+    let mut unknown: Vec<i64> = applied
+        .into_iter()
+        .map(|(v,)| v)
+        .filter(|v| !known.contains(v))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    let lowest = unknown[0];
+    let detail = if unknown.len() == 1 {
+        String::new()
+    } else {
+        // List the remaining unknown versions so operators can see the
+        // full forward-drift surface without grepping the DB themselves.
+        let rest: Vec<String> = unknown[1..].iter().map(|v| v.to_string()).collect();
+        format!(" (additional unknown versions: {})", rest.join(", "))
+    };
+    Err(CalmError::Internal(format!(
+        "database has migration {lowest} applied that this binary doesn't know about \
+         — refusing to boot; downgrade is not supported{detail}"
+    )))
+}
 
 /// Compute the next sort value (max + 1) within a scoped table.
 ///
