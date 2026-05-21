@@ -3,7 +3,7 @@
 //! Writes go through `Repo::write_with_event` (via the
 //! `write_with_event_typed` ergonomic wrapper). The wrapper atomically
 //! commits the entity write + the events-table insert, then broadcasts a
-//! `BroadcastEnvelope { id, event }` on the bus. Handler-level `events.emit`
+//! `BroadcastEnvelope { id, actor, event }` on the bus. Handler-level `events.emit`
 //! calls are gone after Scope A; see `docs/sync-engine-design.md` §3.
 
 use crate::actor::Actor;

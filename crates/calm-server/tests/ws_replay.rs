@@ -204,14 +204,17 @@ async fn subscribe_without_since_only_live() {
     // `id = 0`; the assertion below intentionally accepts that as a
     // canary — the client never advances its cursor off these frames,
     // which is the right behavior for unpersisted broadcasts.)
-    bus.emit(Event::CoveUpdated(calm_server::model::Cove {
-        id: "live-only".into(),
-        name: "n".into(),
-        color: "#fff".into(),
-        sort: 0.0,
-        created_at: 0,
-        updated_at: 0,
-    }));
+    bus.emit(
+        "user",
+        Event::CoveUpdated(calm_server::model::Cove {
+            id: "live-only".into(),
+            name: "n".into(),
+            color: "#fff".into(),
+            sort: 0.0,
+            created_at: 0,
+            updated_at: 0,
+        }),
+    );
 
     let v = recv_json(&mut ws).await;
     assert_eq!(v["ev"], "cove.updated");

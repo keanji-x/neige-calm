@@ -411,13 +411,12 @@ fn infer_wave_id(fixture: &Fixture) -> Option<String> {
 /// Honored by `calm-server` when `RECORD_SESSION=<path>` is set in the
 /// environment. The resulting file is directly playable by `replay --file`.
 ///
+/// The `actor` field on each recorded line is whatever the producing
+/// `write_with_event` / `log_pure_event` call passed through — i.e. the
+/// declared identity from `X-Calm-Actor` or the handler's `Actor::kernel()`
+/// constant. Replayed traces preserve real attribution (issue #39).
+///
 /// Limitations (design doc §6.3 calls this out):
-///   - Actor is not currently threaded through `BroadcastEnvelope`, so
-///     every recorded event lands with `actor: "unknown"`. Replaying the
-///     trace produces the same `events.kind` rows; the actor field can be
-///     hand-edited if it matters for the assertion. Follow-up tracked
-///     in issue #39 (`[sync-engine] Thread actor through
-///     BroadcastEnvelope so RECORD_SESSION captures real actors`).
 ///   - The leading entity snapshot mentioned in §6.3 is deferred: a
 ///     snapshot would let a fixture target a non-empty starting state
 ///     without re-seeding from scratch, but the existing §6.3 fixtures
@@ -460,10 +459,11 @@ pub fn spawn_session_recorder(bus: &EventBus, path: std::path::PathBuf) {
                     let payload = envelope.event.payload_value();
                     let line = serde_json::json!({
                         "kind": kind,
-                        // Actor is not present on `BroadcastEnvelope` —
-                        // see module docs. Recorded as a placeholder so
-                        // the file remains valid for `replay --file`.
-                        "actor": "unknown",
+                        // Real per-event attribution carried on the
+                        // envelope by the wrapper that committed the
+                        // events row (issue #39). The replay loader
+                        // round-trips this field verbatim.
+                        "actor": envelope.actor,
                         "payload": payload,
                     });
                     if let Err(e) = writeln!(writer, "{line}") {
