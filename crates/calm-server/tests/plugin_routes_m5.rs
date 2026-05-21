@@ -120,7 +120,9 @@ async fn boot(cfg: FxConfig<'_>) -> Fixture {
     .expect("seed plugin row");
     let plugin_host = Arc::new(PluginHost::new_full(
         Arc::new(registry),
-        Arc::clone(&repo),
+        // method-call clone is a coercion site for the `Arc<dyn Repo>` →
+        // `Arc<dyn RouteRepo>` upcast (PR #41 — kernel-narrow).
+        repo.clone(),
         plugins_dir,
         plugins_data_dir,
         Vec::new(),

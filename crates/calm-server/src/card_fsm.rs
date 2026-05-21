@@ -50,7 +50,7 @@ use tokio::sync::Mutex;
 use tokio::time::{Instant, sleep_until};
 
 use crate::db::sqlite::overlay_upsert_tx;
-use crate::db::{Repo, write_with_event_typed};
+use crate::db::{RepoEventWrite, write_with_event_typed};
 use crate::event::{Event, EventBus};
 use crate::model::NewOverlay;
 
@@ -142,7 +142,15 @@ fn codex_kind_to_state(kind: &str) -> Option<State> {
 // ---------------------------------------------------------------------------
 
 /// Spawn the FSM task. Subscribes to `bus`, owns its own state map.
-pub fn spawn(repo: Arc<dyn Repo>, bus: EventBus) {
+///
+/// Takes the narrow `Arc<dyn RepoEventWrite>` rather than the full
+/// `Arc<dyn Repo>` — the projector only does eventized writes (overlay
+/// upserts via `write_with_event_typed`) plus reads (`card_get`,
+/// `cards_by_wave`) inherited from the `RepoRead` supertrait. Raw
+/// sync-domain writes like `overlay_upsert` / `card_update` are
+/// deliberately unreachable here so a future contributor can't quietly
+/// bypass the event-log invariant (PR #41).
+pub fn spawn(repo: Arc<dyn RepoEventWrite>, bus: EventBus) {
     let mut rx = bus.subscribe();
     let bus_clone = bus.clone();
     tokio::spawn(async move {
@@ -164,7 +172,7 @@ pub fn spawn(repo: Arc<dyn Repo>, bus: EventBus) {
 // ---------------------------------------------------------------------------
 
 struct Inner {
-    repo: Arc<dyn Repo>,
+    repo: Arc<dyn RepoEventWrite>,
     bus: EventBus,
     /// `card_id → (committed_state, pending_downgrade_deadline)`.
     ///
@@ -189,7 +197,7 @@ struct PendingDowngrade {
 }
 
 impl Inner {
-    fn new(repo: Arc<dyn Repo>, bus: EventBus) -> Self {
+    fn new(repo: Arc<dyn RepoEventWrite>, bus: EventBus) -> Self {
         Self {
             repo,
             bus,
@@ -444,6 +452,11 @@ mod tests {
 
     // ----- end-to-end behavior tests against an in-memory repo --------------
 
+    // Tests seed fixtures via raw sync-domain writes (`cove_create`,
+    // `wave_create`, `card_create`), so they need the full `Repo`. Production
+    // `spawn` takes the narrowed `Arc<dyn RepoEventWrite>` — the call below
+    // relies on stable trait-object coercion at the function-argument site.
+    use crate::db::Repo;
     use crate::db::sqlite::SqlxRepo;
     use crate::model::{NewCard, NewCove, NewWave};
     use serde_json::Value;

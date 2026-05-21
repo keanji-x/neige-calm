@@ -21,7 +21,7 @@ use tokio::task::JoinHandle;
 use crate::db::sqlite::{
     card_create_tx, card_delete_tx, card_update_tx, overlay_delete_tx, overlay_upsert_tx,
 };
-use crate::db::{Repo, write_with_event_typed};
+use crate::db::{RouteRepo, write_with_event_typed};
 use crate::event::{Event, EventBus};
 use crate::model::{CardPatch, NewCard, NewOverlay};
 use crate::validation::{validate_card_payload, validate_overlay_payload};
@@ -44,7 +44,12 @@ static NEXT_SUB_ID: AtomicU64 = AtomicU64::new(1);
 pub struct CallbackCtx<'a> {
     /// The kernel-enforced plugin identity. NOT taken from request params.
     pub plugin_id: &'a str,
-    pub repo: Arc<dyn Repo>,
+    /// Narrowed (PR #41) from `Arc<dyn Repo>` to `Arc<dyn RouteRepo>` — the
+    /// callback dispatcher only does eventized writes + out-of-domain
+    /// plugin/kv writes + reads. Raw sync-domain writes (`card_update`,
+    /// `overlay_upsert`, `cove_create`, …) are unreachable so a plugin's
+    /// inbound RPC can't quietly bypass the audit log.
+    pub repo: Arc<dyn RouteRepo>,
     pub event_bus: Arc<EventBus>,
     pub registry: Arc<PluginRegistry>,
     /// Outbound MCP channel — used to deliver subscription notifications.
@@ -712,6 +717,11 @@ async fn kv_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Tests still seed fixtures via raw sync-domain writes (`cove_create`,
+    // `wave_create`, `card_create`), so the harness keeps a full
+    // `Arc<dyn Repo>`. Production `CallbackCtx::repo` is the narrowed
+    // `Arc<dyn RouteRepo>` — `ctx()` does the upcast.
+    use crate::db::Repo;
     use crate::db::sqlite::SqlxRepo;
     use crate::event::EventBus;
     use crate::model::{NewCove, NewPlugin, NewWave};
@@ -884,9 +894,16 @@ mod tests {
         }
 
         fn ctx(&self) -> CallbackCtx<'_> {
+            // Upcast `Arc<dyn Repo>` (held in the harness so fixture seeds
+            // like `cove_create` / `wave_create` work) to the narrow
+            // `Arc<dyn RouteRepo>` the production `CallbackCtx` exposes.
+            // The let-binding with explicit type drives stable trait-object
+            // upcasting (Rust 1.86+) — `Arc::clone(&_)` alone wouldn't
+            // coerce because its return type is `Arc<dyn Repo>`.
+            let route_repo: Arc<dyn RouteRepo> = self.ctx_storage.repo.clone();
             CallbackCtx {
                 plugin_id: &self.ctx_storage.plugin_id,
-                repo: Arc::clone(&self.ctx_storage.repo),
+                repo: route_repo,
                 event_bus: Arc::clone(&self.ctx_storage.event_bus),
                 registry: Arc::clone(&self.ctx_storage.registry),
                 mcp: Arc::clone(&self.ctx_storage.mcp),

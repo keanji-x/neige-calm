@@ -364,7 +364,9 @@ async fn no_kernel_callbacks_capability_installs_method_not_found_drainer() {
     .expect("seed plugin row");
     let host = Arc::new(PluginHost::new_full(
         Arc::new(registry),
-        Arc::clone(&repo),
+        // method-call clone is a coercion site for the `Arc<dyn Repo>` →
+        // `Arc<dyn RouteRepo>` upcast (PR #41 — kernel-narrow).
+        repo.clone(),
         plugins_dir,
         plugins_data_dir,
         Vec::new(),
