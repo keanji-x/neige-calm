@@ -166,7 +166,10 @@ async fn v2_round_trip_via_pump() {
     assert!(matches!(parsed, DaemonMsg::ServerHello { .. }));
 
     // 3) WS client → daemon: Input.
-    let input = ClientMsg::Input(b"keystrokes".to_vec());
+    let input = ClientMsg::Input {
+        data: b"keystrokes".to_vec(),
+        input_seq: 0,
+    };
     ws.send(TMessage::Text(serde_json::to_string(&input).unwrap()))
         .await
         .unwrap();
@@ -178,7 +181,14 @@ async fn v2_round_trip_via_pump() {
     .expect("daemon-side input read timed out")
     .expect("daemon-side input decode failed");
     match got_input {
-        ClientMsg::Input(b) => assert_eq!(b, b"keystrokes"),
+        ClientMsg::Input { data, input_seq } => {
+            assert_eq!(data, b"keystrokes");
+            // Browser-path default: seq 0 ("no ack requested" — option
+            // (b) from issue #115). The WS bridge must NOT synthesize a
+            // non-zero seq; if a future change adds bridge-side rewrite
+            // this assertion catches the regression.
+            assert_eq!(input_seq, 0);
+        }
         other => panic!("expected Input, got {other:?}"),
     }
 

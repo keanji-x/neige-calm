@@ -740,8 +740,14 @@ mod pump_tests {
     }
 
     /// Build a minimal v2 ClientMsg::Input frame for the up-arm test.
+    /// `input_seq` defaults to 0 — the browser-path "no ack requested"
+    /// posture; the WS bridge does not synthesize seqs, so this matches
+    /// what real browser traffic looks like on the daemon socket.
     fn client_input(bytes: &[u8]) -> ClientMsg {
-        ClientMsg::Input(bytes.to_vec())
+        ClientMsg::Input {
+            data: bytes.to_vec(),
+            input_seq: 0,
+        }
     }
 
     /// Big enough to never wake during a test. We don't want the heartbeat
@@ -808,7 +814,10 @@ mod pump_tests {
         .expect("daemon-side read timed out")
         .expect("daemon-side read failed");
         match got {
-            ClientMsg::Input(b) => assert_eq!(b, b"hello"),
+            ClientMsg::Input { data, input_seq } => {
+                assert_eq!(data, b"hello");
+                assert_eq!(input_seq, 0, "bridge must not synthesize seqs");
+            }
             other => panic!("expected Input(b\"hello\"), got {:?}", other),
         }
     }
@@ -926,7 +935,10 @@ mod pump_tests {
         .expect("daemon-side read timed out after bad JSON")
         .expect("daemon-side read failed");
         match got {
-            ClientMsg::Input(b) => assert_eq!(b, b"after-bad"),
+            ClientMsg::Input { data, input_seq } => {
+                assert_eq!(data, b"after-bad");
+                assert_eq!(input_seq, 0, "bridge must not synthesize seqs");
+            }
             other => panic!("expected Input(b\"after-bad\"), got {:?}", other),
         }
     }

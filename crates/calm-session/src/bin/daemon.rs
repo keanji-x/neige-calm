@@ -48,6 +48,24 @@ use calm_session::terminal_session::{
 };
 use calm_session::{ClientMsg, DaemonMsg, PtySize, read_frame, write_frame};
 
+/// One work item on the PTY-writer channel. Carries the bytes to write
+/// plus the metadata needed to ack the originating connection after the
+/// write completes.
+///
+/// `ack` is the per-client mpsc sender into the connection that produced
+/// the [`ClientMsg::Input`]; the writer thread fires
+/// [`DaemonMsg::InputAck`] back through it after `write_all + flush`
+/// returns. `ack` is `None` when the originating frame had `input_seq ==
+/// 0` (browser-typing default, "no ack requested") — the writer still
+/// performs the PTY write but skips the ack to avoid frame-noise on the
+/// hot browser path. See [`calm_session::ClientMsg::Input`] for the
+/// design rationale (option (b) from issue #115).
+struct PtyWrite {
+    data: Vec<u8>,
+    input_seq: u64,
+    ack: Option<mpsc::UnboundedSender<DaemonMsg>>,
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 enum Mode {
     /// PTY-backed terminal session. Daemon proxies raw bytes both ways.
@@ -271,7 +289,7 @@ async fn run_terminal(cli: Cli) -> anyhow::Result<()> {
     // by `RenderPlane::on_pty_chunk` / `on_child_exit` / `on_resize`. The
     // handler tasks forward those onto each client's socket verbatim.
     let (event_tx, _) = broadcast::channel::<DaemonMsg>(2048);
-    let (stdin_tx, stdin_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (stdin_tx, stdin_rx) = mpsc::unbounded_channel::<PtyWrite>();
 
     // ---- PTY reader → buffer + broadcast ----
     let reader = master.lock().unwrap().try_clone_reader()?;
@@ -544,7 +562,7 @@ fn apply_broadcaster_effects(tx: &broadcast::Sender<DaemonMsg>, effects: Vec<Eff
             // belong to the client-frame state machine.
             Effect::SendToClient(_)
             | Effect::ResizePty { .. }
-            | Effect::WriteToPty(_)
+            | Effect::WriteToPty { .. }
             | Effect::KillChild
             | Effect::SendProtocolError { .. }
             | Effect::CloseConnection
@@ -561,15 +579,40 @@ fn apply_broadcaster_effects(tx: &broadcast::Sender<DaemonMsg>, effects: Vec<Eff
 
 fn spawn_pty_writer(
     mut writer: Box<dyn std::io::Write + Send>,
-    mut stdin_rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    mut stdin_rx: mpsc::UnboundedReceiver<PtyWrite>,
 ) {
     std::thread::spawn(move || {
-        while let Some(bytes) = stdin_rx.blocking_recv() {
-            if let Err(e) = writer.write_all(&bytes) {
+        while let Some(item) = stdin_rx.blocking_recv() {
+            let PtyWrite {
+                data,
+                input_seq,
+                ack,
+            } = item;
+            if let Err(e) = writer.write_all(&data) {
+                // Do NOT emit InputAck on failure — the client will time
+                // out on its outstanding seq, which is the correct
+                // semantics (see `DaemonMsg::InputAck` doc).
                 tracing::warn!(error = %e, "pty write error; stopping writer");
                 break;
             }
+            // `flush()` failure is intentionally non-fatal (mirrors the
+            // pre-#115 behaviour). The bytes are already in the kernel
+            // tty buffer; a failed userspace flush is a logging concern,
+            // not a delivery failure. We still emit the ack.
             let _ = writer.flush();
+            // Emit InputAck back to the originating connection only when
+            // the client requested one (seq > 0 + ack channel attached).
+            // The ack-emission point is HERE, after `write_all` returned
+            // successfully — not at channel-send time in `handle_client`
+            // — so the client's outstanding seq is only resolved once
+            // the bytes have actually been handed to the PTY master.
+            if input_seq > 0
+                && let Some(ack) = ack
+            {
+                // mpsc send failure means the connection has already
+                // gone away; not interesting.
+                let _ = ack.send(DaemonMsg::InputAck { input_seq });
+            }
         }
     });
 }
@@ -673,7 +716,7 @@ async fn accept_loop(
     event_tx: broadcast::Sender<DaemonMsg>,
     render_plane: SharedRenderPlane,
     master: SharedMaster,
-    stdin_tx: mpsc::UnboundedSender<Vec<u8>>,
+    stdin_tx: mpsc::UnboundedSender<PtyWrite>,
     killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
     owner_registry: SharedOwnerRegistry,
     session_id: Uuid,
@@ -750,7 +793,7 @@ async fn handle_client(
     event_tx: broadcast::Sender<DaemonMsg>,
     render_plane: SharedRenderPlane,
     master: SharedMaster,
-    stdin_tx: mpsc::UnboundedSender<Vec<u8>>,
+    stdin_tx: mpsc::UnboundedSender<PtyWrite>,
     killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
     owner_registry: SharedOwnerRegistry,
     session_id: Uuid,
@@ -864,7 +907,7 @@ async fn handle_client(
             }
             // Other effects aren't reachable from the handshake transition.
             Effect::Broadcast(_)
-            | Effect::WriteToPty(_)
+            | Effect::WriteToPty { .. }
             | Effect::KillChild
             | Effect::AssignOwner(_)
             | Effect::BroadcastOwnerChanged(_) => {
@@ -1003,8 +1046,25 @@ async fn handle_client(
                         }
                     }
                 }
-                Effect::WriteToPty(b) => {
-                    if stdin_tx.send(b).is_err() {
+                Effect::WriteToPty { data, input_seq } => {
+                    // Per-connection ack routing: only attach the
+                    // per-client mpsc when the client actually asked for
+                    // an ack (input_seq > 0). seq == 0 is the wire
+                    // default for browser-typing — no ack channel, no
+                    // ack frame, no extra wire traffic on the hot path.
+                    let ack = if input_seq > 0 {
+                        Some(per_client_tx.clone())
+                    } else {
+                        None
+                    };
+                    if stdin_tx
+                        .send(PtyWrite {
+                            data,
+                            input_seq,
+                            ack,
+                        })
+                        .is_err()
+                    {
                         closed = true;
                         break;
                     }
@@ -1241,7 +1301,7 @@ async fn handle_chat_client(
                 break;
             }
             // Terminal-mode-only frames — quietly ignored in chat mode.
-            ClientMsg::Input(_)
+            ClientMsg::Input { .. }
             | ClientMsg::ResizeCommit { .. }
             | ClientMsg::OwnerClaim
             | ClientMsg::OwnerRelease

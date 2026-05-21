@@ -349,7 +349,10 @@ describe('XtermView v2 streaming', () => {
     expect(ws.sentFrames).toHaveLength(1);
     const frame = JSON.parse(ws.sentFrames[0]!);
     expect(frame).toHaveProperty('Input');
-    expect(frame.Input).toEqual([97]); // 'a' = 0x61
+    // Issue #115: browser typing path always emits `input_seq: 0`
+    // ("no ack requested" — option (b)). The daemon writes the bytes
+    // and stays silent — no `DaemonMsg::InputAck` on the hot path.
+    expect(frame.Input).toEqual({ data: [97], input_seq: 0 }); // 'a' = 0x61
   });
 });
 

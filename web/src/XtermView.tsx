@@ -377,7 +377,13 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
 
     const dataSub = term.onData((d) => {
       const bytes = Array.from(new TextEncoder().encode(d));
-      send({ Input: bytes });
+      // Browser typing path: `input_seq: 0` means "no ack requested"
+      // (option (b) from issue #115). The daemon writes the bytes and
+      // stays silent — no `DaemonMsg::InputAck` frame is emitted on the
+      // hot typing path. Only kernel-originated transient clients
+      // (DaemonClient::inject_stdin) use non-zero seqs to await
+      // deterministic delivery confirmation.
+      send({ Input: { data: bytes, input_seq: 0 } });
     });
 
     // Batch resize work to one tick per animation frame and skip cases

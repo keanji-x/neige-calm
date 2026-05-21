@@ -80,7 +80,16 @@ pub enum Effect {
     /// (the existing `apply_resize` keeps that guard).
     ResizePty { cols: u16, rows: u16 },
     /// Write bytes to the PTY stdin.
-    WriteToPty(Vec<u8>),
+    ///
+    /// `input_seq` mirrors the [`ClientMsg::Input`] field that produced
+    /// this effect. The shell uses it to drive a per-write ack: after
+    /// the PTY master write returns successfully, the shell emits a
+    /// [`DaemonMsg::InputAck`] back to the originating connection
+    /// carrying this seq. `input_seq == 0` means the client did not
+    /// request an ack — the shell still performs the write but does not
+    /// emit any ack frame. See [`ClientMsg::Input`] and
+    /// [`DaemonMsg::InputAck`] for the wire-level contract.
+    WriteToPty { data: Vec<u8>, input_seq: u64 },
     /// Tear down the child process (SIGHUP the pgid, then SIGKILL fallback;
     /// the shell still owns that policy).
     KillChild,
@@ -346,7 +355,12 @@ impl TerminalSessionState {
     /// client's `desired_size`) + `ServerHello` with the current snapshot.
     ///
     /// Post-handshake routing:
-    /// - `Input(b)` → owner: `WriteToPty(b)`; observer: `NotOwner` error.
+    /// - `Input{ data, input_seq }` → owner / kernel-input observer:
+    ///   `WriteToPty { data, input_seq }`; observer without kernel-input:
+    ///   `NotOwner` error. The seq is forwarded verbatim; the shell uses
+    ///   it post-write to emit `DaemonMsg::InputAck` to the originating
+    ///   connection (when seq > 0). The state machine never validates or
+    ///   tracks ordering.
     /// - `ResizeCommit{epoch,..}` → owner: bump epoch if `>` current,
     ///   emit `ResizePty` + broadcast `ResizeApplied`; stale epoch is a
     ///   silent no-op. Observer → `NotOwner`.
@@ -369,7 +383,7 @@ impl TerminalSessionState {
         }
 
         match msg {
-            ClientMsg::Input(b) => {
+            ClientMsg::Input { data, input_seq } => {
                 // Two paths can authorize input:
                 // (1) Owner role — the default.
                 // (2) kernel_originated_input capability — only set by
@@ -385,7 +399,12 @@ impl TerminalSessionState {
                     .map(|c| c.kernel_originated_input)
                     .unwrap_or(false);
                 if self.role == Some(Role::Owner) || kernel_input {
-                    vec![Effect::WriteToPty(b)]
+                    // `input_seq` is forwarded into the effect verbatim;
+                    // the shell will emit `DaemonMsg::InputAck` after
+                    // the actual PTY write completes when seq > 0. seq
+                    // == 0 means "no ack requested" — the browser path's
+                    // wire default.
+                    vec![Effect::WriteToPty { data, input_seq }]
                 } else {
                     vec![not_owner_error(
                         "Input requires owner role or kernel_originated_input capability",
