@@ -611,6 +611,16 @@ input, textarea { font: inherit; color: inherit; }
   color: var(--text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* Click-to-rename target. The span is focusable (tabIndex=0, role=button)
+   so keyboard users can land on it; the ring matches the rename input below
+   so the visual story stays consistent when the span swaps to an <input>. */
+.wave-title[role="button"] {
+  border-radius: 4px;
+  outline: none;
+}
+.wave-title[role="button"]:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
 /* When the wave title is in rename mode it becomes an <input> with the same
    visual class. Strip the default chrome and pair `outline: none` with a
    visible focus indicator so keyboard users can still see the focus ring. */
@@ -624,6 +634,27 @@ input, textarea { font: inherit; color: inherit; }
   border-radius: 4px;
 }
 .wave-title-input:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+/* Click-to-rename button on CovePage. The button is nested inside an <h1>
+   so heading semantics are preserved while the interactive role is carried
+   by an intrinsic <button>. We strip the default button chrome so it reads
+   as plain heading text and pin the typography to the parent (h-display
+   already styles size/family on the wrapping h1). */
+.h-display-rename {
+  font: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  cursor: text;
+  border-radius: 4px;
+  outline: none;
+}
+.h-display-rename:focus-visible {
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
 /* Click-to-rename inputs on CovePage. These reuse `.h-display` for typography
