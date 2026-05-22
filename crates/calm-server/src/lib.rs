@@ -26,6 +26,7 @@
 //! ```
 
 pub mod actor;
+pub mod auth;
 pub mod card_fsm;
 pub mod card_role_cache;
 pub mod codex_auto_submit;

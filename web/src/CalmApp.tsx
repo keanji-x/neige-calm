@@ -122,11 +122,15 @@ export function CalmApp() {
 
   const createCove = useCreateCoveMutation();
 
-  // Sign-out wire — UI scaffold ahead of server `/api/auth/logout`. The
-  // POST may 404 today (calm-server has not implemented auth yet, see
-  // `api/auth.ts` header); the reload still runs and re-evaluates the
-  // (currently bypassed) AuthGate, so the user lands wherever boot puts
-  // them. When the server endpoint lands this becomes a real sign-out.
+  // Sign-out (issue #189). POSTs `/api/auth/logout` which drops the
+  // server-side session + clears the `calm-session` cookie. We then
+  // reload so SessionProvider's whoami probe re-runs against the now-
+  // anonymous cookie state and lands the user on `<LoginPage />`. The
+  // reload is preferred over a pure in-memory state flip so every
+  // persisted cache (React Query IDB, WS cursor, etc.) starts clean
+  // under the next sign-in — matches the cache-bust path the
+  // `fireUnauthorized` listener takes for 401s. (Logout itself doesn't
+  // 401, so we have to fire the cleanup explicitly via the reload.)
   const handleSignOut = async () => {
     await logout();
     window.location.reload();

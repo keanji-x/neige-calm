@@ -1,8 +1,8 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { RouterProvider } from '@tanstack/react-router'
-import { TanStackRouterDevtools } from '@tanstack/router-devtools'
 import { AppProviders } from './app/providers'
+import { SessionProvider } from './app/SessionProvider'
 import { router } from './app/router'
 import { registerBuiltins } from './cards/builtins'
 import './calm.css'
@@ -11,20 +11,21 @@ import './calm.css'
 // card entries (M3 slice F) will register themselves as their iframes mount.
 registerBuiltins();
 
-// AuthGate / LoginPage are deliberately bypassed: calm-server (the new
-// kernel on :4040 that this proxy points at) does not yet implement auth.
-// Auth is M3 work, alongside the plugin host (per-plugin tokens land at
-// the same time as per-user sessions). For dev on a loopback port this is
-// fine. The AuthGate.tsx / LoginPage.tsx files are kept so the M3 wire-up
-// can re-mount them around the router at the right time.
+// Issue #189 — `SessionProvider` runs the whoami probe BEFORE mounting
+// `RouterProvider`. Until whoami resolves, no router loader runs — that's
+// the load-bearing invariant: a logged-out tab landing on `/coves/c-1`
+// must not stamp a 401 onto the first paint. On 401 the gate renders
+// `<LoginPage />`; on 200 it renders the router; on transport error it
+// renders a tight retry stub. SessionProvider also subscribes to the
+// global `fireUnauthorized` channel so any in-flight API call that
+// observes a 401 wipes caches + bounces back to LoginPage.
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <AppProviders>
-      <RouterProvider router={router} />
-      {import.meta.env.DEV && (
-        <TanStackRouterDevtools router={router} position="bottom-right" />
-      )}
+      <SessionProvider>
+        <RouterProvider router={router} />
+      </SessionProvider>
     </AppProviders>
   </StrictMode>,
 )

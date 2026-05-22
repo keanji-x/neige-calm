@@ -25,8 +25,6 @@
 // `WEB_COMPAT_VERSION`. On mismatch we paint a hard-block overlay over
 // the whole tree directing the user to refresh. Single check on mount;
 // no polling. See `docs/upgrade-stability.md` (Tier B).
-//
-// Devtools only mount in dev (Vite's `import.meta.env.DEV`).
 
 import {
   QueryClient,
@@ -34,7 +32,6 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query';
-import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
 import { useEffect, type ReactNode } from 'react';
 import { useState } from '../shared/state';
@@ -42,12 +39,29 @@ import { EventBridge } from './eventBridge';
 import { ThemeProvider } from './theme';
 import { buildPersistOptions, IDB_DB_NAME, PERSIST_MAX_AGE_MS } from '../api/persistConfig';
 import { Dialog } from '../ui/Dialog/Dialog';
+import { CalmApiError } from '../api/calm';
 import {
   WEB_COMPAT_VERSION,
   fetchServerVersion,
   isCompatible,
   type ServerVersionInfo,
 } from '../api/version';
+
+/**
+ * Default retry policy for React Query — one retry on transient failures,
+ * but never on 401. A 401 means the session cookie is gone (expired,
+ * server restart, owner logout from a sibling tab); retrying just delays
+ * the SessionProvider's `onUnauthorized` cleanup → LoginPage bounce that
+ * `request()` in `api/calm.ts` already fired, and stacks up a doomed
+ * second request in the meantime. See issue #189.
+ *
+ * Exported so per-query overrides can compose the same policy (e.g. when
+ * a call site sets `staleTime: 0` but still wants the auth-aware retry).
+ */
+export function retryUnless401(failureCount: number, error: unknown): boolean {
+  if (error instanceof CalmApiError && error.status === 401) return false;
+  return failureCount < 1;
+}
 
 /**
  * `localStorage` key under which we stash the last observed
@@ -69,7 +83,7 @@ export const queryClient = new QueryClient({
     queries: {
       staleTime: 30_000,
       gcTime: PERSIST_MAX_AGE_MS,
-      retry: 1,
+      retry: retryUnless401,
       refetchOnWindowFocus: false,
     },
   },
@@ -96,9 +110,6 @@ export function AppProviders({ children }: { children: ReactNode }) {
           <ServerCompatGate>{children}</ServerCompatGate>
         </ThemeProvider>
       </QueryRestoreGate>
-      {import.meta.env.DEV && (
-        <ReactQueryDevtools initialIsOpen={false} buttonPosition="bottom-left" />
-      )}
     </PersistQueryClientProvider>
   );
 }
@@ -141,7 +152,10 @@ export function ServerCompatGate({ children }: { children: ReactNode }) {
     // value to a new mount.
     staleTime: 0,
     gcTime: 0,
-    retry: 1,
+    // `/api/version` is a public endpoint so it never actually returns
+    // 401, but share the same policy as the QueryClient default so the
+    // intent is unambiguous to future readers.
+    retry: retryUnless401,
   });
   const qc = useQueryClient();
   // `busted` flips to true once we've kicked off the cache wipe + reload

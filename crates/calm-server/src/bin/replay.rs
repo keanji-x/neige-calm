@@ -24,6 +24,7 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::post;
+use calm_server::auth::{AuthConfig, AuthState, DEFAULT_DISPLAY_NAME};
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
 use calm_server::replay;
@@ -226,11 +227,35 @@ async fn run_serve(
     let dev_routes = axum::Router::new()
         .route("/dev/reset", post(dev_reset))
         .with_state(dev_state);
+    // Issue #189 — the production `main.rs` mounts an auth router
+    // (`/api/auth/{login,whoami,logout}`) so the frontend's `SessionProvider`
+    // can probe `whoami` on boot and decide whether to render the login
+    // page or the app. The replay binary's `routes::router()` is the
+    // legacy combined router that predates the auth split and does NOT
+    // include those endpoints; without them, the frontend's whoami probe
+    // 404s, throws, and parks `SessionProvider` in the `error` branch
+    // (the a11y Playwright suite then times out waiting for the sidebar
+    // to appear). Mount `auth::router` here with `dev_autologin = true`
+    // so every request is auto-promoted to owner and whoami returns 200
+    // without a session cookie — replay is dev/test-only, exactly the
+    // surface dev_autologin is meant for. The `require_session`
+    // middleware is intentionally NOT attached: the legacy combined
+    // `routes::router()` was always reachable without a session and the
+    // a11y suite relies on that no-auth surface for direct REST drives.
+    let replay_auth_config = AuthConfig {
+        username: None,
+        password: None,
+        dev_autologin: true,
+        display_name: DEFAULT_DISPLAY_NAME.to_string(),
+    };
+    let replay_auth_state = AuthState::new(replay_auth_config);
+    let auth_router = calm_server::auth::router().with_state(replay_auth_state);
     let app = axum::Router::new()
         .merge(rest_routes)
         .merge(calm_server::ws::router())
         .with_state(state)
-        .merge(dev_routes);
+        .merge(dev_routes)
+        .merge(auth_router);
 
     let addr = format!("127.0.0.1:{}", args.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;

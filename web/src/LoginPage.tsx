@@ -2,23 +2,36 @@ import { useState } from './shared/state';
 import { login } from './api/auth';
 
 /**
- * Posts to calm-server's /login/submit via the vite proxy; on success the
- * session cookie is set scoped to the Calm origin and we reload so AuthGate
- * sees the new whoami() result.
+ * Owner login form (issue #189). Posts {username, password} to
+ * /api/auth/login via the Vite proxy; on success the server sets the
+ * httpOnly `calm-session` cookie and returns the whoami payload.
+ *
+ * We reload the page on success so the SessionProvider remounts and
+ * re-runs the whoami probe (whose 200 result drives the router mount).
+ * Re-issuing whoami inside this component would technically work, but
+ * the reload is the simplest path that guarantees every persisted /
+ * in-memory cache also gets a fresh start under the new identity —
+ * matches what the ServerCompatGate's bust path does for the same
+ * structural reason.
  */
 export function LoginPage() {
-  const [token, setToken] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!token.trim() || submitting) return;
+    if (submitting || !username.trim() || !password) return;
     setSubmitting(true);
     setError(null);
     try {
-      const ok = await login(token.trim());
-      if (!ok) throw new Error('Invalid token.');
+      const result = await login(username.trim(), password);
+      if (!result) {
+        setError('Wrong username or password.');
+        setSubmitting(false);
+        return;
+      }
       window.location.reload();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sign-in failed.');
@@ -31,29 +44,34 @@ export function LoginPage() {
       <div className="login-card">
         <div className="login-eyebrow">Neige · Calm</div>
         <h1 className="login-title">Sign in.</h1>
-        <p className="login-hint">
-          Paste your token. Generate one with{' '}
-          <code>calm-server auth rotate</code>.
-        </p>
         <form onSubmit={submit}>
           <input
             className="login-input"
-            type="password"
-            placeholder="Token"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            // Single-purpose login screen with one interactive field; autofocusing
-            // it is expected UX and there's no surrounding context to skip past.
+            type="text"
+            placeholder="Username"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            // Single-purpose login screen; autofocus the first field for
+            // expected UX. There's no surrounding context to skip past.
             // eslint-disable-next-line jsx-a11y/no-autofocus
             autoFocus
-            autoComplete="off"
+            autoComplete="username"
+            spellCheck={false}
+          />
+          <input
+            className="login-input"
+            type="password"
+            placeholder="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
             spellCheck={false}
           />
           {error && <div className="login-error">{error}</div>}
           <button
             className="go"
             type="submit"
-            disabled={submitting || !token.trim()}
+            disabled={submitting || !username.trim() || !password}
             style={{ width: '100%', justifyContent: 'center', marginTop: 4 }}
           >
             {submitting ? 'Signing in…' : 'Sign in'}
