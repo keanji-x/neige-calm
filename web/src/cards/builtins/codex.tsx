@@ -48,10 +48,21 @@ const codexPayloadSchema = z.object({
   cwd: z.string().optional(),
 });
 
-function UnsupportedCodexCard({ version }: { version: number }) {
+function UnsupportedCodexCard({
+  version,
+  onClose,
+}: {
+  version: number;
+  onClose?: () => void;
+}) {
   return (
     <div className="codex-card codex-card-unsupported-version">
-      <CardHead className="codex-card-head card-drag-handle" title="Codex" />
+      <CardHead
+        className="codex-card-head card-drag-handle"
+        title="Codex"
+        onClose={onClose}
+        closeAriaLabel="Remove panel"
+      />
       <div className="codex-card-pty">
         <div className="codex-card-empty">
           Unsupported card payload version (got {version}, kernel supports{' '}
@@ -62,17 +73,34 @@ function UnsupportedCodexCard({ version }: { version: number }) {
   );
 }
 
-function CodexCard({ card }: { card: CodexCardData }) {
+function CodexCard({
+  card,
+  onClose,
+}: {
+  card: CodexCardData;
+  onClose?: () => void;
+}) {
   // Early bail-out for unsupported versions. Split into its own component
   // so React's rules-of-hooks stay satisfied — the hook calls below only
   // run on the supported path.
   if (card.unsupportedVersion !== undefined) {
-    return <UnsupportedCodexCard version={card.unsupportedVersion} />;
+    return (
+      <UnsupportedCodexCard
+        version={card.unsupportedVersion}
+        onClose={onClose}
+      />
+    );
   }
-  return <CodexCardImpl card={card} />;
+  return <CodexCardImpl card={card} onClose={onClose} />;
 }
 
-function CodexCardImpl({ card }: { card: CodexCardData }) {
+function CodexCardImpl({
+  card,
+  onClose,
+}: {
+  card: CodexCardData;
+  onClose?: () => void;
+}) {
   const cardId = card.id;
   const { resolved: theme } = useTheme();
   // FSM state owned by the kernel `card_fsm` task. Defaults to "Starting"
@@ -130,6 +158,8 @@ function CodexCardImpl({ card }: { card: CodexCardData }) {
       <CardHead
         className="codex-card-head card-drag-handle"
         title="Codex"
+        onClose={onClose}
+        closeAriaLabel="Remove panel"
         // Dot-only status (unified with Terminal). The visible label is gone;
         // the FSM state name + most recent hook summary live entirely in the
         // dot's `title` tooltip + `aria-label`. The bare `<span aria-live>`

@@ -21,6 +21,7 @@
 // card opts into a real SVG via `icon`.
 
 import type { ReactNode } from 'react';
+import { CloseIcon } from '../shared/components/CloseIcon';
 
 export type CardHeadProps = {
   /** Title content. Rendered inside `<span className="card-head-title">`. */
@@ -36,6 +37,17 @@ export type CardHeadProps = {
    * between `title` and `status` so right-aligned status stays pinned.
    */
   children?: ReactNode;
+  /**
+   * When defined, render a hover-revealed `×` close button absolutely
+   * positioned at the head's top-right. Omitted entirely when undefined,
+   * so cards that aren't user-deletable (or contexts that own the close
+   * affordance elsewhere — e.g. WaveList's row-level button) render no
+   * head button. The button stops `mousedown` propagation so a click on
+   * it inside an RGL drag handle never initiates a card drag.
+   */
+  onClose?: () => void;
+  /** ARIA label for the close button. Defaults to `'Close'`. */
+  closeAriaLabel?: string;
 };
 
 const ICON_PALETTE_SIZE = 8;
@@ -85,6 +97,8 @@ export function CardHead({
   icon,
   className,
   children,
+  onClose,
+  closeAriaLabel,
 }: CardHeadProps) {
   const rootClass = className ? `card-head ${className}` : 'card-head';
   // Synthesise the letter-avatar only when the caller didn't pass an icon
@@ -103,6 +117,25 @@ export function CardHead({
       {title !== undefined && <span className="card-head-title">{title}</span>}
       {children}
       {status !== undefined && <span className="card-head-status">{status}</span>}
+      {onClose !== undefined && (
+        // Structurally last so the flex slots (icon/title/children/status)
+        // keep their justified layout — the close button is absolutely
+        // positioned out of flow against `.card-head`. `onMouseDown` stops
+        // propagation so RGL's drag-handle (which the head usually carries)
+        // doesn't initiate a drag on the close click.
+        <button
+          className="card-grid-close"
+          type="button"
+          aria-label={closeAriaLabel ?? 'Close'}
+          onClick={(e) => {
+            e.stopPropagation();
+            onClose();
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <CloseIcon />
+        </button>
+      )}
     </div>
   );
 }

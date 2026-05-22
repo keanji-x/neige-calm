@@ -256,14 +256,15 @@
      change at typical card density).
 
      The three `*-icon-size`, `*-close-size`, `*-close-inset` tokens below
-     track the geometry of two absolutely- (or visually-)positioned
-     elements inside a head: the leading 20×20 `.card-head-icon` avatar
-     slot and the 22×22 hover-revealed `.card-grid-close` X button. They
-     intentionally don't live on the 4px `--space-*` grid — they're
-     pixel-tuned hit targets and visual centers, not rhythm metrics. Pull
-     them out as tokens (vs. inline magic px) so `.card-head` padding-
-     right and `.card-grid-close` top/right/size all derive from a
-     single source of truth and can't drift apart in a future refactor. */
+     track the geometry of two elements inside a head: the leading 20×20
+     `.card-head-icon` avatar slot and the 22×22 hover-revealed
+     `.card-grid-close` X button (absolutely positioned against
+     `.card-head`). They intentionally don't live on the 4px `--space-*`
+     grid — they're pixel-tuned hit targets and visual centers, not
+     rhythm metrics. Pull them out as tokens (vs. inline magic px) so
+     `.card-head` padding-right and `.card-grid-close` right/size all
+     derive from a single source of truth and can't drift apart in a
+     future refactor. */
   --card-head-pad-v:     var(--space-5);
   --card-head-pad-h:     var(--space-7);
   --card-head-gap:       var(--space-5);
@@ -1286,11 +1287,11 @@ input, textarea { font: inherit; color: inherit; }
 /* warn text */
 .warn-text { color: var(--warn); }
 
-/* ===== Card slot (RGL grid cell) =====
+/* ===== Wave card (RGL grid cell wrapper) =====
    Each grid item is a flex column so the child card (.term/.doc/.git/.diff/
-   .plan-card/.note) can grow to fill the cell. The slot itself is just a
+   .plan-card/.note) can grow to fill the cell. The wrapper itself is just a
    transparent positioning context — the card draws the border + shadow. */
-.card-slot {
+.wave-card {
   position: relative;
   width: 100%;
   height: 100%;
@@ -1299,15 +1300,15 @@ input, textarea { font: inherit; color: inherit; }
 }
 
 /* Inside a grid cell, cards drop their stacked-layout margin and stretch
-   to fill the slot. The slot owns the gap (RGL `margin` prop). */
-.card-slot > .term {
+   to fill the wrapper. The wrapper owns the gap (RGL `margin` prop). */
+.wave-card > .term {
   margin-bottom: var(--space-0);
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
-.card-slot > .term .term-body {
+.wave-card > .term .term-body {
   flex: 1;
   min-height: 0;
   overflow: auto;
@@ -1321,7 +1322,7 @@ input, textarea { font: inherit; color: inherit; }
      → fit() recomputes fewer cols → content shrinks → scrollbar disappears
      → width grows → fit() runs again → …
    which presents as the cell pulsing from the top-left. */
-.card-slot > .term.live .term-body {
+.wave-card > .term.live .term-body {
   min-height: 0;
   overflow: hidden;
 }
@@ -1331,7 +1332,7 @@ input, textarea { font: inherit; color: inherit; }
    The grid cell already enforces a `minH` in rows; letting xterm fit the
    cell exactly stops the feedback loop where overflow → relayout →
    ResizeObserver → fit() → overflow. */
-.card-slot .xterm-view {
+.wave-card .xterm-view {
   min-height: 0;
 }
 
@@ -1348,16 +1349,15 @@ input, textarea { font: inherit; color: inherit; }
   cursor: grabbing;
 }
 
-/* Per-card × button. Hover-revealed, sits over the card head's top-right.
-   Stops mousedown from bubbling so clicks on it don't initiate a drag. */
+/* Per-card × button. Hover-revealed, sits at the card head's top-right.
+   Rendered inside `.card-head` by `<CardHead>` (`onClose` prop), so the
+   button is absolutely positioned against the head — `top: 50%` centers
+   it on the head row regardless of card height. */
 .card-grid-close {
   position: absolute;
-  /* Vertically centered on the head content row via the
-     icon-size − close-size offset (a half-pixel of asymmetry between the
-     22px button and the 20px icon row, derived from tokens so the X
-     stays aligned through any future card-head metric edits). */
-  top: calc(var(--card-head-pad-v) + (var(--card-head-icon-size) - var(--card-head-close-size)) / 2);
+  top: 50%;
   right: var(--card-head-close-inset);
+  transform: translateY(-50%);
   width: var(--card-head-close-size);
   height: var(--card-head-close-size);
   display: grid;
@@ -1373,8 +1373,8 @@ input, textarea { font: inherit; color: inherit; }
   transition: opacity var(--motion-quick), background var(--motion-quick), color var(--motion-quick);
   z-index: var(--z-raised);
 }
-.card-slot:hover .card-grid-close,
-.card-slot:focus-within .card-grid-close {
+.wave-card:hover .card-grid-close,
+.wave-card:focus-within .card-grid-close {
   opacity: 1;
 }
 .card-grid-close:hover {
@@ -1750,13 +1750,16 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
    uppercase + `--tracking-wider` — so the visual contract is uniform
    across the surface.
    The base reserves right-padding for the absolutely-positioned
-   `.card-grid-close` X button (it lives on `.card-slot`, not in the head,
-   so it overlays every card's head's right edge on hover) — without this
-   any right-aligned head content (Codex status bar, Terminal `· live`
-   pip) would slide under the X.
+   `.card-grid-close` X button (rendered inside the head when `onClose`
+   is passed to `<CardHead>`) — without this any right-aligned head
+   content (Codex/Terminal status dot, observing pill) would slide
+   under the X.
    `.card-head-icon` is the card-identity glyph block (caller-supplied
-   ReactNode or a synthesised letter-avatar) rendered before the title. */
+   ReactNode or a synthesised letter-avatar) rendered before the title.
+   `position: relative` so the absolutely-positioned `.card-grid-close`
+   anchors against the head row, not some ancestor. */
 .card-head {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--card-head-gap);
@@ -1764,13 +1767,23 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   /* Reserve horizontal space for the absolute `.card-grid-close` X button so
      right-aligned head content (the Codex/Terminal status dot) never slides
      under it. Composition: `inset + close + inset` — the close button sits
-     `close-inset` from the card edge and we mirror that inset as the visual
-     gap between the button and the head content. Fully derived from the
-     card-head geometry tokens, so e.g. growing the hit-target keeps the
-     reserve in sync without revisiting this line. */
+     `close-inset` from the head's right edge and we mirror that inset as
+     the visual gap between the button and the head content. Fully derived
+     from the card-head geometry tokens, so e.g. growing the hit-target keeps
+     the reserve in sync without revisiting this line. */
   padding-right: calc(var(--card-head-close-inset) + var(--card-head-close-size) + var(--card-head-close-inset));
   border-bottom: 1px solid var(--hairline);
   background: var(--surface-card);
+  /* Collapse the inherited body line-height (1.5) on the head so the row's
+     cross-axis height is governed by the 20px `.card-head-icon` alone — not
+     by the title's or status slot's outsized text line-box (15px body font ×
+     1.5 = 22.5px, which would push the row taller than the icon and throw
+     the absolutely-positioned `.card-grid-close` off-center while leaving
+     inline-block status dots stranded on the inflated text baseline).
+     `--leading-none` is the right primitive: titles + glyph slots don't
+     wrap, so they don't need leading. Consistent with `.term-head` /
+     `.codex-card-head` history (both used `--leading-none` pre-unify). */
+  line-height: var(--leading-none);
 }
 .card-head-title {
   flex: 0 0 auto;
@@ -1787,6 +1800,18 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   gap: var(--space-4);
   justify-content: flex-end;
   min-width: 0;
+}
+/* Status-slot wrapper spans (e.g. the `<span aria-live="polite">` Codex
+   wraps around `<CardStatusDot>` so SR announces FSM transitions) default
+   to inline layout, which leaves an inline-block dot sitting on the line-
+   box baseline rather than its geometric center. Promoting every direct
+   child to `inline-flex` + `align-items: center` makes the dot center on
+   the slot's cross-axis center, matching the title caps + `.card-grid-close`
+   midline. Scoped to direct children so the observer pill (which already
+   has its own padding/line-height contract) isn't double-flexed. */
+.card-head-status > * {
+  display: inline-flex;
+  align-items: center;
 }
 /* "Observing" pill rendered in `.card-head-status` when the daemon
    assigned this client the Observer role (someone else holds write).
@@ -1903,8 +1928,9 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   overflow: hidden;
 }
 /* `.card-head` already supplies display/align/gap/padding (including the
-   right-padding reserve for `.card-grid-close`)/border/background/font
-   sizing — Codex has no further head-level overrides. */
+   right-padding reserve for the in-head `.card-grid-close` X button)/
+   border/background/font sizing — Codex has no further head-level
+   overrides. */
 [data-theme="dark"] .codex-card-head { background: var(--surface-card); }
 
 /* Per-card status indicator is now the shared `CardStatusDot` component
@@ -2242,10 +2268,9 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
    today-term column flex parent (without it the head gets squeezed when
    the body claims all the height).
    `.card-head` reserves 38px on the right for the absolutely-positioned
-   `.card-grid-close` X button, but that button lives in `.card-slot` on
-   the wave grid — today-term renders on the Today page outside `.card-slot`
-   so no overlay X exists. Return the right padding to the symmetric token
-   so the reset button doesn't get visibly pushed left. */
+   `.card-grid-close` X button, but Today-Term doesn't pass `onClose` to
+   `<CardHead>` so no X is rendered. Return the right padding to the
+   symmetric token so the reset button doesn't get visibly pushed left. */
 .today-term-head {
   padding-right: var(--card-head-pad-h);
   flex-shrink: 0;
@@ -2266,7 +2291,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
      (Today's default PTY), an auto scrollbar fights with xterm's own
      scrollback viewport and fit.fit() in a width-feedback loop — same
      bug as the wave grid's terminal cards, see notes near
-     `.card-slot > .term.live .term-body`. The boot/error fallback inside
+     `.wave-card > .term.live .term-body`. The boot/error fallback inside
      is one or two lines so it never needs to scroll either. */
   flex: 1; min-height: 0;
   overflow: hidden;
@@ -2857,7 +2882,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
    `<ul>` flowing top-to-bottom. Visual density is similar to
    the stacked-card look the app used pre-RGL; the
    `.wave-list-item` carries the card chrome instead of an
-   inner `.card-slot`.
+   inner `.wave-card`.
    ============================================================ */
 .wave-list-wrap {
   margin-bottom: var(--space-8);
@@ -2891,7 +2916,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 /* Inside a list item, cards stretch to fill the row's width and
    their bodies obey their own min-height contracts. The grid view
-   uses `.card-slot > ...` selectors; we mirror them here. */
+   uses `.wave-card > ...` selectors; we mirror them here. */
 .wave-list-item > .term,
 .wave-list-item > .doc,
 .wave-list-item > .git,

@@ -7,8 +7,8 @@
 // `children` escape-hatch lands between title and status so the
 // right-aligned status slot stays pinned to the right.
 
-import { describe, it, expect } from 'vitest';
-import { render } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { fireEvent, render } from '@testing-library/react';
 import { CardHead } from './CardHead';
 
 describe('<CardHead>', () => {
@@ -144,5 +144,85 @@ describe('<CardHead>', () => {
     );
     expect(iconIdx).toBeGreaterThanOrEqual(0);
     expect(titleIdx).toBeGreaterThan(iconIdx);
+  });
+
+  it('omits the close button when `onClose` is undefined', () => {
+    const { container } = render(<CardHead title="T" />);
+    expect(container.querySelector('.card-grid-close')).toBeNull();
+  });
+
+  it('renders the close button inside the head when `onClose` is provided', () => {
+    const { container } = render(<CardHead title="T" onClose={() => {}} />);
+    const head = container.querySelector('.card-head')!;
+    const close = head.querySelector('.card-grid-close');
+    expect(close).not.toBeNull();
+    // Button is `type="button"` so a click never accidentally submits a form.
+    expect((close as HTMLButtonElement).type).toBe('button');
+  });
+
+  it('click on close button invokes the `onClose` callback', () => {
+    const onClose = vi.fn();
+    const { container } = render(<CardHead title="T" onClose={onClose} />);
+    const close = container.querySelector(
+      '.card-grid-close',
+    ) as HTMLButtonElement;
+    fireEvent.click(close);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('propagates `closeAriaLabel` to the close button', () => {
+    const { container } = render(
+      <CardHead title="T" onClose={() => {}} closeAriaLabel="Remove panel" />,
+    );
+    const close = container.querySelector('.card-grid-close');
+    expect(close?.getAttribute('aria-label')).toBe('Remove panel');
+  });
+
+  it("defaults the close button's aria-label to 'Close' when not provided", () => {
+    const { container } = render(<CardHead title="T" onClose={() => {}} />);
+    const close = container.querySelector('.card-grid-close');
+    expect(close?.getAttribute('aria-label')).toBe('Close');
+  });
+
+  it('mouseDown on the close button stops propagation (drag-init blocker)', () => {
+    // The head usually carries `.card-drag-handle` for RGL; a mousedown on
+    // the close button that bubbled up would initiate a drag.
+    const onParentMouseDown = vi.fn();
+    const { container } = render(
+      // eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/no-noninteractive-element-interactions
+      <div onMouseDown={onParentMouseDown}>
+        <CardHead title="T" onClose={() => {}} />
+      </div>,
+    );
+    const close = container.querySelector(
+      '.card-grid-close',
+    ) as HTMLButtonElement;
+    fireEvent.mouseDown(close);
+    expect(onParentMouseDown).not.toHaveBeenCalled();
+  });
+
+  it('renders the close button structurally after the status slot', () => {
+    // Render order inside the head: decor (icon) → title → children →
+    // status → close. The close is last so absolute positioning is its
+    // own concern and the flex flow of the four named slots is undisturbed.
+    const { container } = render(
+      <CardHead
+        title="T"
+        status="S"
+        onClose={() => {}}
+      >
+        <span data-testid="escape">middle</span>
+      </CardHead>,
+    );
+    const root = container.querySelector('.card-head')!;
+    const children = Array.from(root.children);
+    const statusIdx = children.findIndex((el) =>
+      el.classList.contains('card-head-status'),
+    );
+    const closeIdx = children.findIndex((el) =>
+      el.classList.contains('card-grid-close'),
+    );
+    expect(statusIdx).toBeGreaterThanOrEqual(0);
+    expect(closeIdx).toBeGreaterThan(statusIdx);
   });
 });

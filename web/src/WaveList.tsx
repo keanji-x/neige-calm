@@ -11,7 +11,7 @@
 //
 //   - Cards laid out as a semantic `<ul>` with `<li>` wrappers; each `<li>`
 //     hosts the same `<WaveCard>` the grid view renders inside its
-//     `card-slot`. The list owns no positions — order is the kernel-
+//     `wave-card`. The list owns no positions — order is the kernel-
 //     canonical `card.sort` value, identical to what the wave-detail
 //     query already returns.
 //

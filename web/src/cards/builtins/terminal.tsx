@@ -36,7 +36,13 @@ const terminalPayloadSchema = z.object({
   terminal_id: z.string().optional(),
 });
 
-function TerminalCard({ card }: { card: TerminalCardData }) {
+function TerminalCard({
+  card,
+  onClose,
+}: {
+  card: TerminalCardData;
+  onClose?: () => void;
+}) {
   const { title, lines, terminalId, unsupportedVersion } = card;
   const { resolved: theme } = useTheme();
   // Daemon-assigned role lifted out of `<XtermView>` so the head can render
@@ -50,6 +56,8 @@ function TerminalCard({ card }: { card: TerminalCardData }) {
         <CardHead
           className="term-head card-drag-handle"
           title={title || 'terminal'}
+          onClose={onClose}
+          closeAriaLabel="Remove panel"
         />
         <div className="term-body">
           <div className="term-line k-warn">
@@ -67,6 +75,8 @@ function TerminalCard({ card }: { card: TerminalCardData }) {
       <CardHead
         className="term-head card-drag-handle"
         title={title || 'terminal'}
+        onClose={onClose}
+        closeAriaLabel="Remove panel"
         // Status indicator unified with Codex: a `Working` dot when the PTY is
         // attached, nothing when it isn't. The absence-of-dot reads as "not
         // connected yet" without needing a dim placeholder, and matches the

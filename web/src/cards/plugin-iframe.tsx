@@ -107,7 +107,13 @@ const HOST_CAPABILITIES: McpUiHostCapabilities = {
  *     notification when something actually moved, so re-calling it on
  *     unrelated re-renders is cheap.
  */
-function PluginIframeCard({ card }: { card: PluginCardData }) {
+function PluginIframeCard({
+  card,
+  onClose,
+}: {
+  card: PluginCardData;
+  onClose?: () => void;
+}) {
   // Memoise the parse so the setup effect can depend on the whole
   // `parsed` object without `parsePluginCardKind` re-allocating it every
   // render (which would re-fire the effect spuriously).
@@ -357,6 +363,8 @@ function PluginIframeCard({ card }: { card: PluginCardData }) {
       <CardHead
         className="card-drag-handle"
         title={`${parsed.plugin_id}:${parsed.view_id}`}
+        onClose={onClose}
+        closeAriaLabel="Remove panel"
       />
       {error ? (
         <div

@@ -18,10 +18,21 @@ import { CardHead } from './CardHead';
 /** Same mid-range default the registry uses for unknown built-ins. */
 export const UNKNOWN_CARD_SIZE: CardSize = { w: 4, h: 6, minW: 3, minH: 3 };
 
-export function UnknownCard({ kernelKind }: { kernelKind: string }) {
+export function UnknownCard({
+  kernelKind,
+  onClose,
+}: {
+  kernelKind: string;
+  onClose?: () => void;
+}) {
   return (
     <div className="card-unknown">
-      <CardHead className="card-drag-handle" title="Unknown card" />
+      <CardHead
+        className="card-drag-handle"
+        title="Unknown card"
+        onClose={onClose}
+        closeAriaLabel="Remove panel"
+      />
       <div className="card-unknown-body">
         <code style={{ fontFamily: MONO_STACK, fontSize: 12 }}>{kernelKind}</code>
         <small style={{ opacity: 0.7 }}>

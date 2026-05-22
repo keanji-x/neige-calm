@@ -381,10 +381,13 @@ export function XtermView({
         return;
       }
       if ('OwnerChanged' in msg) {
-        // Observer-side notification — owner moved to a different client.
-        // We don't surface this in the UI yet, but logging it makes a
-        // multi-client debug session readable. Once we add an "owner
-        // here" / "observing" badge, this is the dispatch point.
+        // Single-user mode only: role is set on ServerHello and never
+        // flips mid-session, so we just log for debug. When multi-client
+        // handoff lands, this is the dispatch point to call
+        // onRoleChangeRef.current?.(newRole) — but the daemon's payload
+        // here only carries `owner_client_id`, so we'd need to compare
+        // against our own clientId to derive the new role for THIS
+        // client. Defer wiring until that semantic is validated.
         dlog('XtermView', 'OwnerChanged', msg.OwnerChanged);
         return;
       }
