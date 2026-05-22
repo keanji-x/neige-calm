@@ -49,6 +49,7 @@ struct Boot {
     app: axum::Router,
     cove_id: String,
     daemon_data_dir: PathBuf,
+    repo: Arc<dyn Repo>,
     _tmp: TempDir,
 }
 
@@ -102,6 +103,7 @@ async fn boot() -> Boot {
         app,
         cove_id: cove.id.to_string(),
         daemon_data_dir,
+        repo,
         _tmp: tmp,
     }
 }
@@ -199,6 +201,62 @@ async fn wave_create_with_theme_stamps_terminal_fg_bg_args() {
             .any(|(k, v)| k == "--terminal-bg" && v == "15,20,24"),
         "daemon argv must contain `--terminal-bg 15,20,24`; got: {argv:?}"
     );
+
+    // #177 PR2 — the spawn should have ALSO persisted the theme onto
+    // the terminal row so the WS auto-revive path picks it up. Locate
+    // the spec card's terminal via the cove → wave → card chain. The
+    // `--sock <path>` arg the recorder logged maps 1:1 to a terminal
+    // id (`<data_dir>/<id>.sock`), so we extract the id from there.
+    let mut sock_arg: Option<String> = None;
+    let mut it = argv.iter().peekable();
+    while let Some(a) = it.next() {
+        if a == "--sock"
+            && let Some(v) = it.peek()
+        {
+            sock_arg = Some((*v).clone());
+            break;
+        }
+    }
+    let sock = sock_arg.expect("recorder must have seen --sock");
+    let terminal_id = PathBuf::from(&sock)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(String::from)
+        .expect("derive terminal id from sock path");
+    // #177 PR2 persistence happens AFTER the daemon socket binds —
+    // since the recorder writes the argv sidecar BEFORE binding, the
+    // file appearing doesn't mean the kernel's `terminal_set_theme`
+    // call has landed yet. Poll briefly for the row's theme cols to
+    // flip non-NULL.
+    let start = Instant::now();
+    let term = loop {
+        let row = boot
+            .repo
+            .terminal_get(&terminal_id)
+            .await
+            .expect("read terminal row")
+            .expect("terminal row must exist");
+        if row.theme_fg.is_some() && row.theme_bg.is_some() {
+            break row;
+        }
+        if start.elapsed() > Duration::from_secs(5) {
+            panic!(
+                "spec-card terminal theme cols stayed NULL; fg={:?}, bg={:?}",
+                row.theme_fg, row.theme_bg
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    };
+    assert_eq!(
+        term.theme_fg.as_deref(),
+        Some("216,219,226"),
+        "spec-card terminal row must remember its host theme fg"
+    );
+    assert_eq!(
+        term.theme_bg.as_deref(),
+        Some("15,20,24"),
+        "spec-card terminal row must remember its host theme bg"
+    );
 }
 
 /// Back-compat: wave-create body without `theme` (older clients,
@@ -229,5 +287,38 @@ async fn wave_create_without_theme_omits_terminal_fg_bg_args() {
     assert!(
         !argv.iter().any(|a| a == "--terminal-bg"),
         "no `--terminal-bg` should appear without theme; got: {argv:?}"
+    );
+
+    // #177 PR2 — the row's theme columns must remain NULL when the
+    // wave-create body carries no theme. Belt-and-braces: a future
+    // refactor that accidentally hard-codes a default would trip
+    // this regression alongside the argv assertions above.
+    let mut sock_arg: Option<String> = None;
+    let mut it = argv.iter().peekable();
+    while let Some(a) = it.next() {
+        if a == "--sock"
+            && let Some(v) = it.peek()
+        {
+            sock_arg = Some((*v).clone());
+            break;
+        }
+    }
+    let sock = sock_arg.expect("recorder must have seen --sock");
+    let terminal_id = PathBuf::from(&sock)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(String::from)
+        .expect("derive terminal id from sock path");
+    let term = boot
+        .repo
+        .terminal_get(&terminal_id)
+        .await
+        .expect("read terminal row")
+        .expect("terminal row must exist");
+    assert!(
+        term.theme_fg.is_none() && term.theme_bg.is_none(),
+        "untheme wave-create must leave theme columns NULL; got fg={:?}, bg={:?}",
+        term.theme_fg,
+        term.theme_bg
     );
 }

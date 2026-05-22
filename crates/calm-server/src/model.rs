@@ -299,6 +299,18 @@ pub struct Terminal {
     /// fails. `None` for rows that predate Scope C or for which the spawn
     /// returned no pid (kernel-level edge case).
     pub pid: Option<i64>,
+    /// #177 PR2 — host browser's foreground RGB stamped at spawn time,
+    /// stored as comma-decimal `r,g,b` matching the daemon CLI's
+    /// `--terminal-fg` arg shape. `None` for terminal cards (no theme),
+    /// pre-#177 rows, and any spawn path that didn't carry theme. Read
+    /// by `spawn_daemon_with_parts` as the fallback when
+    /// `SpawnDaemonOpts.terminal_fg` is `None`, closing the WS
+    /// auto-revive race where the un-themed shim used to win the
+    /// socket against the themed initial spawn.
+    pub theme_fg: Option<String>,
+    /// Companion to `theme_fg` — host browser's background RGB. Same
+    /// shape / lifecycle / fallback semantics.
+    pub theme_bg: Option<String>,
     pub created_at: i64,
 }
 

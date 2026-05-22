@@ -17,7 +17,7 @@
 
 use crate::db::{RepoOutOfDomain, RouteRepo};
 use crate::error::Result;
-use crate::routes::terminal::spawn_daemon_for;
+use crate::routes::terminal::{SpawnDaemonOpts, spawn_daemon_for_with_opts};
 use crate::state::AppState;
 use axum::{
     Router,
@@ -108,10 +108,31 @@ async fn resolve_live_sock(s: &AppState, id: &str) -> Result<PathBuf> {
         tracing::info!(terminal_id = %term.id, "terminal has no daemon_handle — spawning");
     }
 
-    // Cold path: respawn. `spawn_daemon_for` updates `daemon_handle`
-    // when it succeeds, so we re-read to get the canonical path.
+    // Cold path: respawn. The daemon argv is derived inside
+    // `spawn_daemon_with_parts` by the #177-PR2 priority logic:
+    //   opts.terminal_fg/bg (empty here)
+    //     || term.theme_fg/bg (read from the row written by the
+    //                          initial spawn or the most recent
+    //                          mid-session `TerminalThemeUpdate`)
+    //     || None
+    // — which is precisely what closes the hole observed in PR #193:
+    // the previously un-themed shim used to win a socket race against
+    // the themed initial spawn, leaving codex's OSC 10/11 probe
+    // unanswered. Passing `SpawnDaemonOpts::default()` here is the
+    // entire fix: the row carries enough state for the revive to
+    // reconstruct the original argv. `spawn_daemon_with_parts` also
+    // updates `daemon_handle` on success, so we re-read to get the
+    // canonical path.
     let env = term.env.clone();
-    spawn_daemon_for(s, &term, &term.program, &term.cwd, &env).await?;
+    spawn_daemon_for_with_opts(
+        s,
+        &term,
+        &term.program,
+        &term.cwd,
+        &env,
+        SpawnDaemonOpts::default(),
+    )
+    .await?;
     let refreshed = s.repo.terminal_get(id).await?.ok_or_else(|| {
         crate::error::CalmError::Internal("terminal vanished after respawn".into())
     })?;
@@ -137,6 +158,9 @@ async fn handle(socket: WebSocket, sock: PathBuf, terminal_id: String, repo: Arc
         terminal_id.clone(),
         PING_INTERVAL,
         PONG_TIMEOUT,
+        // #177 PR2: hand the repo to the pump so the up-arm can persist
+        // `TerminalThemeUpdate` frames onto the terminals row.
+        Some(repo.clone()),
     )
     .await;
     if let PumpOutcome::FramingSkew { error } = outcome {
@@ -248,6 +272,20 @@ pub async fn pump<T: DaemonTransport>(
     terminal_id: String,
     ping_interval: Duration,
     pong_timeout: Duration,
+    // #177 PR2 — optional repo handle so the up-arm can persist
+    // `TerminalThemeUpdate` frames onto the `terminals` row, keeping
+    // the next auto-revive's daemon argv in sync with the latest
+    // mid-session theme toggle. Production passes `Some(repo)` from
+    // `handle()`; the in-process `pump_tests` pass `None` because they
+    // don't exercise the persistence side effect (covered by the
+    // `terminal_theme_update_persisted` integration test instead).
+    //
+    // Typed `RouteRepo` (the trait object handlers already see via
+    // `AppState::repo`) rather than `RepoOutOfDomain` so the existing
+    // `Arc<dyn RouteRepo>` from `handle()` flows in without an
+    // upcast dance. `RouteRepo: RepoOutOfDomain` already in the
+    // supertrait chain — `terminal_set_theme` is callable directly.
+    repo_for_theme: Option<Arc<dyn RouteRepo>>,
 ) -> PumpOutcome {
     let (mut rd, mut wr) = tokio::io::split(daemon);
     let (ws_tx, mut ws_rx) = ws.split();
@@ -275,6 +313,8 @@ pub async fn pump<T: DaemonTransport>(
     // alive without relying on pong frames alone (axum auto-pongs, but
     // pongs DO come back through the read half).
     let last_seen_up = last_seen.clone();
+    let terminal_id_up = terminal_id.clone();
+    let repo_for_theme_up = repo_for_theme.clone();
     let up = async move {
         while let Some(Ok(msg)) = ws_rx.next().await {
             // Any frame counts as liveness — pong, text, binary, ping.
@@ -301,6 +341,43 @@ pub async fn pump<T: DaemonTransport>(
                     // PTY as an Observer. See
                     // `crates/calm-session/src/lib.rs` `ClientCapabilities`
                     // doc for the full trust model.
+                    // #177 PR2 — persist mid-session theme toggles so the
+                    // next auto-revive picks up the LATEST theme rather
+                    // than the original card-create snapshot. The daemon
+                    // still receives the frame and synthesizes the OSC
+                    // reply / focus-in cycle as before (`TerminalSession`
+                    // owns that effect); this side-effect is purely about
+                    // keeping the persisted row in sync.
+                    //
+                    // Best-effort: a failed persist is downgraded to warn-
+                    // log and the daemon still gets the frame. Worst case
+                    // a future respawn launches with the previous theme —
+                    // the same status quo as before this PR.
+                    if let ClientMsg::TerminalThemeUpdate { fg, bg } = parsed
+                        && let Some(repo) = repo_for_theme_up.as_ref()
+                    {
+                        let fg_arg = format!("{},{},{}", fg.0, fg.1, fg.2);
+                        let bg_arg = format!("{},{},{}", bg.0, bg.1, bg.2);
+                        let repo = repo.clone();
+                        let tid = terminal_id_up.clone();
+                        // Fire-and-forget: we don't want the WS up-arm
+                        // stalling on a DB write. The frame still ships
+                        // immediately to the daemon via the `write_frame`
+                        // below.
+                        tokio::spawn(async move {
+                            if let Err(e) = repo
+                                .terminal_set_theme(&tid, Some(&fg_arg), Some(&bg_arg))
+                                .await
+                            {
+                                tracing::warn!(
+                                    terminal_id = %tid,
+                                    error = %e,
+                                    "failed to persist mid-session terminal theme; \
+                                     next respawn may use stale theme"
+                                );
+                            }
+                        });
+                    }
                     if let ClientMsg::ClientHello {
                         ref mut capabilities,
                         ref mut terminal_id,
@@ -709,7 +786,12 @@ mod pump_tests {
                         .take()
                         .expect("pump route called more than once");
                     upgrade.on_upgrade(move |socket| async move {
-                        let outcome = pump(socket, daemon, tid, ping, pong).await;
+                        // #177 PR2: the in-process pump test fixture passes
+                        // `None` because it doesn't stand up a real repo —
+                        // mid-session theme persistence is covered by the
+                        // `terminal_theme_update_persisted` integration test
+                        // that DOES have a real `SqlxRepo`.
+                        let outcome = pump(socket, daemon, tid, ping, pong, None).await;
                         // Receiver may have been dropped if the test exited
                         // before the pump did — that's fine, just discard.
                         let _ = outcome_tx.send(outcome);
@@ -723,6 +805,58 @@ mod pump_tests {
             axum::serve(listener, app).await.unwrap();
         });
         // Tiny breathing room — same idiom as tests/ws_events.rs.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        (addr, outcome_rx)
+    }
+
+    /// #177 PR2 — variant of [`boot_pump_with_terminal_id`] that hands
+    /// a real repo into `pump` so the up-arm's
+    /// `ClientMsg::TerminalThemeUpdate` interception can write to the
+    /// `terminals` row. Returns the same `(addr, outcome_rx)` tuple;
+    /// the repo is borrowed by the closure for its lifetime and the
+    /// caller asserts the side effect via the same handle after
+    /// driving the WS round-trip.
+    pub(crate) async fn boot_pump_with_repo(
+        daemon_side: DuplexStream,
+        terminal_id: &str,
+        repo: Arc<dyn RouteRepo>,
+        ping: Duration,
+        pong: Duration,
+    ) -> (SocketAddr, tokio::sync::oneshot::Receiver<PumpOutcome>) {
+        let slot = Arc::new(Mutex::new(Some(daemon_side)));
+        let (outcome_tx, outcome_rx) = tokio::sync::oneshot::channel();
+        let outcome_slot = Arc::new(Mutex::new(Some(outcome_tx)));
+        let terminal_id_str = terminal_id.to_string();
+        let app = Router::new().route(
+            "/pump",
+            get(move |upgrade: WebSocketUpgrade| {
+                let slot = slot.clone();
+                let outcome_slot = outcome_slot.clone();
+                let tid = terminal_id_str.clone();
+                let repo = repo.clone();
+                async move {
+                    let daemon = slot
+                        .lock()
+                        .await
+                        .take()
+                        .expect("pump route called more than once");
+                    let outcome_tx = outcome_slot
+                        .lock()
+                        .await
+                        .take()
+                        .expect("pump route called more than once");
+                    upgrade.on_upgrade(move |socket| async move {
+                        let outcome = pump(socket, daemon, tid, ping, pong, Some(repo)).await;
+                        let _ = outcome_tx.send(outcome);
+                    })
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
         tokio::time::sleep(Duration::from_millis(50)).await;
         (addr, outcome_rx)
     }
@@ -1172,6 +1306,128 @@ mod pump_tests {
             "expected Clean on ChildExited, got {:?}",
             got
         );
+    }
+
+    /// #177 PR2 — the up arm must intercept `ClientMsg::TerminalThemeUpdate`
+    /// and persist the new RGB onto the `terminals` row, so a subsequent
+    /// auto-revive picks up the LATEST theme rather than the original
+    /// card-create snapshot. The daemon STILL receives the frame
+    /// (verified by reading off `daemon_side`), and the side-effect
+    /// runs in a `tokio::spawn` so we poll the repo briefly to give the
+    /// async write a chance to land.
+    #[tokio::test]
+    async fn terminal_theme_update_persists_to_row() {
+        use crate::db::prelude::*;
+        use crate::db::sqlite::SqlxRepo;
+        use crate::model::{NewCard, NewCove, NewTerminal, NewWave};
+
+        // Seed a real repo with a terminal row whose theme starts at
+        // "theme A" — we'll send a TerminalThemeUpdate for "theme B"
+        // and assert the row flips.
+        let repo: Arc<SqlxRepo> = Arc::new(
+            SqlxRepo::open("sqlite::memory:")
+                .await
+                .expect("open sqlite"),
+        );
+        let cove = repo
+            .cove_create(NewCove {
+                name: "tu".into(),
+                color: "#000".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let wave = repo
+            .wave_create(NewWave {
+                cove_id: cove.id.clone(),
+                title: "tu".into(),
+                sort: None,
+                theme: None,
+            })
+            .await
+            .unwrap();
+        let card = repo
+            .card_create(NewCard {
+                wave_id: wave.id.clone(),
+                kind: "codex".into(),
+                sort: None,
+                payload: serde_json::json!({}),
+            })
+            .await
+            .unwrap();
+        let term = repo
+            .terminal_create(NewTerminal {
+                card_id: card.id.clone(),
+                program: "codex".into(),
+                cwd: "/".into(),
+                env: serde_json::json!({}),
+            })
+            .await
+            .unwrap();
+        // Theme A — the "original card-create snapshot" the spec
+        // demands the respawn NOT use after a mid-session toggle.
+        repo.terminal_set_theme(&term.id, Some("216,219,226"), Some("15,20,24"))
+            .await
+            .unwrap();
+
+        // Bring up pump WITH a repo handle so the up arm's interception
+        // path runs.
+        let (mut daemon_side, server_side) = tokio::io::duplex(8192);
+        let (ping, pong) = long_window();
+        let term_id_for_pump = term.id.clone();
+        let repo_for_pump: Arc<dyn RouteRepo> = repo.clone() as Arc<dyn RouteRepo>;
+        let (addr, _outcome) =
+            boot_pump_with_repo(server_side, &term_id_for_pump, repo_for_pump, ping, pong).await;
+
+        let url = format!("ws://{}/pump", addr);
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        // Send TerminalThemeUpdate for theme B ("light mode").
+        let toggle = ClientMsg::TerminalThemeUpdate {
+            fg: (10, 20, 30),
+            bg: (240, 241, 242),
+        };
+        ws.send(TMessage::Text(serde_json::to_string(&toggle).unwrap()))
+            .await
+            .unwrap();
+
+        // The daemon must still see the frame — the persistence side-
+        // effect must NOT swallow the message.
+        let got: ClientMsg = tokio::time::timeout(
+            Duration::from_secs(2),
+            read_frame::<ClientMsg, _>(&mut daemon_side),
+        )
+        .await
+        .expect("daemon-side read timed out")
+        .expect("daemon-side read failed");
+        match got {
+            ClientMsg::TerminalThemeUpdate { fg, bg } => {
+                assert_eq!(fg, (10, 20, 30));
+                assert_eq!(bg, (240, 241, 242));
+            }
+            other => panic!("daemon expected TerminalThemeUpdate, got {other:?}"),
+        }
+
+        // The persistence side-effect runs in a `tokio::spawn`, so poll
+        // briefly for the row to flip from theme A to theme B. Cap at
+        // 2s — production write latency is sub-ms; anything slower
+        // here means the side-effect is broken.
+        let start = Instant::now();
+        loop {
+            let row = repo.terminal_get(&term.id).await.unwrap().unwrap();
+            if row.theme_fg.as_deref() == Some("10,20,30")
+                && row.theme_bg.as_deref() == Some("240,241,242")
+            {
+                break;
+            }
+            if start.elapsed() > Duration::from_secs(2) {
+                panic!(
+                    "row never flipped to new theme; current fg={:?}, bg={:?}",
+                    row.theme_fg, row.theme_bg
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 }
 

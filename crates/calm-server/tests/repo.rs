@@ -613,6 +613,72 @@ async fn terminal_create_rejects_duplicate_card_id() {
     assert!(repo.terminal_get(&t.id).await.unwrap().is_none());
 }
 
+/// #177 PR2 — migration 0010 added `theme_fg` / `theme_bg` to the
+/// `terminals` table as nullable TEXT. Sanity: a fresh terminal row
+/// reads back with both NULL (no theme stamped), `terminal_set_theme`
+/// upserts them, and `terminal_get` round-trips the strings unchanged.
+///
+/// This is the load-bearing column-presence + roundtrip guard. If the
+/// migration ever gets renumbered or the columns dropped from the
+/// SELECT lists in `sqlite.rs`, the assertion below trips before any
+/// of the higher-level spawn / WS-respawn tests would.
+#[tokio::test]
+async fn terminal_theme_columns_roundtrip() {
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "C").await;
+    let w = make_wave(&repo, c.id.as_str(), "W").await;
+    let card = make_card(&repo, w.id.as_str(), "terminal").await;
+
+    let t = repo
+        .terminal_create(NewTerminal {
+            card_id: card.id.clone(),
+            program: "bash".into(),
+            cwd: "/tmp".into(),
+            env: json!({}),
+        })
+        .await
+        .unwrap();
+
+    // Fresh row: theme columns must default to NULL — the migration
+    // intentionally doesn't backfill ("we don't know what theme this
+    // pre-#177 row was meant for; stay silent on OSC").
+    assert!(
+        t.theme_fg.is_none() && t.theme_bg.is_none(),
+        "fresh row must have NULL theme cols; got fg={:?}, bg={:?}",
+        t.theme_fg,
+        t.theme_bg
+    );
+
+    // Upsert both colors.
+    repo.terminal_set_theme(&t.id, Some("216,219,226"), Some("15,20,24"))
+        .await
+        .unwrap();
+    let got = repo.terminal_get(&t.id).await.unwrap().unwrap();
+    assert_eq!(got.theme_fg.as_deref(), Some("216,219,226"));
+    assert_eq!(got.theme_bg.as_deref(), Some("15,20,24"));
+
+    // Update to a different (light-mode) theme — second `UPDATE` path.
+    repo.terminal_set_theme(&t.id, Some("0,0,0"), Some("255,255,255"))
+        .await
+        .unwrap();
+    let got = repo.terminal_get(&t.id).await.unwrap().unwrap();
+    assert_eq!(got.theme_fg.as_deref(), Some("0,0,0"));
+    assert_eq!(got.theme_bg.as_deref(), Some("255,255,255"));
+
+    // Clear both — pass `None` to drop back to NULL.
+    repo.terminal_set_theme(&t.id, None, None).await.unwrap();
+    let got = repo.terminal_get(&t.id).await.unwrap().unwrap();
+    assert!(got.theme_fg.is_none() && got.theme_bg.is_none());
+
+    // Unknown id → NotFound (mirrors `terminal_set_handle` /
+    // `terminal_set_pid` semantics).
+    let err = repo
+        .terminal_set_theme("no-such-terminal", Some("1,2,3"), Some("4,5,6"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, CalmError::NotFound(_)));
+}
+
 // ------------------------------------------- atomic terminal-card helpers ----
 //
 // Coverage for `terminal_create_tx` and `card_with_terminal_create_tx`, the

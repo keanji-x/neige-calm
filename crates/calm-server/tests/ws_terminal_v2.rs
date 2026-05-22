@@ -50,7 +50,9 @@ async fn boot(daemon_side: DuplexStream, terminal_id: &str) -> SocketAddr {
                 // only cares about the v2 wire round-trip; the outcome
                 // variant is exercised separately in `pump_tests`.
                 upgrade.on_upgrade(move |socket| async move {
-                    let _ = pump(socket, daemon, tid, ping, pong).await;
+                    // #177 PR2: no repo handle — this v2 wire test doesn't
+                    // exercise mid-session theme persistence.
+                    let _ = pump(socket, daemon, tid, ping, pong, None).await;
                 })
             }
         }),

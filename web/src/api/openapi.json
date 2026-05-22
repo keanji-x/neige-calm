@@ -2709,6 +2709,20 @@
           },
           "program": {
             "type": "string"
+          },
+          "theme_bg": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Companion to `theme_fg` — host browser's background RGB. Same\nshape / lifecycle / fallback semantics."
+          },
+          "theme_fg": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "#177 PR2 — host browser's foreground RGB stamped at spawn time,\nstored as comma-decimal `r,g,b` matching the daemon CLI's\n`--terminal-fg` arg shape. `None` for terminal cards (no theme),\npre-#177 rows, and any spawn path that didn't carry theme. Read\nby `spawn_daemon_with_parts` as the fallback when\n`SpawnDaemonOpts.terminal_fg` is `None`, closing the WS\nauto-revive race where the un-themed shim used to win the\nsocket against the themed initial spawn."
           }
         }
       },

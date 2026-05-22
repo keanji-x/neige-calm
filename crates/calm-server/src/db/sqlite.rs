@@ -732,10 +732,17 @@ pub async fn terminal_create_tx(
     let now = now_ms();
     let id = new_id();
     let env_text = serde_json::to_string(&p.env)?;
+    // theme_fg / theme_bg start NULL on insert (#177 PR2): they get
+    // populated post-spawn from `SpawnDaemonOpts` via
+    // `terminal_set_theme`. Carrying them on the insert would force
+    // every test fixture and `NewTerminal` caller to know about the
+    // host theme; keeping them write-after-spawn matches how `pid`
+    // and `daemon_handle` are wired.
     sqlx::query(
         r#"INSERT INTO terminals
-               (id, card_id, program, cwd, env, daemon_handle, pid, created_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6)"#,
+               (id, card_id, program, cwd, env, daemon_handle, pid,
+                theme_fg, theme_bg, created_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, NULL, NULL, ?6)"#,
     )
     .bind(&id)
     .bind(&p.card_id)
@@ -753,6 +760,8 @@ pub async fn terminal_create_tx(
         env: p.env,
         daemon_handle: None,
         pid: None,
+        theme_fg: None,
+        theme_bg: None,
         created_at: now,
     })
 }
@@ -1248,7 +1257,8 @@ impl RepoRead for SqlxRepo {
     // ------------------------------------------------------------- terminals
     async fn terminal_get(&self, id: &str) -> Result<Option<Terminal>> {
         let row = sqlx::query_as::<_, Terminal>(
-            r#"SELECT id, card_id, program, cwd, env, daemon_handle, pid, created_at
+            r#"SELECT id, card_id, program, cwd, env, daemon_handle, pid,
+                      theme_fg, theme_bg, created_at
                FROM terminals WHERE id = ?1"#,
         )
         .bind(id)
@@ -1259,7 +1269,8 @@ impl RepoRead for SqlxRepo {
 
     async fn terminal_get_by_card(&self, card_id: &str) -> Result<Option<Terminal>> {
         let row = sqlx::query_as::<_, Terminal>(
-            r#"SELECT id, card_id, program, cwd, env, daemon_handle, pid, created_at
+            r#"SELECT id, card_id, program, cwd, env, daemon_handle, pid,
+                      theme_fg, theme_bg, created_at
                FROM terminals WHERE card_id = ?1"#,
         )
         .bind(card_id)
@@ -1277,7 +1288,8 @@ impl RepoRead for SqlxRepo {
         let cutoff = now_ms() - grace_seconds.saturating_mul(1000);
         let rows = sqlx::query_as::<_, Terminal>(
             r#"SELECT t.id, t.card_id, t.program, t.cwd, t.env,
-                      t.daemon_handle, t.pid, t.created_at
+                      t.daemon_handle, t.pid, t.theme_fg, t.theme_bg,
+                      t.created_at
                FROM terminals t
                WHERE NOT EXISTS (
                    SELECT 1 FROM cards c
@@ -1538,10 +1550,13 @@ impl RepoOutOfDomain for SqlxRepo {
         let now = now_ms();
         let id = new_id();
         let env_text = serde_json::to_string(&p.env)?;
+        // theme_fg/bg follow the same write-after-spawn shape as the tx
+        // helper above; see `terminal_create_tx` for the rationale.
         sqlx::query(
             r#"INSERT INTO terminals
-                   (id, card_id, program, cwd, env, daemon_handle, pid, created_at)
-               VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6)"#,
+                   (id, card_id, program, cwd, env, daemon_handle, pid,
+                    theme_fg, theme_bg, created_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, NULL, NULL, ?6)"#,
         )
         .bind(&id)
         .bind(&p.card_id)
@@ -1559,6 +1574,8 @@ impl RepoOutOfDomain for SqlxRepo {
             env: p.env,
             daemon_handle: None,
             pid: None,
+            theme_fg: None,
+            theme_bg: None,
             created_at: now,
         })
     }
@@ -1580,6 +1597,22 @@ impl RepoOutOfDomain for SqlxRepo {
         let pid_i64: Option<i64> = pid.map(|p| p as i64);
         let res = sqlx::query("UPDATE terminals SET pid = ?1 WHERE id = ?2")
             .bind(pid_i64)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        if res.rows_affected() == 0 {
+            return Err(CalmError::NotFound(format!("terminal {id}")));
+        }
+        Ok(())
+    }
+
+    async fn terminal_set_theme(&self, id: &str, fg: Option<&str>, bg: Option<&str>) -> Result<()> {
+        // #177 PR2 — fg / bg are independent because future paths
+        // might want to clear just one (e.g. partial theme bring-up
+        // / down). Today every caller writes both at once.
+        let res = sqlx::query("UPDATE terminals SET theme_fg = ?1, theme_bg = ?2 WHERE id = ?3")
+            .bind(fg)
+            .bind(bg)
             .bind(id)
             .execute(&self.pool)
             .await?;
