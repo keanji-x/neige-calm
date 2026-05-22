@@ -116,7 +116,10 @@ async fn post_coves_system_first_call_returns_201() {
     let (app, repo) = boot().await;
     let (status, body) = post_empty(app, "/api/coves/system").await;
     assert_eq!(status, StatusCode::CREATED, "first call mints: {body:?}");
-    assert_eq!(body["kind"], "system", "minted row has kind=system: {body:?}");
+    assert_eq!(
+        body["kind"], "system",
+        "minted row has kind=system: {body:?}"
+    );
     let row = repo
         .cove_get_system()
         .await

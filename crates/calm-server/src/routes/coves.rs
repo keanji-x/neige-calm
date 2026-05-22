@@ -16,9 +16,7 @@
 //! exclusively via the idempotent `POST /api/coves/system` upsert.
 
 use crate::actor::Actor;
-use crate::db::sqlite::{
-    cove_create_system_tx, cove_create_tx, cove_delete_tx, cove_update_tx,
-};
+use crate::db::sqlite::{cove_create_system_tx, cove_create_tx, cove_delete_tx, cove_update_tx};
 use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
@@ -36,7 +34,10 @@ use utoipa::{IntoParams, ToSchema};
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/coves", get(list_coves).post(create_cove))
-        .route("/api/coves/system", axum::routing::post(get_or_create_system_cove))
+        .route(
+            "/api/coves/system",
+            axum::routing::post(get_or_create_system_cove),
+        )
         .route(
             "/api/coves/{id}",
             axum::routing::patch(update_cove).delete(delete_cove),
