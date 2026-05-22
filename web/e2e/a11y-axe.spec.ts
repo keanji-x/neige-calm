@@ -330,4 +330,38 @@ test.describe('a11y · axe', () => {
     const { violations } = await axe(page).analyze();
     expect(violations, formatViolations(violations)).toEqual([]);
   });
+
+  test('AddPanel open · dark mode · no violations on menu', async ({ page }) => {
+    const { waveId } = await ids(page);
+    await page.goto(`/calm/wave/${waveId}?trace=1`);
+    await waitForBootstrap(page);
+    await enableDarkTheme(page);
+    const trigger = page.getByRole('button', { name: /\+\s*add/i });
+    await expect(trigger).toBeVisible();
+    await trigger.focus();
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('menu')).toBeVisible();
+    const { violations } = await axe(page).include('[role="menu"]').analyze();
+    expect(violations, formatViolations(violations)).toEqual([]);
+  });
+
+  test('Modal open · dark mode · no violations on dialog', async ({ page }) => {
+    const { waveId } = await ids(page);
+    await page.goto(`/calm/wave/${waveId}?trace=1`);
+    await waitForBootstrap(page);
+    await enableDarkTheme(page);
+    const trigger = page.getByRole('button', { name: /\+\s*add/i });
+    await trigger.focus();
+    await page.keyboard.press('Enter');
+    const codexItem = page.getByRole('menuitem', { name: /codex/i });
+    const hasCodex = (await codexItem.count()) > 0;
+    test.skip(!hasCodex, 'codex card kind not registered in this fixture');
+    await page.keyboard.press('ArrowDown');
+    await expect(codexItem).toBeFocused();
+    await page.keyboard.press('Enter');
+    const dialog = page.getByRole('dialog', { name: /new codex/i });
+    await expect(dialog).toBeVisible();
+    const { violations } = await axe(page).include('.modal-panel').analyze();
+    expect(violations, formatViolations(violations)).toEqual([]);
+  });
 });
