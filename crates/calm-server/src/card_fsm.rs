@@ -49,6 +49,7 @@ use serde_json::json;
 use tokio::sync::Mutex;
 use tokio::time::{Instant, sleep_until};
 
+use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::overlay_upsert_tx;
 use crate::db::{RepoEventWrite, write_with_event_typed};
 use crate::event::{Event, EventBus, EventScope};
@@ -156,11 +157,11 @@ fn codex_kind_to_state(kind: &str) -> Option<State> {
 /// sync-domain writes like `overlay_upsert` / `card_update` are
 /// deliberately unreachable here so a future contributor can't quietly
 /// bypass the event-log invariant (PR #41).
-pub fn spawn(repo: Arc<dyn RepoEventWrite>, bus: EventBus) {
+pub fn spawn(repo: Arc<dyn RepoEventWrite>, bus: EventBus, card_role_cache: CardRoleCache) {
     let mut rx = bus.subscribe();
     let bus_clone = bus.clone();
     tokio::spawn(async move {
-        let inner = Arc::new(Inner::new(repo, bus_clone));
+        let inner = Arc::new(Inner::new(repo, bus_clone, card_role_cache));
         loop {
             match rx.recv().await {
                 Ok(env) => inner.handle(env.event).await,
@@ -180,6 +181,10 @@ pub fn spawn(repo: Arc<dyn RepoEventWrite>, bus: EventBus) {
 struct Inner {
     repo: Arc<dyn RepoEventWrite>,
     bus: EventBus,
+    /// PR3 (#136) role-gate cache. Threaded through every emit so
+    /// `enforce_role` runs against the same map the rest of the server
+    /// shares.
+    card_role_cache: CardRoleCache,
     /// `card_id → (committed_state, pending_downgrade_deadline)`.
     ///
     /// `pending_downgrade_deadline` is `Some(deadline)` only when a downgrade
@@ -203,10 +208,11 @@ struct PendingDowngrade {
 }
 
 impl Inner {
-    fn new(repo: Arc<dyn RepoEventWrite>, bus: EventBus) -> Self {
+    fn new(repo: Arc<dyn RepoEventWrite>, bus: EventBus, card_role_cache: CardRoleCache) -> Self {
         Self {
             repo,
             bus,
+            card_role_cache,
             map: Mutex::new(HashMap::new()),
         }
     }
@@ -344,6 +350,7 @@ impl Inner {
             scope,
             None,
             &self.bus,
+            &self.card_role_cache,
             move |tx| {
                 Box::pin(async move {
                     let o = overlay_upsert_tx(tx, new_overlay).await?;
@@ -432,6 +439,7 @@ impl Inner {
             scope,
             None,
             &self.bus,
+            &self.card_role_cache,
             move |tx| {
                 Box::pin(async move {
                     let o = overlay_upsert_tx(tx, new_overlay).await?;
@@ -545,7 +553,11 @@ mod tests {
     #[tokio::test]
     async fn upgrade_commits_immediately() {
         let (repo, bus, wave_id, card_id) = setup().await;
-        spawn(repo.clone(), bus.clone());
+        spawn(
+            repo.clone(),
+            bus.clone(),
+            crate::card_role_cache::CardRoleCache::new(),
+        );
         // Give the spawn a tick to subscribe.
         tokio::task::yield_now().await;
 
@@ -577,7 +589,11 @@ mod tests {
     #[tokio::test]
     async fn awaiting_input_beats_working() {
         let (repo, bus, _wave_id, card_id) = setup().await;
-        spawn(repo.clone(), bus.clone());
+        spawn(
+            repo.clone(),
+            bus.clone(),
+            crate::card_role_cache::CardRoleCache::new(),
+        );
         tokio::task::yield_now().await;
 
         bus.emit(
@@ -614,7 +630,11 @@ mod tests {
         // the agent is still actively reasoning, so the card should not
         // briefly flicker to Idle. Only `stop` truly ends the turn.
         let (repo, bus, _wave_id, card_id) = setup().await;
-        spawn(repo.clone(), bus.clone());
+        spawn(
+            repo.clone(),
+            bus.clone(),
+            crate::card_role_cache::CardRoleCache::new(),
+        );
         tokio::task::yield_now().await;
 
         bus.emit(

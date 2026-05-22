@@ -232,12 +232,14 @@ pub(crate) async fn create_codex_card(
     )
     .await?;
     let wave_id_for_tx = wave_id;
+    let cache_for_tx = s.card_role_cache.clone();
     let (card, _id) = write_with_event_typed(
         s.repo.as_ref(),
         actor.to_actor_id(),
         scope,
         None,
         &s.events,
+        &s.card_role_cache,
         move |tx| {
             Box::pin(async move {
                 let (card, _term) = card_with_codex_create_tx(
@@ -248,6 +250,7 @@ pub(crate) async fn create_codex_card(
                     cwd_for_tx,
                     env_for_tx,
                     prompt_for_tx,
+                    &cache_for_tx,
                 )
                 .await?;
                 Ok((card.clone(), Event::CardAdded(card)))

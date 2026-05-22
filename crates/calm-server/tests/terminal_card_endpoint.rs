@@ -106,8 +106,10 @@ async fn boot_with_daemon(session_daemon_bin: PathBuf) -> Boot {
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
             EventBus::new(),
+            calm_server::card_role_cache::CardRoleCache::new(),
         )),
         Arc::new(CodexClient::new_stub()),
+        None,
     );
 
     let app = routes::router()

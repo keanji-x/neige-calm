@@ -98,6 +98,7 @@ pub(crate) async fn create_wave(
         EventScope::Cove { cove },
         None,
         &s.events,
+        &s.card_role_cache,
         move |tx| {
             Box::pin(async move {
                 let wave = wave_create_tx(tx, p).await?;
@@ -145,6 +146,7 @@ pub(crate) async fn update_wave(
         scope,
         None,
         &s.events,
+        &s.card_role_cache,
         move |tx| {
             Box::pin(async move {
                 let wave = wave_update_tx(tx, &id, p).await?;
@@ -194,6 +196,7 @@ pub(crate) async fn delete_wave(
         scope,
         None,
         &s.events,
+        &s.card_role_cache,
         move |tx| {
             Box::pin(async move {
                 wave_delete_tx(tx, wave_id.as_ref()).await?;

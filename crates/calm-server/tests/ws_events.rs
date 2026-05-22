@@ -44,8 +44,10 @@ async fn boot() -> (std::net::SocketAddr, EventBus) {
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
             events.clone(),
+            calm_server::card_role_cache::CardRoleCache::new(),
         )),
         Arc::new(calm_server::state::CodexClient::new_stub()),
+        None,
     );
     let app = axum::Router::new().merge(ws::router()).with_state(state);
 

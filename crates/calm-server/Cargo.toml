@@ -89,6 +89,14 @@ subtle = "2"
 anyhow = "1"
 thiserror = "1"
 
+# Wave-as-Actor PR3 (#136): in-memory `CardRoleCache` is a `DashMap<CardId,
+# CardRole>` so the role-gate lookup at every write entry stays lock-free
+# under contention. The cache is clone-cheap (`Arc<DashMap<…>>` internally)
+# which keeps the threading story simple — handlers/sweepers grab a
+# reference off `AppState` rather than threading the type through every
+# helper.
+dashmap = "6"
+
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -27,6 +27,7 @@
 
 pub mod actor;
 pub mod card_fsm;
+pub mod card_role_cache;
 pub mod codex_auto_submit;
 pub mod config;
 pub mod db;
@@ -37,6 +38,7 @@ pub mod model;
 pub mod openapi;
 pub mod plugin_host;
 pub mod replay;
+pub mod role_gate;
 pub mod routes;
 pub mod state;
 pub mod terminal_sweeper;

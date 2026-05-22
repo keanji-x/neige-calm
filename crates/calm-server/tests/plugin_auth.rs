@@ -93,6 +93,7 @@ async fn boot_host(
         plugins_data_dir,
         Vec::new(),
         events.clone(),
+        calm_server::card_role_cache::CardRoleCache::new(),
     ));
     (host, repo, tmp, events)
 }
@@ -371,6 +372,7 @@ async fn no_kernel_callbacks_capability_installs_method_not_found_drainer() {
         plugins_data_dir,
         Vec::new(),
         events,
+        calm_server::card_role_cache::CardRoleCache::new(),
     ));
 
     host.spawn(plugin_id).await.expect("spawn no-caps stub");

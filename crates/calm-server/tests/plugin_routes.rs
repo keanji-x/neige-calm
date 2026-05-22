@@ -126,6 +126,7 @@ async fn boot_state() -> (AppState, TempDir, PathBuf) {
         plugins_data_dir,
         Vec::new(),
         events.clone(),
+        calm_server::card_role_cache::CardRoleCache::new(),
     ));
     let state = AppState::from_parts(
         repo,
@@ -133,6 +134,7 @@ async fn boot_state() -> (AppState, TempDir, PathBuf) {
         Arc::new(DaemonClient::new_stub()),
         plugin,
         Arc::new(calm_server::state::CodexClient::new_stub()),
+        None, // PR3 (#136): card_role_cache — tests don't exercise role gating
     );
     (state, tmp, plugins_dir)
 }

@@ -173,12 +173,20 @@ pub struct PluginHost {
     /// (test shims) we still create a private bus here so dispatch keeps
     /// working — emissions just go nowhere visible.
     events_arc: Arc<EventBus>,
+    /// PR3 (#136) — role cache threaded into every `CallbackCtx`. Clone-
+    /// cheap; the host holds one handle, hands clones out to dispatches
+    /// + to `emit_state`'s `log_pure_event` invocation.
+    card_role_cache: crate::card_role_cache::CardRoleCache,
     processes: Mutex<HashMap<String, RunningPlugin>>,
 }
 
 impl PluginHost {
     /// Real boot-time constructor. Mirrors Slice A's `new`, but takes the
     /// resolved-paths + event bus + config disable list so we can supervise.
+    ///
+    /// PR3 (#136): also takes the [`CardRoleCache`] from `AppState` so
+    /// the host's `log_pure_event` / dispatch paths use the same map as
+    /// the REST surface.
     pub fn new_full(
         registry: Arc<PluginRegistry>,
         repo: Arc<dyn RouteRepo>,
@@ -186,6 +194,7 @@ impl PluginHost {
         plugins_data_dir: PathBuf,
         plugins_disabled: Vec<String>,
         events: EventBus,
+        card_role_cache: crate::card_role_cache::CardRoleCache,
     ) -> Self {
         let events_arc = Arc::new(events.clone());
         Self {
@@ -196,6 +205,7 @@ impl PluginHost {
             plugins_disabled,
             events: Some(events),
             events_arc,
+            card_role_cache,
             processes: Mutex::new(HashMap::new()),
         }
     }
@@ -398,6 +408,7 @@ impl PluginHost {
                 Arc::clone(&subscriptions),
                 inbound,
                 inbound_notifs,
+                self.card_role_cache.clone(),
             )
         } else {
             tracing::info!(
@@ -599,6 +610,7 @@ impl PluginHost {
             mcp,
             subscriptions,
             call_id,
+            card_role_cache: self.card_role_cache.clone(),
         };
         callbacks::dispatch(&ctx, method, params).await
     }
@@ -626,6 +638,7 @@ impl PluginHost {
                     EventScope::System,
                     None,
                     bus,
+                    &self.card_role_cache,
                     event,
                 )
                 .await
@@ -780,6 +793,7 @@ fn spawn_neige_router(
     subscriptions: Arc<Mutex<Vec<SubscriptionRecord>>>,
     mut inbound: mpsc::Receiver<InboundRequest>,
     inbound_notifs: Option<mpsc::Receiver<InboundNotification>>,
+    card_role_cache: crate::card_role_cache::CardRoleCache,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         // Drain notifications in a separate task — they're lossy by spec and
@@ -811,6 +825,7 @@ fn spawn_neige_router(
                 // tracing id (the route layer is where `call_id` enters);
                 // resulting event rows get `correlation = NULL`.
                 call_id: None,
+                card_role_cache: card_role_cache.clone(),
             };
             let outcome = callbacks::dispatch(&ctx, &req.method, req.params).await;
             // If the responder is gone (plugin disconnected mid-call), drop

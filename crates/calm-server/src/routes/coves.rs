@@ -72,6 +72,7 @@ pub(crate) async fn create_cove(
         EventScope::System,
         None,
         &s.events,
+        &s.card_role_cache,
         move |tx| {
             Box::pin(async move {
                 let cove = cove_create_tx(tx, p).await?;
@@ -110,6 +111,7 @@ pub(crate) async fn update_cove(
         scope,
         None,
         &s.events,
+        &s.card_role_cache,
         move |tx| {
             Box::pin(async move {
                 let cove = cove_update_tx(tx, &id, p).await?;
@@ -146,6 +148,7 @@ pub(crate) async fn delete_cove(
         scope,
         None,
         &s.events,
+        &s.card_role_cache,
         move |tx| {
             Box::pin(async move {
                 cove_delete_tx(tx, &id).await?;

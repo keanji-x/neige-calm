@@ -51,8 +51,10 @@ async fn boot() -> (axum::Router, Arc<SqlxRepo>, AppState) {
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
             events,
+            calm_server::card_role_cache::CardRoleCache::new(),
         )),
         Arc::new(CodexClient::new_stub()),
+        None,
     );
     // Same shape as main.rs: middleware sits on the REST router only.
     let app = axum::Router::new()
@@ -140,17 +142,36 @@ async fn missing_header_defaults_to_user_actor() {
 // dispatcher.
 
 #[tokio::test]
-async fn valid_ai_actor_recorded() {
-    let (app, repo, _state) = boot().await;
-    let (status, actor) = post_cove_and_read_actor(app, &repo, Some("ai:codex")).await;
-    assert_eq!(status, StatusCode::CREATED);
-    // `AiCodex` with a placeholder (empty) CardId — REST has no card
-    // context at actor-extraction. PR3 will reattribute via the wave
-    // the request touches.
-    assert_eq!(
-        parse_actor_json(actor.as_deref().unwrap()),
-        serde_json::json!({"kind": "AiCodex", "id": ""})
-    );
+async fn ai_codex_header_rejected_without_card_context() {
+    // PR3 (#136) — `ai:codex` on the REST surface maps to
+    // `ActorId::AiCodex(CardId(""))` (no card context at the actor-
+    // extraction point); the `enforce_role` gate refuses the write
+    // outright via its empty-CardId guard. This used to land in the
+    // events table with a placeholder empty CardId in PR2; PR3
+    // tightens the gate so an AI write without a real card identity
+    // is impossible.
+    //
+    // The codex bridge ingest path (`routes::codex::ingest_hook`) is
+    // unaffected — it now resolves the real card id from its query
+    // param before stamping the actor (see PR3 reattribution in that
+    // file). Other production callers of `ai:codex` on REST don't
+    // exist today; the gate makes that an enforced invariant.
+    let (app, _repo, _state) = boot().await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/coves")
+                .header("content-type", "application/json")
+                .header("X-Calm-Actor", "ai:codex")
+                .body(Body::from(
+                    serde_json::json!({ "name": "c", "color": "#000" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -317,9 +338,10 @@ async fn plugin_callback_path_writes_plugin_actor_regardless_of_middleware() {
         .unwrap();
 
     // Exactly what `plugin_host::callbacks::overlay_set` does after the
-    // perm check. PR2 of #136 typed the actor:
+    // perm check. PR2 of #136 typed the actor; PR3 (#136) added the
+    // role cache as another required arg:
     //   let actor = ActorId::Plugin(ctx.plugin_id.to_string());
-    //   write_with_event_typed(repo, actor, scope, None, &bus, |tx| { ... })
+    //   write_with_event_typed(repo, actor, scope, None, &bus, &cache, |tx| { ... })
     let plugin_id = "hello-world";
     let actor = ActorId::Plugin(plugin_id.to_string());
     let new_overlay = NewOverlay {
@@ -338,6 +360,7 @@ async fn plugin_callback_path_writes_plugin_actor_regardless_of_middleware() {
         },
         None,
         &state.events,
+        &calm_server::card_role_cache::CardRoleCache::new(),
         move |tx| {
             Box::pin(async move {
                 let o = overlay_upsert_tx(tx, new_overlay).await?;

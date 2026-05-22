@@ -29,6 +29,32 @@ payload: unknown, created_at: number, updated_at: number, };
  */
 export type CardId = string;
 
+/**
+ * Wave-as-Actor PR3 (#136): authorization label persisted on each card.
+ *
+ * The role decides whether the card's implicit actor (the AI agent bound
+ * to it, or the user when no agent is bound) is allowed to emit a given
+ * event. The gate is checked at the single write entry — see
+ * `role_gate::enforce_role` — *inside* the transaction, before the event
+ * row is appended. Violations roll the txn back; nothing is broadcast.
+ *
+ *   * [`CardRole::Plain`] is the default for every existing card and
+ *     every PR3-era card insert. The kernel places no extra restrictions
+ *     beyond what the wave/cove already provides.
+ *   * [`CardRole::Spec`] (PR6) is the wave's spec card. Only spec cards
+ *     may emit `WaveUpdated`; this is the structural choke point that
+ *     keeps AI workers from rewriting wave-level metadata.
+ *   * [`CardRole::Worker`] (PR5) is a dispatcher-spawned worker card.
+ *     Its events are scoped to the card itself and never broaden.
+ *
+ * Persisted as a lowercase string in `cards.role` (migration 0008). The
+ * serde + sqlx `rename_all = "lowercase"` keeps the wire / storage shape
+ * stable; ts-rs exports the matching TS union (`"plain" | "spec" |
+ * "worker"`) into `web/src/api/generated-events.ts` so the frontend can
+ * adopt the enum once any UI lands.
+ */
+export type CardRole = "plain" | "spec" | "worker";
+
 export type Cove = { id: CoveId, name: string, color: string, sort: number, created_at: number, updated_at: number, };
 
 /**

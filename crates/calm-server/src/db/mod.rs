@@ -86,6 +86,7 @@
 //! `AppState::raw_repo()` — the ugly name is a deliberate signal that
 //! you're stepping outside the gate.
 
+use crate::card_role_cache::CardRoleCache;
 use crate::error::Result;
 use crate::event::{Event, EventScope};
 use crate::ids::ActorId;
@@ -178,6 +179,13 @@ pub trait RepoRead: Send + Sync + 'static {
 
     // ---- settings (read-only)
     async fn settings_get_all(&self) -> Result<Vec<(String, String)>>;
+
+    /// PR3 (#136) — populate the supplied `CardRoleCache` from the persisted
+    /// `cards.role` column. Boot-time helper for `AppState::new` that keeps
+    /// the cache implementation pool-agnostic (the `&SqlitePool`-typed
+    /// `CardRoleCache::seed_from_db` is private to the sqlite backend, but
+    /// this trait method lets `AppState` seed through the dyn-trait alone).
+    async fn seed_card_role_cache(&self, cache: &CardRoleCache) -> Result<()>;
 }
 
 /// Eventized write surface. The **only** path that writes to the persistent
@@ -220,12 +228,20 @@ pub trait RepoEventWrite: RepoRead {
     ///
     /// `correlation` is optional; populated for plugin tool-call writes
     /// per design §9 (`"user_tool_call:<call_id>"`).
+    ///
+    /// `card_role_cache` is the [`CardRoleCache`] used by PR3's
+    /// `role_gate::enforce_role` to check that the actor is authorized
+    /// to emit this event under the supplied scope. The gate runs
+    /// *inside* the transaction, after the closure produces an event
+    /// and before the event row is appended. Violations roll the txn
+    /// back — entity write, event row, and broadcast all disappear.
     async fn write_with_event(
         &self,
         actor: ActorId,
         scope: EventScope,
         correlation: Option<&str>,
         bus: &crate::event::EventBus,
+        card_role_cache: &CardRoleCache,
         f: WriteWithEventFn<'_>,
     ) -> Result<i64>;
 
@@ -249,6 +265,7 @@ pub trait RepoEventWrite: RepoRead {
         scope: EventScope,
         correlation: Option<&str>,
         bus: &crate::event::EventBus,
+        card_role_cache: &CardRoleCache,
         event: Event,
     ) -> Result<i64>;
 
@@ -479,6 +496,7 @@ pub async fn write_with_event_typed<R, F>(
     scope: EventScope,
     correlation: Option<&str>,
     bus: &crate::event::EventBus,
+    card_role_cache: &CardRoleCache,
     f: F,
 ) -> Result<(R, i64)>
 where
@@ -503,7 +521,7 @@ where
     });
 
     let event_id = repo
-        .write_with_event(actor, scope, correlation, bus, boxed)
+        .write_with_event(actor, scope, correlation, bus, card_role_cache, boxed)
         .await?;
     let row = Arc::try_unwrap(captured)
         .map_err(|_| {

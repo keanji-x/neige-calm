@@ -17,7 +17,7 @@ use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::new_id;
-use crate::model::{Card, CardPatch, NewCard};
+use crate::model::{Card, CardPatch, CardRole, NewCard};
 use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
 use crate::state::AppState;
 use crate::validation::validate_card_payload;
@@ -180,15 +180,18 @@ pub(crate) async fn create_card(
         payload,
     };
     let card_id_for_tx = card_id.0.clone();
+    let cache = s.card_role_cache.clone();
     let (card, _id) = write_with_event_typed(
         s.repo.as_ref(),
         actor.to_actor_id(),
         scope,
         None,
         &s.events,
+        &s.card_role_cache,
         move |tx| {
             Box::pin(async move {
-                let card = card_create_with_id_tx(tx, card_id_for_tx, new).await?;
+                let card = card_create_with_id_tx(tx, card_id_for_tx, new, CardRole::Plain, &cache)
+                    .await?;
                 Ok((card.clone(), Event::CardAdded(card)))
             })
         },
@@ -310,15 +313,18 @@ async fn create_via_tool_call(
         .await
         .map_err(|e| e.into_response())?;
     let card_id_for_tx = card_id.0.clone();
+    let cache = s.card_role_cache.clone();
     let (card, _id) = write_with_event_typed(
         s.repo.as_ref(),
         actor,
         scope,
         Some(&correlation),
         &s.events,
+        &s.card_role_cache,
         move |tx| {
             Box::pin(async move {
-                let card = card_create_with_id_tx(tx, card_id_for_tx, new).await?;
+                let card = card_create_with_id_tx(tx, card_id_for_tx, new, CardRole::Plain, &cache)
+                    .await?;
                 Ok((card.clone(), Event::CardAdded(card)))
             })
         },
@@ -375,6 +381,7 @@ pub(crate) async fn update_card(
         scope,
         None,
         &s.events,
+        &s.card_role_cache,
         move |tx| {
             Box::pin(async move {
                 let card = card_update_tx(tx, &id, p).await?;
@@ -411,15 +418,17 @@ pub(crate) async fn delete_card(
     let card_id = card.id.clone();
     let wave_id = card.wave_id.clone();
     let scope = card_scope(s.repo.as_ref(), card_id.clone(), wave_id.clone()).await?;
+    let cache = s.card_role_cache.clone();
     let (_unit, _id) = write_with_event_typed(
         s.repo.as_ref(),
         actor.to_actor_id(),
         scope,
         None,
         &s.events,
+        &s.card_role_cache,
         move |tx| {
             Box::pin(async move {
-                card_delete_tx(tx, card_id.as_ref()).await?;
+                card_delete_tx(tx, card_id.as_ref(), &cache).await?;
                 Ok((
                     (),
                     Event::CardDeleted {

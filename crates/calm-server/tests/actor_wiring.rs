@@ -81,8 +81,10 @@ fn base_state(repo: Arc<SqlxRepo>, events: EventBus) -> AppState {
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
             events,
+            calm_server::card_role_cache::CardRoleCache::new(),
         )),
         Arc::new(CodexClient::new_stub()),
+        None,
     )
 }
 
@@ -91,10 +93,62 @@ fn base_state(repo: Arc<SqlxRepo>, events: EventBus) -> AppState {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn codex_hook_records_ai_codex_actor_from_header() {
+async fn codex_hook_records_ai_codex_actor_from_card_id_query() {
+    // PR3 (#136) — the codex bridge ingest path now reattributes from
+    // the `card_id` query parameter via `ActorId::AiCodex(CardId)`.
+    // The role gate's empty-CardId guard catches unset card_ids; the
+    // unknown-card guard catches card_ids that aren't in the role
+    // cache (e.g. the card was deleted between hook fire and ingest).
+    // So this test must seed a real card and put it into the role
+    // cache before POSTing.
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    // Seed cove + wave + card so the card_id query points at a row
+    // the role cache will see.
+    let cove = repo
+        .cove_create(NewCove {
+            name: "c".into(),
+            color: "#fff".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo
+        .wave_create(NewWave {
+            cove_id: cove.id.clone(),
+            title: "w".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let card = repo
+        .card_create(calm_server::model::NewCard {
+            wave_id: wave.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({}),
+        })
+        .await
+        .unwrap();
     let events = EventBus::new();
-    let app = app(base_state(repo.clone(), events.clone()));
+    let cache = calm_server::card_role_cache::CardRoleCache::new();
+    repo.seed_card_role_cache(&cache).await.unwrap();
+    let state = calm_server::state::AppState::from_parts(
+        repo.clone() as Arc<dyn Repo>,
+        events.clone(),
+        Arc::new(DaemonClient::new_stub()),
+        Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            repo.clone() as Arc<dyn Repo>,
+            std::path::PathBuf::new(),
+            std::env::temp_dir().join("calm-plugins-data"),
+            Vec::new(),
+            events.clone(),
+            cache.clone(),
+        )),
+        Arc::new(CodexClient::new_stub()),
+        Some(cache),
+    );
+    let app = app(state);
 
     let body = json!({
         "hook_event_name": "PreToolUse",
@@ -103,11 +157,12 @@ async fn codex_hook_records_ai_codex_actor_from_header() {
     })
     .to_string();
 
+    let uri = format!("/internal/codex/hook?card_id={}", card.id);
     let resp = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/internal/codex/hook?card_id=card_42")
+                .uri(uri)
                 .header("content-type", "application/json")
                 .header("X-Calm-Actor", "ai:codex")
                 .body(Body::from(body))
@@ -119,19 +174,12 @@ async fn codex_hook_records_ai_codex_actor_from_header() {
 
     let id = last_event_id(&repo, "codex.hook").await;
     let (actor, correlation) = fetch_actor_correlation(&repo, id).await;
-    // PR2 of #136 — judgment call documented in routes/codex.rs:
-    // the ingest path always stamps `ActorId::Kernel` (synthetic), no
-    // longer threading the header's declared identity. The header
-    // continues to be middleware-validated (so a malformed value still
-    // 400s), but the audit row attributes to the kernel until PR3
-    // wires the dispatcher's typed `AiCodex(card_id)` re-attribution.
-    // `events.actor` now carries the JSON form of [`ActorId::Kernel`].
     let actor_json: serde_json::Value =
         serde_json::from_str(&actor).expect("events.actor is JSON-serialized ActorId");
     assert_eq!(
         actor_json,
-        serde_json::json!({"kind": "Kernel"}),
-        "ingest_hook stamps Kernel (synthetic) per PR2 of #136"
+        serde_json::json!({"kind": "AiCodex", "id": card.id.as_str()}),
+        "ingest_hook stamps AiCodex(<card_id from query>) per PR3 of #136"
     );
     assert_eq!(
         correlation, None,
@@ -148,7 +196,15 @@ async fn codex_hook_records_ai_codex_actor_from_header() {
 // scope brief is a narrative order, not a file order.
 
 #[tokio::test]
-async fn codex_hook_falls_back_to_user_actor_when_header_absent() {
+async fn codex_hook_with_missing_card_is_rejected_by_role_gate() {
+    // PR3 (#136) — even when the header is absent, the route stamps
+    // `ActorId::AiCodex(<card_id from query>)`. If the card_id
+    // references a card the role cache doesn't know (because it was
+    // never minted, or was deleted between hook fire and ingest),
+    // `enforce_role`'s unknown-card branch denies the write. This is
+    // intentional: refusing to ingest a hook for a deleted /
+    // fabricated card id is the safe default. The header's presence
+    // doesn't change the gate's behaviour at all in PR3.
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let events = EventBus::new();
     let app = app(base_state(repo.clone(), events.clone()));
@@ -169,18 +225,14 @@ async fn codex_hook_falls_back_to_user_actor_when_header_absent() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 
-    let id = last_event_id(&repo, "codex.hook").await;
-    let (actor, _) = fetch_actor_correlation(&repo, id).await;
-    // PR2 of #136 — ingest_hook always stamps Kernel (synthetic),
-    // regardless of whether the header was present. Pre-PR2 the path
-    // attributed to the middleware default (`user`); now the kernel
-    // owns the attribution and only PR3's dispatcher can re-attribute
-    // as `AiCodex(card_id)`.
-    let actor_json: serde_json::Value =
-        serde_json::from_str(&actor).expect("events.actor is JSON-serialized ActorId");
-    assert_eq!(actor_json, serde_json::json!({"kind": "Kernel"}));
+    // No events row should have been written.
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM events WHERE kind = 'codex.hook'")
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(count.0, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -262,6 +314,7 @@ async fn plugin_tool_call_threads_call_id_as_correlation() {
         plugins_data_dir,
         Vec::new(),
         events.clone(),
+        calm_server::card_role_cache::CardRoleCache::new(),
     ));
 
     plugin_host.spawn(plugin_id).await.expect("spawn");
@@ -285,6 +338,7 @@ async fn plugin_tool_call_threads_call_id_as_correlation() {
         Arc::new(DaemonClient::new_stub()),
         plugin_host.clone(),
         Arc::new(CodexClient::new_stub()),
+        None, // PR3 (#136): card_role_cache — tests don't exercise role gating
     );
 
     let body = json!({
@@ -403,6 +457,7 @@ async fn plugin_tool_call_without_call_id_leaves_correlation_null() {
         plugins_data_dir,
         Vec::new(),
         events.clone(),
+        calm_server::card_role_cache::CardRoleCache::new(),
     ));
 
     plugin_host.spawn(plugin_id).await.expect("spawn");
@@ -425,6 +480,7 @@ async fn plugin_tool_call_without_call_id_leaves_correlation_null() {
         Arc::new(DaemonClient::new_stub()),
         plugin_host.clone(),
         Arc::new(CodexClient::new_stub()),
+        None, // PR3 (#136): card_role_cache — tests don't exercise role gating
     );
 
     // No call_id field at all — exercises serde default + "no allocation"
@@ -539,6 +595,7 @@ async fn plugin_tool_call_treats_empty_call_id_as_absent() {
         plugins_data_dir,
         Vec::new(),
         events.clone(),
+        calm_server::card_role_cache::CardRoleCache::new(),
     ));
 
     plugin_host.spawn(plugin_id).await.expect("spawn");
@@ -561,6 +618,7 @@ async fn plugin_tool_call_treats_empty_call_id_as_absent() {
         Arc::new(DaemonClient::new_stub()),
         plugin_host.clone(),
         Arc::new(CodexClient::new_stub()),
+        None, // PR3 (#136): card_role_cache — tests don't exercise role gating
     );
 
     // Empty-string call_id — must be normalized to absent, NOT produce
