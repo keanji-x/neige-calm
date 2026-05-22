@@ -101,6 +101,19 @@ const TYPE_SCALE_TOKENS = [
   '--text-display',
 ] as const;
 
+// Font-family semantic aliases (slice 2 of #150). Same alias contract as
+// `ALIAS_TOKENS` above — declared in `:root`, never re-declared in dark
+// (font stacks don't theme-vary, so a dark override would just rot). The
+// extra invariant is the *shape* of the value: each must resolve to one
+// of the positional `--font-sans` / `--font-serif` / `--font-mono`
+// tokens, not a hardcoded font stack. That keeps the positional tokens
+// as the single source of truth for the actual font families.
+const FONT_ALIAS_TOKENS = [
+  '--font-display',
+  '--font-numeric',
+  '--font-code',
+] as const;
+
 // ---------------------------------------------------------------------------
 // Parse helpers
 // ---------------------------------------------------------------------------
@@ -282,7 +295,45 @@ describe('calm.css token graph: type-scale tokens', () => {
 });
 
 // ---------------------------------------------------------------------------
-// (f) Soft drift detector: any `font-size: Npx` literal outside the token
+// (f) Font-family aliases (slice 2 of #150).
+// ---------------------------------------------------------------------------
+//
+// `--font-display` / `--font-numeric` / `--font-code` are semantic aliases
+// over the positional `--font-sans` / `--font-serif` / `--font-mono`. Three
+// invariants:
+//   1. Declared in `:root`.
+//   2. Value is a bare `var(--font-{sans,serif,mono})` reference — never a
+//      hardcoded font stack. The positional tokens stay the one place that
+//      pins concrete font families.
+//   3. NOT redeclared in `[data-theme="dark"]` — fonts don't theme-vary,
+//      and an override would defeat the cascade.
+
+// Stricter than VAR_REF: must point at one of the three positional font
+// tokens specifically (not at some other alias).
+const FONT_VAR_REF = /^var\(--font-(sans|serif|mono)\)$/;
+
+describe('calm.css token graph: font-family aliases', () => {
+  for (const name of FONT_ALIAS_TOKENS) {
+    it(`${name} is declared in :root as a var(--font-{sans|serif|mono}) reference`, () => {
+      const value = rootDecls.get(name);
+      expect(value, `${name} missing from :root`).toBeDefined();
+      expect(
+        value,
+        `${name} should alias one of --font-sans/--font-serif/--font-mono (no hardcoded font stacks). Got: ${value}`,
+      ).toMatch(FONT_VAR_REF);
+    });
+
+    it(`${name} is NOT redeclared in [data-theme="dark"]`, () => {
+      expect(
+        darkDecls.has(name),
+        `${name} is a font alias; font stacks don't theme-vary. Remove from [data-theme="dark"].`,
+      ).toBe(false);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// (g) Soft drift detector: any `font-size: Npx` literal outside the token
 // blocks is fair game for migration (or a deliberate exception that should
 // be called out in review).
 // ---------------------------------------------------------------------------
@@ -330,7 +381,7 @@ describe('calm.css type-scale: no raw font-size literals outside :root', () => {
 });
 
 // ---------------------------------------------------------------------------
-// (g) Orphan detection — soft warning, no failure.
+// (h) Orphan detection — soft warning, no failure.
 // ---------------------------------------------------------------------------
 //
 // If a token is declared in `:root` but never referenced by a `var(--name)`
