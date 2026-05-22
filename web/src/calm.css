@@ -358,7 +358,6 @@ input, textarea { font: inherit; color: inherit; }
   display: flex; flex-direction: column;
 }
 .bar {
-  height: 36px;
   display: flex; align-items: center; padding: var(--space-0) var(--space-7);
   background: transparent;
   flex-shrink: 0;
