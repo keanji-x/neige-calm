@@ -55,11 +55,32 @@ pub fn router() -> Router<AppState> {
 /// Body for `POST /api/waves/:wave_id/codex-cards`.
 ///
 /// Deliberately omits `kind` (always `"codex"`) and `payload` (the kernel
-/// stamps `{schemaVersion, terminal_id, cwd?}` itself). Empty `cwd` falls
-/// back to `$HOME` then the server's cwd. `initial_prompt` is accepted for
-/// forward-/backward-compatibility with older clients but ignored —
-/// interactive codex uses its own slash-command UX for input.
+/// stamps `{schemaVersion, terminal_id, cwd?, prompt?}` itself). Empty
+/// `cwd` falls back to `$HOME` then the server's cwd.
+///
+/// `prompt` is the hands-free entry point: when non-empty, the kernel
+///   1. passes it to codex CLI as the positional `[PROMPT]` arg
+///      (shell-single-quoted), which mounts the TUI with the composer
+///      pre-filled,
+///   2. writes a per-spawn `$CODEX_HOME/config.toml` that silences the
+///      three first-run dialogs (approval, sandbox, project trust) so
+///      injected stdin lands on the composer instead of a modal, and
+///   3. stamps `prompt` onto the card payload — the
+///      `codex_auto_submit` subscriber reads it and, once codex emits
+///      `hook.codex.session_start`, opens a kernel-private connection
+///      to the daemon and injects a `\r` so the composer auto-submits.
+///
+/// Empty / absent `prompt` reverts to the user-initiated flow: codex
+/// boots, the composer is empty, the user types and hits Enter.
+///
+/// Note: the old `initial_prompt` field (which had been a documented
+/// no-op since the codex-TUI port) was removed; serde rejects unknown
+/// fields with the default config, so a stale caller that still sends
+/// it will get a 422 — that's the intended fail-loud signal to update
+/// the caller. The interactive `prompt` channel is the one place
+/// callers should be putting text now.
 #[derive(Deserialize, Debug, Default, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct NewCodexCardBody {
     /// Sort order within the wave. `None` defaults to "append to end".
     #[serde(default)]
@@ -68,10 +89,12 @@ pub struct NewCodexCardBody {
     /// (then `cwd` of server).
     #[serde(default)]
     pub cwd: Option<String>,
-    /// Reserved field — accepted for compat; interactive codex uses its
-    /// own slash-command UX for input. Logged at `debug` only when non-empty.
+    /// Hands-free seed prompt. When set and non-empty, codex boots with
+    /// its composer pre-filled and the kernel auto-submits the composer
+    /// once codex's session is constructed. See the struct doc for the
+    /// full mechanism.
     #[serde(default)]
-    pub initial_prompt: Option<String>,
+    pub prompt: Option<String>,
 }
 
 #[utoipa::path(
@@ -161,6 +184,17 @@ pub(crate) async fn create_codex_card(
     }
     let env = serde_json::Value::Object(env_map);
 
+    // Normalize prompt up-front: trim + non-empty filter. This is the
+    // single source of truth for "is this a hands-free spawn?" — the
+    // payload stamp, the config.toml write, and the codex argv all key
+    // off the same Option<String>. None / empty → user-initiated flow.
+    let prompt = p
+        .prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+
     // 5. Single transaction: card row + terminal row + payload link + event.
     //    A single `card.added` envelope carries the final-state card to
     //    all peers — no intermediate `payload=null` snapshot, no follow-up
@@ -169,6 +203,7 @@ pub(crate) async fn create_codex_card(
     let card_id_for_tx = card_id.clone();
     let cwd_for_tx = cwd.clone();
     let env_for_tx = env.clone();
+    let prompt_for_tx = prompt.clone();
     let (card, _id) = write_with_event_typed(
         s.repo.as_ref(),
         actor.as_str(),
@@ -183,6 +218,7 @@ pub(crate) async fn create_codex_card(
                     sort,
                     cwd_for_tx,
                     env_for_tx,
+                    prompt_for_tx,
                 )
                 .await?;
                 Ok((card.clone(), Event::CardAdded(card)))
@@ -190,13 +226,6 @@ pub(crate) async fn create_codex_card(
         },
     )
     .await?;
-
-    // initial_prompt is intentionally ignored — interactive codex uses its
-    // own slash-command UX. Log once at debug for observability so older
-    // clients pushing prompts don't silently lose anything.
-    if let Some(ip) = p.initial_prompt.as_deref().filter(|s| !s.trim().is_empty()) {
-        tracing::debug!(card_id = %card.id, initial_prompt = %ip, "initial_prompt ignored in interactive mode");
-    }
 
     // 6. Post-commit (out of the transaction): seed CODEX_HOME and write
     //    hooks.json. Copying `$HOME/.codex` shouldn't hold a write txn
@@ -222,6 +251,24 @@ pub(crate) async fn create_codex_card(
     std::fs::write(&hooks_path, hooks_json)
         .map_err(|e| CalmError::Internal(format!("write hooks.json: {e}")))?;
 
+    // Per-spawn `config.toml`. Required only for hands-free
+    // (prompt-set) spawns: a fresh CODEX_HOME otherwise lands on
+    // codex's "Trust this directory?" modal BEFORE the composer
+    // mounts, and the `\r` we'll inject would land on the modal
+    // instead of the composer. We pre-trust the cwd + relax the
+    // approval/sandbox gates to the same defaults the host
+    // workflow uses. NO `[mcp_servers.*]` blocks — those are
+    // separately seeded from the host $CODEX_HOME copy and a
+    // duplicate here would shadow the user's real config; the
+    // `config_toml_has_no_mcp_servers_block` unit test guards
+    // against that regression.
+    if prompt.is_some() {
+        let cfg_path = codex_home.join("config.toml");
+        let cfg_text = build_codex_config_toml(&cwd);
+        std::fs::write(&cfg_path, cfg_text)
+            .map_err(|e| CalmError::Internal(format!("write config.toml: {e}")))?;
+    }
+
     // 7. Fetch the persisted terminal row so we can hand it to
     //    `spawn_daemon_for`. Guaranteed to exist: the transaction above
     //    committed both card and terminal as one unit.
@@ -236,17 +283,29 @@ pub(crate) async fn create_codex_card(
             ))
         })?;
 
-    // 8. Spawn the daemon. On failure we deliberately do NOT roll back
+    // 8. Build the codex command. `spawn_daemon_for` passes
+    //    whatever we hand here to `sh -c`, so for hands-free spawns we
+    //    append the prompt as codex's positional `[PROMPT]` arg,
+    //    shell-single-quoted so any user payload (including single
+    //    quotes) is passed through verbatim without sh re-interpreting
+    //    it. With no prompt we keep the original `"codex"` argv.
+    let command_line = match prompt.as_deref() {
+        Some(p) => format!("codex {}", shell_single_quote(p)),
+        None => "codex".to_string(),
+    };
+
+    // 9. Spawn the daemon. On failure we deliberately do NOT roll back
     //    the persisted rows — the orphan-terminal sweeper handles cleanup
     //    within its grace window. Matches the prior endpoint's semantics:
     //    a 500 tells the client the spawn failed, but the card/terminal
     //    pair is still in the DB until the sweeper runs.
-    spawn_daemon_for(&s, &term, "codex", &cwd, &env).await?;
+    spawn_daemon_for(&s, &term, &command_line, &cwd, &env).await?;
 
     tracing::info!(
         card_id = %card.id,
         terminal_id = %term.id,
         cwd = %cwd,
+        hands_free = prompt.is_some(),
         "spawned interactive codex"
     );
 
@@ -301,6 +360,68 @@ pub(crate) fn copy_dir_recursive(src: &StdPath, dst: &StdPath) -> std::io::Resul
     Ok(())
 }
 
+/// Wrap a string in POSIX-shell single quotes, escaping any embedded
+/// single quotes by closing the quote, emitting a backslash-quoted
+/// literal `'\''`, then reopening. Used to pass an arbitrary user
+/// prompt to codex as a positional arg without `sh -c` re-interpreting
+/// metacharacters. The output is a single shell word.
+///
+/// Examples:
+///   - `hello` → `'hello'`
+///   - `she said 'hi'` → `'she said '\''hi'\'''`
+///   - `$(rm -rf /)` → `'$(rm -rf /)'` (literal, not expanded by sh)
+pub(crate) fn shell_single_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for ch in s.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// Per-spawn `$CODEX_HOME/config.toml` body. Silences the three
+/// first-run dialogs that would otherwise gate composer mount for a
+/// fresh CODEX_HOME:
+///
+///   - `approval_policy = "never"` — don't ask before each command.
+///   - `sandbox_mode = "workspace-write"` — confirms the sandbox
+///     posture so codex doesn't prompt for it on first run.
+///   - `[projects."<cwd>"] trust_level = "trusted"` — pre-trusts the
+///     spawn cwd so the "Trust this directory?" modal doesn't appear
+///     before the composer is mounted; the auto-submitted `\r` would
+///     otherwise land on that modal.
+///
+/// Deliberately omits any `[mcp_servers.*]` blocks. MCP server config
+/// is seeded from the host `$HOME/.codex/config.toml` via
+/// `copy_dir_recursive`; emitting one here would shadow the user's
+/// real config in this per-card CODEX_HOME. The
+/// `config_toml_has_no_mcp_servers_block` regression test below guards
+/// this.
+pub(crate) fn build_codex_config_toml(cwd: &str) -> String {
+    // We hand-write the TOML (no `toml` crate in the workspace) — the
+    // payload is small enough to be readable, and the only field that
+    // can contain anything wild is `cwd`. TOML basic strings allow
+    // most characters but require escaping `"` and `\`. Backslash
+    // shows up on Windows-style paths (which the codex container does
+    // not see, but the test fixture path is a tempdir so we keep the
+    // escape minimal-but-correct).
+    let escaped_cwd = cwd.replace('\\', "\\\\").replace('"', "\\\"");
+    format!(
+        "# Generated by neige-calm per-spawn — silences codex's first-run\n\
+         # dialogs so an auto-submitted \\r lands on the composer.\n\
+         approval_policy = \"never\"\n\
+         sandbox_mode = \"workspace-write\"\n\
+         \n\
+         [projects.\"{escaped_cwd}\"]\n\
+         trust_level = \"trusted\"\n"
+    )
+}
+
 pub(crate) fn build_hooks_json(bridge: &str) -> String {
     // Bridge command — the binary path resolved by `state::CodexClient`.
     // Codex spec: each hook entry is `{"type":"command", "command":"<argv>"}`.
@@ -333,5 +454,73 @@ mod tests {
         let s = build_hooks_json("/usr/local/bin/neige-codex-bridge");
         let v: Value = serde_json::from_str(&s).expect("valid JSON");
         assert!(v["hooks"]["PreToolUse"].is_array());
+    }
+
+    #[test]
+    fn shell_single_quote_basic() {
+        assert_eq!(shell_single_quote("hello"), "'hello'");
+        assert_eq!(shell_single_quote(""), "''");
+    }
+
+    #[test]
+    fn shell_single_quote_embedded_single_quote() {
+        // `she said 'hi'` → close, escape, reopen — single shell word.
+        assert_eq!(
+            shell_single_quote("she said 'hi'"),
+            "'she said '\\''hi'\\'''"
+        );
+    }
+
+    #[test]
+    fn shell_single_quote_metacharacters_are_literal() {
+        // Defends against `sh -c "codex $promptArg"` re-interpreting
+        // `$(...)`, backticks, `;`, `&&`, `|`, etc. The whole arg is
+        // inside single quotes so sh ships it as one literal word.
+        let prompt = "$(rm -rf /) `whoami` ; echo pwned && true | cat";
+        let quoted = shell_single_quote(prompt);
+        assert!(quoted.starts_with('\''));
+        assert!(quoted.ends_with('\''));
+        // Single quotes never appear unescaped inside the body —
+        // if they did, sh would close our quoting and the leftover
+        // bytes would be re-parsed.
+        let body = &quoted[1..quoted.len() - 1];
+        for window in body.as_bytes().windows(1) {
+            if window == b"'" {
+                panic!("unescaped single quote inside body: {body}");
+            }
+        }
+    }
+
+    #[test]
+    fn config_toml_pre_trusts_cwd_and_silences_dialogs() {
+        let s = build_codex_config_toml("/workspace");
+        assert!(s.contains("approval_policy = \"never\""));
+        assert!(s.contains("sandbox_mode = \"workspace-write\""));
+        assert!(s.contains("[projects.\"/workspace\"]"));
+        assert!(s.contains("trust_level = \"trusted\""));
+    }
+
+    /// Regression guard: per-spawn config.toml must NEVER contain a
+    /// `[mcp_servers.*]` block. MCP config is seeded from the host
+    /// `$HOME/.codex/config.toml` via `copy_dir_recursive`; emitting
+    /// one here would shadow the user's real config.
+    #[test]
+    fn config_toml_has_no_mcp_servers_block() {
+        let s = build_codex_config_toml("/workspace");
+        assert!(
+            !s.contains("[mcp_servers"),
+            "per-spawn config.toml must not contain mcp_servers blocks; got:\n{s}"
+        );
+    }
+
+    #[test]
+    fn config_toml_escapes_quoted_cwd() {
+        // A cwd with a `"` would otherwise break the TOML table header.
+        let s = build_codex_config_toml(r#"/work"dir"#);
+        // The cwd is inside a basic string, so `"` must be `\"`.
+        assert!(
+            s.contains("[projects.\"/work\\\"dir\"]"),
+            "expected escaped quote in projects header; got:\n{s}"
+        );
     }
 }

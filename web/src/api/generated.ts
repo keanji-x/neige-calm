@@ -575,10 +575,30 @@ export interface components {
          * @description Body for `POST /api/waves/:wave_id/codex-cards`.
          *
          *     Deliberately omits `kind` (always `"codex"`) and `payload` (the kernel
-         *     stamps `{schemaVersion, terminal_id, cwd?}` itself). Empty `cwd` falls
-         *     back to `$HOME` then the server's cwd. `initial_prompt` is accepted for
-         *     forward-/backward-compatibility with older clients but ignored —
-         *     interactive codex uses its own slash-command UX for input.
+         *     stamps `{schemaVersion, terminal_id, cwd?, prompt?}` itself). Empty
+         *     `cwd` falls back to `$HOME` then the server's cwd.
+         *
+         *     `prompt` is the hands-free entry point: when non-empty, the kernel
+         *       1. passes it to codex CLI as the positional `[PROMPT]` arg
+         *          (shell-single-quoted), which mounts the TUI with the composer
+         *          pre-filled,
+         *       2. writes a per-spawn `$CODEX_HOME/config.toml` that silences the
+         *          three first-run dialogs (approval, sandbox, project trust) so
+         *          injected stdin lands on the composer instead of a modal, and
+         *       3. stamps `prompt` onto the card payload — the
+         *          `codex_auto_submit` subscriber reads it and, once codex emits
+         *          `hook.codex.session_start`, opens a kernel-private connection
+         *          to the daemon and injects a `\r` so the composer auto-submits.
+         *
+         *     Empty / absent `prompt` reverts to the user-initiated flow: codex
+         *     boots, the composer is empty, the user types and hits Enter.
+         *
+         *     Note: the old `initial_prompt` field (which had been a documented
+         *     no-op since the codex-TUI port) was removed; serde rejects unknown
+         *     fields with the default config, so a stale caller that still sends
+         *     it will get a 422 — that's the intended fail-loud signal to update
+         *     the caller. The interactive `prompt` channel is the one place
+         *     callers should be putting text now.
          */
         NewCodexCardBody: {
             /**
@@ -587,10 +607,12 @@ export interface components {
              */
             cwd?: string | null;
             /**
-             * @description Reserved field — accepted for compat; interactive codex uses its
-             *     own slash-command UX for input. Logged at `debug` only when non-empty.
+             * @description Hands-free seed prompt. When set and non-empty, codex boots with
+             *     its composer pre-filled and the kernel auto-submits the composer
+             *     once codex's session is constructed. See the struct doc for the
+             *     full mechanism.
              */
-            initial_prompt?: string | null;
+            prompt?: string | null;
             /**
              * Format: double
              * @description Sort order within the wave. `None` defaults to "append to end".

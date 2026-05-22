@@ -381,7 +381,7 @@ async function addCardWithValues(
     // placeholder to react to.
     const card = await api.createCodexCard(waveId, {
       cwd: values.cwd || undefined,
-      initial_prompt: values.initialPrompt || undefined,
+      prompt: values.prompt || undefined,
     });
     dlog('addCardWithValues', 'codex create DONE', { cardId: card.id });
   } catch (err) {
