@@ -42,32 +42,52 @@ async function waitForBootstrap(page: Page): Promise<void> {
   ).toBeVisible({ timeout: 15_000 });
 }
 
-// Rules disabled across all scans below. These are pre-existing,
-// app-wide design issues that turn up on every page — silencing them
-// here lets the suite land green while keeping the violation list
-// honest in this comment block. Each entry needs a follow-up before
-// it can come back into the strict ruleset.
-//
-//   - color-contrast: secondary "synth" text colors (`.synth`,
-//     `.h-eyebrow`, `.nav-label`, `.surf-clock-ap`, `.cal-empty`, …)
-//     run at ~3:1 against the background where WCAG AA wants ≥ 4.5:1
-//     for normal text. Pre-existing from the M0 design port. Bumping
-//     these affects every page — schedule as a dedicated design-system
-//     pass (#56 slice 9 candidate).
-//
-// Until the follow-ups land, we exclude these rules so the rest of the
-// axe surface (which catches *new* regressions on labels, focus
-// management, ARIA misuse, …) stays a reliable signal.
+// Flip the app into dark mode for the parallel dark-theme scans. The
+// theme is React state living in CalmApp (no localStorage) — the
+// effect mirrors `theme` into `document.documentElement.dataset.theme`.
+// We can't invoke the React setter from outside the bundle, but the
+// dataset attribute is exactly what the `[data-theme="dark"]` selectors
+// in `calm.css` consume — so writing it directly is sufficient to
+// re-paint the cascade for axe's color-contrast probe. We wait on a
+// `waitForFunction` checking the attribute *and* the computed background
+// color of <body> (which should darken once the cascade re-evaluates)
+// so the scan never races a half-applied theme. Note: the next user
+// action that triggers CalmApp's effect will overwrite our attribute,
+// which is fine — the scan runs to completion before any such action.
+async function enableDarkTheme(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    document.documentElement.dataset.theme = 'dark';
+  });
+  await page.waitForFunction(() => {
+    if (document.documentElement.dataset.theme !== 'dark') return false;
+    // --bg in dark mode is oklch(16% …), which resolves well below
+    // rgb(128,128,128). Light mode --bg sits near rgb(252,252,253).
+    // Sampling <body>'s computed background-color gives us a stable
+    // post-cascade signal that the CSS variables actually flipped.
+    const bg = getComputedStyle(document.body).backgroundColor;
+    const m = bg.match(/\d+/g);
+    if (!m) return false;
+    const [r, g, b] = m.map(Number);
+    return r < 80 && g < 80 && b < 80;
+  });
+}
+
+// Rules disabled across all scans below. No rules currently deferred;
+// add here with a comment block explaining why a rule had to be
+// silenced and what the follow-up plan is. The empty array still
+// flows through `disableRules(...)` below so the wiring stays
+// discoverable for the next time we need to defer something.
 //
 // Notable resolved rules (kept here for archaeology):
 //   - region (PR #122): TitleBar promoted to `<header>` so the chrome
 //     sits inside an implicit `banner` landmark.
-//   - nested-interactive (this PR): fixed by the WaveRow refactor — the
+//   - nested-interactive (PR #127): fixed by the WaveRow refactor — the
 //     row is now a real `<button>` with a sibling delete `<button>`
 //     inside a `.wave-row-wrapper`.
-const DEFERRED_RULES = [
-  'color-contrast',
-];
+//   - color-contrast (this PR): --text-3 (light + dark) and --accent
+//     (light) bumped to clear ≥ 4.5:1 on every observed background
+//     surface; .nav-label re-routed from --text-4 to --text-2.
+const DEFERRED_RULES: string[] = [];
 
 // Default Axe builder used by every scan. `withTags` pins the rule set to
 // WCAG 2.1 A + AA + best-practice; we don't want a future axe-core
@@ -261,6 +281,53 @@ test.describe('a11y · axe', () => {
     // DirectoryBrowser) is what we care about here, not the dimmed page
     // underneath (which we already scanned).
     const { violations } = await axe(page).include('.modal-panel').analyze();
+    expect(violations, formatViolations(violations)).toEqual([]);
+  });
+
+  // ---- Dark-mode parity scans ------------------------------------------
+  //
+  // The scans above run against the default (light) theme. Re-run the 4
+  // representative pages (the ones with the most distinct surfaces in
+  // the original color-contrast investigation) with `data-theme="dark"`
+  // applied so we catch any dark-only contrast regression. Limited to 4
+  // tests intentionally — full per-state coverage would double the
+  // suite's runtime for marginal additional signal.
+
+  test('Today page · dark mode · no violations', async ({ page }) => {
+    await page.goto('/?trace=1');
+    await waitForBootstrap(page);
+    await enableDarkTheme(page);
+    const { violations } = await axe(page).analyze();
+    expect(violations, formatViolations(violations)).toEqual([]);
+  });
+
+  test('Cove page · dark mode · no violations', async ({ page }) => {
+    const { coveId } = await ids(page);
+    await page.goto(`/calm/cove/${coveId}?trace=1`);
+    await waitForBootstrap(page);
+    await expect(page.getByRole('heading', { name: /scratch/i })).toBeVisible();
+    await enableDarkTheme(page);
+    const { violations } = await axe(page).analyze();
+    expect(violations, formatViolations(violations)).toEqual([]);
+  });
+
+  test('Wave page · dark mode · no violations', async ({ page }) => {
+    const { waveId } = await ids(page);
+    await page.goto(`/calm/wave/${waveId}?trace=1`);
+    await waitForBootstrap(page);
+    await expect(page.getByRole('button', { name: /\+\s*add/i })).toBeVisible();
+    await enableDarkTheme(page);
+    const { violations } = await axe(page).analyze();
+    expect(violations, formatViolations(violations)).toEqual([]);
+  });
+
+  test('Settings page · dark mode · no violations', async ({ page }) => {
+    await page.goto('/calm/settings?trace=1');
+    await expect(page.getByRole('textbox', { name: /http proxy/i })).toBeVisible({
+      timeout: 15_000,
+    });
+    await enableDarkTheme(page);
+    const { violations } = await axe(page).analyze();
     expect(violations, formatViolations(violations)).toEqual([]);
   });
 });
