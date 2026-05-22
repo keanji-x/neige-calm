@@ -164,6 +164,23 @@ const TRACKING_TOKENS = [
   '--tracking-widest',
 ] as const;
 
+// Border-radius scale tokens (slice 2 of #165). Same shape contract as
+// TYPE_SCALE_TOKENS: single-mode (radius doesn't theme-vary), declared once
+// in `:root` as a concrete `Npx` literal. The migration from 9 raw radius
+// values (2/3/4/5/6/7/8/10/999 px plus the pre-existing 14px on `--r`)
+// into 6 tokens is intentionally lossy — sites with 3/5/7px snap to the
+// nearest token per the issue's rounding policy. The pre-existing `--r`
+// alias is intentionally *not* listed here: it's a back-compat alias
+// (`--r: var(--radius-xl)`) so consumers don't churn in this slice.
+const RADIUS_TOKENS = [
+  '--radius-xs',
+  '--radius-sm',
+  '--radius-md',
+  '--radius-lg',
+  '--radius-xl',
+  '--radius-pill',
+] as const;
+
 // Status colors (slice 3b of #137). Positional-like: concrete oklch literals
 // in `:root` AND in `[data-theme="dark"]`. The dark side carries an extra
 // invariant — see DARK_STATUS_OKLCH below — locking in the L=74% standardize
@@ -481,6 +498,35 @@ describe('calm.css token graph: type-scale tokens', () => {
       expect(
         darkDecls.has(name),
         `${name} is a type-scale token; type scale is shape, not color — no dark override.`,
+      ).toBe(false);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// (e1b) Border-radius scale tokens (slice 2 of #165).
+// ---------------------------------------------------------------------------
+//
+// Same shape contract as TYPE_SCALE_TOKENS: concrete `Npx` literal in `:root`,
+// no dark override. Radius is part of the design system's shape vocabulary
+// (like type scale and `--r`), not its color vocabulary — overriding it in
+// dark would break the cascade and add noise without benefit.
+
+describe('calm.css token graph: radius-scale tokens', () => {
+  for (const name of RADIUS_TOKENS) {
+    it(`${name} is declared in :root as a numeric px literal`, () => {
+      const value = rootDecls.get(name);
+      expect(value, `${name} missing from :root`).toBeDefined();
+      expect(
+        value,
+        `${name} should be a concrete 'Npx' literal (radius scale doesn't theme-vary), got: ${value}`,
+      ).toMatch(PX_LITERAL);
+    });
+
+    it(`${name} is NOT redeclared in [data-theme="dark"]`, () => {
+      expect(
+        darkDecls.has(name),
+        `${name} is a radius-scale token; radius is shape, not color — no dark override.`,
       ).toBe(false);
     });
   }
@@ -863,6 +909,60 @@ describe('calm.css tracking scale: no raw letter-spacing literals outside :root'
       // eslint-disable-next-line no-console
       console.warn(
         `[calm-tokens] raw letter-spacing literals outside :root/dark token blocks (migrate to var(--tracking-*) per #165):\n  ${hits.join('\n  ')}`,
+      );
+    }
+    expect(true).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (g2) Soft drift detector for raw `border-radius` literals outside :root.
+// ---------------------------------------------------------------------------
+//
+// Mirror of the font-size drift detector above (#150 / slice 1) but for the
+// radius scale introduced in slice 2 of #165. Component selectors should be
+// reading `border-radius` through one of `var(--radius-*)` (or the legacy
+// `var(--r)` alias, which itself points at `--radius-xl`). Anything else is
+// drift and should be migrated or have an inline disable with a reason.
+//
+// Soft today (informational `console.warn`); the stylelint rule in
+// `.stylelintrc.cjs` is the hard gate. The test exists as a second
+// reviewer — it surfaces drift in `npm test` output even before lint runs,
+// and includes line numbers so the migration is one-shot.
+
+describe('calm.css radius-scale: no raw border-radius literals outside :root', () => {
+  it('logs any remaining border-radius numeric literal in component selectors (informational)', () => {
+    const rootStart = CSS.indexOf(':root {');
+    const rootBody = sliceBlock(CSS, ':root {');
+    const rootEnd = CSS.indexOf(rootBody, rootStart) + rootBody.length + 1;
+    const darkStart = CSS.indexOf('[data-theme="dark"] {');
+    const darkBody = sliceBlock(CSS, '[data-theme="dark"] {');
+    const darkEnd = CSS.indexOf(darkBody, darkStart) + darkBody.length + 1;
+
+    const lineCountIn = (s: string) => (s.match(/\n/g) || []).length;
+    const blank = (n: number) => '\n'.repeat(n);
+    const masked =
+      CSS.slice(0, rootStart) +
+      blank(lineCountIn(CSS.slice(rootStart, rootEnd))) +
+      CSS.slice(rootEnd, darkStart) +
+      blank(lineCountIn(CSS.slice(darkStart, darkEnd))) +
+      CSS.slice(darkEnd);
+
+    const hits: string[] = [];
+    // Match `border-radius: Npx` (and `border-*-radius` long-hands). We don't
+    // match `50%` here — the few intentional-percentage uses have been
+    // migrated to `--radius-pill` already, and the simpler `\d+px` form is
+    // what we actually want to catch (drift would re-introduce px literals).
+    const re = /border(?:-(?:top|bottom|left|right))?(?:-(?:top|bottom|left|right))?-radius:\s*\d+(?:\.\d+)?px/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(masked)) !== null) {
+      const line = masked.slice(0, m.index).split('\n').length;
+      hits.push(`calm.css:${line}: ${m[0]}`);
+    }
+    if (hits.length > 0) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[calm-tokens] raw border-radius px literals outside :root/dark token blocks (migrate to var(--radius-*) per #165):\n  ${hits.join('\n  ')}`,
       );
     }
     expect(true).toBe(true);

@@ -88,6 +88,20 @@ module.exports = {
       // excused — it's a cascade directive, not a literal value.
       'line-height': [/^\d+(\.\d+)?$/],
       'letter-spacing': [/^-?\d+(\.\d+)?(em|rem|px)$/],
+
+      // Radius gate — slice 2 of #165. Ban raw numeric `border-radius`
+      // literals so component selectors must read through one of the
+      // `--radius-*` tokens (or the back-compat `--r` alias, which itself
+      // points at `--radius-xl`). `/^\d+/` catches values that *start* with
+      // a digit (`6px`, `999px`, `50%`); `/\s\d+px/` catches a stray
+      // `Npx` in the second corner of a shorthand (e.g. the rare
+      // `border-radius: var(--radius-md) 4px;` form). Values starting
+      // with `var(`, `inherit`, `unset`, `currentColor`, etc. pass.
+      'border-radius': [/^\d+/, /\s\d+px/],
+      'border-top-left-radius': [/^\d+/],
+      'border-top-right-radius': [/^\d+/],
+      'border-bottom-left-radius': [/^\d+/],
+      'border-bottom-right-radius': [/^\d+/],
     },
 
     // `stylelint-config-recommended` enables a small set of "must-fix"
