@@ -58,16 +58,19 @@ services:
       # host, so swapping between docker and `cargo run` shares the same db.
       CALM_DB_URL: ${CALM_DB_URL:-sqlite://${HOME}/.local/share/neige-calm/calm.db?mode=rwc}
       CALM_ALLOWED_ORIGIN: http://localhost:${CALM_PORT:-4040}
-      # Issue #189 — auth. Local docker-compose loops are single-user dev
-      # on a loopback origin: we default to `CALM_DEV_AUTOLOGIN=true` so
-      # `make dev` keeps working without anyone having to invent an owner
-      # password to ship the stack. Set CALM_DEV_AUTOLOGIN=false +
-      # CALM_AUTH_PASSWORD=... in .env when you're testing the real
-      # cookie/login flow (or running this stack against an exposed
-      # surface; do NOT keep dev autologin on for that).
-      CALM_DEV_AUTOLOGIN: ${CALM_DEV_AUTOLOGIN:-true}
+      # Issue #189 — auth. `CALM_DEV_AUTOLOGIN` defaults to `false` so a
+      # `make dev` of this stack on an exposed origin (LAN, VPS, tailnet,
+      # accidental 0.0.0.0 bind) does NOT silently disable the login gate.
+      # The cost is that out-of-the-box `make dev` now requires a password —
+      # we provide a known dev default below (`owner` / `dev`) so the
+      # login page still works without anyone having to write a `.env`
+      # first. Override either via .env. To bypass LoginPage entirely
+      # (single-user loopback workflows), set `CALM_DEV_AUTOLOGIN=true` in
+      # .env — see .env.example for the warning about network-reachable
+      # instances.
+      CALM_DEV_AUTOLOGIN: ${CALM_DEV_AUTOLOGIN:-false}
       CALM_AUTH_USERNAME: ${CALM_AUTH_USERNAME:-owner}
-      CALM_AUTH_PASSWORD: ${CALM_AUTH_PASSWORD:-}
+      CALM_AUTH_PASSWORD: ${CALM_AUTH_PASSWORD:-dev}
       RUST_LOG: ${RUST_LOG:-info,calm_server=debug}
       # Codex CLI binary. Host install path is the musl static binary
       # under /usr/local/lib/node_modules/@openai/codex/... — we bind-mount

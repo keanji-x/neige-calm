@@ -21,8 +21,10 @@ import {
   DB_INSTANCE_ID_STORAGE_KEY,
   RefreshRequiredOverlay,
   ServerCompatGate,
+  retryUnless401,
 } from './providers';
 import { IDB_DB_NAME } from '../api/persistConfig';
+import { CalmApiError } from '../api/calm';
 import {
   WEB_COMPAT_VERSION,
   isCompatible,
@@ -211,6 +213,35 @@ function installIndexedDBSpy() {
   });
   return deleteDatabase;
 }
+
+// --- retryUnless401 -----------------------------------------------------
+//
+// 401 means the session cookie is gone; `request()` in `api/calm.ts` has
+// already fired `onUnauthorized`, the SessionProvider is about to bounce
+// us back to LoginPage, and a retry just stacks up a doomed second call.
+// Every non-auth failure still gets the standard "one retry" budget.
+
+describe('retryUnless401', () => {
+  it('does not retry on CalmApiError with status 401', () => {
+    const err = new CalmApiError(401, 'unauthorized', 'no session');
+    expect(retryUnless401(0, err)).toBe(false);
+    // Even later in the retry budget (defensive — failureCount should
+    // never get above 0 for a 401, but the policy must hold either way).
+    expect(retryUnless401(5, err)).toBe(false);
+  });
+
+  it('retries once on a 500 CalmApiError', () => {
+    const err = new CalmApiError(500, 'internal', 'boom');
+    expect(retryUnless401(0, err)).toBe(true);
+    expect(retryUnless401(1, err)).toBe(false);
+  });
+
+  it('retries once on a non-CalmApiError (network failure)', () => {
+    const err = new Error('Failed to fetch');
+    expect(retryUnless401(0, err)).toBe(true);
+    expect(retryUnless401(1, err)).toBe(false);
+  });
+});
 
 describe('ServerCompatGate — dbInstanceId cache bust', () => {
   it('stores the id on first boot and renders children (no clear, no reload)', async () => {
