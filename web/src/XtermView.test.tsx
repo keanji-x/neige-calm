@@ -147,7 +147,7 @@ function currentWs(): FakeWS {
 
 // ---- import after mocks ------------------------------------------------
 
-import { XtermView } from './XtermView';
+import { XtermView, LIGHT_THEME, DARK_THEME } from './XtermView';
 
 beforeEach(() => {
   wsInstances = [];
@@ -441,6 +441,47 @@ describe('XtermView v2 terminal states', () => {
     // the generic close code.
     expect(screen.getByRole('alert')).toBeInTheDocument();
     expect(screen.getByText(/protocol error: BadHandshake/i)).toBeInTheDocument();
+  });
+});
+
+// Helper: parse a CSS color spec (#rgb / #rrggbb / #rrggbbaa) into r,g,b,a.
+// We deliberately only support the hex shapes the themes use so the test
+// fails loudly if someone reintroduces an `rgba()` background.
+function parseHex(s: string): { r: number; g: number; b: number; a: number } {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(s);
+  if (!m) throw new Error(`unsupported color spec for this test: ${s}`);
+  const h = m[1]!;
+  const exp =
+    h.length === 3
+      ? h
+          .split('')
+          .map((c) => c + c)
+          .join('') + 'ff'
+      : h.length === 6
+        ? h + 'ff'
+        : h;
+  return {
+    r: parseInt(exp.slice(0, 2), 16),
+    g: parseInt(exp.slice(2, 4), 16),
+    b: parseInt(exp.slice(4, 6), 16),
+    a: parseInt(exp.slice(6, 8), 16),
+  };
+}
+
+describe('XtermView themes (issue #177 — OSC 11 probe)', () => {
+  it('light theme background is opaque and bright', () => {
+    // Codex CLI v0.132+ probes OSC 11 at startup; a transparent value
+    // makes xterm.js report a useless fallback. Both branches must be
+    // opaque so `color::is_light(bg)` returns a sensible answer.
+    const { r, g, b, a } = parseHex(LIGHT_THEME.background!);
+    expect(a).toBe(255);
+    expect(r + g + b).toBeGreaterThan(200 * 3);
+  });
+
+  it('dark theme background is opaque and dark', () => {
+    const { r, g, b, a } = parseHex(DARK_THEME.background!);
+    expect(a).toBe(255);
+    expect(r + g + b).toBeLessThan(128 * 3);
   });
 });
 

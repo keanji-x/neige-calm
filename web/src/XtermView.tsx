@@ -15,8 +15,20 @@ import type {
 
 // Cool-neutral light xterm theme matching Calm's palette. Same numbers as
 // the previous useTerminalCore-backed version; only the wire below changed.
-const LIGHT_THEME: ITheme = {
-  background: '#ffffff00',
+//
+// `background` is intentionally OPAQUE and matches `--paper` (light/dark)
+// in sRGB. Codex CLI v0.132+ probes the host terminal background via
+// OSC 11 at startup and picks light- vs dark-mode styling via
+// `color::is_light(bg)` (see #177). A transparent value made xterm.js
+// report a useless fallback, so codex always rendered the light-mode
+// composer over our dark card. Visual transparency of the card surface
+// is preserved by `.xterm-container .xterm { background: transparent
+// !important }` in calm.css. Note: codex caches the OSC 11 result and
+// only re-queries on focus, so toggling the app theme mid-session won't
+// recolor an already-running composer until codex re-probes.
+// TODO(#177): visual regression for the codex composer (Playwright).
+export const LIGHT_THEME: ITheme = {
+  background: '#fcfeff',
   foreground: '#2a2f3a',
   cursor: '#2a2f3a',
   cursorAccent: '#ffffff',
@@ -39,9 +51,9 @@ const LIGHT_THEME: ITheme = {
   brightWhite: '#f6f7f9',
 };
 
-const DARK_THEME: ITheme = {
+export const DARK_THEME: ITheme = {
   ...LIGHT_THEME,
-  background: '#ffffff00',
+  background: '#111418',
   foreground: '#d8dbe2',
   cursor: '#d8dbe2',
   selectionBackground: 'rgba(140, 180, 255, 0.22)',
