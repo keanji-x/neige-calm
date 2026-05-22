@@ -15,6 +15,12 @@
   --text-3: oklch(52% 0.01 250);
   --text-4: oklch(76% 0.008 250);
 
+  /* Semantic aliases over positional tokens. Resolve via the cascade —
+     no dark-mode override needed; --text-N already swaps in dark. */
+  --text-label:      var(--text-2);  /* sidebar/settings labels — AA contrast surface */
+  --text-meta:       var(--text-3);  /* subtitles, breadcrumbs, hints, empty states */
+  --text-decorative: var(--text-4);  /* icons, counts, placeholders — WCAG-exempt */
+
   --accent: oklch(52% 0.13 245);
   --accent-soft: oklch(95% 0.025 245);
 
@@ -171,11 +177,12 @@ input, textarea { font: inherit; color: inherit; }
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  /* Re-routed from --text-4 to --text-2 to clear WCAG AA on the
-     sidebar's section labels. Other --text-4 consumers (icons,
-     counts, swatch-plus, input placeholders) aren't axe-flagged —
-     keep the 4-tier hierarchy intact rather than collapsing tokens. */
-  color: var(--text-2);
+  /* Re-routed from --text-4 to --text-label (= --text-2) to clear
+     WCAG AA on the sidebar's section labels. Other decorative
+     consumers (icons, counts, swatch-plus, input placeholders) stay
+     on --text-decorative — they aren't axe-flagged, and the
+     semantic split preserves the 4-tier hierarchy. */
+  color: var(--text-label);
   padding: 12px 10px 4px;
 }
 .side .nav-label.warn-text { color: var(--warn); }
@@ -276,7 +283,7 @@ input, textarea { font: inherit; color: inherit; }
   flex-shrink: 0;
   font-size: 11px;
   font-weight: 500;
-  color: var(--text-4);
+  color: var(--text-decorative);
   font-variant-numeric: tabular-nums;
   margin-left: 6px;
 }
@@ -293,7 +300,7 @@ input, textarea { font: inherit; color: inherit; }
   width: 10px; height: 10px;
   display: flex; align-items: center; justify-content: center;
   font-size: 13px; line-height: 1;
-  color: var(--text-4);
+  color: var(--text-decorative);
 }
 .side .cove-nav.new:hover .swatch-plus { color: var(--text-2); }
 
@@ -323,7 +330,7 @@ input, textarea { font: inherit; color: inherit; }
 .side .cove-nav-edit input:focus-visible {
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
-.side .cove-nav-edit input::placeholder { color: var(--text-4); }
+.side .cove-nav-edit input::placeholder { color: var(--text-decorative); }
 
 @keyframes live-pulse {
   0%, 100% { box-shadow: 0 0 0 0 currentColor; opacity: 1; }
@@ -584,7 +591,7 @@ input, textarea { font: inherit; color: inherit; }
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--text-3);
+  color: var(--text-meta);
   margin-bottom: 6px;
 }
 .h-display {
@@ -635,7 +642,7 @@ input, textarea { font: inherit; color: inherit; }
   flex-shrink: 0;
 }
 .wave-cove {
-  color: var(--text-3);
+  color: var(--text-meta);
   cursor: pointer;
   flex-shrink: 0;
   /* When rendered as <button>: defaults like font-family/size differ from a
@@ -761,7 +768,7 @@ input, textarea { font: inherit; color: inherit; }
   display: flex; align-items: center; gap: 6px;
 }
 .crumbs a,
-.crumbs .crumb-link { color: var(--text-3); cursor: pointer; }
+.crumbs .crumb-link { color: var(--text-meta); cursor: pointer; }
 .crumbs a:hover,
 .crumbs .crumb-link:hover { color: var(--text); }
 .crumbs .crumb-link:focus-visible {
@@ -1797,7 +1804,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 .surf-clock-date {
   font-size: 12px;
-  color: var(--text-3);
+  color: var(--text-meta);
 }
 
 .surf-clock-now {
@@ -2051,7 +2058,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .surf-stat.warn .surf-stat-n { color: var(--warn); }
 .surf-stat-lbl {
   font-size: 12.5px;
-  color: var(--text-3);
+  color: var(--text-meta);
 }
 .surf-stat-sep {
   color: var(--text-4);
@@ -2255,7 +2262,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 .cal-empty {
   font-size: 12.5px;
-  color: var(--text-3);
+  color: var(--text-meta);
   padding: 4px 4px 2px;
   font-style: italic;
 }
@@ -2398,7 +2405,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
-.login-input::placeholder { color: var(--text-4); }
+.login-input::placeholder { color: var(--text-decorative); }
 .login-error {
   font-size: 12.5px;
   color: var(--warn);
