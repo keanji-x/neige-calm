@@ -36,7 +36,12 @@
   --surface-rail: oklch(98% 0.003 240);
   --surface-card: oklch(96% 0.004 240);
   --surface-chip: oklch(95% 0.005 240);
+  --surface-panel-head: oklch(98% 0.003 240);
   --surface-toggle-overlay: oklch(0% 0 0 / 0.045);
+  /* Hover-state overlay. Aliased to --surface-toggle-overlay today (values
+     match), but spelled separately so future hover-tier tweaks (e.g. a
+     denser hover) can move without touching persistent .cal-toggle. */
+  --surface-hover-overlay: var(--surface-toggle-overlay);
 
   /* generous shape */
   --r: 14px;
@@ -59,6 +64,7 @@
   --surface-rail: oklch(15% 0.008 245);
   --surface-card: oklch(21% 0.009 245);
   --surface-chip: oklch(24% 0.01 245);
+  --surface-panel-head: oklch(20% 0.009 245);
   --surface-toggle-overlay: oklch(100% 0 0 / 0.06);
   --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 36px rgba(0,0,0,.4);
 }
@@ -1539,9 +1545,9 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   font-weight: 500;
   letter-spacing: -0.005em;
   color: var(--text);
-  background: oklch(98% 0.003 240);
+  background: var(--surface-panel-head);
 }
-[data-theme="dark"] .doc-head { background: oklch(20% 0.009 245); }
+[data-theme="dark"] .doc-head { background: var(--surface-panel-head); }
 .doc-body {
   padding: 14px 22px 18px;
 }
@@ -1576,9 +1582,9 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   display: flex; align-items: center; justify-content: space-between;
   padding: 10px 14px;
   border-bottom: 1px solid var(--hairline);
-  background: oklch(98% 0.003 240);
+  background: var(--surface-panel-head);
 }
-[data-theme="dark"] .git-head { background: oklch(20% 0.009 245); }
+[data-theme="dark"] .git-head { background: var(--surface-panel-head); }
 .git-branch {
   font-family: var(--font-mono);
   font-size: 12.5px;
@@ -1628,9 +1634,9 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   display: flex; align-items: center; justify-content: space-between;
   padding: 10px 14px;
   border-bottom: 1px solid var(--hairline);
-  background: oklch(98% 0.003 240);
+  background: var(--surface-panel-head);
 }
-[data-theme="dark"] .diff-head { background: oklch(20% 0.009 245); }
+[data-theme="dark"] .diff-head { background: var(--surface-panel-head); }
 .diff-file {
   font-family: var(--font-mono);
   font-size: 12.5px;
@@ -1693,14 +1699,14 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .plan-card-head {
   padding: 10px 16px;
   border-bottom: 1px solid var(--hairline);
-  background: oklch(98% 0.003 240);
+  background: var(--surface-panel-head);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-3);
 }
-[data-theme="dark"] .plan-card-head { background: oklch(20% 0.009 245); }
+[data-theme="dark"] .plan-card-head { background: var(--surface-panel-head); }
 .plan-card-body {
   list-style: none; margin: 0; padding: 6px 0;
 }
@@ -2123,8 +2129,8 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   font-size: 15px;
   line-height: 1;
 }
-.cal-nav:hover { background: oklch(0% 0 0 / 0.045); color: var(--text); }
-[data-theme="dark"] .cal-nav:hover { background: oklch(100% 0 0 / 0.06); }
+.cal-nav:hover { background: var(--surface-hover-overlay); color: var(--text); }
+[data-theme="dark"] .cal-nav:hover { background: var(--surface-hover-overlay); }
 
 .cal-month-label {
   font-size: 12.5px;
