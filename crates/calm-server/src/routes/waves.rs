@@ -137,11 +137,21 @@ pub(crate) async fn create_wave(
     //    may wire a wave-level cwd field).
     let cwd = crate::routes::codex_cards::default_cwd();
     let settings = load_settings(s.repo.as_ref()).await?;
+    // PR7a (#136) — env baked into the terminal row is the pre-MCP
+    // shape (no `NEIGE_MCP_TOKEN` / `NEIGE_MCP_SOCKET` yet). The token
+    // is minted inside the tx below; the env handed to the codex
+    // daemon spawn is augmented post-commit just before
+    // `seed_and_spawn_spec_daemon`. Restarting from the terminal-row
+    // env on a future cold-start path will need to re-derive these
+    // from `card_mcp_tokens` + `mcp_server.shim_config`, but that's
+    // not exercised today (PR8 followup).
     let env = build_codex_env_map(
         s.codex.as_ref(),
         &spec_card_id,
         settings.http_proxy.as_deref(),
         settings.https_proxy.as_deref(),
+        None,
+        None,
     );
 
     // 3. Run the atomic tx: wave row + spec card row + spec terminal
@@ -164,7 +174,7 @@ pub(crate) async fn create_wave(
     let env_for_tx = env.clone();
     let cwd_for_tx = cwd.clone();
     let spec_card_id_for_tx = spec_card_id.clone();
-    let (wave, _event_ids) = write_with_events_typed(
+    let ((wave, mcp_token), _event_ids) = write_with_events_typed(
         s.repo.as_ref(),
         actor_id,
         None,
@@ -180,8 +190,13 @@ pub(crate) async fn create_wave(
                 // 3b. Spec card + terminal row. The helper's
                 // `card_create_with_id_tx` writes through into the
                 // role cache (`Spec` for this call) so the next
-                // `enforce_role` step sees it.
-                let (spec_card, _term) = card_with_codex_create_tx(
+                // `enforce_role` step sees it. PR7a adds the third
+                // return slot — the raw per-card MCP token. For the
+                // spec card it'll be `Some`; we capture and re-emit
+                // it as the row return so the post-commit closure
+                // can fold it into the env map handed to the codex
+                // daemon.
+                let (spec_card, _term, mcp_token) = card_with_codex_create_tx(
                     tx,
                     spec_card_id_for_tx,
                     wave_id.clone(),
@@ -211,7 +226,7 @@ pub(crate) async fn create_wave(
                     (wave_scope, Event::WaveUpdated(wave.clone())),
                     (card_scope, Event::CardAdded(spec_card)),
                 ];
-                Ok((wave, events))
+                Ok(((wave, mcp_token), events))
             })
         },
     )
@@ -245,13 +260,38 @@ pub(crate) async fn create_wave(
         let state_for_task = s.clone();
         let spec_card_id_for_task = spec_card_id.clone();
         let wave_id_for_task = wave.id.as_str().to_string();
+        // PR7a (#136) — fold the freshly minted per-card MCP token +
+        // kernel socket path into the env handed to the codex daemon
+        // spawn. The shim_config lives on `AppState::mcp_server`; when
+        // both the token and the shim are present we add
+        // `NEIGE_MCP_TOKEN` + `NEIGE_MCP_SOCKET` so the codex daemon
+        // forwards them to `neige-mcp-stdio-shim` per its
+        // `[mcp_servers.calm].env` block (PR6 baseline) for the
+        // handshake step. Missing either side is a soft-fail: the
+        // daemon still starts, but the spec agent can't reach the
+        // kernel-as-MCP-server.
+        let mut env_for_spawn = env;
+        if let (Some(token), Some(server)) = (mcp_token.as_deref(), s.mcp_server.as_ref())
+            && let Some(map) = env_for_spawn.as_object_mut()
+        {
+            map.insert(
+                "NEIGE_MCP_TOKEN".into(),
+                serde_json::Value::String(token.to_string()),
+            );
+            map.insert(
+                "NEIGE_MCP_SOCKET".into(),
+                serde_json::Value::String(
+                    server.shim_config.socket_path.to_string_lossy().to_string(),
+                ),
+            );
+        }
         tokio::spawn(async move {
             seed_and_spawn_spec_daemon(
                 state_for_task,
                 spec_card_id_for_task,
                 wave_id_for_task,
                 cwd,
-                env,
+                env_for_spawn,
             )
             .await;
         });

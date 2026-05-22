@@ -36,6 +36,7 @@ pub mod dispatcher;
 pub mod error;
 pub mod event;
 pub mod ids;
+pub mod mcp_server;
 pub mod model;
 pub mod openapi;
 pub mod plugin_host;

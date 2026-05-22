@@ -870,6 +870,11 @@ pub async fn card_with_terminal_create_tx(
 ///
 /// On any failure the surrounding transaction rolls back; a partial state
 /// (card without terminal, or terminal without payload link) is impossible.
+/// PR7a (#136) — third return slot is `Some(raw_token)` for Spec/Worker
+/// cards, `None` for Plain. The caller is expected to thread the raw
+/// value into the codex daemon's `NEIGE_MCP_TOKEN` env var immediately
+/// and discard it — the hash is persisted in `card_mcp_tokens`, but the
+/// raw form is unrecoverable on a kernel restart (by design).
 #[allow(clippy::too_many_arguments)]
 pub async fn card_with_codex_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
@@ -881,7 +886,7 @@ pub async fn card_with_codex_create_tx(
     prompt: Option<String>,
     role: CardRole,
     card_role_cache: &CardRoleCache,
-) -> Result<(Card, Terminal)> {
+) -> Result<(Card, Terminal, Option<String>)> {
     // 1. Card row with placeholder payload — the terminal_id, cwd, and
     //    schemaVersion fields are stamped in step 5 once we have the
     //    terminal row.
@@ -965,7 +970,56 @@ pub async fn card_with_codex_create_tx(
     )
     .await?;
 
-    Ok((card, term))
+    // 6. PR7a (#136) — when the card is Spec/Worker, mint a fresh per-card
+    //    MCP token, store the hash in `card_mcp_tokens` inside the same tx
+    //    (FK enforced — the card row above is the parent), and return the
+    //    raw value to the caller so it can be threaded into the codex
+    //    daemon's `NEIGE_MCP_TOKEN` env var. Plain cards return `None`.
+    //
+    //    Doing this here (rather than at the route layer) keeps the
+    //    invariant atomic: a committed card row whose role is Spec/Worker
+    //    will *always* have a matching token row, and a rolled-back tx
+    //    drops both together.
+    let mcp_token = if matches!(role, CardRole::Spec | CardRole::Worker) {
+        let token = crate::mcp_server::auth::CardMcpToken::generate();
+        let hashed = crate::mcp_server::auth::hash_token(token.as_str());
+        card_mcp_token_set_tx(tx, card.id.as_ref(), &hashed).await?;
+        Some(token.into_inner())
+    } else {
+        None
+    };
+
+    Ok((card, term, mcp_token))
+}
+
+/// PR7a (#136) — insert (or replace) a per-card MCP token row in the
+/// supplied transaction. The raw token is never persisted; the caller
+/// passes `hash_token(raw)` and keeps the raw value only in memory long
+/// enough to thread it into the env map handed to the codex daemon.
+///
+/// `card_id` must reference a real row in `cards` — the FK constraint
+/// in migration 0010 fails the tx otherwise. The standard call site is
+/// `card_with_codex_create_tx`, where the card row is created moments
+/// earlier in the same tx, so the FK is satisfied by construction.
+pub async fn card_mcp_token_set_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card_id: &str,
+    hashed_token: &str,
+) -> Result<()> {
+    let now = now_ms();
+    sqlx::query(
+        r#"INSERT INTO card_mcp_tokens (card_id, hashed_token, created_at)
+           VALUES (?1, ?2, ?3)
+           ON CONFLICT(card_id) DO UPDATE SET
+               hashed_token = excluded.hashed_token,
+               created_at   = excluded.created_at"#,
+    )
+    .bind(card_id)
+    .bind(hashed_token)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 pub async fn overlay_upsert_tx(tx: &mut Transaction<'_, Sqlite>, p: NewOverlay) -> Result<Overlay> {
@@ -1330,6 +1384,16 @@ impl RepoRead for SqlxRepo {
     // ------------------------------------------------------------ role cache
     async fn seed_card_role_cache(&self, cache: &CardRoleCache) -> Result<()> {
         cache.seed_from_db(&self.pool).await
+    }
+
+    // ----------------------------------------------------------- mcp tokens
+    async fn card_mcp_token_lookup_by_hash(&self, hashed_token: &str) -> Result<Option<String>> {
+        let row: Option<(String,)> =
+            sqlx::query_as(r#"SELECT card_id FROM card_mcp_tokens WHERE hashed_token = ?1"#)
+                .bind(hashed_token)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(|(id,)| id))
     }
 }
 

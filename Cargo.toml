@@ -4,4 +4,5 @@ members = [
     "crates/calm-server",
     "crates/calm-session",
     "crates/calm-codex-bridge",
+    "crates/neige-mcp-stdio-shim",
 ]
