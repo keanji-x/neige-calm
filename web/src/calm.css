@@ -7,18 +7,26 @@
    block. */
 /* stylelint-disable color-no-hex, declaration-property-value-disallowed-list */
 :root {
-  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  --font-sans: "IBM Plex Sans", "IBM Plex Sans SC", "IBM Plex Sans JP", "IBM Plex Sans KR", "PingFang SC", "Hiragino Sans GB", -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
   --font-serif: "New York", "Iowan Old Style", "Charter", "Georgia", serif;
-  --font-mono: "SF Mono", ui-monospace, "Menlo", monospace;
+  --font-mono: "IBM Plex Mono", "PingFang SC", "SF Mono", ui-monospace, "Menlo", monospace;
 
   /* Semantic font-family aliases over positional --font-sans/serif/mono
-     (slice 2 of #150). The positional tokens above stay declared — they
-     remain the one place that pins concrete font stacks, and aliases
-     resolve through the cascade (no dark override needed; fonts don't
-     theme-vary). No --font-ui alias: the default `body { font-family:
-     var(--font-sans); }` already covers UI text via inheritance. */
-  --font-display: var(--font-serif);  /* large titles, modal attn heads */
-  --font-numeric: var(--font-serif);  /* clocks, dates, large stats — could diverge from --font-display later */
+     (slice 4 of #150). After unification onto a single editorial typeface,
+     --font-display and --font-numeric both alias --font-sans (IBM Plex Sans)
+     rather than the serif stack — the surface is no longer mixed sans+serif.
+     --font-serif stays defined as positional vocabulary for future opt-in
+     (marketing/editorial pages) but has zero consumers in this file.
+
+     CJK fallback: the IBM Plex Sans SC/JP/KR + PingFang SC + Hiragino Sans
+     GB entries are declared in the chain so the browser's per-character
+     fallback picks them up for CJK text. Plex CJK is NOT preloaded as a
+     webfont (hundreds of KB before the first Han char is unacceptable for
+     a primarily-Latin UI); when Plex CJK isn't installed locally, the
+     system CJK face takes over. Aliases resolve through the cascade — no
+     dark override; fonts don't theme-vary. */
+  --font-display: var(--font-sans);   /* large titles, modal attn heads */
+  --font-numeric: var(--font-sans);   /* clocks, dates, large stats — could diverge from --font-display later */
   --font-code:    var(--font-mono);   /* terminal, diff, inline code, settings hint code */
 
   /* Cold neutrals — a hint of snow */
@@ -1736,7 +1744,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .doc-head {
   padding: 12px 18px;
   border-bottom: 1px solid var(--hairline);
-  font-family: var(--font-serif);
+  font-family: var(--font-display);
   font-size: var(--text-md);
   font-weight: 500;
   letter-spacing: -0.005em;

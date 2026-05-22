@@ -3,6 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Latin-only Plex (Sans + Mono). CJK is intentionally not preloaded:
+         we rely on system CJK fallback (PingFang SC / Hiragino Sans GB) so
+         we don't push hundreds of KB of webfont before the first Han char. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" />
     <title>Neige · Calm</title>
   </head>
   <body>
