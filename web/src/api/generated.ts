@@ -741,6 +741,7 @@ export interface components {
             cove_id: string;
             /** Format: double */
             sort?: number | null;
+            theme?: null | components["schemas"]["RequestTheme"];
             title: string;
         };
         Overlay: {

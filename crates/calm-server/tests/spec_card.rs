@@ -334,6 +334,7 @@ async fn write_with_events_typed_persists_and_broadcasts_multiple_in_order() {
                         cove_id: cove.id.clone(),
                         title: "plural-wave".into(),
                         sort: None,
+                        theme: None,
                     },
                 )
                 .await?;
@@ -481,6 +482,7 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
                         cove_id: cove.id.clone(),
                         title: "gated-wave".into(),
                         sort: None,
+                        theme: None,
                     },
                 )
                 .await?;

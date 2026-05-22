@@ -48,6 +48,7 @@ async fn boot() -> (AppState, String) {
             cove_id: cove.id.clone(),
             title: "demo".into(),
             sort: None,
+            theme: None,
         })
         .await
         .unwrap();

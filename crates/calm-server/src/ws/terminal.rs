@@ -1213,6 +1213,7 @@ mod cleanup_tests {
                 cove_id: cove.id,
                 title: "w".into(),
                 sort: None,
+                theme: None,
             })
             .await
             .unwrap();

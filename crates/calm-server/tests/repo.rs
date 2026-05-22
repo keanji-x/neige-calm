@@ -32,6 +32,7 @@ async fn make_wave(repo: &SqlxRepo, cove_id: &str, title: &str) -> Wave {
         cove_id: cove_id.into(),
         title: title.into(),
         sort: None,
+        theme: None,
     })
     .await
     .expect("create wave")
@@ -131,6 +132,7 @@ async fn wave_crud_round_trip() {
             cove_id: "no-such-cove".into(),
             title: "x".into(),
             sort: None,
+            theme: None,
         })
         .await
         .unwrap_err();

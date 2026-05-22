@@ -214,6 +214,14 @@ function CoveComponent() {
   const updateCove = useUpdateCoveMutation();
   const deleteCove = useDeleteCoveMutation();
   const deleteWave = useDeleteWaveMutation();
+  // #177: snapshot the host browser's current theme so each wave-create
+  // POST can stamp `theme: { fg, bg }` onto the body. The auto-minted
+  // spec card's codex daemon then advertises matching colors on OSC
+  // 10/11 — without this, the spec card's TUI paints against codex's
+  // built-in default and visually clashes with the surrounding card
+  // (same hole the codex-card POST closed for user-created codex
+  // cards in PR #193).
+  const { resolved: theme } = useTheme();
 
   const kernelCove = covesQ.data?.find((c) => c.id === coveId);
   if (!kernelCove) {
@@ -233,7 +241,14 @@ function CoveComponent() {
       waves={waves}
       onGo={go}
       onCreateWave={async (cId, title) => {
-        const w = await createWave.mutateAsync({ cove_id: cId, title });
+        // #177: stamp theme on the create body so the auto-minted spec
+        // card daemon advertises matching colors on OSC 10/11.
+        const rgb = theme === 'dark' ? DARK_THEME_RGB : LIGHT_THEME_RGB;
+        const w = await createWave.mutateAsync({
+          cove_id: cId,
+          title,
+          theme: { fg: rgb.fg, bg: rgb.bg },
+        });
         go({ name: 'wave', id: w.id });
       }}
       onRenameCove={async (cId, name) => {

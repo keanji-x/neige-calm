@@ -319,6 +319,7 @@ async fn no_kernel_callbacks_capability_installs_method_not_found_drainer() {
             cove_id: cove.id.clone(),
             title: "demo".into(),
             sort: None,
+            theme: None,
         })
         .await
         .unwrap();

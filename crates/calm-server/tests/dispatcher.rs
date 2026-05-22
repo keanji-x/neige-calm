@@ -59,6 +59,7 @@ async fn boot() -> (Arc<dyn Repo>, EventBus, CardRoleCache, WaveId, CoveId) {
             cove_id: cove.id.clone(),
             title: "dispatcher-test".into(),
             sort: None,
+            theme: None,
         })
         .await
         .unwrap();

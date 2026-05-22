@@ -147,6 +147,15 @@ pub(crate) async fn create_wave(
     //    `routes/coves.rs`); we read it back from the closure result.
     let spec_card_id = new_id();
 
+    // #177: snapshot the optional host-theme RGB off the body before
+    // the tx closure moves `p` — we need it post-commit to stamp
+    // `--terminal-fg` / `--terminal-bg` onto the spec-card daemon
+    // argv. When absent (older clients, scripted callers, tests) the
+    // daemon stays silent on OSC 10/11 and codex falls back to its
+    // built-in default. Same back-compat shape as
+    // `NewCodexCardBody.theme` on the codex-card route.
+    let theme = p.theme;
+
     // 2. Resolve cwd + assemble env up front — these go into the
     //    terminal row written inside the tx. Mirror of
     //    `routes::codex_cards::create_codex_card` minus the user-
@@ -310,6 +319,7 @@ pub(crate) async fn create_wave(
                 wave_id_for_task,
                 cwd,
                 env_for_spawn,
+                theme,
             )
             .await;
         });

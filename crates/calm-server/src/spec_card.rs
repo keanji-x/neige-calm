@@ -31,7 +31,8 @@ use std::path::PathBuf;
 
 use crate::error::{CalmError, Result};
 use crate::routes::codex_cards::{build_hooks_json, copy_dir_recursive, host_codex_dir};
-use crate::routes::terminal::spawn_daemon_for;
+use crate::routes::terminal::{SpawnDaemonOpts, spawn_daemon_for_with_opts};
+use crate::routes::theme::RequestTheme;
 use crate::state::{AppState, CodexClient};
 
 /// Minimal spec-agent system prompt template. PR6 ships a placeholder
@@ -422,6 +423,7 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
     wave_id: String,
     cwd: String,
     env: serde_json::Value,
+    theme: Option<RequestTheme>,
 ) {
     // 1. Seed `$CODEX_HOME` for the spec card. Filesystem-only — fast,
     //    bounded by a handful of mkdir + small write_alls. Failure
@@ -467,10 +469,25 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
     //    agent's system prompt is in $CODEX_HOME/config.toml's
     //    `instructions` field, not as a composer prefill.
     //
-    //    `spawn_daemon_for` includes a busy-poll wait-until-socket-
-    //    ready loop (up to ~3s); doing it off the response hot path
-    //    is the whole point of this helper.
-    if let Err(e) = spawn_daemon_for(&state, &term, "codex", &cwd, &env).await {
+    //    `spawn_daemon_for_with_opts` includes a busy-poll wait-until-
+    //    socket-ready loop (up to ~3s); doing it off the response hot
+    //    path is the whole point of this helper.
+    //
+    //    #177: when the wave-create request carried a `theme` field,
+    //    stamp `--terminal-fg=r,g,b --terminal-bg=r,g,b` onto the
+    //    daemon argv so the spec card's codex composer answers OSC
+    //    10/11 with colors matching the host browser. Without this,
+    //    a wave created from the UI auto-spawns a spec card whose
+    //    codex TUI paints against codex's built-in default and
+    //    visually clashes with the surrounding card background — the
+    //    same hole PR #193 closed for the user-created codex card
+    //    path. When `theme` is `None` (older clients, scripted
+    //    callers, tests) the daemon stays silent on OSC queries.
+    let opts = SpawnDaemonOpts {
+        terminal_fg: theme.map(|t| t.fg_arg()),
+        terminal_bg: theme.map(|t| t.bg_arg()),
+    };
+    if let Err(e) = spawn_daemon_for_with_opts(&state, &term, "codex", &cwd, &env, opts).await {
         tracing::warn!(
             card_id = %spec_card_id,
             wave_id = %wave_id,

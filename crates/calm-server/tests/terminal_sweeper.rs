@@ -86,6 +86,7 @@ async fn seed_linked_pair(state: &AppState) -> (String, String) {
             cove_id: cove.id.clone(),
             title: "w".into(),
             sort: None,
+            theme: None,
         })
         .await
         .unwrap();

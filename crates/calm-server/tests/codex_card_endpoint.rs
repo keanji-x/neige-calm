@@ -88,6 +88,7 @@ async fn boot_with_daemon(session_daemon_bin: PathBuf) -> Boot {
             cove_id: cove.id,
             title: "endpoint-test".into(),
             sort: None,
+            theme: None,
         })
         .await
         .unwrap();

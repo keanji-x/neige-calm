@@ -103,6 +103,7 @@ async fn boot_full() -> (
             cove_id: cove.id,
             title: "hf".into(),
             sort: None,
+            theme: None,
         })
         .await
         .unwrap();
@@ -352,6 +353,7 @@ async fn auto_submit_subscriber_skips_card_without_prompt() {
             cove_id: cove.id,
             title: "gate".into(),
             sort: None,
+            theme: None,
         })
         .await
         .unwrap();
@@ -456,6 +458,7 @@ async fn route_to_subscriber_chain_skips_auto_submit_for_empty_or_absent_prompt(
             cove_id: cove.id,
             title: "no-prompt".into(),
             sort: None,
+            theme: None,
         })
         .await
         .unwrap();

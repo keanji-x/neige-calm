@@ -49,6 +49,15 @@ path = "tests/fixtures/stub-plugin-caller/main.rs"
 name = "plugin-host-stub-toolcall"
 path = "tests/fixtures/stub-plugin-toolcall/main.rs"
 
+# #177 fake calm-session-daemon: records argv to <sock>.argv + binds the
+# unix socket the kernel polls for readiness. Used by
+# `tests/wave_create_with_theme.rs` and `tests/dispatcher.rs` to assert
+# `--terminal-fg=r,g,b --terminal-bg=r,g,b` is stamped onto the spawn argv
+# from the wave-create + dispatcher paths.
+[[bin]]
+name = "argv-recorder-daemon"
+path = "tests/fixtures/argv-recorder-daemon/main.rs"
+
 [dependencies]
 # HTTP / WS
 axum = { version = "0.8", features = ["ws", "macros"] }

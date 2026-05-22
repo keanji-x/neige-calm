@@ -175,6 +175,20 @@ pub struct NewWave {
     pub cove_id: CoveId,
     pub title: String,
     pub sort: Option<f64>,
+    /// Host browser's current theme RGB (#177). When set, the kernel
+    /// stamps `--terminal-fg=r,g,b --terminal-bg=r,g,b` onto the auto-
+    /// minted spec card's `calm-session-daemon` argv so codex's OSC
+    /// 10/11 startup probe gets matching colors. When missing, the
+    /// daemon stays silent on OSC queries and codex falls back to its
+    /// built-in default — same back-compat as the codex-card endpoint.
+    ///
+    /// Note: `NewWave` is consumed both inside the
+    /// `routes::waves::create_wave` handler (which honors this field)
+    /// and by `db::sqlite::wave_create_tx` directly via tests — the
+    /// txn-level helper ignores theme since spec-card spawning is
+    /// owned by the handler.
+    #[serde(default)]
+    pub theme: Option<crate::routes::theme::RequestTheme>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, ToSchema)]

@@ -62,6 +62,7 @@ async fn boot_with_wave(
             cove_id: cove.id.clone(),
             title: "demo".into(),
             sort: None,
+            theme: None,
         })
         .await
         .unwrap();

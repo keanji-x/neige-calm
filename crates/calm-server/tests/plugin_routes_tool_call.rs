@@ -84,6 +84,7 @@ async fn boot(cfg: StubConfig<'_>) -> Fixture {
             cove_id: cove.id.clone(),
             title: "demo".into(),
             sort: None,
+            theme: None,
         })
         .await
         .unwrap();

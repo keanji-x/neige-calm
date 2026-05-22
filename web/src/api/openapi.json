@@ -2351,6 +2351,17 @@
             ],
             "format": "double"
           },
+          "theme": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RequestTheme",
+                "description": "Host browser's current theme RGB (#177). When set, the kernel\nstamps `--terminal-fg=r,g,b --terminal-bg=r,g,b` onto the auto-\nminted spec card's `calm-session-daemon` argv so codex's OSC\n10/11 startup probe gets matching colors. When missing, the\ndaemon stays silent on OSC queries and codex falls back to its\nbuilt-in default — same back-compat as the codex-card endpoint.\n\nNote: `NewWave` is consumed both inside the\n`routes::waves::create_wave` handler (which honors this field)\nand by `db::sqlite::wave_create_tx` directly via tests — the\ntxn-level helper ignores theme since spec-card spawning is\nowned by the handler."
+              }
+            ]
+          },
           "title": {
             "type": "string"
           }
