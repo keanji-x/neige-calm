@@ -25,10 +25,6 @@
 // `WEB_COMPAT_VERSION`. On mismatch we paint a hard-block overlay over
 // the whole tree directing the user to refresh. Single check on mount;
 // no polling. See `docs/upgrade-stability.md` (Tier B).
-//
-// Devtools (React Query + TanStack Router) live in `main.tsx` next to the
-// `RouterProvider`, *inside* `SessionProvider`. That keeps both devtools
-// scoped to the authed branch — they don't paint on the LoginPage.
 
 import {
   QueryClient,
