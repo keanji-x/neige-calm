@@ -38,8 +38,8 @@ function TerminalCard({ card }: { card: TerminalCardData }) {
   if (unsupportedVersion !== undefined) {
     return (
       <div className="term term-unsupported-version">
-        <div className="term-head card-drag-handle">
-          <span className="term-title">{title || 'terminal'}</span>
+        <div className="term-head card-head card-drag-handle">
+          <span className="term-title card-head-title">{title || 'terminal'}</span>
         </div>
         <div className="term-body">
           <div className="term-line k-warn">
@@ -54,14 +54,18 @@ function TerminalCard({ card }: { card: TerminalCardData }) {
   dlog('TerminalCard', 'render', { id: card.id, live, terminalId });
   return (
     <div className={'term' + (live ? ' live' : '')}>
-      <div className="term-head card-drag-handle">
-        <span className="term-dot" />
-        <span className="term-dot b" />
-        <span className="term-dot c" />
-        <span className="term-title">
-          {title || 'terminal'}
-          {live && <span className="term-live-pip"> · live</span>}
+      <div className="term-head card-head card-drag-handle">
+        <span className="card-head-decor">
+          <span className="term-dot" />
+          <span className="term-dot b" />
+          <span className="term-dot c" />
         </span>
+        <span className="term-title card-head-title">{title || 'terminal'}</span>
+        {live && (
+          <span className="card-head-status">
+            <span className="term-live-pip">· live</span>
+          </span>
+        )}
       </div>
       <div className="term-body">
         {live ? (
