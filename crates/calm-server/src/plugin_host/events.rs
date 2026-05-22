@@ -84,21 +84,10 @@ impl SubscriptionFilter {
 
 /// The dotted wire name for an event, identical to the `ev` field the WS
 /// serializer emits (`crate::event::Event`'s `#[serde(tag = "ev")]` rename).
+/// Delegates to [`Event::kind_tag`] so adding a new variant only needs one
+/// site (the enum match in `event.rs`) — see PR4 of #136.
 fn event_name(ev: &Event) -> &'static str {
-    match ev {
-        Event::CoveUpdated(_) => "cove.updated",
-        Event::CoveDeleted { .. } => "cove.deleted",
-        Event::WaveUpdated(_) => "wave.updated",
-        Event::WaveDeleted { .. } => "wave.deleted",
-        Event::CardAdded(_) => "card.added",
-        Event::CardUpdated(_) => "card.updated",
-        Event::CardDeleted { .. } => "card.deleted",
-        Event::OverlaySet(_) => "overlay.set",
-        Event::OverlayDeleted { .. } => "overlay.deleted",
-        Event::TerminalDeleted { .. } => "terminal.deleted",
-        Event::PluginState { .. } => "plugin.state",
-        Event::CodexHook { .. } => "codex.hook",
-    }
+    ev.kind_tag()
 }
 
 /// Plugin id carried by the event, if any. Only overlay events and plugin.state
@@ -148,6 +137,15 @@ fn event_entity_id(ev: &Event) -> Option<String> {
         // filters that omit `entity_kind` / `entity_id` or set them via
         // the `events` clause.
         Event::TerminalDeleted { id, .. } => Some(id.clone()),
+        // PR4 of #136 — kernel-internal dispatcher / task-lifecycle
+        // signals carry no entity id on the payload (the
+        // BroadcastEnvelope holds the scope instead). Plugins that want
+        // to subscribe to these must omit `entity_id` / `entity_kind`
+        // and filter via the `events` glob clause.
+        Event::CodexJobRequested { .. }
+        | Event::TerminalJobRequested { .. }
+        | Event::TaskCompleted { .. }
+        | Event::TaskFailed { .. } => None,
     }
 }
 

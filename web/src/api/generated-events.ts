@@ -11,6 +11,23 @@
  */
 export type ActorId = { "kind": "User" } | { "kind": "Kernel" } | { "kind": "KernelDispatcher" } | { "kind": "Plugin", "id": string } | { "kind": "AiSpec", "id": CardId } | { "kind": "AiCodex", "id": CardId };
 
+/**
+ * Opaque identifier for a worker-produced artifact (file write, structured
+ * output blob, etc.). PR4 of #136 introduces this as a **placeholder**:
+ * the real Artifact Stream lands in #129, which will expand the type with
+ * hash / content-type / storage-uri fields.
+ *
+ * Today the variant is referenced only by `Event::TaskCompleted.artifacts`,
+ * which carries a list of these so the (future) `wait_for_events` MCP tool
+ * can hand a spec card a manifest of what its worker produced. Keep this
+ * minimal — #129 territory expands the shape, not PR4.
+ *
+ * Wire shape is a bare string via `#[serde(transparent)]`, matching the
+ * typed-id pattern in [`crate::ids`]. ts-rs emits `export type ArtifactRef
+ * = string;` so the frontend stays a thin alias.
+ */
+export type ArtifactRef = string;
+
 export type Card = { id: CardId, wave_id: WaveId, 
 /**
  * `"terminal"` for built-in PTY cards, `"plugin:<plugin-id>:<view-id>"`
@@ -104,7 +121,7 @@ kind: string,
 /**
  * Original codex hook JSON, verbatim.
  */
-payload: unknown, } };
+payload: unknown, } } | { "ev": "codex.job_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, } } | { "ev": "terminal.job_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, } } | { "ev": "task.completed", "data": { idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, } } | { "ev": "task.failed", "data": { idempotency_key: string, reason: string, } };
 
 /**
  * Where an event lives in the cove → wave → card hierarchy.

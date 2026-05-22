@@ -54,6 +54,59 @@ use tokio::sync::broadcast;
 use ts_rs::TS;
 
 // ---------------------------------------------------------------------------
+// ArtifactRef — placeholder identifier for #129 Artifact Stream
+// ---------------------------------------------------------------------------
+
+/// Opaque identifier for a worker-produced artifact (file write, structured
+/// output blob, etc.). PR4 of #136 introduces this as a **placeholder**:
+/// the real Artifact Stream lands in #129, which will expand the type with
+/// hash / content-type / storage-uri fields.
+///
+/// Today the variant is referenced only by `Event::TaskCompleted.artifacts`,
+/// which carries a list of these so the (future) `wait_for_events` MCP tool
+/// can hand a spec card a manifest of what its worker produced. Keep this
+/// minimal — #129 territory expands the shape, not PR4.
+///
+/// Wire shape is a bare string via `#[serde(transparent)]`, matching the
+/// typed-id pattern in [`crate::ids`]. ts-rs emits `export type ArtifactRef
+/// = string;` so the frontend stays a thin alias.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(transparent)]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
+pub struct ArtifactRef(pub String);
+
+impl ArtifactRef {
+    /// Borrow the underlying string slice.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for ArtifactRef {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for ArtifactRef {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
+impl std::fmt::Display for ArtifactRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl AsRef<str> for ArtifactRef {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+// ---------------------------------------------------------------------------
 // EventScope — every event's "home scope"
 // ---------------------------------------------------------------------------
 
@@ -289,6 +342,75 @@ pub enum Event {
         #[ts(type = "unknown")]
         payload: Value,
     },
+
+    /// Spec/worker card asks the kernel dispatcher to spawn a codex worker
+    /// card. PR4 of #136 introduces this **schema-only** — there is no
+    /// emitter yet. PR5's `Dispatcher` subscribes to `kinds=["*.requested"]`
+    /// on the event bus and reacts by minting a worker card; PR8's
+    /// `wait_for_events` long-polls the matching `task.completed` /
+    /// `task.failed` on behalf of the requesting spec card.
+    ///
+    /// `idempotency_key` lets the dispatcher dedupe replays — a retried
+    /// MCP call surfaces the same key and the dispatcher short-circuits to
+    /// the existing worker card / pending result.
+    ///
+    /// `context` is opaque payload (working-dir hints, prior turn history,
+    /// model preference). Kernel never inspects it; PR5's dispatcher
+    /// forwards verbatim into the spawned worker's card payload.
+    #[serde(rename = "codex.job_requested")]
+    CodexJobRequested {
+        idempotency_key: String,
+        goal: String,
+        #[ts(type = "unknown")]
+        context: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        acceptance_criteria: Option<String>,
+    },
+
+    /// Spec card asks the kernel dispatcher to spawn a terminal worker
+    /// card. PR4 schema-only; PR5's `Dispatcher` is the consumer.
+    ///
+    /// `cwd` is `None` when the spec card defers to the wave/cove default
+    /// working directory.
+    #[serde(rename = "terminal.job_requested")]
+    TerminalJobRequested {
+        idempotency_key: String,
+        cmd: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        cwd: Option<String>,
+    },
+
+    /// Worker card reports task completion. PR4 schema-only; PR8's
+    /// `wait_for_events` delivers this to the requesting spec card. The
+    /// `idempotency_key` echoes back the one from the matching
+    /// `*.job_requested` event so the spec can correlate without parsing
+    /// the worker card's identity.
+    ///
+    /// `result` is opaque agent payload (free-form text, structured
+    /// output, etc.); `artifacts` carries a list of [`ArtifactRef`]s the
+    /// worker produced (file writes, blobs). PR4's `ArtifactRef` is a
+    /// placeholder for #129's Artifact Stream — the full type lands there.
+    #[serde(rename = "task.completed")]
+    TaskCompleted {
+        idempotency_key: String,
+        #[ts(type = "unknown")]
+        result: Value,
+        artifacts: Vec<ArtifactRef>,
+    },
+
+    /// Worker card reports task failure. PR4 schema-only; PR8's
+    /// `wait_for_events` delivers this to the requesting spec card.
+    ///
+    /// `reason` is a free-form failure string — the kernel never parses
+    /// it, but persists it on the events table so audit-log replay can
+    /// surface the rationale a worker gave its spec.
+    #[serde(rename = "task.failed")]
+    TaskFailed {
+        idempotency_key: String,
+        reason: String,
+    },
 }
 
 impl Event {
@@ -310,6 +432,10 @@ impl Event {
             Event::TerminalDeleted { .. } => "terminal.deleted",
             Event::PluginState { .. } => "plugin.state",
             Event::CodexHook { .. } => "codex.hook",
+            Event::CodexJobRequested { .. } => "codex.job_requested",
+            Event::TerminalJobRequested { .. } => "terminal.job_requested",
+            Event::TaskCompleted { .. } => "task.completed",
+            Event::TaskFailed { .. } => "task.failed",
         }
     }
 
@@ -410,6 +536,16 @@ pub fn topics(ev: &Event) -> Vec<String> {
         Event::CodexHook { card_id, .. } => {
             vec![format!("card:{}", card_id), "*".into()]
         }
+
+        // PR4 of #136: kernel-internal dispatcher / task-lifecycle signals.
+        // No card/wave/cove ids on the payload itself (the BroadcastEnvelope
+        // carries the originating `EventScope` instead — see `Dispatcher`
+        // and `wait_for_events` in PR5/PR8). Subscribers identify these
+        // via the firehose plus the dispatcher's `kinds=` filter (PR5).
+        Event::CodexJobRequested { .. }
+        | Event::TerminalJobRequested { .. }
+        | Event::TaskCompleted { .. }
+        | Event::TaskFailed { .. } => vec!["*".into()],
     }
 }
 
@@ -681,5 +817,197 @@ mod scope_tests {
             EventScope::from_row(Some("wave"), Some("c"), None, None),
             EventScope::System,
         );
+    }
+
+    // ----- PR4 of #136: new Event variants + ArtifactRef -----------------
+    //
+    // Schema-only PR — these tests pin the wire shape of the four new
+    // dispatcher / task-lifecycle variants and the `ArtifactRef`
+    // placeholder. No emitters exist yet (PR5 wires the dispatcher), but
+    // PR8's `wait_for_events` and the web zod schemas already need a
+    // stable wire shape to compile against.
+
+    #[test]
+    fn artifact_ref_transparent_serde() {
+        // `#[serde(transparent)]` keeps the wire shape a bare string —
+        // never `{"0":"foo"}`. Mirrors the typed-id pattern in `ids.rs`.
+        let r = ArtifactRef::from("artifact-1");
+        assert_eq!(serde_json::to_string(&r).unwrap(), r#""artifact-1""#);
+        let back: ArtifactRef = serde_json::from_str(r#""artifact-1""#).unwrap();
+        assert_eq!(back, r);
+        assert_eq!(r.as_str(), "artifact-1");
+        assert_eq!(format!("{r}"), "artifact-1");
+    }
+
+    #[test]
+    fn kind_tag_new_variants_pinned() {
+        // The kind_tag strings are persisted to `events.kind` and surfaced
+        // on the wire as the `ev` discriminator — changing them is a wire
+        // break. Pin each PR4 variant explicitly.
+        let codex_req = Event::CodexJobRequested {
+            idempotency_key: "k".into(),
+            goal: "g".into(),
+            context: serde_json::Value::Null,
+            acceptance_criteria: None,
+        };
+        assert_eq!(codex_req.kind_tag(), "codex.job_requested");
+
+        let term_req = Event::TerminalJobRequested {
+            idempotency_key: "k".into(),
+            cmd: "ls".into(),
+            cwd: None,
+        };
+        assert_eq!(term_req.kind_tag(), "terminal.job_requested");
+
+        let done = Event::TaskCompleted {
+            idempotency_key: "k".into(),
+            result: serde_json::Value::Null,
+            artifacts: vec![],
+        };
+        assert_eq!(done.kind_tag(), "task.completed");
+
+        let failed = Event::TaskFailed {
+            idempotency_key: "k".into(),
+            reason: "boom".into(),
+        };
+        assert_eq!(failed.kind_tag(), "task.failed");
+    }
+
+    #[test]
+    fn codex_job_requested_serde_round_trip() {
+        let ev = Event::CodexJobRequested {
+            idempotency_key: "idem-1".into(),
+            goal: "refactor X".into(),
+            context: serde_json::json!({ "cwd": "/tmp", "hints": [1, 2] }),
+            acceptance_criteria: Some("tests pass".into()),
+        };
+        let json = serde_json::to_value(&ev).unwrap();
+        // Pin the exact wire shape: `{ev, data}` envelope, snake_case keys.
+        assert_eq!(json["ev"], "codex.job_requested");
+        assert_eq!(json["data"]["idempotency_key"], "idem-1");
+        assert_eq!(json["data"]["goal"], "refactor X");
+        assert_eq!(json["data"]["context"]["cwd"], "/tmp");
+        assert_eq!(json["data"]["acceptance_criteria"], "tests pass");
+
+        // Round-trip via the Event enum.
+        let back: Event = serde_json::from_value(json).unwrap();
+        assert_eq!(back.kind_tag(), "codex.job_requested");
+
+        // `acceptance_criteria = None` should be absent on the wire via
+        // `skip_serializing_if`.
+        let no_ac = Event::CodexJobRequested {
+            idempotency_key: "k".into(),
+            goal: "g".into(),
+            context: serde_json::Value::Null,
+            acceptance_criteria: None,
+        };
+        let v = serde_json::to_value(&no_ac).unwrap();
+        assert!(
+            v["data"].get("acceptance_criteria").is_none(),
+            "acceptance_criteria should be omitted when None, got {v}",
+        );
+    }
+
+    #[test]
+    fn terminal_job_requested_serde_round_trip() {
+        let ev = Event::TerminalJobRequested {
+            idempotency_key: "idem-2".into(),
+            cmd: "cargo test".into(),
+            cwd: Some("/repo".into()),
+        };
+        let json = serde_json::to_value(&ev).unwrap();
+        assert_eq!(json["ev"], "terminal.job_requested");
+        assert_eq!(json["data"]["idempotency_key"], "idem-2");
+        assert_eq!(json["data"]["cmd"], "cargo test");
+        assert_eq!(json["data"]["cwd"], "/repo");
+
+        // `cwd = None` absent on the wire.
+        let no_cwd = Event::TerminalJobRequested {
+            idempotency_key: "k".into(),
+            cmd: "ls".into(),
+            cwd: None,
+        };
+        let v = serde_json::to_value(&no_cwd).unwrap();
+        assert!(
+            v["data"].get("cwd").is_none(),
+            "cwd should be omitted when None, got {v}",
+        );
+
+        // Round-trip via the Event enum.
+        let back: Event = serde_json::from_value(json).unwrap();
+        assert_eq!(back.kind_tag(), "terminal.job_requested");
+    }
+
+    #[test]
+    fn task_completed_serde_round_trip() {
+        let ev = Event::TaskCompleted {
+            idempotency_key: "idem-3".into(),
+            result: serde_json::json!({ "summary": "ok", "lines": 42 }),
+            artifacts: vec![ArtifactRef::from("a-1"), ArtifactRef::from("a-2")],
+        };
+        let json = serde_json::to_value(&ev).unwrap();
+        assert_eq!(json["ev"], "task.completed");
+        assert_eq!(json["data"]["idempotency_key"], "idem-3");
+        assert_eq!(json["data"]["result"]["summary"], "ok");
+        // Artifacts are transparent strings on the wire — assert the array
+        // shape so a future #129 expansion can't silently regress.
+        assert_eq!(json["data"]["artifacts"][0], "a-1");
+        assert_eq!(json["data"]["artifacts"][1], "a-2");
+
+        let back: Event = serde_json::from_value(json).unwrap();
+        assert_eq!(back.kind_tag(), "task.completed");
+    }
+
+    #[test]
+    fn task_failed_serde_round_trip() {
+        let ev = Event::TaskFailed {
+            idempotency_key: "idem-4".into(),
+            reason: "process exited with code 137".into(),
+        };
+        let json = serde_json::to_value(&ev).unwrap();
+        assert_eq!(json["ev"], "task.failed");
+        assert_eq!(json["data"]["idempotency_key"], "idem-4");
+        assert_eq!(json["data"]["reason"], "process exited with code 137");
+
+        let back: Event = serde_json::from_value(json).unwrap();
+        assert_eq!(back.kind_tag(), "task.failed");
+    }
+
+    #[test]
+    fn new_variants_round_trip_via_from_kind_and_payload() {
+        // Replay path: `Event::from_kind_and_payload` reconstitutes a
+        // typed Event from the `(kind, payload)` columns. Pin that the
+        // PR4 variants survive this path so the eventual sync-engine
+        // replay doesn't strand them.
+        for (kind, payload) in [
+            (
+                "codex.job_requested",
+                serde_json::json!({
+                    "idempotency_key": "k",
+                    "goal": "g",
+                    "context": {},
+                }),
+            ),
+            (
+                "terminal.job_requested",
+                serde_json::json!({ "idempotency_key": "k", "cmd": "ls" }),
+            ),
+            (
+                "task.completed",
+                serde_json::json!({
+                    "idempotency_key": "k",
+                    "result": {},
+                    "artifacts": [],
+                }),
+            ),
+            (
+                "task.failed",
+                serde_json::json!({ "idempotency_key": "k", "reason": "r" }),
+            ),
+        ] {
+            let ev = Event::from_kind_and_payload(kind, payload)
+                .unwrap_or_else(|e| panic!("replay decode failed for {kind}: {e}"));
+            assert_eq!(ev.kind_tag(), kind, "round-trip kind mismatch");
+        }
     }
 }

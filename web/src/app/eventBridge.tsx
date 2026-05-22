@@ -269,6 +269,18 @@ function dispatch(qc: QueryClient, ev: WireEvent): void {
       // invalidation required.
       return;
     }
+    case 'codex.job_requested':
+    case 'terminal.job_requested':
+    case 'task.completed':
+    case 'task.failed': {
+      // PR4 of #136: kernel-internal dispatcher / task-lifecycle signals.
+      // No UI invalidation — PR5's Dispatcher consumes via
+      // EventBus::subscribe, and PR8's wait_for_events surfaces them to
+      // the spec agent directly. The case arms exist so the discriminated
+      // union is exhaustive and tsc catches a missed variant on the next
+      // wire-shape change.
+      return;
+    }
   }
 }
 
