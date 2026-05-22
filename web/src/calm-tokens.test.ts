@@ -609,7 +609,7 @@ describe('calm.css token graph: tracking scale tokens', () => {
 //     We accept both via SPACING_PX_OR_ZERO.
 //   - Negative-derived literals (margin: -1px sites) live outside the token
 //     vocabulary by design — see the "negative tunnel adjustment" notes in
-//     calm.css around the .sr-only, .surf-clock-colon, and .cal-agenda
+//     calm.css around the .sr-only, .today-clock-colon, and .cal-agenda
 //     selectors. Those carry stylelint-disable markers; the spacing test
 //     doesn't enumerate them.
 
