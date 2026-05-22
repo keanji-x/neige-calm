@@ -379,21 +379,20 @@ input, textarea { font: inherit; color: inherit; }
   display: flex; align-items: center; padding: var(--space-0) var(--space-7);
   background: transparent;
   flex-shrink: 0;
-  gap: var(--space-5);
 }
-.bar .right { margin-left: auto; display: flex; align-items: center; gap: var(--space-2); }
 
 /* Connection-state indicator (WS /api/events reconnect signal). Lives in
-   the title bar's `.right` cluster; mounted before the settings + theme
-   buttons. Hidden in the `connected` and `disconnected` states — only
-   visible while we're in the backoff/reconnect loop. The dot pulses to
-   reinforce "in-progress" without animating something distracting. */
+   the title bar; pushed to the right end via `margin-left: auto`. Hidden
+   in the `connected` and `disconnected` states — only visible while
+   we're in the backoff/reconnect loop. The dot pulses to reinforce
+   "in-progress" without animating something distracting. */
 .conn-indicator {
   display: inline-flex;
   align-items: center;
   gap: var(--space-3);
   height: 22px;
   padding: var(--space-0) var(--space-4);
+  margin-left: auto;
   margin-right: var(--space-2);
   border: 1px solid var(--hairline-strong);
   border-radius: var(--radius-pill);
