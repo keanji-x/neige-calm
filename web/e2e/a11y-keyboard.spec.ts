@@ -683,9 +683,11 @@ test.describe('a11y · keyboard-only navigation', () => {
   });
 
   test('Settings page: all controls reachable and labeled', async ({ page }) => {
-    // Tab to the Sidebar's "Open settings" button (the gear icon). Its
-    // accessible name is set explicitly by aria-label.
-    await tabUntil(page, (info) => /open settings/i.test(info.name ?? ''));
+    // Tab to the Sidebar's avatar trigger ("Open user menu"). Its
+    // accessible name is set explicitly by aria-label. Pressing Enter
+    // opens the menu; the first item is Settings, which Enter activates.
+    await tabUntil(page, (info) => /open user menu/i.test(info.name ?? ''));
+    await page.keyboard.press('Enter');
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(/\/calm\/settings(\?|$)/);
 

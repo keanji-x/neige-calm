@@ -21,3 +21,12 @@ export async function login(token: string): Promise<boolean> {
   });
   return res.ok;
 }
+
+export async function logout(): Promise<boolean> {
+  try {
+    const res = await fetch('/api/auth/logout', { method: 'POST' });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}

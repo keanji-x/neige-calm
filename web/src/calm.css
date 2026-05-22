@@ -376,7 +376,6 @@ input, textarea { font: inherit; color: inherit; }
   display: flex; flex-direction: column;
 }
 .bar {
-  height: 36px;
   display: flex; align-items: center; padding: var(--space-0) var(--space-7);
   background: transparent;
   flex-shrink: 0;
@@ -556,10 +555,34 @@ input, textarea { font: inherit; color: inherit; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .side .sp { flex: 1; }
+/* ===== Sidebar user menu =====
+   The avatar row is a single <button> that opens a popover menu
+   (Settings, Sign out). Visual layout matches the prior `.me-row`
+   div; the button reset zeroes browser defaults so the avatar
+   stays flush with the rest of the sidebar. The popover anchors
+   above the trigger (sidebar's avatar sits at the bottom). */
+.side .me-menu {
+  position: relative;
+}
 .side .me-row {
   display: flex; align-items: center; gap: var(--space-5);
   padding: var(--space-4) var(--space-5);
   border-radius: var(--radius-lg);
+  width: 100%;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-quick), color var(--motion-quick);
+}
+.side .me-row:hover { background: var(--overlay-hover-faint); }
+[data-theme="dark"] .side .me-row:hover { background: var(--overlay-hover); }
+.side .me-row[aria-expanded="true"] { background: var(--overlay-active); }
+[data-theme="dark"] .side .me-row[aria-expanded="true"] { background: var(--overlay-active); }
+.side .me-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 .side .me-row .me {
   width: 26px; height: 26px; border-radius: var(--radius-pill);
@@ -569,36 +592,52 @@ input, textarea { font: inherit; color: inherit; }
   flex-shrink: 0;
 }
 .side .me-row .who { font-size: var(--text-sm); font-weight: 600; min-width: 0; flex: 1; }
-.side .me-row .who .sub { font-size: var(--text-xs); font-weight: 500; color: var(--text-3); }
+.side .me-row .who .sub {
+  /* Was a <div> — now a <span> inside a <button>, so we set
+     display:block to preserve the line break under the name. */
+  display: block;
+  font-size: var(--text-xs); font-weight: 500; color: var(--text-3);
+}
 
-/* Settings gear lives at the right end of the me-row. Sized to balance
-   the avatar; ghost styling so it reads as a quiet utility (mirrors the
-   `.cove-nav` hover/focus tokens for visual continuity). */
-.side .me-row .me-settings {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  flex-shrink: 0;
-  border-radius: var(--radius-md);
-  background: transparent;
-  border: 0;
-  color: var(--text-3);
-  cursor: pointer;
-  transition: background 0.1s, color 0.1s;
+/* Popover. Anchored above the trigger because the avatar lives at
+   the sidebar's bottom; ~180px wide matches the AddPanel menu
+   vocabulary. Tokens mirror `.add-panel-menu` for cohesion. */
+.side .me-menu-popover {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  min-width: 160px;
+  background: var(--paper);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--r);
+  box-shadow: var(--shadow);
+  padding: var(--space-2) var(--space-0);
+  list-style: none;
+  z-index: var(--z-raised);
+  margin: var(--space-0);
 }
-.side .me-row .me-settings:hover {
-  background: var(--overlay-hover-faint);
+.side .me-menu-item {
+  display: block; width: 100%;
+  padding: var(--space-4) var(--space-7);
+  text-align: left;
+  font-size: var(--text-base);
   color: var(--text);
+  background: transparent;
+  border: none;
+  cursor: pointer;
 }
-[data-theme="dark"] .side .me-row .me-settings:hover {
+.side .me-menu-item:hover,
+.side .me-menu-item.is-active {
   background: var(--overlay-hover);
 }
-.side .me-row .me-settings:focus-visible {
+[data-theme="dark"] .side .me-menu-item:hover,
+[data-theme="dark"] .side .me-menu-item.is-active {
+  background: var(--overlay-hover);
+}
+.side .me-menu-item:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline-offset: -2px;
 }
 
 /* nested cove list inside sidebar */
@@ -2157,15 +2196,25 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   flex: 1;
   min-height: 0;
   padding: var(--space-10) var(--space-11) var(--space-11);
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 308px;
-  gap: var(--space-10);
-  align-items: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-9);
 }
 
 /* the page parent has align-items: center on its flex column —
    make sure surf gets full width */
 .scroll > .surf { align-self: stretch; }
+
+/* 2-col grid sitting under the full-width clock header. align-items: start
+   keeps the terminal top edge flush with the calendar top edge — the
+   columns no longer stretch to match each other's height. */
+.surf-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 308px;
+  gap: var(--space-10);
+  align-items: start;
+  min-height: 0;
+}
 
 .surf-main {
   min-width: 0;
@@ -2174,12 +2223,15 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   gap: var(--space-9);
 }
 
-/* ---- clock + now strip ---- */
+/* ---- clock + now strip ----
+   align-items: baseline puts the clock's text baseline (bottom of "5:10 PM"),
+   the .surf-clock-day baseline ("Friday"), and the .surf-clock-status row
+   on a shared horizontal line — reads as a clean anchor across the row. */
 .surf-clock {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-8) var(--space-10);
-  align-items: center;
+  align-items: baseline;
   padding: var(--space-3) var(--space-2) var(--space-0);
 }
 .surf-clock-time {
@@ -2213,23 +2265,15 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   letter-spacing: var(--tracking-widest);
   margin-left: var(--space-4);
 }
-.surf-clock-meta {
-  display: flex; flex-direction: column;
-  gap: var(--space-1);
-  padding-left: var(--space-9);
-  border-left: 1px solid var(--hairline);
-  flex-shrink: 0;
-}
 .surf-clock-day {
   font-family: var(--font-numeric);
   font-size: var(--text-lg);
   letter-spacing: var(--tracking-tight);
   color: var(--text);
   line-height: var(--leading-tight);
-}
-.surf-clock-date {
-  font-size: var(--text-sm);
-  color: var(--text-meta);
+  padding-left: var(--space-9);
+  border-left: 1px solid var(--hairline);
+  flex-shrink: 0;
 }
 
 .surf-clock-now {
@@ -2305,7 +2349,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .surf-now-meta .surf-now-sep { color: var(--text-4); }
 
 @media (max-width: 720px) {
-  .surf-clock-meta { padding-left: var(--space-0); border-left: 0; }
+  .surf-clock-day { padding-left: var(--space-0); border-left: 0; }
 }
 
 /* ---- main terminal (plain) ---- */
@@ -2759,7 +2803,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 
 /* narrow viewports — stack rail under terminal */
 @media (max-width: 920px) {
-  .surf {
+  .surf-grid {
     grid-template-columns: minmax(0, 1fr);
   }
   .surf-term { min-height: 380px; }

@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo } from 'react';
 import { useState } from '../shared/state';
-import { coveOf, timeOfDay } from '../shared/components/helpers';
+import { coveOf } from '../shared/components/helpers';
 import { useTheme } from '../app/theme';
 import type { Cove, Route, Wave } from '../types';
 
@@ -88,23 +88,25 @@ export function TodayPage({
 
   return (
     <div className="surf">
-      <section className="surf-main">
-        <SurfClock waves={waves} />
-        <TodayTerminalPanel
-          terminalId={todayTerminalId ?? null}
-          error={todayError ?? null}
-          onReset={onResetTodayTerminal}
-        />
-      </section>
-      <aside className="surf-rail" aria-label="Calendar">
-        <CalendarCard
-          today0={today0}
-          events={events}
-          coves={coves}
-          waves={waves}
-          onGo={onGo}
-        />
-      </aside>
+      <SurfClock waves={waves} />
+      <div className="surf-grid">
+        <section className="surf-main">
+          <TodayTerminalPanel
+            terminalId={todayTerminalId ?? null}
+            error={todayError ?? null}
+            onReset={onResetTodayTerminal}
+          />
+        </section>
+        <aside className="surf-rail" aria-label="Calendar">
+          <CalendarCard
+            today0={today0}
+            events={events}
+            coves={coves}
+            waves={waves}
+            onGo={onGo}
+          />
+        </aside>
+      </div>
     </div>
   );
 }
@@ -210,7 +212,6 @@ function SurfClock({ waves }: { waves: Wave[] }) {
   const period = hh >= 12 ? 'PM' : 'AM';
   const h12 = (hh + 11) % 12 + 1;
   const weekday = now.toLocaleDateString('en-US', { weekday: 'long' });
-  const datePart = now.toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
 
   const runningCount = waves.filter((w) => w.status === 'running').length;
   const waitingCount = waves.filter((w) => w.status === 'waiting').length;
@@ -223,12 +224,7 @@ function SurfClock({ waves }: { waves: Wave[] }) {
         <span className="surf-clock-m num">{mm}</span>
         <span className="surf-clock-ap">{period}</span>
       </div>
-      <div className="surf-clock-meta">
-        <div className="surf-clock-day">{weekday}</div>
-        <div className="surf-clock-date">
-          {datePart} · {timeOfDay()}
-        </div>
-      </div>
+      <div className="surf-clock-day">{weekday}</div>
       <div className="surf-clock-status">
         <span className="surf-stat run">
           <span className="surf-stat-dot run" />

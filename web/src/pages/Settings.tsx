@@ -1,5 +1,5 @@
-// SettingsPage — app-global Settings view, reachable from the TitleBar
-// gear button (`/settings`).
+// SettingsPage — app-global Settings view, reachable from the Sidebar
+// avatar menu's "Settings" item (`/settings`).
 //
 // First config block is HTTP/HTTPS proxy. The codex spawn path reads
 // these at process-spawn time and overrides whatever proxy the docker
@@ -193,9 +193,8 @@ export function SettingsPage({ onGo }: { onGo: (r: Route) => void }) {
 // Light / Dark / System radio group. Backed by `useTheme()` from
 // `app/theme.tsx`; no server round-trip — the preference lives in
 // localStorage (`calm.theme`) and is read synchronously on boot by
-// the provider. The TitleBar toggle button writes the same store
-// (explicit 'light' / 'dark'), so toggling there flips this radio
-// in real time without any extra wiring.
+// the provider. This section is the ONLY place to change theme;
+// the previous TitleBar toggle button has been removed.
 function AppearanceSection() {
   const { mode, setMode } = useTheme();
   const options: { value: ThemeMode; label: string; hint: string }[] = [
@@ -209,9 +208,8 @@ function AppearanceSection() {
         Appearance
       </h2>
       <p className="settings-section-hint">
-        Choose how the app picks its color theme. The TitleBar toggle button
-        cycles between Light and Dark; pick System here to track your OS
-        preference instead.
+        Choose how the app picks its color theme. Pick Light or Dark to pin
+        a fixed theme, or System to follow your OS preference.
       </p>
       <fieldset
         className="schema-form"

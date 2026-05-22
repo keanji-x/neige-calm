@@ -1,29 +1,17 @@
-import { Icon } from '../../Icon';
 import { ConnectionIndicator } from './ConnectionIndicator';
 
 // ---------------- TitleBar ----------------
+//
+// The title bar now only hosts the connection indicator. Theme switching
+// moved to the Settings page's Appearance section (Light/Dark/System
+// radio); the user menu (Settings, Sign out) is the Sidebar's avatar
+// row. See issue #22.
 
-export function TitleBar({
-  theme,
-  onToggleTheme,
-}: {
-  theme: 'light' | 'dark';
-  onToggleTheme: () => void;
-}) {
+export function TitleBar() {
   return (
     <header className="bar">
       <div className="right">
         <ConnectionIndicator />
-        <button
-          className="go ghost"
-          onClick={onToggleTheme}
-          title="Toggle theme"
-          aria-label={
-            theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'
-          }
-        >
-          <Icon n={theme === 'dark' ? 'sun' : 'moon'} s={14} />
-        </button>
       </div>
     </header>
   );
