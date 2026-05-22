@@ -301,7 +301,17 @@ test.describe('a11y · axe', () => {
         await waitForBootstrap(page);
         // Wait for the wave page to fully render before flipping the
         // toggle — WaveGrid is lazy-loaded.
-        await expect(page.getByRole('button', { name: /\+\s*add/i })).toBeVisible();
+        const addBtn = page.getByRole('button', { name: /\+\s*add/i });
+        await expect(addBtn).toBeVisible();
+        // Post-#175 the wave from `ids()` is freshly minted with zero
+        // cards (the default Today PTY lives in the hidden system cove,
+        // not user-created waves). Without at least one card the
+        // list-view `<ul>` collapses to 0 height and Playwright reports
+        // it as hidden. Add one card so the list view has something to
+        // render — what we're scanning is the populated list state.
+        await addBtn.click();
+        await page.getByRole('menuitem', { name: /terminal/i }).first().click();
+        await page.waitForTimeout(500);
         const toggle = page.getByRole('switch', { name: /switch wave to list view/i });
         await expect(toggle).toBeVisible();
         await toggle.click();
