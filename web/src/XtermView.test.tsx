@@ -33,6 +33,7 @@ import { render, screen, act } from '@testing-library/react';
 interface MockTerm {
   cols: number;
   rows: number;
+  options: { theme?: unknown };
   write: ReturnType<typeof vi.fn>;
   writeln: ReturnType<typeof vi.fn>;
   clear: ReturnType<typeof vi.fn>;
@@ -50,6 +51,10 @@ vi.mock('@xterm/xterm', () => {
   class Terminal {
     cols = 80;
     rows = 24;
+    // The component mutates `term.options.theme` via the theme-apply
+    // effect. Real xterm.js exposes `options` as a mutable bag; mirror
+    // that here so writes don't throw.
+    options: { theme?: unknown } = {};
     write = vi.fn();
     writeln = vi.fn();
     clear = vi.fn();
@@ -65,7 +70,8 @@ vi.mock('@xterm/xterm', () => {
       (this as unknown as MockTerm).__dataCb = cb;
       return { dispose: () => {} };
     }
-    constructor() {
+    constructor(opts?: { theme?: unknown }) {
+      if (opts?.theme !== undefined) this.options.theme = opts.theme;
       mockTerm = this as unknown as MockTerm;
     }
   }
@@ -482,6 +488,41 @@ describe('XtermView themes (issue #177 — OSC 11 probe)', () => {
     const { r, g, b, a } = parseHex(DARK_THEME.background!);
     expect(a).toBe(255);
     expect(r + g + b).toBeLessThan(128 * 3);
+  });
+
+  it('sends CSI focus-in to nudge codex re-probe on theme prop change', () => {
+    // Codex caches the OSC 10/11 result from spawn and only re-probes on
+    // `Event::FocusGained` (CSI \x1b[I). On a mid-session theme toggle
+    // the theme-effect updates xterm.js's bg AND pushes \x1b[I to the
+    // PTY so codex re-probes and picks up the new bg. The initial mount
+    // must NOT send the focus-in — codex already got the right bg from
+    // its spawn-time probe, and a stray focus event would be noise.
+    const { rerender } = render(
+      <XtermView terminalId="term_test" theme="dark" />,
+    );
+    const ws = currentWs();
+    act(() => {
+      ws.fireOpen();
+    });
+    // Drop the ClientHello frame so the rest of the assertions only see
+    // post-mount sends.
+    ws.sentFrames.length = 0;
+
+    // Re-render with the same theme — nothing should fire (the effect
+    // skips when prev === current).
+    act(() => {
+      rerender(<XtermView terminalId="term_test" theme="dark" />);
+    });
+    expect(ws.sentFrames).toHaveLength(0);
+
+    // Toggle to light — expect a single Input frame carrying \x1b[I.
+    act(() => {
+      rerender(<XtermView terminalId="term_test" theme="light" />);
+    });
+    expect(ws.sentFrames).toHaveLength(1);
+    const frame = JSON.parse(ws.sentFrames[0]!);
+    // \x1b[I = ESC [ I = [27, 91, 73]
+    expect(frame).toEqual({ Input: { data: [27, 91, 73], input_seq: 0 } });
   });
 });
 

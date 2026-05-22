@@ -23,9 +23,10 @@ import type {
 // report a useless fallback, so codex always rendered the light-mode
 // composer over our dark card. Visual transparency of the card surface
 // is preserved by `.xterm-container .xterm { background: transparent
-// !important }` in calm.css. Note: codex caches the OSC 11 result and
-// only re-queries on focus, so toggling the app theme mid-session won't
-// recolor an already-running composer until codex re-probes.
+// !important }` in calm.css. Codex caches the OSC 11 result and only
+// re-queries on `Event::FocusGained`; the theme-apply effect below
+// nudges it with a synthetic CSI `\x1b[I` on theme changes so the
+// composer follows mid-session toggles.
 // TODO(#177): visual regression for the codex composer (Playwright).
 export const LIGHT_THEME: ITheme = {
   background: '#fcfeff',
@@ -135,6 +136,15 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
   // the Terminal on (re)mount or after a reconnect.
   const latestThemeRef = useRef<'light' | 'dark'>(theme);
   latestThemeRef.current = theme;
+  // Bridge from the theme-effect (which can't see the bridge-mount effect's
+  // local `send` closure) to the live WS. Populated on mount; nulled on
+  // teardown. The theme-effect uses this to push a CSI focus-in to codex
+  // when the theme prop changes — see the theme-apply effect below.
+  const sendInputBytesRef = useRef<((bytes: number[]) => void) | null>(null);
+  // Previous theme, so the theme-effect can distinguish first render
+  // (skip — codex already got the right bg from its spawn-time OSC 11
+  // probe) from a real toggle (nudge codex to re-probe).
+  const prevThemeRef = useRef<'light' | 'dark' | null>(null);
   const [status, setStatus] = useState<Status>('connecting');
   const [closeInfo, setCloseInfo] = useState<CloseInfo | null>(null);
   const [protocolError, setProtocolError] = useState<ProtocolError | null>(null);
@@ -159,10 +169,30 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
   // `term.options.theme = ...` is the official re-theming path. Putting
   // this in its own effect keeps the (heavy) bridge-mount effect's deps
   // small and lets us drop `theme` from there.
+  //
+  // Codex (the typical PTY child) caches the OSC 10/11 result from spawn
+  // and only re-probes on `Event::FocusGained` (CSI `\x1b[I` — see
+  // codex-rs/tui/src/tui/event_stream.rs). Without a nudge a mid-session
+  // theme toggle leaves the running composer in the original colors. So
+  // on actual theme *changes* (not the first render) we send `\x1b[I` to
+  // the PTY; codex re-runs OSC 10/11, xterm.js reports the bg we just
+  // set above, and the composer repaints next frame. Already-rendered
+  // scrollback keeps its old bg (codex doesn't repaint history), which
+  // is acceptable — the composer is the visible thing the issue is about.
   useEffect(() => {
+    const prev = prevThemeRef.current;
+    // Record `theme` *before* any early-return so a subsequent toggle
+    // sees the correct prev. (React fires this effect before the
+    // bridge-mount effect's first run, so `termRef.current` can be null
+    // here on the initial render — we still want to remember the theme.)
+    prevThemeRef.current = theme;
     const term = termRef.current;
-    if (!term) return;
-    term.options.theme = theme === 'dark' ? DARK_THEME : LIGHT_THEME;
+    if (term) {
+      term.options.theme = theme === 'dark' ? DARK_THEME : LIGHT_THEME;
+    }
+    if (prev !== null && prev !== theme) {
+      sendInputBytesRef.current?.([0x1b, 0x5b, 0x49]);
+    }
   }, [theme]);
 
   useEffect(() => {
@@ -209,6 +239,12 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(msg));
       }
+    };
+    // Surface a raw-bytes input path to the theme-effect (which lives
+    // outside this closure). See `sendInputBytesRef` + the theme-apply
+    // effect above.
+    sendInputBytesRef.current = (bytes: number[]) => {
+      send({ Input: { data: bytes, input_seq: 0 } });
     };
 
     // Per-connection client id. The daemon's `OwnerRegistry` keys on this
@@ -490,6 +526,7 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
       // has already installed its own term; without this guard we'd null
       // out the new instance.
       if (termRef.current === term) termRef.current = null;
+      sendInputBytesRef.current = null;
     };
     // `theme` deliberately omitted: a theme flip should NOT rebuild the
     // WebSocket / Terminal. The sibling effect above mutates
