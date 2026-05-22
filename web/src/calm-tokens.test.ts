@@ -30,6 +30,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { describe, it, expect } from 'vitest';
+import { MONO_STACK } from './font-stack';
 
 // ---------------------------------------------------------------------------
 // Pinned token vocabulary
@@ -387,6 +388,31 @@ describe('calm.css type-scale: no raw font-size literals outside :root', () => {
 // If a token is declared in `:root` but never referenced by a `var(--name)`
 // elsewhere in the file, it's dead code. Today we just log — promote to a
 // hard failure once token churn settles and we trust the inventory.
+
+// ---------------------------------------------------------------------------
+// (f) JS↔CSS mono-stack drift — `MONO_STACK` constant must match `--font-mono`.
+// ---------------------------------------------------------------------------
+//
+// `font-stack.ts:MONO_STACK` is the source of truth for JS consumers that need
+// a font-family string (xterm.js, fallback inline styles in UnknownCard, etc.).
+// `--font-mono` in `:root` is the source of truth for CSS. The two must agree
+// byte-for-byte — otherwise the terminal and the rest of the UI silently fall
+// back to different system mono faces, which we'd never notice in review.
+//
+// Same "vocabulary becomes contract" pattern as the rest of this file: if you
+// change one, update the other or CI fails. The assertion is intentionally a
+// trimmed string compare — no fuzzy normalization, because subtle differences
+// like quoting `"SF Mono"` vs `SF Mono` actually matter to the browser font
+// resolver and we want them caught.
+//
+// #150 slice 3.
+describe('calm.css ↔ font-stack.ts: mono stack drift', () => {
+  it('--font-mono matches MONO_STACK byte-for-byte', () => {
+    const fontMonoValue = rootDecls.get('--font-mono');
+    expect(fontMonoValue, '--font-mono missing from :root').toBeDefined();
+    expect(fontMonoValue).toBe(MONO_STACK);
+  });
+});
 
 describe('calm.css token graph: orphan detection (soft)', () => {
   it('logs tokens with zero consumers (informational)', () => {

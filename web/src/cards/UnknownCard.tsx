@@ -14,6 +14,7 @@
 // stay self-contained.
 
 import type { CardSize } from './registry';
+import { MONO_STACK } from '../font-stack';
 
 /** Same mid-range default the registry uses for unknown built-ins. */
 export const UNKNOWN_CARD_SIZE: CardSize = { w: 4, h: 6, minW: 3, minH: 3 };
@@ -42,8 +43,7 @@ export function UnknownCard({ kernelKind }: { kernelKind: string }) {
       </header>
       <code
         style={{
-          fontFamily:
-            'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+          fontFamily: MONO_STACK,
           fontSize: 12,
         }}
       >
