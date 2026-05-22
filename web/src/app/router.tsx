@@ -31,6 +31,8 @@ import {
 import { CalmApp } from '../CalmApp';
 import { MissingShell } from './shell';
 import { useGo } from './navigation';
+import { useTheme } from './theme';
+import { LIGHT_THEME_RGB, DARK_THEME_RGB } from '../shared/themeRgb';
 import { useTodayTerminal } from '../hooks/useTodayTerminal';
 import {
   covesQueryOptions,
@@ -274,6 +276,10 @@ function WaveComponent() {
   const updateWave = useUpdateWaveMutation();
   const deleteWave = useDeleteWaveMutation();
   const deleteCard = useDeleteCardMutation();
+  // #177: snapshot the host browser's current theme so the codex-card
+  // create POST below can stamp `theme: { fg, bg }` onto the body. The
+  // daemon then advertises matching colors on OSC 10/11.
+  const { resolved: theme } = useTheme();
   dlog('WaveComponent', 'render', {
     waveId,
     detailLoaded: !!detailQ.data,
@@ -310,7 +316,7 @@ function WaveComponent() {
         await addCardOfKind(qc, wId, type);
       }}
       onCreateCardWithBody={async (wId, type, values) => {
-        await addCardWithValues(qc, wId, type, values);
+        await addCardWithValues(qc, wId, type, values, theme);
       }}
       onRemoveCard={async (_wId, idx) => {
         const target = detail.cards[idx];
@@ -368,6 +374,7 @@ async function addCardWithValues(
   waveId: string,
   type: AddPanelKind,
   values: Record<string, string>,
+  theme: 'light' | 'dark',
 ): Promise<void> {
   if (type !== 'codex') {
     // Falls through to the default "no-config" pathway. The AddPanel
@@ -383,9 +390,18 @@ async function addCardWithValues(
     // `card.added` event carrying the final payload — no intermediate
     // empty-payload flash for the renderer's "Codex is starting…"
     // placeholder to react to.
+    //
+    // #177: stamp the host browser's current theme RGB onto the body so
+    // the daemon's `TerminalModel` can answer codex's OSC 10/11 startup
+    // probe with matching colors. Without this the composer paints
+    // against codex's built-in default and visually clashes with the
+    // card background.
+    const rgb =
+      theme === 'dark' ? DARK_THEME_RGB : LIGHT_THEME_RGB;
     const card = await api.createCodexCard(waveId, {
       cwd: values.cwd || undefined,
       prompt: values.prompt || undefined,
+      theme: { fg: rgb.fg, bg: rgb.bg },
     });
     dlog('addCardWithValues', 'codex create DONE', { cardId: card.id });
   } catch (err) {

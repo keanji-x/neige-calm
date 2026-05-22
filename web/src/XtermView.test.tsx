@@ -60,6 +60,11 @@ vi.mock('@xterm/xterm', () => {
     open = vi.fn();
     loadAddon = vi.fn();
     dispose = vi.fn();
+    // xterm.js exposes `options` as a mutable bag; the live-theme effect
+    // assigns `term.options.theme = ...` and the real impl picks it up
+    // on the next render cycle. For the mock we just need the slot to
+    // exist so the assignment doesn't throw.
+    options: Record<string, unknown> = {};
     onData(cb: (d: string) => void): { dispose: () => void } {
       // Expose the callback so a test can simulate typing.
       (this as unknown as MockTerm).__dataCb = cb;
@@ -177,7 +182,7 @@ afterEach(() => {
 function serverHello(over: Record<string, unknown> = {}): unknown {
   return {
     ServerHello: {
-      protocol_version: 2,
+      protocol_version: 3,
       terminal_id: 'term_test',
       session_id: '11111111-1111-4111-8111-111111111111',
       client_role: 'Owner',
@@ -203,7 +208,7 @@ function serverHello(over: Record<string, unknown> = {}): unknown {
 }
 
 describe('XtermView v2 handshake', () => {
-  it('sends ClientHello with protocol_version=2 and role_hint Owner on open', () => {
+  it('sends ClientHello with current PROTOCOL_VERSION and role_hint Owner on open', () => {
     render(<XtermView terminalId="term_test" />);
     const ws = currentWs();
     act(() => {
@@ -213,7 +218,7 @@ describe('XtermView v2 handshake', () => {
     const frame = JSON.parse(ws.sentFrames[0]!);
     expect(frame).toHaveProperty('ClientHello');
     const hello = frame.ClientHello;
-    expect(hello.protocol_version).toBe(2);
+    expect(hello.protocol_version).toBe(3);
     expect(hello.terminal_id).toBe('term_test');
     expect(typeof hello.client_id).toBe('string');
     expect(hello.role_hint).toBe('Owner');
@@ -441,6 +446,67 @@ describe('XtermView v2 terminal states', () => {
     // the generic close code.
     expect(screen.getByRole('alert')).toBeInTheDocument();
     expect(screen.getByText(/protocol error: BadHandshake/i)).toBeInTheDocument();
+  });
+});
+
+describe('XtermView theme toggle (#177)', () => {
+  it('does NOT send TerminalThemeUpdate on initial render', () => {
+    // The codex-card POST already carried the theme; sending it again
+    // would needlessly retrigger codex's focus-in re-probe.
+    render(<XtermView terminalId="term_test" theme="light" />);
+    const ws = currentWs();
+    act(() => {
+      ws.fireOpen();
+    });
+    act(() => {
+      ws.push(serverHello());
+    });
+    const sent = ws.sentFrames.map((f) => JSON.parse(f));
+    expect(sent.some((f) => 'TerminalThemeUpdate' in f)).toBe(false);
+  });
+
+  it('sends TerminalThemeUpdate with new RGB when theme prop flips light→dark', async () => {
+    const { rerender } = render(
+      <XtermView terminalId="term_test" theme="light" />,
+    );
+    const ws = currentWs();
+    await act(async () => {
+      ws.fireOpen();
+    });
+    await act(async () => {
+      ws.push(serverHello());
+    });
+    const beforeCount = ws.sentFrames.length;
+    await act(async () => {
+      rerender(<XtermView terminalId="term_test" theme="dark" />);
+    });
+    const after = ws.sentFrames.slice(beforeCount).map((f) => JSON.parse(f));
+    const themeFrame = after.find((f) => 'TerminalThemeUpdate' in f);
+    expect(themeFrame).toBeTruthy();
+    expect(themeFrame.TerminalThemeUpdate.fg).toEqual([216, 219, 226]);
+    expect(themeFrame.TerminalThemeUpdate.bg).toEqual([15, 20, 24]);
+  });
+
+  it('sends TerminalThemeUpdate with light RGB when theme prop flips dark→light', async () => {
+    const { rerender } = render(
+      <XtermView terminalId="term_test" theme="dark" />,
+    );
+    const ws = currentWs();
+    await act(async () => {
+      ws.fireOpen();
+    });
+    await act(async () => {
+      ws.push(serverHello());
+    });
+    const beforeCount = ws.sentFrames.length;
+    await act(async () => {
+      rerender(<XtermView terminalId="term_test" theme="light" />);
+    });
+    const after = ws.sentFrames.slice(beforeCount).map((f) => JSON.parse(f));
+    const themeFrame = after.find((f) => 'TerminalThemeUpdate' in f);
+    expect(themeFrame).toBeTruthy();
+    expect(themeFrame.TerminalThemeUpdate.fg).toEqual([42, 47, 58]);
+    expect(themeFrame.TerminalThemeUpdate.bg).toEqual([252, 254, 255]);
   });
 });
 

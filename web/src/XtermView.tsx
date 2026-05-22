@@ -12,9 +12,15 @@ import type {
   ProtocolErrorCode,
   Role,
 } from './api/generated-terminal';
+import { LIGHT_THEME_RGB, DARK_THEME_RGB } from './shared/themeRgb';
 
 // Cool-neutral light xterm theme matching Calm's palette. Same numbers as
 // the previous useTerminalCore-backed version; only the wire below changed.
+//
+// Background stays `#ffffff00` (transparent) so the surrounding card
+// background shows through unchanged. Codex / claude-tui's *composer*
+// background — the visible mismatch from #177 — is handled by the
+// daemon-side OSC 10/11 reply path, not by changing xterm's clearColor.
 const LIGHT_THEME: ITheme = {
   background: '#ffffff00',
   foreground: '#2a2f3a',
@@ -47,6 +53,11 @@ const DARK_THEME: ITheme = {
   selectionBackground: 'rgba(140, 180, 255, 0.22)',
 };
 
+// `LIGHT_THEME_RGB` / `DARK_THEME_RGB` (#177) live in `shared/themeRgb.ts`
+// so the codex-card create POST in `app/router.tsx` can import them
+// without dragging the heavy XtermView module statically (which would
+// defeat its `lazy(...)` chunk split).
+
 interface XtermViewProps {
   /** `Terminal.id` from the kernel — addresses the daemon socket on the server. */
   terminalId: string;
@@ -63,8 +74,9 @@ interface CloseInfo {
 
 /** Wire version the frontend speaks. Must match
  *  `crates/calm-session/src/lib.rs::PROTOCOL_VERSION`. A mismatch surfaces
- *  via `DaemonMsg::ProtocolError(UnsupportedVersion)` and the overlay below. */
-const PROTOCOL_VERSION = 2;
+ *  via `DaemonMsg::ProtocolError(UnsupportedVersion)` and the overlay below.
+ *  Bumped 2 → 3 in #177 for the `ClientMsg::TerminalThemeUpdate` variant. */
+const PROTOCOL_VERSION = 3;
 
 /**
  * UI status for the v2 terminal protocol. Slimmed-down state machine
@@ -142,15 +154,46 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
     setReconnectKey((k) => k + 1);
   };
 
+  // Live `send` from the WS-effect, captured so the theme-effect can
+  // post `TerminalThemeUpdate` without owning the WebSocket itself.
+  // Cleared back to `null` on disconnect (the WS-effect's cleanup).
+  const sendRef = useRef<((msg: ClientMsg) => void) | null>(null);
+  // Tracks whether we've already dispatched a `TerminalThemeUpdate` for
+  // the current theme. On initial mount the codex-card POST already
+  // carried the theme (see `app/router.tsx`) so we MUST NOT also send
+  // an update — that would needlessly resize the daemon's reply buffer
+  // and (more importantly) double-trigger codex's focus-in re-probe.
+  const prevThemeRef = useRef<'light' | 'dark' | null>(null);
+
   // Live-apply theme changes without rebuilding the Terminal + WS.
   // xterm.js exposes `term.options` as a mutable bag; assigning
   // `term.options.theme = ...` is the official re-theming path. Putting
   // this in its own effect keeps the (heavy) bridge-mount effect's deps
   // small and lets us drop `theme` from there.
+  //
+  // #177: also dispatch `TerminalThemeUpdate` over the WS on subsequent
+  // changes so the daemon's `TerminalModel` advertises the new fg/bg on
+  // future OSC 10/11 queries AND emits a focus-in nudge so codex /
+  // claude-tui re-paints their composer. The initial render skips this
+  // because the card-create POST already carried `theme`.
   useEffect(() => {
+    // Snapshot + advance the prev marker BEFORE the early return — the
+    // termRef may not be populated on the initial render (the bridge
+    // effect runs in declaration order); we still want to record that
+    // we've seen this theme so the next prop change correctly observes
+    // `prev !== null` and dispatches a `TerminalThemeUpdate`.
+    const prev = prevThemeRef.current;
+    prevThemeRef.current = theme;
     const term = termRef.current;
-    if (!term) return;
-    term.options.theme = theme === 'dark' ? DARK_THEME : LIGHT_THEME;
+    if (term) {
+      term.options.theme = theme === 'dark' ? DARK_THEME : LIGHT_THEME;
+    }
+    if (prev !== null && prev !== theme) {
+      const rgb = theme === 'dark' ? DARK_THEME_RGB : LIGHT_THEME_RGB;
+      sendRef.current?.({
+        TerminalThemeUpdate: { fg: rgb.fg, bg: rgb.bg },
+      });
+    }
   }, [theme]);
 
   useEffect(() => {
@@ -198,6 +241,9 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
         ws.send(JSON.stringify(msg));
       }
     };
+    // Surface `send` to the theme-effect (which lives outside this
+    // closure). Cleared in the WS-effect's teardown below.
+    sendRef.current = send;
 
     // Per-connection client id. The daemon's `OwnerRegistry` keys on this
     // so the same browser tab survives WS reconnects without losing
@@ -478,6 +524,10 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
       // has already installed its own term; without this guard we'd null
       // out the new instance.
       if (termRef.current === term) termRef.current = null;
+      // Symmetric guard for the `send` ref — clear only if we still own
+      // it, so a strict-mode double-invoke doesn't trample the next
+      // mount's installed sender.
+      if (sendRef.current === send) sendRef.current = null;
     };
     // `theme` deliberately omitted: a theme flip should NOT rebuild the
     // WebSocket / Terminal. The sibling effect above mutates

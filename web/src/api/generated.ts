@@ -697,6 +697,7 @@ export interface components {
              * @description Sort order within the wave. `None` defaults to "append to end".
              */
             sort?: number | null;
+            theme?: null | components["schemas"]["RequestTheme"];
         };
         NewCove: {
             color: string;
@@ -821,6 +822,24 @@ export interface components {
              */
             state: string;
             version: string;
+        };
+        /**
+         * @description Wire shape of `NewCodexCardBody.theme`. Matches the
+         *     `calm_session::TerminalTheme` value type one-for-one — duplicated
+         *     here so the route can keep its own `ToSchema` derive (the
+         *     `calm_session` crate is utoipa-free).
+         */
+        RequestTheme: {
+            bg: [
+                number,
+                number,
+                number
+            ];
+            fg: [
+                number,
+                number,
+                number
+            ];
         };
         /**
          * @description Wire-shape: a flat string map of key -> value. We use `BTreeMap` for

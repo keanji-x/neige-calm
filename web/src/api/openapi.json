@@ -2243,6 +2243,17 @@
             ],
             "format": "double",
             "description": "Sort order within the wave. `None` defaults to \"append to end\"."
+          },
+          "theme": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RequestTheme",
+                "description": "Host browser's current theme RGB (#177). When set, the kernel\nstamps `--terminal-fg=r,g,b --terminal-bg=r,g,b` onto the\n`calm-session-daemon` argv so the daemon's `TerminalModel` can\nanswer codex's OSC 10/11 startup probe with colors matching the\nhost theme — otherwise codex falls back to its built-in default\nand visually clashes with the surrounding card background. When\nmissing the kernel passes no extra args and the daemon stays\nsilent on OSC queries (pre-#177 behaviour)."
+              }
+            ]
           }
         },
         "additionalProperties": false
@@ -2554,6 +2565,59 @@
             "type": "string"
           }
         }
+      },
+      "RequestTheme": {
+        "type": "object",
+        "description": "Wire shape of `NewCodexCardBody.theme`. Matches the\n`calm_session::TerminalTheme` value type one-for-one — duplicated\nhere so the route can keep its own `ToSchema` derive (the\n`calm_session` crate is utoipa-free).",
+        "required": [
+          "fg",
+          "bg"
+        ],
+        "properties": {
+          "bg": {
+            "type": "array",
+            "items": false,
+            "prefixItems": [
+              {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              }
+            ]
+          },
+          "fg": {
+            "type": "array",
+            "items": false,
+            "prefixItems": [
+              {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
       },
       "SettingsBag": {
         "type": "object",
