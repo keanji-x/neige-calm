@@ -87,7 +87,7 @@ module.exports = {
     // literals on the same properties — they must read through the
     // `var(--space-*)` vocabulary established in :root. Negative margin
     // literals opt out via a stylelint-disable-next-line marker (audit
-    // found 3 sites: `.sr-only`, `.surf-clock-colon`, `.cal-agenda`); the
+    // found 3 sites: `.sr-only`, `.today-clock-colon`, `.cal-agenda`); the
     // 38px outlier on `.codex-card-head` is also opted out — it tracks the
     // absolutely-positioned X button's geometry, not the rhythm grid.
     'declaration-property-value-disallowed-list': {
