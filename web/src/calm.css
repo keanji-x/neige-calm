@@ -144,8 +144,8 @@
          the previously-distinct .surf-term value (0.2%/0.5% L) into one
          shared surface; the delta is invisible.
        --surface-code — persistent inline-code background in prose
-         contexts (.note p code, .doc-body p code, .surf-term-line code).
-         Distinct from hover overlays (those alias --surface-hover-overlay).
+         contexts (.note p code, .surf-term-line code). Distinct from
+         hover overlays (those alias --surface-hover-overlay).
   */
   --surface-terminal: oklch(99% 0.003 240);
   --surface-code:     oklch(0% 0 0 / 0.04);
@@ -1221,11 +1221,7 @@ input, textarea { font: inherit; color: inherit; }
   display: flex;
   flex-direction: column;
 }
-.card-slot > .term .term-body,
-.card-slot > .doc .doc-body,
-.card-slot > .git .git-body,
-.card-slot > .diff .diff-body,
-.card-slot > .plan-card .plan-card-body {
+.card-slot > .term .term-body {
   flex: 1;
   min-height: 0;
   overflow: auto;
@@ -1255,7 +1251,8 @@ input, textarea { font: inherit; color: inherit; }
 
 /* Card headers are RGL drag handles — give them the grab cursor and disable
    text selection so the drag feels native. The styling of each head
-   (.term-head/.doc-head/...) already exists; we only add the cursor here. */
+   (`.term-head`, `.codex-card-head`) lives in their own section; this
+   rule only adds the cursor. */
 .card-drag-handle {
   cursor: grab;
   user-select: none;
@@ -1656,9 +1653,10 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .dirpicker-select:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ===== Card head (shared) =====
-   Base skeleton for card headers. Today it's adopted by `.codex-card-head`
-   and `.term-head`; `.plan-card-head` and `.surf-term-head` are still on
-   their bespoke padding/font and will migrate in a follow-up.
+   Base skeleton for card headers. Adopted by `.codex-card-head`,
+   `.term-head`, and `.surf-term-head` via the typed `<CardHead>`
+   component (`web/src/cards/CardHead.tsx`); Plan/Doc/Git/Diff were
+   removed in the Wave 4 sweep and no longer have card heads.
    Card-specific selectors layer character on top:
      - `.term-head .card-head-title` keeps the uppercase / letter-spacing /
        600-weight typography (the Terminal head's signature look).
@@ -1811,25 +1809,21 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 [data-theme="dark"] .term-dot.c { background: var(--term-dot-light); }
 /* Terminal head keeps its "CRT typography" character — uppercase, wider
    letter-spacing, smaller size, heavier weight — over the unified
-   `.card-head-title` base. `.term-title` is still applied standalone on
-   `.surf-term-head` (out of scope for this slice), so this stays the
-   single source of truth: on the dual-classed Terminal title both
-   `.card-head-title` (defined earlier in the file) and `.term-title`
-   apply with equal specificity, and source-order tie-break lets these
-   properties win — uppercase/letter-spacing/text-xs/600 survive. */
+   `.card-head-title` base. Both Terminal and Surf-Term wrap their title
+   text in a `<span class="term-title">` that lives inside the
+   `<span class="card-head-title">` slot wrapper emitted by the
+   `<CardHead>` component (`web/src/cards/CardHead.tsx`); typography
+   rules below win because `.term-title` is more specific than the bare
+   `.card-head-title` selector that owns the slot. The legacy
+   `margin-left: var(--space-3)` is intentionally dropped — `.card-head`'s
+   parent `gap: var(--card-head-gap)` already spaces siblings. */
 .term-title {
-  margin-left: var(--space-3);
   font-size: var(--text-xs);
   letter-spacing: var(--tracking-wider);
   text-transform: uppercase;
   color: var(--text-3);
   font-weight: 600;
 }
-/* When `.term-title` co-occurs with `.card-head-decor` (the dots wrapper)
-   as flex children of `.card-head`, the parent's `gap: var(--card-head-gap)`
-   already provides spacing — drop the legacy `margin-left: 6px` that
-   existed for the dots-as-siblings layout. */
-.term-head .term-title { margin-left: var(--space-0); }
 .term-body {
   font-family: var(--font-code);
   font-size: var(--text-sm);
@@ -1849,8 +1843,10 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   overflow: hidden;
   display: flex;
 }
+/* `.term-live-pip` is the sole child of `.card-head-status` in the new
+   DOM, so its spacing from the title comes from the parent `.card-head`
+   `gap` — no `margin-left` is needed here. */
 .term-live-pip {
-  margin-left: var(--space-3);
   color: var(--accent);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
@@ -1972,218 +1968,13 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 [data-theme="dark"] .note p code { background: var(--surface-code); }
 
-/* ===== Doc card ===== */
-.doc {
-  border: 1px solid var(--hairline);
-  border-radius: var(--r);
-  background: var(--paper);
-  margin-bottom: var(--space-10);
-  overflow: hidden;
-}
-.doc-head {
-  padding: var(--space-6) var(--space-9);
-  border-bottom: 1px solid var(--hairline);
-  font-family: var(--font-display);
-  font-size: var(--text-md);
-  font-weight: 500;
-  letter-spacing: var(--tracking-normal);
-  color: var(--text);
-  background: var(--surface-panel-head);
-}
-[data-theme="dark"] .doc-head { background: var(--surface-panel-head); }
-.doc-body {
-  padding: var(--space-7) var(--space-10) var(--space-9);
-}
-.doc-body p {
-  margin: var(--space-0) var(--space-0) var(--space-6);
-  font-size: var(--text-md);
-  line-height: var(--leading-loose);
-  color: var(--text-2);
-  text-wrap: pretty;
-}
-.doc-body p:last-child { margin-bottom: var(--space-0); }
-.doc-body p strong { color: var(--text); font-weight: 600; }
-.doc-body p code {
-  font-family: var(--font-code);
-  font-size: var(--text-sm);
-  background: var(--surface-code);
-  padding: var(--space-px) var(--space-3);
-  border-radius: var(--radius-md);
-  color: var(--text);
-}
-[data-theme="dark"] .doc-body p code { background: var(--surface-code); }
-
-/* ===== Git card ===== */
-.git {
-  border: 1px solid var(--hairline);
-  border-radius: var(--r);
-  background: var(--paper);
-  margin-bottom: var(--space-10);
-  overflow: hidden;
-}
-.git-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: var(--space-5) var(--space-7);
-  border-bottom: 1px solid var(--hairline);
-  background: var(--surface-panel-head);
-}
-[data-theme="dark"] .git-head { background: var(--surface-panel-head); }
-.git-branch {
-  font-family: var(--font-code);
-  font-size: var(--text-sm);
-  color: var(--accent);
-  font-weight: 600;
-}
-.git-count {
-  font-size: var(--text-xs);
-  letter-spacing: var(--tracking-wider);
-  text-transform: uppercase;
-  color: var(--text-3);
-  font-weight: 600;
-}
-.git-body { padding: var(--space-3) var(--space-0); }
-.git-row {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  gap: var(--space-7);
-  padding: var(--space-4) var(--space-8);
-  align-items: center;
-}
-.git-sha {
-  font-family: var(--font-code);
-  font-size: var(--text-sm);
-  color: var(--text-3);
-}
-.git-msg {
-  font-size: var(--text-base);
-  color: var(--text);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.git-when {
-  font-size: var(--text-xs);
-  color: var(--text-4);
-  font-variant-numeric: tabular-nums;
-}
-
-/* ===== Diff card ===== */
-.diff {
-  border: 1px solid var(--hairline);
-  border-radius: var(--r);
-  background: var(--paper);
-  margin-bottom: var(--space-10);
-  overflow: hidden;
-}
-.diff-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: var(--space-5) var(--space-7);
-  border-bottom: 1px solid var(--hairline);
-  background: var(--surface-panel-head);
-}
-[data-theme="dark"] .diff-head { background: var(--surface-panel-head); }
-.diff-file {
-  font-family: var(--font-code);
-  font-size: var(--text-sm);
-  color: var(--text);
-  font-weight: 600;
-}
-.diff-stats {
-  display: inline-flex; gap: var(--space-4);
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
-}
-.diff-add { color: var(--success); font-weight: 600; }
-.diff-rm  { color: var(--error);   font-weight: 600; }
-.diff-body {
-  font-family: var(--font-code);
-  font-size: var(--text-sm);
-  line-height: var(--leading-loose);
-  padding: var(--space-3) var(--space-0);
-}
-.diff-hunk { padding: var(--space-3) var(--space-0); border-top: 1px solid var(--hairline); }
-.diff-hunk:first-child { border-top: 0; }
-.diff-line {
-  display: grid;
-  grid-template-columns: 18px 1fr;
-  padding: var(--space-0) var(--space-7);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.diff-line.k-hdr {
-  color: var(--text-3);
-  padding: var(--space-1) var(--space-7) var(--space-2);
-  font-size: var(--text-xs);
-  display: block;
-}
-.diff-gutter { color: var(--text-4); user-select: none; }
-.diff-line.k-add { background: var(--diff-add-bg); }
-.diff-line.k-add .diff-gutter,
-.diff-line.k-add .diff-text { color: var(--diff-add-text); }
-.diff-line.k-rm  { background: var(--diff-rm-bg); }
-.diff-line.k-rm .diff-gutter,
-.diff-line.k-rm .diff-text  { color: var(--diff-rm-text); }
-.diff-line.k-ctx .diff-text { color: var(--text-2); }
-[data-theme="dark"] .diff-line.k-add { background: var(--diff-add-bg); }
-[data-theme="dark"] .diff-line.k-add .diff-gutter,
-[data-theme="dark"] .diff-line.k-add .diff-text { color: var(--diff-add-text); }
-[data-theme="dark"] .diff-line.k-rm  { background: var(--diff-rm-bg); }
-[data-theme="dark"] .diff-line.k-rm .diff-gutter,
-[data-theme="dark"] .diff-line.k-rm .diff-text  { color: var(--diff-rm-text); }
-
-/* ===== Plan card ===== */
-.plan-card {
-  border: 1px solid var(--hairline);
-  border-radius: var(--r);
-  background: var(--paper);
-  margin-bottom: var(--space-10);
-  overflow: hidden;
-}
-.plan-card-head {
-  padding: var(--space-5) var(--space-8);
-  border-bottom: 1px solid var(--hairline);
-  background: var(--surface-panel-head);
-  font-size: var(--text-xs);
-  font-weight: 700;
-  letter-spacing: var(--tracking-widest);
-  text-transform: uppercase;
-  color: var(--text-3);
-}
-[data-theme="dark"] .plan-card-head { background: var(--surface-panel-head); }
-.plan-card-body {
-  list-style: none; margin: var(--space-0); padding: var(--space-3) var(--space-0);
-}
-.plan-card-body li {
-  display: grid;
-  grid-template-columns: 18px 1fr auto;
-  gap: var(--space-6);
-  align-items: center;
-  padding: var(--space-5) var(--space-8);
-}
-.plan-card-body li .dot {
-  width: 16px; height: 16px;
-  border-radius: var(--radius-pill);
-  border: 1.5px solid var(--hairline-strong);
-  display: grid; place-items: center;
-  color: transparent;
-  font-size: var(--text-xs);
-}
-.plan-card-body li.done .dot { background: var(--text); border-color: var(--text); color: var(--bg); }
-.plan-card-body li.cur  .dot { border-color: var(--accent); position: relative; }
-.plan-card-body li.cur  .dot::before {
-  content: ""; width: 7px; height: 7px; border-radius: var(--radius-pill); background: var(--accent);
-}
-.plan-card-body li .lbl {
-  font-size: var(--text-md);
-  color: var(--text);
-  line-height: var(--leading-snug);
-  text-wrap: pretty;
-}
-.plan-card-body li.done .lbl { color: var(--text-3); text-decoration: line-through; text-decoration-thickness: 1px; }
-.plan-card-body li.cur  .lbl { font-weight: 600; }
-.plan-card-body li .when {
-  font-size: var(--text-xs);
-  color: var(--text-4);
-  font-variant-numeric: tabular-nums;
-}
+/* (Doc / Git / Diff / Plan card styles removed — those card builtins were
+   retired in the Wave 4 sweep along with their TSX components. The
+   `.card-slot > .term .term-body` rule above used to also chain
+   `.doc .doc-body`, `.git .git-body`, `.diff .diff-body`,
+   `.plan-card .plan-card-body` siblings; those chain entries were
+   removed when this block went away. If a future card needs a
+   panel-head bg, reuse `--surface-panel-head` via `<CardHead>`.) */
 
 
 /* ============================================================
@@ -2365,17 +2156,24 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 [data-theme="dark"] .surf-term { background: var(--surface-terminal); }
 
+/* `.card-head` (applied via `<CardHead>`) supplies display/align/gap/
+   padding/border/background. `flex-shrink: 0` is load-bearing inside the
+   surf-term column flex parent (without it the head gets squeezed when
+   the body claims all the height).
+   `.card-head` reserves 38px on the right for the absolutely-positioned
+   `.card-grid-close` X button, but that button lives in `.card-slot` on
+   the wave grid — surf-term renders on the Today page outside `.card-slot`
+   so no overlay X exists. Return the right padding to the symmetric token
+   so the reset button doesn't get visibly pushed left. */
 .surf-term-head {
-  display: flex; align-items: center; gap: var(--space-3);
-  padding: var(--space-5) var(--space-7);
-  border-bottom: 1px solid var(--hairline);
-  background: var(--surface-card);
+  padding-right: var(--card-head-pad-h);
   flex-shrink: 0;
 }
 [data-theme="dark"] .surf-term-head { background: var(--surface-card); }
-.surf-term-head .term-title { margin-left: var(--space-3); }
+/* The reset button now lives in the `.card-head-status` slot wrapper
+   (which is right-aligned via the base's `justify-content: flex-end`),
+   so `margin-left: auto` is no longer needed — the slot pins it. */
 .surf-term-host {
-  margin-left: auto;
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   color: var(--text-4);

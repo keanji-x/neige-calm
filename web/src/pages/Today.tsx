@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useMemo } from 'react';
 import { useState } from '../shared/state';
 import { coveOf } from '../shared/components/helpers';
 import { useTheme } from '../app/theme';
+import { CardHead } from '../cards/CardHead';
 import type { Cove, Route, Wave } from '../types';
 
 // xterm.js is heavy and only mounts when the Today home panel resolves a
@@ -132,29 +133,36 @@ function TodayTerminalPanel({
 }) {
   return (
     <div className="surf-term">
-      <div className="surf-term-head">
-        <span className="term-dot" />
-        <span className="term-dot b" />
-        <span className="term-dot c" />
-        <span className="term-title">~ / neige · today</span>
-        {onReset && (
-          <button
-            className="surf-term-host"
-            onClick={onReset}
-            title="Forget the cached Today terminal and bootstrap a fresh one"
-            style={{
-              background: 'transparent',
-              border: 'none',
-              cursor: 'pointer',
-              font: 'inherit',
-              color: 'inherit',
-              padding: 0,
-            }}
-          >
-            reset ↻
-          </button>
-        )}
-      </div>
+      <CardHead
+        className="surf-term-head"
+        decor={
+          <>
+            <span className="term-dot" />
+            <span className="term-dot b" />
+            <span className="term-dot c" />
+          </>
+        }
+        title={<span className="term-title">~ / neige · today</span>}
+        status={
+          onReset ? (
+            <button
+              className="surf-term-host"
+              onClick={onReset}
+              title="Forget the cached Today terminal and bootstrap a fresh one"
+              style={{
+                background: 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+                font: 'inherit',
+                color: 'inherit',
+                padding: 0,
+              }}
+            >
+              reset ↻
+            </button>
+          ) : undefined
+        }
+      />
       <div className="surf-term-body" style={{ padding: 0 }}>
         {error ? (
           <div className="surf-term-line" style={{ padding: 16, color: 'var(--warn, #c00)' }}>
