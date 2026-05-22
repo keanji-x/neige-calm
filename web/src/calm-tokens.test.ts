@@ -69,6 +69,26 @@ const CONCRETE_SURFACE_TOKENS = [
   '--surface-panel-head',
 ] as const;
 
+// Prose / code surface tokens (slice 3c of #137). Same shape contract as
+// CONCRETE_SURFACE_TOKENS — oklch literals in both `:root` and dark — but
+// listed separately so the slice-3c migration is auditable as its own
+// chunk in the test inventory.
+const PROSE_SURFACE_TOKENS = [
+  '--surface-terminal',
+  '--surface-code',
+] as const;
+
+// Diff line palette (slice 3c of #137). Background + text pairs for k-add /
+// k-rm rows. Backgrounds carry the 4-arg oklch(... / alpha) form so they
+// blend over the card surface; text values are deliberately separate from
+// --success / --error (slice 3b) — diff contexts want denser hues.
+const DIFF_COLOR_TOKENS = [
+  '--diff-add-bg',
+  '--diff-rm-bg',
+  '--diff-add-text',
+  '--diff-rm-text',
+] as const;
+
 // Alias tokens: `var(--other)` references declared once in `:root`. They
 // MUST NOT have a dark override — the underlying positional token already
 // swaps, and a dark override would just re-pin the alias to a different
@@ -242,6 +262,54 @@ describe('calm.css token graph: positional tokens', () => {
 
 describe('calm.css token graph: concrete surface tokens', () => {
   for (const name of CONCRETE_SURFACE_TOKENS) {
+    it(`${name} has matching oklch() literals in :root and dark`, () => {
+      const light = rootDecls.get(name);
+      const dark = darkDecls.get(name);
+      expect(light, `${name} missing from :root`).toBeDefined();
+      expect(dark, `${name} missing from [data-theme="dark"]`).toBeDefined();
+      expect(
+        light,
+        `${name} light value should be an oklch() literal, got: ${light}`,
+      ).toMatch(OKLCH_LITERAL);
+      expect(
+        dark,
+        `${name} dark value should be an oklch() literal (not a var alias), got: ${dark}`,
+      ).toMatch(OKLCH_LITERAL);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// (c2) Prose / code surface tokens (slice 3c of #137): same shape contract
+// as CONCRETE_SURFACE_TOKENS — oklch literal in both blocks, theme-varying.
+// ---------------------------------------------------------------------------
+
+describe('calm.css token graph: prose / code surface tokens', () => {
+  for (const name of PROSE_SURFACE_TOKENS) {
+    it(`${name} has matching oklch() literals in :root and dark`, () => {
+      const light = rootDecls.get(name);
+      const dark = darkDecls.get(name);
+      expect(light, `${name} missing from :root`).toBeDefined();
+      expect(dark, `${name} missing from [data-theme="dark"]`).toBeDefined();
+      expect(
+        light,
+        `${name} light value should be an oklch() literal, got: ${light}`,
+      ).toMatch(OKLCH_LITERAL);
+      expect(
+        dark,
+        `${name} dark value should be an oklch() literal (not a var alias), got: ${dark}`,
+      ).toMatch(OKLCH_LITERAL);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// (c3) Diff line palette tokens (slice 3c of #137): bg + text pairs, each
+// theme-varying, each an oklch literal.
+// ---------------------------------------------------------------------------
+
+describe('calm.css token graph: diff color tokens', () => {
+  for (const name of DIFF_COLOR_TOKENS) {
     it(`${name} has matching oklch() literals in :root and dark`, () => {
       const light = rootDecls.get(name);
       const dark = darkDecls.get(name);

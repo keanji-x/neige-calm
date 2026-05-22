@@ -86,6 +86,27 @@
   --error-text: oklch(60% 0.15 25);  /* form validation, dirpicker errors */
   --warn-border: oklch(85% 0.05 30); /* .attn.warn accent border */
 
+  /* Prose / code surfaces (slice 3c of #137). Two concrete surface tokens
+     for persistent (non-hover) backgrounds.
+       --surface-terminal — terminal card body (.term, .surf-term). Rounds
+         the previously-distinct .surf-term value (0.2%/0.5% L) into one
+         shared surface; the delta is invisible.
+       --surface-code — persistent inline-code background in prose
+         contexts (.note p code, .doc-body p code, .surf-term-line code).
+         Distinct from hover overlays (those alias --surface-hover-overlay).
+  */
+  --surface-terminal: oklch(99% 0.003 240);
+  --surface-code:     oklch(0% 0 0 / 0.04);
+
+  /* Diff line palette (slice 3c of #137). Backgrounds use the 4-arg
+     oklch(... / alpha) form to blend over the card surface. Text colors
+     are deliberately separate from --success/--error (slice 3b) — diff
+     contexts want a darker, denser hue (40%/45% L vs 54% for status). */
+  --diff-add-bg:   oklch(96% 0.05 145 / 0.45);
+  --diff-rm-bg:    oklch(96% 0.05 25 / 0.45);
+  --diff-add-text: oklch(40% 0.11 145);
+  --diff-rm-text:  oklch(45% 0.13 25);
+
   /* generous shape */
   --r: 14px;
   --shadow: 0 1px 2px rgba(20,30,55,.04), 0 12px 36px rgba(20,30,55,.06);
@@ -113,6 +134,12 @@
   --cal-event-waiting-bg: oklch(24% 0.03 30);
   --error-text: oklch(74% 0.14 25);   /* aligned with #137 3b standardization for dark status */
   --warn-border: oklch(40% 0.05 30);  /* no existing .attn.warn dark override on main; derived from --warn dark */
+  --surface-terminal: oklch(18% 0.009 245);
+  --surface-code:     oklch(100% 0 0 / 0.06);
+  --diff-add-bg:      oklch(28% 0.05 145 / 0.5);
+  --diff-rm-bg:       oklch(28% 0.05 25 / 0.5);
+  --diff-add-text:    oklch(74% 0.14 145);
+  --diff-rm-text:     oklch(74% 0.14 25);
   --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 36px rgba(0,0,0,.4);
 }
 /* stylelint-enable color-no-hex, declaration-property-value-disallowed-list */
@@ -1493,14 +1520,12 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .term {
   border: 1px solid var(--hairline);
   border-radius: var(--r);
-  /* stylelint-disable-next-line declaration-property-value-disallowed-list */
-  background: oklch(99% 0.003 240);
+  background: var(--surface-terminal);
   margin-bottom: 24px;
   overflow: hidden;
   box-shadow: var(--shadow);
 }
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-[data-theme="dark"] .term { background: oklch(18% 0.009 245); }
+[data-theme="dark"] .term { background: var(--surface-terminal); }
 .term-head {
   display: flex; align-items: center; gap: 6px;
   padding: 9px 12px;
@@ -1674,14 +1699,12 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .note p code {
   font-family: var(--font-code);
   font-size: var(--text-sm);
-  /* stylelint-disable-next-line declaration-property-value-disallowed-list */
-  background: oklch(0% 0 0 / 0.04);
+  background: var(--surface-code);
   padding: 1px 6px;
   border-radius: 5px;
   color: var(--text);
 }
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-[data-theme="dark"] .note p code { background: oklch(100% 0 0 / 0.06); }
+[data-theme="dark"] .note p code { background: var(--surface-code); }
 
 /* ===== Doc card ===== */
 .doc {
@@ -1717,14 +1740,12 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .doc-body p code {
   font-family: var(--font-code);
   font-size: var(--text-sm);
-  /* stylelint-disable-next-line declaration-property-value-disallowed-list */
-  background: oklch(0% 0 0 / 0.04);
+  background: var(--surface-code);
   padding: 1px 6px;
   border-radius: 5px;
   color: var(--text);
 }
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-[data-theme="dark"] .doc-body p code { background: oklch(100% 0 0 / 0.06); }
+[data-theme="dark"] .doc-body p code { background: var(--surface-code); }
 
 /* ===== Git card ===== */
 .git {
@@ -1834,27 +1855,19 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   display: block;
 }
 .diff-gutter { color: var(--text-4); user-select: none; }
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-.diff-line.k-add { background: oklch(96% 0.05 145 / 0.45); }
+.diff-line.k-add { background: var(--diff-add-bg); }
 .diff-line.k-add .diff-gutter,
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-.diff-line.k-add .diff-text { color: oklch(40% 0.11 145); }
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-.diff-line.k-rm  { background: oklch(96% 0.05 25 / 0.45); }
+.diff-line.k-add .diff-text { color: var(--diff-add-text); }
+.diff-line.k-rm  { background: var(--diff-rm-bg); }
 .diff-line.k-rm .diff-gutter,
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-.diff-line.k-rm .diff-text  { color: oklch(45% 0.13 25); }
+.diff-line.k-rm .diff-text  { color: var(--diff-rm-text); }
 .diff-line.k-ctx .diff-text { color: var(--text-2); }
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-[data-theme="dark"] .diff-line.k-add { background: oklch(28% 0.05 145 / 0.5); }
+[data-theme="dark"] .diff-line.k-add { background: var(--diff-add-bg); }
 [data-theme="dark"] .diff-line.k-add .diff-gutter,
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-[data-theme="dark"] .diff-line.k-add .diff-text { color: oklch(78% 0.14 145); }
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-[data-theme="dark"] .diff-line.k-rm  { background: oklch(28% 0.05 25 / 0.5); }
+[data-theme="dark"] .diff-line.k-add .diff-text { color: var(--diff-add-text); }
+[data-theme="dark"] .diff-line.k-rm  { background: var(--diff-rm-bg); }
 [data-theme="dark"] .diff-line.k-rm .diff-gutter,
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-[data-theme="dark"] .diff-line.k-rm .diff-text  { color: oklch(78% 0.14 25); }
+[data-theme="dark"] .diff-line.k-rm .diff-text  { color: var(--diff-rm-text); }
 
 /* ===== Plan card ===== */
 .plan-card {
@@ -2082,13 +2095,11 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   flex-direction: column;
   border: 1px solid var(--hairline);
   border-radius: var(--r);
-  /* stylelint-disable-next-line declaration-property-value-disallowed-list */
-  background: oklch(99.2% 0.003 240);
+  background: var(--surface-terminal);
   box-shadow: var(--shadow);
   overflow: hidden;
 }
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-[data-theme="dark"] .surf-term { background: oklch(17.5% 0.009 245); }
+[data-theme="dark"] .surf-term { background: var(--surface-terminal); }
 
 .surf-term-head {
   display: flex; align-items: center; gap: 6px;
@@ -2132,14 +2143,12 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .surf-term-line strong { color: var(--text); font-weight: 600; }
 .surf-term-line code {
   font-family: var(--font-code);
-  /* stylelint-disable-next-line declaration-property-value-disallowed-list */
-  background: oklch(0% 0 0 / 0.05);
+  background: var(--surface-code);
   padding: 0 5px;
   border-radius: 4px;
   color: var(--text);
 }
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-[data-theme="dark"] .surf-term-line code { background: oklch(100% 0 0 / 0.06); }
+[data-theme="dark"] .surf-term-line code { background: var(--surface-code); }
 .surf-term-line .dim { color: var(--text-3); }
 
 .surf-cmd {
