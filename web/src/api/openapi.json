@@ -2568,7 +2568,7 @@
       },
       "RequestTheme": {
         "type": "object",
-        "description": "Wire shape of `NewCodexCardBody.theme`. Matches the\n`calm_session::TerminalTheme` value type one-for-one — duplicated\nhere so the route can keep its own `ToSchema` derive (the\n`calm_session` crate is utoipa-free).",
+        "description": "Wire shape of `NewCodexCardBody.theme` / `NewWave.theme`. Matches the\n`calm_session::TerminalTheme` value type one-for-one — duplicated\nhere so the route can keep its own `ToSchema` derive (the\n`calm_session` crate is utoipa-free).",
         "required": [
           "fg",
           "bg"

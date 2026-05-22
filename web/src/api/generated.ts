@@ -824,7 +824,7 @@ export interface components {
             version: string;
         };
         /**
-         * @description Wire shape of `NewCodexCardBody.theme`. Matches the
+         * @description Wire shape of `NewCodexCardBody.theme` / `NewWave.theme`. Matches the
          *     `calm_session::TerminalTheme` value type one-for-one — duplicated
          *     here so the route can keep its own `ToSchema` derive (the
          *     `calm_session` crate is utoipa-free).
