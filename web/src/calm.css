@@ -257,6 +257,24 @@
   --motion-slow:    1s;
   --motion-pulse:   2.2s;
 
+  /* Card head metrics — shared by `.card-head` (the cross-card base used by
+     Codex + Terminal today; Plan / Surf-Term still on their bespoke heads).
+     Padding and gap are the only structural numbers cards agree on; height
+     falls out of the flex + padding combo. No dark-mode override —
+     spacing tokens are structural, not visual.
+
+     Expressed as references into the `--space-*` scale (same back-compat-
+     alias pattern as `--r → --radius-xl`) so the card-head vocabulary
+     stays anchored to the 4px-grid #170 established. Pre-#170 these were
+     9px/14px/10px; the v-padding lands on --space-5 (10px) — a deliberate
+     +1px drift consistent with #170's intentional lossiness on odd-pixel
+     sites (the head's overall height is still tuned by the flex + padding
+     combo and visual review against the old 9px showed no perceptible
+     change at typical card density). */
+  --card-head-pad-v: var(--space-5);
+  --card-head-pad-h: var(--space-7);
+  --card-head-gap:   var(--space-5);
+
   /* generous shape */
   /* Aliased to --radius-xl (10px). Pre-#165 this was a literal 14px used
      on the card-tier surfaces (.attn, .modal-panel, .codex-card, .term,
@@ -1573,6 +1591,57 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 .dirpicker-select:disabled { opacity: 0.5; cursor: not-allowed; }
 
+/* ===== Card head (shared) =====
+   Base skeleton for card headers. Today it's adopted by `.codex-card-head`
+   and `.term-head`; `.plan-card-head` and `.surf-term-head` are still on
+   their bespoke padding/font and will migrate in a follow-up.
+   Card-specific selectors layer character on top:
+     - `.term-head .card-head-title` keeps the uppercase / letter-spacing /
+       600-weight typography (the Terminal head's signature look).
+   The base reserves right-padding for the absolutely-positioned
+   `.card-grid-close` X button (it lives on `.card-slot`, not in the head,
+   so it overlays every card's head's right edge on hover) — without this
+   any right-aligned head content (Codex status bar, Terminal `· live`
+   pip) would slide under the X.
+   `.card-head-decor` is the optional left-of-title decoration slot (the
+   three CRT dots on Terminal); future heads that want similar treatment
+   should reuse it instead of inventing a new wrapper class. */
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--card-head-gap);
+  padding: var(--card-head-pad-v) var(--card-head-pad-h);
+  /* Reserve space for absolute .card-grid-close (top:6 right:8 width:22).
+     38px is deliberately off-scale — it tracks the absolutely-positioned X
+     button's geometry, not the rhythm grid, same as the pre-#170 outlier
+     #170 documented on `.codex-card-head` before this slice folded that
+     selector into the base. */
+  /* stylelint-disable-next-line declaration-property-value-disallowed-list */
+  padding-right: 38px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface-card);
+}
+.card-head-title {
+  flex: 0 0 auto;
+  font-size: var(--text-base);
+  font-weight: 500;
+  color: var(--text);
+}
+.card-head-status {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  justify-content: flex-end;
+  min-width: 0;
+}
+.card-head-decor {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex: 0 0 auto;
+}
+
 /* ===== Codex card ===== */
 .codex-card {
   border: 1px solid var(--hairline);
@@ -1583,22 +1652,10 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   display: flex; flex-direction: column;
   overflow: hidden;
 }
-.codex-card-head {
-  display: flex; align-items: center; gap: var(--space-6);
-  /* right-padding leaves room for the absolutely-positioned `.card-grid-close`
-     X button (top:6 right:8 width:22) so the FSM status dot can sit flush
-     against the head's content edge without sliding under the X. The 38px
-     value is deliberately off-scale (between --space-12 and a hypothetical
-     space-13) — it tracks the X button's geometry, not the rhythm grid. */
-  /* stylelint-disable-next-line declaration-property-value-disallowed-list */
-  padding: var(--space-3) 38px var(--space-3) var(--space-6);
-  border-bottom: 1px solid var(--hairline);
-  background: var(--surface-card);
-  font-size: var(--text-base); font-weight: 500;
-  min-height: 28px;
-}
+/* `.card-head` already supplies display/align/gap/padding (including the
+   right-padding reserve for `.card-grid-close`)/border/background/font
+   sizing — Codex has no further head-level overrides. */
 [data-theme="dark"] .codex-card-head { background: var(--surface-card); }
-.codex-card-title { flex: 0 0 auto; }
 
 /* Status bar: latest hook event + working/idle dot. Takes up the rest of
    the header so the label can ellipsis without pushing the dot. */
@@ -1676,13 +1733,9 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   box-shadow: var(--shadow);
 }
 [data-theme="dark"] .term { background: var(--surface-terminal); }
-.term-head {
-  display: flex; align-items: center; gap: var(--space-3);
-  padding: var(--space-5) var(--space-6);
-  border-bottom: 1px solid var(--hairline);
-  background: var(--surface-card);
-}
-[data-theme="dark"] .term-head { background: var(--surface-card); }
+/* `.card-head` covers display/align/gap/padding/border/background; its
+   `background: var(--surface-card)` is dark-aware, so no separate
+   `[data-theme="dark"] .term-head` override is needed here. */
 .term-dot {
   width: 9px; height: 9px; border-radius: var(--radius-pill);
   background: var(--term-dot-light);
@@ -1692,6 +1745,14 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 [data-theme="dark"] .term-dot   { background: var(--term-dot-dark); }
 [data-theme="dark"] .term-dot.b { background: var(--term-dot-medium); }
 [data-theme="dark"] .term-dot.c { background: var(--term-dot-light); }
+/* Terminal head keeps its "CRT typography" character — uppercase, wider
+   letter-spacing, smaller size, heavier weight — over the unified
+   `.card-head-title` base. `.term-title` is still applied standalone on
+   `.surf-term-head` (out of scope for this slice), so this stays the
+   single source of truth: on the dual-classed Terminal title both
+   `.card-head-title` (defined earlier in the file) and `.term-title`
+   apply with equal specificity, and source-order tie-break lets these
+   properties win — uppercase/letter-spacing/text-xs/600 survive. */
 .term-title {
   margin-left: var(--space-3);
   font-size: var(--text-xs);
@@ -1700,6 +1761,11 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   color: var(--text-3);
   font-weight: 600;
 }
+/* When `.term-title` co-occurs with `.card-head-decor` (the dots wrapper)
+   as flex children of `.card-head`, the parent's `gap: var(--card-head-gap)`
+   already provides spacing — drop the legacy `margin-left: 6px` that
+   existed for the dots-as-siblings layout. */
+.term-head .term-title { margin-left: var(--space-0); }
 .term-body {
   font-family: var(--font-code);
   font-size: var(--text-sm);
