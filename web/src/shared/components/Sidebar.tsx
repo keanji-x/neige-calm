@@ -1,5 +1,6 @@
 import { useRef } from 'react';
 import { useState } from '../state';
+import { Icon } from '../../Icon';
 import type { Cove, Route, Wave } from '../../types';
 
 // ---------------- Sidebar ----------------
@@ -10,6 +11,7 @@ export function Sidebar({
   route,
   onGo,
   onCreateCove,
+  onOpenSettings,
 }: {
   coves: Cove[];
   waves: Wave[];
@@ -20,6 +22,9 @@ export function Sidebar({
    *  cove has no other home. Wave creation, by contrast, lives inside
    *  CovePage where the cove context is already established. */
   onCreateCove?: (name: string, color: string) => void | Promise<void>;
+  /** Open the app-global settings page. Optional so tests / sub-trees that
+   *  render the sidebar without a router don't have to wire it up. */
+  onOpenSettings?: () => void;
 }) {
   const waitingWaves = waves.filter((w) => w.status === 'waiting');
   // Sub-landmarks inside the outer <aside aria-label="Navigation">:
@@ -112,6 +117,16 @@ export function Sidebar({
           Yuki K.
           <div className="sub">Pro · 5 agents online</div>
         </span>
+        {onOpenSettings && (
+          <button
+            className="me-settings"
+            onClick={onOpenSettings}
+            title="Settings"
+            aria-label="Open settings"
+          >
+            <Icon n="gear" s={14} />
+          </button>
+        )}
       </div>
     </aside>
   );
