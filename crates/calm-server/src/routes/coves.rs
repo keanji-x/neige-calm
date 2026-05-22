@@ -13,14 +13,18 @@
 //! sidebar; opt back into the full list via `?include_system=true`.
 //! `POST /api/coves` never accepts a `kind` field — every cove created
 //! through the regular surface lands as `User`. The system cove is minted
-//! exclusively via the idempotent `POST /api/coves/system` upsert.
+//! exclusively via the idempotent `POST /api/coves/system` upsert, and
+//! `DELETE /api/coves/{id}` refuses (`403 forbidden`) when the target row
+//! has `kind = 'system'` — system scaffolding is kernel-owned and not
+//! user-deletable.
 
 use crate::actor::Actor;
 use crate::db::sqlite::{cove_create_system_tx, cove_create_tx, cove_delete_tx, cove_update_tx};
 use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
-use crate::model::{Cove, CovePatch, NewCove};
+use crate::ids::ActorId;
+use crate::model::{Cove, CoveKind, CovePatch, NewCove};
 use crate::state::AppState;
 use axum::{
     Json, Router,
@@ -160,7 +164,16 @@ pub(crate) async fn create_cove(
 /// reserved-name policy).
 pub(crate) async fn get_or_create_system_cove(
     State(s): State<AppState>,
-    actor: Actor,
+    // Note: `Actor` is extracted to keep this handler consistent with the
+    // rest of the cove surface (it forces the middleware to validate the
+    // `X-Calm-Actor` header), but the value is intentionally **not**
+    // propagated into the event log. The system cove is kernel-owned
+    // scaffolding — a `cove.updated` event for the mint stamped with
+    // `User` would be untruthful and would let a future audit pipeline
+    // misattribute the row to the human caller. We hardcode
+    // `ActorId::Kernel` below, mirroring the convention the FSM projector
+    // and terminal sweeper already use for server-internal lifecycle.
+    _actor: Actor,
 ) -> Result<(StatusCode, Json<Cove>)> {
     // Existence check first — the common path is "system cove already
     // exists, just return it" (every Today-page load after the first
@@ -171,10 +184,12 @@ pub(crate) async fn get_or_create_system_cove(
     // Mint the row inside a `write_with_event` closure so the create
     // emits a `cove.updated` envelope on the bus, just like the regular
     // `POST /api/coves`. Scope is `System` (same rationale as
-    // `create_cove`: the cove id is minted inside the closure).
+    // `create_cove`: the cove id is minted inside the closure). Actor is
+    // hardcoded to `ActorId::Kernel` — see the `_actor` extractor doc
+    // above for the rationale.
     let mint_result = write_with_event_typed(
         s.repo.as_ref(),
-        actor.to_actor_id(),
+        ActorId::Kernel,
         EventScope::System,
         None,
         &s.events,
@@ -260,6 +275,7 @@ pub(crate) async fn update_cove(
     params(("id" = String, Path, description = "Cove id")),
     responses(
         (status = 204, description = "Cove deleted"),
+        (status = 403, description = "Cove is system-owned and cannot be deleted via REST", body = ErrorBody),
         (status = 404, description = "Cove not found", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
@@ -269,6 +285,25 @@ pub(crate) async fn delete_cove(
     actor: Actor,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
+    // Issue #175 followup — refuse to delete the singleton system cove
+    // via the REST surface. The underlying `cove_delete_tx` is a low-level
+    // primitive that trusts its caller (the same helper is reachable from
+    // server-internal sites like replay fixtures); the policy decision
+    // "system coves are not user-deletable" lives at the handler boundary
+    // here. We pre-check via `cove_get` rather than threading the kind
+    // through `_tx`'s WHERE clause because:
+    //   * the read is cheap (single row, indexed by PK),
+    //   * a transactional check would still need this surface to translate
+    //     "no row affected because kind='system'" into a 403 rather than
+    //     the txn's natural 404 — same code-shape, same trip to the DB,
+    //     and the handler check fails fast without opening a write txn.
+    if let Some(target) = s.repo.cove_get(&id).await?
+        && target.kind == CoveKind::System
+    {
+        return Err(CalmError::Forbidden(format!(
+            "cove {id} is system-owned and cannot be deleted via the public API"
+        )));
+    }
     let scope = EventScope::Cove {
         cove: id.clone().into(),
     };
