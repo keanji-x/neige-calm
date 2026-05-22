@@ -17,7 +17,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
-import { RefreshRequiredOverlay } from './providers';
+import {
+  DB_INSTANCE_ID_STORAGE_KEY,
+  RefreshRequiredOverlay,
+  ServerCompatGate,
+} from './providers';
+import { IDB_DB_NAME } from '../api/persistConfig';
 import {
   WEB_COMPAT_VERSION,
   isCompatible,
@@ -34,6 +39,7 @@ function makeServerInfo(over: Partial<ServerVersionInfo> = {}): ServerVersionInf
     mcpProtocolVersion: '2025-11-25',
     minWebCompatVersion: WEB_COMPAT_VERSION,
     buildSha: null,
+    dbInstanceId: '00000000-0000-4000-8000-000000000000',
     ...over,
   };
 }
@@ -83,11 +89,24 @@ function renderWithClient(ui: React.ReactNode) {
 
 beforeEach(() => {
   cleanup();
+  // Ensure cross-test isolation for the DB-instance check.
+  try {
+    localStorage.removeItem(DB_INSTANCE_ID_STORAGE_KEY);
+    localStorage.removeItem('calm:sync:cursor');
+  } catch {
+    /* jsdom env always has localStorage; guard anyway */
+  }
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  try {
+    localStorage.removeItem(DB_INSTANCE_ID_STORAGE_KEY);
+    localStorage.removeItem('calm:sync:cursor');
+  } catch {
+    /* */
+  }
 });
 
 describe('RefreshRequiredOverlay', () => {
@@ -158,6 +177,133 @@ describe('ServerCompatGate (via TestCompatGate)', () => {
       expect(screen.getByRole('dialog')).toBeInTheDocument();
     });
     expect(screen.getByText('Please refresh')).toBeInTheDocument();
+    expect(screen.queryByTestId('app')).not.toBeInTheDocument();
+  });
+});
+
+// --- DB instance id (cache buster) -------------------------------------
+//
+// These tests exercise the real `ServerCompatGate` (not the
+// `TestCompatGate` mirror) under a bare QueryClient, because the
+// db-instance-id branch is the contract under test and we want the
+// production code path to be the thing that runs. We mock
+// `window.location.reload` (jsdom makes `location` non-writable so we
+// `defineProperty` instead of a plain assignment) and `indexedDB.
+// deleteDatabase` so the test stays hermetic.
+
+const ID_A = '11111111-1111-4111-8111-111111111111';
+const ID_B = '22222222-2222-4222-8222-222222222222';
+
+function installLocationReloadSpy() {
+  const reload = vi.fn();
+  Object.defineProperty(window, 'location', {
+    configurable: true,
+    value: { ...window.location, reload },
+  });
+  return reload;
+}
+
+function installIndexedDBSpy() {
+  const deleteDatabase = vi.fn().mockReturnValue({} as IDBOpenDBRequest);
+  Object.defineProperty(window, 'indexedDB', {
+    configurable: true,
+    value: { deleteDatabase },
+  });
+  return deleteDatabase;
+}
+
+describe('ServerCompatGate — dbInstanceId cache bust', () => {
+  it('stores the id on first boot and renders children (no clear, no reload)', async () => {
+    expect(localStorage.getItem(DB_INSTANCE_ID_STORAGE_KEY)).toBeNull();
+
+    mockFetchVersion(makeServerInfo({ dbInstanceId: ID_A }));
+    const reload = installLocationReloadSpy();
+    const deleteIDB = installIndexedDBSpy();
+
+    renderWithClient(
+      <ServerCompatGate>
+        <div data-testid="app">app body</div>
+      </ServerCompatGate>,
+    );
+
+    // First the children paint (loading state still renders them, since
+    // we only block on `isCompatible`). Then the useEffect runs once
+    // the version query resolves and stores the id.
+    await waitFor(() => {
+      expect(localStorage.getItem(DB_INSTANCE_ID_STORAGE_KEY)).toBe(ID_A);
+    });
+    expect(screen.getByTestId('app')).toBeInTheDocument();
+    expect(reload).not.toHaveBeenCalled();
+    expect(deleteIDB).not.toHaveBeenCalled();
+  });
+
+  it('renders children without reloading when the stored id matches', async () => {
+    localStorage.setItem(DB_INSTANCE_ID_STORAGE_KEY, ID_A);
+    // Pre-existing WS cursor must NOT be wiped on the matching path —
+    // we'd lose every event since boot otherwise.
+    localStorage.setItem('calm:sync:cursor', '42');
+
+    mockFetchVersion(makeServerInfo({ dbInstanceId: ID_A }));
+    const reload = installLocationReloadSpy();
+    const deleteIDB = installIndexedDBSpy();
+
+    renderWithClient(
+      <ServerCompatGate>
+        <div data-testid="app">app body</div>
+      </ServerCompatGate>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('app')).toBeInTheDocument();
+    });
+    // Even after the query has resolved + the effect has had a chance
+    // to run, nothing about persistent state should change on the
+    // matching path.
+    expect(localStorage.getItem(DB_INSTANCE_ID_STORAGE_KEY)).toBe(ID_A);
+    expect(localStorage.getItem('calm:sync:cursor')).toBe('42');
+    expect(reload).not.toHaveBeenCalled();
+    expect(deleteIDB).not.toHaveBeenCalled();
+  });
+
+  it('clears qc / WS cursor / IDB and reloads when the id has changed', async () => {
+    // Simulate a previous server boot that minted ID_A.
+    localStorage.setItem(DB_INSTANCE_ID_STORAGE_KEY, ID_A);
+    localStorage.setItem('calm:sync:cursor', '999');
+
+    // Now the server reports ID_B — the DB was reset under us.
+    mockFetchVersion(makeServerInfo({ dbInstanceId: ID_B }));
+    const reload = installLocationReloadSpy();
+    const deleteIDB = installIndexedDBSpy();
+
+    // Render with a client that has a known query in cache, so we can
+    // verify `qc.clear()` actually fires.
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+    client.setQueryData(['coves'], [{ id: 'stale-cove-from-previous-db' }]);
+    expect(client.getQueryData(['coves'])).toBeDefined();
+
+    render(
+      <QueryClientProvider client={client}>
+        <ServerCompatGate>
+          <div data-testid="app">app body</div>
+        </ServerCompatGate>
+      </QueryClientProvider>,
+    );
+
+    // Wait for the bust path to run.
+    await waitFor(() => {
+      expect(reload).toHaveBeenCalledTimes(1);
+    });
+
+    // All three persisted artifacts were cleared / rewritten.
+    expect(client.getQueryData(['coves'])).toBeUndefined();
+    expect(localStorage.getItem('calm:sync:cursor')).toBeNull();
+    expect(deleteIDB).toHaveBeenCalledWith(IDB_DB_NAME);
+    expect(localStorage.getItem(DB_INSTANCE_ID_STORAGE_KEY)).toBe(ID_B);
+
+    // Children are NOT rendered during the in-flight reload — we paint
+    // null so the user doesn't see an empty-cache flash.
     expect(screen.queryByTestId('app')).not.toBeInTheDocument();
   });
 });

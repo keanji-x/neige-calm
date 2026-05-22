@@ -60,7 +60,7 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
-    // All six fields present.
+    // All seven fields present.
     let obj = v.as_object().expect("response is a JSON object");
     for key in [
         "kernelVersion",
@@ -69,6 +69,7 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         "mcpProtocolVersion",
         "minWebCompatVersion",
         "buildSha",
+        "dbInstanceId",
     ] {
         assert!(obj.contains_key(key), "missing field: {key}");
     }
@@ -87,6 +88,18 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert!(v["mcpProtocolVersion"].is_string());
     assert!(v["minWebCompatVersion"].is_number());
     assert!(v["buildSha"].is_null() || v["buildSha"].is_string());
+    assert!(v["dbInstanceId"].is_string());
+
+    // `dbInstanceId` is a UUID v4 (the 13th hex char is `4`, the 17th
+    // is one of `8/9/a/b`). Cheap shape check — the per-process
+    // uniqueness contract is exercised by the dedicated test below.
+    let id = v["dbInstanceId"].as_str().unwrap();
+    let parsed = uuid::Uuid::parse_str(id).expect("dbInstanceId is a valid UUID");
+    assert_eq!(
+        parsed.get_version_num(),
+        4,
+        "dbInstanceId must be UUID v4, got {parsed}",
+    );
 
     // Source agreement.
     assert_eq!(
@@ -113,5 +126,49 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
+    );
+}
+
+/// `dbInstanceId` MUST be unique per `AppState` construction — that's the
+/// whole correctness contract the web client relies on for IDB cache
+/// busting on DB resets. Two fresh `AppState`s (= two simulated server
+/// boots) must produce two distinct ids; the same `AppState` queried
+/// twice must produce the same id.
+#[tokio::test]
+async fn db_instance_id_changes_across_boots_stable_within_boot() {
+    async fn hit(state: AppState) -> String {
+        let app = axum::Router::new()
+            .merge(routes::router())
+            .with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/version")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        v["dbInstanceId"].as_str().unwrap().to_string()
+    }
+
+    // Two boots → two distinct ids.
+    let boot_a = fresh_state().await;
+    let boot_b = fresh_state().await;
+    let id_a = hit(boot_a.clone()).await;
+    let id_b = hit(boot_b).await;
+    assert_ne!(
+        id_a, id_b,
+        "dbInstanceId must differ across server boots (got the same id twice)",
+    );
+
+    // Same boot → stable id across requests.
+    let id_a_again = hit(boot_a).await;
+    assert_eq!(
+        id_a, id_a_again,
+        "dbInstanceId must be stable within a single boot",
     );
 }

@@ -39,6 +39,13 @@ export const WEB_COMPAT_VERSION = 2;
  * (rather than reused from `generated.ts`) so the compat check has a
  * narrow, hand-maintained source of truth and isn't tangled with the
  * full OpenAPI surface during refactors.
+ *
+ * `dbInstanceId` is a UUID v4 minted once per server-process boot. The
+ * client uses it to detect when the server's underlying sqlite DB has
+ * been recreated (e.g. `make dev RESET_DB=1` or a fresh-migrations branch
+ * swap) and busts its persisted React Query cache + WS event cursor on
+ * mismatch — see `ServerCompatGate` in `app/providers.tsx`. Additive on
+ * the wire; older frontends ignore it without consequence.
  */
 export type ServerVersionInfo = {
   kernelVersion: string;
@@ -47,6 +54,7 @@ export type ServerVersionInfo = {
   mcpProtocolVersion: string;
   minWebCompatVersion: number;
   buildSha: string | null;
+  dbInstanceId: string;
 };
 
 /** Fetch the server's `/api/version` payload. Throws on non-2xx. */

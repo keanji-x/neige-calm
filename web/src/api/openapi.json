@@ -2592,7 +2592,8 @@
           "apiVersion",
           "syncEventVersion",
           "mcpProtocolVersion",
-          "minWebCompatVersion"
+          "minWebCompatVersion",
+          "dbInstanceId"
         ],
         "properties": {
           "apiVersion": {
@@ -2603,6 +2604,10 @@
               "string",
               "null"
             ]
+          },
+          "dbInstanceId": {
+            "type": "string",
+            "description": "UUID v4 minted once per process boot. See module doc."
           },
           "kernelVersion": {
             "type": "string"

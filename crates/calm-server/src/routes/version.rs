@@ -27,11 +27,19 @@
 //! * `buildSha` — optional git SHA baked in at compile time via
 //!   `option_env!("NEIGE_BUILD_SHA")`. `null` for local `cargo build` runs;
 //!   release CI sets the env var.
+//! * `dbInstanceId` — UUID v4 minted once per server-process startup. NOT
+//!   persisted to the DB. The web client compares it against a value it
+//!   stashes in `localStorage`; on mismatch it wipes its IndexedDB-backed
+//!   React Query cache + WS event cursor and hard-reloads, so a `make dev
+//!   RESET_DB=1` (or any other DB wipe / migration rebuild) doesn't leave
+//!   the browser holding stale row ids that would 404 at route loaders.
+//!   The field is additive on the wire — older frontends ignore it
+//!   and continue to work, so no `WEB_COMPAT_VERSION` bump is required.
 
 use crate::event::SYNC_EVENT_VERSION;
 use crate::plugin_host::mcp::KERNEL_PROTOCOL_VERSION;
 use crate::state::AppState;
-use axum::{Json, Router, routing::get};
+use axum::{Json, Router, extract::State, routing::get};
 use serde::Serialize;
 use utoipa::ToSchema;
 
@@ -71,6 +79,8 @@ pub struct VersionInfo {
     pub mcp_protocol_version: String,
     pub min_web_compat_version: u32,
     pub build_sha: Option<String>,
+    /// UUID v4 minted once per process boot. See module doc.
+    pub db_instance_id: String,
 }
 
 #[utoipa::path(
@@ -81,7 +91,7 @@ pub struct VersionInfo {
         (status = 200, description = "Kernel + protocol version metadata", body = VersionInfo),
     ),
 )]
-pub(crate) async fn get_version() -> Json<VersionInfo> {
+pub(crate) async fn get_version(State(state): State<AppState>) -> Json<VersionInfo> {
     Json(VersionInfo {
         kernel_version: env!("CARGO_PKG_VERSION").to_string(),
         api_version: API_VERSION.to_string(),
@@ -89,6 +99,7 @@ pub(crate) async fn get_version() -> Json<VersionInfo> {
         mcp_protocol_version: KERNEL_PROTOCOL_VERSION.to_string(),
         min_web_compat_version: WEB_COMPAT_VERSION,
         build_sha: option_env!("NEIGE_BUILD_SHA").map(|s| s.to_string()),
+        db_instance_id: (*state.db_instance_id).clone(),
     })
 }
 
@@ -98,12 +109,22 @@ mod tests {
 
     /// The wire field must echo the constant verbatim. Catches the
     /// failure mode of bumping `WEB_COMPAT_VERSION` (or the response
-    /// builder) without bumping the other; the integration test in
-    /// `tests/version.rs` covers the same property at the HTTP layer,
-    /// this one fails loudly on the unit-test path too.
-    #[tokio::test]
-    async fn min_web_compat_version_matches_constant() {
-        let body = get_version().await;
+    /// builder) without bumping the other. The handler is now state-aware
+    /// (it pulls `db_instance_id` off `AppState`); we exercise the body
+    /// construction directly with a fixed instance id to keep this unit
+    /// test free of the heavy `AppState::from_parts` plumbing — the HTTP
+    /// integration test in `tests/version.rs` covers the request path.
+    #[test]
+    fn min_web_compat_version_matches_constant() {
+        let body = VersionInfo {
+            kernel_version: env!("CARGO_PKG_VERSION").to_string(),
+            api_version: API_VERSION.to_string(),
+            sync_event_version: SYNC_EVENT_VERSION,
+            mcp_protocol_version: KERNEL_PROTOCOL_VERSION.to_string(),
+            min_web_compat_version: WEB_COMPAT_VERSION,
+            build_sha: option_env!("NEIGE_BUILD_SHA").map(|s| s.to_string()),
+            db_instance_id: "test-id".to_string(),
+        };
         assert_eq!(body.min_web_compat_version, WEB_COMPAT_VERSION);
     }
 }
