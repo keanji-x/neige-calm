@@ -49,7 +49,8 @@ use std::time::Duration;
 
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
-use calm_server::event::{Event, EventBus};
+use calm_server::event::{Event, EventBus, EventScope};
+use calm_server::ids::ActorId;
 use calm_server::model::Overlay;
 use calm_server::replay::{self, Fixture};
 use calm_server::ws;
@@ -263,7 +264,7 @@ async fn record_session_roundtrips_through_loader() {
     let mut want_kinds: Vec<&str> = Vec::new();
     for ev in events {
         want_kinds.push(ev.kind_tag());
-        repo.log_pure_event("user", None, &bus, ev)
+        repo.log_pure_event(ActorId::User, EventScope::System, None, &bus, ev)
             .await
             .expect("log_pure_event");
     }
@@ -425,7 +426,7 @@ async fn reset_from_fixture_wipes_and_reseeds() {
         updated_at: 99,
     });
     let extra_id = repo
-        .log_pure_event("user", None, &bus, extra)
+        .log_pure_event(ActorId::User, EventScope::System, None, &bus, extra)
         .await
         .expect("log extra event");
     assert_eq!(extra_id, n + 1, "extra event sits at id=N+1");
@@ -457,7 +458,7 @@ async fn reset_from_fixture_wipes_and_reseeds() {
         .await
         .expect("events_since after reset");
     assert_eq!(log.len() as i64, n, "log has only the reseeded events");
-    for ((_id, _ver, ev), fix_ev) in log.iter().zip(fixture.events.iter()) {
+    for ((_id, _ver, _scope, ev), fix_ev) in log.iter().zip(fixture.events.iter()) {
         assert_eq!(
             ev.kind_tag(),
             fix_ev.kind,

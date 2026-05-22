@@ -30,7 +30,8 @@ use std::time::Duration;
 
 use calm_server::db::sqlite::{SqlxRepo, cove_create_tx};
 use calm_server::db::{Repo, write_with_event_typed};
-use calm_server::event::{Event, EventBus};
+use calm_server::event::{Event, EventBus, EventScope};
+use calm_server::ids::ActorId;
 use calm_server::model::NewCove;
 use calm_server::plugin_host::PluginHost;
 use calm_server::state::{AppState, DaemonClient};
@@ -90,15 +91,21 @@ async fn seed_three(repo: &SqlxRepo, bus: &EventBus, names: [&str; 3]) -> Vec<(i
             color: "#000".into(),
             sort: None,
         };
-        let (cove, event_id) =
-            write_with_event_typed(repo as &dyn Repo, "user", None, bus, move |tx| {
+        let (cove, event_id) = write_with_event_typed(
+            repo as &dyn Repo,
+            ActorId::User,
+            EventScope::System,
+            None,
+            bus,
+            move |tx| {
                 Box::pin(async move {
                     let c = cove_create_tx(tx, p).await?;
                     Ok((c.clone(), Event::CoveUpdated(c)))
                 })
-            })
-            .await
-            .unwrap();
+            },
+        )
+        .await
+        .unwrap();
         out.push((event_id, cove.id.to_string()));
     }
     out
@@ -209,7 +216,7 @@ async fn subscribe_without_since_only_live() {
     // canary — the client never advances its cursor off these frames,
     // which is the right behavior for unpersisted broadcasts.)
     bus.emit(
-        "user",
+        ActorId::User,
         Event::CoveUpdated(calm_server::model::Cove {
             id: "live-only".into(),
             name: "n".into(),
@@ -290,15 +297,21 @@ async fn replay_then_live_no_drop_no_dupe() {
         color: "#000".into(),
         sort: None,
     };
-    let (_c, live_id) =
-        write_with_event_typed(repo.as_ref() as &dyn Repo, "user", None, &bus, move |tx| {
+    let (_c, live_id) = write_with_event_typed(
+        repo.as_ref() as &dyn Repo,
+        ActorId::User,
+        EventScope::System,
+        None,
+        &bus,
+        move |tx| {
             Box::pin(async move {
                 let c = cove_create_tx(tx, new_cove).await?;
                 Ok((c.clone(), Event::CoveUpdated(c)))
             })
-        })
-        .await
-        .unwrap();
+        },
+    )
+    .await
+    .unwrap();
     assert!(
         live_id > seeded[2].0,
         "live event must come after seeded ids"

@@ -31,7 +31,8 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
 use super::{RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, WriteWithEventFn};
 use crate::error::{CalmError, Result};
-use crate::event::{BroadcastEnvelope, Event, EventBus, SYNC_EVENT_VERSION};
+use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VERSION};
+use crate::ids::ActorId;
 use crate::model::*;
 use crate::validation::{
     CODEX_PAYLOAD_SCHEMA_VERSION, TERMINAL_PAYLOAD_SCHEMA_VERSION, validate_card_payload,
@@ -110,27 +111,49 @@ impl SqlxRepo {
     ///
     /// Returns the auto-incremented row id, which is then stamped onto
     /// the `BroadcastEnvelope` the wrapper emits on the bus.
+    ///
+    /// PR2 of #136:
+    ///   * `actor` is typed [`ActorId`] and stored as `serde_json::to_string(&actor)`
+    ///     in the `events.actor` TEXT column (forward-compatible with future
+    ///     actor enrichment).
+    ///   * `scope` is decomposed into the four `events.scope_*` columns added
+    ///     in migration 0007. `EventScope::System` writes `scope_kind='system'`
+    ///     with NULL ancestor cols; the other variants populate whatever
+    ///     prefix of the cove → wave → card chain they carry.
     async fn event_append_in_tx(
         tx: &mut Transaction<'_, Sqlite>,
-        actor: &str,
+        actor: &ActorId,
+        scope: &EventScope,
         correlation: Option<&str>,
         event: &Event,
     ) -> Result<i64> {
         let kind = event.kind_tag();
         let payload = event.payload_value();
         let payload_text = serde_json::to_string(&payload)?;
+        let actor_text = serde_json::to_string(actor)?;
         let at = now_ms();
+        let scope_kind = scope.kind();
+        let scope_cove = scope.cove_id().map(|c| c.as_str());
+        let scope_wave = scope.wave_id().map(|w| w.as_str());
+        let scope_card = scope.card_id().map(|c| c.as_str());
         let row = sqlx::query(
-            r#"INSERT INTO events (kind, payload, actor, at, correlation, event_version)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            r#"INSERT INTO events (
+                   kind, payload, actor, at, correlation, event_version,
+                   scope_kind, scope_cove, scope_wave, scope_card
+               )
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                RETURNING id"#,
         )
         .bind(kind)
         .bind(&payload_text)
-        .bind(actor)
+        .bind(&actor_text)
         .bind(at)
         .bind(correlation)
         .bind(SYNC_EVENT_VERSION)
+        .bind(scope_kind)
+        .bind(scope_cove)
+        .bind(scope_wave)
+        .bind(scope_card)
         .fetch_one(&mut **tx)
         .await?;
         let id: i64 = row.try_get("id")?;
@@ -144,12 +167,13 @@ impl SqlxRepo {
     #[cfg(test)]
     pub async fn event_append_fixture(
         &self,
-        actor: &str,
+        actor: ActorId,
+        scope: EventScope,
         correlation: Option<&str>,
         event: &Event,
     ) -> Result<i64> {
         let mut tx = self.pool.begin().await?;
-        let id = Self::event_append_in_tx(&mut tx, actor, correlation, event).await?;
+        let id = Self::event_append_in_tx(&mut tx, &actor, &scope, correlation, event).await?;
         tx.commit().await?;
         Ok(id)
     }
@@ -614,6 +638,7 @@ pub async fn terminal_create_tx(
 /// (card without terminal, or terminal without payload link) is impossible.
 pub async fn card_with_terminal_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
+    card_id: String,
     wave_id: WaveId,
     sort: Option<f64>,
     program: String,
@@ -622,8 +647,14 @@ pub async fn card_with_terminal_create_tx(
 ) -> Result<(Card, Terminal)> {
     // 1. Card row with placeholder payload — the terminal_id and schemaVersion
     //    are stamped in step 5 once we have the terminal row.
-    let card = card_create_tx(
+    //
+    // PR2 of #136: card id is now pre-minted by the caller (same pattern
+    // the codex helper has had since #117) so the surrounding
+    // `write_with_event` can stamp `EventScope::Card { card, .. }` on
+    // the audit row without racing the txn.
+    let card = card_create_with_id_tx(
         tx,
+        card_id,
         NewCard {
             wave_id,
             kind: "terminal".into(),
@@ -1522,7 +1553,8 @@ impl RepoOutOfDomain for SqlxRepo {
 impl RepoEventWrite for SqlxRepo {
     async fn write_with_event(
         &self,
-        actor: &str,
+        actor: ActorId,
+        scope: EventScope,
         correlation: Option<&str>,
         bus: &EventBus,
         f: WriteWithEventFn<'_>,
@@ -1540,20 +1572,22 @@ impl RepoEventWrite for SqlxRepo {
             }
         };
         // Persist the event in the same txn.
-        let event_id = match Self::event_append_in_tx(&mut tx, actor, correlation, &event).await {
-            Ok(id) => id,
-            Err(e) => {
-                let _ = tx.rollback().await;
-                return Err(e);
-            }
-        };
+        let event_id =
+            match Self::event_append_in_tx(&mut tx, &actor, &scope, correlation, &event).await {
+                Ok(id) => id,
+                Err(e) => {
+                    let _ = tx.rollback().await;
+                    return Err(e);
+                }
+            };
         // Commit before any externally-visible side effect.
         tx.commit().await?;
         // Commit-then-emit invariant: now (and only now) do we broadcast.
         bus.emit_envelope(BroadcastEnvelope {
             id: event_id,
             event_version: SYNC_EVENT_VERSION,
-            actor: actor.to_string(),
+            actor,
+            scope,
             event,
         });
         Ok(event_id)
@@ -1561,24 +1595,27 @@ impl RepoEventWrite for SqlxRepo {
 
     async fn log_pure_event(
         &self,
-        actor: &str,
+        actor: ActorId,
+        scope: EventScope,
         correlation: Option<&str>,
         bus: &EventBus,
         event: Event,
     ) -> Result<i64> {
         let mut tx = self.pool.begin().await?;
-        let event_id = match Self::event_append_in_tx(&mut tx, actor, correlation, &event).await {
-            Ok(id) => id,
-            Err(e) => {
-                let _ = tx.rollback().await;
-                return Err(e);
-            }
-        };
+        let event_id =
+            match Self::event_append_in_tx(&mut tx, &actor, &scope, correlation, &event).await {
+                Ok(id) => id,
+                Err(e) => {
+                    let _ = tx.rollback().await;
+                    return Err(e);
+                }
+            };
         tx.commit().await?;
         bus.emit_envelope(BroadcastEnvelope {
             id: event_id,
             event_version: SYNC_EVENT_VERSION,
-            actor: actor.to_string(),
+            actor,
+            scope,
             event,
         });
         Ok(event_id)
@@ -1588,7 +1625,7 @@ impl RepoEventWrite for SqlxRepo {
         &self,
         since_id: i64,
         limit: Option<i64>,
-    ) -> Result<Vec<(i64, u32, Event)>> {
+    ) -> Result<Vec<(i64, u32, EventScope, Event)>> {
         // `LIMIT -1` is sqlite's "no limit" sentinel; using `?` binding lets
         // us keep one SQL string regardless of caller intent. Callers that
         // pass `None` want every row > since_id.
@@ -1599,8 +1636,27 @@ impl RepoEventWrite for SqlxRepo {
         // 0006 backfill to `1` via the column default, and any future row
         // written under a newer envelope schema must round-trip its own
         // version, not the kernel's.
-        let rows: Vec<(i64, String, String, u32)> = sqlx::query_as(
-            r#"SELECT id, kind, payload, event_version
+        //
+        // `scope_*` columns (migration 0007) reconstruct the typed
+        // `EventScope`. Rows that predate the migration carry
+        // `scope_kind='system'` (column default) with NULL ancestor cols,
+        // which `EventScope::from_row` collapses to `EventScope::System`.
+        // The same fallback covers any malformed row whose declared
+        // `scope_kind` doesn't line up with its ancestor cols — replay
+        // never strands a client on a malformed scope.
+        type ScopeRow = (
+            i64,            // id
+            String,         // kind
+            String,         // payload
+            u32,            // event_version
+            Option<String>, // scope_kind
+            Option<String>, // scope_cove
+            Option<String>, // scope_wave
+            Option<String>, // scope_card
+        );
+        let rows: Vec<ScopeRow> = sqlx::query_as(
+            r#"SELECT id, kind, payload, event_version,
+                      scope_kind, scope_cove, scope_wave, scope_card
                FROM events
                WHERE id > ?1
                ORDER BY id ASC
@@ -1612,7 +1668,7 @@ impl RepoEventWrite for SqlxRepo {
         .await?;
 
         let mut out = Vec::with_capacity(rows.len());
-        for (id, kind, payload_text, event_version) in rows {
+        for (id, kind, payload_text, event_version, sk, sc, sw, scard) in rows {
             let payload: serde_json::Value = match serde_json::from_str(&payload_text) {
                 Ok(v) => v,
                 Err(e) => {
@@ -1623,8 +1679,14 @@ impl RepoEventWrite for SqlxRepo {
                     continue;
                 }
             };
+            let scope = EventScope::from_row(
+                sk.as_deref(),
+                sc.as_deref(),
+                sw.as_deref(),
+                scard.as_deref(),
+            );
             match Event::from_kind_and_payload(&kind, payload) {
-                Ok(ev) => out.push((id, event_version, ev)),
+                Ok(ev) => out.push((id, event_version, scope, ev)),
                 Err(e) => {
                     tracing::error!(
                         id, kind = %kind, error = %e,

@@ -19,11 +19,12 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 use crate::db::sqlite::{
-    card_create_tx, card_delete_tx, card_update_tx, overlay_delete_tx, overlay_upsert_tx,
+    card_create_with_id_tx, card_delete_tx, card_update_tx, overlay_delete_tx, overlay_upsert_tx,
 };
-use crate::db::{RouteRepo, write_with_event_typed};
-use crate::event::{Event, EventBus};
-use crate::model::{CardPatch, NewCard, NewOverlay};
+use crate::db::{RepoRead, RouteRepo, write_with_event_typed};
+use crate::event::{Event, EventBus, EventScope};
+use crate::ids::{ActorId, CardId};
+use crate::model::{CardPatch, NewCard, NewOverlay, new_id};
 use crate::validation::{validate_card_payload, validate_overlay_payload};
 
 use super::events::SubscriptionFilter;
@@ -72,6 +73,65 @@ impl<'a> CallbackCtx<'a> {
     /// expect. Allocation is skipped entirely when `call_id` is None.
     fn correlation(&self) -> Option<String> {
         self.call_id.map(|c| format!("user_tool_call:{c}"))
+    }
+
+    /// Build the [`ActorId::Plugin`] tag for this dispatch. PR2 of #136
+    /// typed the actor field — plugin callback writes all attribute to
+    /// the plugin's id, server-enforced.
+    fn actor(&self) -> ActorId {
+        ActorId::Plugin(self.plugin_id.to_string())
+    }
+}
+
+/// Build the `EventScope` for a plugin overlay write keyed by
+/// `(entity_kind, entity_id)`. Mirrors `routes::overlays::overlay_scope`
+/// — overlays are polymorphic so we pattern-match on the declared kind.
+/// Missing rows collapse to `EventScope::System` rather than failing the
+/// dispatch.
+async fn overlay_scope_for_callback(
+    repo: &dyn RepoRead,
+    entity_kind: &str,
+    entity_id: &str,
+) -> EventScope {
+    match entity_kind {
+        "card" => {
+            let Ok(Some(card)) = repo.card_get(entity_id).await else {
+                return EventScope::System;
+            };
+            let Ok(Some(wave)) = repo.wave_get(card.wave_id.as_str()).await else {
+                return EventScope::System;
+            };
+            EventScope::Card {
+                card: card.id,
+                wave: wave.id,
+                cove: wave.cove_id,
+            }
+        }
+        "wave" => {
+            let Ok(Some(wave)) = repo.wave_get(entity_id).await else {
+                return EventScope::System;
+            };
+            EventScope::Wave {
+                wave: wave.id,
+                cove: wave.cove_id,
+            }
+        }
+        _ => EventScope::System,
+    }
+}
+
+/// Build a `EventScope::Card { card, wave, cove }` for the given wave +
+/// pre-minted card id. Falls back to `EventScope::System` when the wave
+/// lookup fails so the dispatch doesn't refuse the write on a transient
+/// read error.
+async fn card_scope_for_callback(repo: &dyn RepoRead, card: CardId, wave_id: &str) -> EventScope {
+    match repo.wave_get(wave_id).await {
+        Ok(Some(w)) => EventScope::Card {
+            card,
+            wave: w.id,
+            cove: w.cove_id,
+        },
+        _ => EventScope::System,
     }
 }
 
@@ -236,11 +296,13 @@ async fn overlay_set(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         kind: p.kind.clone(),
         payload: p.payload,
     };
-    let actor = format!("plugin:{}", ctx.plugin_id);
+    let actor = ctx.actor();
     let correlation = ctx.correlation();
+    let scope = overlay_scope_for_callback(ctx.repo.as_ref(), &p.entity_kind, &p.entity_id).await;
     let (stored, _id) = write_with_event_typed(
         ctx.repo.as_ref(),
-        &actor,
+        actor,
+        scope,
         correlation.as_deref(),
         ctx.event_bus.as_ref(),
         move |tx| {
@@ -279,15 +341,17 @@ async fn overlay_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, R
     }
     // Scope strictly to this plugin's overlays — repo enforces by passing the
     // server-known plugin_id.
-    let actor = format!("plugin:{}", ctx.plugin_id);
+    let actor = ctx.actor();
     let correlation = ctx.correlation();
     let plugin_id_owned = ctx.plugin_id.to_string();
     let entity_kind = p.entity_kind.clone();
     let entity_id = p.entity_id.clone();
     let kind = p.kind.clone();
+    let scope = overlay_scope_for_callback(ctx.repo.as_ref(), &entity_kind, &entity_id).await;
     let result = write_with_event_typed(
         ctx.repo.as_ref(),
-        &actor,
+        actor,
+        scope,
         correlation.as_deref(),
         ctx.event_bus.as_ref(),
         move |tx| {
@@ -348,22 +412,31 @@ async fn card_create(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
     if let Err(e) = validate_card_payload(&p.kind, &payload) {
         return Err(RpcError::invalid_params(e.to_string()));
     }
+    let wave_id_for_scope = p.wave_id.clone();
     let new = NewCard {
         wave_id: p.wave_id.into(),
         kind: p.kind,
         sort: p.sort,
         payload,
     };
-    let actor = format!("plugin:{}", ctx.plugin_id);
+    let actor = ctx.actor();
     let correlation = ctx.correlation();
+    // Pre-mint the card id so the audit row's `EventScope::Card` is
+    // determinable before the txn opens (matches the REST routes/cards
+    // refactor in PR2 of #136).
+    let card_id = CardId::from(new_id());
+    let scope =
+        card_scope_for_callback(ctx.repo.as_ref(), card_id.clone(), &wave_id_for_scope).await;
+    let card_id_for_tx = card_id.0.clone();
     let (stored, _id) = write_with_event_typed(
         ctx.repo.as_ref(),
-        &actor,
+        actor,
+        scope,
         correlation.as_deref(),
         ctx.event_bus.as_ref(),
         move |tx| {
             Box::pin(async move {
-                let stored = card_create_tx(tx, new).await?;
+                let stored = card_create_with_id_tx(tx, card_id_for_tx, new).await?;
                 Ok((stored.clone(), Event::CardAdded(stored)))
             })
         },
@@ -425,12 +498,15 @@ async fn card_update(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         sort: p.sort,
         payload: p.payload,
     };
-    let actor = format!("plugin:{}", ctx.plugin_id);
+    let actor = ctx.actor();
     let correlation = ctx.correlation();
     let card_id = p.card_id.clone();
+    let scope =
+        card_scope_for_callback(ctx.repo.as_ref(), card.id.clone(), card.wave_id.as_str()).await;
     let (updated, _id) = write_with_event_typed(
         ctx.repo.as_ref(),
-        &actor,
+        actor,
+        scope,
         correlation.as_deref(),
         ctx.event_bus.as_ref(),
         move |tx| {
@@ -470,11 +546,13 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
     }
     let wave_id = card.wave_id.clone();
     let card_id = p.card_id.clone();
-    let actor = format!("plugin:{}", ctx.plugin_id);
+    let actor = ctx.actor();
     let correlation = ctx.correlation();
+    let scope = card_scope_for_callback(ctx.repo.as_ref(), card.id.clone(), wave_id.as_str()).await;
     let _ = write_with_event_typed(
         ctx.repo.as_ref(),
-        &actor,
+        actor,
+        scope,
         correlation.as_deref(),
         ctx.event_bus.as_ref(),
         move |tx| {

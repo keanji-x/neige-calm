@@ -119,9 +119,19 @@ async fn codex_hook_records_ai_codex_actor_from_header() {
 
     let id = last_event_id(&repo, "codex.hook").await;
     let (actor, correlation) = fetch_actor_correlation(&repo, id).await;
+    // PR2 of #136 — judgment call documented in routes/codex.rs:
+    // the ingest path always stamps `ActorId::Kernel` (synthetic), no
+    // longer threading the header's declared identity. The header
+    // continues to be middleware-validated (so a malformed value still
+    // 400s), but the audit row attributes to the kernel until PR3
+    // wires the dispatcher's typed `AiCodex(card_id)` re-attribution.
+    // `events.actor` now carries the JSON form of [`ActorId::Kernel`].
+    let actor_json: serde_json::Value =
+        serde_json::from_str(&actor).expect("events.actor is JSON-serialized ActorId");
     assert_eq!(
-        actor, "ai:codex",
-        "header value must reach events.actor verbatim",
+        actor_json,
+        serde_json::json!({"kind": "Kernel"}),
+        "ingest_hook stamps Kernel (synthetic) per PR2 of #136"
     );
     assert_eq!(
         correlation, None,
@@ -163,10 +173,14 @@ async fn codex_hook_falls_back_to_user_actor_when_header_absent() {
 
     let id = last_event_id(&repo, "codex.hook").await;
     let (actor, _) = fetch_actor_correlation(&repo, id).await;
-    // Documented in routes/codex.rs::ingest_hook: an older bridge with no
-    // header attributes as the middleware default. We don't silently
-    // re-attribute as `ai:codex` from this path.
-    assert_eq!(actor, "user");
+    // PR2 of #136 — ingest_hook always stamps Kernel (synthetic),
+    // regardless of whether the header was present. Pre-PR2 the path
+    // attributed to the middleware default (`user`); now the kernel
+    // owns the attribution and only PR3's dispatcher can re-attribute
+    // as `AiCodex(card_id)`.
+    let actor_json: serde_json::Value =
+        serde_json::from_str(&actor).expect("events.actor is JSON-serialized ActorId");
+    assert_eq!(actor_json, serde_json::json!({"kind": "Kernel"}));
 }
 
 // ---------------------------------------------------------------------------
@@ -300,10 +314,15 @@ async fn plugin_tool_call_threads_call_id_as_correlation() {
 
     let id = last_event_id(&repo, "overlay.set").await;
     let (actor, correlation) = fetch_actor_correlation(&repo, id).await;
+    // PR2 of #136 typed the actor: overlay-set from the plugin callback
+    // path now lands as `ActorId::Plugin(<id>)`, serialized into the
+    // `events.actor` TEXT column as the typed JSON shape.
+    let actor_json: serde_json::Value =
+        serde_json::from_str(&actor).expect("events.actor is JSON-serialized ActorId");
     assert_eq!(
-        actor,
-        format!("plugin:{plugin_id}"),
-        "overlay-set actor is always plugin:<id>, server-enforced"
+        actor_json,
+        serde_json::json!({"kind": "Plugin", "id": plugin_id}),
+        "overlay-set actor is always Plugin(<id>), server-enforced"
     );
     assert_eq!(
         correlation.as_deref(),

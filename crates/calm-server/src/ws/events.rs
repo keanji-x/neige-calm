@@ -75,7 +75,10 @@
 
 use crate::db::RepoEventWrite;
 use crate::event;
+#[cfg(test)]
+use crate::event::EventScope;
 use crate::event::{BroadcastEnvelope, SYNC_EVENT_VERSION};
+use crate::ids::ActorId;
 use crate::state::AppState;
 use axum::{
     Router,
@@ -279,7 +282,7 @@ where
     };
 
     let mut last_id = since;
-    for (id, event_version, ev) in rows {
+    for (id, event_version, scope, ev) in rows {
         // Topic filter applies to replayed frames too: a cursor-aware
         // client that just changed waves shouldn't suddenly see history
         // for a wave it didn't subscribe to.
@@ -290,17 +293,20 @@ where
             continue;
         }
         // The replay path reconstructs an envelope from
-        // `(id, event_version, ev)` rows in the `events` table.
+        // `(id, event_version, scope, ev)` rows in the `events` table.
         // `events_since` does not return the `actor` column (replay is
         // read-only and the wire format omits actor — see
-        // `render_envelope`), so we synthesize an empty actor here. This
+        // `render_envelope`), so we synthesize a `User` actor here. This
         // branch never feeds the `RECORD_SESSION` recorder. `event_version`
         // is round-tripped from the row's `event_version` column — old
-        // rows backfill to `1` via the migration default.
+        // rows backfill to `1` via the migration default. `scope` carries
+        // through to the rendered envelope so future per-scope subscribers
+        // (PR3+ of #136) see the same metadata fresh writes have.
         let env = BroadcastEnvelope {
             id,
             event_version,
-            actor: String::new(),
+            actor: ActorId::User,
+            scope,
             event: ev,
         };
         let payload = match render_envelope(&env) {
@@ -390,6 +396,11 @@ fn render_envelope(env: &BroadcastEnvelope) -> Result<String, serde_json::Error>
             "eventVersion".to_string(),
             serde_json::Value::from(env.event_version),
         );
+        // PR2 of #136 surfaces the event's home scope on the WS wire so
+        // future MCP subscribers + frontend can route/filter without
+        // re-parsing the event payload. Tagged `{kind, id}` shape per
+        // `EventScope`'s serde attributes.
+        map.insert("scope".to_string(), serde_json::to_value(&env.scope)?);
     }
     serde_json::to_string(&value)
 }
@@ -416,21 +427,25 @@ mod tests {
         let env = BroadcastEnvelope {
             id: 42,
             event_version: SYNC_EVENT_VERSION,
-            actor: "user".into(),
+            actor: ActorId::User,
+            scope: EventScope::Cove { cove: "c-1".into() },
             event: Event::CoveUpdated(sample_cove()),
         };
         let s = render_envelope(&env).expect("render");
         // Key ordering on the wire is implementation-defined (serde_json
         // sorts alphabetically by default); the contract we care about
-        // is that `_id`, `eventVersion`, `ev`, and `data` are all present
-        // at the top level with the right values. Frontend `zod` parsing
-        // is by key name, not position, so this is what matters.
+        // is that `_id`, `eventVersion`, `ev`, `data`, and `scope` are
+        // all present at the top level with the right values. Frontend
+        // `zod` parsing is by key name, not position, so this is what
+        // matters.
         let v: serde_json::Value = serde_json::from_str(&s).unwrap();
         assert_eq!(v["_id"], 42);
         assert_eq!(v["eventVersion"], SYNC_EVENT_VERSION);
         assert_eq!(v["ev"], "cove.updated");
         assert_eq!(v["data"]["id"], "c-1");
         assert_eq!(v["data"]["name"], "n");
+        assert_eq!(v["scope"]["kind"], "Cove");
+        assert_eq!(v["scope"]["id"]["cove"], "c-1");
     }
 
     #[test]
@@ -442,11 +457,15 @@ mod tests {
         let env = BroadcastEnvelope {
             id: 0,
             event_version: SYNC_EVENT_VERSION,
-            actor: "kernel".into(),
+            actor: ActorId::Kernel,
+            scope: EventScope::System,
             event: Event::CoveUpdated(sample_cove()),
         };
         let s = render_envelope(&env).expect("render");
         assert!(s.contains(r#""_id":0"#), "got: {s}");
+        // System scope still surfaces on the wire as `{"kind":"System"}`.
+        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(v["scope"]["kind"], "System");
     }
 
     #[test]
@@ -459,7 +478,8 @@ mod tests {
         let env = BroadcastEnvelope {
             id: 7,
             event_version: 99,
-            actor: String::new(),
+            actor: ActorId::User,
+            scope: EventScope::System,
             event: Event::CoveUpdated(sample_cove()),
         };
         let s = render_envelope(&env).expect("render");

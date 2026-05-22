@@ -46,12 +46,136 @@
 //! this enum and the frontend fails at the type-check step. See D7 /
 //! issue #5.
 
-use crate::ids::{CardId, CoveId, WaveId};
+use crate::ids::{ActorId, CardId, CoveId, WaveId};
 use crate::model::{Card, Cove, Overlay, Wave};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::broadcast;
 use ts_rs::TS;
+
+// ---------------------------------------------------------------------------
+// EventScope — every event's "home scope"
+// ---------------------------------------------------------------------------
+
+/// Where an event lives in the cove → wave → card hierarchy.
+///
+/// PR2 of #136 stamps a scope on every persisted event so future PRs can
+/// filter / route / authorize without re-parsing the event payload:
+///
+///   * PR3 (`enforce_role`) gates writes per card scope.
+///   * PR5 (`SubscribeFilter` + `Dispatcher`) routes notifications + work
+///     queues by wave scope.
+///   * PR8 (`wait_for_events`) long-polls a scoped cursor for MCP tools.
+///
+/// `EventScope::System` is the catch-all for events that genuinely don't
+/// belong to a single cove/wave/card (`Event::PluginState`, the
+/// CoveCreated case where the cove doesn't exist before the event, and
+/// the legacy NULL-on-replay fallback for pre-PR2 history rows). Pick
+/// `System` only when you've ruled out the more specific scopes — a
+/// `System`-tagged event opts out of every per-scope filter that follows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", content = "id")]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
+pub enum EventScope {
+    /// No entity scope — server-internal or cross-entity event.
+    System,
+    /// Scoped to one cove. No wave or card context.
+    Cove { cove: CoveId },
+    /// Scoped to one wave. Carries the owning cove for filter ergonomics
+    /// (`scope_cove IS NOT NULL` already narrows the rowset for cove-level
+    /// subscribers without a join).
+    Wave { wave: WaveId, cove: CoveId },
+    /// Scoped to one card. Carries wave + cove for the same reason.
+    Card {
+        card: CardId,
+        wave: WaveId,
+        cove: CoveId,
+    },
+}
+
+impl EventScope {
+    /// String discriminator stored in `events.scope_kind`. Stable: changing
+    /// these strings would silently break the replay path. Mirrors the
+    /// `#[serde(tag = "kind")]` variant names lowercased.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            EventScope::System => "system",
+            EventScope::Cove { .. } => "cove",
+            EventScope::Wave { .. } => "wave",
+            EventScope::Card { .. } => "card",
+        }
+    }
+
+    /// Owning cove id, if the scope carries one. PR5 will fan subscribers
+    /// out per-cove from this without re-parsing the variant.
+    pub fn cove_id(&self) -> Option<&CoveId> {
+        match self {
+            EventScope::System => None,
+            EventScope::Cove { cove } => Some(cove),
+            EventScope::Wave { cove, .. } => Some(cove),
+            EventScope::Card { cove, .. } => Some(cove),
+        }
+    }
+
+    /// Owning wave id, if the scope is wave-or-narrower.
+    pub fn wave_id(&self) -> Option<&WaveId> {
+        match self {
+            EventScope::System | EventScope::Cove { .. } => None,
+            EventScope::Wave { wave, .. } => Some(wave),
+            EventScope::Card { wave, .. } => Some(wave),
+        }
+    }
+
+    /// Card id, only for the card scope.
+    pub fn card_id(&self) -> Option<&CardId> {
+        match self {
+            EventScope::Card { card, .. } => Some(card),
+            _ => None,
+        }
+    }
+
+    /// Reconstruct the scope from the four `events.scope_*` columns. Used
+    /// by the replay path to recover the typed scope from a row.
+    ///
+    /// **NULL-tolerant**: a pre-PR2 row (NULL `scope_kind` is impossible
+    /// thanks to the column default, but defensive nonetheless) or any
+    /// row whose ancestor cols don't line up with the declared `kind`
+    /// falls back to `EventScope::System`. The fallback is deliberate —
+    /// the replay path must never strand a client because of a malformed
+    /// scope.
+    pub fn from_row(
+        kind: Option<&str>,
+        cove: Option<&str>,
+        wave: Option<&str>,
+        card: Option<&str>,
+    ) -> EventScope {
+        match kind.unwrap_or("system") {
+            "cove" => match cove {
+                Some(c) => EventScope::Cove {
+                    cove: CoveId::from(c),
+                },
+                None => EventScope::System,
+            },
+            "wave" => match (wave, cove) {
+                (Some(w), Some(c)) => EventScope::Wave {
+                    wave: WaveId::from(w),
+                    cove: CoveId::from(c),
+                },
+                _ => EventScope::System,
+            },
+            "card" => match (card, wave, cove) {
+                (Some(card), Some(w), Some(c)) => EventScope::Card {
+                    card: CardId::from(card),
+                    wave: WaveId::from(w),
+                    cove: CoveId::from(c),
+                },
+                _ => EventScope::System,
+            },
+            // "system" or anything unknown.
+            _ => EventScope::System,
+        }
+    }
+}
 
 /// Capacity of the broadcast channel. If a subscriber lags more than this,
 /// it'll receive a `Lagged` error and the server drops its connection — the
@@ -316,12 +440,17 @@ pub struct BroadcastEnvelope {
     /// carry the value read back from the row (old rows backfill to `1`
     /// via the column default). Surfaced on the WS frame as `eventVersion`.
     pub event_version: u32,
-    /// Declared producer identity, matching the `actor` column on the
-    /// persisted `events` row. Same grammar as `write_with_event`'s `actor`
-    /// argument: `"user"`, `"kernel"`, `"plugin:<id>"`, `"ai:<id>"`. Used by
-    /// `replay::spawn_session_recorder` so `RECORD_SESSION` traces preserve
-    /// real attribution; not surfaced on the public WS wire format.
-    pub actor: String,
+    /// Typed producer identity. Persisted to the `events.actor` TEXT column
+    /// as `serde_json::to_string(&actor)` so future actor variants (e.g.
+    /// `ActorId::Plugin { id, version }`) round-trip without a schema bump.
+    /// Used by `replay::spawn_session_recorder` so `RECORD_SESSION` traces
+    /// preserve real attribution.
+    pub actor: ActorId,
+    /// "Home scope" — which cove/wave/card this event belongs to. PR3+
+    /// filter and route on this without re-parsing the event payload.
+    /// Replay-path envelopes for pre-PR2 rows (NULL `scope_*` columns)
+    /// fall back to `EventScope::System`.
+    pub scope: EventScope,
     pub event: Event,
 }
 
@@ -359,20 +488,22 @@ impl EventBus {
     /// must return zero hits for production code; only tests and the
     /// internal `card_fsm` test injection use this.
     ///
-    /// `actor` is the declared producer identity (`"user"`, `"kernel"`,
-    /// `"plugin:<id>"`, `"ai:<id>"`) — tests should pass whatever value
-    /// would be threaded through `write_with_event` in the equivalent
-    /// production path, so recorder smoke tests preserve realistic
-    /// attribution.
+    /// `actor` is the declared producer identity (PR2 of #136 typed this
+    /// — pass `ActorId::User` / `ActorId::Kernel` / `ActorId::Plugin(...)`
+    /// matching the production code path you're stand-in for). `scope`
+    /// defaults to `EventScope::System` to keep the test ergonomics —
+    /// tests that need to exercise scope-aware filtering should call
+    /// `emit_envelope` directly.
     ///
     /// Available outside `#[cfg(test)]` because integration tests in
     /// `crates/calm-server/tests/` consume the library through normal
     /// linkage — they don't see `#[cfg(test)]`-gated items.
-    pub fn emit(&self, actor: &str, ev: Event) {
+    pub fn emit(&self, actor: ActorId, ev: Event) {
         let _ = self.tx.send(BroadcastEnvelope {
             id: 0,
             event_version: SYNC_EVENT_VERSION,
-            actor: actor.to_string(),
+            actor,
+            scope: EventScope::System,
             event: ev,
         });
     }
@@ -387,5 +518,168 @@ impl EventBus {
 impl Default for EventBus {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+
+    #[test]
+    fn scope_kind_strings_pinned() {
+        // These strings are persisted to `events.scope_kind` — changing
+        // them is a wire break. Pin against accidental rename.
+        assert_eq!(EventScope::System.kind(), "system");
+        assert_eq!(
+            EventScope::Cove {
+                cove: CoveId::from("c")
+            }
+            .kind(),
+            "cove"
+        );
+        assert_eq!(
+            EventScope::Wave {
+                wave: WaveId::from("w"),
+                cove: CoveId::from("c"),
+            }
+            .kind(),
+            "wave"
+        );
+        assert_eq!(
+            EventScope::Card {
+                card: CardId::from("k"),
+                wave: WaveId::from("w"),
+                cove: CoveId::from("c"),
+            }
+            .kind(),
+            "card"
+        );
+    }
+
+    #[test]
+    fn ancestor_accessors_return_chain() {
+        let s = EventScope::Card {
+            card: CardId::from("k"),
+            wave: WaveId::from("w"),
+            cove: CoveId::from("c"),
+        };
+        assert_eq!(s.card_id().map(|x| x.as_str()), Some("k"));
+        assert_eq!(s.wave_id().map(|x| x.as_str()), Some("w"));
+        assert_eq!(s.cove_id().map(|x| x.as_str()), Some("c"));
+
+        let s = EventScope::Wave {
+            wave: WaveId::from("w"),
+            cove: CoveId::from("c"),
+        };
+        assert_eq!(s.card_id(), None);
+        assert_eq!(s.wave_id().map(|x| x.as_str()), Some("w"));
+        assert_eq!(s.cove_id().map(|x| x.as_str()), Some("c"));
+
+        let s = EventScope::Cove {
+            cove: CoveId::from("c"),
+        };
+        assert!(s.card_id().is_none() && s.wave_id().is_none());
+        assert_eq!(s.cove_id().map(|x| x.as_str()), Some("c"));
+
+        let s = EventScope::System;
+        assert!(s.card_id().is_none() && s.wave_id().is_none() && s.cove_id().is_none());
+    }
+
+    #[test]
+    fn serde_round_trip_all_variants() {
+        for s in [
+            EventScope::System,
+            EventScope::Cove {
+                cove: CoveId::from("c"),
+            },
+            EventScope::Wave {
+                wave: WaveId::from("w"),
+                cove: CoveId::from("c"),
+            },
+            EventScope::Card {
+                card: CardId::from("k"),
+                wave: WaveId::from("w"),
+                cove: CoveId::from("c"),
+            },
+        ] {
+            let json = serde_json::to_string(&s).expect("serialize");
+            let back: EventScope = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(back, s, "round-trip mismatch for {s:?} via {json}");
+        }
+    }
+
+    #[test]
+    fn serde_card_shape_pinned() {
+        // Lock the on-wire shape so a future serde attribute change can't
+        // silently break the WS envelope contract. `#[serde(tag = "kind",
+        // content = "id")]` encodes a tuple variant as `{kind, id}` where
+        // `id` carries the struct fields.
+        let s = EventScope::Card {
+            card: CardId::from("k"),
+            wave: WaveId::from("w"),
+            cove: CoveId::from("c"),
+        };
+        let v: serde_json::Value = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["kind"], "Card");
+        assert_eq!(v["id"]["card"], "k");
+        assert_eq!(v["id"]["wave"], "w");
+        assert_eq!(v["id"]["cove"], "c");
+
+        // `System` unit variant: just the `kind` discriminator, no `id`.
+        let v: serde_json::Value = serde_json::to_value(EventScope::System).unwrap();
+        assert_eq!(v["kind"], "System");
+    }
+
+    #[test]
+    fn from_row_recovers_typed_scope() {
+        assert_eq!(
+            EventScope::from_row(Some("system"), None, None, None),
+            EventScope::System,
+        );
+        assert_eq!(
+            EventScope::from_row(Some("cove"), Some("c"), None, None),
+            EventScope::Cove {
+                cove: CoveId::from("c"),
+            },
+        );
+        assert_eq!(
+            EventScope::from_row(Some("wave"), Some("c"), Some("w"), None),
+            EventScope::Wave {
+                wave: WaveId::from("w"),
+                cove: CoveId::from("c"),
+            },
+        );
+        assert_eq!(
+            EventScope::from_row(Some("card"), Some("c"), Some("w"), Some("k")),
+            EventScope::Card {
+                card: CardId::from("k"),
+                wave: WaveId::from("w"),
+                cove: CoveId::from("c"),
+            },
+        );
+    }
+
+    #[test]
+    fn from_row_null_fallback_to_system() {
+        // NULL kind → System.
+        assert_eq!(
+            EventScope::from_row(None, None, None, None),
+            EventScope::System,
+        );
+        // Unknown kind → System.
+        assert_eq!(
+            EventScope::from_row(Some("plugin"), None, None, None),
+            EventScope::System,
+        );
+        // Declared kind but missing required ancestor → System (replay
+        // never strands a client on malformed scope).
+        assert_eq!(
+            EventScope::from_row(Some("card"), Some("c"), Some("w"), None),
+            EventScope::System,
+        );
+        assert_eq!(
+            EventScope::from_row(Some("wave"), Some("c"), None, None),
+            EventScope::System,
+        );
     }
 }

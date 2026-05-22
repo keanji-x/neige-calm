@@ -35,6 +35,7 @@ use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::Event;
 use crate::model::{Card, new_id};
+use crate::routes::cards::card_scope;
 use crate::routes::settings::load_settings;
 use crate::routes::terminal::spawn_daemon_for;
 use crate::state::AppState;
@@ -221,9 +222,20 @@ pub(crate) async fn create_codex_card(
     let cwd_for_tx = cwd.clone();
     let env_for_tx = env.clone();
     let prompt_for_tx = prompt.clone();
+    // Pre-built `EventScope::Card` — `card_id` is pre-minted on this
+    // endpoint (see module-level doc), so the scope is fully determined
+    // before the txn opens.
+    let scope = card_scope(
+        s.repo.as_ref(),
+        card_id.clone().into(),
+        wave_id.clone().into(),
+    )
+    .await?;
+    let wave_id_for_tx = wave_id;
     let (card, _id) = write_with_event_typed(
         s.repo.as_ref(),
-        actor.as_str(),
+        actor.to_actor_id(),
+        scope,
         None,
         &s.events,
         move |tx| {
@@ -231,7 +243,7 @@ pub(crate) async fn create_codex_card(
                 let (card, _term) = card_with_codex_create_tx(
                     tx,
                     card_id_for_tx,
-                    wave_id.into(),
+                    wave_id_for_tx.into(),
                     sort,
                     cwd_for_tx,
                     env_for_tx,

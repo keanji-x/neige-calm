@@ -10,10 +10,13 @@
 //! the direct-create fields).
 
 use crate::actor::Actor;
-use crate::db::sqlite::{card_create_tx, card_delete_tx, card_update_tx};
+use crate::db::RepoRead;
+use crate::db::sqlite::{card_create_with_id_tx, card_delete_tx, card_update_tx};
 use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
-use crate::event::Event;
+use crate::event::{Event, EventScope};
+use crate::ids::{ActorId, CardId, WaveId};
+use crate::model::new_id;
 use crate::model::{Card, CardPatch, NewCard};
 use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
 use crate::state::AppState;
@@ -29,6 +32,27 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use utoipa::ToSchema;
+
+/// Resolve the (wave, cove) ancestor pair for a wave id, returning a
+/// pre-built [`EventScope::Card`] for the given card. PR2 of #136 needs
+/// this at every card-emit site so the event row's `scope_*` columns
+/// carry the full ancestor chain. Looking up the wave outside the txn
+/// is fine — wave rows are immutable wrt their parent cove.
+pub(crate) async fn card_scope(
+    repo: &dyn RepoRead,
+    card: CardId,
+    wave: WaveId,
+) -> Result<EventScope> {
+    let w = repo
+        .wave_get(wave.as_str())
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("wave {wave}")))?;
+    Ok(EventScope::Card {
+        card,
+        wave: w.id,
+        cove: w.cove_id,
+    })
+}
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -139,20 +163,32 @@ pub(crate) async fn create_card(
     // D4: reject malformed payloads for kernel-owned kinds. Plugin-defined
     // (`ui://*`) kinds remain opaque per the architectural invariant.
     validate_card_payload(&kind, &payload).map_err(|e| e.into_response())?;
+    // Pre-mint the card id so we can stamp `EventScope::Card { card, .. }`
+    // deterministically before the txn opens. The kernel's `new_id()` is
+    // a UUID — collision risk is negligible. Using
+    // `card_create_with_id_tx` (the carved-out variant the codex/terminal
+    // atomic endpoints already use) keeps the actual SQL identical.
+    let card_id = CardId::from(new_id());
+    let wave_id: WaveId = wave_id.into();
+    let scope = card_scope(s.repo.as_ref(), card_id.clone(), wave_id.clone())
+        .await
+        .map_err(|e| e.into_response())?;
     let new = NewCard {
-        wave_id: wave_id.into(),
+        wave_id,
         kind,
         sort: body.sort,
         payload,
     };
+    let card_id_for_tx = card_id.0.clone();
     let (card, _id) = write_with_event_typed(
         s.repo.as_ref(),
-        actor.as_str(),
+        actor.to_actor_id(),
+        scope,
         None,
         &s.events,
         move |tx| {
             Box::pin(async move {
-                let card = card_create_tx(tx, new).await?;
+                let card = card_create_with_id_tx(tx, card_id_for_tx, new).await?;
                 Ok((card.clone(), Event::CardAdded(card)))
             })
         },
@@ -261,19 +297,28 @@ async fn create_via_tool_call(
         sort: None,
         payload,
     };
-    // M2 tool-call writes: actor stays `"plugin:<id>"` (the entity making
+    // M2 tool-call writes: actor stays `Plugin(<id>)` (the entity making
     // the kernel write), `correlation` records the user-driven invocation
     // so audit queries can reconstruct the causal chain (design §9 bullet 3).
-    let actor = format!("plugin:{}", via.plugin_id);
+    // PR2 of #136 pre-mints the card id so `EventScope::Card { card, .. }`
+    // is determinable before the txn opens.
+    let actor = ActorId::Plugin(via.plugin_id.clone());
     let correlation = format!("user_tool_call:{}", via.tool_name);
+    let card_id = CardId::from(new_id());
+    let wave_id_for_scope: WaveId = new.wave_id.clone();
+    let scope = card_scope(s.repo.as_ref(), card_id.clone(), wave_id_for_scope)
+        .await
+        .map_err(|e| e.into_response())?;
+    let card_id_for_tx = card_id.0.clone();
     let (card, _id) = write_with_event_typed(
         s.repo.as_ref(),
-        &actor,
+        actor,
+        scope,
         Some(&correlation),
         &s.events,
         move |tx| {
             Box::pin(async move {
-                let card = card_create_tx(tx, new).await?;
+                let card = card_create_with_id_tx(tx, card_id_for_tx, new).await?;
                 Ok((card.clone(), Event::CardAdded(card)))
             })
         },
@@ -309,26 +354,25 @@ pub(crate) async fn update_card(
     Path(id): Path<String>,
     Json(p): Json<CardPatch>,
 ) -> Result<Json<Card>> {
+    // We need the existing card's wave_id for the EventScope chain
+    // regardless of whether validation needs the kind. Fetch once.
+    let existing = s
+        .repo
+        .card_get(&id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
     // D4: if the patch carries a payload, validate it against the kind that
     // will land in the DB. The kind is either the patch's new kind (when the
-    // patch retargets) or the existing card's kind. Look up the existing card
-    // before mutation when we need its kind to validate.
+    // patch retargets) or the existing card's kind.
     if let Some(payload) = p.payload.as_ref() {
-        let kind = match p.kind.as_deref() {
-            Some(k) => k.to_string(),
-            None => {
-                s.repo
-                    .card_get(&id)
-                    .await?
-                    .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?
-                    .kind
-            }
-        };
-        validate_card_payload(&kind, payload)?;
+        let kind = p.kind.as_deref().unwrap_or(existing.kind.as_str());
+        validate_card_payload(kind, payload)?;
     }
+    let scope = card_scope(s.repo.as_ref(), existing.id.clone(), existing.wave_id).await?;
     let (card, _id) = write_with_event_typed(
         s.repo.as_ref(),
-        actor.as_str(),
+        actor.to_actor_id(),
+        scope,
         None,
         &s.events,
         move |tx| {
@@ -366,9 +410,11 @@ pub(crate) async fn delete_card(
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
     let card_id = card.id.clone();
     let wave_id = card.wave_id.clone();
+    let scope = card_scope(s.repo.as_ref(), card_id.clone(), wave_id.clone()).await?;
     let (_unit, _id) = write_with_event_typed(
         s.repo.as_ref(),
-        actor.as_str(),
+        actor.to_actor_id(),
+        scope,
         None,
         &s.events,
         move |tx| {

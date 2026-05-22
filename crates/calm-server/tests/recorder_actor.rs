@@ -14,10 +14,11 @@ use std::time::Duration;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, cove_create_tx};
 use calm_server::db::write_with_event_typed;
-use calm_server::event::{Event, EventBus};
+use calm_server::event::{Event, EventBus, EventScope};
+use calm_server::ids::{ActorId, CardId};
 use calm_server::model::NewCove;
 use calm_server::replay::spawn_session_recorder;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tempfile::NamedTempFile;
 
 /// Boot an in-memory repo, an event bus, and a tempfile-backed recorder.
@@ -38,20 +39,21 @@ async fn boot() -> (Arc<dyn Repo>, EventBus, NamedTempFile) {
 }
 
 /// Drive one `write_with_event_typed` cove create with the supplied actor.
-async fn create_cove_as(repo: &dyn Repo, bus: &EventBus, actor: &str, name: &str) -> i64 {
+async fn create_cove_as(repo: &dyn Repo, bus: &EventBus, actor: ActorId, name: &str) -> i64 {
     let p = NewCove {
         name: name.to_string(),
         color: "#000".into(),
         sort: None,
     };
-    let (_cove, event_id) = write_with_event_typed(repo, actor, None, bus, move |tx| {
-        Box::pin(async move {
-            let c = cove_create_tx(tx, p).await?;
-            Ok((c.clone(), Event::CoveUpdated(c)))
+    let (_cove, event_id) =
+        write_with_event_typed(repo, actor, EventScope::System, None, bus, move |tx| {
+            Box::pin(async move {
+                let c = cove_create_tx(tx, p).await?;
+                Ok((c.clone(), Event::CoveUpdated(c)))
+            })
         })
-    })
-    .await
-    .expect("write_with_event ok");
+        .await
+        .expect("write_with_event ok");
     event_id
 }
 
@@ -73,15 +75,19 @@ async fn recorder_captures_real_actor_per_envelope() {
 
     // Three writes with three distinct actors that match the design doc's
     // grammar — exactly the shape RECORD_SESSION needs to preserve for
-    // `replay --assert` to be useful as a bug-report artifact.
-    let _id_user = create_cove_as(&*repo, &bus, "user", "u").await;
-    let _id_ai = create_cove_as(&*repo, &bus, "ai:codex", "a").await;
+    // `replay --assert` to be useful as a bug-report artifact. PR2 of
+    // #136 typed the actor field; the recorder now writes the JSON form
+    // of [`ActorId`] (`{"kind":"User"}`, etc.) — round-trippable into
+    // the new typed surface without ambiguity.
+    let _id_user = create_cove_as(&*repo, &bus, ActorId::User, "u").await;
+    let _id_ai = create_cove_as(&*repo, &bus, ActorId::AiCodex(CardId::from("card-7")), "a").await;
 
-    // Pure event with `"kernel"` actor — same `BroadcastEnvelope` shape via
+    // Pure event with `Kernel` actor — same `BroadcastEnvelope` shape via
     // `log_pure_event`. Carries no entity write.
     let _kernel_id = repo
         .log_pure_event(
-            "kernel",
+            ActorId::Kernel,
+            EventScope::System,
             None,
             &bus,
             Event::PluginState {
@@ -103,18 +109,18 @@ async fn recorder_captures_real_actor_per_envelope() {
         "expected three recorded lines, got {lines:?}"
     );
 
-    let actors: Vec<&str> = lines
-        .iter()
-        .map(|l| l["actor"].as_str().expect("actor is a string"))
-        .collect();
-    assert_eq!(actors, vec!["user", "ai:codex", "kernel"]);
+    // Each line's `actor` is now the typed [`ActorId`] JSON shape.
+    let actors: Vec<&Value> = lines.iter().map(|l| &l["actor"]).collect();
+    assert_eq!(actors[0], &json!({"kind": "User"}));
+    assert_eq!(actors[1], &json!({"kind": "AiCodex", "id": "card-7"}));
+    assert_eq!(actors[2], &json!({"kind": "Kernel"}));
 
-    // And no line should have the pre-#39 placeholder.
+    // And no line should have the pre-#39 placeholder or the legacy
+    // bare-string form.
     for l in &lines {
-        assert_ne!(
-            l["actor"].as_str(),
-            Some("unknown"),
-            "recorded line still carries pre-#39 placeholder: {l}"
+        assert!(
+            l["actor"].is_object(),
+            "actor must be the typed ActorId JSON object: {l}"
         );
         // Sanity: payload + kind are still recorded.
         assert!(l["kind"].is_string(), "kind missing: {l}");
@@ -128,10 +134,11 @@ async fn envelope_carries_actor_alongside_event() {
     // future subscriber (not just the recorder) can read it directly.
     let (repo, bus, _tmp) = boot().await;
     let mut sub = bus.subscribe();
-    let event_id = create_cove_as(&*repo, &bus, "ai:codex", "c").await;
+    let event_id =
+        create_cove_as(&*repo, &bus, ActorId::AiCodex(CardId::from("card-1")), "c").await;
     let env = sub.recv().await.expect("envelope delivered");
     assert_eq!(env.id, event_id);
-    assert_eq!(env.actor, "ai:codex");
+    assert_eq!(env.actor, ActorId::AiCodex(CardId::from("card-1")));
     match env.event {
         Event::CoveUpdated(_) => {}
         other => panic!("expected CoveUpdated, got {other:?}"),

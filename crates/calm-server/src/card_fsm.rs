@@ -51,14 +51,18 @@ use tokio::time::{Instant, sleep_until};
 
 use crate::db::sqlite::overlay_upsert_tx;
 use crate::db::{RepoEventWrite, write_with_event_typed};
-use crate::event::{Event, EventBus};
-use crate::ids::{CardId, WaveId};
+use crate::event::{Event, EventBus, EventScope};
+use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::NewOverlay;
 use crate::validation::OVERLAY_STATUS_SCHEMA_VERSION;
 
-/// Actor tag stamped on every event the FSM produces. Kernel-internal
-/// projector — distinct from `"user"` / `"plugin:<id>"` / `"ai:<id>"`.
-const FSM_ACTOR: &str = "kernel";
+/// Actor stamped on every event the FSM produces. Kernel-internal
+/// projector — distinct from [`ActorId::User`] / [`ActorId::Plugin`] /
+/// [`ActorId::AiCodex`]. PR2 of #136 typed this from the legacy
+/// `"kernel"` string.
+const fn fsm_actor() -> ActorId {
+    ActorId::Kernel
+}
 
 /// Plugin id stamped on the FSM-authored overlays. The kernel uses a
 /// reserved `"kernel"` namespace — plugins can't write under it (their
@@ -321,14 +325,33 @@ impl Inner {
             kind: "status".to_string(),
             payload: card_payload,
         };
-        if let Err(e) =
-            write_with_event_typed(self.repo.as_ref(), FSM_ACTOR, None, &self.bus, move |tx| {
+        // Resolve `wave → cove` so the audit row carries the full
+        // ancestor chain (PR2 of #136). On lookup failure fall back to
+        // `EventScope::System` — we'd rather emit a less-scoped event
+        // than refuse the FSM commit, since the projection itself is
+        // best-effort.
+        let scope = match self.repo.wave_get(card.wave_id.as_str()).await {
+            Ok(Some(w)) => EventScope::Card {
+                card: card_id.clone(),
+                wave: w.id,
+                cove: w.cove_id,
+            },
+            _ => EventScope::System,
+        };
+        if let Err(e) = write_with_event_typed(
+            self.repo.as_ref(),
+            fsm_actor(),
+            scope,
+            None,
+            &self.bus,
+            move |tx| {
                 Box::pin(async move {
                     let o = overlay_upsert_tx(tx, new_overlay).await?;
                     Ok(((), Event::OverlaySet(o)))
                 })
-            })
-            .await
+            },
+        )
+        .await
         {
             tracing::warn!(card_id = %card_id, error = %e, "card_fsm: card overlay_upsert failed");
             return;
@@ -393,14 +416,30 @@ impl Inner {
             kind: "status".to_string(),
             payload,
         };
-        if let Err(e) =
-            write_with_event_typed(self.repo.as_ref(), FSM_ACTOR, None, &self.bus, move |tx| {
+        // Resolve cove for the wave-scoped overlay event. On lookup
+        // failure fall back to `EventScope::System` for the same reason
+        // the card-overlay commit does — the projection is best-effort.
+        let scope = match self.repo.wave_get(wave_id.as_str()).await {
+            Ok(Some(w)) => EventScope::Wave {
+                wave: w.id,
+                cove: w.cove_id,
+            },
+            _ => EventScope::System,
+        };
+        if let Err(e) = write_with_event_typed(
+            self.repo.as_ref(),
+            fsm_actor(),
+            scope,
+            None,
+            &self.bus,
+            move |tx| {
                 Box::pin(async move {
                     let o = overlay_upsert_tx(tx, new_overlay).await?;
                     Ok(((), Event::OverlaySet(o)))
                 })
-            })
-            .await
+            },
+        )
+        .await
         {
             tracing::warn!(wave_id = %wave_id, error = %e, "card_fsm: wave overlay_upsert failed");
         }
@@ -511,7 +550,7 @@ mod tests {
         tokio::task::yield_now().await;
 
         bus.emit(
-            "ai:codex",
+            ActorId::AiCodex(card_id.clone()),
             Event::CodexHook {
                 card_id: card_id.clone(),
                 kind: "hook.codex.pre_tool_use".into(),
@@ -542,7 +581,7 @@ mod tests {
         tokio::task::yield_now().await;
 
         bus.emit(
-            "ai:codex",
+            ActorId::AiCodex(card_id.clone()),
             Event::CodexHook {
                 card_id: card_id.clone(),
                 kind: "hook.codex.pre_tool_use".into(),
@@ -551,7 +590,7 @@ mod tests {
         );
         tokio::time::sleep(StdDuration::from_millis(50)).await;
         bus.emit(
-            "ai:codex",
+            ActorId::AiCodex(card_id.clone()),
             Event::CodexHook {
                 card_id: card_id.clone(),
                 kind: "hook.codex.permission_request".into(),
@@ -579,7 +618,7 @@ mod tests {
         tokio::task::yield_now().await;
 
         bus.emit(
-            "ai:codex",
+            ActorId::AiCodex(card_id.clone()),
             Event::CodexHook {
                 card_id: card_id.clone(),
                 kind: "hook.codex.pre_tool_use".into(),
@@ -588,7 +627,7 @@ mod tests {
         );
         tokio::time::sleep(StdDuration::from_millis(50)).await;
         bus.emit(
-            "ai:codex",
+            ActorId::AiCodex(card_id.clone()),
             Event::CodexHook {
                 card_id: card_id.clone(),
                 kind: "hook.codex.post_tool_use".into(),
@@ -604,7 +643,7 @@ mod tests {
 
         // stop → AwaitingInput commits the turn boundary.
         bus.emit(
-            "ai:codex",
+            ActorId::AiCodex(card_id.clone()),
             Event::CodexHook {
                 card_id: card_id.clone(),
                 kind: "hook.codex.stop".into(),

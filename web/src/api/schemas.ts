@@ -162,6 +162,34 @@ export const codexHookSchema = z.object({
   }),
 });
 
+// ---------------- EventScope (mirror event.rs) ----------------
+
+/**
+ * `EventScope` — the event's "home scope" in the cove → wave → card
+ * hierarchy. PR2 of #136 adds this to every persisted event so future
+ * MCP subscribers / dispatcher routes can filter without re-parsing
+ * the payload. Tagged `{kind, id}` shape via `#[serde(tag, content)]`
+ * on the Rust side.
+ *
+ * `System` is the catch-all for events that genuinely don't belong to
+ * a single cove/wave/card (`plugin.state`, cove-create, the pre-PR2
+ * NULL-fallback). Pre-PR2 history rows replay as `System`.
+ */
+export const eventScopeSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('System') }),
+  z.object({ kind: z.literal('Cove'), id: z.object({ cove: z.string() }) }),
+  z.object({
+    kind: z.literal('Wave'),
+    id: z.object({ wave: z.string(), cove: z.string() }),
+  }),
+  z.object({
+    kind: z.literal('Card'),
+    id: z.object({ card: z.string(), wave: z.string(), cove: z.string() }),
+  }),
+]);
+
+export type EventScope = z.infer<typeof eventScopeSchema>;
+
 // ---------------- Discriminated union ----------------
 
 /**
