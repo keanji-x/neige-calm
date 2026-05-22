@@ -137,6 +137,33 @@ const TYPE_SCALE_TOKENS = [
   '--text-display',
 ] as const;
 
+// Line-height (leading) scale tokens — slice 3 of #165. Single-mode like the
+// type scale: leading is shape, not color, so no dark override. Values are
+// unitless ratios (the `Npx` literal of TYPE_SCALE has no analogue here — a
+// `1` line-height composes against any inherited font-size). The migration
+// from ~10 distinct ratios is intentionally lossy; rounding policy lives in
+// the issue body.
+const LEADING_TOKENS = [
+  '--leading-none',
+  '--leading-tight',
+  '--leading-snug',
+  '--leading-base',
+  '--leading-loose',
+] as const;
+
+// Letter-spacing (tracking) scale tokens — slice 3 of #165. Same shape
+// contract as LEADING_TOKENS (single-mode, no dark override). Values are
+// either `0` (the explicit `--tracking-normal` reset) or `±0.0Nem` — em so
+// the spacing scales with font-size.
+const TRACKING_TOKENS = [
+  '--tracking-tighter',
+  '--tracking-tight',
+  '--tracking-normal',
+  '--tracking-wide',
+  '--tracking-wider',
+  '--tracking-widest',
+] as const;
+
 // Status colors (slice 3b of #137). Positional-like: concrete oklch literals
 // in `:root` AND in `[data-theme="dark"]`. The dark side carries an extra
 // invariant — see DARK_STATUS_OKLCH below — locking in the L=74% standardize
@@ -460,6 +487,65 @@ describe('calm.css token graph: type-scale tokens', () => {
 });
 
 // ---------------------------------------------------------------------------
+// (e1.5) Leading + tracking scale tokens (slice 3 of #165).
+// ---------------------------------------------------------------------------
+//
+// Same single-mode shape contract as the type scale (declared in `:root`,
+// never in `[data-theme="dark"]`). The value-shape gate differs:
+//   - Leading values are unitless (`1`, `1.15`, …) so the ratio composes
+//     against any inherited font-size at the call site.
+//   - Tracking values are either `0` (the explicit `--tracking-normal`
+//     reset, distinct from CSS `normal` so the linter can disallow the
+//     bare keyword) or `±0.0Nem` so the spacing scales with font-size.
+//
+// Like the type scale, the migration from ~10 leading and ~9 tracking
+// distinct literals into 5 + 6 tiers is intentionally lossy; the rounding
+// policy lives in the #165 slice 3 body, not here.
+
+const UNITLESS_LITERAL = /^\d+(\.\d+)?$/;
+const TRACKING_LITERAL = /^(0|-?0\.\d+em)$/;
+
+describe('calm.css token graph: leading scale tokens', () => {
+  for (const name of LEADING_TOKENS) {
+    it(`${name} is declared in :root as a unitless number`, () => {
+      const value = rootDecls.get(name);
+      expect(value, `${name} missing from :root`).toBeDefined();
+      expect(
+        value,
+        `${name} should be a unitless number (line-height composes against inherited font-size), got: ${value}`,
+      ).toMatch(UNITLESS_LITERAL);
+    });
+
+    it(`${name} is NOT redeclared in [data-theme="dark"]`, () => {
+      expect(
+        darkDecls.has(name),
+        `${name} is a leading token; leading is shape, not color — no dark override.`,
+      ).toBe(false);
+    });
+  }
+});
+
+describe('calm.css token graph: tracking scale tokens', () => {
+  for (const name of TRACKING_TOKENS) {
+    it(`${name} is declared in :root as 0 or ±0.0Nem`, () => {
+      const value = rootDecls.get(name);
+      expect(value, `${name} missing from :root`).toBeDefined();
+      expect(
+        value,
+        `${name} should be '0' or '±0.0Nem' (em so tracking scales with font-size), got: ${value}`,
+      ).toMatch(TRACKING_LITERAL);
+    });
+
+    it(`${name} is NOT redeclared in [data-theme="dark"]`, () => {
+      expect(
+        darkDecls.has(name),
+        `${name} is a tracking token; tracking is shape, not color — no dark override.`,
+      ).toBe(false);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // (e2) Status color tokens (slice 3b of #137).
 // ---------------------------------------------------------------------------
 //
@@ -684,30 +770,35 @@ describe('calm.css token graph: z-index scale tokens (#165 slice 4)', () => {
 // be called out in review).
 // ---------------------------------------------------------------------------
 
+// Shared helper for the soft drift detectors below. Replaces the
+// `:root { … }` and `[data-theme="dark"] { … }` blocks with blank lines of
+// equal line count, so when we regex-scan the result the matched offsets
+// still correspond to the original file's line numbers in `console.warn`.
+function maskedSourceWithoutTokenBlocks(): string {
+  const rootStart = CSS.indexOf(':root {');
+  const rootBody = sliceBlock(CSS, ':root {');
+  const rootEnd = CSS.indexOf(rootBody, rootStart) + rootBody.length + 1;
+  const darkStart = CSS.indexOf('[data-theme="dark"] {');
+  const darkBody = sliceBlock(CSS, '[data-theme="dark"] {');
+  const darkEnd = CSS.indexOf(darkBody, darkStart) + darkBody.length + 1;
+  const lineCountIn = (s: string) => (s.match(/\n/g) || []).length;
+  const blank = (n: number) => '\n'.repeat(n);
+  return (
+    CSS.slice(0, rootStart) +
+    blank(lineCountIn(CSS.slice(rootStart, rootEnd))) +
+    CSS.slice(rootEnd, darkStart) +
+    blank(lineCountIn(CSS.slice(darkStart, darkEnd))) +
+    CSS.slice(darkEnd)
+  );
+}
+
 describe('calm.css type-scale: no raw font-size literals outside :root', () => {
   it('logs any remaining font-size px literal in component selectors (informational)', () => {
     // Skip the token-definition blocks (`:root { … }` and the dark block).
     // Anything else is a component selector that should be reading through a
     // var(--text-*) token. We surface this as a warning today; if drift
     // appears in CI noise we can promote to a hard failure later.
-    const rootStart = CSS.indexOf(':root {');
-    const rootBody = sliceBlock(CSS, ':root {');
-    const rootEnd = CSS.indexOf(rootBody, rootStart) + rootBody.length + 1;
-    const darkStart = CSS.indexOf('[data-theme="dark"] {');
-    const darkBody = sliceBlock(CSS, '[data-theme="dark"] {');
-    const darkEnd = CSS.indexOf(darkBody, darkStart) + darkBody.length + 1;
-
-    // Build the source-minus-token-blocks string. We replace the token
-    // blocks with newlines of equal line count so line numbers in the
-    // warning still line up with the original file.
-    const lineCountIn = (s: string) => (s.match(/\n/g) || []).length;
-    const blank = (n: number) => '\n'.repeat(n);
-    const masked =
-      CSS.slice(0, rootStart) +
-      blank(lineCountIn(CSS.slice(rootStart, rootEnd))) +
-      CSS.slice(rootEnd, darkStart) +
-      blank(lineCountIn(CSS.slice(darkStart, darkEnd))) +
-      CSS.slice(darkEnd);
+    const masked = maskedSourceWithoutTokenBlocks();
 
     const hits: string[] = [];
     const re = /font-size:\s*\d+(?:\.\d+)?px/g;
@@ -720,6 +811,58 @@ describe('calm.css type-scale: no raw font-size literals outside :root', () => {
       // eslint-disable-next-line no-console
       console.warn(
         `[calm-tokens] raw font-size px literals outside :root/dark token blocks (migrate to var(--text-*) per #150):\n  ${hits.join('\n  ')}`,
+      );
+    }
+    expect(true).toBe(true);
+  });
+});
+
+// (g2) Soft drift detector for leading + tracking literals (slice 3 of #165).
+// Same masking pattern as font-size above. Hard enforcement lives in the
+// stylelint config (`declaration-property-value-disallowed-list`); this
+// detector is the human-readable "here are the lines" report for whichever
+// future slice promotes the gate to a CI failure.
+describe('calm.css leading scale: no raw line-height literals outside :root', () => {
+  it('logs any remaining line-height numeric literal in component selectors (informational)', () => {
+    const masked = maskedSourceWithoutTokenBlocks();
+    const hits: string[] = [];
+    // Match bare numeric forms only (`1`, `1.55`). `inherit`, `normal`, and
+    // `var(--leading-*)` are intentionally excused.
+    const re = /line-height:\s*\d+(?:\.\d+)?/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(masked)) !== null) {
+      const line = masked.slice(0, m.index).split('\n').length;
+      hits.push(`calm.css:${line}: ${m[0]}`);
+    }
+    if (hits.length > 0) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[calm-tokens] raw line-height literals outside :root/dark token blocks (migrate to var(--leading-*) per #165):\n  ${hits.join('\n  ')}`,
+      );
+    }
+    expect(true).toBe(true);
+  });
+});
+
+describe('calm.css tracking scale: no raw letter-spacing literals outside :root', () => {
+  it('logs any remaining letter-spacing numeric literal in component selectors (informational)', () => {
+    const masked = maskedSourceWithoutTokenBlocks();
+    const hits: string[] = [];
+    // Match `±N.Nem`/`±Npx`/`±Nrem` — bare numeric forms. `inherit` and
+    // `var(--tracking-*)` are intentionally excused. `normal` is also
+    // excused here (the migration left `--tracking-normal` for everything
+    // except the one inherited-tracking reset); the stylelint gate enforces
+    // the numeric ban directly.
+    const re = /letter-spacing:\s*-?\d+(?:\.\d+)?(?:em|rem|px)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(masked)) !== null) {
+      const line = masked.slice(0, m.index).split('\n').length;
+      hits.push(`calm.css:${line}: ${m[0]}`);
+    }
+    if (hits.length > 0) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[calm-tokens] raw letter-spacing literals outside :root/dark token blocks (migrate to var(--tracking-*) per #165):\n  ${hits.join('\n  ')}`,
       );
     }
     expect(true).toBe(true);

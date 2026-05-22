@@ -80,6 +80,14 @@ module.exports = {
       // the existing `stylelint-disable` pair, so the `--z-*: 0|2|4|…`
       // declarations in `:root` are excused without a new exception.
       'z-index': [/^-?\d+$/],
+      // Slice 3 of #165 — leading + tracking scales. The regexes match the
+      // bare literal forms the migration replaced; `var(--leading-*)` /
+      // `var(--tracking-*)` references are excused because stylelint sees
+      // the raw `var(...)` string at parse time and the regexes don't match
+      // it. `inherit` is the one remaining bare keyword and is intentionally
+      // excused — it's a cascade directive, not a literal value.
+      'line-height': [/^\d+(\.\d+)?$/],
+      'letter-spacing': [/^-?\d+(\.\d+)?(em|rem|px)$/],
     },
 
     // `stylelint-config-recommended` enables a small set of "must-fix"
