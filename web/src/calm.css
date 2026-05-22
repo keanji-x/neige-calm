@@ -150,15 +150,6 @@
   --surface-terminal: oklch(99% 0.003 240);
   --surface-code:     oklch(0% 0 0 / 0.04);
 
-  /* Diff line palette (slice 3c of #137). Backgrounds use the 4-arg
-     oklch(... / alpha) form to blend over the card surface. Text colors
-     are deliberately separate from --success/--error (slice 3b) — diff
-     contexts want a darker, denser hue (40%/45% L vs 54% for status). */
-  --diff-add-bg:   oklch(96% 0.05 145 / 0.45);
-  --diff-rm-bg:    oklch(96% 0.05 25 / 0.45);
-  --diff-add-text: oklch(40% 0.11 145);
-  --diff-rm-text:  oklch(45% 0.13 25);
-
   /* Transparent hover/active overlays — slice 3a of #137.
      Consolidates ~42 inline `oklch(0% 0 0 / 0.0X)` literals scattered
      across hover and `.active` / `.sel` selectors into 4 named tiers.
@@ -326,10 +317,6 @@
   --warn-border: oklch(40% 0.05 30);  /* no existing .attn.warn dark override on main; derived from --warn dark */
   --surface-terminal: oklch(18% 0.009 245);
   --surface-code:     oklch(100% 0 0 / 0.06);
-  --diff-add-bg:      oklch(28% 0.05 145 / 0.5);
-  --diff-rm-bg:       oklch(28% 0.05 25 / 0.5);
-  --diff-add-text:    oklch(74% 0.14 145);
-  --diff-rm-text:     oklch(74% 0.14 25);
   --overlay-hover-faint:  oklch(100% 0 0 / 0.035);
   --overlay-hover:        oklch(100% 0 0 / 0.05);
   --overlay-hover-strong: oklch(100% 0 0 / 0.06);
@@ -1209,12 +1196,7 @@ input, textarea { font: inherit; color: inherit; }
 
 /* Inside a grid cell, cards drop their stacked-layout margin and stretch
    to fill the slot. The slot owns the gap (RGL `margin` prop). */
-.card-slot > .term,
-.card-slot > .doc,
-.card-slot > .git,
-.card-slot > .diff,
-.card-slot > .plan-card,
-.card-slot > .note {
+.card-slot > .term {
   margin-bottom: var(--space-0);
   flex: 1;
   min-height: 0;
@@ -1942,39 +1924,6 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   animation: term-blink var(--motion-slow) steps(2, start) infinite;
 }
 @keyframes term-blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
-
-/* ===== Note card ===== */
-.note {
-  border: 1px solid var(--hairline);
-  border-radius: var(--r);
-  background: var(--paper);
-  padding: var(--space-9) var(--space-10);
-  margin-bottom: var(--space-10);
-}
-.note p {
-  margin: var(--space-0);
-  font-size: var(--text-md);
-  line-height: var(--leading-base);
-  color: var(--text-2);
-  text-wrap: pretty;
-}
-.note p code {
-  font-family: var(--font-code);
-  font-size: var(--text-sm);
-  background: var(--surface-code);
-  padding: var(--space-px) var(--space-3);
-  border-radius: var(--radius-md);
-  color: var(--text);
-}
-[data-theme="dark"] .note p code { background: var(--surface-code); }
-
-/* (Doc / Git / Diff / Plan card styles removed — those card builtins were
-   retired in the Wave 4 sweep along with their TSX components. The
-   `.card-slot > .term .term-body` rule above used to also chain
-   `.doc .doc-body`, `.git .git-body`, `.diff .diff-body`,
-   `.plan-card .plan-card-body` siblings; those chain entries were
-   removed when this block went away. If a future card needs a
-   panel-head bg, reuse `--surface-panel-head` via `<CardHead>`.) */
 
 
 /* ============================================================

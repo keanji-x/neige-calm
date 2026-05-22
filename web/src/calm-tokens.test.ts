@@ -78,17 +78,6 @@ const PROSE_SURFACE_TOKENS = [
   '--surface-code',
 ] as const;
 
-// Diff line palette (slice 3c of #137). Background + text pairs for k-add /
-// k-rm rows. Backgrounds carry the 4-arg oklch(... / alpha) form so they
-// blend over the card surface; text values are deliberately separate from
-// --success / --error (slice 3b) — diff contexts want denser hues.
-const DIFF_COLOR_TOKENS = [
-  '--diff-add-bg',
-  '--diff-rm-bg',
-  '--diff-add-text',
-  '--diff-rm-text',
-] as const;
-
 // Overlay tokens (slice 3a of #137): transparent hover/active overlays.
 // 4-tier vocabulary that replaced ~42 inline `oklch(0% 0 0 / 0.0X)` /
 // `oklch(100% 0 0 / 0.0X)` literals scattered across hover and selected
@@ -425,30 +414,6 @@ describe('calm.css token graph: concrete surface tokens', () => {
 
 describe('calm.css token graph: prose / code surface tokens', () => {
   for (const name of PROSE_SURFACE_TOKENS) {
-    it(`${name} has matching oklch() literals in :root and dark`, () => {
-      const light = rootDecls.get(name);
-      const dark = darkDecls.get(name);
-      expect(light, `${name} missing from :root`).toBeDefined();
-      expect(dark, `${name} missing from [data-theme="dark"]`).toBeDefined();
-      expect(
-        light,
-        `${name} light value should be an oklch() literal, got: ${light}`,
-      ).toMatch(OKLCH_LITERAL);
-      expect(
-        dark,
-        `${name} dark value should be an oklch() literal (not a var alias), got: ${dark}`,
-      ).toMatch(OKLCH_LITERAL);
-    });
-  }
-});
-
-// ---------------------------------------------------------------------------
-// (c3) Diff line palette tokens (slice 3c of #137): bg + text pairs, each
-// theme-varying, each an oklch literal.
-// ---------------------------------------------------------------------------
-
-describe('calm.css token graph: diff color tokens', () => {
-  for (const name of DIFF_COLOR_TOKENS) {
     it(`${name} has matching oklch() literals in :root and dark`, () => {
       const light = rootDecls.get(name);
       const dark = darkDecls.get(name);
