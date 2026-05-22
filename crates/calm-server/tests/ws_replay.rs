@@ -99,7 +99,7 @@ async fn seed_three(repo: &SqlxRepo, bus: &EventBus, names: [&str; 3]) -> Vec<(i
             })
             .await
             .unwrap();
-        out.push((event_id, cove.id));
+        out.push((event_id, cove.id.to_string()));
     }
     out
 }

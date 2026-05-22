@@ -113,7 +113,7 @@ async fn seed_linked_pair(state: &AppState) -> (String, String) {
     state
         .raw_repo()
         .card_update(
-            &card.id,
+            card.id.as_str(),
             CardPatch {
                 payload: Some(json!({ "terminal_id": term.id })),
                 ..Default::default()
@@ -121,7 +121,7 @@ async fn seed_linked_pair(state: &AppState) -> (String, String) {
         )
         .await
         .unwrap();
-    (card.id, term.id)
+    (card.id.to_string(), term.id)
 }
 
 /// Unlink a card from its terminal by stripping `payload.terminal_id`.
@@ -244,7 +244,7 @@ async fn sweep_emits_terminal_deleted_with_kernel_actor() {
     match env.event {
         Event::TerminalDeleted { id, card_id: c } => {
             assert_eq!(id, terminal_id);
-            assert_eq!(c, card_id);
+            assert_eq!(c.as_str(), card_id);
         }
         other => panic!("expected TerminalDeleted, got {other:?}"),
     }

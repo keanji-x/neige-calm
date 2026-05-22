@@ -132,7 +132,7 @@ pub(crate) async fn delete_cove(
         move |tx| {
             Box::pin(async move {
                 cove_delete_tx(tx, &id).await?;
-                Ok(((), Event::CoveDeleted { id }))
+                Ok(((), Event::CoveDeleted { id: id.into() }))
             })
         },
     )

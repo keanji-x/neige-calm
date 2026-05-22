@@ -131,7 +131,7 @@ pub(crate) async fn create_terminal_card(
             Box::pin(async move {
                 let (card, _term) = card_with_terminal_create_tx(
                     tx,
-                    wave_id,
+                    wave_id.into(),
                     sort,
                     program_for_tx,
                     cwd_for_tx,
@@ -152,7 +152,7 @@ pub(crate) async fn create_terminal_card(
     //    above committed both card and terminal as one unit.
     let term = s
         .repo
-        .terminal_get_by_card(&card.id)
+        .terminal_get_by_card(card.id.as_ref())
         .await?
         .ok_or_else(|| {
             CalmError::Internal(format!(

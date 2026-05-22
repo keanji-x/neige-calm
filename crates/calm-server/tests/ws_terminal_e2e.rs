@@ -153,7 +153,7 @@ async fn boot_full() -> (std::net::SocketAddr, axum::Router, String, TempDir) {
     // Tiny breathing room — same idiom as tests/ws_events.rs.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    (addr, app, wave.id, tmp)
+    (addr, app, wave.id.to_string(), tmp)
 }
 
 /// In-process REST POST against the merged router (no TCP hop, no JSON

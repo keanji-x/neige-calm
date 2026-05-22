@@ -65,7 +65,7 @@ async fn boot() -> (AppState, String) {
         )),
         Arc::new(calm_server::state::CodexClient::new_stub()),
     );
-    (state, wave.id)
+    (state, wave.id.to_string())
 }
 
 fn app(state: AppState) -> axum::Router {
@@ -203,7 +203,7 @@ async fn patch_terminal_card_with_bad_payload_returns_400() {
     let seeded = state
         .raw_repo()
         .card_create(NewCard {
-            wave_id: wave_id.clone(),
+            wave_id: wave_id.clone().into(),
             kind: "terminal".into(),
             sort: None,
             payload: json!({ "terminal_id": "t1" }),
@@ -213,7 +213,7 @@ async fn patch_terminal_card_with_bad_payload_returns_400() {
 
     let resp = patch_card(
         app(state),
-        &seeded.id,
+        seeded.id.as_str(),
         json!({ "payload": { "terminal_id": 99 } }),
     )
     .await;
@@ -229,7 +229,7 @@ async fn patch_ui_card_with_junk_payload_is_accepted() {
     let seeded = state
         .raw_repo()
         .card_create(NewCard {
-            wave_id: wave_id.clone(),
+            wave_id: wave_id.clone().into(),
             kind: "ui://example/view".into(),
             sort: None,
             payload: json!({}),
@@ -239,7 +239,7 @@ async fn patch_ui_card_with_junk_payload_is_accepted() {
 
     let resp = patch_card(
         app(state),
-        &seeded.id,
+        seeded.id.as_str(),
         json!({ "payload": { "garbage": true } }),
     )
     .await;

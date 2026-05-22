@@ -52,6 +52,7 @@ use tokio::time::{Instant, sleep_until};
 use crate::db::sqlite::overlay_upsert_tx;
 use crate::db::{RepoEventWrite, write_with_event_typed};
 use crate::event::{Event, EventBus};
+use crate::ids::{CardId, WaveId};
 use crate::model::NewOverlay;
 use crate::validation::OVERLAY_STATUS_SCHEMA_VERSION;
 
@@ -179,7 +180,7 @@ struct Inner {
     ///
     /// `pending_downgrade_deadline` is `Some(deadline)` only when a downgrade
     /// is being held. A landing upgrade clears it.
-    map: Mutex<HashMap<String, CardEntry>>,
+    map: Mutex<HashMap<CardId, CardEntry>>,
 }
 
 #[derive(Debug, Clone)]
@@ -218,7 +219,7 @@ impl Inner {
 
     /// Mutating entry: a new event says "card X wants to be in state Y now".
     /// Decides upgrade-vs-downgrade and (synchronously) commits or schedules.
-    async fn observe(self: &Arc<Self>, card_id: String, target: State) {
+    async fn observe(self: &Arc<Self>, card_id: CardId, target: State) {
         let mut map = self.map.lock().await;
         // Distinguish "first observation of this card" from "already-tracked
         // card landing in its current state again". The first observation
@@ -255,7 +256,7 @@ impl Inner {
         }
     }
 
-    fn schedule_downgrade(self: Arc<Self>, card_id: String, deadline: Instant) {
+    fn schedule_downgrade(self: Arc<Self>, card_id: CardId, deadline: Instant) {
         tokio::spawn(async move {
             sleep_until(deadline).await;
             // Re-read state at fire time: the pending may have been replaced
@@ -288,16 +289,16 @@ impl Inner {
     /// recompute and write the wave-level union overlay. Emits
     /// `Event::OverlaySet` for both so the WS bridge invalidates the right
     /// queries.
-    async fn commit(&self, card_id: &str, state: State) {
+    async fn commit(&self, card_id: &CardId, state: State) {
         // Look up the owning wave; we need it for the union step.
-        let card = match self.repo.card_get(card_id).await {
+        let card = match self.repo.card_get(card_id.as_ref()).await {
             Ok(Some(c)) => c,
             Ok(None) => {
-                tracing::debug!(card_id, "card_fsm: card vanished mid-commit, skipping");
+                tracing::debug!(card_id = %card_id, "card_fsm: card vanished mid-commit, skipping");
                 return;
             }
             Err(e) => {
-                tracing::warn!(card_id, error = %e, "card_fsm: card_get failed");
+                tracing::warn!(card_id = %card_id, error = %e, "card_fsm: card_get failed");
                 return;
             }
         };
@@ -329,7 +330,7 @@ impl Inner {
             })
             .await
         {
-            tracing::warn!(card_id, error = %e, "card_fsm: card overlay_upsert failed");
+            tracing::warn!(card_id = %card_id, error = %e, "card_fsm: card overlay_upsert failed");
             return;
         }
 
@@ -340,12 +341,12 @@ impl Inner {
     /// Recompute the wave's union state by walking every card in the wave's
     /// FSM map entry (we only know about tracked cards). Writes a wave-level
     /// overlay `{ state, counts }`.
-    async fn recompute_wave(&self, wave_id: &str) {
+    async fn recompute_wave(&self, wave_id: &WaveId) {
         // Find every card in this wave so we can intersect with the FSM map.
-        let cards = match self.repo.cards_by_wave(wave_id).await {
+        let cards = match self.repo.cards_by_wave(wave_id.as_ref()).await {
             Ok(c) => c,
             Err(e) => {
-                tracing::warn!(wave_id, error = %e, "card_fsm: cards_by_wave failed");
+                tracing::warn!(wave_id = %wave_id, error = %e, "card_fsm: cards_by_wave failed");
                 return;
             }
         };
@@ -401,7 +402,7 @@ impl Inner {
             })
             .await
         {
-            tracing::warn!(wave_id, error = %e, "card_fsm: wave overlay_upsert failed");
+            tracing::warn!(wave_id = %wave_id, error = %e, "card_fsm: wave overlay_upsert failed");
         }
     }
 }
@@ -471,7 +472,7 @@ mod tests {
     use serde_json::Value;
     use std::time::Duration as StdDuration;
 
-    async fn setup() -> (Arc<dyn Repo>, EventBus, String, String) {
+    async fn setup() -> (Arc<dyn Repo>, EventBus, WaveId, CardId) {
         let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let bus = EventBus::new();
         let cove = repo
@@ -521,14 +522,14 @@ mod tests {
         // Wait a beat for the async handler to land the overlay write.
         tokio::time::sleep(StdDuration::from_millis(100)).await;
 
-        let card_overlays = repo.overlays_for("card", &card_id).await.unwrap();
+        let card_overlays = repo.overlays_for("card", card_id.as_str()).await.unwrap();
         let s = card_overlays
             .iter()
             .find(|o| o.kind == "status")
             .expect("status overlay written");
         assert_eq!(s.payload["state"], "Working");
 
-        let wave_overlays = repo.overlays_for("wave", &wave_id).await.unwrap();
+        let wave_overlays = repo.overlays_for("wave", wave_id.as_str()).await.unwrap();
         let ws = wave_overlays.iter().find(|o| o.kind == "status").unwrap();
         assert_eq!(ws.payload["state"], "Working");
         assert_eq!(ws.payload["counts"]["working"], 1);
@@ -559,7 +560,7 @@ mod tests {
         );
         tokio::time::sleep(StdDuration::from_millis(100)).await;
 
-        let card_overlays = repo.overlays_for("card", &card_id).await.unwrap();
+        let card_overlays = repo.overlays_for("card", card_id.as_str()).await.unwrap();
         let s = card_overlays
             .iter()
             .find(|o| o.kind == "status")
@@ -597,7 +598,7 @@ mod tests {
 
         // Past the old debounce window — still Working, never flickers.
         tokio::time::sleep(StdDuration::from_millis(900)).await;
-        let card_overlays = repo.overlays_for("card", &card_id).await.unwrap();
+        let card_overlays = repo.overlays_for("card", card_id.as_str()).await.unwrap();
         let s = card_overlays.iter().find(|o| o.kind == "status").unwrap();
         assert_eq!(s.payload["state"], "Working");
 
@@ -611,7 +612,7 @@ mod tests {
             },
         );
         tokio::time::sleep(StdDuration::from_millis(100)).await;
-        let card_overlays = repo.overlays_for("card", &card_id).await.unwrap();
+        let card_overlays = repo.overlays_for("card", card_id.as_str()).await.unwrap();
         let s = card_overlays.iter().find(|o| o.kind == "status").unwrap();
         assert_eq!(s.payload["state"], "AwaitingInput");
     }

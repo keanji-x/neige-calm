@@ -118,7 +118,7 @@ async fn boot_with_daemon(session_daemon_bin: PathBuf) -> Boot {
 
     Boot {
         app,
-        wave_id: wave.id,
+        wave_id: wave.id.to_string(),
         events,
         repo,
         _tmp: tmp,

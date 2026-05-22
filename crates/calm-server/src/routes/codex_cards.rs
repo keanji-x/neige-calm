@@ -231,7 +231,7 @@ pub(crate) async fn create_codex_card(
                 let (card, _term) = card_with_codex_create_tx(
                     tx,
                     card_id_for_tx,
-                    wave_id,
+                    wave_id.into(),
                     sort,
                     cwd_for_tx,
                     env_for_tx,
@@ -291,7 +291,7 @@ pub(crate) async fn create_codex_card(
     //    committed both card and terminal as one unit.
     let term = s
         .repo
-        .terminal_get_by_card(&card.id)
+        .terminal_get_by_card(card.id.as_ref())
         .await?
         .ok_or_else(|| {
             CalmError::Internal(format!(

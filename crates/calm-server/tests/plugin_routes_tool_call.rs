@@ -152,7 +152,7 @@ async fn boot(cfg: StubConfig<'_>) -> Fixture {
 
     Fixture {
         state,
-        wave_id: wave.id,
+        wave_id: wave.id.to_string(),
         plugin_id: cfg.plugin_id.to_string(),
         _tmp: tmp,
     }

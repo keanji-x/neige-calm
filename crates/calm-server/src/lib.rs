@@ -32,6 +32,7 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod event;
+pub mod ids;
 pub mod model;
 pub mod openapi;
 pub mod plugin_host;

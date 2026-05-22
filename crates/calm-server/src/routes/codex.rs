@@ -92,7 +92,7 @@ pub(crate) async fn ingest_hook(
             None,
             &s.events,
             Event::CodexHook {
-                card_id: q.card_id,
+                card_id: q.card_id.into(),
                 kind,
                 payload,
             },
