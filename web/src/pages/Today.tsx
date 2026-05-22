@@ -88,23 +88,25 @@ export function TodayPage({
 
   return (
     <div className="surf">
-      <section className="surf-main">
-        <SurfClock waves={waves} />
-        <TodayTerminalPanel
-          terminalId={todayTerminalId ?? null}
-          error={todayError ?? null}
-          onReset={onResetTodayTerminal}
-        />
-      </section>
-      <aside className="surf-rail" aria-label="Calendar">
-        <CalendarCard
-          today0={today0}
-          events={events}
-          coves={coves}
-          waves={waves}
-          onGo={onGo}
-        />
-      </aside>
+      <SurfClock waves={waves} />
+      <div className="surf-grid">
+        <section className="surf-main">
+          <TodayTerminalPanel
+            terminalId={todayTerminalId ?? null}
+            error={todayError ?? null}
+            onReset={onResetTodayTerminal}
+          />
+        </section>
+        <aside className="surf-rail" aria-label="Calendar">
+          <CalendarCard
+            today0={today0}
+            events={events}
+            coves={coves}
+            waves={waves}
+            onGo={onGo}
+          />
+        </aside>
+      </div>
     </div>
   );
 }

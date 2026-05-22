@@ -2130,15 +2130,25 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   flex: 1;
   min-height: 0;
   padding: var(--space-10) var(--space-11) var(--space-11);
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 308px;
-  gap: var(--space-10);
-  align-items: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-9);
 }
 
 /* the page parent has align-items: center on its flex column —
    make sure surf gets full width */
 .scroll > .surf { align-self: stretch; }
+
+/* 2-col grid sitting under the full-width clock header. align-items: start
+   keeps the terminal top edge flush with the calendar top edge — the
+   columns no longer stretch to match each other's height. */
+.surf-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 308px;
+  gap: var(--space-10);
+  align-items: start;
+  min-height: 0;
+}
 
 .surf-main {
   min-width: 0;
@@ -2147,12 +2157,17 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   gap: var(--space-9);
 }
 
-/* ---- clock + now strip ---- */
+/* ---- clock + now strip ----
+   align-items: baseline puts the clock's text baseline (bottom of "5:10 PM"),
+   the first-line baseline of .surf-clock-meta ("Friday"), and the
+   .surf-clock-status row on a shared horizontal line — reads as a clean
+   anchor across the row. The meta's second line ("May 22 · Evening") hangs
+   below that shared baseline. */
 .surf-clock {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-8) var(--space-10);
-  align-items: center;
+  align-items: baseline;
   padding: var(--space-3) var(--space-2) var(--space-0);
 }
 .surf-clock-time {
@@ -2732,7 +2747,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 
 /* narrow viewports — stack rail under terminal */
 @media (max-width: 920px) {
-  .surf {
+  .surf-grid {
     grid-template-columns: minmax(0, 1fr);
   }
   .surf-term { min-height: 380px; }
