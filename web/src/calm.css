@@ -21,6 +21,17 @@
   --warn: oklch(58% 0.16 30);
   --warn-soft: oklch(96% 0.03 30);
 
+  /* Surface tokens — named backgrounds that text lands on. Slice 1 of #137:
+     paper/bg are aliases for existing tokens; rail/card/chip/toggle-overlay
+     replace inline oklch literals scattered across component selectors.
+     Future contrast audits become an N-text × M-surface grid lookup. */
+  --surface-paper: var(--paper);
+  --surface-bg: var(--bg);
+  --surface-rail: oklch(98% 0.003 240);
+  --surface-card: oklch(96% 0.004 240);
+  --surface-chip: oklch(95% 0.005 240);
+  --surface-toggle-overlay: oklch(0% 0 0 / 0.045);
+
   /* generous shape */
   --r: 14px;
   --shadow: 0 1px 2px rgba(20,30,55,.04), 0 12px 36px rgba(20,30,55,.06);
@@ -39,6 +50,10 @@
   --accent-soft: oklch(28% 0.05 245);
   --warn: oklch(70% 0.16 30);
   --warn-soft: oklch(28% 0.05 30);
+  --surface-rail: oklch(15% 0.008 245);
+  --surface-card: oklch(21% 0.009 245);
+  --surface-chip: oklch(24% 0.01 245);
+  --surface-toggle-overlay: oklch(100% 0 0 / 0.06);
   --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 36px rgba(0,0,0,.4);
 }
 
@@ -105,9 +120,9 @@ input, textarea { font: inherit; color: inherit; }
   padding: 6px 10px 14px;
   gap: 2px;
   border-right: 1px solid var(--hairline);
-  background: oklch(98% 0.003 240);
+  background: var(--surface-rail);
 }
-[data-theme="dark"] .side { background: oklch(15% 0.008 245); }
+[data-theme="dark"] .side { background: var(--surface-rail); }
 /* Sub-landmark wrappers (<nav>, <section>) inside the sidebar. They
    exist for a11y scoping (see Sidebar.tsx + a11y-contract.md §2.2);
    visually they're invisible — children should sit in the same flex
@@ -1003,10 +1018,10 @@ input, textarea { font: inherit; color: inherit; }
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding: 9px 12px;
   border-bottom: 1px solid var(--hairline);
-  background: oklch(96% 0.004 240);
+  background: var(--surface-card);
   font-size: 13px; font-weight: 500;
 }
-[data-theme="dark"] .modal-head { background: oklch(21% 0.009 245); }
+[data-theme="dark"] .modal-head { background: var(--surface-card); }
 .modal-title { color: var(--text); }
 .modal-close {
   background: transparent;
@@ -1147,9 +1162,9 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   display: flex; align-items: center; gap: 8px;
   padding: 10px 14px;
   border-bottom: 1px solid var(--hairline);
-  background: oklch(96% 0.004 240);
+  background: var(--surface-card);
 }
-[data-theme="dark"] .dirpicker-browser-head { background: oklch(21% 0.009 245); }
+[data-theme="dark"] .dirpicker-browser-head { background: var(--surface-card); }
 .dirpicker-up {
   flex: none;
   height: 30px; min-width: 34px;
@@ -1255,11 +1270,11 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
      against the head's content edge without sliding under the X. */
   padding: 6px 38px 6px 12px;
   border-bottom: 1px solid var(--hairline);
-  background: oklch(96% 0.004 240);
+  background: var(--surface-card);
   font-size: 13px; font-weight: 500;
   min-height: 28px;
 }
-[data-theme="dark"] .codex-card-head { background: oklch(21% 0.009 245); }
+[data-theme="dark"] .codex-card-head { background: var(--surface-card); }
 .codex-card-title { flex: 0 0 auto; }
 
 /* Status bar: latest hook event + working/idle dot. Takes up the rest of
@@ -1339,9 +1354,9 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   display: flex; align-items: center; gap: 6px;
   padding: 9px 12px;
   border-bottom: 1px solid var(--hairline);
-  background: oklch(96% 0.004 240);
+  background: var(--surface-card);
 }
-[data-theme="dark"] .term-head { background: oklch(21% 0.009 245); }
+[data-theme="dark"] .term-head { background: var(--surface-card); }
 .term-dot {
   width: 9px; height: 9px; border-radius: 50%;
   background: oklch(85% 0.008 240);
@@ -1890,10 +1905,10 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   display: flex; align-items: center; gap: 6px;
   padding: 10px 14px;
   border-bottom: 1px solid var(--hairline);
-  background: oklch(96% 0.004 240);
+  background: var(--surface-card);
   flex-shrink: 0;
 }
-[data-theme="dark"] .surf-term-head { background: oklch(21% 0.009 245); }
+[data-theme="dark"] .surf-term-head { background: var(--surface-card); }
 .surf-term-head .term-title { margin-left: 6px; }
 .surf-term-host {
   margin-left: auto;
@@ -2069,12 +2084,12 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 
 .cal-toggle {
   display: inline-flex;
-  background: oklch(0% 0 0 / 0.045);
+  background: var(--surface-toggle-overlay);
   border-radius: 7px;
   padding: 2px;
   gap: 1px;
 }
-[data-theme="dark"] .cal-toggle { background: oklch(100% 0 0 / 0.06); }
+[data-theme="dark"] .cal-toggle { background: var(--surface-toggle-overlay); }
 .cal-toggle button {
   font-size: 11px;
   font-weight: 600;
@@ -2637,13 +2652,13 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .settings-field-hint code {
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
   font-size: 12px;
-  background: oklch(95% 0.005 240);
+  background: var(--surface-chip);
   border-radius: 4px;
   padding: 1px 4px;
 }
 [data-theme="dark"] .settings-section-hint code,
 [data-theme="dark"] .settings-field-hint code {
-  background: oklch(24% 0.01 245);
+  background: var(--surface-chip);
 }
 .settings-field-hint {
   font-size: 12px;
