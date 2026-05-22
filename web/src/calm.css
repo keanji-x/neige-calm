@@ -231,6 +231,32 @@
   --space-11: 28px;
   --space-12: 32px;
 
+  /* Motion duration scale (slice 5 of #165). Six-tier vocabulary that
+     consolidates ad-hoc transition / animation durations scattered across
+     the file. The migration is intentionally lossy — pre-consolidation we
+     had 0.06/0.1/0.12/0.15s + 200/240ms + 1.05/1.4/1.6/2.2/2.4s, and the
+     rounding policy below collapses them into a reviewable scale. The
+     ms-vs-s spelling inconsistency (`200ms` next to `0.24s`) is also
+     normalized away — every consumer now reads through `var(--motion-*)`,
+     and the literals live here in `s` units only.
+
+     Single-mode (motion doesn't theme-vary). No easing tokens this slice —
+     consumers keep the `ease` / `ease-in-out` keyword inline for now.
+     Durations:
+       --motion-instant  0.06s  tap responses, micro-presses
+       --motion-quick    0.1s   default hover/focus (was also 0.12s)
+       --motion-snappy   0.15s  (was also 200ms)
+       --motion-medium   0.24s  drawer/modal transitions (was 240ms)
+       --motion-slow     1s     long fades (was also 1.05s / 1.4s)
+       --motion-pulse    2.2s   status pulses (was also 1.6s / 2.4s)
+  */
+  --motion-instant: 0.06s;
+  --motion-quick:   0.1s;
+  --motion-snappy:  0.15s;
+  --motion-medium:  0.24s;
+  --motion-slow:    1s;
+  --motion-pulse:   2.2s;
+
   /* generous shape */
   /* Aliased to --radius-xl (10px). Pre-#165 this was a literal 14px used
      on the card-tier surfaces (.attn, .modal-panel, .codex-card, .term,
@@ -377,7 +403,7 @@ input, textarea { font: inherit; color: inherit; }
   height: 6px;
   border-radius: var(--radius-pill);
   background: var(--warn);
-  animation: conn-indicator-pulse 1.4s ease-in-out infinite;
+  animation: conn-indicator-pulse var(--motion-slow) ease-in-out infinite;
   flex: 0 0 auto;
 }
 @keyframes conn-indicator-pulse {
@@ -435,7 +461,7 @@ input, textarea { font: inherit; color: inherit; }
   font-size: var(--text-base);
   font-weight: 500;
   text-align: left;
-  transition: background 0.1s, color 0.1s;
+  transition: background var(--motion-quick), color var(--motion-quick);
   position: relative;
 }
 .side .nav-item:hover { background: var(--overlay-hover); color: var(--text); }
@@ -494,7 +520,7 @@ input, textarea { font: inherit; color: inherit; }
   color: var(--text-2);
   font-size: var(--text-sm);
   text-align: left;
-  transition: background 0.1s, color 0.1s;
+  transition: background var(--motion-quick), color var(--motion-quick);
 }
 .side .side-wave:hover { background: var(--overlay-hover-faint); color: var(--text); }
 [data-theme="dark"] .side .side-wave:hover { background: var(--overlay-hover); }
@@ -541,7 +567,7 @@ input, textarea { font: inherit; color: inherit; }
   font-size: var(--text-base);
   font-weight: 500;
   text-align: left;
-  transition: background 0.1s, color 0.1s;
+  transition: background var(--motion-quick), color var(--motion-quick);
   position: relative;
 }
 .side .cove-nav:hover { background: var(--overlay-hover-faint); color: var(--text); }
@@ -558,7 +584,7 @@ input, textarea { font: inherit; color: inherit; }
   border-radius: var(--radius-sm);
 }
 .side .cove-nav .swatch.pulse {
-  animation: dot-pulse 2.4s ease-in-out infinite;
+  animation: dot-pulse var(--motion-pulse) ease-in-out infinite;
 }
 .side .cove-nav .pip {
   position: absolute;
@@ -625,7 +651,7 @@ input, textarea { font: inherit; color: inherit; }
   font-weight: 500;
   color: var(--text);
   border-radius: var(--radius-sm);
-  transition: box-shadow 0.1s;
+  transition: box-shadow var(--motion-quick);
 }
 .side .cove-nav-edit input:focus-visible {
   box-shadow: 0 0 0 2px var(--accent-soft);
@@ -639,7 +665,7 @@ input, textarea { font: inherit; color: inherit; }
 
 /* running dot pulse */
 .live-dot {
-  animation: dot-pulse 2.2s ease-in-out infinite;
+  animation: dot-pulse var(--motion-pulse) ease-in-out infinite;
 }
 @keyframes dot-pulse {
   0%, 100% { opacity: 1; }
@@ -711,7 +737,7 @@ input, textarea { font: inherit; color: inherit; }
 }
 .attn .label .pulse {
   width: 6px; height: 6px; border-radius: var(--radius-pill);
-  background: currentColor; animation: pulse 1.6s infinite;
+  background: currentColor; animation: pulse var(--motion-pulse) infinite;
 }
 @keyframes pulse { 0%,100%{opacity:1; transform:scale(1)} 50%{opacity:0.4; transform:scale(1.4)} }
 
@@ -758,7 +784,7 @@ input, textarea { font: inherit; color: inherit; }
   color: var(--bg);
   font-size: var(--text-md); font-weight: 600;
   letter-spacing: var(--tracking-normal);
-  transition: transform 0.06s, opacity 0.1s;
+  transition: transform var(--motion-instant), opacity var(--motion-quick);
 }
 .go:hover { opacity: 0.88; }
 .go:active { transform: scale(0.98); }
@@ -800,7 +826,7 @@ input, textarea { font: inherit; color: inherit; }
   font: inherit;
   width: 100%;
   text-align: left;
-  transition: background 0.1s;
+  transition: background var(--motion-quick);
   cursor: pointer;
 }
 .wave-row:disabled { cursor: default; }
@@ -860,7 +886,7 @@ input, textarea { font: inherit; color: inherit; }
   line-height: var(--leading-none);
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.12s, color 0.12s, background 0.12s;
+  transition: opacity var(--motion-quick), color var(--motion-quick), background var(--motion-quick);
 }
 .wave-row-wrapper:hover .wave-row-delete,
 .wave-row-wrapper:focus-within .wave-row-delete { opacity: 1; }
@@ -926,7 +952,7 @@ input, textarea { font: inherit; color: inherit; }
   border-radius: var(--radius-md);
   color: var(--text-3);
   flex-shrink: 0;
-  transition: background 0.1s, color 0.1s;
+  transition: background var(--motion-quick), color var(--motion-quick);
 }
 .wave-back:hover { background: var(--overlay-hover-strong); color: var(--text); }
 [data-theme="dark"] .wave-back:hover { background: var(--overlay-hover-strong); }
@@ -1019,14 +1045,14 @@ input, textarea { font: inherit; color: inherit; }
    lives here so keyboard users still get visible focus. */
 .cove-title-input {
   border-radius: var(--radius-sm);
-  transition: box-shadow 0.1s;
+  transition: box-shadow var(--motion-quick);
 }
 .cove-title-input:focus-visible {
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
 .new-wave-input {
   border-radius: var(--radius-sm);
-  transition: box-shadow 0.1s;
+  transition: box-shadow var(--motion-quick);
 }
 .new-wave-input:focus-visible {
   box-shadow: 0 0 0 2px var(--accent-soft);
@@ -1047,7 +1073,7 @@ input, textarea { font: inherit; color: inherit; }
   width: 7px; height: 7px; border-radius: var(--radius-pill);
   background: currentColor;
 }
-.status-pill-dot.live-dot { animation: dot-pulse 2.2s ease-in-out infinite; }
+.status-pill-dot.live-dot { animation: dot-pulse var(--motion-pulse) ease-in-out infinite; }
 .status-pill-dot.warn    { box-shadow: 0 0 0 3px var(--warn-soft); }
 .wave-percent {
   font-size: var(--text-sm); color: var(--text-3);
@@ -1175,7 +1201,7 @@ input, textarea { font: inherit; color: inherit; }
   border: none;
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.12s, background 0.1s, color 0.1s;
+  transition: opacity var(--motion-quick), background var(--motion-quick), color var(--motion-quick);
   z-index: var(--z-raised);
 }
 .card-slot:hover .card-grid-close,
@@ -1201,7 +1227,7 @@ input, textarea { font: inherit; color: inherit; }
   color: var(--text-3);
   font-size: var(--text-sm);
   font-weight: 500;
-  transition: color 0.1s, border-color 0.1s;
+  transition: color var(--motion-quick), border-color var(--motion-quick);
   background: transparent;
 }
 .add-panel:hover { color: var(--text); border-color: var(--text-3); }
@@ -1222,7 +1248,7 @@ input, textarea { font: inherit; color: inherit; }
   font-size: var(--text-sm);
   font-weight: 500;
   background: transparent;
-  transition: color 0.1s, border-color 0.1s, background 0.1s;
+  transition: color var(--motion-quick), border-color var(--motion-quick), background var(--motion-quick);
 }
 .view-toggle:hover { color: var(--text); border-color: var(--text-3); }
 .view-toggle.is-list {
@@ -1407,7 +1433,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   background: var(--paper);
   color: var(--text);
   cursor: pointer;
-  transition: border-color 0.1s;
+  transition: border-color var(--motion-quick);
 }
 .dirpicker-field:hover { border-color: var(--text-3); }
 .dirpicker-field-open { border-color: var(--text-3); box-shadow: 0 0 0 2px oklch(60% 0.04 245 / 0.18); }
@@ -1605,13 +1631,13 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   width: 8px; height: 8px; border-radius: var(--radius-pill);
   background: var(--text-4);
   box-shadow: 0 0 0 2px rgba(0,0,0,0);
-  transition: background 240ms ease, box-shadow 240ms ease;
+  transition: background var(--motion-medium) ease, box-shadow var(--motion-medium) ease;
 }
 .codex-status-dot-working {
   /* stylelint-disable-next-line declaration-property-value-disallowed-list */
   background: oklch(74% 0.16 70); /* amber */
   box-shadow: 0 0 0 3px oklch(74% 0.16 70 / 0.20);
-  animation: codex-dot-pulse 1.6s ease-in-out infinite;
+  animation: codex-dot-pulse var(--motion-pulse) ease-in-out infinite;
 }
 @keyframes codex-dot-pulse {
   0%, 100% { box-shadow: 0 0 0 2px oklch(74% 0.16 70 / 0.18); }
@@ -1755,7 +1781,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   font-size: var(--text-base);
   font-weight: 500;
   cursor: pointer;
-  transition: background 0.1s, border-color 0.1s;
+  transition: background var(--motion-quick), border-color var(--motion-quick);
 }
 .xterm-restart:hover {
   background: var(--overlay-hover);
@@ -1787,7 +1813,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   width: 7px; height: 13px;
   background: var(--text);
   vertical-align: middle;
-  animation: term-blink 1.05s steps(2, start) infinite;
+  animation: term-blink var(--motion-slow) steps(2, start) infinite;
 }
 @keyframes term-blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
 
@@ -2085,7 +2111,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   color: var(--text-3);
   /* stylelint-disable-next-line declaration-property-value-disallowed-list */
   margin: 0 -1px;
-  animation: clock-blink 1.6s steps(2, start) infinite;
+  animation: clock-blink var(--motion-pulse) steps(2, start) infinite;
 }
 @keyframes clock-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 .surf-clock-ap {
@@ -2129,7 +2155,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   border-radius: var(--radius-xl);
   padding: var(--space-5) var(--space-7) var(--space-5);
   background: var(--paper);
-  transition: background 0.1s, border-color 0.1s;
+  transition: background var(--motion-quick), border-color var(--motion-quick);
   cursor: pointer;
 }
 .surf-now-card.empty { cursor: default; color: var(--text-3); }
@@ -2165,7 +2191,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 .surf-now-dot.live {
   background: var(--accent);
-  animation: dot-pulse 2.2s ease-in-out infinite;
+  animation: dot-pulse var(--motion-pulse) ease-in-out infinite;
 }
 .surf-now-title {
   font-size: var(--text-base);
@@ -2298,7 +2324,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   background: var(--text);
   vertical-align: middle;
   margin-left: var(--space-1);
-  animation: term-blink 1.05s steps(2, start) infinite;
+  animation: term-blink var(--motion-slow) steps(2, start) infinite;
 }
 
 /* ---- right rail ---- */
@@ -2361,7 +2387,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 .surf-stat-dot.run {
   background: var(--accent);
-  animation: dot-pulse 2.2s ease-in-out infinite;
+  animation: dot-pulse var(--motion-pulse) ease-in-out infinite;
 }
 .surf-stat-n {
   font-size: var(--text-md);
@@ -2402,7 +2428,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   padding: var(--space-2) var(--space-5);
   border-radius: var(--radius-md);
   color: var(--text-3);
-  transition: background 0.1s, color 0.1s;
+  transition: background var(--motion-quick), color var(--motion-quick);
 }
 .cal-toggle button:hover { color: var(--text); }
 .cal-toggle button.on {
@@ -2450,7 +2476,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   padding: var(--space-3) var(--space-0) var(--space-3);
   border-radius: var(--radius-lg);
   cursor: pointer;
-  transition: background 0.1s;
+  transition: background var(--motion-quick);
 }
 .cal-week-day:hover { background: var(--overlay-hover-faint); }
 [data-theme="dark"] .cal-week-day:hover { background: var(--overlay-hover); }
@@ -2521,7 +2547,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   gap: var(--space-1);
   border-radius: var(--radius-md);
   cursor: pointer;
-  transition: background 0.1s;
+  transition: background var(--motion-quick);
 }
 .cal-month-day:hover { background: var(--overlay-hover-faint); }
 [data-theme="dark"] .cal-month-day:hover { background: var(--overlay-hover); }
@@ -2589,7 +2615,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   border-radius: var(--radius-md);
   text-align: left;
   align-items: stretch;
-  transition: background 0.1s;
+  transition: background var(--motion-quick);
   cursor: pointer;
   position: relative;
 }
@@ -2717,7 +2743,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   font-size: var(--text-base);
   letter-spacing: var(--tracking-wide);
   outline: none;
-  transition: border-color 0.1s, box-shadow 0.1s;
+  transition: border-color var(--motion-quick), box-shadow var(--motion-quick);
   margin-bottom: var(--space-6);
 }
 .login-input:focus-visible {
@@ -2752,7 +2778,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
    in a single frame. */
 .react-grid-item,
 .react-grid-item.cssTransforms {
-  transition: transform 200ms ease, box-shadow 0.15s ease;
+  transition: transform var(--motion-snappy) ease, box-shadow var(--motion-snappy) ease;
   transition-property: transform, box-shadow;
 }
 .react-grid-item.react-grid-placeholder {
@@ -2797,7 +2823,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   bottom: 3px;
   right: 3px;
   opacity: 0;
-  transition: opacity 0.12s, color 0.12s;
+  transition: opacity var(--motion-quick), color var(--motion-quick);
   color: var(--text-4);
 }
 .react-resizable-handle::after {
@@ -2913,7 +2939,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   border: none;
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.12s, background 0.1s, color 0.1s;
+  transition: opacity var(--motion-quick), background var(--motion-quick), color var(--motion-quick);
   z-index: var(--z-raised);
 }
 .wave-list-item:hover .card-list-close,
