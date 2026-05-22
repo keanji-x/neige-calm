@@ -78,6 +78,25 @@ export CALM_DAEMON_BIN := $(DAEMON)
 export CALM_CODEX_BRIDGE_BIN := $(BRIDGE)
 export CALM_WEB_DIST := $(DIST)
 
+# Wipe the local sqlite DB (with a timestamped backup) before `up -d` so
+# the new stack boots from a clean schema. Useful when switching between
+# branches with different migration histories — old rows + migration
+# records confuse the new binary. Default = off (preserve current state).
+#
+#   make dev RESET_DB=1     # back up + wipe DB, then `up`
+#   make dev                # unchanged
+#   make reset-db           # standalone: wipe without bringing stack up
+#
+# Backup location: $(CALM_DB_PATH).bak-make-dev-<unix_ts>
+# Terminal sock leftovers at $(HOME)/.local/share/neige-calm/terminals/*.sock
+# are removed too — they reference dead terminal_ids after a reset.
+#
+# Caveat: only the default host DB path is targeted. If CALM_DB_URL points
+# elsewhere, this is a no-op for the custom location.
+RESET_DB ?=
+CALM_DB_PATH := $(HOME)/.local/share/neige-calm/calm.db
+CALM_TERMINALS_DIR := $(HOME)/.local/share/neige-calm/terminals
+
 .PHONY: help
 help: ## Show this help.
 	@awk 'BEGIN {FS = ":.*##"; printf "Targets:\n"} \
@@ -104,7 +123,12 @@ $(DIST): $(shell find $(WORKTREE)/web/src -type f 2>/dev/null) $(WORKTREE)/web/p
 # ---- docker lifecycle ---------------------------------------------------
 
 .PHONY: dev
-dev: build dirs ## Build, then bring the stack up in the background.
+dev: build dirs ## Build, then bring the stack up in the background (RESET_DB=1 wipes db first).
+ifeq ($(RESET_DB),1)
+	@echo "  RESET_DB=1 — stopping stack, wiping DB, then bringing up"
+	-$(COMPOSE) down --remove-orphans
+	$(MAKE) reset-db
+endif
 	$(COMPOSE) up -d
 	@echo ""
 	@echo "  → http://localhost:$(CALM_PORT)/"
@@ -155,3 +179,18 @@ clean: ## Remove build artifacts (target/, web/dist).
 clean-data: ## Remove the sqlite db and plugin state (DANGEROUS).
 	@read -p "wipe ~/.local/share/neige-calm? [y/N] " ans; \
 	  [ "$$ans" = "y" ] && rm -rf $(HOME)/.local/share/neige-calm/* || echo "aborted"
+
+.PHONY: reset-db
+reset-db: ## Back up + remove the local sqlite DB (called by `make dev RESET_DB=1`).
+	@if [ -f "$(CALM_DB_PATH)" ]; then \
+	  ts=$$(date +%s); \
+	  cp "$(CALM_DB_PATH)" "$(CALM_DB_PATH).bak-make-dev-$$ts"; \
+	  rm "$(CALM_DB_PATH)"; \
+	  echo "  reset-db: backed up + removed $(CALM_DB_PATH) (backup: $(CALM_DB_PATH).bak-make-dev-$$ts)"; \
+	else \
+	  echo "  reset-db: $(CALM_DB_PATH) not present, nothing to back up"; \
+	fi
+	@if [ -d "$(CALM_TERMINALS_DIR)" ]; then \
+	  rm -f "$(CALM_TERMINALS_DIR)"/*.sock 2>/dev/null || true; \
+	  echo "  reset-db: removed stale terminal sock files in $(CALM_TERMINALS_DIR)/"; \
+	fi
