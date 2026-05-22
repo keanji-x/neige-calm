@@ -2159,10 +2159,8 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 
 /* ---- clock + now strip ----
    align-items: baseline puts the clock's text baseline (bottom of "5:10 PM"),
-   the first-line baseline of .surf-clock-meta ("Friday"), and the
-   .surf-clock-status row on a shared horizontal line — reads as a clean
-   anchor across the row. The meta's second line ("May 22 · Evening") hangs
-   below that shared baseline. */
+   the .surf-clock-day baseline ("Friday"), and the .surf-clock-status row
+   on a shared horizontal line — reads as a clean anchor across the row. */
 .surf-clock {
   display: flex;
   flex-wrap: wrap;
@@ -2201,23 +2199,15 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   letter-spacing: var(--tracking-widest);
   margin-left: var(--space-4);
 }
-.surf-clock-meta {
-  display: flex; flex-direction: column;
-  gap: var(--space-1);
-  padding-left: var(--space-9);
-  border-left: 1px solid var(--hairline);
-  flex-shrink: 0;
-}
 .surf-clock-day {
   font-family: var(--font-numeric);
   font-size: var(--text-lg);
   letter-spacing: var(--tracking-tight);
   color: var(--text);
   line-height: var(--leading-tight);
-}
-.surf-clock-date {
-  font-size: var(--text-sm);
-  color: var(--text-meta);
+  padding-left: var(--space-9);
+  border-left: 1px solid var(--hairline);
+  flex-shrink: 0;
 }
 
 .surf-clock-now {
@@ -2293,7 +2283,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .surf-now-meta .surf-now-sep { color: var(--text-4); }
 
 @media (max-width: 720px) {
-  .surf-clock-meta { padding-left: var(--space-0); border-left: 0; }
+  .surf-clock-day { padding-left: var(--space-0); border-left: 0; }
 }
 
 /* ---- main terminal (plain) ---- */
