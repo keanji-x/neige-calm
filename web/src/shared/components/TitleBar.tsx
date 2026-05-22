@@ -10,9 +10,7 @@ import { ConnectionIndicator } from './ConnectionIndicator';
 export function TitleBar() {
   return (
     <header className="bar">
-      <div className="right">
-        <ConnectionIndicator />
-      </div>
+      <ConnectionIndicator />
     </header>
   );
 }
