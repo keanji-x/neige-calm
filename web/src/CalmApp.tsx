@@ -21,7 +21,8 @@
 // `useTheme()` hook. The TitleBar's toggle button cycles only between
 // 'light' and 'dark' (an explicit user choice that pins the theme away
 // from the OS preference); the three-mode picker (Light/Dark/System)
-// lives on the Settings page. See issue #22.
+// lives on the Settings page (reachable via the Sidebar's settings
+// button). See issue #22.
 
 import { Suspense, useMemo } from 'react';
 import { Outlet, useRouterState } from '@tanstack/react-router';
@@ -122,7 +123,6 @@ export function CalmApp() {
         // tapping it pins away from 'system'. The three-way Light/Dark/
         // System control lives on the Settings page.
         onToggleTheme={() => setMode(theme === 'dark' ? 'light' : 'dark')}
-        onOpenSettings={() => go({ name: 'settings' })}
       />
       <div className="stage">
         <Sidebar
@@ -133,6 +133,7 @@ export function CalmApp() {
           onCreateCove={async (name, color) => {
             await createCove.mutateAsync({ name, color });
           }}
+          onOpenSettings={() => go({ name: 'settings' })}
         />
         <main className="page">
           <div className="scroll">

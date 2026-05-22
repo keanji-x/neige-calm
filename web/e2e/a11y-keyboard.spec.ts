@@ -683,7 +683,7 @@ test.describe('a11y · keyboard-only navigation', () => {
   });
 
   test('Settings page: all controls reachable and labeled', async ({ page }) => {
-    // Tab to the TitleBar's "Open settings" button (the gear icon). Its
+    // Tab to the Sidebar's "Open settings" button (the gear icon). Its
     // accessible name is set explicitly by aria-label.
     await tabUntil(page, (info) => /open settings/i.test(info.name ?? ''));
     await page.keyboard.press('Enter');
