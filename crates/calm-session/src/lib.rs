@@ -408,10 +408,7 @@ pub enum ClientMsg {
     /// hit the PTY master and the daemon must not let an observer (or a
     /// malicious tab acting through a forged ClientHello) hijack the
     /// child's terminal colors.
-    TerminalThemeUpdate {
-        fg: (u8, u8, u8),
-        bg: (u8, u8, u8),
-    },
+    TerminalThemeUpdate { fg: (u8, u8, u8), bg: (u8, u8, u8) },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

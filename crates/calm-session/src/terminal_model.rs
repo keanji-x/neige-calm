@@ -625,11 +625,7 @@ impl TerminalModel {
     /// Replace the default fg/bg. The next OSC 10/11 query will reflect
     /// the new value. Pre-existing `pending_osc_replies` are not
     /// rewritten — they correspond to a query that already happened.
-    pub fn set_default_colors(
-        &mut self,
-        fg: Option<(u8, u8, u8)>,
-        bg: Option<(u8, u8, u8)>,
-    ) {
+    pub fn set_default_colors(&mut self, fg: Option<(u8, u8, u8)>, bg: Option<(u8, u8, u8)>) {
         self.default_fg = fg;
         self.default_bg = bg;
     }

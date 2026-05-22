@@ -382,7 +382,7 @@ describe('XtermView v2 terminal states', () => {
       screen.getByText(/protocol error: UnsupportedVersion/i),
     ).toBeInTheDocument();
     expect(screen.getByText(/kernel is v3/)).toBeInTheDocument();
-    expect(screen.getByText(/refresh required for protocol v2/i)).toBeInTheDocument();
+    expect(screen.getByText(/refresh required for protocol v3/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /refresh/i })).toBeInTheDocument();
   });
 

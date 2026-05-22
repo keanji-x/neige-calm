@@ -171,13 +171,7 @@ fn osc_11_query_yields_reply_with_configured_bg() {
 
 #[test]
 fn osc_10_query_yields_reply_with_configured_fg() {
-    let mut m = TerminalModel::with_colors(
-        80,
-        24,
-        100,
-        Some((216, 219, 226)),
-        Some((17, 20, 24)),
-    );
+    let mut m = TerminalModel::with_colors(80, 24, 100, Some((216, 219, 226)), Some((17, 20, 24)));
     m.feed(b"\x1b]10;?\x1b\\");
     let reply = m.take_pending_osc_replies();
     assert!(

@@ -572,7 +572,7 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
             protocol error: {protocolError.code}
             {protocolError.message ? ` — ${protocolError.message}` : ''}
             {protocolError.code === 'UnsupportedVersion'
-              ? ' (refresh required for protocol v2)'
+              ? ' (refresh required for protocol v3)'
               : ''}
           </span>
           <button
