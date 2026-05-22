@@ -404,3 +404,185 @@ async fn auto_submit_subscriber_skips_card_without_prompt() {
         "card should remain queryable after subscriber dispatch"
     );
 }
+
+// ---------------------------------------------------------------------------
+// End-to-end negative gate: route → subscriber chain must NOT auto-submit
+// when the route receives `prompt: ""` or no `prompt` field at all.
+//
+// The subscriber-side unit gate is covered above
+// (`auto_submit_subscriber_skips_card_without_prompt`), and the route
+// itself normalizes prompt at parse time before stamping payload. This
+// test wires the two halves together: it actually hits
+// `POST /api/waves/:id/codex-cards` so that the payload-stamping logic
+// in the route is what writes the card, then exercises the live
+// subscriber against the bus.
+//
+// Detection strategy: bind a UnixListener at the exact socket path
+// `DaemonClient::inject_stdin` would dial (`<data_dir>/<term>.sock`)
+// *before* emitting the synthetic session_start event. If the
+// subscriber called `inject_stdin`, the listener's `accept()` future
+// would complete; we assert it stays pending across a tight window.
+// This is the same negative-path style the existing test uses (no
+// affirmative signal exists for "skipped") but with an active
+// connection-observed guard instead of just "no panic".
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn route_to_subscriber_chain_skips_auto_submit_for_empty_or_absent_prompt() {
+    // Re-use `boot_full` minus the daemon binary — we deliberately
+    // point at a bogus path so the route's spawn step fails (500 to
+    // the client). Per #132's existing
+    // `returns_500_on_daemon_spawn_failure_but_persists_row` test, the
+    // card + terminal row are still committed; that's what we want
+    // here so the subscriber has a real card to look up.
+    let tmp = TempDir::new().expect("tempdir");
+    let repo: Arc<dyn Repo> = Arc::new(
+        SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite"),
+    );
+    let cove = repo
+        .cove_create(NewCove {
+            name: "no-prompt".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo
+        .wave_create(NewWave {
+            cove_id: cove.id,
+            title: "no-prompt".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+
+    // Bogus daemon binary so spawn fails fast; data_dir is a tempdir
+    // so we control where `sock_path` resolves.
+    let bad_bin = std::env::temp_dir().join("definitely-not-a-real-daemon-binary-hf");
+    let _ = std::fs::remove_file(&bad_bin);
+    let daemon = Arc::new(DaemonClient {
+        data_dir: tmp.path().to_path_buf(),
+        session_daemon_bin: bad_bin,
+    });
+    let events = EventBus::new();
+    let state = AppState::from_parts(
+        repo.clone(),
+        events.clone(),
+        daemon.clone(),
+        Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            repo.clone(),
+            PathBuf::new(),
+            std::env::temp_dir().join("calm-plugins-data"),
+            Vec::new(),
+            EventBus::new(),
+        )),
+        Arc::new(CodexClient::new_stub()),
+    );
+    let app = routes::router()
+        .layer(axum::middleware::from_fn(
+            calm_server::actor::actor_middleware,
+        ))
+        .with_state(state);
+
+    // Wire up the real subscriber against the same bus + daemon + repo
+    // the route will write to. This is the chain we're locking down.
+    calm_server::codex_auto_submit::spawn(repo.clone(), daemon.clone(), events.clone());
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // Sub-case runner. `body` is the JSON we POST to the route; `label`
+    // tags assertion messages so a failure pinpoints which variant
+    // regressed.
+    let run_case = |body: Value, label: &'static str| {
+        let app = app.clone();
+        let wave_id = wave.id.clone();
+        let events = events.clone();
+        let repo = repo.clone();
+        let daemon = daemon.clone();
+        async move {
+            let (status, resp) =
+                rest_post(app, format!("/api/waves/{wave_id}/codex-cards"), body).await;
+            // 500 because the bogus daemon binary makes spawn fail —
+            // but the card+terminal txn still committed.
+            assert_eq!(
+                status,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "{label}: expected 500 (daemon spawn fails on bogus bin); body={resp:?}"
+            );
+
+            // Recover the persisted card so we can pull its
+            // terminal_id and emit a CodexHook matching it.
+            let cards = repo.cards_by_wave(&wave_id).await.unwrap();
+            let card = cards
+                .iter()
+                .find(|c| c.kind == "codex" && c.payload.get("prompt").is_none_or(Value::is_null))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{label}: expected at least one codex card with no prompt; got {cards:?}"
+                    )
+                })
+                .clone();
+            let terminal_id = card.payload["terminal_id"]
+                .as_str()
+                .expect("payload.terminal_id stamped")
+                .to_string();
+
+            // Bind a listener at the exact socket path the subscriber
+            // would dial. If `codex_auto_submit` mistakenly called
+            // `inject_stdin`, our `accept()` would complete; the
+            // assertion below proves it stays pending.
+            let sock_path = daemon.sock_path(&terminal_id);
+            if let Some(parent) = sock_path.parent() {
+                std::fs::create_dir_all(parent).expect("mkdir data_dir for sock listener");
+            }
+            let _ = std::fs::remove_file(&sock_path);
+            let listener = tokio::net::UnixListener::bind(&sock_path)
+                .unwrap_or_else(|e| panic!("{label}: bind sock listener at {sock_path:?}: {e}"));
+
+            // Emit the trigger event. With no prompt on the card, the
+            // subscriber's gate should short-circuit before touching
+            // the socket.
+            events.emit(
+                "ai:codex",
+                Event::CodexHook {
+                    card_id: card.id.clone(),
+                    kind: "hook.codex.session_start".into(),
+                    payload: json!({}),
+                },
+            );
+
+            // Tight window — the subscriber's fire-and-forget task
+            // would complete its connect attempt well inside 200ms on
+            // any reasonable test host. If `accept()` *does* fire,
+            // that's a regression: prompt-less card auto-submitted.
+            let observed = tokio::time::timeout(Duration::from_millis(200), listener.accept())
+                .await
+                .ok();
+            assert!(
+                observed.is_none(),
+                "{label}: subscriber must NOT connect to the daemon socket when prompt is empty/absent; observed connection from auto-submit path"
+            );
+
+            // Clean up so the next sub-case starts from a known state.
+            // (Card stays in the DB — the next case will find its own
+            // card via the same `prompt is None` predicate.)
+            drop(listener);
+            let _ = std::fs::remove_file(&sock_path);
+        }
+    };
+
+    // Sub-case 1: explicit empty-string prompt. Route normalizes via
+    // `.trim().filter(!empty)` before stamping, so payload.prompt ends
+    // up absent — subscriber gate matches the same shape.
+    run_case(json!({ "prompt": "" }), "empty-string prompt").await;
+    // Reset: clear cards so the next case's lookup-by-no-prompt is
+    // unambiguous (we want exactly one prompt-less card to find).
+    for c in repo.cards_by_wave(&wave.id).await.unwrap() {
+        repo.card_delete(&c.id).await.unwrap();
+    }
+
+    // Sub-case 2: prompt field omitted entirely. Same expected
+    // behavior — subscriber should not auto-submit.
+    run_case(json!({}), "absent prompt field").await;
+}
