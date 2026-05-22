@@ -181,6 +181,30 @@ const RADIUS_TOKENS = [
   '--radius-pill',
 ] as const;
 
+// Spacing-scale tokens: single-mode (don't theme-vary). Declared once in
+// `:root` with a concrete `Npx` literal (or bare `0` for --space-0). Slice 1
+// of #165 consolidates ~228 raw padding/margin/gap literals into this
+// 14-step 4px-grid vocabulary. Same shape contract as TYPE_SCALE_TOKENS —
+// these are shape primitives, not color, so no dark override. The numeric
+// values land on a 4px grid past --space-2 (the small end stays logarithmic
+// to cover the 1/2/4px sites that hairlines and tight clusters lean on).
+const SPACING_TOKENS = [
+  '--space-0',
+  '--space-px',
+  '--space-1',
+  '--space-2',
+  '--space-3',
+  '--space-4',
+  '--space-5',
+  '--space-6',
+  '--space-7',
+  '--space-8',
+  '--space-9',
+  '--space-10',
+  '--space-11',
+  '--space-12',
+] as const;
+
 // Status colors (slice 3b of #137). Positional-like: concrete oklch literals
 // in `:root` AND in `[data-theme="dark"]`. The dark side carries an extra
 // invariant — see DARK_STATUS_OKLCH below — locking in the L=74% standardize
@@ -592,6 +616,42 @@ describe('calm.css token graph: tracking scale tokens', () => {
 });
 
 // ---------------------------------------------------------------------------
+// (e1b) Spacing-scale tokens (slice 1 of #165).
+// ---------------------------------------------------------------------------
+//
+// Same contract as type-scale: declared in `:root`, no dark override. Two
+// twists relative to the type scale:
+//   - The value can be either `Npx` (most steps) OR bare `0` (--space-0).
+//     We accept both via SPACING_PX_OR_ZERO.
+//   - Negative-derived literals (margin: -1px sites) live outside the token
+//     vocabulary by design — see the "negative tunnel adjustment" notes in
+//     calm.css around the .sr-only, .surf-clock-colon, and .cal-agenda
+//     selectors. Those carry stylelint-disable markers; the spacing test
+//     doesn't enumerate them.
+
+const SPACING_PX_OR_ZERO = /^(0|-?\d+(\.\d+)?px)$/;
+
+describe('calm.css token graph: spacing-scale tokens', () => {
+  for (const name of SPACING_TOKENS) {
+    it(`${name} is declared in :root as a numeric px literal (or 0)`, () => {
+      const value = rootDecls.get(name);
+      expect(value, `${name} missing from :root`).toBeDefined();
+      expect(
+        value,
+        `${name} should be a numeric 'Npx' literal or bare '0' (spacing doesn't theme-vary), got: ${value}`,
+      ).toMatch(SPACING_PX_OR_ZERO);
+    });
+
+    it(`${name} is NOT redeclared in [data-theme="dark"]`, () => {
+      expect(
+        darkDecls.has(name),
+        `${name} is a spacing-scale token; spacing is shape, not color — no dark override.`,
+      ).toBe(false);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // (e2) Status color tokens (slice 3b of #137).
 // ---------------------------------------------------------------------------
 //
@@ -963,6 +1023,71 @@ describe('calm.css radius-scale: no raw border-radius literals outside :root', (
       // eslint-disable-next-line no-console
       console.warn(
         `[calm-tokens] raw border-radius px literals outside :root/dark token blocks (migrate to var(--radius-*) per #165):\n  ${hits.join('\n  ')}`,
+      );
+    }
+    expect(true).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (g3) Soft drift detector for spacing literals (slice 1 of #165).
+// ---------------------------------------------------------------------------
+//
+// Same mask-and-scan pattern as the font-size detector above. We catch any
+// `padding|margin|gap|row-gap|column-gap[-*]: ... Npx` in component
+// selectors. Stylelint catches new violations at lint time; this test is the
+// in-repo audit trail so drift is also visible in the test output when
+// somebody runs `npm run test` locally.
+//
+// Negative-derived literals (margin: -1px etc.) are kept as deliberate
+// exceptions with stylelint-disable markers — see the comments in calm.css.
+// We skip lines that carry a stylelint-disable-next-line marker on the
+// previous line so the detector doesn't double-flag the documented sites.
+
+describe('calm.css spacing-scale: no raw spacing literals outside :root', () => {
+  it('logs any remaining padding/margin/gap px literal in component selectors (informational)', () => {
+    const rootStart = CSS.indexOf(':root {');
+    const rootBody = sliceBlock(CSS, ':root {');
+    const rootEnd = CSS.indexOf(rootBody, rootStart) + rootBody.length + 1;
+    const darkStart = CSS.indexOf('[data-theme="dark"] {');
+    const darkBody = sliceBlock(CSS, '[data-theme="dark"] {');
+    const darkEnd = CSS.indexOf(darkBody, darkStart) + darkBody.length + 1;
+
+    const lineCountIn = (s: string) => (s.match(/\n/g) || []).length;
+    const blank = (n: number) => '\n'.repeat(n);
+    const masked =
+      CSS.slice(0, rootStart) +
+      blank(lineCountIn(CSS.slice(rootStart, rootEnd))) +
+      CSS.slice(rootEnd, darkStart) +
+      blank(lineCountIn(CSS.slice(darkStart, darkEnd))) +
+      CSS.slice(darkEnd);
+
+    // Match any spacing property whose value carries an `Npx` literal. We
+    // match `-?\d+px` so negative-tunnel sites also surface here — they're
+    // suppressed at the disable-marker check below.
+    const re =
+      /\b(padding|padding-(?:top|right|bottom|left|inline|block|inline-start|inline-end|block-start|block-end)|margin|margin-(?:top|right|bottom|left|inline|block|inline-start|inline-end|block-start|block-end)|gap|row-gap|column-gap)\s*:\s*[^;{}]*-?\d+px/g;
+
+    const lines = masked.split('\n');
+    const hits: string[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(masked)) !== null) {
+      const lineNum = masked.slice(0, m.index).split('\n').length;
+      // Skip if the previous line opts out via stylelint-disable-next-line
+      // for this rule (the negative-tunnel exception sites).
+      const prev = lineNum >= 2 ? lines[lineNum - 2] : '';
+      if (
+        /stylelint-disable-next-line/.test(prev) &&
+        /declaration-property-value-disallowed-list/.test(prev)
+      ) {
+        continue;
+      }
+      hits.push(`calm.css:${lineNum}: ${m[0].trim()}`);
+    }
+    if (hits.length > 0) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[calm-tokens] raw spacing px literals outside :root/dark token blocks (migrate to var(--space-*) per #165):\n  ${hits.join('\n  ')}`,
       );
     }
     expect(true).toBe(true);

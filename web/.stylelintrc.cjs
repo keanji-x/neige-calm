@@ -46,6 +46,27 @@ const RAW_COLOR_FNS = [
   /^hsla\(/i,
 ];
 
+// Raw spacing literals (slice 1 of #165). We disallow values that start with
+// a digit, plus mid-value `Npx` literals on the shorthand properties. Token
+// references (`var(--space-*)`), keywords (`auto`, `inherit`), `calc(...)`,
+// `clamp(...)` etc. all pass implicitly — none of them match `^\d` or the
+// `\sNpx` mid-value sniff.
+//
+// Negative literals: most margin* sites that historically used a negative
+// pixel ("tunnel adjustment") opt out via a stylelint-disable-next-line
+// marker in `calm.css`. The `^-?\d` form on margin longhands documents that
+// new negatives need explicit suppression, not silent passage.
+//
+// Shorthand properties (`padding`, `margin`, `gap`) need a mid-value sniff
+// because their values are space-separated and `^\d` only checks the first
+// token — without `(\s\d+px)`, `padding: var(--space-0) 6px` would slip past
+// even though the second value is a raw literal.
+const SPACING_BAN_LONGHAND_NONNEG = [/^\d+/];
+const SPACING_BAN_LONGHAND_NEGOK = [/^-?\d+/];
+const SPACING_BAN_PADDING = [/^\d+/, /^-\d+/, /(\s\d+px)/];
+const SPACING_BAN_MARGIN = [/^\d+/, /^-\d+/, /(\s-?\d+px)/];
+const SPACING_BAN_GAP = [/^\d+/, /\s\d+px/];
+
 module.exports = {
   extends: ['stylelint-config-recommended'],
   rules: {
@@ -61,6 +82,14 @@ module.exports = {
     // gradient cases that legitimately need a literal sit in the
     // `:root`/`[data-theme="dark"]` blocks (and are wrapped by the block
     // disable above the token tables in `calm.css`).
+    //
+    // Padding/margin/gap entries (slice 1 of #165) gate raw spacing
+    // literals on the same properties — they must read through the
+    // `var(--space-*)` vocabulary established in :root. Negative margin
+    // literals opt out via a stylelint-disable-next-line marker (audit
+    // found 3 sites: `.sr-only`, `.surf-clock-colon`, `.cal-agenda`); the
+    // 38px outlier on `.codex-card-head` is also opted out — it tracks the
+    // absolutely-positioned X button's geometry, not the rhythm grid.
     'declaration-property-value-disallowed-list': {
       color: RAW_COLOR_FNS,
       'background-color': RAW_COLOR_FNS,
@@ -102,6 +131,31 @@ module.exports = {
       'border-top-right-radius': [/^\d+/],
       'border-bottom-left-radius': [/^\d+/],
       'border-bottom-right-radius': [/^\d+/],
+      padding: SPACING_BAN_PADDING,
+      'padding-top': SPACING_BAN_LONGHAND_NONNEG,
+      'padding-right': SPACING_BAN_LONGHAND_NONNEG,
+      'padding-bottom': SPACING_BAN_LONGHAND_NONNEG,
+      'padding-left': SPACING_BAN_LONGHAND_NONNEG,
+      'padding-inline': SPACING_BAN_LONGHAND_NONNEG,
+      'padding-block': SPACING_BAN_LONGHAND_NONNEG,
+      'padding-inline-start': SPACING_BAN_LONGHAND_NONNEG,
+      'padding-inline-end': SPACING_BAN_LONGHAND_NONNEG,
+      'padding-block-start': SPACING_BAN_LONGHAND_NONNEG,
+      'padding-block-end': SPACING_BAN_LONGHAND_NONNEG,
+      margin: SPACING_BAN_MARGIN,
+      'margin-top': SPACING_BAN_LONGHAND_NEGOK,
+      'margin-right': SPACING_BAN_LONGHAND_NEGOK,
+      'margin-bottom': SPACING_BAN_LONGHAND_NEGOK,
+      'margin-left': SPACING_BAN_LONGHAND_NEGOK,
+      'margin-inline': SPACING_BAN_LONGHAND_NEGOK,
+      'margin-block': SPACING_BAN_LONGHAND_NEGOK,
+      'margin-inline-start': SPACING_BAN_LONGHAND_NEGOK,
+      'margin-inline-end': SPACING_BAN_LONGHAND_NEGOK,
+      'margin-block-start': SPACING_BAN_LONGHAND_NEGOK,
+      'margin-block-end': SPACING_BAN_LONGHAND_NEGOK,
+      gap: SPACING_BAN_GAP,
+      'row-gap': SPACING_BAN_LONGHAND_NONNEG,
+      'column-gap': SPACING_BAN_LONGHAND_NONNEG,
     },
 
     // `stylelint-config-recommended` enables a small set of "must-fix"
