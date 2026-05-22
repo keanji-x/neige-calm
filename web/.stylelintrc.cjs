@@ -71,6 +71,15 @@ module.exports = {
       'border-bottom-color': RAW_COLOR_FNS,
       'border-left-color': RAW_COLOR_FNS,
       'outline-color': RAW_COLOR_FNS,
+      // Z-index scale gate (slice 4 of #165). Bans bare integer (incl.
+      // negative) z-index values in component selectors — they must go
+      // through one of the `--z-*` tokens declared in `:root`. The regex
+      // matches `^-?\d+$` so `var(--z-modal)`, `auto`, `inherit`, `unset`
+      // all pass implicitly (none start with `-` or a digit). The token-
+      // definition block at the top of `calm.css` is already wrapped in
+      // the existing `stylelint-disable` pair, so the `--z-*: 0|2|4|…`
+      // declarations in `:root` are excused without a new exception.
+      'z-index': [/^-?\d+$/],
     },
 
     // `stylelint-config-recommended` enables a small set of "must-fix"
