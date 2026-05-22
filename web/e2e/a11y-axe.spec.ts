@@ -4,14 +4,20 @@
 // contrast, label/control association, landmark structure, etc.
 //
 // Coverage matrix:
-//   Page                              | Spec name                       |
+//   Page                              | Describe block                  |
 //   -----------------------------------|---------------------------------|
-//   /calm/ (Today)                    | "Today page · axe scan"         |
-//   /calm/cove/<id>                   | "Cove page · axe scan"          |
-//   /calm/wave/<id>                   | "Wave page · axe scan"          |
-//   /calm/settings                    | "Settings page · axe scan"      |
-//   Wave + AddPanel menu open         | "AddPanel open · axe scan"      |
-//   Wave + Modal open                 | "Modal open · axe scan"         |
+//   /calm/ (Today)                    | "Today page"                    |
+//   /calm/cove/<id>                   | "Cove page"                     |
+//   /calm/wave/<id>                   | "Wave page"                     |
+//   /calm/settings                    | "Settings page"                 |
+//   Wave + AddPanel menu open         | "AddPanel open"                 |
+//   Wave + list view toggled on       | "Wave list view"                |
+//   Wave + Modal open                 | "Modal open"                    |
+//
+// Every describe block is parameterised over THEMES (light + dark) so the
+// suite scans each route/state once per theme — catching dark-only
+// contrast regressions that #133/#135 surfaced manually. Slice 3 of #142
+// promoted this from "AddPanel + Modal only" to full parity.
 //
 // Runs under the Playwright `a11y` project (so it talks to a Vite dev
 // server fronting the in-process replay binary). Same constraint as
@@ -28,6 +34,14 @@
 import { test, expect, type Page } from '@playwright/test';
 import { AxeBuilder } from '@axe-core/playwright';
 import { resetReplayServer } from './helpers/reset';
+
+/** Themes the axe matrix scans every route under. `light` is the default
+ *  the app boots into; `dark` is applied via `enableDarkTheme()` below
+ *  after the page has rendered, before the scan runs. Keeping this as a
+ *  single source of truth means a future "high-contrast" or "auto"
+ *  variant can be added in one place. */
+const THEMES = ['light', 'dark'] as const;
+type Theme = (typeof THEMES)[number];
 
 // Wait for the auto-bootstrap to land. `useTodayTerminal` runs on first
 // paint of the Today page and creates "Scratch / Today / <terminal>"
@@ -70,6 +84,13 @@ async function enableDarkTheme(page: Page): Promise<void> {
     const [r, g, b] = m.map(Number);
     return r < 80 && g < 80 && b < 80;
   });
+}
+
+/** Apply `theme` if it's not the default light mode. Centralised so each
+ *  per-route test body only has to call `applyTheme(page, theme)` after
+ *  its setup is complete — no branching in the call sites. */
+async function applyTheme(page: Page, theme: Theme): Promise<void> {
+  if (theme === 'dark') await enableDarkTheme(page);
 }
 
 // Rules disabled across all scans below. No rules currently deferred;
@@ -167,201 +188,164 @@ test.describe('a11y · axe', () => {
     await resetReplayServer(request);
   });
 
-  test('Today page · no violations', async ({ page }) => {
-    await page.goto('/?trace=1');
-    await waitForBootstrap(page);
-    const { violations } = await axe(page).analyze();
-    expect(violations, formatViolations(violations)).toEqual([]);
+  // Each describe block below scans the same route/state twice — once
+  // per theme — using identical assertions. The light pass is the
+  // historical baseline; the dark pass guards the parallel cascade
+  // (`[data-theme="dark"]` selectors in `calm.css`) against contrast /
+  // landmark / labelling regressions that wouldn't show up at light.
+
+  test.describe('Today page', () => {
+    for (const theme of THEMES) {
+      test(`${theme} mode · no violations`, async ({ page }) => {
+        await page.goto('/?trace=1');
+        await waitForBootstrap(page);
+        await applyTheme(page, theme);
+        const { violations } = await axe(page).analyze();
+        expect(violations, formatViolations(violations)).toEqual([]);
+      });
+    }
   });
 
-  test('Cove page · no violations', async ({ page }) => {
-    const { coveId } = await ids(page);
-    await page.goto(`/calm/cove/${coveId}?trace=1`);
-    await waitForBootstrap(page);
-    // CovePage paints its header (h1, eyebrow, …) synchronously once
-    // covesQuery resolves. Wait for the title before scanning so we
-    // don't catch a half-rendered skeleton.
-    await expect(page.getByRole('heading', { name: /scratch/i })).toBeVisible();
-    const { violations } = await axe(page).analyze();
-    expect(violations, formatViolations(violations)).toEqual([]);
+  test.describe('Cove page', () => {
+    for (const theme of THEMES) {
+      test(`${theme} mode · no violations`, async ({ page }) => {
+        const { coveId } = await ids(page);
+        await page.goto(`/calm/cove/${coveId}?trace=1`);
+        await waitForBootstrap(page);
+        // CovePage paints its header (h1, eyebrow, …) synchronously once
+        // covesQuery resolves. Wait for the title before scanning so we
+        // don't catch a half-rendered skeleton.
+        await expect(page.getByRole('heading', { name: /scratch/i })).toBeVisible();
+        await applyTheme(page, theme);
+        const { violations } = await axe(page).analyze();
+        expect(violations, formatViolations(violations)).toEqual([]);
+      });
+    }
   });
 
-  test('Wave page · no violations', async ({ page }) => {
-    const { waveId } = await ids(page);
-    await page.goto(`/calm/wave/${waveId}?trace=1`);
-    await waitForBootstrap(page);
-    // WaveGrid is lazy-loaded — wait for AddPanel to render before
-    // scanning so the wave page's full role tree is in the DOM.
-    await expect(page.getByRole('button', { name: /\+\s*add/i })).toBeVisible();
-    const { violations } = await axe(page).analyze();
-    expect(violations, formatViolations(violations)).toEqual([]);
+  test.describe('Wave page', () => {
+    for (const theme of THEMES) {
+      test(`${theme} mode · no violations`, async ({ page }) => {
+        const { waveId } = await ids(page);
+        await page.goto(`/calm/wave/${waveId}?trace=1`);
+        await waitForBootstrap(page);
+        // WaveGrid is lazy-loaded — wait for AddPanel to render before
+        // scanning so the wave page's full role tree is in the DOM.
+        await expect(page.getByRole('button', { name: /\+\s*add/i })).toBeVisible();
+        await applyTheme(page, theme);
+        const { violations } = await axe(page).analyze();
+        expect(violations, formatViolations(violations)).toEqual([]);
+      });
+    }
   });
 
-  test('Settings page · no violations', async ({ page }) => {
-    await page.goto('/calm/settings?trace=1');
-    // The form mounts with empty/default values; we still wait for the
-    // first input to be present so the scan covers the real DOM, not a
-    // pre-hydration shell.
-    await expect(page.getByRole('textbox', { name: /http proxy/i })).toBeVisible({
-      timeout: 15_000,
-    });
-    const { violations } = await axe(page).analyze();
-    expect(violations, formatViolations(violations)).toEqual([]);
+  test.describe('Settings page', () => {
+    for (const theme of THEMES) {
+      test(`${theme} mode · no violations`, async ({ page }) => {
+        await page.goto('/calm/settings?trace=1');
+        // The form mounts with empty/default values; we still wait for
+        // the first input to be present so the scan covers the real
+        // DOM, not a pre-hydration shell.
+        await expect(page.getByRole('textbox', { name: /http proxy/i })).toBeVisible({
+          timeout: 15_000,
+        });
+        await applyTheme(page, theme);
+        const { violations } = await axe(page).analyze();
+        expect(violations, formatViolations(violations)).toEqual([]);
+      });
+    }
   });
 
-  test('AddPanel open · no violations on menu', async ({ page }) => {
-    const { waveId } = await ids(page);
-    await page.goto(`/calm/wave/${waveId}?trace=1`);
-    await waitForBootstrap(page);
-    // Open the menu via keyboard so we're scanning the same transient
-    // state a real user would land in. Slice 7 may rework the menu's
-    // keyboard semantics but the open-on-Enter contract holds today.
-    const trigger = page.getByRole('button', { name: /\+\s*add/i });
-    await expect(trigger).toBeVisible();
-    await trigger.focus();
-    await page.keyboard.press('Enter');
-    await expect(page.getByRole('menu')).toBeVisible();
-    // Scope the scan to the menu region — scanning the whole document
-    // would re-flag everything from the page-level scan above. We
-    // explicitly want "is the menu itself ARIA-clean?".
-    const { violations } = await axe(page).include('[role="menu"]').analyze();
-    expect(violations, formatViolations(violations)).toEqual([]);
+  test.describe('AddPanel open', () => {
+    for (const theme of THEMES) {
+      test(`${theme} mode · no violations on menu`, async ({ page }) => {
+        const { waveId } = await ids(page);
+        await page.goto(`/calm/wave/${waveId}?trace=1`);
+        await waitForBootstrap(page);
+        await applyTheme(page, theme);
+        // Open the menu via keyboard so we're scanning the same
+        // transient state a real user would land in. Slice 7 may rework
+        // the menu's keyboard semantics but the open-on-Enter contract
+        // holds today.
+        const trigger = page.getByRole('button', { name: /\+\s*add/i });
+        await expect(trigger).toBeVisible();
+        await trigger.focus();
+        await page.keyboard.press('Enter');
+        await expect(page.getByRole('menu')).toBeVisible();
+        // Scope the scan to the menu region — scanning the whole
+        // document would re-flag everything from the page-level scan
+        // above. We explicitly want "is the menu itself ARIA-clean?".
+        const { violations } = await axe(page).include('[role="menu"]').analyze();
+        expect(violations, formatViolations(violations)).toEqual([]);
+      });
+    }
   });
 
   // Slice 9: the list-view alternative to WaveGrid. Same role/name
   // hygiene applies — labels, roles, landmark structure should come
   // out clean. The role="switch" toggle is the new control we want
   // covered along with the list itself.
-  test('Wave list view · no violations', async ({ page }) => {
-    const { waveId } = await ids(page);
-    await page.goto(`/calm/wave/${waveId}?trace=1`);
-    await waitForBootstrap(page);
-    // Wait for the wave page to fully render before flipping the
-    // toggle — WaveGrid is lazy-loaded.
-    await expect(page.getByRole('button', { name: /\+\s*add/i })).toBeVisible();
-    const toggle = page.getByRole('switch', { name: /switch wave to list view/i });
-    await expect(toggle).toBeVisible();
-    await toggle.click();
-    // List mode lazily mounts; wait for the <ul> before the scan.
-    await expect(page.getByRole('list', { name: /wave cards/i })).toBeVisible({
-      timeout: 5_000,
-    });
-    const { violations } = await axe(page).analyze();
-    expect(violations, formatViolations(violations)).toEqual([]);
+  test.describe('Wave list view', () => {
+    for (const theme of THEMES) {
+      test(`${theme} mode · no violations`, async ({ page }) => {
+        const { waveId } = await ids(page);
+        await page.goto(`/calm/wave/${waveId}?trace=1`);
+        await waitForBootstrap(page);
+        // Wait for the wave page to fully render before flipping the
+        // toggle — WaveGrid is lazy-loaded.
+        await expect(page.getByRole('button', { name: /\+\s*add/i })).toBeVisible();
+        const toggle = page.getByRole('switch', { name: /switch wave to list view/i });
+        await expect(toggle).toBeVisible();
+        await toggle.click();
+        // List mode lazily mounts; wait for the <ul> before the scan.
+        await expect(page.getByRole('list', { name: /wave cards/i })).toBeVisible({
+          timeout: 5_000,
+        });
+        await applyTheme(page, theme);
+        const { violations } = await axe(page).analyze();
+        expect(violations, formatViolations(violations)).toEqual([]);
+      });
+    }
   });
 
-  test('Modal open · no violations on dialog', async ({ page }) => {
-    const { waveId } = await ids(page);
-    await page.goto(`/calm/wave/${waveId}?trace=1`);
-    await waitForBootstrap(page);
-    // Same path as the keyboard spec: open AddPanel, pick the codex
-    // menuitem (the only built-in with a createSchema → modal).
-    const trigger = page.getByRole('button', { name: /\+\s*add/i });
-    await trigger.focus();
-    await page.keyboard.press('Enter');
-    const codexItem = page.getByRole('menuitem', { name: /codex/i });
-    const hasCodex = (await codexItem.count()) > 0;
-    test.skip(!hasCodex, 'codex card kind not registered in this fixture');
-    // Slice 7's roving-tabindex menu: ArrowDown from the (focused) first
-    // menuitem to land on codex, then Enter activates *that* item.
-    // `codexItem.press('Enter')` would fire keydown on the codex button
-    // but the hook reads its internal `activeIndex` to decide which item
-    // to activate — keyboard navigation has to walk to it first.
-    await page.keyboard.press('ArrowDown');
-    await expect(codexItem).toBeFocused();
-    await page.keyboard.press('Enter');
-    // The "New codex" entry opens a Modal panel whose body wraps a
-    // DirectoryBrowser. Both wrap their content in role="dialog" — the
-    // Modal panel is the outer one (aria-label = title) and the nested
-    // browser tags itself "Choose a directory". We anchor on the outer
-    // by its accessible name so the scan target is unambiguous.
-    const dialog = page.getByRole('dialog', { name: /new codex/i });
-    await expect(dialog).toBeVisible();
-    // Scope the scan to the modal panel — its content (SchemaForm or
-    // DirectoryBrowser) is what we care about here, not the dimmed page
-    // underneath (which we already scanned).
-    const { violations } = await axe(page).include('.modal-panel').analyze();
-    expect(violations, formatViolations(violations)).toEqual([]);
-  });
-
-  // ---- Dark-mode parity scans ------------------------------------------
-  //
-  // The scans above run against the default (light) theme. Re-run the 4
-  // representative pages (the ones with the most distinct surfaces in
-  // the original color-contrast investigation) with `data-theme="dark"`
-  // applied so we catch any dark-only contrast regression. Limited to 4
-  // tests intentionally — full per-state coverage would double the
-  // suite's runtime for marginal additional signal.
-
-  test('Today page · dark mode · no violations', async ({ page }) => {
-    await page.goto('/?trace=1');
-    await waitForBootstrap(page);
-    await enableDarkTheme(page);
-    const { violations } = await axe(page).analyze();
-    expect(violations, formatViolations(violations)).toEqual([]);
-  });
-
-  test('Cove page · dark mode · no violations', async ({ page }) => {
-    const { coveId } = await ids(page);
-    await page.goto(`/calm/cove/${coveId}?trace=1`);
-    await waitForBootstrap(page);
-    await expect(page.getByRole('heading', { name: /scratch/i })).toBeVisible();
-    await enableDarkTheme(page);
-    const { violations } = await axe(page).analyze();
-    expect(violations, formatViolations(violations)).toEqual([]);
-  });
-
-  test('Wave page · dark mode · no violations', async ({ page }) => {
-    const { waveId } = await ids(page);
-    await page.goto(`/calm/wave/${waveId}?trace=1`);
-    await waitForBootstrap(page);
-    await expect(page.getByRole('button', { name: /\+\s*add/i })).toBeVisible();
-    await enableDarkTheme(page);
-    const { violations } = await axe(page).analyze();
-    expect(violations, formatViolations(violations)).toEqual([]);
-  });
-
-  test('Settings page · dark mode · no violations', async ({ page }) => {
-    await page.goto('/calm/settings?trace=1');
-    await expect(page.getByRole('textbox', { name: /http proxy/i })).toBeVisible({
-      timeout: 15_000,
-    });
-    await enableDarkTheme(page);
-    const { violations } = await axe(page).analyze();
-    expect(violations, formatViolations(violations)).toEqual([]);
-  });
-
-  test('AddPanel open · dark mode · no violations on menu', async ({ page }) => {
-    const { waveId } = await ids(page);
-    await page.goto(`/calm/wave/${waveId}?trace=1`);
-    await waitForBootstrap(page);
-    await enableDarkTheme(page);
-    const trigger = page.getByRole('button', { name: /\+\s*add/i });
-    await expect(trigger).toBeVisible();
-    await trigger.focus();
-    await page.keyboard.press('Enter');
-    await expect(page.getByRole('menu')).toBeVisible();
-    const { violations } = await axe(page).include('[role="menu"]').analyze();
-    expect(violations, formatViolations(violations)).toEqual([]);
-  });
-
-  test('Modal open · dark mode · no violations on dialog', async ({ page }) => {
-    const { waveId } = await ids(page);
-    await page.goto(`/calm/wave/${waveId}?trace=1`);
-    await waitForBootstrap(page);
-    await enableDarkTheme(page);
-    const trigger = page.getByRole('button', { name: /\+\s*add/i });
-    await trigger.focus();
-    await page.keyboard.press('Enter');
-    const codexItem = page.getByRole('menuitem', { name: /codex/i });
-    const hasCodex = (await codexItem.count()) > 0;
-    test.skip(!hasCodex, 'codex card kind not registered in this fixture');
-    await page.keyboard.press('ArrowDown');
-    await expect(codexItem).toBeFocused();
-    await page.keyboard.press('Enter');
-    const dialog = page.getByRole('dialog', { name: /new codex/i });
-    await expect(dialog).toBeVisible();
-    const { violations } = await axe(page).include('.modal-panel').analyze();
-    expect(violations, formatViolations(violations)).toEqual([]);
+  test.describe('Modal open', () => {
+    for (const theme of THEMES) {
+      test(`${theme} mode · no violations on dialog`, async ({ page }) => {
+        const { waveId } = await ids(page);
+        await page.goto(`/calm/wave/${waveId}?trace=1`);
+        await waitForBootstrap(page);
+        await applyTheme(page, theme);
+        // Same path as the keyboard spec: open AddPanel, pick the codex
+        // menuitem (the only built-in with a createSchema → modal).
+        const trigger = page.getByRole('button', { name: /\+\s*add/i });
+        await trigger.focus();
+        await page.keyboard.press('Enter');
+        const codexItem = page.getByRole('menuitem', { name: /codex/i });
+        const hasCodex = (await codexItem.count()) > 0;
+        test.skip(!hasCodex, 'codex card kind not registered in this fixture');
+        // Slice 7's roving-tabindex menu: ArrowDown from the (focused)
+        // first menuitem to land on codex, then Enter activates *that*
+        // item. `codexItem.press('Enter')` would fire keydown on the
+        // codex button but the hook reads its internal `activeIndex` to
+        // decide which item to activate — keyboard navigation has to
+        // walk to it first.
+        await page.keyboard.press('ArrowDown');
+        await expect(codexItem).toBeFocused();
+        await page.keyboard.press('Enter');
+        // The "New codex" entry opens a Modal panel whose body wraps a
+        // DirectoryBrowser. Both wrap their content in role="dialog" —
+        // the Modal panel is the outer one (aria-label = title) and the
+        // nested browser tags itself "Choose a directory". We anchor on
+        // the outer by its accessible name so the scan target is
+        // unambiguous.
+        const dialog = page.getByRole('dialog', { name: /new codex/i });
+        await expect(dialog).toBeVisible();
+        // Scope the scan to the modal panel — its content (SchemaForm or
+        // DirectoryBrowser) is what we care about here, not the dimmed
+        // page underneath (which we already scanned).
+        const { violations } = await axe(page).include('.modal-panel').analyze();
+        expect(violations, formatViolations(violations)).toEqual([]);
+      });
+    }
   });
 });
