@@ -104,6 +104,21 @@ struct Cli {
     #[arg(long, default_value_t = 24)]
     rows: u16,
 
+    /// Default foreground RGB the daemon advertises to the PTY child in
+    /// reply to OSC 10 color queries (#177). Format: `r,g,b` (decimal
+    /// 0..=255). When omitted the daemon stays silent on OSC 10 and the
+    /// child falls back to its built-in default — same pre-#177
+    /// behaviour. Terminal mode only.
+    #[arg(long, value_parser = parse_rgb)]
+    terminal_fg: Option<(u8, u8, u8)>,
+
+    /// Default background RGB the daemon advertises to the PTY child in
+    /// reply to OSC 11 color queries (#177). Same shape as
+    /// `--terminal-fg`. The codex composer reads this on startup to
+    /// pick a contrasting text color against the host browser's theme.
+    #[arg(long, value_parser = parse_rgb)]
+    terminal_bg: Option<(u8, u8, u8)>,
+
     /// Working directory for the spawned child. Defaults to the daemon's cwd.
     #[arg(long)]
     cwd: Option<PathBuf>,
@@ -150,6 +165,26 @@ struct Cli {
     /// `--program`).
     #[arg(last = true)]
     cmd: Vec<String>,
+}
+
+/// Parse `--terminal-fg`/`--terminal-bg` payloads. Format: three
+/// comma-separated decimal `u8` channels (e.g. `216,219,226`). Used by
+/// clap's value_parser; fails fast with a human-readable error so a
+/// typo on the spawn arg list surfaces before the daemon comes up.
+fn parse_rgb(s: &str) -> Result<(u8, u8, u8), String> {
+    let parts: Vec<&str> = s.split(',').collect();
+    if parts.len() != 3 {
+        return Err(format!(
+            "expected `r,g,b` (three comma-separated u8 channels), got {s:?}"
+        ));
+    }
+    let parse = |i: usize| -> Result<u8, String> {
+        parts[i]
+            .trim()
+            .parse::<u8>()
+            .map_err(|e| format!("channel {i} ({:?}): {e}", parts[i]))
+    };
+    Ok((parse(0)?, parse(1)?, parse(2)?))
 }
 
 /// Events fanned out in chat mode. Each `Event` here is one already-
@@ -271,11 +306,17 @@ async fn run_terminal(cli: Cli) -> anyhow::Result<()> {
         Arc::new(Mutex::new(child.clone_killer()));
     drop(pair.slave);
 
-    let render_plane: SharedRenderPlane = Arc::new(Mutex::new(RenderPlane::new(
+    // `with_colors` pre-seeds the OSC 10/11 reply colors so codex's
+    // startup probe (#177) gets an authoritative answer from the very
+    // first feed. `None` (the back-compat default) keeps the daemon
+    // silent on OSC queries — matches pre-#177 behaviour.
+    let render_plane: SharedRenderPlane = Arc::new(Mutex::new(RenderPlane::with_colors(
         cli.cols,
         cli.rows,
         cli.buffer_bytes,
         SCROLLBACK_MAX_LINES,
+        cli.terminal_fg,
+        cli.terminal_bg,
     )));
     let master: SharedMaster = Arc::new(Mutex::new(pair.master));
     // Daemon-level owner registry. Single instance shared across every
