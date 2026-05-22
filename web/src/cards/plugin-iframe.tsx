@@ -36,6 +36,7 @@ import {
   type McpUiHostCapabilities,
 } from '@modelcontextprotocol/ext-apps/app-bridge';
 import type { Implementation } from '@modelcontextprotocol/sdk/types.js';
+import { useTheme } from '../app/theme';
 
 /**
  * Parse a `ui://` resource URI into the (plugin_id, view_id) pair.
@@ -88,21 +89,21 @@ const HOST_CAPABILITIES: McpUiHostCapabilities = {
   logging: {},
 };
 
-function detectTheme(): 'light' | 'dark' {
-  if (typeof window === 'undefined') return 'light';
-  try {
-    const mql = window.matchMedia('(prefers-color-scheme: dark)');
-    return mql.matches ? 'dark' : 'light';
-  } catch {
-    return 'light';
-  }
-}
-
 /**
  * The actual card body. Mounts an iframe pointing at the kernel's HTML
  * route, then wires an AppBridge to the iframe's content window once it
  * loads. Errors during mount surface as an in-card error state — the rest
  * of the wave keeps rendering.
+ *
+ * Theme wiring (issue #22):
+ *   * Initial `hostContext.theme` is captured from `useTheme()` at the
+ *     moment the bridge is constructed (closure snapshot below).
+ *   * After the bridge connects, we hold it in a ref. A second effect,
+ *     keyed on the live `resolved` theme, calls `bridge.setHostContext`
+ *     so iframes flip without remounting. AppBridge's `setHostContext`
+ *     diffs internally and only emits a `host-context-changed`
+ *     notification when something actually moved, so re-calling it on
+ *     unrelated re-renders is cheap.
  */
 function PluginIframeCard({ card }: { card: PluginCardData }) {
   // Memoise the parse so the setup effect can depend on the whole
@@ -113,7 +114,20 @@ function PluginIframeCard({ card }: { card: PluginCardData }) {
     [card.resource_uri],
   );
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  // Live ref to the AppBridge so the theme-push effect can find it without
+  // re-running the (much heavier) bridge-setup effect on every theme flip.
+  // Stays `null` until `connect()` resolves; cleared by the setup effect's
+  // teardown so a late theme push after unmount becomes a no-op.
+  const bridgeRef = useRef<AppBridge | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const { resolved: theme } = useTheme();
+  // The bridge-setup effect deliberately omits `theme` from its deps —
+  // we don't want a theme flip to remount the iframe + tear down the
+  // AppBridge. Instead we snapshot the latest theme into a ref and read
+  // it once at construction time. Live updates ride the separate
+  // theme-push effect further below.
+  const latestThemeRef = useRef<'light' | 'dark'>(theme);
+  latestThemeRef.current = theme;
 
   useEffect(() => {
     if (!parsed) {
@@ -166,7 +180,11 @@ function PluginIframeCard({ card }: { card: PluginCardData }) {
       // iframes that need it can read it as `hostContext.neige.cardId`.
       bridge = new AppBridge(null, HOST_INFO, HOST_CAPABILITIES, {
         hostContext: {
-          theme: detectTheme(),
+          // Snapshot the *current* theme at construction time. Live updates
+          // are pushed by the separate `[theme]`-keyed effect below via
+          // `bridge.setHostContext`. Reading through the ref keeps this
+          // setup effect's deps `theme`-free (no remount on flip).
+          theme: latestThemeRef.current,
           platform: 'web',
           availableDisplayModes: ['inline'],
           displayMode: 'inline',
@@ -229,6 +247,26 @@ function PluginIframeCard({ card }: { card: PluginCardData }) {
 
       try {
         await bridge.connect(transport);
+        // Publish the connected bridge so the theme-push effect can find
+        // it. Anything before this point is "not yet connected" — pushing
+        // host-context updates would race the handshake.
+        if (!cancelled) {
+          bridgeRef.current = bridge;
+          // The host's theme may have changed between mount and connect
+          // resolving. Re-apply now so we don't miss a flip that
+          // happened during the handshake window. `setHostContext`
+          // diffs internally; if nothing moved, no notification fires.
+          try {
+            bridge.setHostContext({ theme: latestThemeRef.current });
+          } catch (e) {
+            // Don't fail the card over a post-connect notification hiccup.
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[plugin ${plugin_id}] post-connect setHostContext failed:`,
+              e,
+            );
+          }
+        }
       } catch (e) {
         if (!cancelled) {
           setError(`AppBridge connect failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -242,6 +280,10 @@ function PluginIframeCard({ card }: { card: PluginCardData }) {
 
     return () => {
       cancelled = true;
+      // Drop the ref BEFORE close() so the theme-push effect can no longer
+      // see this bridge (avoids calling setHostContext on a torn-down bridge
+      // during the strict-mode double-invoke remount window).
+      bridgeRef.current = null;
       // Best-effort teardown. `close()` on the bridge cascades into the
       // transport; the transport closes its postMessage listener so a
       // late frame can't fire a stale handler.
@@ -254,6 +296,30 @@ function PluginIframeCard({ card }: { card: PluginCardData }) {
     // initial mount, but a card whose `resource_uri` was mutated server-side
     // should get a fresh iframe.
   }, [card.id, card.resource_uri, parsed]);
+
+  // Live theme propagation (issue #22). Separate from the bridge-setup
+  // effect on purpose:
+  //   * Setup is async and writes `bridgeRef.current` only after
+  //     `connect()` resolves; this effect is a cheap no-op until then.
+  //   * Keying on `[theme]` only means a theme flip never re-runs the
+  //     heavy iframe + transport + connect dance — the iframe DOM is
+  //     untouched, only a `host-context-changed` notification frame is
+  //     posted to the iframe.
+  //   * The first run after mount may either (a) find `bridgeRef.current`
+  //     still null (the post-connect re-push inside `setup` will deliver
+  //     the right value once connect resolves) or (b) find a connected
+  //     bridge whose initial hostContext already matches `theme`; in case
+  //     (b), `setHostContext`'s internal diff suppresses the notification.
+  useEffect(() => {
+    const bridge = bridgeRef.current;
+    if (!bridge) return;
+    try {
+      bridge.setHostContext({ theme });
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('[plugin-iframe] setHostContext(theme) failed:', e);
+    }
+  }, [theme]);
 
   if (!parsed) {
     return (

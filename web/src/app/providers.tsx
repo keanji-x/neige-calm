@@ -33,6 +33,7 @@ import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
 import type { ReactNode } from 'react';
 import { EventBridge } from './eventBridge';
+import { ThemeProvider } from './theme';
 import { buildPersistOptions, PERSIST_MAX_AGE_MS } from '../api/persistConfig';
 import { Dialog } from '../ui/Dialog/Dialog';
 import {
@@ -62,7 +63,17 @@ export function AppProviders({ children }: { children: ReactNode }) {
     <PersistQueryClientProvider client={queryClient} persistOptions={persistOptions}>
       <EventBridge />
       <QueryRestoreGate>
-        <ServerCompatGate>{children}</ServerCompatGate>
+        {/*
+         * ThemeProvider lives INSIDE AppProviders (so it shares the same
+         * mount lifetime as everything else here) but OUTSIDE the RouterProvider
+         * that `children` ultimately resolves to. Plugin iframe cards rendered
+         * inside routes call `useTheme()`; they need a single provider above
+         * the entire route tree so a theme flip is observable across every
+         * route at once. See issue #22.
+         */}
+        <ThemeProvider>
+          <ServerCompatGate>{children}</ServerCompatGate>
+        </ThemeProvider>
       </QueryRestoreGate>
       {import.meta.env.DEV && (
         <ReactQueryDevtools initialIsOpen={false} buttonPosition="bottom-left" />

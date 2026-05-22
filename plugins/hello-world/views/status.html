@@ -4,6 +4,22 @@
   <meta charset="utf-8">
   <title>Hello status</title>
   <style>
+    /*
+     * Theme: we live inside an MCP-Apps iframe whose AppBridge host pushes
+     * `ui/notifications/host-context-changed` with `{ theme: "light" | "dark" }`
+     * whenever the parent app's theme flips (see web/src/cards/plugin-iframe.tsx
+     * and web/src/app/theme.tsx — issue #22). The script below mirrors that
+     * value onto `<html data-theme="...">`, and the rules below key on it.
+     *
+     * The `@media (prefers-color-scheme: dark)` block is kept as a FALLBACK
+     * only — it covers two corner cases:
+     *   1. The iframe is opened standalone (e.g. dev preview) with no host.
+     *   2. The first paint happens before the host's first
+     *      `host-context-changed` arrives (a few RTT-tens-of-ms window).
+     * Once `data-theme` is set on <html>, the `[data-theme="..."]` rules
+     * win on specificity over the `@media` defaults, so the host's chosen
+     * theme always overrides the OS preference.
+     */
     :root {
       color-scheme: light dark;
       --fg: #2a2f3a;
@@ -18,6 +34,17 @@
         --muted: #9aa1ad;
         --bg: #14171c;
       }
+    }
+    /* Host-driven overrides. Win on specificity over the @media fallback. */
+    html[data-theme="light"] {
+      --fg: #2a2f3a;
+      --muted: #5b626d;
+      --bg: #fff;
+    }
+    html[data-theme="dark"] {
+      --fg: #d9deea;
+      --muted: #9aa1ad;
+      --bg: #14171c;
     }
     body {
       margin: 0;
@@ -144,6 +171,15 @@
       send({ jsonrpc: "2.0", method, params });
     }
 
+    // Apply the host's theme to the iframe's root element. The CSS rules
+    // above key on `html[data-theme="..."]` and override the @media
+    // fallback once we set this. Called from the `host-context-changed`
+    // listener — see the listener below for the message shape.
+    function applyTheme(theme) {
+      if (theme !== "light" && theme !== "dark") return;
+      document.documentElement.dataset.theme = theme;
+    }
+
     function applyPayload(structuredContent, toolInfo) {
       if (!structuredContent) return;
       state.payload = structuredContent;
@@ -185,9 +221,13 @@
           break;
         }
         case "ui/notifications/host-context-changed": {
-          // Theme + container size updates. We don't render anything fancy yet
-          // but log so the demo is visible.
-          log("host-context: " + JSON.stringify(msg.params || {}));
+          // Per the MCP-Apps spec, `params` IS the partial McpUiHostContext —
+          // only the fields that changed. So `params.theme` (not
+          // `params.hostContext.theme`) is the field to read. May be
+          // undefined on a non-theme update.
+          const params = msg.params || {};
+          if (typeof params.theme === "string") applyTheme(params.theme);
+          log("host-context: " + JSON.stringify(params));
           break;
         }
         case "ui/initialize": {

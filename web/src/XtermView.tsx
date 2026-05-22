@@ -109,6 +109,18 @@ interface ExitInfo {
  */
 export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  // Live ref to the active xterm.js Terminal instance so a sibling effect
+  // can re-apply the theme without tearing down the WebSocket + replay
+  // state. xterm.js reads `term.options.theme` lazily on every render
+  // cycle, so reassigning it triggers an immediate repaint at the next
+  // flush. See the theme-apply effect below.
+  const termRef = useRef<Terminal | null>(null);
+  // Latest theme prop, captured into a ref so the main bridge-mount effect
+  // (which omits `theme` from its deps on purpose — see the theme-apply
+  // effect below) can still read the *current* theme when constructing
+  // the Terminal on (re)mount or after a reconnect.
+  const latestThemeRef = useRef<'light' | 'dark'>(theme);
+  latestThemeRef.current = theme;
   const [status, setStatus] = useState<Status>('connecting');
   const [closeInfo, setCloseInfo] = useState<CloseInfo | null>(null);
   const [protocolError, setProtocolError] = useState<ProtocolError | null>(null);
@@ -128,6 +140,17 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
     setReconnectKey((k) => k + 1);
   };
 
+  // Live-apply theme changes without rebuilding the Terminal + WS.
+  // xterm.js exposes `term.options` as a mutable bag; assigning
+  // `term.options.theme = ...` is the official re-theming path. Putting
+  // this in its own effect keeps the (heavy) bridge-mount effect's deps
+  // small and lets us drop `theme` from there.
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    term.options.theme = theme === 'dark' ? DARK_THEME : LIGHT_THEME;
+  }, [theme]);
+
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -138,13 +161,15 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
     });
 
     const term = new Terminal({
-      theme: theme === 'dark' ? DARK_THEME : LIGHT_THEME,
+      theme:
+        latestThemeRef.current === 'dark' ? DARK_THEME : LIGHT_THEME,
       fontFamily: '"SF Mono", ui-monospace, "Menlo", monospace',
       fontSize: 12.5,
       convertEol: true,
       allowProposedApi: true,
       cursorBlink: true,
     });
+    termRef.current = term;
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(container);
@@ -442,8 +467,17 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
         /* already closed */
       }
       term.dispose();
+      // Only clear the ref if it's still pointing at *this* term. A
+      // strict-mode double-invoke teardown can run after the next mount
+      // has already installed its own term; without this guard we'd null
+      // out the new instance.
+      if (termRef.current === term) termRef.current = null;
     };
-  }, [terminalId, theme, reconnectKey]);
+    // `theme` deliberately omitted: a theme flip should NOT rebuild the
+    // WebSocket / Terminal. The sibling effect above mutates
+    // `term.options.theme` in place. `latestThemeRef` captures the current
+    // value for the initial constructor.
+  }, [terminalId, reconnectKey]);
 
   return (
     <div className="xterm-view">

@@ -17,6 +17,7 @@ import { useEffect } from 'react';
 import { useState } from '../shared/state';
 import { Crumbs } from '../shared/components/Crumbs';
 import { useSettingsQuery, useUpdateSettingsMutation } from '../api/queries';
+import { useTheme, type ThemeMode } from '../app/theme';
 import type { Route } from '../types';
 
 type FormState = {
@@ -181,6 +182,81 @@ export function SettingsPage({ onGo }: { onGo: (r: Route) => void }) {
 
         {toast && <div className="settings-toast">{toast}</div>}
       </section>
+
+      <AppearanceSection />
     </div>
+  );
+}
+
+// ---------- Appearance ----------
+//
+// Light / Dark / System radio group. Backed by `useTheme()` from
+// `app/theme.tsx`; no server round-trip — the preference lives in
+// localStorage (`calm.theme`) and is read synchronously on boot by
+// the provider. The TitleBar toggle button writes the same store
+// (explicit 'light' / 'dark'), so toggling there flips this radio
+// in real time without any extra wiring.
+function AppearanceSection() {
+  const { mode, setMode } = useTheme();
+  const options: { value: ThemeMode; label: string; hint: string }[] = [
+    { value: 'light', label: 'Light', hint: 'Always light' },
+    { value: 'dark', label: 'Dark', hint: 'Always dark' },
+    { value: 'system', label: 'System', hint: 'Follow your OS' },
+  ];
+  return (
+    <section className="settings-section" aria-labelledby="settings-appearance-title">
+      <h2 className="settings-section-title" id="settings-appearance-title">
+        Appearance
+      </h2>
+      <p className="settings-section-hint">
+        Choose how the app picks its color theme. The TitleBar toggle button
+        cycles between Light and Dark; pick System here to track your OS
+        preference instead.
+      </p>
+      <fieldset
+        className="schema-form"
+        style={{ border: 'none', padding: 0, margin: 0, gap: 6 }}
+      >
+        <legend
+          className="schema-form-label"
+          // Visually hidden — the section h2 already labels this fieldset
+          // via aria-labelledby. The <legend> still helps assistive tech
+          // identify the grouping when navigating by form control.
+          style={{
+            position: 'absolute',
+            width: 1,
+            height: 1,
+            overflow: 'hidden',
+            clip: 'rect(0 0 0 0)',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          Theme
+        </legend>
+        {options.map((opt) => (
+          <label
+            key={opt.value}
+            htmlFor={`settings-theme-${opt.value}`}
+            className="schema-form-field"
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}
+          >
+            <input
+              id={`settings-theme-${opt.value}`}
+              type="radio"
+              name="settings-theme"
+              value={opt.value}
+              checked={mode === opt.value}
+              onChange={() => setMode(opt.value)}
+            />
+            <span className="schema-form-label" style={{ marginBottom: 0 }}>
+              {opt.label}
+            </span>
+            <span className="settings-field-hint" style={{ marginTop: 0 }}>
+              {opt.hint}
+            </span>
+          </label>
+        ))}
+      </fieldset>
+    </section>
   );
 }

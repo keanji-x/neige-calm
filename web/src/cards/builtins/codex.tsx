@@ -22,6 +22,7 @@ import { z } from 'zod';
 import type { CodexCardData, FsmState } from '../../types';
 import { sharedEventStream } from '../../api/events';
 import { CardStatusDot } from '../../shared/components/CardStatusDot';
+import { useTheme } from '../../app/theme';
 import type { CardEntry } from '../registry';
 import {
   CODEX_PAYLOAD_SCHEMA_VERSION,
@@ -73,6 +74,7 @@ function CodexCard({ card }: { card: CodexCardData }) {
 
 function CodexCardImpl({ card }: { card: CodexCardData }) {
   const cardId = card.id;
+  const { resolved: theme } = useTheme();
   // FSM state owned by the kernel `card_fsm` task. Defaults to "Starting"
   // until the first overlay.set lands (the kernel writes one on the
   // session_start hook, so this placeholder is usually visible for a few
@@ -132,7 +134,7 @@ function CodexCardImpl({ card }: { card: CodexCardData }) {
       <div className="codex-card-pty">
         {card.terminalId ? (
           <Suspense fallback={<div className="codex-card-empty">Loading terminal…</div>}>
-            <XtermView terminalId={card.terminalId} />
+            <XtermView terminalId={card.terminalId} theme={theme} />
           </Suspense>
         ) : (
           <div className="codex-card-empty">
