@@ -1788,6 +1788,35 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   justify-content: flex-end;
   min-width: 0;
 }
+/* "Observing" pill rendered in `.card-head-status` when the daemon
+   assigned this client the Observer role (someone else holds write).
+   Lives next to `<CardStatusDot>`; dot stays anchored at the right
+   (last child) so the live indicator's position is unchanged in the
+   common owner case.
+
+   Token choices:
+   - `--warn-soft` background: this is an attentional state (input is
+     read-only) but not alarming. The same soft-warn we use for the
+     `AwaitingInput` halo on `<CardStatusDot>` so the head's two status
+     children share a colour family.
+   - `--text-3` foreground: subdued; the pill isn't trying to compete
+     with the title — it's metadata. Stays legible on `--warn-soft`
+     (the same pairing already used elsewhere — see the `.note` block).
+   - `--text-xs` + `--tracking-wider` + uppercase: matches the
+     `.card-head-title` typography vocabulary, so the head reads as a
+     single typographic system. */
+.card-head-observing-pill {
+  flex: 0 0 auto;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  line-height: var(--leading-none);
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--text-3);
+  background: var(--warn-soft);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-pill);
+}
 /* `.card-head-icon` is the card-identity glyph block at the very left of
    the header — small rounded square hosting either a caller-supplied
    ReactNode (`icon` prop on <CardHead>) or the default letter-avatar.
@@ -3026,42 +3055,6 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
-}
-
-/* terminal v2 role badge (#81) */
-.xterm-role {
-  position: absolute;
-  top: 8px;
-  left: 12px;
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  line-height: var(--leading-snug);
-  letter-spacing: var(--tracking-wider);
-  text-transform: lowercase;
-  padding: var(--space-1) var(--space-4);
-  border-radius: var(--radius-pill);
-  pointer-events: none;
-  /* z-index 比 xterm 渲染高一点，避免被 canvas 遮 */
-  z-index: var(--z-raised);
-}
-.xterm-role-owner {
-  background: var(--accent-soft);
-  color: var(--accent);
-  border: 1px solid var(--accent);
-}
-.xterm-role-observer {
-  /* stylelint-disable-next-line declaration-property-value-disallowed-list */
-  background: oklch(95% 0.005 240);
-  color: var(--text-3);
-  border: 1px solid var(--hairline-strong);
-}
-.xterm-role-observer::before {
-  content: "◉ ";
-  opacity: 0.6;
-}
-[data-theme="dark"] .xterm-role-observer {
-  /* stylelint-disable-next-line declaration-property-value-disallowed-list */
-  background: oklch(22% 0.008 245);
 }
 
 /* close-info appendix (existed in v1, now styled) */

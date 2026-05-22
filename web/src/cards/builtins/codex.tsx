@@ -20,6 +20,7 @@ import { lazy, Suspense, useEffect } from 'react';
 import { useState } from '../../shared/state';
 import { z } from 'zod';
 import type { CodexCardData, FsmState } from '../../types';
+import type { Role } from '../../api/generated-terminal';
 import { sharedEventStream } from '../../api/events';
 import { CardStatusDot } from '../../shared/components/CardStatusDot';
 import { useTheme } from '../../app/theme';
@@ -83,6 +84,11 @@ function CodexCardImpl({ card }: { card: CodexCardData }) {
   // most recent codex.hook event. Independent of the FSM state because the
   // label is a string and the FSM is a closed enum.
   const [label, setLabel] = useState<string>('starting…');
+  // Daemon-assigned role from the embedded `<XtermView>` handshake. Owners
+  // (the common single-user case) render no badge; Observers get a small
+  // "observing" pill in the head status slot. Cleared on disconnect — the
+  // XtermView callback re-emits on every state transition.
+  const [role, setRole] = useState<Role | null>(null);
 
   useEffect(() => {
     if (!cardId) return;
@@ -132,15 +138,20 @@ function CodexCardImpl({ card }: { card: CodexCardData }) {
         // between `live-dot` and `undefined` on Working/Starting toggles,
         // which is the kind of churn that confuses some AT.
         status={
-          <span aria-live="polite">
-            <CardStatusDot state={fsm} title={`${fsm} — ${label}`} />
-          </span>
+          <>
+            {role === 'Observer' && (
+              <span className="card-head-observing-pill">observing</span>
+            )}
+            <span aria-live="polite">
+              <CardStatusDot state={fsm} title={`${fsm} — ${label}`} />
+            </span>
+          </>
         }
       />
       <div className="codex-card-pty">
         {card.terminalId ? (
           <Suspense fallback={<div className="codex-card-empty">Loading terminal…</div>}>
-            <XtermView terminalId={card.terminalId} theme={theme} />
+            <XtermView terminalId={card.terminalId} theme={theme} onRoleChange={setRole} />
           </Suspense>
         ) : (
           <div className="codex-card-empty">
