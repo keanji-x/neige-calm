@@ -1844,8 +1844,10 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   overflow: hidden;
   display: flex;
 }
+/* `.term-live-pip` is the sole child of `.card-head-status` in the new
+   DOM, so its spacing from the title comes from the parent `.card-head`
+   `gap` — no `margin-left` is needed here. */
 .term-live-pip {
-  margin-left: var(--space-3);
   color: var(--accent);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
@@ -2158,8 +2160,14 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 /* `.card-head` (applied via `<CardHead>`) supplies display/align/gap/
    padding/border/background. `flex-shrink: 0` is load-bearing inside the
    surf-term column flex parent (without it the head gets squeezed when
-   the body claims all the height). */
+   the body claims all the height).
+   `.card-head` reserves 38px on the right for the absolutely-positioned
+   `.card-grid-close` X button, but that button lives in `.card-slot` on
+   the wave grid — surf-term renders on the Today page outside `.card-slot`
+   so no overlay X exists. Return the right padding to the symmetric token
+   so the reset button doesn't get visibly pushed left. */
 .surf-term-head {
+  padding-right: var(--card-head-pad-h);
   flex-shrink: 0;
 }
 [data-theme="dark"] .surf-term-head { background: var(--surface-card); }

@@ -81,6 +81,15 @@ describe('<CardHead>', () => {
     expect(statusIdx).toBeGreaterThan(escapeIdx);
   });
 
+  it('omits className artifact when caller passes none', () => {
+    // Guard against the `card-head ${undefined}` footgun — when no
+    // className is supplied the root's class attribute must be exactly
+    // `card-head` (no trailing space, no literal `"undefined"` token).
+    const { container } = render(<CardHead title="T" />);
+    const root = container.firstChild as HTMLElement;
+    expect(root.getAttribute('class')).toBe('card-head');
+  });
+
   it('places decor before title in DOM order', () => {
     // The `.card-head-decor` slot is the optional left-of-title decoration
     // (Terminal's 3 CRT dots); DOM order pins it left of the title in the
