@@ -20,7 +20,7 @@ use crate::db::sqlite::{
     cove_create_system_tx, cove_create_tx, cove_delete_tx, cove_update_tx,
 };
 use crate::db::write_with_event_typed;
-use crate::error::{ErrorBody, Result};
+use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
 use crate::model::{Cove, CovePatch, NewCove};
 use crate::state::AppState;
@@ -145,7 +145,12 @@ pub(crate) async fn create_cove(
 /// returns 201. The DB-level partial unique index on
 /// `coves(kind) WHERE kind = 'system'` enforces the at-most-one
 /// invariant as a backstop, so two tabs racing this endpoint can both
-/// safely call it: the loser of the write race re-reads on retry.
+/// safely call it: the loser of the write race catches the unique
+/// violation, re-reads the row the winner committed, and returns 200
+/// to its own caller. From the frontend's perspective both racers see a
+/// success and a populated `Cove` body — the only observable difference
+/// is the status code (201 vs 200), and `useTodayTerminal` treats both
+/// as success.
 ///
 /// The endpoint exists so the frontend's `useTodayTerminal` hook can
 /// bootstrap a default terminal without exposing the underlying system
@@ -166,7 +171,7 @@ pub(crate) async fn get_or_create_system_cove(
     // emits a `cove.updated` envelope on the bus, just like the regular
     // `POST /api/coves`. Scope is `System` (same rationale as
     // `create_cove`: the cove id is minted inside the closure).
-    let (cove, _id) = write_with_event_typed(
+    let mint_result = write_with_event_typed(
         s.repo.as_ref(),
         actor.to_actor_id(),
         EventScope::System,
@@ -180,8 +185,32 @@ pub(crate) async fn get_or_create_system_cove(
             })
         },
     )
-    .await?;
-    Ok((StatusCode::CREATED, Json(cove)))
+    .await;
+    match mint_result {
+        Ok((cove, _id)) => Ok((StatusCode::CREATED, Json(cove))),
+        // Race: two cold-boot Today-page loads can both see `cove_get_system()
+        // == None` above and both reach the mint closure; the partial unique
+        // index on `coves(kind) WHERE kind = 'system'` from migration 0009
+        // backstops the at-most-one invariant by failing the loser's INSERT.
+        // We catch that DB error, re-read the now-existing row, and return
+        // 200 — the caller's effective postcondition (a present system cove)
+        // is satisfied. Without this fallback the loser would surface a 500
+        // and `useTodayTerminal` would render the Today page in an error
+        // state until reload. We're permissive (any `Db` error retries the
+        // read) rather than down-casting to a typed `sqlx::error::DatabaseError`
+        // because sqlx requires an `Any` boundary for that and the repo's
+        // existing precedent (`dispatcher::is_sqlite_busy`) likewise
+        // matches on the surface string; if the original error is something
+        // other than the unique violation, the follow-up read returns `None`
+        // and we propagate it unchanged.
+        Err(e) => match e {
+            CalmError::Db(_) => match s.repo.cove_get_system().await? {
+                Some(existing) => Ok((StatusCode::OK, Json(existing))),
+                None => Err(e),
+            },
+            other => Err(other),
+        },
+    }
 }
 
 #[utoipa::path(

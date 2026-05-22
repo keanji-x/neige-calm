@@ -25,7 +25,7 @@
 // auto-creates a hidden **system** cove + "Today" wave + terminal card
 // via `useTodayTerminal` on first paint; that cove is filtered out of
 // `GET /api/coves` by default, so the sidebar never renders it. Each
-// `beforeEach` below mints a `Scratch` **user** cove via the REST API
+// `beforeEach` below mints an `Atlas` **user** cove via the REST API
 // so the keyboard tests have a stable sidebar anchor to navigate from.
 //
 // Where it matters, we pair the UI assertion with an event-trace
@@ -141,13 +141,13 @@ async function tabUntil(
 // Wait for the auto-bootstrap to land. `useTodayTerminal` runs on first
 // paint of the Today page and creates a hidden system cove + "Today"
 // wave + terminal card (issue #175 — the system cove is not visible
-// in the sidebar). The `beforeEach` below also mints a `Scratch` user
+// in the sidebar). The `beforeEach` below also mints an `Atlas` user
 // cove via REST so the keyboard tests have a stable sidebar anchor;
 // this helper waits for that user cove to render (the WS feed
 // invalidates the coves query and the live render picks it up).
 async function waitForBootstrap(page: Page): Promise<void> {
   await expect(
-    page.locator('aside.side').getByRole('button', { name: /scratch/i }),
+    page.locator('aside.side').getByRole('button', { name: /atlas/i }),
   ).toBeVisible({ timeout: 15_000 });
   // Also wait for the trace buffer to come into existence so subsequent
   // `clearEventTrace` / `waitForEvent` calls have a buffer to read.
@@ -165,16 +165,16 @@ test.describe('a11y · keyboard-only navigation', () => {
     await resetReplayServer(request);
     // Issue #175 — the kernel hides the system cove that hosts the
     // default Today terminal from the sidebar. Mint a user-visible
-    // `Scratch` cove + `Today` wave via the REST API so the keyboard
+    // `Atlas` cove + `Today` wave via the REST API so the keyboard
     // tests below have a stable sidebar anchor (they all
-    // `tabUntil(... /scratch/i)`) and a Today wave under it (the
+    // `tabUntil(... /atlas/i)`) and a Today wave under it (the
     // WaveRow tests anchor on /today/i inside the Waves region). The
     // replay server's `POST /api/coves` + `POST /api/waves` are the
     // same handlers production uses; the live frontend invalidates the
     // coves / waves queries on the resulting WS events and renders the
     // new rows without a reload.
-    const scratch = await createUserCove(request, 'Scratch');
-    await createWaveInCove(request, scratch.id, 'Today');
+    const atlas = await createUserCove(request, 'Atlas');
+    await createWaveInCove(request, atlas.id, 'Today');
     // Every spec opens the app with the trace ring buffer enabled so that
     // event assertions can read `window.__neigeEvents__`. baseURL is set
     // by the `a11y` project, so we just append the param.
@@ -189,9 +189,9 @@ test.describe('a11y · keyboard-only navigation', () => {
 
   test('Today → Cove via keyboard', async ({ page }) => {
     // Tab forward from the document start until focus lands on the
-    // Scratch cove button in the sidebar. Its accessible name is just
+    // Atlas cove button in the sidebar. Its accessible name is just
     // the cove name (see Sidebar.tsx).
-    await tabUntil(page, (info) => info.name?.toLowerCase().includes('scratch') === true);
+    await tabUntil(page, (info) => info.name?.toLowerCase().includes('atlas') === true);
     // Activate the cove. The Sidebar's cove rows are real <button>s, so
     // Enter is the canonical activation key — Space would also work, but
     // Enter is what a screen reader announces ("Activate").
@@ -200,14 +200,14 @@ test.describe('a11y · keyboard-only navigation', () => {
     // opaque (kernel-generated UUID), so we just match the prefix.
     await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
     // The CovePage's <h1> title button renders the cove name + period
-    // ("Scratch."). Asserting it is visible proves the route actually
+    // ("Atlas."). Asserting it is visible proves the route actually
     // mounted, not just that the URL changed.
-    await expect(page.getByRole('heading', { name: /scratch/i })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /atlas/i })).toBeVisible();
   });
 
   test('Cove → New wave via keyboard creates a wave', async ({ page }) => {
     // First land on the cove page via keyboard (same path as above).
-    await tabUntil(page, (info) => info.name?.toLowerCase().includes('scratch') === true);
+    await tabUntil(page, (info) => info.name?.toLowerCase().includes('atlas') === true);
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
 
@@ -245,8 +245,8 @@ test.describe('a11y · keyboard-only navigation', () => {
   test('Wave → AddPanel opens with Enter and closes with Escape', async ({ page }) => {
     // Navigate to a wave page via keyboard so the AddPanel trigger
     // exists in the DOM. We use the auto-created "Today" wave under the
-    // Scratch cove — it's the only wave that exists at this point.
-    await tabUntil(page, (info) => info.name?.toLowerCase().includes('scratch') === true);
+    // Atlas cove — it's the only wave that exists at this point.
+    await tabUntil(page, (info) => info.name?.toLowerCase().includes('atlas') === true);
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
     // From the cove page, the "Today" wave row is a real <button> with
@@ -289,9 +289,9 @@ test.describe('a11y · keyboard-only navigation', () => {
     page,
   }) => {
     // Navigate to a wave page via keyboard. We use the auto-created
-    // "Today" wave under the Scratch cove — the only one that exists at
+    // "Today" wave under the Atlas cove — the only one that exists at
     // bootstrap time on the replay fixture.
-    await tabUntil(page, (info) => info.name?.toLowerCase().includes('scratch') === true);
+    await tabUntil(page, (info) => info.name?.toLowerCase().includes('atlas') === true);
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
     // WaveRow is a real <button>; filter on `wave-row` className to
@@ -394,7 +394,7 @@ test.describe('a11y · keyboard-only navigation', () => {
     page,
   }) => {
     // Navigate to the wave page via keyboard.
-    await tabUntil(page, (info) => info.name?.toLowerCase().includes('scratch') === true);
+    await tabUntil(page, (info) => info.name?.toLowerCase().includes('atlas') === true);
     await page.keyboard.press('Enter');
     // WaveRow is a real <button>; filter on `wave-row` className to
     // disambiguate from the sidebar Today nav button and the Crumbs
@@ -487,7 +487,7 @@ test.describe('a11y · keyboard-only navigation', () => {
     page,
   }) => {
     // Land on the wave page via keyboard.
-    await tabUntil(page, (info) => info.name?.toLowerCase().includes('scratch') === true);
+    await tabUntil(page, (info) => info.name?.toLowerCase().includes('atlas') === true);
     await page.keyboard.press('Enter');
     // WaveRow is a real <button>; filter on `wave-row` className to
     // disambiguate from the sidebar Today nav button and the Crumbs
@@ -548,14 +548,14 @@ test.describe('a11y · keyboard-only navigation', () => {
     page,
   }) => {
     // Click (not keyboard) into the wave: skips tabUntil to avoid tab-count
-    // brittleness when previous tests accumulate waves. The Scratch cove
+    // brittleness when previous tests accumulate waves. The Atlas cove
     // and its auto-created Today wave are the stable entrypoints; this
     // test exercises the list-view toggle + Alt+Arrow reorder contract,
     // not the sidebar / cove navigation (those have their own keyboard
     // coverage elsewhere in this suite).
     await page
       .locator('aside.side')
-      .getByRole('button', { name: /scratch/i })
+      .getByRole('button', { name: /atlas/i })
       .click();
     await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
     // Click into the auto-bootstrapped "Today" wave row. WaveRow is a

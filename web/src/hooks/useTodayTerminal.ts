@@ -1,5 +1,7 @@
-// Resolves the "Today terminal" — a singleton scratch PTY mounted on the
-// home page so the user always lands in a live shell. Strategy:
+// Resolves the "Today terminal" — a singleton kernel-owned Today PTY
+// mounted on the home page so the user always lands in a live shell.
+// Lives inside the hidden system cove (issue #175) — the sidebar never
+// renders it, but the same Terminal row backs every browser tab. Strategy:
 //
 //   1. Read `calm.todayCardId` from localStorage.
 //   2. If present, GET /api/cards/:id/terminal to validate the card still
