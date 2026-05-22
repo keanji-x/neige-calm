@@ -71,6 +71,26 @@ type Listener = (ev: WireEvent, meta: EventMeta) => void;
 type ReplayCompleteListener = () => void;
 type SnapshotRequiredListener = () => void;
 
+/**
+ * Observable connection state for the `/api/events` WebSocket.
+ *
+ *   * `disconnected` — `close()` was called explicitly (e.g. component
+ *     unmount, or before the very first `start()`). Subscribers can use
+ *     this to hide the UI indicator entirely; nothing is being attempted.
+ *   * `connecting` — initial connection in progress, OR the socket dropped
+ *     and we're in the exponential-backoff retry loop. The user-visible
+ *     UX is the same either way ("not live; working on it") so they're
+ *     collapsed into one state.
+ *   * `connected` — the `_replay_complete` control frame has arrived,
+ *     meaning we've finished consuming any historical replay from `since`
+ *     and are now streaming live. NOTE: WS `'open'` alone is NOT enough —
+ *     between open and `_replay_complete`, the server may still be
+ *     catching us up on missed events, and emitting `connected` then
+ *     would tell the user "you're live" while they actually aren't.
+ */
+export type ConnectionState = 'connecting' | 'connected' | 'disconnected';
+type ConnectionStateListener = (state: ConnectionState) => void;
+
 /** Storage key for the persisted cursor. Single namespace because we're
  *  single-user; if multi-account ever lands, namespace by user email. */
 const CURSOR_STORAGE_KEY = 'calm:sync:cursor';
@@ -99,6 +119,8 @@ export class EventStream {
   private listeners = new Set<Listener>();
   private replayCompleteListeners = new Set<ReplayCompleteListener>();
   private snapshotRequiredListeners = new Set<SnapshotRequiredListener>();
+  private connectionStateListeners = new Set<ConnectionStateListener>();
+  private connectionState: ConnectionState = 'disconnected';
   private topics = new Set<string>();
   private closed = false;
   private backoffMs = 500;
@@ -154,6 +176,28 @@ export class EventStream {
     return () => this.snapshotRequiredListeners.delete(fn);
   }
 
+  /** Subscribe to connection-state transitions. Fires the current state
+   *  synchronously on subscribe so React `useSyncExternalStore` consumers
+   *  get a non-`undefined` snapshot on first render. Returns an
+   *  unsubscribe function. */
+  onConnectionState(fn: ConnectionStateListener): () => void {
+    this.connectionStateListeners.add(fn);
+    fn(this.connectionState);
+    return () => this.connectionStateListeners.delete(fn);
+  }
+
+  /** Current connection state. Exposed for `useSyncExternalStore`'s
+   *  getSnapshot and for tests. */
+  get state(): ConnectionState {
+    return this.connectionState;
+  }
+
+  private setConnectionState(next: ConnectionState): void {
+    if (next === this.connectionState) return;
+    this.connectionState = next;
+    for (const fn of this.connectionStateListeners) fn(next);
+  }
+
   /** Current cursor — `null` for a fresh client, or the largest `_id`
    *  observed. Exposed primarily for tests. */
   get cursor(): number | null {
@@ -162,6 +206,7 @@ export class EventStream {
 
   start(): void {
     if (this.ws || this.closed) return;
+    this.setConnectionState('connecting');
     this.connect();
   }
 
@@ -169,14 +214,24 @@ export class EventStream {
     this.closed = true;
     this.ws?.close();
     this.ws = null;
+    this.setConnectionState('disconnected');
   }
 
   private connect(): void {
+    // Cover the reconnect-after-backoff path: `connect()` is also called
+    // from the close handler's `setTimeout`, where the state already
+    // moved to `connecting` — but make it idempotent so the initial
+    // `start()` path and any future entry point stays consistent.
+    this.setConnectionState('connecting');
     const ws = new WebSocket(this.url);
     this.ws = ws;
     ws.addEventListener('open', () => {
       this.backoffMs = 500;
       this.publishSub();
+      // NOTE: don't transition to `connected` here. WS-open just means
+      // the socket handshake succeeded; the server may still stream
+      // replay frames before we're "live". `_replay_complete` is the
+      // authoritative signal — handled in `handleFrame`.
     });
     ws.addEventListener('message', (m) => {
       const raw = typeof m.data === 'string' ? m.data : '';
@@ -191,6 +246,10 @@ export class EventStream {
     ws.addEventListener('close', () => {
       this.ws = null;
       if (!this.closed) {
+        // We're going back into the backoff loop. Surface `connecting`
+        // immediately so any UI indicator can show "reconnecting" while
+        // we wait, rather than appearing stale-but-connected.
+        this.setConnectionState('connecting');
         setTimeout(() => this.connect(), this.backoffMs);
         this.backoffMs = Math.min(this.backoffMs * 2, this.maxBackoff);
       }
@@ -214,6 +273,10 @@ export class EventStream {
     // ---- control frames first -----------------------------------------
     if (envelope.ev === REPLAY_COMPLETE_EV) {
       this.advanceCursor(envelope._id);
+      // Authoritative "we're live" signal — replay window is done and
+      // we're now streaming current events. See the ConnectionState
+      // doc comment for why this is preferred over `'open'`.
+      this.setConnectionState('connected');
       for (const fn of this.replayCompleteListeners) fn();
       return;
     }

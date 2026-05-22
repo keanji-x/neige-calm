@@ -1,4 +1,5 @@
 import { Icon } from '../../Icon';
+import { ConnectionIndicator } from './ConnectionIndicator';
 
 // ---------------- TitleBar ----------------
 
@@ -17,6 +18,7 @@ export function TitleBar({
     <header className="bar">
       <div className="name">Neige</div>
       <div className="right">
+        <ConnectionIndicator />
         {onOpenSettings && (
           <button
             className="go ghost"

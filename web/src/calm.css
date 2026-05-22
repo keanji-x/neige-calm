@@ -151,6 +151,59 @@ input, textarea { font: inherit; color: inherit; }
 }
 .bar .right { margin-left: auto; display: flex; align-items: center; gap: 4px; }
 
+/* Connection-state indicator (WS /api/events reconnect signal). Lives in
+   the title bar's `.right` cluster; mounted before the settings + theme
+   buttons. Hidden in the `connected` and `disconnected` states — only
+   visible while we're in the backoff/reconnect loop. The dot pulses to
+   reinforce "in-progress" without animating something distracting. */
+.conn-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px;
+  margin-right: 4px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 999px;
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  /* Text uses `--text` (full-contrast body color) rather than `--warn`
+     directly: at `--text-xs` (11px) the orange `--warn` on `--warn-soft`
+     hovers near the AA 4.5:1 line in light mode, and we want the
+     contrast headroom. The colored signal still lands via the dot +
+     soft pill background, which is the eye-catching part. */
+  color: var(--text);
+  background: var(--warn-soft);
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  user-select: none;
+}
+.conn-indicator-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+  animation: conn-indicator-pulse 1.4s ease-in-out infinite;
+  flex: 0 0 auto;
+}
+@keyframes conn-indicator-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+/* Respect users who've opted out of motion: hold the dot at full
+   opacity instead of pulsing. The pill itself still surfaces the state
+   via color + text. */
+@media (prefers-reduced-motion: reduce) {
+  .conn-indicator-dot { animation: none; }
+}
+/* Dark-mode pairing for the soft pill — `--warn` already swaps via the
+   token, but the soft background needs a less-bright dark variant so
+   text-on-pill keeps AA contrast. The token's dark override (defined in
+   `[data-theme="dark"]`) supplies that automatically; no extra rule
+   needed here. Keeping this comment as a breadcrumb in case the soft
+   token diverges. */
+
 .stage {
   flex: 1; min-height: 0;
   display: flex;
