@@ -251,7 +251,7 @@
         "tags": [
           "coves"
         ],
-        "summary": "Issue #175 — idempotent upsert for the singleton system cove that\nhosts the default Today terminal's wave + card. Returns 200 with the\nexisting row when one is present; otherwise mints a new row and\nreturns 201. The DB-level partial unique index on\n`coves(kind) WHERE kind = 'system'` enforces the at-most-one\ninvariant as a backstop, so two tabs racing this endpoint can both\nsafely call it: the loser of the write race re-reads on retry.",
+        "summary": "Issue #175 — idempotent upsert for the singleton system cove that\nhosts the default Today terminal's wave + card. Returns 200 with the\nexisting row when one is present; otherwise mints a new row and\nreturns 201. The DB-level partial unique index on\n`coves(kind) WHERE kind = 'system'` enforces the at-most-one\ninvariant as a backstop, so two tabs racing this endpoint can both\nsafely call it: the loser of the write race catches the unique\nviolation, re-reads the row the winner committed, and returns 200\nto its own caller. From the frontend's perspective both racers see a\nsuccess and a populated `Cove` body — the only observable difference\nis the status code (201 vs 200), and `useTodayTerminal` treats both\nas success.",
         "description": "The endpoint exists so the frontend's `useTodayTerminal` hook can\nbootstrap a default terminal without exposing the underlying system\ncove to the regular `POST /api/coves` surface (which the sidebar\n\"+ New cove\" affordance consumes and which would otherwise need a\nreserved-name policy).",
         "operationId": "get_or_create_system_cove",
         "responses": {

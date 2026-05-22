@@ -73,7 +73,12 @@ export interface paths {
          *     returns 201. The DB-level partial unique index on
          *     `coves(kind) WHERE kind = 'system'` enforces the at-most-one
          *     invariant as a backstop, so two tabs racing this endpoint can both
-         *     safely call it: the loser of the write race re-reads on retry.
+         *     safely call it: the loser of the write race catches the unique
+         *     violation, re-reads the row the winner committed, and returns 200
+         *     to its own caller. From the frontend's perspective both racers see a
+         *     success and a populated `Cove` body — the only observable difference
+         *     is the status code (201 vs 200), and `useTodayTerminal` treats both
+         *     as success.
          * @description The endpoint exists so the frontend's `useTodayTerminal` hook can
          *     bootstrap a default terminal without exposing the underlying system
          *     cove to the regular `POST /api/coves` surface (which the sidebar
