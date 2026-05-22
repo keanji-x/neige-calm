@@ -1258,6 +1258,15 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Cove is system-owned and cannot be deleted via REST */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Cove not found */
             404: {
                 headers: {

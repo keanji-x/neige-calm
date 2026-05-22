@@ -42,11 +42,20 @@ use tower::ServiceExt;
 /// `payload_validation.rs::boot` — no cove/wave seeding here because the
 /// tests exercise the cove endpoints themselves.
 async fn boot() -> (axum::Router, Arc<dyn Repo>) {
-    let repo: Arc<dyn Repo> = Arc::new(
+    let (app, repo, _concrete) = boot_with_concrete().await;
+    (app, repo)
+}
+
+/// Same shape as `boot`, but additionally returns the concrete
+/// `Arc<SqlxRepo>` so callers can reach `repo.pool()` for raw SQL
+/// assertions on the `events` table (used by the actor-stamp test below).
+async fn boot_with_concrete() -> (axum::Router, Arc<dyn Repo>, Arc<SqlxRepo>) {
+    let concrete = Arc::new(
         SqlxRepo::open("sqlite::memory:")
             .await
             .expect("open in-memory sqlite repo"),
     );
+    let repo: Arc<dyn Repo> = concrete.clone();
     let state = AppState::from_parts(
         repo.clone(),
         EventBus::new(),
@@ -68,7 +77,7 @@ async fn boot() -> (axum::Router, Arc<dyn Repo>) {
             calm_server::actor::actor_middleware,
         ))
         .with_state(state);
-    (app, repo)
+    (app, repo, concrete)
 }
 
 async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) {
@@ -272,5 +281,176 @@ async fn post_coves_silently_drops_kind_field_lands_as_user() {
     assert!(
         repo.cove_get_system().await.unwrap().is_none(),
         "no system row should be created by the public POST surface"
+    );
+}
+
+/// Followup to issue #175 — `DELETE /api/coves/{id}` must refuse to
+/// remove the singleton system cove. The handler-level guard returns 403
+/// (`CalmError::Forbidden`) before reaching `cove_delete_tx`, so the
+/// underlying primitive stays a low-level no-policy helper (it's also
+/// reachable from server-internal sites like replay fixtures) and the
+/// policy lives at the public boundary.
+///
+/// We assert:
+///   * a 403 status,
+///   * the system row is still present in the DB after the rejected call,
+///   * for contrast, deleting a user cove minted via the public POST
+///     surface still succeeds (204) — the guard is targeted, not blanket.
+#[tokio::test]
+async fn delete_system_cove_via_rest_is_forbidden() {
+    let (app, repo) = boot().await;
+
+    // Mint the system cove via the public upsert endpoint.
+    let (status, body) = post_empty(app.clone(), "/api/coves/system").await;
+    assert_eq!(status, StatusCode::CREATED, "mint system cove: {body:?}");
+    let system_id = body["id"].as_str().expect("system cove id").to_string();
+
+    // Attempt to delete it via the public DELETE surface — must be 403.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/coves/{system_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let delete_status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let delete_body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    assert_eq!(
+        delete_status,
+        StatusCode::FORBIDDEN,
+        "DELETE on system cove must be forbidden (got {delete_status}): {delete_body:?}"
+    );
+    assert_eq!(
+        delete_body["code"], "forbidden",
+        "error body carries the `forbidden` code: {delete_body:?}"
+    );
+
+    // DB invariant: the system row is still there. The handler short-
+    // circuited before opening a write txn, so this is a strong check.
+    let still_there = repo
+        .cove_get_system()
+        .await
+        .unwrap()
+        .expect("system cove still present after rejected delete");
+    assert_eq!(still_there.id.as_str(), system_id);
+    assert_eq!(still_there.kind, CoveKind::System);
+
+    // Belt + braces: a regular user cove can still be deleted via the
+    // same endpoint — the guard is targeted at `kind = 'system'`, not a
+    // blanket "no deletes" regression.
+    let (create_status, create_body) = post(
+        app.clone(),
+        "/api/coves",
+        json!({ "name": "u", "color": "#000" }),
+    )
+    .await;
+    assert_eq!(create_status, StatusCode::CREATED, "user cove created");
+    let user_id = create_body["id"].as_str().expect("user cove id");
+    let user_del = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/coves/{user_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        user_del.status(),
+        StatusCode::NO_CONTENT,
+        "user cove delete still works"
+    );
+}
+
+/// Followup to issue #175 — the `cove.updated` event emitted by `POST
+/// /api/coves/system` must carry `actor = Kernel`, not the
+/// middleware-injected `User`. The system cove is kernel-owned
+/// scaffolding (no human "did" the mint — the frontend just bootstraps
+/// the default Today terminal); a `User` stamp here would mislead any
+/// future audit pipeline that joins on `events.actor`.
+///
+/// We pin the on-disk shape directly via `repo.pool()` — the events
+/// table is the audit source of truth, and this test mirrors the style
+/// of `tests/actor.rs::missing_header_defaults_to_user_actor`.
+#[tokio::test]
+async fn post_coves_system_stamps_kernel_actor_in_events() {
+    let (app, _repo, concrete) = boot_with_concrete().await;
+
+    // Mint the system cove (default header — no X-Calm-Actor present;
+    // middleware would inject `User`, the handler must override to
+    // `Kernel`).
+    let (status, body) = post_empty(app, "/api/coves/system").await;
+    assert_eq!(status, StatusCode::CREATED, "mint succeeded: {body:?}");
+
+    // Read the most recent event — the mint is the only write so far.
+    let row: (String, String) =
+        sqlx::query_as("SELECT kind, actor FROM events ORDER BY id DESC LIMIT 1")
+            .fetch_one(concrete.pool())
+            .await
+            .expect("read latest event row");
+    assert_eq!(
+        row.0, "cove.updated",
+        "latest event is the system cove mint: {row:?}"
+    );
+    let actor: Value =
+        serde_json::from_str(&row.1).expect("events.actor is JSON-serialized ActorId");
+    assert_eq!(
+        actor,
+        json!({ "kind": "Kernel" }),
+        "system cove mint stamps Kernel actor, not User: {actor}"
+    );
+}
+
+/// Followup to issue #175 — even with a `X-Calm-Actor: ai:codex` header
+/// the system cove mint must record `Kernel` in the event log. The
+/// header is validated (the middleware would still reject malformed
+/// values), but its declared identity does **not** leak into the
+/// system-scaffolding write. This locks down the override at the handler
+/// rather than relying on the middleware-default-only path.
+///
+/// We use `ai:codex` rather than the bare `user` default because the
+/// override is most observable when there's a non-default header for
+/// it to discard — a regression that drops the hardcode and falls back
+/// to `actor.to_actor_id()` would surface here as `AiCodex(<empty>)`.
+#[tokio::test]
+async fn post_coves_system_ignores_caller_actor_header() {
+    let (app, _repo, concrete) = boot_with_concrete().await;
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/coves/system")
+                .header("content-type", "application/json")
+                .header("X-Calm-Actor", "ai:codex")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "mint succeeded even with ai:codex header"
+    );
+
+    let row: (String, String) =
+        sqlx::query_as("SELECT kind, actor FROM events ORDER BY id DESC LIMIT 1")
+            .fetch_one(concrete.pool())
+            .await
+            .expect("read latest event row");
+    assert_eq!(row.0, "cove.updated");
+    let actor: Value =
+        serde_json::from_str(&row.1).expect("events.actor is JSON-serialized ActorId");
+    assert_eq!(
+        actor,
+        json!({ "kind": "Kernel" }),
+        "Kernel override wins over the declared `ai:codex` header: {actor}"
     );
 }

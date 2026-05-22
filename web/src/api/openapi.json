@@ -353,6 +353,16 @@
           "204": {
             "description": "Cove deleted"
           },
+          "403": {
+            "description": "Cove is system-owned and cannot be deleted via REST",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Cove not found",
             "content": {
