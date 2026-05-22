@@ -126,6 +126,23 @@ pub(crate) async fn create_codex_card(
         return Err(CalmError::NotFound(format!("wave {wave_id}")));
     }
 
+    // Validate `cwd` at the request boundary: a value containing ASCII
+    // control characters (`\n`, `\r`, `\t`, `\0`, `\x7f`, ...) would
+    // produce TOML-spec-invalid output when `build_codex_config_toml`
+    // hand-escapes it into a basic string, and codex's config parser
+    // would crash at spawn time. Reject up front with 400 so the caller
+    // gets a deterministic, debuggable signal instead of a daemon spawn
+    // failure deep in the pipeline. Only validates when the caller
+    // supplied a value — `None` / empty string still falls back to
+    // `default_cwd()` below.
+    if let Some(raw) = p.cwd.as_deref()
+        && raw.chars().any(|c| c.is_ascii_control())
+    {
+        return Err(CalmError::BadRequest(
+            "cwd must not contain ASCII control characters".into(),
+        ));
+    }
+
     // 2. Pre-mint the card id so we can derive `CODEX_HOME` (keyed on
     //    card id, see module-level doc) before the row hits the DB.
     let card_id = new_id();

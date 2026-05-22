@@ -16,6 +16,9 @@
 //!     — 500 to the client; card + terminal rows + payload.terminal_id
 //!     all in the DB.
 //!   * `post_codex_card_atomic_404_on_unknown_wave` — 404, no row leak.
+//!   * `post_codex_card_atomic_rejects_control_chars_in_cwd` — 400, no
+//!     row leak, for newline/CR/tab/NUL in `cwd` (regression guard for
+//!     `build_codex_config_toml`'s hand-rolled TOML escape table).
 //!   * `post_codex_card_atomic_defaults_cwd_to_home` — empty body stamps
 //!     `$HOME` (or server cwd) into `payload.cwd`.
 
@@ -314,6 +317,56 @@ async fn post_codex_card_atomic_404_on_unknown_wave() {
     // No card and no terminal row leaked under the original wave either.
     let cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
     assert!(cards.is_empty(), "no rows must leak on 404: {cards:?}");
+}
+
+#[tokio::test]
+async fn post_codex_card_atomic_rejects_control_chars_in_cwd() {
+    // `build_codex_config_toml` hand-escapes only `\` and `"` when
+    // inlining `cwd` into a TOML basic string. A control character in
+    // the cwd (newline, tab, NUL, ...) would slip past that hand-roll
+    // and produce TOML-spec-invalid output, crashing codex's config
+    // parser at spawn time. The route handler is supposed to validate
+    // `NewCodexCardBody.cwd` for ASCII control chars and return 400
+    // *before* the create-card transaction even opens.
+    //
+    // We exercise a handful of representative control characters and
+    // assert that each one (a) returns a 4xx and (b) leaves no card or
+    // terminal row in the DB.
+    let cases: &[(&str, &str)] = &[
+        ("/tmp/x\nfoo", "newline"),
+        ("/tmp/x\rfoo", "carriage return"),
+        ("/tmp/x\tfoo", "tab"),
+        ("/tmp/x\0foo", "nul"),
+    ];
+
+    for (cwd, label) in cases {
+        // No daemon spawn happens on the validation-rejection path, so
+        // a non-existent binary is fine — we never reach `spawn_daemon_for`.
+        let boot = boot_with_daemon(PathBuf::from("calm-session-daemon")).await;
+
+        let (status, body) = post(
+            boot.app.clone(),
+            format!("/api/waves/{}/codex-cards", boot.wave_id),
+            json!({ "cwd": cwd, "prompt": "hi" }),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "{label}: expected 400 for control char in cwd; body={body:?}"
+        );
+        assert_eq!(
+            body["code"], "bad_request",
+            "{label}: error code should be bad_request; body={body:?}"
+        );
+
+        // No row leak — validation must run BEFORE the create transaction.
+        let cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
+        assert!(
+            cards.is_empty(),
+            "{label}: no card row may be created on validation reject; got {cards:?}"
+        );
+    }
 }
 
 #[tokio::test]
