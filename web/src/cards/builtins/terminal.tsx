@@ -4,6 +4,7 @@ import type { TerminalCardData } from '../../types';
 import type { CardEntry } from '../registry';
 import { dlog } from '../../util/debug';
 import { useTheme } from '../../app/theme';
+import { CardHead } from '../CardHead';
 import {
   TERMINAL_PAYLOAD_SCHEMA_VERSION,
   payloadSchemaVersion,
@@ -38,9 +39,10 @@ function TerminalCard({ card }: { card: TerminalCardData }) {
   if (unsupportedVersion !== undefined) {
     return (
       <div className="term term-unsupported-version">
-        <div className="term-head card-head card-drag-handle">
-          <span className="term-title card-head-title">{title || 'terminal'}</span>
-        </div>
+        <CardHead
+          className="term-head card-drag-handle"
+          title={<span className="term-title">{title || 'terminal'}</span>}
+        />
         <div className="term-body">
           <div className="term-line k-warn">
             Unsupported card payload version (got {unsupportedVersion}, kernel
@@ -54,19 +56,18 @@ function TerminalCard({ card }: { card: TerminalCardData }) {
   dlog('TerminalCard', 'render', { id: card.id, live, terminalId });
   return (
     <div className={'term' + (live ? ' live' : '')}>
-      <div className="term-head card-head card-drag-handle">
-        <span className="card-head-decor">
-          <span className="term-dot" />
-          <span className="term-dot b" />
-          <span className="term-dot c" />
-        </span>
-        <span className="term-title card-head-title">{title || 'terminal'}</span>
-        {live && (
-          <span className="card-head-status">
-            <span className="term-live-pip">· live</span>
-          </span>
-        )}
-      </div>
+      <CardHead
+        className="term-head card-drag-handle"
+        decor={
+          <>
+            <span className="term-dot" />
+            <span className="term-dot b" />
+            <span className="term-dot c" />
+          </>
+        }
+        title={<span className="term-title">{title || 'terminal'}</span>}
+        status={live ? <span className="term-live-pip">· live</span> : undefined}
+      />
       <div className="term-body">
         {live ? (
           <Suspense fallback={<div className="term-line k-cursor">Loading terminal…</div>}>

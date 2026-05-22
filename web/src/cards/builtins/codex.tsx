@@ -23,6 +23,7 @@ import type { CodexCardData, FsmState } from '../../types';
 import { sharedEventStream } from '../../api/events';
 import { CardStatusDot } from '../../shared/components/CardStatusDot';
 import { useTheme } from '../../app/theme';
+import { CardHead } from '../CardHead';
 import type { CardEntry } from '../registry';
 import {
   CODEX_PAYLOAD_SCHEMA_VERSION,
@@ -49,9 +50,7 @@ const codexPayloadSchema = z.object({
 function UnsupportedCodexCard({ version }: { version: number }) {
   return (
     <div className="codex-card codex-card-unsupported-version">
-      <div className="codex-card-head card-head card-drag-handle">
-        <span className="codex-card-title card-head-title">Codex</span>
-      </div>
+      <CardHead className="codex-card-head card-drag-handle" title="Codex" />
       <div className="codex-card-pty">
         <div className="codex-card-empty">
           Unsupported card payload version (got {version}, kernel supports{' '}
@@ -122,15 +121,18 @@ function CodexCardImpl({ card }: { card: CodexCardData }) {
 
   return (
     <div className="codex-card">
-      <div className="codex-card-head card-head card-drag-handle">
-        <span className="codex-card-title card-head-title">Codex</span>
-        <div className="codex-status-bar card-head-status" aria-live="polite">
-          <span className="codex-status-label" title={`${fsm} — ${label}`}>
-            {fsm}: {label}
-          </span>
-          <CardStatusDot state={fsm} title={`${fsm} — ${label}`} />
-        </div>
-      </div>
+      <CardHead
+        className="codex-card-head card-drag-handle"
+        title="Codex"
+        status={
+          <div className="codex-status-bar" aria-live="polite">
+            <span className="codex-status-label" title={`${fsm} — ${label}`}>
+              {fsm}: {label}
+            </span>
+            <CardStatusDot state={fsm} title={`${fsm} — ${label}`} />
+          </div>
+        }
+      />
       <div className="codex-card-pty">
         {card.terminalId ? (
           <Suspense fallback={<div className="codex-card-empty">Loading terminal…</div>}>
