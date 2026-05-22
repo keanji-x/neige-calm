@@ -374,6 +374,18 @@ pub trait TerminalHandler {
     ///
     /// Same no-bump-rev invariant as [`Self::enter_alt_screen`].
     fn exit_alt_screen(&mut self);
+
+    /// OSC 10 / OSC 11 color query — `ESC ] 10 ; ? ST` or
+    /// `ESC ] 11 ; ? ST`. `slot` is `10` (default foreground) or `11`
+    /// (default background); the handler decides whether to push a
+    /// reply (`ESC ] slot ; rgb:RRRR/GGGG/BBBB ST`) into its
+    /// pending-write buffer.
+    ///
+    /// Default impl is a noop so non-`TerminalModel` test handlers
+    /// don't have to implement it. The real impl on `TerminalModel`
+    /// generates the OSC reply when default colors have been
+    /// configured via [`TerminalModel::set_default_colors`].
+    fn osc_color_query(&mut self, _slot: u8) {}
 }
 
 /// VTE-to-handler adapter. Owns nothing of its own beyond a borrow of the
@@ -523,8 +535,25 @@ impl<H: TerminalHandler + ?Sized> Perform for VteProcessor<'_, H> {
         // charset selection. All currently noop; flagged EXPERIMENTAL.
     }
 
-    fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {
-        // OSC: window title, hyperlinks, palette queries — all ignored.
+    fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
+        // OSC 10 (default fg) / OSC 11 (default bg) with `?` as the value
+        // payload is a query — codex (and many TUIs) probes the terminal
+        // for its theme this way at startup and on focus regains. Pass
+        // it through to the handler so the model can push a reply into
+        // its pending-write buffer; the daemon flushes those bytes to the
+        // PTY master after `feed()`. Everything else stays noop (title,
+        // hyperlinks, ...).
+        let Some(first) = params.first() else { return };
+        let Some(second) = params.get(1) else { return };
+        if *second != b"?" {
+            return;
+        }
+        let slot = match *first {
+            b"10" => 10u8,
+            b"11" => 11u8,
+            _ => return,
+        };
+        self.handler.osc_color_query(slot);
     }
 
     fn hook(&mut self, _params: &Params, _intermediates: &[u8], _ignore: bool, _action: char) {}
@@ -545,6 +574,17 @@ pub struct TerminalModel {
     scrollback_max_lines: usize,
     rev: u32,
     cursor_visible: bool,
+    /// Default foreground/background RGB the daemon advertises to the
+    /// PTY child in reply to OSC 10/11 color queries. `None` means
+    /// "stay silent" — the child falls back to its built-in default,
+    /// which is what the daemon did historically (#177 first-fix).
+    default_fg: Option<(u8, u8, u8)>,
+    default_bg: Option<(u8, u8, u8)>,
+    /// Bytes the daemon should push back onto the PTY master after the
+    /// current `feed()` returns. Populated by [`Self::osc_color_query`]
+    /// when a child probes OSC 10/11. The session loop drains via
+    /// [`Self::take_pending_osc_replies`].
+    pending_osc_replies: Vec<u8>,
 }
 
 impl TerminalModel {
@@ -558,7 +598,56 @@ impl TerminalModel {
             scrollback_max_lines,
             rev: 0,
             cursor_visible: true,
+            default_fg: None,
+            default_bg: None,
+            pending_osc_replies: Vec::new(),
         }
+    }
+
+    /// Same as [`Self::new`] but pre-seeds the default fg/bg the model
+    /// will advertise on OSC 10/11 queries. Used by the daemon when the
+    /// host browser has stamped its theme onto the CLI args so codex's
+    /// startup probe gets an authoritative answer instead of falling
+    /// back to its built-in default.
+    pub fn with_colors(
+        cols: u16,
+        rows: u16,
+        scrollback_max_lines: usize,
+        default_fg: Option<(u8, u8, u8)>,
+        default_bg: Option<(u8, u8, u8)>,
+    ) -> Self {
+        let mut m = Self::new(cols, rows, scrollback_max_lines);
+        m.default_fg = default_fg;
+        m.default_bg = default_bg;
+        m
+    }
+
+    /// Replace the default fg/bg. The next OSC 10/11 query will reflect
+    /// the new value. Pre-existing `pending_osc_replies` are not
+    /// rewritten — they correspond to a query that already happened.
+    pub fn set_default_colors(
+        &mut self,
+        fg: Option<(u8, u8, u8)>,
+        bg: Option<(u8, u8, u8)>,
+    ) {
+        self.default_fg = fg;
+        self.default_bg = bg;
+    }
+
+    pub fn default_fg(&self) -> Option<(u8, u8, u8)> {
+        self.default_fg
+    }
+
+    pub fn default_bg(&self) -> Option<(u8, u8, u8)> {
+        self.default_bg
+    }
+
+    /// Drain any OSC reply bytes the model produced since the last call.
+    /// The daemon writes these to the PTY master after each `feed()` so
+    /// the child reads its color-query answer on stdin via crossterm's
+    /// event queue.
+    pub fn take_pending_osc_replies(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.pending_osc_replies)
     }
 
     fn bump(&mut self) {
@@ -1046,6 +1135,35 @@ impl TerminalHandler for TerminalModel {
 
     fn exit_alt_screen(&mut self) {
         // See `enter_alt_screen` — symmetric noop.
+    }
+
+    fn osc_color_query(&mut self, slot: u8) {
+        // OSC 10 → default fg, OSC 11 → default bg. xterm replies with
+        // the 16-bit form `rgb:RRRR/GGGG/BBBB`; we mirror that — each
+        // 8-bit channel `c` becomes `c * 257` (== `(c<<8)|c`) and emits
+        // four hex digits. Terminated with the canonical ST
+        // (`ESC \`). `bell_terminated` queries (`BEL`-terminated)
+        // technically exist too, but ST is universally accepted and
+        // codex specifically uses the parser shape that handles either.
+        let rgb = match slot {
+            10 => self.default_fg,
+            11 => self.default_bg,
+            _ => return,
+        };
+        let Some((r, g, b)) = rgb else {
+            // No color configured → stay silent. The child falls back to
+            // its built-in default, matching pre-#177 behaviour.
+            return;
+        };
+        let to16 = |c: u8| (c as u16) * 257;
+        let reply = format!(
+            "\x1b]{};rgb:{:04x}/{:04x}/{:04x}\x1b\\",
+            slot,
+            to16(r),
+            to16(g),
+            to16(b),
+        );
+        self.pending_osc_replies.extend_from_slice(reply.as_bytes());
     }
 }
 
