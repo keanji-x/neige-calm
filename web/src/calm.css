@@ -53,6 +53,35 @@
   --text-display-sm: 26px;    /* surf-card large numerals */
   --text-display:    36px;    /* h-display, login hero */
 
+  /* Line-height (leading) scale — slice 3 of #165. Unitless ratios so the
+     value composes against the inherited font-size at each call site. Single-
+     mode like the type scale: leading is shape, not color, and doesn't
+     theme-vary. Migration is intentionally lossy — pre-consolidation we had
+     ~10 distinct ratios scattered across selectors (1, 1.15, 1.2, 1.3, 1.32,
+     1.4, 1.5, 1.55, 1.6, 1.65, 1.7, 1.75); collapsing to 5 tiers IS the cure
+     for the per-selector hand-tuning. Rounding policy lives in #165 (slice 3
+     body). */
+  --leading-none:  1;      /* icon glyphs, tight buttons, single-line metrics */
+  --leading-tight: 1.15;   /* card titles, display heads */
+  --leading-snug:  1.3;    /* dense UI body, settings rows */
+  --leading-base:  1.5;    /* default prose */
+  --leading-loose: 1.65;   /* long-form reading, code blocks */
+
+  /* Letter-spacing (tracking) scale — slice 3 of #165. em units so the
+     spacing scales with font-size. Same single-mode shape contract as the
+     leading scale. Pre-consolidation we had a long tail (-0.04 → 0.08 in
+     ~9 distinct steps); collapsing to 6 tiers (plus an explicit `normal`
+     token) makes the design call reviewable. Sub-percent values
+     (`-0.005em`) round to `--tracking-normal` — invisible at any reasonable
+     font-size. The -0.04em → --tracking-tighter (-0.02em) mapping is the
+     lossiest single step; acceptable per consolidation goal. */
+  --tracking-tighter: -0.02em;  /* display heads, large numerals */
+  --tracking-tight:   -0.01em;  /* hero text, card titles */
+  --tracking-normal:  0;         /* explicit reset over inherited tracking */
+  --tracking-wide:    0.02em;   /* small caps, sentence-case labels */
+  --tracking-wider:   0.06em;   /* uppercase eyebrows, badges */
+  --tracking-widest:  0.08em;   /* sparse uppercase labels, kbd */
+
   --accent: oklch(52% 0.13 245);
   --accent-soft: oklch(95% 0.025 245);
 
@@ -214,7 +243,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font-size: var(--text-md);
-  line-height: 1.55;
+  line-height: var(--leading-base);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow: hidden;
@@ -252,7 +281,7 @@ input, textarea { font: inherit; color: inherit; }
 }
 .bar .name {
   position: absolute; left: 50%; transform: translateX(-50%);
-  font-size: var(--text-sm); font-weight: 600; color: var(--text-3); letter-spacing: 0.01em;
+  font-size: var(--text-sm); font-weight: 600; color: var(--text-3); letter-spacing: var(--tracking-wide);
 }
 .bar .right { margin-left: auto; display: flex; align-items: center; gap: 4px; }
 
@@ -280,7 +309,7 @@ input, textarea { font: inherit; color: inherit; }
      soft pill background, which is the eye-catching part. */
   color: var(--text);
   background: var(--warn-soft);
-  letter-spacing: 0.01em;
+  letter-spacing: var(--tracking-wide);
   white-space: nowrap;
   user-select: none;
 }
@@ -360,7 +389,7 @@ input, textarea { font: inherit; color: inherit; }
 .side .nav-today {
   font-size: var(--text-md);
   font-weight: 700;
-  letter-spacing: -0.005em;
+  letter-spacing: var(--tracking-normal);
   padding: 10px 10px 12px;
   color: var(--text);
 }
@@ -388,7 +417,7 @@ input, textarea { font: inherit; color: inherit; }
   font-size: var(--text-xs);
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--tracking-wider);
   /* Re-routed from --text-4 to --text-label (= --text-2) to clear
      WCAG AA on the sidebar's section labels. Other decorative
      consumers (icons, counts, swatch-plus, input placeholders) stay
@@ -511,7 +540,7 @@ input, textarea { font: inherit; color: inherit; }
 .side .cove-nav.new .swatch-plus {
   width: 10px; height: 10px;
   display: flex; align-items: center; justify-content: center;
-  font-size: var(--text-base); line-height: 1;
+  font-size: var(--text-base); line-height: var(--leading-none);
   color: var(--text-decorative);
 }
 .side .cove-nav.new:hover .swatch-plus { color: var(--text-2); }
@@ -582,7 +611,7 @@ input, textarea { font: inherit; color: inherit; }
   font-size: var(--text-sm);
   color: var(--text-3);
   font-weight: 500;
-  letter-spacing: 0.01em;
+  letter-spacing: var(--tracking-wide);
   margin-bottom: 16px;
   font-variant-numeric: tabular-nums;
 }
@@ -592,8 +621,8 @@ input, textarea { font: inherit; color: inherit; }
   font-family: var(--font-display);
   font-weight: 400;
   font-size: var(--text-display-sm);
-  line-height: 1.32;
-  letter-spacing: -0.01em;
+  line-height: var(--leading-snug);
+  letter-spacing: var(--tracking-tight);
   color: var(--text);
   text-wrap: pretty;
   margin: 0 0 28px;
@@ -616,7 +645,7 @@ input, textarea { font: inherit; color: inherit; }
 }
 .attn .label {
   display: inline-flex; align-items: center; gap: 8px;
-  font-size: var(--text-xs); font-weight: 700; letter-spacing: 0.08em;
+  font-size: var(--text-xs); font-weight: 700; letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
   color: var(--warn);
   margin-bottom: 14px;
@@ -631,13 +660,13 @@ input, textarea { font: inherit; color: inherit; }
   font-family: var(--font-display);
   font-weight: 500;
   font-size: var(--text-xl);
-  line-height: 1.3;
+  line-height: var(--leading-snug);
   margin: 0 0 12px;
-  letter-spacing: -0.01em;
+  letter-spacing: var(--tracking-tight);
   text-wrap: pretty;
 }
 .attn .body {
-  font-size: var(--text-md); line-height: 1.55;
+  font-size: var(--text-md); line-height: var(--leading-base);
   color: var(--text-2);
   margin: 0 0 22px;
   text-wrap: pretty;
@@ -669,7 +698,7 @@ input, textarea { font: inherit; color: inherit; }
   background: var(--text);
   color: var(--bg);
   font-size: var(--text-md); font-weight: 600;
-  letter-spacing: -0.005em;
+  letter-spacing: var(--tracking-normal);
   transition: transform 0.06s, opacity 0.1s;
 }
 .go:hover { opacity: 0.88; }
@@ -769,7 +798,7 @@ input, textarea { font: inherit; color: inherit; }
   color: var(--text-3);
   font: inherit;
   font-size: var(--text-md);
-  line-height: 1;
+  line-height: var(--leading-none);
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.12s, color 0.12s, background 0.12s;
@@ -804,7 +833,7 @@ input, textarea { font: inherit; color: inherit; }
   font-size: var(--text-xs);
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: var(--tracking-widest);
   color: var(--text-meta);
   margin-bottom: 6px;
 }
@@ -812,8 +841,8 @@ input, textarea { font: inherit; color: inherit; }
   font-family: var(--font-display);
   font-weight: 400;
   font-size: var(--text-display);
-  line-height: 1.15;
-  letter-spacing: -0.022em;
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-tighter);
   margin: 0 0 24px;
   text-wrap: pretty;
 }
@@ -876,7 +905,7 @@ input, textarea { font: inherit; color: inherit; }
   font-family: var(--font-display);
   font-size: var(--text-lg);
   font-weight: 500;
-  letter-spacing: -0.005em;
+  letter-spacing: var(--tracking-normal);
   color: var(--text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
@@ -1081,7 +1110,7 @@ input, textarea { font: inherit; color: inherit; }
   place-items: center;
   border-radius: 5px;
   font-size: var(--text-md);
-  line-height: 1;
+  line-height: var(--leading-none);
   color: var(--text-3);
   background: transparent;
   border: none;
@@ -1233,7 +1262,7 @@ input, textarea { font: inherit; color: inherit; }
   background: transparent;
   border: none;
   color: var(--text-3);
-  font-size: var(--text-lg); line-height: 1;
+  font-size: var(--text-lg); line-height: var(--leading-none);
   padding: 2px 6px;
   border-radius: 4px;
   cursor: pointer;
@@ -1376,7 +1405,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   height: 30px; min-width: 34px;
   padding: 0 10px;
   font: inherit;
-  font-size: var(--text-md); line-height: 1;
+  font-size: var(--text-md); line-height: var(--leading-none);
   border: 1px solid var(--hairline-strong);
   border-radius: 4px;
   background: transparent;
@@ -1578,7 +1607,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .term-title {
   margin-left: 6px;
   font-size: var(--text-xs);
-  letter-spacing: 0.06em;
+  letter-spacing: var(--tracking-wider);
   text-transform: uppercase;
   color: var(--text-3);
   font-weight: 600;
@@ -1586,7 +1615,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .term-body {
   font-family: var(--font-code);
   font-size: var(--text-sm);
-  line-height: 1.7;
+  line-height: var(--leading-loose);
   padding: 12px 16px 14px;
   color: var(--text-2);
   max-height: 280px;
@@ -1630,7 +1659,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   color: var(--text-3);
-  letter-spacing: 0.04em;
+  letter-spacing: var(--tracking-wider);
   text-transform: lowercase;
   pointer-events: none;
 }
@@ -1650,7 +1679,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   backdrop-filter: blur(2px);
   text-transform: none;
   font-size: var(--text-base);
-  letter-spacing: normal;
+  letter-spacing: var(--tracking-normal);
 }
 /* stylelint-disable-next-line declaration-property-value-disallowed-list */
 [data-theme="dark"] .xterm-status-closed { background: oklch(15% 0 0 / 0.55); }
@@ -1711,7 +1740,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .note p {
   margin: 0;
   font-size: var(--text-md);
-  line-height: 1.55;
+  line-height: var(--leading-base);
   color: var(--text-2);
   text-wrap: pretty;
 }
@@ -1739,7 +1768,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   font-family: var(--font-serif);
   font-size: var(--text-md);
   font-weight: 500;
-  letter-spacing: -0.005em;
+  letter-spacing: var(--tracking-normal);
   color: var(--text);
   background: var(--surface-panel-head);
 }
@@ -1750,7 +1779,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .doc-body p {
   margin: 0 0 12px;
   font-size: var(--text-md);
-  line-height: 1.6;
+  line-height: var(--leading-loose);
   color: var(--text-2);
   text-wrap: pretty;
 }
@@ -1789,7 +1818,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 .git-count {
   font-size: var(--text-xs);
-  letter-spacing: 0.06em;
+  letter-spacing: var(--tracking-wider);
   text-transform: uppercase;
   color: var(--text-3);
   font-weight: 600;
@@ -1849,7 +1878,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .diff-body {
   font-family: var(--font-code);
   font-size: var(--text-sm);
-  line-height: 1.65;
+  line-height: var(--leading-loose);
   padding: 6px 0;
 }
 .diff-hunk { padding: 6px 0; border-top: 1px solid var(--hairline); }
@@ -1896,7 +1925,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   background: var(--surface-panel-head);
   font-size: var(--text-xs);
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
   color: var(--text-3);
 }
@@ -1927,7 +1956,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .plan-card-body li .lbl {
   font-size: var(--text-md);
   color: var(--text);
-  line-height: 1.4;
+  line-height: var(--leading-snug);
   text-wrap: pretty;
 }
 .plan-card-body li.done .lbl { color: var(--text-3); text-decoration: line-through; text-decoration-thickness: 1px; }
@@ -1979,8 +2008,8 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   gap: 1px;
   font-family: var(--font-mono);
   color: var(--text);
-  letter-spacing: -0.04em;
-  line-height: 1;
+  letter-spacing: var(--tracking-tighter);
+  line-height: var(--leading-none);
   flex-shrink: 0;
 }
 .surf-clock-h, .surf-clock-m {
@@ -2000,7 +2029,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   font-size: var(--text-sm);
   font-weight: 600;
   color: var(--text-3);
-  letter-spacing: 0.08em;
+  letter-spacing: var(--tracking-widest);
   margin-left: 7px;
 }
 .surf-clock-meta {
@@ -2013,9 +2042,9 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .surf-clock-day {
   font-family: var(--font-numeric);
   font-size: var(--text-lg);
-  letter-spacing: -0.015em;
+  letter-spacing: var(--tracking-tight);
   color: var(--text);
-  line-height: 1.15;
+  line-height: var(--leading-tight);
 }
 .surf-clock-date {
   font-size: var(--text-sm);
@@ -2060,7 +2089,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   display: inline-flex; align-items: center; gap: 6px;
   font-size: var(--text-xs);
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: var(--tracking-widest);
   text-transform: uppercase;
   color: var(--text-3);
   margin-bottom: 3px;
@@ -2079,7 +2108,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   font-size: var(--text-base);
   font-weight: 500;
   color: var(--text);
-  line-height: 1.3;
+  line-height: var(--leading-snug);
   text-wrap: pretty;
   overflow: hidden; text-overflow: ellipsis;
   display: -webkit-box;
@@ -2126,7 +2155,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   color: var(--text-4);
-  letter-spacing: 0.02em;
+  letter-spacing: var(--tracking-wide);
 }
 
 .surf-term-body {
@@ -2140,7 +2169,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   overflow: hidden;
   font-family: var(--font-mono);
   font-size: var(--text-base);
-  line-height: 1.75;
+  line-height: var(--leading-loose);
   padding: 20px 22px 22px;
   color: var(--text-2);
 }
@@ -2231,9 +2260,9 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   font-family: var(--font-numeric);
   font-size: var(--text-xl);
   font-weight: 400;
-  letter-spacing: -0.015em;
+  letter-spacing: var(--tracking-tight);
   color: var(--text);
-  line-height: 1.2;
+  line-height: var(--leading-tight);
   text-wrap: pretty;
 }
 .surf-tod {
@@ -2306,7 +2335,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .cal-toggle button {
   font-size: var(--text-xs);
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: var(--tracking-wide);
   padding: 4px 10px;
   border-radius: 5px;
   color: var(--text-3);
@@ -2328,7 +2357,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   color: var(--text-3);
   border-radius: 5px;
   font-size: var(--text-md);
-  line-height: 1;
+  line-height: var(--leading-none);
 }
 .cal-nav:hover { background: var(--surface-hover-overlay); color: var(--text); }
 [data-theme="dark"] .cal-nav:hover { background: var(--surface-hover-overlay); }
@@ -2338,7 +2367,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   font-weight: 600;
   color: var(--text);
   font-variant-numeric: tabular-nums;
-  letter-spacing: -0.005em;
+  letter-spacing: var(--tracking-normal);
 }
 
 /* ---- week ---- */
@@ -2366,7 +2395,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   font-size: var(--text-xs);
   font-weight: 700;
   color: var(--text-4);
-  letter-spacing: 0.06em;
+  letter-spacing: var(--tracking-wider);
   text-transform: uppercase;
 }
 .cal-week-date {
@@ -2413,7 +2442,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   font-size: var(--text-xs);
   font-weight: 700;
   color: var(--text-4);
-  letter-spacing: 0.06em;
+  letter-spacing: var(--tracking-wider);
   text-transform: uppercase;
   padding: 2px 0;
 }
@@ -2438,7 +2467,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   font-weight: 500;
   color: var(--text);
   font-variant-numeric: tabular-nums;
-  line-height: 1;
+  line-height: var(--leading-none);
 }
 .cal-month-day.dim .cal-md-n { color: var(--text-4); }
 .cal-month-day.today .cal-md-n {
@@ -2476,7 +2505,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   font-weight: 600;
   color: var(--text);
   margin-bottom: 6px;
-  letter-spacing: -0.005em;
+  letter-spacing: var(--tracking-normal);
 }
 .cal-agenda {
   display: flex; flex-direction: column;
@@ -2537,7 +2566,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   font-size: var(--text-sm);
   font-weight: 500;
   color: var(--text);
-  line-height: 1.3;
+  line-height: var(--leading-snug);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .cal-event-meta {
@@ -2581,7 +2610,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   font-size: var(--text-xs);
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: var(--tracking-widest);
   color: var(--text-3);
   margin-bottom: 10px;
 }
@@ -2589,14 +2618,14 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   font-family: var(--font-display);
   font-weight: 400;
   font-size: var(--text-display-sm);
-  line-height: 1.15;
-  letter-spacing: -0.022em;
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-tighter);
   color: var(--text);
   margin: 0 0 10px;
 }
 .login-hint {
   font-size: var(--text-base);
-  line-height: 1.5;
+  line-height: var(--leading-base);
   color: var(--text-3);
   margin: 0 0 22px;
 }
@@ -2622,7 +2651,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   color: var(--text);
   font-family: var(--font-mono);
   font-size: var(--text-base);
-  letter-spacing: 0.02em;
+  letter-spacing: var(--tracking-wide);
   outline: none;
   transition: border-color 0.1s, box-shadow 0.1s;
   margin-bottom: 12px;
@@ -2814,7 +2843,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   place-items: center;
   border-radius: 5px;
   font-size: var(--text-md);
-  line-height: 1;
+  line-height: var(--leading-none);
   color: var(--text-3);
   background: transparent;
   border: none;
@@ -2857,7 +2886,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .settings-section-title {
   font-size: var(--text-base);
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
   color: var(--text-3);
   margin: 0 0 6px;
@@ -2939,8 +2968,8 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   left: 12px;
   font-family: var(--font-mono);
   font-size: var(--text-xs);
-  line-height: 1.4;
-  letter-spacing: 0.04em;
+  line-height: var(--leading-snug);
+  letter-spacing: var(--tracking-wider);
   text-transform: lowercase;
   padding: 2px 8px;
   border-radius: 999px;
