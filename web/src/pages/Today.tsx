@@ -56,8 +56,10 @@ interface CalEvent { wave: Wave; date: Date; h: number; dur: number; }
 
 // ============================================================
 // TodayPage — terminal-launcher home + calendar rail.
-// Ports the design's SurfPage. The Surf vocabulary lives in CSS class
-// names (.surf, .surf-clock, …) — we keep it there since it's stable.
+// Ports the design's TodayPage. The CSS class vocabulary
+// (.today-page, .today-clock, …) was originally named .surf-* in the
+// mockup; it was renamed to .today-* to align with the Today landing
+// page identity. We keep the class names in CSS since they're stable.
 // ============================================================
 
 export function TodayPage({
@@ -88,17 +90,17 @@ export function TodayPage({
   const events = useMemo<CalEvent[]>(() => [], []);
 
   return (
-    <div className="surf">
-      <SurfClock waves={waves} />
-      <div className="surf-grid">
-        <section className="surf-main">
+    <div className="today-page">
+      <TodayClock waves={waves} />
+      <div className="today-grid">
+        <section className="today-main">
           <TodayTerminalPanel
             terminalId={todayTerminalId ?? null}
             error={todayError ?? null}
             onReset={onResetTodayTerminal}
           />
         </section>
-        <aside className="surf-rail" aria-label="Calendar">
+        <aside className="today-rail" aria-label="Calendar">
           <CalendarCard
             today0={today0}
             events={events}
@@ -114,7 +116,8 @@ export function TodayPage({
 
 // ---------------- TodayTerminalPanel — the real default PTY on Today ----------------
 //
-// Replaces the original mockup's static `SurfTerminal` with an actual live
+// Replaces the original mockup's static `SurfTerminal` (later renamed
+// `TodayTerminal` in the class-name cleanup pass) with an actual live
 // shell. The terminal binds to a single per-browser "Scratch / Today"
 // card (resolved by `useTodayTerminal` upstream and passed in as
 // `terminalId`). While the resolver runs we show a calm "Booting…" line.
@@ -132,9 +135,9 @@ function TodayTerminalPanel({
   onReset?: () => void;
 }) {
   return (
-    <div className="surf-term">
+    <div className="today-term">
       <CardHead
-        className="surf-term-head"
+        className="today-term-head"
         decor={
           <>
             <span className="term-dot" />
@@ -146,7 +149,7 @@ function TodayTerminalPanel({
         status={
           onReset ? (
             <button
-              className="surf-term-host"
+              className="today-term-host"
               onClick={onReset}
               title="Forget the cached Today terminal and bootstrap a fresh one"
               style={{
@@ -163,9 +166,9 @@ function TodayTerminalPanel({
           ) : undefined
         }
       />
-      <div className="surf-term-body" style={{ padding: 0 }}>
+      <div className="today-term-body" style={{ padding: 0 }}>
         {error ? (
-          <div className="surf-term-line" style={{ padding: 16, color: 'var(--warn, #c00)' }}>
+          <div className="today-term-line" style={{ padding: 16, color: 'var(--warn, #c00)' }}>
             kernel error: {error.message}
             {onReset && (
               <>
@@ -186,7 +189,7 @@ function TodayTerminalPanel({
         ) : terminalId ? (
           <LiveTerminalSlot terminalId={terminalId} />
         ) : (
-          <div className="surf-term-line dim" style={{ padding: 16 }}>
+          <div className="today-term-line dim" style={{ padding: 16 }}>
             booting today's terminal…
           </div>
         )}
@@ -208,7 +211,7 @@ function LiveTerminalSlot({ terminalId }: { terminalId: string }) {
 
 // ---------------- Clock ----------------
 
-function SurfClock({ waves }: { waves: Wave[] }) {
+function TodayClock({ waves }: { waves: Wave[] }) {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000);
@@ -225,25 +228,25 @@ function SurfClock({ waves }: { waves: Wave[] }) {
   const waitingCount = waves.filter((w) => w.status === 'waiting').length;
 
   return (
-    <header className="surf-clock">
-      <div className="surf-clock-time">
-        <span className="surf-clock-h num">{h12}</span>
-        <span className="surf-clock-colon">:</span>
-        <span className="surf-clock-m num">{mm}</span>
-        <span className="surf-clock-ap">{period}</span>
+    <header className="today-clock">
+      <div className="today-clock-time">
+        <span className="today-clock-h num">{h12}</span>
+        <span className="today-clock-colon">:</span>
+        <span className="today-clock-m num">{mm}</span>
+        <span className="today-clock-ap">{period}</span>
       </div>
-      <div className="surf-clock-day">{weekday}</div>
-      <div className="surf-clock-status">
-        <span className="surf-stat run">
-          <span className="surf-stat-dot run" />
-          <span className="surf-stat-n num">{runningCount}</span>
-          <span className="surf-stat-lbl">running</span>
+      <div className="today-clock-day">{weekday}</div>
+      <div className="today-clock-status">
+        <span className="today-stat run">
+          <span className="today-stat-dot run" />
+          <span className="today-stat-n num">{runningCount}</span>
+          <span className="today-stat-lbl">running</span>
         </span>
-        <span className="surf-stat-sep">·</span>
-        <span className="surf-stat warn">
-          <span className="surf-stat-dot warn" />
-          <span className="surf-stat-n num">{waitingCount}</span>
-          <span className="surf-stat-lbl">waiting</span>
+        <span className="today-stat-sep">·</span>
+        <span className="today-stat warn">
+          <span className="today-stat-dot warn" />
+          <span className="today-stat-n num">{waitingCount}</span>
+          <span className="today-stat-lbl">waiting</span>
         </span>
       </div>
     </header>
@@ -279,7 +282,7 @@ function CalendarCard({
       });
 
   return (
-    <section className="surf-card cal">
+    <section className="today-card cal">
       <div className="cal-head">
         <div className="h-eyebrow">Calendar</div>
         <div className="cal-toggle">

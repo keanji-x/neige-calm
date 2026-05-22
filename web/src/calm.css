@@ -58,7 +58,7 @@
   --text-md:         15px;    /* emphasized body, settings field labels, login */
   --text-lg:         18px;    /* card titles */
   --text-xl:         22px;    /* section heads */
-  --text-display-sm: 26px;    /* surf-card large numerals */
+  --text-display-sm: 26px;    /* today-card large numerals */
   --text-display:    36px;    /* h-display, login hero */
 
   /* Line-height (leading) scale — slice 3 of #165. Unitless ratios so the
@@ -140,11 +140,11 @@
 
   /* Prose / code surfaces (slice 3c of #137). Two concrete surface tokens
      for persistent (non-hover) backgrounds.
-       --surface-terminal — terminal card body (.term, .surf-term). Rounds
-         the previously-distinct .surf-term value (0.2%/0.5% L) into one
+       --surface-terminal — terminal card body (.term, .today-term). Rounds
+         the previously-distinct .today-term value (0.2%/0.5% L) into one
          shared surface; the delta is invisible.
        --surface-code — persistent inline-code background in prose
-         contexts (.note p code, .surf-term-line code). Distinct from
+         contexts (.note p code, .today-term-line code). Distinct from
          hover overlays (those alias --surface-hover-overlay).
   */
   --surface-terminal: oklch(99% 0.003 240);
@@ -278,7 +278,7 @@
   /* generous shape */
   /* Aliased to --radius-xl (10px). Pre-#165 this was a literal 14px used
      on the card-tier surfaces (.attn, .modal-panel, .codex-card, .term,
-     .doc, .git, .diff, .plan-card, .note, .surf-term, .surf-card,
+     .doc, .git, .diff, .plan-card, .note, .today-term, .today-card,
      .login-card, .settings-section, .add-panel, .view-toggle,
      .add-panel-menu, .dirpicker-inline, .react-grid-placeholder,
      .xterm-restart, .wave-list-item:focus-visible). 14px was an oddball
@@ -306,7 +306,7 @@
   --warn-soft: oklch(28% 0.05 30);
   /* Dark-mode status colors standardize at L=74% (slice 3b of #137).
      Pre-consolidation we had three L values (72/74/78) scattered across
-     k-pass/k-fail, diff-add/rm, diff-line .diff-text, surf-live/host. The
+     k-pass/k-fail, diff-add/rm, diff-line .diff-text, today-live/host. The
      74% landing collapses the family at the cost of small per-site drift
      (78% sites drop 4 L; 72% sites gain 2 L) — accepted per the design
      call. The 0.14 chroma matches the light side. */
@@ -1654,7 +1654,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 
 /* ===== Card head (shared) =====
    Base skeleton for card headers. Adopted by `.codex-card-head`,
-   `.term-head`, and `.surf-term-head` via the typed `<CardHead>`
+   `.term-head`, and `.today-term-head` via the typed `<CardHead>`
    component (`web/src/cards/CardHead.tsx`); Plan/Doc/Git/Diff were
    removed in the Wave 4 sweep and no longer have card heads.
    Card-specific selectors layer character on top:
@@ -1980,7 +1980,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 /* ============================================================
    Surf — main home view (terminal + Today/Calendar rail)
    ============================================================ */
-.surf {
+.today-page {
   width: 100%;
   max-width: 1180px;
   flex: 1;
@@ -1992,13 +1992,13 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 
 /* the page parent has align-items: center on its flex column —
-   make sure surf gets full width */
-.scroll > .surf { align-self: stretch; }
+   make sure today-page gets full width */
+.scroll > .today-page { align-self: stretch; }
 
 /* 2-col grid sitting under the full-width clock header. align-items: start
    keeps the terminal top edge flush with the calendar top edge — the
    columns no longer stretch to match each other's height. */
-.surf-grid {
+.today-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 308px;
   gap: var(--space-10);
@@ -2006,7 +2006,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   min-height: 0;
 }
 
-.surf-main {
+.today-main {
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -2015,16 +2015,16 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 
 /* ---- clock + now strip ----
    align-items: baseline puts the clock's text baseline (bottom of "5:10 PM"),
-   the .surf-clock-day baseline ("Friday"), and the .surf-clock-status row
+   the .today-clock-day baseline ("Friday"), and the .today-clock-status row
    on a shared horizontal line — reads as a clean anchor across the row. */
-.surf-clock {
+.today-clock {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-8) var(--space-10);
   align-items: baseline;
   padding: var(--space-3) var(--space-2) var(--space-0);
 }
-.surf-clock-time {
+.today-clock-time {
   display: flex;
   align-items: baseline;
   gap: var(--space-px);
@@ -2034,12 +2034,12 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   line-height: var(--leading-none);
   flex-shrink: 0;
 }
-.surf-clock-h, .surf-clock-m {
+.today-clock-h, .today-clock-m {
   font-size: var(--text-display);
   font-weight: 300;
   font-variant-numeric: tabular-nums;
 }
-.surf-clock-colon {
+.today-clock-colon {
   font-size: var(--text-display);
   font-weight: 300;
   color: var(--text-3);
@@ -2048,14 +2048,14 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   animation: clock-blink var(--motion-pulse) steps(2, start) infinite;
 }
 @keyframes clock-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
-.surf-clock-ap {
+.today-clock-ap {
   font-size: var(--text-sm);
   font-weight: 600;
   color: var(--text-3);
   letter-spacing: var(--tracking-widest);
   margin-left: var(--space-4);
 }
-.surf-clock-day {
+.today-clock-day {
   font-family: var(--font-numeric);
   font-size: var(--text-lg);
   letter-spacing: var(--tracking-tight);
@@ -2066,13 +2066,13 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   flex-shrink: 0;
 }
 
-.surf-clock-now {
+.today-clock-now {
   flex: 1 1 240px;
   min-width: 220px;
   display: flex;
   justify-content: flex-end;
 }
-.surf-now-card {
+.today-now-card {
   display: block;
   width: 100%;
   max-width: 320px;
@@ -2084,23 +2084,23 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   transition: background var(--motion-quick), border-color var(--motion-quick);
   cursor: pointer;
 }
-.surf-now-card.empty { cursor: default; color: var(--text-3); }
-.surf-now-card.empty:hover { background: var(--paper); }
-.surf-now-card:hover { background: var(--overlay-hover-faint); }
-[data-theme="dark"] .surf-now-card:hover { background: var(--overlay-hover); }
-.surf-now-card.running {
+.today-now-card.empty { cursor: default; color: var(--text-3); }
+.today-now-card.empty:hover { background: var(--paper); }
+.today-now-card:hover { background: var(--overlay-hover-faint); }
+[data-theme="dark"] .today-now-card:hover { background: var(--overlay-hover); }
+.today-now-card.running {
   /* stylelint-disable-next-line declaration-property-value-disallowed-list */
   border-color: oklch(80% 0.07 245);
   /* stylelint-disable-next-line declaration-property-value-disallowed-list */
   background: oklch(97% 0.02 245);
 }
-[data-theme="dark"] .surf-now-card.running {
+[data-theme="dark"] .today-now-card.running {
   /* stylelint-disable-next-line declaration-property-value-disallowed-list */
   border-color: oklch(40% 0.08 245);
   /* stylelint-disable-next-line declaration-property-value-disallowed-list */
   background: oklch(22% 0.03 245);
 }
-.surf-now-label {
+.today-now-label {
   display: inline-flex; align-items: center; gap: var(--space-3);
   font-size: var(--text-xs);
   font-weight: 700;
@@ -2110,16 +2110,16 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   margin-bottom: var(--space-1);
   font-variant-numeric: tabular-nums;
 }
-.surf-now-card.running .surf-now-label { color: var(--accent); }
-.surf-now-dot {
+.today-now-card.running .today-now-label { color: var(--accent); }
+.today-now-dot {
   width: 6px; height: 6px; border-radius: var(--radius-pill);
   background: var(--text-4);
 }
-.surf-now-dot.live {
+.today-now-dot.live {
   background: var(--accent);
   animation: dot-pulse var(--motion-pulse) ease-in-out infinite;
 }
-.surf-now-title {
+.today-now-title {
   font-size: var(--text-base);
   font-weight: 500;
   color: var(--text);
@@ -2130,20 +2130,20 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
 }
-.surf-now-meta {
+.today-now-meta {
   font-size: var(--text-xs);
   color: var(--text-3);
   margin-top: var(--space-1);
   display: flex; gap: var(--space-3); align-items: center;
 }
-.surf-now-meta .surf-now-sep { color: var(--text-4); }
+.today-now-meta .today-now-sep { color: var(--text-4); }
 
 @media (max-width: 720px) {
-  .surf-clock-day { padding-left: var(--space-0); border-left: 0; }
+  .today-clock-day { padding-left: var(--space-0); border-left: 0; }
 }
 
 /* ---- main terminal (plain) ---- */
-.surf-term {
+.today-term {
   flex: 1;
   min-height: 480px;
   display: flex;
@@ -2154,33 +2154,33 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   box-shadow: var(--shadow);
   overflow: hidden;
 }
-[data-theme="dark"] .surf-term { background: var(--surface-terminal); }
+[data-theme="dark"] .today-term { background: var(--surface-terminal); }
 
 /* `.card-head` (applied via `<CardHead>`) supplies display/align/gap/
    padding/border/background. `flex-shrink: 0` is load-bearing inside the
-   surf-term column flex parent (without it the head gets squeezed when
+   today-term column flex parent (without it the head gets squeezed when
    the body claims all the height).
    `.card-head` reserves 38px on the right for the absolutely-positioned
    `.card-grid-close` X button, but that button lives in `.card-slot` on
-   the wave grid — surf-term renders on the Today page outside `.card-slot`
+   the wave grid — today-term renders on the Today page outside `.card-slot`
    so no overlay X exists. Return the right padding to the symmetric token
    so the reset button doesn't get visibly pushed left. */
-.surf-term-head {
+.today-term-head {
   padding-right: var(--card-head-pad-h);
   flex-shrink: 0;
 }
-[data-theme="dark"] .surf-term-head { background: var(--surface-card); }
+[data-theme="dark"] .today-term-head { background: var(--surface-card); }
 /* The reset button now lives in the `.card-head-status` slot wrapper
    (which is right-aligned via the base's `justify-content: flex-end`),
    so `margin-left: auto` is no longer needed — the slot pins it. */
-.surf-term-host {
+.today-term-host {
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   color: var(--text-4);
   letter-spacing: var(--tracking-wide);
 }
 
-.surf-term-body {
+.today-term-body {
   /* `overflow: hidden`, not `auto`: when this wraps a live <XtermView/>
      (Today's default PTY), an auto scrollbar fights with xterm's own
      scrollback viewport and fit.fit() in a width-feedback loop — same
@@ -2196,62 +2196,62 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   color: var(--text-2);
 }
 
-.surf-term-line {
+.today-term-line {
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--text-2);
 }
-.surf-term-line.dim { color: var(--text-3); }
-.surf-term-line strong { color: var(--text); font-weight: 600; }
-.surf-term-line code {
+.today-term-line.dim { color: var(--text-3); }
+.today-term-line strong { color: var(--text); font-weight: 600; }
+.today-term-line code {
   font-family: var(--font-code);
   background: var(--surface-code);
   padding: var(--space-0) var(--space-3);
   border-radius: var(--radius-sm);
   color: var(--text);
 }
-[data-theme="dark"] .surf-term-line code { background: var(--surface-code); }
-.surf-term-line .dim { color: var(--text-3); }
+[data-theme="dark"] .today-term-line code { background: var(--surface-code); }
+.today-term-line .dim { color: var(--text-3); }
 
-.surf-cmd {
+.today-cmd {
   color: var(--text);
   font-weight: 600;
 }
-.surf-arg {
+.today-arg {
   color: var(--accent);
 }
-.surf-live {
+.today-live {
   /* stylelint-disable-next-line declaration-property-value-disallowed-list */
   color: oklch(48% 0.13 145);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
-[data-theme="dark"] .surf-live { color: var(--success); }
+[data-theme="dark"] .today-live { color: var(--success); }
 
-.surf-term-gap { height: 14px; }
+.today-term-gap { height: 14px; }
 
 /* terminal prompt */
-.surf-prompt {
+.today-prompt {
   display: flex; align-items: center; gap: var(--space-3);
   font-family: var(--font-mono);
   font-size: var(--text-base);
   padding-top: var(--space-1);
 }
-.surf-host {
+.today-host {
   /* stylelint-disable-next-line declaration-property-value-disallowed-list */
   color: oklch(48% 0.13 145);
   font-weight: 600;
 }
-[data-theme="dark"] .surf-host { color: var(--success); }
-.surf-tilde {
+[data-theme="dark"] .today-host { color: var(--success); }
+.today-tilde {
   color: var(--accent);
   font-weight: 600;
 }
-.surf-ps {
+.today-ps {
   color: var(--text);
   font-weight: 600;
 }
-.surf-cursor {
+.today-cursor {
   display: inline-block;
   width: 8px; height: 15px;
   background: var(--text);
@@ -2261,24 +2261,24 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 
 /* ---- right rail ---- */
-.surf-rail {
+.today-rail {
   min-width: 0;
   display: flex; flex-direction: column;
   gap: var(--space-8);
   min-height: 0;
 }
 
-.surf-card {
+.today-card {
   border: 1px solid var(--hairline);
   border-radius: var(--r);
   background: var(--paper);
   padding: var(--space-8) var(--space-9) var(--space-9);
 }
-.surf-card .h-eyebrow { margin-bottom: var(--space-5); }
+.today-card .h-eyebrow { margin-bottom: var(--space-5); }
 
 /* Today */
-.surf-today { padding-bottom: var(--space-8); }
-.surf-date {
+.today-today { padding-bottom: var(--space-8); }
+.today-date {
   font-family: var(--font-numeric);
   font-size: var(--text-xl);
   font-weight: 400;
@@ -2287,12 +2287,12 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   line-height: var(--leading-tight);
   text-wrap: pretty;
 }
-.surf-tod {
+.today-tod {
   font-size: var(--text-sm);
   color: var(--text-3);
   margin-top: var(--space-1);
 }
-.surf-today-status {
+.today-today-status {
   display: none;
 }
 .cal-status {
@@ -2303,36 +2303,36 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   padding-bottom: var(--space-6);
   border-bottom: 1px solid var(--hairline);
 }
-.surf-stat {
+.today-stat {
   display: inline-flex;
   align-items: baseline;
   gap: var(--space-3);
   font-variant-numeric: tabular-nums;
 }
-.surf-stat-dot {
+.today-stat-dot {
   width: 6px; height: 6px;
   border-radius: var(--radius-pill);
   align-self: center;
 }
-.surf-stat-dot.warn {
+.today-stat-dot.warn {
   background: var(--warn);
   box-shadow: 0 0 0 3px var(--warn-soft);
 }
-.surf-stat-dot.run {
+.today-stat-dot.run {
   background: var(--accent);
   animation: dot-pulse var(--motion-pulse) ease-in-out infinite;
 }
-.surf-stat-n {
+.today-stat-n {
   font-size: var(--text-md);
   font-weight: 600;
   color: var(--text);
 }
-.surf-stat.warn .surf-stat-n { color: var(--warn); }
-.surf-stat-lbl {
+.today-stat.warn .today-stat-n { color: var(--warn); }
+.today-stat-lbl {
   font-size: var(--text-sm);
   color: var(--text-meta);
 }
-.surf-stat-sep {
+.today-stat-sep {
   color: var(--text-4);
   font-size: var(--text-base);
 }
@@ -2600,10 +2600,10 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 
 /* narrow viewports — stack rail under terminal */
 @media (max-width: 920px) {
-  .surf-grid {
+  .today-grid {
     grid-template-columns: minmax(0, 1fr);
   }
-  .surf-term { min-height: 380px; }
+  .today-term { min-height: 380px; }
 }
 
 /* ============================================================
@@ -2731,7 +2731,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 
 /* Lift the card while dragging — same shadow grammar as `.attn` and the
-   surf terminal, just a touch stronger so the displacement reads. */
+   today-page terminal, just a touch stronger so the displacement reads. */
 .react-grid-item.react-draggable-dragging {
   z-index: var(--z-overlay);
   cursor: grabbing;
