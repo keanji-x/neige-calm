@@ -28,13 +28,19 @@
 //
 // Devtools only mount in dev (Vite's `import.meta.env.DEV`).
 
-import { QueryClient, useIsRestoring, useQuery } from '@tanstack/react-query';
+import {
+  QueryClient,
+  useIsRestoring,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
+import { useState } from '../shared/state';
 import { EventBridge } from './eventBridge';
 import { ThemeProvider } from './theme';
-import { buildPersistOptions, PERSIST_MAX_AGE_MS } from '../api/persistConfig';
+import { buildPersistOptions, IDB_DB_NAME, PERSIST_MAX_AGE_MS } from '../api/persistConfig';
 import { Dialog } from '../ui/Dialog/Dialog';
 import {
   WEB_COMPAT_VERSION,
@@ -42,6 +48,21 @@ import {
   isCompatible,
   type ServerVersionInfo,
 } from '../api/version';
+
+/**
+ * `localStorage` key under which we stash the last observed
+ * `dbInstanceId`. Compared on every mount against the server's current
+ * value — see `ServerCompatGate` below.
+ */
+export const DB_INSTANCE_ID_STORAGE_KEY = 'calm:db_instance_id';
+
+/**
+ * WS sync cursor storage key. Mirrors the private constant in
+ * `api/events.ts`; we duplicate it here (rather than import) so the
+ * cache-bust path doesn't pull the WS module into the providers'
+ * import graph. The value MUST stay in sync with `events.ts`.
+ */
+const WS_CURSOR_STORAGE_KEY = 'calm:sync:cursor';
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -93,12 +114,25 @@ function QueryRestoreGate({ children }: { children: ReactNode }) {
  * mount (no `refetchInterval`); on mismatch we render an overlay over
  * the whole tree directing the user to refresh.
  *
+ * On the same mount, also watch `dbInstanceId`: a UUID v4 the server
+ * mints once per process boot (NOT persisted to the DB). If the value
+ * we stashed in `localStorage` on a previous load differs from what the
+ * server reports now, the underlying sqlite DB has been recreated under
+ * us (operator ran `make dev RESET_DB=1`, a fresh-migrations branch
+ * swap, etc.) and our persisted React Query cache + WS cursor are
+ * holding row ids that no longer exist. Wipe both stores and hard-
+ * reload — silently, because there's no client-owned state to lose
+ * (everything lives server-side) and a confirmation modal would be
+ * pure friction. First-time visitors (no previous id) just store the
+ * value and continue.
+ *
  * If the query itself fails (network blip, server down), we render the
  * children — better to let the existing per-query error banners surface
  * the connectivity problem than to block the entire app on a transient
- * /api/version failure.
+ * /api/version failure. The DB-instance check is no-op'd in that case
+ * too: missing data means we have nothing to compare against.
  */
-function ServerCompatGate({ children }: { children: ReactNode }) {
+export function ServerCompatGate({ children }: { children: ReactNode }) {
   const q = useQuery<ServerVersionInfo>({
     queryKey: ['server-version'],
     queryFn: fetchServerVersion,
@@ -109,11 +143,95 @@ function ServerCompatGate({ children }: { children: ReactNode }) {
     gcTime: 0,
     retry: 1,
   });
+  const qc = useQueryClient();
+  // `busted` flips to true once we've kicked off the cache wipe + reload
+  // path. The browser will navigate away momentarily; rendering `null`
+  // in the interim prevents a flash of children with the cleared cache.
+  const [busted, setBusted] = useState<boolean>(false);
+
+  useEffect(() => {
+    const id = q.data?.dbInstanceId;
+    if (!id) return;
+    const previous = safeLocalStorageGet(DB_INSTANCE_ID_STORAGE_KEY);
+    if (previous && previous !== id) {
+      // Server DB has been recreated since our last paint. Clear every
+      // persisted client-side artifact that could now reference dead ids:
+      //   * React Query in-memory cache (paint-from-snapshot lives here)
+      //   * IndexedDB the persister writes to (`IDB_DB_NAME`)
+      //   * WS event cursor in `localStorage[WS_CURSOR_STORAGE_KEY]`
+      // Then write the new id and hard-reload — any in-flight queries
+      // hold references to the cleared cache, so the cleanest path is
+      // to start the page over from scratch against the new state.
+      qc.clear();
+      safeLocalStorageRemove(WS_CURSOR_STORAGE_KEY);
+      safeDeleteIDB(IDB_DB_NAME);
+      safeLocalStorageSet(DB_INSTANCE_ID_STORAGE_KEY, id);
+      setBusted(true);
+      window.location.reload();
+      return;
+    }
+    if (!previous) {
+      // First-time visitor (or `localStorage` was wiped). Just remember
+      // the current id so the next boot has something to compare against.
+      safeLocalStorageSet(DB_INSTANCE_ID_STORAGE_KEY, id);
+    }
+  }, [q.data?.dbInstanceId, qc]);
 
   if (q.data && !isCompatible(q.data)) {
     return <RefreshRequiredOverlay server={q.data} />;
   }
+  if (busted) {
+    // Reload is pending — render nothing rather than briefly flashing
+    // the children with an empty cache.
+    return null;
+  }
   return <>{children}</>;
+}
+
+// ---------------------------------------------------------------------------
+// `localStorage` / `indexedDB` access helpers.
+//
+// All three storage APIs can throw or be undefined in degraded environments
+// (private mode / disabled-storage browsers, SSR, tests that haven't
+// installed a jsdom polyfill). The try/catch wrappers below are the
+// difference between a graceful no-op and a runtime crash that takes the
+// whole app down.
+//
+// In the degraded case, the cache-bust feature simply doesn't work — the
+// user gets the same broken behavior they had pre-PR. That's a strictly
+// better outcome than crashing the providers tree.
+// ---------------------------------------------------------------------------
+
+function safeLocalStorageGet(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeLocalStorageSet(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* private mode / quota — degrade silently */
+  }
+}
+
+function safeLocalStorageRemove(key: string): void {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    /* private mode / quota — degrade silently */
+  }
+}
+
+function safeDeleteIDB(name: string): void {
+  try {
+    indexedDB.deleteDatabase(name);
+  } catch {
+    /* IDB unavailable — degrade silently */
+  }
 }
 
 /** Hard-block modal directing the user to refresh after a backend skew is

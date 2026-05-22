@@ -811,6 +811,8 @@ export interface components {
         VersionInfo: {
             apiVersion: string;
             buildSha?: string | null;
+            /** @description UUID v4 minted once per process boot. See module doc. */
+            dbInstanceId: string;
             kernelVersion: string;
             mcpProtocolVersion: string;
             /** Format: int32 */

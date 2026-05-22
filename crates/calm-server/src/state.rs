@@ -30,6 +30,18 @@ pub struct AppState {
     pub daemon: Arc<DaemonClient>,
     pub plugin: Arc<PluginHost>,
     pub codex: Arc<CodexClient>,
+    /// UUID v4 minted once per server-process boot, surfaced on
+    /// `/api/version` as `dbInstanceId`. Lets the web client detect when the
+    /// underlying sqlite DB has been recreated under it (e.g. `make dev
+    /// RESET_DB=1` or a fresh-migrations branch swap) and bust its
+    /// IndexedDB-backed React Query cache + WS event cursor before they
+    /// paint stale ids that 404 at the route loader.
+    ///
+    /// Deliberately not persisted to the DB: the whole point is that it
+    /// changes whenever the DB *might* have changed underneath us. A new
+    /// process = a new instance id, full stop. `Arc<String>` so the value
+    /// is cheap to clone across handler dispatches.
+    pub db_instance_id: Arc<String>,
     /// Full-capability handle. Held separately from `repo` so the gate at
     /// `AppState::repo` survives even though the underlying concrete impl
     /// is the same `SqlxRepo`. Kept private — callers must go through
@@ -77,6 +89,11 @@ impl AppState {
             daemon,
             plugin,
             codex,
+            // Fresh UUID per `AppState` — same boot-scoped semantics as
+            // `AppState::new`. Each integration test gets its own id,
+            // which is the right behavior: two tests sharing one binary
+            // are conceptually two server "boots".
+            db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
             raw: repo,
         }
     }
@@ -151,6 +168,11 @@ impl AppState {
             daemon: Arc::new(DaemonClient::new(cfg)),
             plugin,
             codex: Arc::new(CodexClient::new(cfg)),
+            // See struct doc for `db_instance_id`: one fresh UUID v4 per
+            // process boot. `AppState::new` is called exactly once from
+            // `main.rs`, so this is the boot-scoped id the rest of the
+            // server hands out via `/api/version`.
+            db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
             raw: repo,
         };
 
