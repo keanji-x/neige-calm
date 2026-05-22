@@ -1089,10 +1089,12 @@ mod pump_tests {
     }
 
     /// Unsupported framing version: `pump` must return
-    /// `PumpOutcome::FramingSkew { error: FrameError::UnsupportedFrameVersion { got: 1, supported: 2 } }`.
-    /// After PR #62, current `FRAME_VERSION` is 2, so pushing the legacy
-    /// v1 framing prefix exercises the skew path (older daemon binary still
-    /// bound to a row whose kernel has since upgraded).
+    /// `PumpOutcome::FramingSkew { error: FrameError::UnsupportedFrameVersion { got: 1, supported: FRAME_VERSION } }`.
+    /// Pushing the legacy v1 framing prefix exercises the skew path
+    /// (older daemon binary still bound to a row whose kernel has since
+    /// upgraded). Asserts against the current `FRAME_VERSION` so the
+    /// test stays correct across version bumps (#177 raised it from 2
+    /// → 3).
     #[tokio::test]
     async fn pump_returns_framing_skew_on_unsupported_version() {
         use tokio::io::AsyncWriteExt;
@@ -1120,20 +1122,18 @@ mod pump_tests {
             .await
             .expect("pump did not return within timeout")
             .expect("outcome sender dropped without sending");
+        let expected = calm_session::FRAME_VERSION;
         match got {
-            PumpOutcome::FramingSkew { error } => {
-                assert!(
-                    matches!(
-                        error,
-                        FrameError::UnsupportedFrameVersion {
-                            got: 1,
-                            supported: 2,
-                        }
-                    ),
-                    "expected UnsupportedFrameVersion {{ got: 1, supported: 2 }}, got {:?}",
-                    error
-                );
-            }
+            PumpOutcome::FramingSkew { error } => match error {
+                FrameError::UnsupportedFrameVersion { got, supported } => {
+                    assert_eq!(got, 1);
+                    assert_eq!(supported, expected);
+                }
+                other => panic!(
+                    "expected UnsupportedFrameVersion {{ got: 1, supported: {} }}, got {:?}",
+                    expected, other,
+                ),
+            },
             other => panic!("expected FramingSkew, got {:?}", other),
         }
     }

@@ -122,6 +122,18 @@ pub enum Effect {
     /// pre-existing tests but new v2 paths emit
     /// [`Self::SendProtocolError`] + [`Self::CloseConnection`] instead.
     ProtocolViolation(&'static str),
+    /// Update the daemon-side default fg/bg used to answer OSC 10/11
+    /// color queries, and synthesize a fresh reply on the PTY master so
+    /// the child re-paints at the new theme (#177). The shell calls
+    /// `RenderPlane::set_default_colors` and writes
+    /// `\x1B]10;rgb:R/G/B\x1B\\ \x1B]11;rgb:R/G/B\x1B\\ \x1B[I` to the
+    /// PTY (the trailing focus-in CSI nudges codex/claude-tui to
+    /// re-query the default colors via crossterm's event queue, since
+    /// those TUIs don't otherwise observe an unsolicited reply).
+    TerminalThemeUpdate {
+        fg: (u8, u8, u8),
+        bg: (u8, u8, u8),
+    },
 }
 
 /// Chunk-granular byte ring used to seed a fresh client's render snapshot.
@@ -489,6 +501,24 @@ impl TerminalSessionState {
                     Effect::CloseConnection,
                 ]
             }
+            ClientMsg::TerminalThemeUpdate { fg, bg } => {
+                // Same authorization shape as `Input`: owner OR
+                // kernel-input observer. Theme bytes end up on the PTY
+                // master (synthetic OSC 10/11 reply + focus-in CSI), so
+                // we MUST NOT let an observer rewrite another user's
+                // terminal colors through a forged WS frame.
+                let kernel_input = self
+                    .capabilities
+                    .as_ref()
+                    .map(|c| c.kernel_originated_input)
+                    .unwrap_or(false);
+                if self.role != Some(Role::Owner) && !kernel_input {
+                    return vec![not_owner_error(
+                        "TerminalThemeUpdate requires owner role or kernel_originated_input capability",
+                    )];
+                }
+                vec![Effect::TerminalThemeUpdate { fg, bg }]
+            }
             // Chat-mode frames received in terminal mode are silently
             // dropped (parity with v1 behaviour).
             ClientMsg::ChatUserMessage { .. }
@@ -809,6 +839,36 @@ impl RenderPlane {
         )
     }
 
+    /// Same as [`Self::new`] but pre-seeds the model's OSC 10/11 reply
+    /// colors. The daemon passes the host browser's theme RGB here on
+    /// spawn so codex's startup probe gets an authoritative answer
+    /// before the first PTY chunk lands. See
+    /// [`crate::TerminalTheme`] / `--terminal-fg` / `--terminal-bg`.
+    pub fn with_colors(
+        cols: u16,
+        rows: u16,
+        transcript_max_bytes: usize,
+        scrollback_max_lines: usize,
+        default_fg: Option<(u8, u8, u8)>,
+        default_bg: Option<(u8, u8, u8)>,
+    ) -> Self {
+        let mut rp = Self::new(cols, rows, transcript_max_bytes, scrollback_max_lines);
+        rp.model.set_default_colors(default_fg, default_bg);
+        rp
+    }
+
+    /// Replace the default fg/bg the model advertises on OSC 10/11
+    /// query. Drives the mid-session theme-toggle path (#177): the
+    /// session-frame handler updates the model, then writes a synthetic
+    /// OSC reply to the PTY master.
+    pub fn set_default_colors(
+        &mut self,
+        fg: Option<(u8, u8, u8)>,
+        bg: Option<(u8, u8, u8)>,
+    ) {
+        self.model.set_default_colors(fg, bg);
+    }
+
     /// Constructor with an injected clock (test use). Production goes
     /// through [`Self::new`].
     ///
@@ -887,13 +947,28 @@ impl RenderPlane {
             self.last_rev_change_at = Some((self.now)());
         }
 
-        vec![Effect::Broadcast(DaemonMsg::RenderPatch(RenderPatch {
+        let mut effects: Vec<Effect> = Vec::with_capacity(2);
+        effects.push(Effect::Broadcast(DaemonMsg::RenderPatch(RenderPatch {
             render_rev: new_rev,
             prev_render_rev: prev,
             pty_seq: self.pty_seq,
             encoding: RenderEncoding::Vt,
             data: bytes,
-        }))]
+        })));
+        // 5. Drain OSC 10/11 reply bytes the model produced this feed
+        //    (codex's startup probe lands inside the very first chunk).
+        //    Routed back to the PTY master via Effect::WriteToPty so
+        //    crossterm's stdin event queue sees the answer.
+        //    `input_seq: 0` — the daemon doesn't want an ack for its
+        //    own synthesized writes; this is fire-and-forget.
+        let replies = self.model.take_pending_osc_replies();
+        if !replies.is_empty() {
+            effects.push(Effect::WriteToPty {
+                data: replies,
+                input_seq: 0,
+            });
+        }
+        effects
     }
 
     /// Poll for the one-shot `ChildReady` signal. Returns `Some(Effect)`

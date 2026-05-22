@@ -806,3 +806,126 @@ fn observer_with_kernel_input_capability_still_blocked_on_kill() {
         "Kill with kernel_originated_input must not actually KillChild, got {effects:?}"
     );
 }
+
+// ---- TerminalThemeUpdate (#177) ----------------------------------------
+//
+// Mid-session theme toggle: the browser POSTs the new (fg, bg) over the
+// WS so the daemon can update its OSC 10/11 reply colors AND synthesize
+// a focus-in nudge to make codex / claude-tui re-paint.
+
+#[test]
+fn owner_terminal_theme_update_yields_terminal_theme_update_effect() {
+    let mut registry = OwnerRegistry::new();
+    let (mut state, broadcaster) = attached_owner(&mut registry, Uuid::new_v4());
+    let session_id = Uuid::new_v4();
+
+    let effects = state.on_client_frame(
+        ClientMsg::TerminalThemeUpdate {
+            fg: (216, 219, 226),
+            bg: (15, 20, 24),
+        },
+        broadcaster.buffer(),
+        &mut registry,
+        &ctx(&broadcaster, session_id),
+    );
+
+    assert_eq!(effects.len(), 1, "expected exactly one effect, got {effects:?}");
+    match &effects[0] {
+        Effect::TerminalThemeUpdate { fg, bg } => {
+            assert_eq!(*fg, (216, 219, 226));
+            assert_eq!(*bg, (15, 20, 24));
+        }
+        other => panic!("expected TerminalThemeUpdate effect, got {other:?}"),
+    }
+}
+
+#[test]
+fn observer_terminal_theme_update_yields_not_owner() {
+    let mut registry = OwnerRegistry::new();
+    // Pre-register a different owner so this attach defaults to Observer.
+    let _ = registry.on_attach(Uuid::new_v4(), None);
+
+    let broadcaster = PtyBroadcaster::new(1024);
+    let mut state = TerminalSessionState::new();
+    let session_id = Uuid::new_v4();
+    let _ = state.on_client_frame(
+        hello(Uuid::new_v4(), TID),
+        broadcaster.buffer(),
+        &mut registry,
+        &ctx(&broadcaster, session_id),
+    );
+    assert_eq!(state.role(), Some(Role::Observer));
+
+    let effects = state.on_client_frame(
+        ClientMsg::TerminalThemeUpdate {
+            fg: (1, 2, 3),
+            bg: (4, 5, 6),
+        },
+        broadcaster.buffer(),
+        &mut registry,
+        &ctx(&broadcaster, session_id),
+    );
+
+    assert!(
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::SendProtocolError {
+                code: ProtocolErrorCode::NotOwner,
+                ..
+            }
+        )),
+        "expected NotOwner for observer TerminalThemeUpdate, got {effects:?}"
+    );
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::TerminalThemeUpdate { .. })),
+        "observer TerminalThemeUpdate must not produce the actual effect, got {effects:?}"
+    );
+}
+
+#[test]
+fn kernel_input_observer_terminal_theme_update_allowed() {
+    // Kernel-private clients carry the same trust posture for theme as
+    // they do for Input — see the `TerminalThemeUpdate` doc on
+    // `ClientMsg`. Authorize via the kernel_originated_input flag.
+    let mut registry = OwnerRegistry::new();
+    let _ = registry.on_attach(Uuid::new_v4(), None);
+
+    let (mut state, broadcaster) =
+        attached_observer_with_kernel_input(&mut registry, Uuid::new_v4());
+    let session_id = Uuid::new_v4();
+
+    let effects = state.on_client_frame(
+        ClientMsg::TerminalThemeUpdate {
+            fg: (1, 2, 3),
+            bg: (4, 5, 6),
+        },
+        broadcaster.buffer(),
+        &mut registry,
+        &ctx(&broadcaster, session_id),
+    );
+
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::TerminalThemeUpdate { .. })),
+        "kernel-input observer TerminalThemeUpdate must produce the effect, got {effects:?}"
+    );
+}
+
+#[test]
+fn terminal_theme_update_bincode_roundtrips() {
+    // The kernel↔daemon hop uses bincode (issue #44). Lock the wire
+    // shape of the new variant so a missed schema bump fails loudly in
+    // CI rather than as a silent payload mismatch.
+    let original = ClientMsg::TerminalThemeUpdate {
+        fg: (1, 2, 3),
+        bg: (4, 5, 6),
+    };
+    let bytes =
+        bincode::serde::encode_to_vec(&original, bincode::config::standard()).expect("encode");
+    let (decoded, _): (ClientMsg, _) =
+        bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).expect("decode");
+    assert_eq!(decoded, original);
+}
