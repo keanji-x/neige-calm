@@ -81,6 +81,26 @@ const ALIAS_TOKENS = [
   '--text-decorative',
 ] as const;
 
+// Type-scale tokens: single-mode (don't theme-vary). Declared once in `:root`
+// with a concrete `Npx` literal — they're the consolidated vocabulary that
+// every component selector reads through (slice 1 of #150). The migration
+// from 20+ raw font-size literals is intentionally lossy; the rounding
+// policy lives in the issue body, not here.
+//
+// Unlike POSITIONAL_TOKENS, these MUST NOT have a dark override: the type
+// scale is part of the design system's shape vocabulary (like `--r`), not
+// its color vocabulary.
+const TYPE_SCALE_TOKENS = [
+  '--text-xs',
+  '--text-sm',
+  '--text-base',
+  '--text-md',
+  '--text-lg',
+  '--text-xl',
+  '--text-display-sm',
+  '--text-display',
+] as const;
+
 // ---------------------------------------------------------------------------
 // Parse helpers
 // ---------------------------------------------------------------------------
@@ -232,7 +252,85 @@ describe('calm.css token graph: alias tokens have no dark override', () => {
 });
 
 // ---------------------------------------------------------------------------
-// (e) Orphan detection — soft warning, no failure.
+// (e) Type-scale tokens: defined in :root, concrete px literals, no dark.
+// ---------------------------------------------------------------------------
+//
+// Mirrors the contract for concrete surface tokens but with two twists:
+//  - The literal is a numeric `Npx` (or `N.Npx`) — not oklch.
+//  - The token MUST NOT have a dark override; type scale is shape, not color.
+
+const PX_LITERAL = /^\d+(\.\d+)?px$/;
+
+describe('calm.css token graph: type-scale tokens', () => {
+  for (const name of TYPE_SCALE_TOKENS) {
+    it(`${name} is declared in :root as a numeric px literal`, () => {
+      const value = rootDecls.get(name);
+      expect(value, `${name} missing from :root`).toBeDefined();
+      expect(
+        value,
+        `${name} should be a concrete 'Npx' literal (type scale doesn't theme-vary), got: ${value}`,
+      ).toMatch(PX_LITERAL);
+    });
+
+    it(`${name} is NOT redeclared in [data-theme="dark"]`, () => {
+      expect(
+        darkDecls.has(name),
+        `${name} is a type-scale token; type scale is shape, not color — no dark override.`,
+      ).toBe(false);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// (f) Soft drift detector: any `font-size: Npx` literal outside the token
+// blocks is fair game for migration (or a deliberate exception that should
+// be called out in review).
+// ---------------------------------------------------------------------------
+
+describe('calm.css type-scale: no raw font-size literals outside :root', () => {
+  it('logs any remaining font-size px literal in component selectors (informational)', () => {
+    // Skip the token-definition blocks (`:root { … }` and the dark block).
+    // Anything else is a component selector that should be reading through a
+    // var(--text-*) token. We surface this as a warning today; if drift
+    // appears in CI noise we can promote to a hard failure later.
+    const rootStart = CSS.indexOf(':root {');
+    const rootBody = sliceBlock(CSS, ':root {');
+    const rootEnd = CSS.indexOf(rootBody, rootStart) + rootBody.length + 1;
+    const darkStart = CSS.indexOf('[data-theme="dark"] {');
+    const darkBody = sliceBlock(CSS, '[data-theme="dark"] {');
+    const darkEnd = CSS.indexOf(darkBody, darkStart) + darkBody.length + 1;
+
+    // Build the source-minus-token-blocks string. We replace the token
+    // blocks with newlines of equal line count so line numbers in the
+    // warning still line up with the original file.
+    const lineCountIn = (s: string) => (s.match(/\n/g) || []).length;
+    const blank = (n: number) => '\n'.repeat(n);
+    const masked =
+      CSS.slice(0, rootStart) +
+      blank(lineCountIn(CSS.slice(rootStart, rootEnd))) +
+      CSS.slice(rootEnd, darkStart) +
+      blank(lineCountIn(CSS.slice(darkStart, darkEnd))) +
+      CSS.slice(darkEnd);
+
+    const hits: string[] = [];
+    const re = /font-size:\s*\d+(?:\.\d+)?px/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(masked)) !== null) {
+      const line = masked.slice(0, m.index).split('\n').length;
+      hits.push(`calm.css:${line}: ${m[0]}`);
+    }
+    if (hits.length > 0) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[calm-tokens] raw font-size px literals outside :root/dark token blocks (migrate to var(--text-*) per #150):\n  ${hits.join('\n  ')}`,
+      );
+    }
+    expect(true).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (g) Orphan detection — soft warning, no failure.
 // ---------------------------------------------------------------------------
 //
 // If a token is declared in `:root` but never referenced by a `var(--name)`
