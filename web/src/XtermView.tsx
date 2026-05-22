@@ -5,6 +5,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { dlog } from './util/debug';
 import { makeUuid } from './util/uuid';
+import { MONO_STACK } from './font-stack';
 import type {
   ClientMsg,
   DaemonMsg,
@@ -164,7 +165,7 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
     const term = new Terminal({
       theme:
         latestThemeRef.current === 'dark' ? DARK_THEME : LIGHT_THEME,
-      fontFamily: '"SF Mono", ui-monospace, "Menlo", monospace',
+      fontFamily: MONO_STACK,
       fontSize: 12.5,
       convertEol: true,
       allowProposedApi: true,

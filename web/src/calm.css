@@ -1200,7 +1200,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-family: var(--font-mono);
   font-size: var(--text-sm);
 }
 .dirpicker-value-empty { color: var(--text-3); font-family: inherit; font-size: var(--text-base); }
@@ -1262,7 +1262,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .dirpicker-up:disabled { opacity: 0.4; cursor: not-allowed; }
 .dirpicker-cwd {
   flex: 1; min-width: 0;
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-family: var(--font-mono);
   font-size: var(--text-sm);
   color: var(--text-2);
   overflow: hidden;
@@ -1367,7 +1367,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   display: flex; align-items: center; gap: 8px;
   min-width: 0; /* allow the label to actually shrink */
   font-size: var(--text-xs);
-  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-family: var(--font-mono);
   color: var(--text-2);
 }
 .codex-status-label {
@@ -2798,7 +2798,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 .settings-section-hint code,
 .settings-field-hint code {
-  font-family: var(--font-code, ui-monospace, SFMono-Regular, monospace);
+  font-family: var(--font-code);
   font-size: var(--text-sm);
   background: var(--surface-chip);
   border-radius: 4px;
