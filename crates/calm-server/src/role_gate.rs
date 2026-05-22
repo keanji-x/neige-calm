@@ -1,0 +1,442 @@
+//! Wave-as-Actor PR3 (#136) — authorization gate at the single write entry.
+//!
+//! The gate runs inside `Repo::write_with_event` / `Repo::log_pure_event`,
+//! after the closure produces an `Event`, before `event_append_in_tx`
+//! commits the row. A violation rolls the txn back: no entity write,
+//! no event row, no broadcast. The kernel is the only safety boundary
+//! between AI-controlled cards and the wave-level kernel state, so the
+//! gate is deliberately strict — *deny* is the default for anything
+//! ambiguous, and we re-confirm role lookups against the in-process
+//! `CardRoleCache` rather than trusting the actor's claimed identity.
+//!
+//! ## What the gate enforces
+//!
+//! 1. **Empty-CardId guard.** `ActorId::AiCodex(CardId(""))` and
+//!    `ActorId::AiSpec(CardId(""))` are rejected outright. This catches
+//!    the PR2 stopgap path in `crate::actor::Actor::to_actor_id` where
+//!    the `X-Calm-Actor: ai:codex` header has no card context to attach.
+//!    PR3 reattributes the codex bridge ingest to a real card id (see
+//!    `routes::codex::ingest_hook`), so this branch ends up firing only
+//!    when something else regresses — fail loud, not silent.
+//!
+//! 2. **`Event::WaveUpdated` is gated to spec cards.** The actor must be
+//!    `User`, `Kernel`, or `AiSpec(card_id)` where the cache confirms
+//!    `CardRole::Spec`. Any `AiCodex` actor — even one bound to a card —
+//!    is rejected: codex worker cards must not edit wave-level state.
+//!
+//! 3. **Worker-card scope check.** When an `AiCodex(card_id)` actor's
+//!    cached role is `Worker`, the event's `EventScope` must be the
+//!    same card. A worker that tries to emit a `Wave` or `Cove` scope
+//!    event is refused.
+//!
+//! 4. **User / Kernel / KernelDispatcher / Plugin(_)** are unrestricted
+//!    in PR3. The kernel's own writes (FSM projector, terminal sweeper,
+//!    plugin callback dispatcher) and the user's REST surface continue
+//!    to flow through the gate unchanged.
+//!
+//! 5. **Unknown card.** If the actor names a card the cache doesn't
+//!    know, the write is denied. Two possible causes:
+//!      * the card was deleted between the actor's request landing and
+//!        the gate running (race; safe to reject),
+//!      * an attacker fabricated a card id (the gate is the last line
+//!        of defense, deny by default).
+
+use crate::card_role_cache::CardRoleCache;
+use crate::event::{Event, EventScope};
+use crate::ids::{ActorId, CardId};
+use crate::model::CardRole;
+use thiserror::Error;
+
+/// Reasons the gate may refuse a write. Surfaced verbatim into the
+/// returned `CalmError::Forbidden` so test assertions can pattern-match
+/// without parsing a free-form string.
+#[derive(Debug, Error)]
+pub enum RoleViolation {
+    #[error("AiCodex/AiSpec actor has empty card id (likely from legacy `ai:codex` header path)")]
+    EmptyAiCardId,
+
+    #[error("only spec cards (or User/Kernel) may emit wave.updated (actor={actor})")]
+    NotSpecForWave { actor: String },
+
+    #[error("worker card {card} is out of scope {scope}")]
+    WorkerOutOfScope { card: CardId, scope: String },
+
+    #[error(
+        "AiCodex actor references card {card} that the role cache does not know — \
+         card was likely deleted or never minted; denying by default"
+    )]
+    UnknownCard { card: CardId },
+}
+
+/// Run the role gate. Returns `Ok(())` on success, `Err(RoleViolation)`
+/// to refuse the write. Caller wraps the error into a transactional
+/// rollback — see the `write_with_event` / `log_pure_event` impls in
+/// `db::sqlite`.
+///
+/// The function is intentionally side-effect-free: it never mutates the
+/// cache (only the card-create / -delete paths do), and it never reads
+/// the database. That's why the gate is cheap enough to run inline at
+/// every write site.
+pub fn enforce_role(
+    actor: &ActorId,
+    event: &Event,
+    scope: &EventScope,
+    cache: &CardRoleCache,
+) -> Result<(), RoleViolation> {
+    // --- (1) Empty-CardId guard. ---
+    //
+    // PR2's `Actor::to_actor_id` returns `AiCodex(CardId(""))` for the
+    // legacy `X-Calm-Actor: ai:codex` header path because there's no
+    // card context at the REST entry. PR3 must not silently match an
+    // empty CardId against any real card — that would be a
+    // gate-bypass. We reject loud and let the call site (the codex
+    // bridge ingest in routes/codex.rs) attribute a real card.
+    if let ActorId::AiCodex(c) | ActorId::AiSpec(c) = actor
+        && c.as_str().is_empty()
+    {
+        return Err(RoleViolation::EmptyAiCardId);
+    }
+
+    // --- (2) `WaveUpdated` is spec-only. ---
+    //
+    // The wave-level authority decision: only the spec card (PR6) is
+    // allowed to update the wave row. User + Kernel keep their
+    // unrestricted authority (the user is *the* authority; Kernel is
+    // the FSM projector / sweeper / plugin dispatcher, which writes
+    // server-internal lifecycle the user implicitly authorized at
+    // boot).
+    if matches!(event, Event::WaveUpdated(_)) {
+        match actor {
+            ActorId::User | ActorId::Kernel | ActorId::KernelDispatcher => {}
+            ActorId::Plugin(_) => {
+                // Plugins are unrestricted in PR3 — see the
+                // `RouteRepo` capability split docs. Plugin-driven
+                // wave edits are rare in practice (the surface for
+                // them lives in the plugin host callback dispatcher,
+                // which is server-internal). If PR4+ tightens this,
+                // it lands here.
+            }
+            ActorId::AiSpec(card_id) => {
+                let role = cache.get(card_id);
+                if role != Some(CardRole::Spec) {
+                    return Err(RoleViolation::NotSpecForWave {
+                        actor: format!("AiSpec({card_id})"),
+                    });
+                }
+            }
+            ActorId::AiCodex(card_id) => {
+                // Even an AiCodex actor whose card happens to be
+                // `Spec`-roled (impossible in PR3 — spec cards are
+                // bound to `AiSpec`) is rejected here. The actor
+                // variant is the wire-level claim; the gate sticks
+                // to it rather than re-binding via the cache.
+                return Err(RoleViolation::NotSpecForWave {
+                    actor: format!("AiCodex({card_id})"),
+                });
+            }
+        }
+    }
+
+    // --- (3) Worker-card scope check + (5) unknown-card deny. ---
+    //
+    // For `AiCodex` actors: confirm the cache knows the card, and if
+    // the cached role is `Worker`, refuse anything broader than that
+    // card's own scope. Plain-role codex cards (the path users hit
+    // today before PR5 introduces the dispatcher) have no extra
+    // scope restriction.
+    if let ActorId::AiCodex(card_id) = actor {
+        match cache.get(card_id) {
+            None => {
+                return Err(RoleViolation::UnknownCard {
+                    card: card_id.clone(),
+                });
+            }
+            Some(CardRole::Worker) => {
+                let scope_matches =
+                    matches!(scope, EventScope::Card { card, .. } if card == card_id);
+                if !scope_matches {
+                    return Err(RoleViolation::WorkerOutOfScope {
+                        card: card_id.clone(),
+                        scope: format!("{scope:?}"),
+                    });
+                }
+            }
+            // PR3 invariant: spec cards are bound to AiSpec, not
+            // AiCodex. If the cache claims an AiCodex actor's card is
+            // Spec-roled, something has gone wrong upstream — fail
+            // loud. This branch unreachable today.
+            Some(CardRole::Spec) => {
+                return Err(RoleViolation::NotSpecForWave {
+                    actor: format!(
+                        "AiCodex({card_id}) — card is Spec-roled but actor variant is AiCodex"
+                    ),
+                });
+            }
+            // Plain: no extra restrictions from this arm. Wave-update
+            // was already handled in step (2) above.
+            Some(CardRole::Plain) => {}
+        }
+    }
+
+    // --- (4) User / Kernel / KernelDispatcher / Plugin: unrestricted. ---
+    //
+    // The match above already let them through. Documented here as a
+    // gate decision, not as code, so the policy is greppable.
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ids::{CoveId, WaveId};
+    use crate::model::{Cove, Wave};
+
+    fn wave(id: &str, cove: &str) -> Wave {
+        Wave {
+            id: WaveId::from(id),
+            cove_id: CoveId::from(cove),
+            title: "t".into(),
+            sort: 1.0,
+            archived_at: None,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    fn card_scope(card: &str, wave: &str, cove: &str) -> EventScope {
+        EventScope::Card {
+            card: CardId::from(card),
+            wave: WaveId::from(wave),
+            cove: CoveId::from(cove),
+        }
+    }
+
+    fn wave_scope(wave: &str, cove: &str) -> EventScope {
+        EventScope::Wave {
+            wave: WaveId::from(wave),
+            cove: CoveId::from(cove),
+        }
+    }
+
+    fn wave_updated() -> Event {
+        Event::WaveUpdated(wave("w", "c"))
+    }
+
+    fn cove_updated() -> Event {
+        Event::CoveUpdated(Cove {
+            id: CoveId::from("c"),
+            name: "n".into(),
+            color: "#fff".into(),
+            sort: 1.0,
+            created_at: 0,
+            updated_at: 0,
+        })
+    }
+
+    #[test]
+    fn user_can_update_wave() {
+        let cache = CardRoleCache::new();
+        let res = enforce_role(
+            &ActorId::User,
+            &wave_updated(),
+            &wave_scope("w", "c"),
+            &cache,
+        );
+        assert!(
+            res.is_ok(),
+            "user should be allowed to update wave: {res:?}"
+        );
+    }
+
+    #[test]
+    fn kernel_can_update_wave() {
+        let cache = CardRoleCache::new();
+        let res = enforce_role(
+            &ActorId::Kernel,
+            &wave_updated(),
+            &wave_scope("w", "c"),
+            &cache,
+        );
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn ai_spec_with_spec_role_can_update_wave() {
+        let cache = CardRoleCache::new();
+        let spec_id = CardId::from("spec-1");
+        cache.insert(spec_id.clone(), CardRole::Spec);
+        let res = enforce_role(
+            &ActorId::AiSpec(spec_id),
+            &wave_updated(),
+            &wave_scope("w", "c"),
+            &cache,
+        );
+        assert!(res.is_ok(), "AiSpec(spec-card) should update wave: {res:?}");
+    }
+
+    #[test]
+    fn ai_spec_without_spec_role_cannot_update_wave() {
+        // An AiSpec actor whose cached role is `Plain` (mismatch
+        // between wire claim + persisted truth) is denied.
+        let cache = CardRoleCache::new();
+        let id = CardId::from("c1");
+        cache.insert(id.clone(), CardRole::Plain);
+        let res = enforce_role(
+            &ActorId::AiSpec(id),
+            &wave_updated(),
+            &wave_scope("w", "c"),
+            &cache,
+        );
+        assert!(matches!(res, Err(RoleViolation::NotSpecForWave { .. })));
+    }
+
+    #[test]
+    fn ai_codex_cannot_update_wave_even_with_known_card() {
+        let cache = CardRoleCache::new();
+        let id = CardId::from("worker-1");
+        cache.insert(id.clone(), CardRole::Worker);
+        let res = enforce_role(
+            &ActorId::AiCodex(id),
+            &wave_updated(),
+            &wave_scope("w", "c"),
+            &cache,
+        );
+        assert!(
+            matches!(res, Err(RoleViolation::NotSpecForWave { .. })),
+            "AiCodex must never emit wave.updated regardless of role: {res:?}",
+        );
+    }
+
+    #[test]
+    fn worker_in_card_scope_ok() {
+        let cache = CardRoleCache::new();
+        let id = CardId::from("worker-1");
+        cache.insert(id.clone(), CardRole::Worker);
+        let res = enforce_role(
+            &ActorId::AiCodex(id.clone()),
+            // A non-wave-updated event (CoveUpdated chosen because it
+            // also has no card semantics — but the scope is what we
+            // assert on, the event variant is irrelevant after the
+            // wave-updated branch). Use a card-scoped event:
+            // OverlaySet would also work; CoveUpdated lets us exercise
+            // the scope check independent of payload shape.
+            &cove_updated(),
+            &card_scope(id.as_str(), "w", "c"),
+            &cache,
+        );
+        assert!(res.is_ok(), "worker in own card scope: {res:?}");
+    }
+
+    #[test]
+    fn worker_out_of_card_scope_rejected() {
+        let cache = CardRoleCache::new();
+        let id = CardId::from("worker-1");
+        cache.insert(id.clone(), CardRole::Worker);
+        // Wave scope when caller is a worker → reject.
+        let res = enforce_role(
+            &ActorId::AiCodex(id),
+            &cove_updated(),
+            &wave_scope("w", "c"),
+            &cache,
+        );
+        assert!(matches!(res, Err(RoleViolation::WorkerOutOfScope { .. })));
+    }
+
+    #[test]
+    fn worker_in_different_card_scope_rejected() {
+        let cache = CardRoleCache::new();
+        let id = CardId::from("worker-1");
+        cache.insert(id.clone(), CardRole::Worker);
+        let res = enforce_role(
+            &ActorId::AiCodex(id),
+            &cove_updated(),
+            &card_scope("not-my-card", "w", "c"),
+            &cache,
+        );
+        assert!(matches!(res, Err(RoleViolation::WorkerOutOfScope { .. })));
+    }
+
+    #[test]
+    fn empty_codex_card_id_rejected() {
+        let cache = CardRoleCache::new();
+        let res = enforce_role(
+            &ActorId::AiCodex(CardId::from("")),
+            &cove_updated(),
+            &EventScope::System,
+            &cache,
+        );
+        assert!(matches!(res, Err(RoleViolation::EmptyAiCardId)));
+    }
+
+    #[test]
+    fn empty_aispec_card_id_rejected() {
+        let cache = CardRoleCache::new();
+        let res = enforce_role(
+            &ActorId::AiSpec(CardId::from("")),
+            &cove_updated(),
+            &EventScope::System,
+            &cache,
+        );
+        assert!(matches!(res, Err(RoleViolation::EmptyAiCardId)));
+    }
+
+    #[test]
+    fn unknown_codex_card_rejected() {
+        // Defense-in-depth: an AiCodex actor whose card is not in the
+        // cache is denied. Covers two real cases — card was deleted
+        // between request and gate, or the id was fabricated.
+        let cache = CardRoleCache::new();
+        let res = enforce_role(
+            &ActorId::AiCodex(CardId::from("never-seen")),
+            &cove_updated(),
+            &EventScope::System,
+            &cache,
+        );
+        assert!(matches!(res, Err(RoleViolation::UnknownCard { .. })));
+    }
+
+    #[test]
+    fn plain_codex_card_unrestricted_in_card_scope() {
+        // The pre-PR5 flow: codex cards exist with role=Plain (PR5
+        // will introduce dispatcher-spawned Worker cards). Plain
+        // codex cards can emit anything in their own scope. The
+        // gate's job at this stage is to *catch* the PR5+ role
+        // transitions, not to lock down the existing pre-PR5
+        // behavior.
+        let cache = CardRoleCache::new();
+        let id = CardId::from("codex-plain");
+        cache.insert(id.clone(), CardRole::Plain);
+        let res = enforce_role(
+            &ActorId::AiCodex(id.clone()),
+            &cove_updated(),
+            &card_scope(id.as_str(), "w", "c"),
+            &cache,
+        );
+        assert!(res.is_ok(), "plain codex card in own scope: {res:?}");
+    }
+
+    #[test]
+    fn plugin_actor_unrestricted() {
+        let cache = CardRoleCache::new();
+        let res = enforce_role(
+            &ActorId::Plugin("hello-world".into()),
+            &wave_updated(),
+            &wave_scope("w", "c"),
+            &cache,
+        );
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn kernel_dispatcher_unrestricted() {
+        let cache = CardRoleCache::new();
+        let res = enforce_role(
+            &ActorId::KernelDispatcher,
+            &wave_updated(),
+            &wave_scope("w", "c"),
+            &cache,
+        );
+        assert!(res.is_ok());
+    }
+}

@@ -122,8 +122,10 @@ async fn boot_full() -> (
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
             EventBus::new(),
+            calm_server::card_role_cache::CardRoleCache::new(),
         )),
         Arc::new(CodexClient::new_stub()),
+        None,
     );
 
     let rest = routes::router().layer(axum::middleware::from_fn(
@@ -478,8 +480,10 @@ async fn route_to_subscriber_chain_skips_auto_submit_for_empty_or_absent_prompt(
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
             EventBus::new(),
+            calm_server::card_role_cache::CardRoleCache::new(),
         )),
         Arc::new(CodexClient::new_stub()),
+        None,
     );
     let app = routes::router()
         .layer(axum::middleware::from_fn(

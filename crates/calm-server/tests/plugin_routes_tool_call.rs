@@ -137,6 +137,7 @@ async fn boot(cfg: StubConfig<'_>) -> Fixture {
         plugins_data_dir,
         Vec::new(),
         events.clone(),
+        calm_server::card_role_cache::CardRoleCache::new(),
     ));
 
     plugin_host.spawn(cfg.plugin_id).await.expect("spawn");
@@ -148,6 +149,7 @@ async fn boot(cfg: StubConfig<'_>) -> Fixture {
         Arc::new(DaemonClient::new_stub()),
         plugin_host,
         Arc::new(calm_server::state::CodexClient::new_stub()),
+        None, // PR3 (#136): card_role_cache — tests don't exercise role gating
     );
 
     Fixture {

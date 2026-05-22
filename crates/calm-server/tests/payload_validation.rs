@@ -62,8 +62,10 @@ async fn boot() -> (AppState, String) {
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
             EventBus::new(),
+            calm_server::card_role_cache::CardRoleCache::new(),
         )),
         Arc::new(calm_server::state::CodexClient::new_stub()),
+        None,
     );
     (state, wave.id.to_string())
 }

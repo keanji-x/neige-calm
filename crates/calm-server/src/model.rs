@@ -13,6 +13,54 @@ use utoipa::ToSchema;
 
 pub use crate::ids::{ActorId, CardId, CoveId, WaveId};
 
+// ---------------- CardRole ----------------
+
+/// Wave-as-Actor PR3 (#136): authorization label persisted on each card.
+///
+/// The role decides whether the card's implicit actor (the AI agent bound
+/// to it, or the user when no agent is bound) is allowed to emit a given
+/// event. The gate is checked at the single write entry — see
+/// `role_gate::enforce_role` — *inside* the transaction, before the event
+/// row is appended. Violations roll the txn back; nothing is broadcast.
+///
+///   * [`CardRole::Plain`] is the default for every existing card and
+///     every PR3-era card insert. The kernel places no extra restrictions
+///     beyond what the wave/cove already provides.
+///   * [`CardRole::Spec`] (PR6) is the wave's spec card. Only spec cards
+///     may emit `WaveUpdated`; this is the structural choke point that
+///     keeps AI workers from rewriting wave-level metadata.
+///   * [`CardRole::Worker`] (PR5) is a dispatcher-spawned worker card.
+///     Its events are scoped to the card itself and never broaden.
+///
+/// Persisted as a lowercase string in `cards.role` (migration 0008). The
+/// serde + sqlx `rename_all = "lowercase"` keeps the wire / storage shape
+/// stable; ts-rs exports the matching TS union (`"plain" | "spec" |
+/// "worker"`) into `web/src/api/generated-events.ts` so the frontend can
+/// adopt the enum once any UI lands.
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    sqlx::Type,
+    ToSchema,
+    TS,
+)]
+#[sqlx(rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
+pub enum CardRole {
+    #[default]
+    Plain,
+    Spec,
+    Worker,
+}
+
 // ---------------- Cove ----------------
 
 #[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema, TS)]
@@ -261,4 +309,32 @@ pub fn now_ms() -> i64 {
 
 pub fn new_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()
+}
+
+#[cfg(test)]
+mod card_role_tests {
+    use super::CardRole;
+
+    #[test]
+    fn serde_round_trip_pinned_lowercase() {
+        // Wire shape is locked: serde + sqlx storage both emit the
+        // lowercase variant name. Migration 0008 inserts the literal
+        // `'plain'` string for existing rows; changing the rename
+        // strategy here would silently desync code-vs-DB.
+        for (role, json) in [
+            (CardRole::Plain, "\"plain\""),
+            (CardRole::Spec, "\"spec\""),
+            (CardRole::Worker, "\"worker\""),
+        ] {
+            let s = serde_json::to_string(&role).expect("serialize");
+            assert_eq!(s, json, "serialize mismatch for {role:?}");
+            let back: CardRole = serde_json::from_str(json).expect("deserialize");
+            assert_eq!(back, role, "round-trip mismatch for {json}");
+        }
+    }
+
+    #[test]
+    fn default_is_plain() {
+        assert_eq!(CardRole::default(), CardRole::Plain);
+    }
 }

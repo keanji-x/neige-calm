@@ -264,9 +264,16 @@ async fn record_session_roundtrips_through_loader() {
     let mut want_kinds: Vec<&str> = Vec::new();
     for ev in events {
         want_kinds.push(ev.kind_tag());
-        repo.log_pure_event(ActorId::User, EventScope::System, None, &bus, ev)
-            .await
-            .expect("log_pure_event");
+        repo.log_pure_event(
+            ActorId::User,
+            EventScope::System,
+            None,
+            &bus,
+            &calm_server::card_role_cache::CardRoleCache::new(),
+            ev,
+        )
+        .await
+        .expect("log_pure_event");
     }
 
     // The recorder writes line-by-line and flushes on each event, but the
@@ -426,7 +433,14 @@ async fn reset_from_fixture_wipes_and_reseeds() {
         updated_at: 99,
     });
     let extra_id = repo
-        .log_pure_event(ActorId::User, EventScope::System, None, &bus, extra)
+        .log_pure_event(
+            ActorId::User,
+            EventScope::System,
+            None,
+            &bus,
+            &calm_server::card_role_cache::CardRoleCache::new(),
+            extra,
+        )
         .await
         .expect("log extra event");
     assert_eq!(extra_id, n + 1, "extra event sits at id=N+1");

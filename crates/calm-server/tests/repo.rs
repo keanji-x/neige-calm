@@ -590,6 +590,7 @@ async fn card_with_terminal_create_tx_atomic_writes_card_terminal_and_payload_li
         "bash".into(),
         "/tmp".into(),
         json!({"FOO": "bar"}),
+        &calm_server::card_role_cache::CardRoleCache::new(),
     )
     .await
     .expect("atomic create");
@@ -635,6 +636,7 @@ async fn card_with_terminal_create_tx_rolls_back_on_invalid_wave() {
         "bash".into(),
         "/tmp".into(),
         json!({}),
+        &calm_server::card_role_cache::CardRoleCache::new(),
     )
     .await
     .expect_err("unknown wave must error");
@@ -673,6 +675,7 @@ async fn card_with_terminal_create_tx_uses_caller_supplied_sort() {
         "bash".into(),
         "/tmp".into(),
         json!({}),
+        &calm_server::card_role_cache::CardRoleCache::new(),
     )
     .await
     .unwrap();
@@ -703,6 +706,7 @@ async fn card_with_terminal_create_tx_defaults_sort_when_none() {
         "bash".into(),
         "/tmp".into(),
         json!({}),
+        &calm_server::card_role_cache::CardRoleCache::new(),
     )
     .await
     .unwrap();
@@ -782,6 +786,7 @@ async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_payload_link(
         "/workspace".into(),
         json!({"CODEX_HOME": "/tmp/cx"}),
         None,
+        &calm_server::card_role_cache::CardRoleCache::new(),
     )
     .await
     .expect("atomic codex create");
@@ -829,6 +834,7 @@ async fn card_with_codex_create_tx_rolls_back_on_invalid_wave() {
         "/workspace".into(),
         json!({}),
         None,
+        &calm_server::card_role_cache::CardRoleCache::new(),
     )
     .await
     .expect_err("unknown wave must error");
@@ -864,6 +870,7 @@ async fn card_with_codex_create_tx_uses_caller_supplied_sort() {
         "/workspace".into(),
         json!({}),
         None,
+        &calm_server::card_role_cache::CardRoleCache::new(),
     )
     .await
     .unwrap();

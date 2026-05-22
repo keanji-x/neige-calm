@@ -33,8 +33,10 @@ async fn fresh_state() -> AppState {
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
             EventBus::new(),
+            calm_server::card_role_cache::CardRoleCache::new(),
         )),
         Arc::new(CodexClient::new_stub()),
+        None,
     )
 }
 

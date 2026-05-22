@@ -11,8 +11,10 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::Request;
 use calm_server::actor::actor_middleware;
+use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus};
+use calm_server::model::{NewCard, NewCove, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -21,6 +23,37 @@ use tower::ServiceExt;
 #[tokio::test]
 async fn ingest_emits_codex_hook_event() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    // PR3 (#136) — the ingest path stamps `ActorId::AiCodex(card_id)` and
+    // the role gate refuses unknown cards. Seed a real card so the gate
+    // lets the write through.
+    let cove = repo
+        .cove_create(NewCove {
+            name: "c".into(),
+            color: "#fff".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo
+        .wave_create(NewWave {
+            cove_id: cove.id.clone(),
+            title: "w".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let card = repo
+        .card_create(NewCard {
+            wave_id: wave.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
+    let cache = calm_server::card_role_cache::CardRoleCache::new();
+    repo.seed_card_role_cache(&cache).await.unwrap();
+
     let events = EventBus::new();
     let state = AppState::from_parts(
         repo.clone(),
@@ -28,13 +61,15 @@ async fn ingest_emits_codex_hook_event() {
         Arc::new(DaemonClient::new_stub()),
         Arc::new(PluginHost::new_full(
             Arc::new(PluginRegistry::empty()),
-            repo,
+            repo.clone(),
             std::path::PathBuf::new(),
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
             events.clone(),
+            cache.clone(),
         )),
         Arc::new(CodexClient::new_stub()),
+        Some(cache),
     );
     // Scope β: the actor middleware must be present — the `ingest_hook`
     // handler now extracts `Actor` from request extensions to honor the
@@ -53,12 +88,13 @@ async fn ingest_emits_codex_hook_event() {
     })
     .to_string();
 
+    let uri = format!("/internal/codex/hook?card_id={}", card.id);
     let resp = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/internal/codex/hook?card_id=card_42")
+                .uri(uri)
                 .header("content-type", "application/json")
                 .body(Body::from(body))
                 .unwrap(),
@@ -77,7 +113,7 @@ async fn ingest_emits_codex_hook_event() {
             kind,
             payload,
         } => {
-            assert_eq!(card_id.as_str(), "card_42");
+            assert_eq!(card_id.as_str(), card.id.as_str());
             assert_eq!(kind, "hook.codex.pre_tool_use");
             assert_eq!(payload["tool_name"], "Bash");
         }

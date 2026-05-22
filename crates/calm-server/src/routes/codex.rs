@@ -27,7 +27,7 @@
 use crate::actor::Actor;
 use crate::error::Result;
 use crate::event::{Event, EventScope};
-use crate::ids::ActorId;
+use crate::ids::{ActorId, CardId};
 use crate::state::AppState;
 use axum::{
     Json, Router,
@@ -87,22 +87,23 @@ pub(crate) async fn ingest_hook(
         .unwrap_or("unknown");
     let kind = format!("hook.codex.{}", to_snake_case(event_name));
 
-    // PR2 of #136 — judgment call: the codex hook ingest stamps
-    // `ActorId::Kernel` (synthetic) rather than threading the header's
-    // declared actor. Rationale: the per-PR brief lists this route as
-    // `ActorId::Kernel`, and PR3's `AiCodex(card_id)` actor will be set
-    // by the dispatcher *after* the hook lands — not at the ingest
-    // boundary. The `_actor` extractor still runs (preserving the
-    // middleware's header-validation invariant) so a malformed header
-    // continues to 400 here; we just don't propagate the value.
+    // PR3 (#136) — reattribute the hook to the codex card that produced
+    // it. PR2's stopgap stamped `ActorId::Kernel` because there was no
+    // typed card id at the ingest boundary; PR3 now resolves the card
+    // through the `card_id` query parameter and stamps
+    // `ActorId::AiCodex(CardId)`. The role gate's empty-CardId guard
+    // catches the case where `card_id` is empty / unresolvable, and
+    // the unknown-card guard catches a card that was deleted between
+    // hook fire and ingest.
     //
-    // Scope: try to resolve the card → wave → cove chain so per-card
-    // subscribers see the hook. Falls back to `EventScope::System`
-    // when the card has been deleted between hook fire + ingest (the
-    // hook is best-effort attribution; we don't want to refuse the
-    // write for a stale row).
-    let card_id = q.card_id.clone();
-    let scope = match s.repo.card_get(&card_id).await? {
+    // Scope: same as before — try to resolve `card → wave → cove`;
+    // fall back to `EventScope::System` when the card has been
+    // deleted. The gate's unknown-card branch then refuses the write,
+    // which is what we want: a hook for a deleted card is an audit
+    // smell.
+    let card_id_str = q.card_id.clone();
+    let card_id_typed = CardId::from(card_id_str.clone());
+    let scope = match s.repo.card_get(&card_id_str).await? {
         Some(c) => match s.repo.wave_get(c.wave_id.as_str()).await? {
             Some(w) => EventScope::Card {
                 card: c.id,
@@ -116,12 +117,13 @@ pub(crate) async fn ingest_hook(
 
     s.repo
         .log_pure_event(
-            ActorId::Kernel,
+            ActorId::AiCodex(card_id_typed.clone()),
             scope,
             None,
             &s.events,
+            &s.card_role_cache,
             Event::CodexHook {
-                card_id: q.card_id.into(),
+                card_id: card_id_typed,
                 kind,
                 payload,
             },

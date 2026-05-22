@@ -113,6 +113,7 @@ async fn boot_with_wave(
         plugins_data_dir,
         Vec::new(),
         events,
+        calm_server::card_role_cache::CardRoleCache::new(),
     ));
     (host, repo, wave.id.to_string(), tmp)
 }

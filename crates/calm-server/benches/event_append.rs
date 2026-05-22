@@ -69,6 +69,7 @@ fn event_append_bench(c: &mut Criterion) {
                     EventScope::System,
                     None,
                     &bus,
+                    &calm_server::card_role_cache::CardRoleCache::new(),
                     move |tx| {
                         Box::pin(async move {
                             let cove = cove_create_tx(tx, p).await?;

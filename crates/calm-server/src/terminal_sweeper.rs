@@ -206,6 +206,7 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
         scope,
         None,
         &state.events,
+        &state.card_role_cache,
         move |tx| {
             Box::pin(async move {
                 // The FK cascade on `terminals.card_id` may have already

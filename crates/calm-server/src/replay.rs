@@ -177,6 +177,10 @@ pub fn load_fixture_from_path(path: &Path) -> Result<Fixture, String> {
 pub async fn boot_in_memory() -> anyhow::Result<(Arc<SqlxRepo>, EventBus, AppState)> {
     let events = EventBus::new();
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await?);
+    // PR3 (#136) — replay path doesn't need role enforcement coverage
+    // (fixtures replay as `ActorId::User`, which the gate lets through
+    // without a cache lookup). An empty cache is fine.
+    let card_role_cache = crate::card_role_cache::CardRoleCache::new();
     let plugin = Arc::new(PluginHost::new_full(
         Arc::new(PluginRegistry::empty()),
         repo.clone(),
@@ -184,6 +188,7 @@ pub async fn boot_in_memory() -> anyhow::Result<(Arc<SqlxRepo>, EventBus, AppSta
         std::env::temp_dir().join("calm-plugins-data"),
         Vec::new(),
         events.clone(),
+        card_role_cache.clone(),
     ));
     let state = AppState::from_parts(
         repo.clone(),
@@ -191,6 +196,7 @@ pub async fn boot_in_memory() -> anyhow::Result<(Arc<SqlxRepo>, EventBus, AppSta
         Arc::new(DaemonClient::new_stub()),
         plugin,
         Arc::new(CodexClient::new_stub()),
+        Some(card_role_cache),
     );
     Ok((repo, events, state))
 }
@@ -209,6 +215,14 @@ pub async fn seed_events(
     fixture: &Fixture,
 ) -> anyhow::Result<Vec<i64>> {
     let mut out = Vec::with_capacity(fixture.events.len());
+    // PR3 (#136) — seed path uses an empty cache. Fixture events are
+    // replayed under their persisted actor (predominantly `User`); the
+    // role gate lets `User`/`Kernel`/`Plugin` through without a cache
+    // lookup. `AiCodex` actors in legacy fixtures predate PR3's role
+    // model and would be denied for unknown card — that's intentional
+    // (replay should refuse to ingest events the live kernel would
+    // refuse to mint).
+    let cache = crate::card_role_cache::CardRoleCache::new();
     for ev in &fixture.events {
         let event = Event::from_kind_and_payload(&ev.kind, ev.payload.clone())
             .map_err(|e| anyhow::anyhow!("reconstruct event {}: {}", ev.kind, e))?;
@@ -230,7 +244,7 @@ pub async fn seed_events(
                 .map_err(|e| anyhow::anyhow!("invalid actor on fixture event: {e}"))?
         };
         let id = repo
-            .log_pure_event(actor, EventScope::System, None, bus, event)
+            .log_pure_event(actor, EventScope::System, None, bus, &cache, event)
             .await?;
         out.push(id);
     }

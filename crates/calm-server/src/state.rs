@@ -3,6 +3,7 @@
 //! `Clone` is cheap — everything inside is wrapped in `Arc` or already
 //! reference-counted internally.
 
+use crate::card_role_cache::CardRoleCache;
 use crate::config::Config;
 use crate::db::{Repo, RouteRepo};
 use crate::event::EventBus;
@@ -42,6 +43,15 @@ pub struct AppState {
     /// process = a new instance id, full stop. `Arc<String>` so the value
     /// is cheap to clone across handler dispatches.
     pub db_instance_id: Arc<String>,
+    /// PR3 (#136) — `CardId -> CardRole` cache used by `role_gate::enforce_role`
+    /// at every audited write entry. Clone-cheap (`Arc<DashMap<…>>` inside).
+    /// Production builds seed this from the cards table during
+    /// [`AppState::new`]; tests construct an empty cache via
+    /// [`AppState::from_parts`] when they don't need role-gating coverage,
+    /// or pre-populate it manually otherwise. The cache is also threaded
+    /// into every `_tx`-suffixed card helper so the insert/delete path
+    /// stays write-through inside the surrounding transaction.
+    pub card_role_cache: CardRoleCache,
     /// Full-capability handle. Held separately from `repo` so the gate at
     /// `AppState::repo` survives even though the underlying concrete impl
     /// is the same `SqlxRepo`. Kept private — callers must go through
@@ -75,12 +85,20 @@ impl AppState {
     /// integration tests can compose the struct without bypassing the
     /// `raw` field's privacy (which is what guards the capability split
     /// from external `AppState { ... }` literals).
+    ///
+    /// PR3 (#136): `card_role_cache` defaults to an empty cache when the
+    /// caller passes `None`. Tests that exercise role-gating manually
+    /// pre-populate the cache via `CardRoleCache::insert` before calling
+    /// this; the replay path uses an empty cache because replay events
+    /// are seeded via `log_pure_event` from `ActorId::User` (which the
+    /// gate lets through without a cache lookup).
     pub fn from_parts(
         repo: Arc<dyn Repo>,
         events: EventBus,
         daemon: Arc<DaemonClient>,
         plugin: Arc<PluginHost>,
         codex: Arc<CodexClient>,
+        card_role_cache: Option<CardRoleCache>,
     ) -> Self {
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
         Self {
@@ -94,6 +112,7 @@ impl AppState {
             // which is the right behavior: two tests sharing one binary
             // are conceptually two server "boots".
             db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
+            card_role_cache: card_role_cache.unwrap_or_default(),
             raw: repo,
         }
     }
@@ -138,11 +157,22 @@ impl AppState {
 
         let events = EventBus::new();
 
+        // PR3 (#136) — boot-time role cache. Seed from the cards table
+        // *after* migrations have run (which `SqlxRepo::open` did) and
+        // *before* any background task is spawned, so the FSM projector
+        // / sweeper / plugin host all see the same cache state the first
+        // REST write will. Cache is clone-cheap; we stash one clone on
+        // `AppState` and hand the FSM/sweeper their own clones —
+        // `Arc<DashMap<…>>` under the hood, so it's the same underlying
+        // map.
+        let card_role_cache = CardRoleCache::new();
+        repo.seed_card_role_cache(&card_role_cache).await?;
+
         // Per-card FSM (phase 1: codex cards only). Subscribes to the bus
         // and projects `codex.hook` events onto a 6-state FSM, writing
         // `Overlay { kind: "status" }` rows for cards and wave-union rows
         // for waves. See `card_fsm` module docs for the scope rationale.
-        crate::card_fsm::spawn(repo.clone(), events.clone());
+        crate::card_fsm::spawn(repo.clone(), events.clone(), card_role_cache.clone());
 
         let plugin = Arc::new(PluginHost::new_full(
             Arc::new(registry),
@@ -151,6 +181,7 @@ impl AppState {
             plugins_data_dir,
             cfg.plugins_disabled.clone(),
             events.clone(),
+            card_role_cache.clone(),
         ));
 
         // Auto-spawn every enabled plugin row. Per-plugin errors are logged
@@ -173,6 +204,7 @@ impl AppState {
             // `main.rs`, so this is the boot-scoped id the rest of the
             // server hands out via `/api/version`.
             db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
+            card_role_cache,
             raw: repo,
         };
 

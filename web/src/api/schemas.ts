@@ -16,6 +16,20 @@ import { z } from 'zod';
 
 // ---------------- Entity schemas (mirror model.rs) ----------------
 
+/**
+ * PR3 of #136 — `model::CardRole`. The server-side authorization label
+ * persisted on `cards.role`. Frontend doesn't consume this today; the
+ * schema is exported so a future UI surface (PR6+ may surface "this is
+ * the wave's spec card" indicators) can validate against the same wire
+ * shape without a duplicate definition.
+ *
+ * Wire values are lowercase via `#[serde(rename_all = "lowercase")]` on
+ * the Rust enum. ts-rs will emit the matching union in
+ * `generated-events.ts`; this zod schema is the runtime validator.
+ */
+export const cardRoleSchema = z.enum(['plain', 'spec', 'worker']);
+export type CardRole = z.infer<typeof cardRoleSchema>;
+
 /** `model::Cove` — cove metadata row. */
 export const coveSchema = z.object({
   id: z.string(),

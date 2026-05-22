@@ -30,6 +30,7 @@ use sqlx::Transaction;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
 use super::{RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, WriteWithEventFn};
+use crate::card_role_cache::CardRoleCache;
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VERSION};
 use crate::ids::ActorId;
@@ -40,6 +41,20 @@ use crate::validation::{
 
 pub struct SqlxRepo {
     pool: SqlitePool,
+    /// PR3 (#136) — write-through role cache local to the repo so the
+    /// gated `RepoSyncDomainRaw` trait methods (`card_create` /
+    /// `card_delete`) can call the `_tx` helpers without every test
+    /// fixture having to hand a cache in. Production writes go through
+    /// `AppState::card_role_cache` — a separate `Arc<DashMap<…>>`
+    /// instance also kept in sync via the `_tx` helpers when the
+    /// production `write_with_event` path runs. Both caches converge
+    /// on whatever the `cards` table holds, since `seed_from_db`
+    /// fully repopulates from sqlite. The duplication is intentional:
+    /// `enforce_role` only ever consults the cache passed in at the
+    /// call site, so AppState's view stays authoritative for
+    /// production while the repo-local view backs the test-only raw
+    /// path.
+    card_role_cache: CardRoleCache,
 }
 
 impl SqlxRepo {
@@ -88,7 +103,18 @@ impl SqlxRepo {
             .await
             .map_err(|e| CalmError::Internal(format!("migrate: {e}")))?;
 
-        Ok(Self { pool })
+        // PR3 (#136): seed the repo-local role cache from the freshly-
+        // migrated table. This is the backing store for the gated raw
+        // path's `card_create_tx` / `card_delete_tx` calls; the
+        // production write path uses `AppState::card_role_cache`,
+        // which `AppState::new` re-seeds from the same pool.
+        let card_role_cache = CardRoleCache::new();
+        card_role_cache.seed_from_db(&pool).await?;
+
+        Ok(Self {
+            pool,
+            card_role_cache,
+        })
     }
 
     /// Direct access to the pool for tests / fixtures / sync-engine
@@ -102,6 +128,14 @@ impl SqlxRepo {
     #[doc(hidden)]
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    /// PR3 (#136) — borrow the repo's role cache. `AppState::new` clones
+    /// this into its own field so the production write path's `enforce_role`
+    /// lookup sees the same map as the repo's `_tx` write-through.
+    /// `CardRoleCache: Clone` is cheap (`Arc<DashMap<…>>` under the hood).
+    pub fn card_role_cache(&self) -> &CardRoleCache {
+        &self.card_role_cache
     }
 
     /// **Private.** The raw events-table insert. Lives off the trait per
@@ -455,6 +489,8 @@ pub async fn card_create_with_id_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: String,
     p: NewCard,
+    role: CardRole,
+    card_role_cache: &CardRoleCache,
 ) -> Result<Card> {
     let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM waves WHERE id = ?1")
         .bind(&p.wave_id)
@@ -473,21 +509,36 @@ pub async fn card_create_with_id_tx(
     };
     let now = now_ms();
     let payload_text = serde_json::to_string(&p.payload)?;
+    // `role` lands in the `cards.role` column added by migration 0008
+    // (PR3, #136). PR3 callers always pass `CardRole::Plain`; PR6 will
+    // pass `CardRole::Spec` from the wave-create path, PR5 will pass
+    // `CardRole::Worker` from the dispatcher.
     sqlx::query(
-        r#"INSERT INTO cards (id, wave_id, kind, sort, payload, created_at, updated_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
+        r#"INSERT INTO cards (id, wave_id, kind, sort, payload, role, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"#,
     )
     .bind(&id)
     .bind(&p.wave_id)
     .bind(&p.kind)
     .bind(sort)
     .bind(&payload_text)
+    .bind(role)
     .bind(now)
     .bind(now)
     .execute(&mut **tx)
     .await?;
+    // PR3 (#136) — write-through into the role cache. The cache update
+    // happens *inside* the surrounding `write_with_event` transaction
+    // so a follow-up emit in the same closure can see the freshly
+    // minted role via `enforce_role`'s lookup. A txn rollback leaves a
+    // stale entry; that's acceptable per the cache's documented
+    // semantics — `enforce_role` denies in the only direction that
+    // matters (unknown card) and the next boot's `seed_from_db` will
+    // overwrite stale entries from the persisted truth.
+    let card_id: CardId = id.into();
+    card_role_cache.insert(card_id.clone(), role);
     Ok(Card {
-        id: id.into(),
+        id: card_id,
         wave_id: p.wave_id,
         kind: p.kind,
         sort,
@@ -497,8 +548,12 @@ pub async fn card_create_with_id_tx(
     })
 }
 
-pub async fn card_create_tx(tx: &mut Transaction<'_, Sqlite>, p: NewCard) -> Result<Card> {
-    card_create_with_id_tx(tx, new_id(), p).await
+pub async fn card_create_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    p: NewCard,
+    card_role_cache: &CardRoleCache,
+) -> Result<Card> {
+    card_create_with_id_tx(tx, new_id(), p, CardRole::Plain, card_role_cache).await
 }
 
 pub async fn card_update_tx(
@@ -541,7 +596,11 @@ pub async fn card_update_tx(
     Ok(c)
 }
 
-pub async fn card_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<()> {
+pub async fn card_delete_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    card_role_cache: &CardRoleCache,
+) -> Result<()> {
     let res = sqlx::query("DELETE FROM cards WHERE id = ?1")
         .bind(id)
         .execute(&mut **tx)
@@ -549,6 +608,13 @@ pub async fn card_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Resul
     if res.rows_affected() == 0 {
         return Err(CalmError::NotFound(format!("card {id}")));
     }
+    // PR3 (#136) — keep the role cache in lockstep with the table.
+    // Like the insert-side write-through, this happens before commit;
+    // a txn rollback would leave the cache temporarily missing an
+    // entry. The consequence is at worst an `enforce_role` deny on a
+    // re-emit that would have been allowed (the card still exists),
+    // which is the *safe* failure mode for an auth gate.
+    card_role_cache.remove(&CardId::from(id));
     Ok(())
 }
 
@@ -636,6 +702,7 @@ pub async fn terminal_create_tx(
 ///
 /// On any failure the surrounding transaction rolls back, so partial state
 /// (card without terminal, or terminal without payload link) is impossible.
+#[allow(clippy::too_many_arguments)]
 pub async fn card_with_terminal_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: String,
@@ -644,6 +711,7 @@ pub async fn card_with_terminal_create_tx(
     program: String,
     cwd: String,
     env: serde_json::Value,
+    card_role_cache: &CardRoleCache,
 ) -> Result<(Card, Terminal)> {
     // 1. Card row with placeholder payload — the terminal_id and schemaVersion
     //    are stamped in step 5 once we have the terminal row.
@@ -652,6 +720,9 @@ pub async fn card_with_terminal_create_tx(
     // the codex helper has had since #117) so the surrounding
     // `write_with_event` can stamp `EventScope::Card { card, .. }` on
     // the audit row without racing the txn.
+    //
+    // PR3 (#136): role defaults to Plain — terminal cards are user-driven,
+    // not AI-driven, and `enforce_role` keeps them unrestricted.
     let card = card_create_with_id_tx(
         tx,
         card_id,
@@ -661,6 +732,8 @@ pub async fn card_with_terminal_create_tx(
             sort,
             payload: serde_json::Value::Null,
         },
+        CardRole::Plain,
+        card_role_cache,
     )
     .await?;
 
@@ -727,6 +800,7 @@ pub async fn card_with_terminal_create_tx(
 ///
 /// On any failure the surrounding transaction rolls back; a partial state
 /// (card without terminal, or terminal without payload link) is impossible.
+#[allow(clippy::too_many_arguments)]
 pub async fn card_with_codex_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: String,
@@ -735,10 +809,15 @@ pub async fn card_with_codex_create_tx(
     cwd: String,
     env: serde_json::Value,
     prompt: Option<String>,
+    card_role_cache: &CardRoleCache,
 ) -> Result<(Card, Terminal)> {
     // 1. Card row with placeholder payload — the terminal_id, cwd, and
     //    schemaVersion fields are stamped in step 5 once we have the
     //    terminal row.
+    //
+    // PR3 (#136): role defaults to Plain. PR5 will introduce dispatcher-
+    // spawned worker codex cards with `CardRole::Worker`; this user-facing
+    // create endpoint stays Plain so the existing UX is unchanged.
     let card = card_create_with_id_tx(
         tx,
         card_id,
@@ -748,6 +827,8 @@ pub async fn card_with_codex_create_tx(
             sort,
             payload: serde_json::Value::Null,
         },
+        CardRole::Plain,
+        card_role_cache,
     )
     .await?;
 
@@ -1139,6 +1220,11 @@ impl RepoRead for SqlxRepo {
                 .await?;
         Ok(rows)
     }
+
+    // ------------------------------------------------------------ role cache
+    async fn seed_card_role_cache(&self, cache: &CardRoleCache) -> Result<()> {
+        cache.seed_from_db(&self.pool).await
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1196,7 +1282,7 @@ impl RepoSyncDomainRaw for SqlxRepo {
     // ---------------------------------------------------------------- cards
     async fn card_create(&self, p: NewCard) -> Result<Card> {
         let mut tx = self.pool.begin().await?;
-        let out = card_create_tx(&mut tx, p).await?;
+        let out = card_create_tx(&mut tx, p, &self.card_role_cache).await?;
         tx.commit().await?;
         Ok(out)
     }
@@ -1210,7 +1296,7 @@ impl RepoSyncDomainRaw for SqlxRepo {
 
     async fn card_delete(&self, id: &str) -> Result<()> {
         let mut tx = self.pool.begin().await?;
-        card_delete_tx(&mut tx, id).await?;
+        card_delete_tx(&mut tx, id, &self.card_role_cache).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -1557,6 +1643,7 @@ impl RepoEventWrite for SqlxRepo {
         scope: EventScope,
         correlation: Option<&str>,
         bus: &EventBus,
+        card_role_cache: &CardRoleCache,
         f: WriteWithEventFn<'_>,
     ) -> Result<i64> {
         let mut tx = self.pool.begin().await?;
@@ -1571,6 +1658,17 @@ impl RepoEventWrite for SqlxRepo {
                 return Err(e);
             }
         };
+        // PR3 (#136) — authorization gate. Runs after the closure
+        // produces an event so the closure can mint per-row roles
+        // (e.g. `card_create_with_id_tx` writes through the cache)
+        // before the gate checks them. Violations roll back: no
+        // entity write, no event row, no broadcast.
+        if let Err(violation) =
+            crate::role_gate::enforce_role(&actor, &event, &scope, card_role_cache)
+        {
+            let _ = tx.rollback().await;
+            return Err(CalmError::Forbidden(violation.to_string()));
+        }
         // Persist the event in the same txn.
         let event_id =
             match Self::event_append_in_tx(&mut tx, &actor, &scope, correlation, &event).await {
@@ -1599,9 +1697,22 @@ impl RepoEventWrite for SqlxRepo {
         scope: EventScope,
         correlation: Option<&str>,
         bus: &EventBus,
+        card_role_cache: &CardRoleCache,
         event: Event,
     ) -> Result<i64> {
         let mut tx = self.pool.begin().await?;
+        // PR3 (#136) — gate. Pure events don't have an entity write to
+        // populate the cache from, so the role lookup uses the cache's
+        // current contents. `log_pure_event` callers (codex hook
+        // ingest, plugin state transitions) always supply a real actor
+        // identity; the gate's defense-in-depth checks (empty
+        // CardId, unknown card) still apply.
+        if let Err(violation) =
+            crate::role_gate::enforce_role(&actor, &event, &scope, card_role_cache)
+        {
+            let _ = tx.rollback().await;
+            return Err(CalmError::Forbidden(violation.to_string()));
+        }
         let event_id =
             match Self::event_append_in_tx(&mut tx, &actor, &scope, correlation, &event).await {
                 Ok(id) => id,
