@@ -193,6 +193,27 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
     if (prev !== null && prev !== theme) {
       sendInputBytesRef.current?.([0x1b, 0x5b, 0x49]);
     }
+    // TEMP(#177-debug): runtime visibility into theme-toggle bug. Gated by
+    // localStorage.calm.debug=1 so production users see nothing. Revert
+    // once root cause is identified.
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('calm.debug') === '1') {
+      const internalBg =
+        // @ts-expect-error xterm internal — diagnostic only
+        term?._themeService?.colors?.background ??
+        // @ts-expect-error fallback path varies by minifier
+        term?._core?._themeService?.colors?.background ??
+        null;
+      // eslint-disable-next-line no-console
+      console.log('[calm:#177-debug] theme-effect', {
+        prev,
+        next: theme,
+        willSendFocusIn: prev !== null && prev !== theme,
+        themeOptions: term?.options?.theme,
+        internalBgColor: internalBg,
+        termPresent: !!term,
+        sendInputPresent: !!sendInputBytesRef.current,
+      });
+    }
   }, [theme]);
 
   useEffect(() => {
@@ -316,6 +337,21 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
       });
     };
 
+    // TEMP(#177-debug): log daemon→xterm chunks that carry ESC bytes so we
+    // can see codex's OSC 11 query land. Gated by localStorage.calm.debug=1.
+    // Sample to ESC-bearing only — plain text would flood the console.
+    const debugLogDaemonWrite = (data: number[], source: string) => {
+      if (typeof localStorage === 'undefined' || localStorage.getItem('calm.debug') !== '1') return;
+      const hasEsc = data.some((b) => b === 0x1b);
+      if (!hasEsc) return;
+      // eslint-disable-next-line no-console
+      console.log('[calm:#177-debug] term.write (escape-bearing chunk)', {
+        source,
+        bytesHex: data.slice(0, 64).map((b) => b.toString(16).padStart(2, '0')).join(' '),
+        length: data.length,
+      });
+    };
+
     ws.onmessage = (e) => {
       let msg: DaemonMsg;
       try {
@@ -339,8 +375,10 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
           lastRows = sh.snapshot.rows;
         }
         if (sh.snapshot.scrollback) {
+          debugLogDaemonWrite(sh.snapshot.scrollback, 'ServerHello.snapshot.scrollback');
           term.write(Uint8Array.from(sh.snapshot.scrollback));
         }
+        debugLogDaemonWrite(sh.snapshot.data, 'ServerHello.snapshot.data');
         term.write(Uint8Array.from(sh.snapshot.data));
         renderRev = sh.snapshot.render_rev;
         ptySeq = sh.snapshot.pty_seq;
@@ -349,6 +387,7 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
       if ('RenderPatch' in msg) {
         const p = msg.RenderPatch;
         if (p.encoding === 'Vt') {
+          debugLogDaemonWrite(p.data, 'RenderPatch.data');
           term.write(Uint8Array.from(p.data));
         }
         renderRev = p.render_rev;
@@ -365,6 +404,7 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
           lastRows = s.rows;
         }
         term.clear();
+        debugLogDaemonWrite(s.data, 'RenderSnapshot.data');
         term.write(Uint8Array.from(s.data));
         renderRev = s.render_rev;
         ptySeq = s.pty_seq;
@@ -456,6 +496,16 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
 
     const dataSub = term.onData((d) => {
       const bytes = Array.from(new TextEncoder().encode(d));
+      // TEMP(#177-debug): see if xterm.js emits OSC 11 reply after codex
+      // re-probes on focus-in. Gated by localStorage.calm.debug=1.
+      if (typeof localStorage !== 'undefined' && localStorage.getItem('calm.debug') === '1') {
+        // eslint-disable-next-line no-console
+        console.log('[calm:#177-debug] onData', {
+          bytesHex: bytes.map((b) => b.toString(16).padStart(2, '0')).join(' '),
+          asString: d.replace(/[\x00-\x1f]/g, (c) => '\\x' + c.charCodeAt(0).toString(16).padStart(2, '0')),
+          length: bytes.length,
+        });
+      }
       // Browser typing path: `input_seq: 0` means "no ack requested"
       // (option (b) from issue #115). The daemon writes the bytes and
       // stays silent — no `DaemonMsg::InputAck` frame is emitted on the
