@@ -439,4 +439,115 @@ mod tests {
         );
         assert!(res.is_ok());
     }
+
+    // ---- PR4 of #136: new Event variants flow through enforce_role ------
+    //
+    // PR4 is schema-only — there are no emitters of these variants yet,
+    // but PR5 (dispatcher) and PR8 (wait_for_events) will rely on the
+    // gate's existing logic to route + authorize them. These tests lock
+    // in the behavior PR5 will depend on:
+    //
+    //   * a worker card emitting `codex.job_requested` within its own
+    //     card scope is permitted (PR5's job request fan-out path);
+    //   * a worker card emitting `task.completed` within its own card
+    //     scope is permitted (PR8's wait_for_events delivery path);
+    //   * an AiSpec actor with an empty CardId is rejected via the
+    //     section-1 guard, even when the payload is a new variant — the
+    //     guard is variant-agnostic by design;
+    //   * the same goes for AiCodex with empty CardId.
+    //
+    // None of these write paths exist in PR4. The tests are forward-only:
+    // they assert what the gate *will* permit/reject when PR5 starts
+    // emitting these variants, so PR5 doesn't have to re-discover the
+    // contract from scratch.
+
+    use crate::event::ArtifactRef;
+
+    fn codex_job_requested() -> Event {
+        Event::CodexJobRequested {
+            idempotency_key: "idem-1".into(),
+            goal: "g".into(),
+            context: serde_json::Value::Null,
+            acceptance_criteria: None,
+        }
+    }
+
+    fn task_completed() -> Event {
+        Event::TaskCompleted {
+            idempotency_key: "idem-1".into(),
+            result: serde_json::Value::Null,
+            artifacts: vec![ArtifactRef::from("a-1")],
+        }
+    }
+
+    #[test]
+    fn worker_can_emit_codex_job_requested_in_own_scope() {
+        // PR5's dispatcher will surface this path when a worker card
+        // fans out a sub-job request. Scope must be the worker's own
+        // card (else the section-3 worker-scope check fires).
+        let cache = CardRoleCache::new();
+        let id = CardId::from("worker-1");
+        cache.insert(id.clone(), CardRole::Worker);
+        let res = enforce_role(
+            &ActorId::AiCodex(id.clone()),
+            &codex_job_requested(),
+            &card_scope(id.as_str(), "w", "c"),
+            &cache,
+        );
+        assert!(
+            res.is_ok(),
+            "worker in own card scope can request a codex job: {res:?}",
+        );
+    }
+
+    #[test]
+    fn worker_can_emit_task_completed_in_own_scope() {
+        // PR8's wait_for_events delivery path: workers report
+        // task.completed scoped to themselves.
+        let cache = CardRoleCache::new();
+        let id = CardId::from("worker-1");
+        cache.insert(id.clone(), CardRole::Worker);
+        let res = enforce_role(
+            &ActorId::AiCodex(id.clone()),
+            &task_completed(),
+            &card_scope(id.as_str(), "w", "c"),
+            &cache,
+        );
+        assert!(
+            res.is_ok(),
+            "worker reporting its own task completion: {res:?}",
+        );
+    }
+
+    #[test]
+    fn empty_codex_card_id_rejected_on_new_variant() {
+        // The section-1 empty-CardId guard is variant-agnostic — it
+        // refuses any payload from an AiCodex actor whose CardId is
+        // empty, including the new PR4 variants. Locks the contract so
+        // a future refactor can't accidentally route the empty case
+        // around the guard for a "harmless" new variant.
+        let cache = CardRoleCache::new();
+        let res = enforce_role(
+            &ActorId::AiCodex(CardId::from("")),
+            &task_completed(),
+            &EventScope::System,
+            &cache,
+        );
+        assert!(matches!(res, Err(RoleViolation::EmptyAiCardId)));
+    }
+
+    #[test]
+    fn empty_aispec_card_id_rejected_on_new_variant() {
+        // Mirror of the AiCodex case for AiSpec — when PR5 wires the
+        // spec card as the requester of codex.job_requested, the empty
+        // CardId path must still be rejected.
+        let cache = CardRoleCache::new();
+        let res = enforce_role(
+            &ActorId::AiSpec(CardId::from("")),
+            &codex_job_requested(),
+            &EventScope::System,
+            &cache,
+        );
+        assert!(matches!(res, Err(RoleViolation::EmptyAiCardId)));
+    }
 }

@@ -176,6 +176,86 @@ export const codexHookSchema = z.object({
   }),
 });
 
+// ---------------- PR4 of #136: dispatcher + task-lifecycle variants ----
+//
+// Schema-only PR — no kernel emitters today. PR5 (Dispatcher) and PR8
+// (wait_for_events) wire them. The four schemas below pin the wire shape
+// the kernel will start emitting once PR5 lands, so the runtime
+// validator at the WS boundary doesn't drop frames on the floor.
+//
+// `ArtifactRef` is a transparent newtype on the server (#129 placeholder);
+// ts-rs emits `export type ArtifactRef = string;` so on the wire each
+// element of `task.completed.artifacts[]` is a bare string.
+
+/**
+ * `Event::CodexJobRequested` — spec/worker card asks the kernel
+ * dispatcher to spawn a codex worker card. PR5's `Dispatcher` consumes
+ * via `EventBus::subscribe(kinds=["*.requested"])`; PR8's
+ * `wait_for_events` correlates the eventual `task.completed` /
+ * `task.failed` back to the requester via `idempotency_key`.
+ *
+ * `context` is opaque `serde_json::Value` (working-dir hints, prior turn
+ * history, model preference) — kernel never inspects, dispatcher
+ * forwards verbatim into the spawned worker's card payload.
+ */
+export const codexJobRequestedSchema = z.object({
+  ev: z.literal('codex.job_requested'),
+  data: z.object({
+    idempotency_key: z.string(),
+    goal: z.string(),
+    context: z.unknown(),
+    acceptance_criteria: z.string().optional(),
+  }),
+});
+
+/**
+ * `Event::TerminalJobRequested` — spec card asks the dispatcher to spawn
+ * a terminal worker card. `cwd` is `None` when the spec card defers to
+ * the wave/cove default working directory.
+ */
+export const terminalJobRequestedSchema = z.object({
+  ev: z.literal('terminal.job_requested'),
+  data: z.object({
+    idempotency_key: z.string(),
+    cmd: z.string(),
+    cwd: z.string().optional(),
+  }),
+});
+
+/**
+ * `Event::TaskCompleted` — worker card reports task completion. PR8's
+ * `wait_for_events` delivers this to the requesting spec card.
+ * `idempotency_key` echoes the matching `*.job_requested` key so the
+ * spec can correlate without parsing the worker card's identity.
+ *
+ * `artifacts` is `Vec<ArtifactRef>` server-side; `ArtifactRef` is a
+ * transparent newtype around `String`, so each element is a bare string
+ * on the wire. #129 will expand the type with hash / content-type /
+ * storage-uri — at that point this schema will tighten alongside.
+ */
+export const taskCompletedSchema = z.object({
+  ev: z.literal('task.completed'),
+  data: z.object({
+    idempotency_key: z.string(),
+    result: z.unknown(),
+    artifacts: z.array(z.string()),
+  }),
+});
+
+/**
+ * `Event::TaskFailed` — worker card reports task failure. `reason` is a
+ * free-form failure string; the kernel never parses it but persists it
+ * on the events table so audit-log replay can surface the rationale the
+ * worker gave its spec.
+ */
+export const taskFailedSchema = z.object({
+  ev: z.literal('task.failed'),
+  data: z.object({
+    idempotency_key: z.string(),
+    reason: z.string(),
+  }),
+});
+
 // ---------------- EventScope (mirror event.rs) ----------------
 
 /**
@@ -224,6 +304,10 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   terminalDeletedSchema,
   pluginStateSchema,
   codexHookSchema,
+  codexJobRequestedSchema,
+  terminalJobRequestedSchema,
+  taskCompletedSchema,
+  taskFailedSchema,
 ]);
 
 // ---------------- Inferred types ----------------
@@ -248,5 +332,9 @@ export type OverlayDeletedEvent = z.infer<typeof overlayDeletedSchema>;
 export type TerminalDeletedEvent = z.infer<typeof terminalDeletedSchema>;
 export type PluginStateEvent = z.infer<typeof pluginStateSchema>;
 export type CodexHookEvent = z.infer<typeof codexHookSchema>;
+export type CodexJobRequestedEvent = z.infer<typeof codexJobRequestedSchema>;
+export type TerminalJobRequestedEvent = z.infer<typeof terminalJobRequestedSchema>;
+export type TaskCompletedEvent = z.infer<typeof taskCompletedSchema>;
+export type TaskFailedEvent = z.infer<typeof taskFailedSchema>;
 
 export type WireEvent = z.infer<typeof wireEventSchema>;

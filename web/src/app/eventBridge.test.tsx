@@ -258,6 +258,40 @@ describe('EventBridge', () => {
     cleanup();
   });
 
+  it('PR4 dispatcher/task-lifecycle variants dispatch without invalidating', () => {
+    // PR4 of #136: codex.job_requested / terminal.job_requested /
+    // task.completed / task.failed are kernel-internal signals. The
+    // dispatcher's switch has explicit no-op arms so a stray frame
+    // doesn't crash the UI — assert one each fans through cleanly with
+    // no query invalidation side effect.
+    const client = makeClient();
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const Wrapper = wrap(client);
+    render(
+      <Wrapper>
+        <EventBridge />
+      </Wrapper>,
+    );
+    expect(() =>
+      fakeStream.emit({
+        ev: 'codex.job_requested',
+        data: {
+          idempotency_key: 'idem-1',
+          goal: 'g',
+          context: null,
+        },
+      }),
+    ).not.toThrow();
+    expect(() =>
+      fakeStream.emit({
+        ev: 'task.completed',
+        data: { idempotency_key: 'idem-1', result: null, artifacts: [] },
+      }),
+    ).not.toThrow();
+    expect(invalidate).not.toHaveBeenCalled();
+    cleanup();
+  });
+
   it('an event with an unmapped `ev` is ignored without throwing', () => {
     const client = makeClient();
     const invalidate = vi.spyOn(client, 'invalidateQueries');

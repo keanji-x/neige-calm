@@ -126,6 +126,107 @@ describe('zod ↔ ts-rs conformance', () => {
   });
 });
 
+// ---- PR4 of #136: dispatcher + task-lifecycle variants ----------------
+//
+// Schema-only PR. These tests pin the wire shape the parser accepts/rejects
+// for each of the four new variants. Two per variant: a happy-path parse,
+// and a `safeParse` confirming a missing required field fails. PR5's
+// Dispatcher and PR8's wait_for_events will emit these payloads — these
+// tests are the contract they're emitting against.
+describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
+  it('parses a valid codex.job_requested', () => {
+    const parsed = wireEventSchema.parse({
+      ev: 'codex.job_requested',
+      data: {
+        idempotency_key: 'idem-1',
+        goal: 'refactor X',
+        context: { cwd: '/tmp', hints: [1, 2] },
+        acceptance_criteria: 'tests pass',
+      },
+    });
+    expect(parsed.ev).toBe('codex.job_requested');
+    if (parsed.ev === 'codex.job_requested') {
+      expect(parsed.data.idempotency_key).toBe('idem-1');
+      expect(parsed.data.goal).toBe('refactor X');
+    }
+  });
+
+  it('rejects codex.job_requested missing idempotency_key', () => {
+    const result = wireEventSchema.safeParse({
+      ev: 'codex.job_requested',
+      data: { goal: 'g', context: {} },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('parses a valid terminal.job_requested (cwd present)', () => {
+    const parsed = wireEventSchema.parse({
+      ev: 'terminal.job_requested',
+      data: { idempotency_key: 'idem-2', cmd: 'cargo test', cwd: '/repo' },
+    });
+    expect(parsed.ev).toBe('terminal.job_requested');
+    if (parsed.ev === 'terminal.job_requested') {
+      expect(parsed.data.cmd).toBe('cargo test');
+      expect(parsed.data.cwd).toBe('/repo');
+    }
+  });
+
+  it('rejects terminal.job_requested missing cmd', () => {
+    const result = wireEventSchema.safeParse({
+      ev: 'terminal.job_requested',
+      data: { idempotency_key: 'idem-2' },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('parses a valid task.completed (artifacts as bare strings)', () => {
+    // `ArtifactRef` is `#[serde(transparent)]` around `String` on the
+    // server, so each artifacts[] element is a bare string on the wire.
+    const parsed = wireEventSchema.parse({
+      ev: 'task.completed',
+      data: {
+        idempotency_key: 'idem-3',
+        result: { summary: 'ok', lines: 42 },
+        artifacts: ['a-1', 'a-2'],
+      },
+    });
+    expect(parsed.ev).toBe('task.completed');
+    if (parsed.ev === 'task.completed') {
+      expect(parsed.data.artifacts).toEqual(['a-1', 'a-2']);
+    }
+  });
+
+  it('rejects task.completed missing artifacts array', () => {
+    const result = wireEventSchema.safeParse({
+      ev: 'task.completed',
+      data: { idempotency_key: 'idem-3', result: {} },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('parses a valid task.failed', () => {
+    const parsed = wireEventSchema.parse({
+      ev: 'task.failed',
+      data: {
+        idempotency_key: 'idem-4',
+        reason: 'process exited with code 137',
+      },
+    });
+    expect(parsed.ev).toBe('task.failed');
+    if (parsed.ev === 'task.failed') {
+      expect(parsed.data.reason).toBe('process exited with code 137');
+    }
+  });
+
+  it('rejects task.failed missing reason', () => {
+    const result = wireEventSchema.safeParse({
+      ev: 'task.failed',
+      data: { idempotency_key: 'idem-4' },
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
 describe('entity sub-schemas', () => {
   it('coveSchema round-trips a minimal cove', () => {
     const c = {
