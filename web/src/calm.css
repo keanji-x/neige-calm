@@ -1848,7 +1848,8 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 .xterm-container .xterm,
 .xterm-container .xterm-viewport,
-.xterm-container .xterm-screen { background: transparent !important; }
+.xterm-container .xterm-screen,
+.xterm-container .xterm-scrollable-element { background: transparent !important; }
 .xterm-status {
   position: absolute;
   top: 8px; right: 12px;
