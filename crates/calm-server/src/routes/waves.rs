@@ -169,7 +169,7 @@ pub(crate) async fn delete_wave(
         &s.events,
         move |tx| {
             Box::pin(async move {
-                wave_delete_tx(tx, &wave_id).await?;
+                wave_delete_tx(tx, wave_id.as_ref()).await?;
                 Ok((
                     (),
                     Event::WaveDeleted {

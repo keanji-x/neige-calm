@@ -120,7 +120,7 @@ async fn boot_with_daemon(session_daemon_bin: PathBuf) -> Boot {
 
     Boot {
         app,
-        wave_id: wave.id,
+        wave_id: wave.id.to_string(),
         events,
         repo,
         _tmp: tmp,
@@ -185,7 +185,7 @@ async fn post_codex_card_atomic_returns_card_with_linked_payload() {
         .await
         .unwrap()
         .expect("terminal row persists");
-    assert_eq!(term.card_id, card["id"].as_str().unwrap());
+    assert_eq!(term.card_id.as_str(), card["id"].as_str().unwrap());
     assert_eq!(term.program, "codex", "program is hardwired to codex");
     assert_eq!(term.cwd, "/workspace");
 }

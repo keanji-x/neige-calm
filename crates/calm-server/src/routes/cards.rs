@@ -140,7 +140,7 @@ pub(crate) async fn create_card(
     // (`ui://*`) kinds remain opaque per the architectural invariant.
     validate_card_payload(&kind, &payload).map_err(|e| e.into_response())?;
     let new = NewCard {
-        wave_id,
+        wave_id: wave_id.into(),
         kind,
         sort: body.sort,
         payload,
@@ -256,7 +256,7 @@ async fn create_via_tool_call(
     // we reject a malformed payload here rather than after the DB write.
     validate_card_payload(&creation.resource_uri, &payload).map_err(|e| e.into_response())?;
     let new = NewCard {
-        wave_id,
+        wave_id: wave_id.into(),
         kind: creation.resource_uri,
         sort: None,
         payload,
@@ -373,7 +373,7 @@ pub(crate) async fn delete_card(
         &s.events,
         move |tx| {
             Box::pin(async move {
-                card_delete_tx(tx, &card_id).await?;
+                card_delete_tx(tx, card_id.as_ref()).await?;
                 Ok((
                     (),
                     Event::CardDeleted {

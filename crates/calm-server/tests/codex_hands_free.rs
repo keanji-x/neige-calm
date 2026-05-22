@@ -141,7 +141,7 @@ async fn boot_full() -> (
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    (addr, app, wave.id, daemon, tmp)
+    (addr, app, wave.id.to_string(), daemon, tmp)
 }
 
 async fn rest_post(app: axum::Router, uri: String, body: Value) -> (StatusCode, Value) {
@@ -398,7 +398,7 @@ async fn auto_submit_subscriber_skips_card_without_prompt() {
     // catches panics on the runtime's join. Add an active assertion
     // anyway: the card should still be readable through the same
     // repo handle the subscriber is using (rules out repo poisoning).
-    let still_there = repo.card_get(&card.id).await.unwrap();
+    let still_there = repo.card_get(card.id.as_str()).await.unwrap();
     assert!(
         still_there.is_some(),
         "card should remain queryable after subscriber dispatch"
@@ -513,7 +513,7 @@ async fn route_to_subscriber_chain_skips_auto_submit_for_empty_or_absent_prompt(
 
             // Recover the persisted card so we can pull its
             // terminal_id and emit a CodexHook matching it.
-            let cards = repo.cards_by_wave(&wave_id).await.unwrap();
+            let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
             let card = cards
                 .iter()
                 .find(|c| c.kind == "codex" && c.payload.get("prompt").is_none_or(Value::is_null))
@@ -578,8 +578,8 @@ async fn route_to_subscriber_chain_skips_auto_submit_for_empty_or_absent_prompt(
     run_case(json!({ "prompt": "" }), "empty-string prompt").await;
     // Reset: clear cards so the next case's lookup-by-no-prompt is
     // unambiguous (we want exactly one prompt-less card to find).
-    for c in repo.cards_by_wave(&wave.id).await.unwrap() {
-        repo.card_delete(&c.id).await.unwrap();
+    for c in repo.cards_by_wave(wave.id.as_str()).await.unwrap() {
+        repo.card_delete(c.id.as_str()).await.unwrap();
     }
 
     // Sub-case 2: prompt field omitted entirely. Same expected

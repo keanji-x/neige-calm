@@ -114,7 +114,7 @@ async fn boot_with_wave(
         Vec::new(),
         events,
     ));
-    (host, repo, wave.id, tmp)
+    (host, repo, wave.id.to_string(), tmp)
 }
 
 async fn wait_for_running(host: &Arc<PluginHost>, id: &str) {

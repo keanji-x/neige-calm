@@ -73,7 +73,7 @@ async fn write_with_event_persists_entity_and_event_in_one_txn() {
     .expect("write_with_event ok");
 
     // Entity persisted.
-    let fetched = repo.cove_get(&cove.id).await.unwrap();
+    let fetched = repo.cove_get(cove.id.as_str()).await.unwrap();
     assert_eq!(fetched.map(|c| c.id), Some(cove.id.clone()));
 
     // Event row persisted with the same id we got back.
@@ -549,7 +549,7 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
             let new_overlay = NewOverlay {
                 plugin_id: "kernel".into(),
                 entity_kind: "card".into(),
-                entity_id: card_id,
+                entity_id: card_id.to_string(),
                 kind: "status".into(),
                 payload: serde_json::json!({ "state": "Idle" }),
             };
@@ -568,9 +568,9 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
 
 #[derive(Default)]
 struct PropState {
-    last_cove: Option<String>,
-    last_wave: Option<String>,
-    last_card: Option<String>,
+    last_cove: Option<calm_server::ids::CoveId>,
+    last_wave: Option<calm_server::ids::WaveId>,
+    last_card: Option<calm_server::ids::CardId>,
 }
 
 #[tokio::test]

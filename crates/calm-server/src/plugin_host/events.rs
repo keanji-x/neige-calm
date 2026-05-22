@@ -132,17 +132,17 @@ fn event_entity_kind(ev: &Event) -> Option<String> {
 /// Entity id the event touches. Same coverage logic as `event_entity_kind`.
 fn event_entity_id(ev: &Event) -> Option<String> {
     match ev {
-        Event::CoveUpdated(c) => Some(c.id.clone()),
-        Event::CoveDeleted { id } => Some(id.clone()),
-        Event::WaveUpdated(w) => Some(w.id.clone()),
-        Event::WaveDeleted { id, .. } => Some(id.clone()),
-        Event::CardAdded(c) | Event::CardUpdated(c) => Some(c.id.clone()),
-        Event::CardDeleted { id, .. } => Some(id.clone()),
+        Event::CoveUpdated(c) => Some(c.id.to_string()),
+        Event::CoveDeleted { id } => Some(id.to_string()),
+        Event::WaveUpdated(w) => Some(w.id.to_string()),
+        Event::WaveDeleted { id, .. } => Some(id.to_string()),
+        Event::CardAdded(c) | Event::CardUpdated(c) => Some(c.id.to_string()),
+        Event::CardDeleted { id, .. } => Some(id.to_string()),
         Event::OverlaySet(o) => Some(o.entity_id.clone()),
         Event::OverlayDeleted { entity_id, .. } => Some(entity_id.clone()),
         Event::PluginState { id, .. } => Some(id.clone()),
         // Codex hooks are scoped to a card_id, mirroring card.* events.
-        Event::CodexHook { card_id, .. } => Some(card_id.clone()),
+        Event::CodexHook { card_id, .. } => Some(card_id.to_string()),
         // Terminal-deleted: id IS the terminal id; we don't expose a
         // "terminal" entity_kind on the filter API, so this only matches
         // filters that omit `entity_kind` / `entity_id` or set them via

@@ -46,6 +46,7 @@
 //! this enum and the frontend fails at the type-check step. See D7 /
 //! issue #5.
 
+use crate::ids::{CardId, CoveId, WaveId};
 use crate::model::{Card, Cove, Overlay, Wave};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -93,19 +94,19 @@ pub enum Event {
     #[serde(rename = "cove.updated")]
     CoveUpdated(Cove),
     #[serde(rename = "cove.deleted")]
-    CoveDeleted { id: String },
+    CoveDeleted { id: CoveId },
 
     #[serde(rename = "wave.updated")]
     WaveUpdated(Wave),
     #[serde(rename = "wave.deleted")]
-    WaveDeleted { id: String, cove_id: String },
+    WaveDeleted { id: WaveId, cove_id: CoveId },
 
     #[serde(rename = "card.added")]
     CardAdded(Card),
     #[serde(rename = "card.updated")]
     CardUpdated(Card),
     #[serde(rename = "card.deleted")]
-    CardDeleted { id: String, wave_id: String },
+    CardDeleted { id: CardId, wave_id: WaveId },
 
     #[serde(rename = "overlay.set")]
     OverlaySet(Overlay),
@@ -124,7 +125,7 @@ pub enum Event {
     /// though the card itself may have been deleted in an earlier event.
     /// Topic mapping (see `topics`): `terminal:<id>` plus the firehose.
     #[serde(rename = "terminal.deleted")]
-    TerminalDeleted { id: String, card_id: String },
+    TerminalDeleted { id: String, card_id: CardId },
 
     #[serde(rename = "plugin.state")]
     PluginState {
@@ -155,7 +156,7 @@ pub enum Event {
     #[serde(rename = "codex.hook")]
     CodexHook {
         /// Owning card id — topic key `card:<card_id>`.
-        card_id: String,
+        card_id: CardId,
         /// Snake_case discriminator: `hook.codex.<event_name>` (e.g.
         /// `hook.codex.pre_tool_use`). Derived from `hook_event_name` in
         /// the codex payload; defaults to `hook.codex.unknown` if missing.

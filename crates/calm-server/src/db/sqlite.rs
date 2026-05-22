@@ -268,7 +268,7 @@ pub async fn cove_create_tx(tx: &mut Transaction<'_, Sqlite>, p: NewCove) -> Res
     .execute(&mut **tx)
     .await?;
     Ok(Cove {
-        id,
+        id: id.into(),
         name: p.name,
         color: p.color,
         sort,
@@ -338,7 +338,10 @@ pub async fn wave_create_tx(tx: &mut Transaction<'_, Sqlite>, p: NewWave) -> Res
 
     let sort = match p.sort {
         Some(s) => s,
-        None => next_sort_scoped_in_tx(tx, "waves", "WHERE cove_id = ?1", Some(&p.cove_id)).await?,
+        None => {
+            next_sort_scoped_in_tx(tx, "waves", "WHERE cove_id = ?1", Some(p.cove_id.as_ref()))
+                .await?
+        }
     };
     let now = now_ms();
     let id = new_id();
@@ -356,7 +359,7 @@ pub async fn wave_create_tx(tx: &mut Transaction<'_, Sqlite>, p: NewWave) -> Res
     .execute(&mut **tx)
     .await?;
     Ok(Wave {
-        id,
+        id: id.into(),
         cove_id: p.cove_id,
         title: p.title,
         sort,
@@ -439,7 +442,10 @@ pub async fn card_create_with_id_tx(
 
     let sort = match p.sort {
         Some(s) => s,
-        None => next_sort_scoped_in_tx(tx, "cards", "WHERE wave_id = ?1", Some(&p.wave_id)).await?,
+        None => {
+            next_sort_scoped_in_tx(tx, "cards", "WHERE wave_id = ?1", Some(p.wave_id.as_ref()))
+                .await?
+        }
     };
     let now = now_ms();
     let payload_text = serde_json::to_string(&p.payload)?;
@@ -457,7 +463,7 @@ pub async fn card_create_with_id_tx(
     .execute(&mut **tx)
     .await?;
     Ok(Card {
-        id,
+        id: id.into(),
         wave_id: p.wave_id,
         kind: p.kind,
         sort,
@@ -608,7 +614,7 @@ pub async fn terminal_create_tx(
 /// (card without terminal, or terminal without payload link) is impossible.
 pub async fn card_with_terminal_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
-    wave_id: String,
+    wave_id: WaveId,
     sort: Option<f64>,
     program: String,
     cwd: String,
@@ -654,7 +660,7 @@ pub async fn card_with_terminal_create_tx(
     // 5. Re-stamp the card with the real payload.
     let card = card_update_tx(
         tx,
-        &card.id,
+        card.id.as_ref(),
         CardPatch {
             kind: None,
             sort: None,
@@ -693,7 +699,7 @@ pub async fn card_with_terminal_create_tx(
 pub async fn card_with_codex_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: String,
-    wave_id: String,
+    wave_id: WaveId,
     sort: Option<f64>,
     cwd: String,
     env: serde_json::Value,
@@ -762,7 +768,7 @@ pub async fn card_with_codex_create_tx(
     // 5. Re-stamp the card with the real payload.
     let card = card_update_tx(
         tx,
-        &card.id,
+        card.id.as_ref(),
         CardPatch {
             kind: None,
             sort: None,

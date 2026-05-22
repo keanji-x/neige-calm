@@ -77,7 +77,7 @@ async fn ingest_emits_codex_hook_event() {
             kind,
             payload,
         } => {
-            assert_eq!(card_id, "card_42");
+            assert_eq!(card_id.as_str(), "card_42");
             assert_eq!(kind, "hook.codex.pre_tool_use");
             assert_eq!(payload["tool_name"], "Bash");
         }

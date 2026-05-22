@@ -11,12 +11,15 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use utoipa::ToSchema;
 
+pub use crate::ids::{ActorId, CardId, CoveId, WaveId};
+
 // ---------------- Cove ----------------
 
 #[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema, TS)]
 #[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub struct Cove {
-    pub id: String,
+    #[schema(value_type = String)]
+    pub id: CoveId,
     pub name: String,
     pub color: String,
     pub sort: f64,
@@ -44,8 +47,10 @@ pub struct CovePatch {
 #[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema, TS)]
 #[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub struct Wave {
-    pub id: String,
-    pub cove_id: String,
+    #[schema(value_type = String)]
+    pub id: WaveId,
+    #[schema(value_type = String)]
+    pub cove_id: CoveId,
     pub title: String,
     pub sort: f64,
     pub archived_at: Option<i64>,
@@ -55,7 +60,8 @@ pub struct Wave {
 
 #[derive(Clone, Debug, Deserialize, ToSchema)]
 pub struct NewWave {
-    pub cove_id: String,
+    #[schema(value_type = String)]
+    pub cove_id: CoveId,
     pub title: String,
     pub sort: Option<f64>,
 }
@@ -76,8 +82,10 @@ pub struct WavePatch {
 #[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema, TS)]
 #[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub struct Card {
-    pub id: String,
-    pub wave_id: String,
+    #[schema(value_type = String)]
+    pub id: CardId,
+    #[schema(value_type = String)]
+    pub wave_id: WaveId,
     /// `"terminal"` for built-in PTY cards, `"plugin:<plugin-id>:<view-id>"`
     /// for plugin-provided cards. Kernel never interprets beyond that prefix.
     pub kind: String,
@@ -99,7 +107,8 @@ pub struct NewCard {
     /// param without forcing every client body to repeat it. Direct repo
     /// callers must still set this — passing "" produces a NotFound.
     #[serde(default)]
-    pub wave_id: String,
+    #[schema(value_type = String)]
+    pub wave_id: WaveId,
     pub kind: String,
     pub sort: Option<f64>,
     #[serde(default)]
@@ -151,7 +160,8 @@ pub struct NewOverlay {
 #[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema)]
 pub struct Terminal {
     pub id: String,
-    pub card_id: String,
+    #[schema(value_type = String)]
+    pub card_id: CardId,
     pub program: String,
     pub cwd: String,
     #[sqlx(json)]
@@ -169,7 +179,8 @@ pub struct Terminal {
 
 #[derive(Clone, Debug, Deserialize, ToSchema)]
 pub struct NewTerminal {
-    pub card_id: String,
+    #[schema(value_type = String)]
+    pub card_id: CardId,
     pub program: String,
     pub cwd: String,
     #[serde(default = "empty_object")]

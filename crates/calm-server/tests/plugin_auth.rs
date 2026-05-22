@@ -396,14 +396,14 @@ async fn no_kernel_callbacks_capability_installs_method_not_found_drainer() {
         "neige.kv.set must NOT touch kv when capability is absent; got {kv:?}"
     );
 
-    let cards = repo.cards_by_wave(&wave.id).await.unwrap();
+    let cards = repo.cards_by_wave(wave.id.as_str()).await.unwrap();
     assert!(
         cards.is_empty(),
         "neige.card.create must NOT create cards when capability is absent; got {} cards",
         cards.len()
     );
 
-    let overlays = repo.overlays_for("wave", &wave.id).await.unwrap();
+    let overlays = repo.overlays_for("wave", wave.id.as_str()).await.unwrap();
     assert!(
         overlays.is_empty(),
         "neige.overlay.set must NOT write overlays when capability is absent; got {} overlays",

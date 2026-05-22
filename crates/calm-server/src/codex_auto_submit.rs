@@ -90,7 +90,7 @@ pub fn spawn(repo: Arc<dyn RepoRead>, daemon: Arc<DaemonClient>, bus: EventBus) 
                         let inner = inner.clone();
                         let card_id = card_id.clone();
                         tokio::spawn(async move {
-                            inner.maybe_submit(&card_id).await;
+                            inner.maybe_submit(card_id.as_ref()).await;
                         });
                     }
                 }

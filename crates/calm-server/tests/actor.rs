@@ -294,7 +294,7 @@ async fn plugin_callback_path_writes_plugin_actor_regardless_of_middleware() {
     let new_overlay = NewOverlay {
         plugin_id: plugin_id.to_string(),
         entity_kind: "wave".into(),
-        entity_id: wave.id.clone(),
+        entity_id: wave.id.to_string(),
         kind: "status".into(),
         payload: serde_json::json!({ "state": "Idle" }),
     };

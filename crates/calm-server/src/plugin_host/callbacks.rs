@@ -349,7 +349,7 @@ async fn card_create(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         return Err(RpcError::invalid_params(e.to_string()));
     }
     let new = NewCard {
-        wave_id: p.wave_id,
+        wave_id: p.wave_id.into(),
         kind: p.kind,
         sort: p.sort,
         payload,
@@ -483,7 +483,7 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
                 Ok((
                     (),
                     Event::CardDeleted {
-                        id: card_id,
+                        id: card_id.into(),
                         wave_id,
                     },
                 ))
@@ -891,7 +891,7 @@ mod tests {
                     mcp,
                     subs,
                 }),
-                wave_id: wave.id,
+                wave_id: wave.id.to_string(),
             }
         }
 
@@ -1084,7 +1084,7 @@ mod tests {
             .ctx_storage
             .repo
             .card_create(NewCard {
-                wave_id: h.wave_id.clone(),
+                wave_id: h.wave_id.clone().into(),
                 kind: "terminal".into(),
                 sort: None,
                 payload: json!({}),
