@@ -28,6 +28,21 @@
   --text-meta:       var(--text-3);  /* subtitles, breadcrumbs, hints, empty states */
   --text-decorative: var(--text-4);  /* icons, counts, placeholders — WCAG-exempt */
 
+  /* Type scale — single-mode, doesn't theme-vary. Slice 1 of #150:
+     consolidates 20+ raw font-size literals (9.5px → 44px, with 0.5px
+     increments) into 8 opinionated tokens. The migration is intentionally
+     lossy — some sites move 0.5–2px — because that lossiness IS the cure
+     for the per-selector hand-tuning that read as "割裂". See the issue's
+     rounding policy table for the exact mapping. */
+  --text-xs:         11px;    /* small labels, counts, eyebrows */
+  --text-sm:         12.5px;  /* dense UI, hints, captions */
+  --text-base:       13px;    /* default body */
+  --text-md:         15px;    /* emphasized body, settings field labels, login */
+  --text-lg:         18px;    /* card titles */
+  --text-xl:         22px;    /* section heads */
+  --text-display-sm: 26px;    /* surf-card large numerals */
+  --text-display:    36px;    /* h-display, login hero */
+
   --accent: oklch(52% 0.13 245);
   --accent-soft: oklch(95% 0.025 245);
 
@@ -83,7 +98,7 @@ body {
   font-family: var(--font-sans);
   background: var(--bg);
   color: var(--text);
-  font-size: 15px;
+  font-size: var(--text-md);
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -122,7 +137,7 @@ input, textarea { font: inherit; color: inherit; }
 }
 .bar .name {
   position: absolute; left: 50%; transform: translateX(-50%);
-  font-size: 12px; font-weight: 600; color: var(--text-3); letter-spacing: 0.01em;
+  font-size: var(--text-sm); font-weight: 600; color: var(--text-3); letter-spacing: 0.01em;
 }
 .bar .right { margin-left: auto; display: flex; align-items: center; gap: 4px; }
 
@@ -161,7 +176,7 @@ input, textarea { font: inherit; color: inherit; }
   width: 100%;
   border-radius: 8px;
   color: var(--text-2);
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 500;
   text-align: left;
   transition: background 0.1s, color 0.1s;
@@ -178,7 +193,7 @@ input, textarea { font: inherit; color: inherit; }
    Matches the dot/swatch grammar of the rest of the sidebar by simply
    refusing to compete with it. */
 .side .nav-today {
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: 700;
   letter-spacing: -0.005em;
   padding: 10px 10px 12px;
@@ -196,7 +211,7 @@ input, textarea { font: inherit; color: inherit; }
 .side .nav-item.active .ico { color: var(--accent); }
 .side .nav-item .lbl { flex: 1; min-width: 0; }
 .side .nav-item .count {
-  font-size: 11px; font-weight: 700;
+  font-size: var(--text-xs); font-weight: 700;
   color: white;
   background: var(--warn);
   padding: 1px 6px;
@@ -206,7 +221,7 @@ input, textarea { font: inherit; color: inherit; }
   font-variant-numeric: tabular-nums;
 }
 .side .nav-label {
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -225,7 +240,7 @@ input, textarea { font: inherit; color: inherit; }
   width: 100%;
   border-radius: 6px;
   color: var(--text-2);
-  font-size: 12.5px;
+  font-size: var(--text-sm);
   text-align: left;
   transition: background 0.1s, color 0.1s;
 }
@@ -261,12 +276,12 @@ input, textarea { font: inherit; color: inherit; }
 .side .me-row .me {
   width: 26px; height: 26px; border-radius: 50%;
   background: linear-gradient(135deg, oklch(70% 0.08 245), oklch(55% 0.1 245));
-  color: white; font-weight: 600; font-size: 11px;
+  color: white; font-weight: 600; font-size: var(--text-xs);
   display: grid; place-items: center;
   flex-shrink: 0;
 }
-.side .me-row .who { font-size: 12.5px; font-weight: 600; min-width: 0; flex: 1; }
-.side .me-row .who .sub { font-size: 10.5px; font-weight: 500; color: var(--text-3); }
+.side .me-row .who { font-size: var(--text-sm); font-weight: 600; min-width: 0; flex: 1; }
+.side .me-row .who .sub { font-size: var(--text-xs); font-weight: 500; color: var(--text-3); }
 
 /* nested cove list inside sidebar */
 .side .cove-nav {
@@ -275,7 +290,7 @@ input, textarea { font: inherit; color: inherit; }
   width: 100%;
   border-radius: 6px;
   color: var(--text-2);
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 500;
   text-align: left;
   transition: background 0.1s, color 0.1s;
@@ -309,7 +324,7 @@ input, textarea { font: inherit; color: inherit; }
   border-radius: 999px;
   background: var(--warn);
   color: white;
-  font-size: 9.5px; font-weight: 700;
+  font-size: var(--text-xs); font-weight: 700;
   display: grid; place-items: center;
   box-shadow: 0 0 0 2px var(--bg);
   font-variant-numeric: tabular-nums;
@@ -322,7 +337,7 @@ input, textarea { font: inherit; color: inherit; }
    reads as metadata, not a primary affordance. */
 .side .cove-nav .count {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: var(--text-xs);
   font-weight: 500;
   color: var(--text-decorative);
   font-variant-numeric: tabular-nums;
@@ -342,7 +357,7 @@ input, textarea { font: inherit; color: inherit; }
 .side .cove-nav.new .swatch-plus {
   width: 10px; height: 10px;
   display: flex; align-items: center; justify-content: center;
-  font-size: 13px; line-height: 1;
+  font-size: var(--text-base); line-height: 1;
   color: var(--text-decorative);
 }
 .side .cove-nav.new:hover .swatch-plus { color: var(--text-2); }
@@ -366,7 +381,7 @@ input, textarea { font: inherit; color: inherit; }
   border: none;
   outline: none;
   font: inherit;
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 500;
   color: var(--text);
   border-radius: 3px;
@@ -412,7 +427,7 @@ input, textarea { font: inherit; color: inherit; }
 
 /* time line */
 .eyebrow {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-3);
   font-weight: 500;
   letter-spacing: 0.01em;
@@ -424,7 +439,7 @@ input, textarea { font: inherit; color: inherit; }
 .synth {
   font-family: var(--font-serif);
   font-weight: 400;
-  font-size: 26px;
+  font-size: var(--text-display-sm);
   line-height: 1.32;
   letter-spacing: -0.01em;
   color: var(--text);
@@ -450,7 +465,7 @@ input, textarea { font: inherit; color: inherit; }
 }
 .attn .label {
   display: inline-flex; align-items: center; gap: 8px;
-  font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
+  font-size: var(--text-xs); font-weight: 700; letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--warn);
   margin-bottom: 14px;
@@ -464,14 +479,14 @@ input, textarea { font: inherit; color: inherit; }
 .attn h2 {
   font-family: var(--font-serif);
   font-weight: 500;
-  font-size: 22px;
+  font-size: var(--text-xl);
   line-height: 1.3;
   margin: 0 0 12px;
   letter-spacing: -0.01em;
   text-wrap: pretty;
 }
 .attn .body {
-  font-size: 15px; line-height: 1.55;
+  font-size: var(--text-md); line-height: 1.55;
   color: var(--text-2);
   margin: 0 0 22px;
   text-wrap: pretty;
@@ -483,7 +498,7 @@ input, textarea { font: inherit; color: inherit; }
 }
 .attn .source {
   display: flex; gap: 10px; align-items: center;
-  font-size: 12px; color: var(--text-3);
+  font-size: var(--text-sm); color: var(--text-3);
   margin-bottom: 14px;
   padding-bottom: 14px;
   border-bottom: 1px solid var(--hairline);
@@ -502,7 +517,7 @@ input, textarea { font: inherit; color: inherit; }
   border-radius: 10px;
   background: var(--text);
   color: var(--bg);
-  font-size: 14px; font-weight: 600;
+  font-size: var(--text-md); font-weight: 600;
   letter-spacing: -0.005em;
   transition: transform 0.06s, opacity 0.1s;
 }
@@ -521,7 +536,7 @@ input, textarea { font: inherit; color: inherit; }
 .go.ghost:hover { color: var(--text); background: oklch(0% 0 0 / 0.04); }
 /* stylelint-disable-next-line declaration-property-value-disallowed-list */
 [data-theme="dark"] .go.ghost:hover { background: oklch(100% 0 0 / 0.05); }
-.go .mini { font-size: 11px; opacity: 0.6; margin-left: 6px; }
+.go .mini { font-size: var(--text-xs); opacity: 0.6; margin-left: 6px; }
 
 /* waves list — minimal */
 .waves {
@@ -563,13 +578,13 @@ input, textarea { font: inherit; color: inherit; }
 }
 .wave-row .body { min-width: 0; }
 .wave-row .t {
-  font-size: 15px; font-weight: 500;
+  font-size: var(--text-md); font-weight: 500;
   color: var(--text);
   margin-bottom: 3px;
   text-wrap: pretty;
 }
 .wave-row .s {
-  font-size: 13px;
+  font-size: var(--text-base);
   color: var(--text-3);
   display: flex; gap: 10px; align-items: center;
 }
@@ -582,7 +597,7 @@ input, textarea { font: inherit; color: inherit; }
   width: 6px; height: 6px; border-radius: 50%;
 }
 .wave-row .when {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
   text-align: right;
@@ -606,7 +621,7 @@ input, textarea { font: inherit; color: inherit; }
   border-radius: 6px;
   color: var(--text-3);
   font: inherit;
-  font-size: 16px;
+  font-size: var(--text-md);
   line-height: 1;
   cursor: pointer;
   opacity: 0;
@@ -639,7 +654,7 @@ input, textarea { font: inherit; color: inherit; }
 
 /* heading */
 .h-eyebrow {
-  font-size: 11px;
+  font-size: var(--text-xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -649,7 +664,7 @@ input, textarea { font: inherit; color: inherit; }
 .h-display {
   font-family: var(--font-serif);
   font-weight: 400;
-  font-size: 36px;
+  font-size: var(--text-display);
   line-height: 1.15;
   letter-spacing: -0.022em;
   margin: 0 0 24px;
@@ -689,7 +704,7 @@ input, textarea { font: inherit; color: inherit; }
 .wave-crumb {
   display: flex; align-items: center; gap: 8px;
   min-width: 0; flex: 1;
-  font-size: 14px;
+  font-size: var(--text-md);
 }
 .wave-cove-dot {
   width: 9px; height: 9px; border-radius: 3px;
@@ -714,7 +729,7 @@ input, textarea { font: inherit; color: inherit; }
 .wave-sep { color: var(--text-4); flex-shrink: 0; }
 .wave-title {
   font-family: var(--font-serif);
-  font-size: 18px;
+  font-size: var(--text-lg);
   font-weight: 500;
   letter-spacing: -0.005em;
   color: var(--text);
@@ -789,7 +804,7 @@ input, textarea { font: inherit; color: inherit; }
 }
 .status-pill {
   display: inline-flex; align-items: center; gap: 7px;
-  font-size: 12.5px;
+  font-size: var(--text-sm);
   font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
@@ -802,7 +817,7 @@ input, textarea { font: inherit; color: inherit; }
 .status-pill-dot.live-dot { animation: dot-pulse 2.2s ease-in-out infinite; }
 .status-pill-dot.warn    { box-shadow: 0 0 0 3px var(--warn-soft); }
 .wave-percent {
-  font-size: 12.5px; color: var(--text-3);
+  font-size: var(--text-sm); color: var(--text-3);
   min-width: 36px; text-align: right;
 }
 
@@ -816,7 +831,7 @@ input, textarea { font: inherit; color: inherit; }
 
 /* breadcrumb top */
 .crumbs {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-3);
   margin-bottom: 22px;
   display: flex; align-items: center; gap: 6px;
@@ -920,7 +935,7 @@ input, textarea { font: inherit; color: inherit; }
   display: grid;
   place-items: center;
   border-radius: 5px;
-  font-size: 16px;
+  font-size: var(--text-md);
   line-height: 1;
   color: var(--text-3);
   background: transparent;
@@ -951,7 +966,7 @@ input, textarea { font: inherit; color: inherit; }
   border: 1.5px dashed var(--hairline-strong);
   border-radius: var(--r);
   color: var(--text-3);
-  font-size: 12.5px;
+  font-size: var(--text-sm);
   font-weight: 500;
   transition: color 0.1s, border-color 0.1s;
   background: transparent;
@@ -971,7 +986,7 @@ input, textarea { font: inherit; color: inherit; }
   border: 1.5px dashed var(--hairline-strong);
   border-radius: var(--r);
   color: var(--text-3);
-  font-size: 12.5px;
+  font-size: var(--text-sm);
   font-weight: 500;
   background: transparent;
   transition: color 0.1s, border-color 0.1s, background 0.1s;
@@ -1007,7 +1022,7 @@ input, textarea { font: inherit; color: inherit; }
   display: block; width: 100%;
   padding: 8px 14px;
   text-align: left;
-  font-size: 13px;
+  font-size: var(--text-base);
   color: var(--text);
   background: transparent;
   border: none;
@@ -1018,7 +1033,7 @@ input, textarea { font: inherit; color: inherit; }
 [data-theme="dark"] .add-panel-menu-item:hover { background: oklch(100% 0 0 / 0.05); }
 .add-panel-empty {
   padding: 8px 14px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-3);
 }
 
@@ -1069,7 +1084,7 @@ input, textarea { font: inherit; color: inherit; }
   padding: 9px 12px;
   border-bottom: 1px solid var(--hairline);
   background: var(--surface-card);
-  font-size: 13px; font-weight: 500;
+  font-size: var(--text-base); font-weight: 500;
 }
 [data-theme="dark"] .modal-head { background: var(--surface-card); }
 .modal-title { color: var(--text); }
@@ -1077,7 +1092,7 @@ input, textarea { font: inherit; color: inherit; }
   background: transparent;
   border: none;
   color: var(--text-3);
-  font-size: 18px; line-height: 1;
+  font-size: var(--text-lg); line-height: 1;
   padding: 2px 6px;
   border-radius: 4px;
   cursor: pointer;
@@ -1107,7 +1122,7 @@ input, textarea { font: inherit; color: inherit; }
 
 .schema-form { display: flex; flex-direction: column; gap: 10px; }
 .schema-form-field { display: flex; flex-direction: column; gap: 4px; }
-.schema-form-label { font-size: 12px; color: var(--text-2); }
+.schema-form-label { font-size: var(--text-sm); color: var(--text-2); }
 /* stylelint-disable-next-line declaration-property-value-disallowed-list */
 .schema-form-required { color: oklch(60% 0.15 25); }
 .schema-form-input {
@@ -1135,7 +1150,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .schema-form-cancel, .schema-form-submit {
   height: 32px; padding: 0 12px;
   border-radius: 6px;
-  font-size: 13px;
+  font-size: var(--text-base);
   border: 1px solid var(--hairline-strong);
   background: transparent;
   color: var(--text);
@@ -1176,12 +1191,12 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
-  font-size: 12.5px;
+  font-size: var(--text-sm);
 }
-.dirpicker-value-empty { color: var(--text-3); font-family: inherit; font-size: 13px; }
+.dirpicker-value-empty { color: var(--text-3); font-family: inherit; font-size: var(--text-base); }
 .dirpicker-browse {
   flex: none;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-3);
   border-left: 1px solid var(--hairline);
   padding-left: 8px;
@@ -1223,7 +1238,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   height: 30px; min-width: 34px;
   padding: 0 10px;
   font: inherit;
-  font-size: 15px; line-height: 1;
+  font-size: var(--text-md); line-height: 1;
   border: 1px solid var(--hairline-strong);
   border-radius: 4px;
   background: transparent;
@@ -1238,7 +1253,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .dirpicker-cwd {
   flex: 1; min-width: 0;
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
-  font-size: 12.5px;
+  font-size: var(--text-sm);
   color: var(--text-2);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1260,7 +1275,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   width: 100%;
   padding: 8px 16px;
   text-align: left;
-  font-size: 13.5px;
+  font-size: var(--text-base);
   color: var(--text);
   background: transparent;
   border: none;
@@ -1272,7 +1287,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 [data-theme="dark"] .dirpicker-entry:hover:not(:disabled) { background: oklch(100% 0 0 / 0.05); }
 .dirpicker-entry:disabled { color: var(--text-3); cursor: default; }
 .dirpicker-entry-file { color: var(--text-3); }
-.dirpicker-entry-icon { flex: none; font-size: 13px; opacity: 0.8; }
+.dirpicker-entry-icon { flex: none; font-size: var(--text-base); opacity: 0.8; }
 .dirpicker-entry-name {
   flex: 1; min-width: 0;
   overflow: hidden;
@@ -1282,7 +1297,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .dirpicker-status,
 .dirpicker-error {
   padding: 12px 16px;
-  font-size: 13px;
+  font-size: var(--text-base);
   color: var(--text-3);
 }
 /* stylelint-disable-next-line declaration-property-value-disallowed-list */
@@ -1298,7 +1313,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .dirpicker-select {
   height: 32px; padding: 0 14px;
   border-radius: 6px;
-  font-size: 13px;
+  font-size: var(--text-base);
   border: 1px solid var(--hairline-strong);
   background: transparent;
   color: var(--text);
@@ -1329,7 +1344,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   padding: 6px 38px 6px 12px;
   border-bottom: 1px solid var(--hairline);
   background: var(--surface-card);
-  font-size: 13px; font-weight: 500;
+  font-size: var(--text-base); font-weight: 500;
   min-height: 28px;
 }
 [data-theme="dark"] .codex-card-head { background: var(--surface-card); }
@@ -1341,7 +1356,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   flex: 1;
   display: flex; align-items: center; gap: 8px;
   min-width: 0; /* allow the label to actually shrink */
-  font-size: 11px;
+  font-size: var(--text-xs);
   font-family: ui-monospace, SFMono-Regular, monospace;
   color: var(--text-2);
 }
@@ -1352,7 +1367,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 .codex-status-count {
   flex: 0 0 auto;
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--text-3);
   padding: 1px 6px;
   border-radius: 999px;
@@ -1397,7 +1412,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .codex-card-empty {
   display: flex; align-items: center; justify-content: center;
   height: 100%;
-  color: var(--text-3); font-size: 12px;
+  color: var(--text-3); font-size: var(--text-sm);
   padding: 12px;
 }
 
@@ -1437,7 +1452,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 [data-theme="dark"] .term-dot.c { background: oklch(45% 0.008 245); }
 .term-title {
   margin-left: 6px;
-  font-size: 11px;
+  font-size: var(--text-xs);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--text-3);
@@ -1445,7 +1460,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 .term-body {
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: var(--text-sm);
   line-height: 1.7;
   padding: 12px 16px 14px;
   color: var(--text-2);
@@ -1488,7 +1503,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   position: absolute;
   top: 8px; right: 12px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--text-3);
   letter-spacing: 0.04em;
   text-transform: lowercase;
@@ -1509,7 +1524,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   background: oklch(99% 0 0 / 0.6);
   backdrop-filter: blur(2px);
   text-transform: none;
-  font-size: 13px;
+  font-size: var(--text-base);
   letter-spacing: normal;
 }
 /* stylelint-disable-next-line declaration-property-value-disallowed-list */
@@ -1521,7 +1536,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   background: var(--paper);
   color: var(--text);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 500;
   cursor: pointer;
   transition: background 0.1s, border-color 0.1s;
@@ -1578,14 +1593,14 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 .note p {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--text-md);
   line-height: 1.55;
   color: var(--text-2);
   text-wrap: pretty;
 }
 .note p code {
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: var(--text-sm);
   /* stylelint-disable-next-line declaration-property-value-disallowed-list */
   background: oklch(0% 0 0 / 0.04);
   padding: 1px 6px;
@@ -1607,7 +1622,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   padding: 12px 18px;
   border-bottom: 1px solid var(--hairline);
   font-family: var(--font-serif);
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: 500;
   letter-spacing: -0.005em;
   color: var(--text);
@@ -1619,7 +1634,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 .doc-body p {
   margin: 0 0 12px;
-  font-size: 14.5px;
+  font-size: var(--text-md);
   line-height: 1.6;
   color: var(--text-2);
   text-wrap: pretty;
@@ -1628,7 +1643,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .doc-body p strong { color: var(--text); font-weight: 600; }
 .doc-body p code {
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: var(--text-sm);
   /* stylelint-disable-next-line declaration-property-value-disallowed-list */
   background: oklch(0% 0 0 / 0.04);
   padding: 1px 6px;
@@ -1655,12 +1670,12 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 [data-theme="dark"] .git-head { background: var(--surface-panel-head); }
 .git-branch {
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: var(--text-sm);
   color: var(--accent);
   font-weight: 600;
 }
 .git-count {
-  font-size: 11px;
+  font-size: var(--text-xs);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--text-3);
@@ -1676,16 +1691,16 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 .git-sha {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-3);
 }
 .git-msg {
-  font-size: 13.5px;
+  font-size: var(--text-base);
   color: var(--text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .git-when {
-  font-size: 11.5px;
+  font-size: var(--text-xs);
   color: var(--text-4);
   font-variant-numeric: tabular-nums;
 }
@@ -1707,14 +1722,14 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 [data-theme="dark"] .diff-head { background: var(--surface-panel-head); }
 .diff-file {
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: var(--text-sm);
   color: var(--text);
   font-weight: 600;
 }
 .diff-stats {
   display: inline-flex; gap: 8px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 /* stylelint-disable-next-line declaration-property-value-disallowed-list */
 .diff-add { color: oklch(54% 0.14 145); font-weight: 600; }
@@ -1726,7 +1741,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 [data-theme="dark"] .diff-rm  { color: oklch(72% 0.14 25);  }
 .diff-body {
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: var(--text-sm);
   line-height: 1.65;
   padding: 6px 0;
 }
@@ -1742,7 +1757,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .diff-line.k-hdr {
   color: var(--text-3);
   padding: 2px 14px 4px;
-  font-size: 11.5px;
+  font-size: var(--text-xs);
   display: block;
 }
 .diff-gutter { color: var(--text-4); user-select: none; }
@@ -1780,7 +1795,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   padding: 10px 16px;
   border-bottom: 1px solid var(--hairline);
   background: var(--surface-panel-head);
-  font-size: 11px;
+  font-size: var(--text-xs);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1803,7 +1818,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   border: 1.5px solid var(--hairline-strong);
   display: grid; place-items: center;
   color: transparent;
-  font-size: 10px;
+  font-size: var(--text-xs);
 }
 .plan-card-body li.done .dot { background: var(--text); border-color: var(--text); color: var(--bg); }
 .plan-card-body li.cur  .dot { border-color: var(--accent); position: relative; }
@@ -1811,7 +1826,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
 }
 .plan-card-body li .lbl {
-  font-size: 14px;
+  font-size: var(--text-md);
   color: var(--text);
   line-height: 1.4;
   text-wrap: pretty;
@@ -1819,7 +1834,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .plan-card-body li.done .lbl { color: var(--text-3); text-decoration: line-through; text-decoration-thickness: 1px; }
 .plan-card-body li.cur  .lbl { font-weight: 600; }
 .plan-card-body li .when {
-  font-size: 11.5px;
+  font-size: var(--text-xs);
   color: var(--text-4);
   font-variant-numeric: tabular-nums;
 }
@@ -1870,12 +1885,12 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   flex-shrink: 0;
 }
 .surf-clock-h, .surf-clock-m {
-  font-size: 44px;
+  font-size: var(--text-display);
   font-weight: 300;
   font-variant-numeric: tabular-nums;
 }
 .surf-clock-colon {
-  font-size: 40px;
+  font-size: var(--text-display);
   font-weight: 300;
   color: var(--text-3);
   margin: 0 -1px;
@@ -1883,7 +1898,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 @keyframes clock-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 .surf-clock-ap {
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--text-3);
   letter-spacing: 0.08em;
@@ -1898,13 +1913,13 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 .surf-clock-day {
   font-family: var(--font-serif);
-  font-size: 18px;
+  font-size: var(--text-lg);
   letter-spacing: -0.015em;
   color: var(--text);
   line-height: 1.15;
 }
 .surf-clock-date {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-meta);
 }
 
@@ -1946,7 +1961,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 .surf-now-label {
   display: inline-flex; align-items: center; gap: 6px;
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1964,7 +1979,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   animation: dot-pulse 2.2s ease-in-out infinite;
 }
 .surf-now-title {
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 500;
   color: var(--text);
   line-height: 1.3;
@@ -1975,7 +1990,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   -webkit-box-orient: vertical;
 }
 .surf-now-meta {
-  font-size: 11.5px;
+  font-size: var(--text-xs);
   color: var(--text-3);
   margin-top: 3px;
   display: flex; gap: 6px; align-items: center;
@@ -2014,7 +2029,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .surf-term-host {
   margin-left: auto;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--text-4);
   letter-spacing: 0.02em;
 }
@@ -2029,7 +2044,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   flex: 1; min-height: 0;
   overflow: hidden;
   font-family: var(--font-mono);
-  font-size: 13.5px;
+  font-size: var(--text-base);
   line-height: 1.75;
   padding: 20px 22px 22px;
   color: var(--text-2);
@@ -2076,7 +2091,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .surf-prompt {
   display: flex; align-items: center; gap: 6px;
   font-family: var(--font-mono);
-  font-size: 13.5px;
+  font-size: var(--text-base);
   padding-top: 2px;
 }
 .surf-host {
@@ -2123,7 +2138,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .surf-today { padding-bottom: 16px; }
 .surf-date {
   font-family: var(--font-serif);
-  font-size: 22px;
+  font-size: var(--text-xl);
   font-weight: 400;
   letter-spacing: -0.015em;
   color: var(--text);
@@ -2131,7 +2146,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   text-wrap: pretty;
 }
 .surf-tod {
-  font-size: 12.5px;
+  font-size: var(--text-sm);
   color: var(--text-3);
   margin-top: 2px;
 }
@@ -2166,18 +2181,18 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   animation: dot-pulse 2.2s ease-in-out infinite;
 }
 .surf-stat-n {
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: 600;
   color: var(--text);
 }
 .surf-stat.warn .surf-stat-n { color: var(--warn); }
 .surf-stat-lbl {
-  font-size: 12.5px;
+  font-size: var(--text-sm);
   color: var(--text-meta);
 }
 .surf-stat-sep {
   color: var(--text-4);
-  font-size: 13px;
+  font-size: var(--text-base);
 }
 
 /* ============================================================
@@ -2198,7 +2213,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 [data-theme="dark"] .cal-toggle { background: var(--surface-toggle-overlay); }
 .cal-toggle button {
-  font-size: 11px;
+  font-size: var(--text-xs);
   font-weight: 600;
   letter-spacing: 0.02em;
   padding: 4px 10px;
@@ -2221,14 +2236,14 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   display: grid; place-items: center;
   color: var(--text-3);
   border-radius: 5px;
-  font-size: 15px;
+  font-size: var(--text-md);
   line-height: 1;
 }
 .cal-nav:hover { background: var(--surface-hover-overlay); color: var(--text); }
 [data-theme="dark"] .cal-nav:hover { background: var(--surface-hover-overlay); }
 
 .cal-month-label {
-  font-size: 12.5px;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--text);
   font-variant-numeric: tabular-nums;
@@ -2259,7 +2274,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 /* stylelint-disable-next-line declaration-property-value-disallowed-list */
 [data-theme="dark"] .cal-week-day:hover { background: oklch(100% 0 0 / 0.045); }
 .cal-week-dow {
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 700;
   color: var(--text-4);
   letter-spacing: 0.06em;
@@ -2269,7 +2284,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   width: 24px; height: 24px;
   display: grid; place-items: center;
   border-radius: 50%;
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 500;
   color: var(--text);
   font-variant-numeric: tabular-nums;
@@ -2308,7 +2323,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 .cal-month-dow span {
   text-align: center;
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 700;
   color: var(--text-4);
   letter-spacing: 0.06em;
@@ -2334,7 +2349,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 /* stylelint-disable-next-line declaration-property-value-disallowed-list */
 [data-theme="dark"] .cal-month-day:hover { background: oklch(100% 0 0 / 0.05); }
 .cal-md-n {
-  font-size: 11.5px;
+  font-size: var(--text-xs);
   font-weight: 500;
   color: var(--text);
   font-variant-numeric: tabular-nums;
@@ -2372,7 +2387,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   margin-top: 14px;
   padding-top: 12px;
   border-top: 1px solid var(--hairline);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--text);
   margin-bottom: 6px;
@@ -2383,7 +2398,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   margin: 0 -4px;
 }
 .cal-empty {
-  font-size: 12.5px;
+  font-size: var(--text-sm);
   color: var(--text-meta);
   padding: 4px 4px 2px;
   font-style: italic;
@@ -2426,7 +2441,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 .cal-event-time {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--text-3);
   padding-top: 2px;
   text-align: right;
@@ -2438,14 +2453,14 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 .cal-event-body { min-width: 0; }
 .cal-event-title {
-  font-size: 12.5px;
+  font-size: var(--text-sm);
   font-weight: 500;
   color: var(--text);
   line-height: 1.3;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .cal-event-meta {
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--text-3);
   margin-top: 1px;
 }
@@ -2482,7 +2497,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   padding: 30px 32px 28px;
 }
 .login-eyebrow {
-  font-size: 11px;
+  font-size: var(--text-xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -2492,21 +2507,21 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .login-title {
   font-family: var(--font-serif);
   font-weight: 400;
-  font-size: 30px;
+  font-size: var(--text-display-sm);
   line-height: 1.15;
   letter-spacing: -0.022em;
   color: var(--text);
   margin: 0 0 10px;
 }
 .login-hint {
-  font-size: 13.5px;
+  font-size: var(--text-base);
   line-height: 1.5;
   color: var(--text-3);
   margin: 0 0 22px;
 }
 .login-hint code {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
   /* stylelint-disable-next-line declaration-property-value-disallowed-list */
   background: oklch(0% 0 0 / 0.04);
   padding: 1px 6px;
@@ -2525,7 +2540,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: var(--text-base);
   letter-spacing: 0.02em;
   outline: none;
   transition: border-color 0.1s, box-shadow 0.1s;
@@ -2537,7 +2552,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 .login-input::placeholder { color: var(--text-decorative); }
 .login-error {
-  font-size: 12.5px;
+  font-size: var(--text-sm);
   color: var(--warn);
   margin: 0 0 12px;
 }
@@ -2717,7 +2732,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   display: grid;
   place-items: center;
   border-radius: 5px;
-  font-size: 16px;
+  font-size: var(--text-md);
   line-height: 1;
   color: var(--text-3);
   background: transparent;
@@ -2744,7 +2759,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 
 .wave-list-empty {
   color: var(--text-3);
-  font-size: 13px;
+  font-size: var(--text-base);
   margin: 8px 0;
 }
 
@@ -2759,7 +2774,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   margin-bottom: 20px;
 }
 .settings-section-title {
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 600;
   letter-spacing: 0.02em;
   text-transform: uppercase;
@@ -2767,14 +2782,14 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   margin: 0 0 6px;
 }
 .settings-section-hint {
-  font-size: 13px;
+  font-size: var(--text-base);
   color: var(--text-2);
   margin: 0 0 14px;
 }
 .settings-section-hint code,
 .settings-field-hint code {
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
-  font-size: 12px;
+  font-size: var(--text-sm);
   background: var(--surface-chip);
   border-radius: 4px;
   padding: 1px 4px;
@@ -2784,19 +2799,19 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   background: var(--surface-chip);
 }
 .settings-field-hint {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-3);
   margin-top: 2px;
 }
 .settings-error {
   /* stylelint-disable-next-line color-no-hex */
   color: var(--warn, #c00);
-  font-size: 13px;
+  font-size: var(--text-base);
   margin-top: 12px;
 }
 .settings-toast {
   margin-top: 12px;
-  font-size: 13px;
+  font-size: var(--text-base);
   color: var(--text-2);
   /* stylelint-disable-next-line declaration-property-value-disallowed-list */
   background: oklch(95% 0.02 145);
@@ -2843,7 +2858,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   top: 8px;
   left: 12px;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--text-xs);
   line-height: 1.4;
   letter-spacing: 0.04em;
   text-transform: lowercase;
@@ -2877,5 +2892,5 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .xterm-close-info {
   color: var(--text-3);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
