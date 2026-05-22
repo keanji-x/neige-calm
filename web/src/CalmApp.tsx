@@ -1,8 +1,8 @@
 // CalmApp — the layout shell rendered by the router's root route.
 //
-// What's here: TitleBar, Sidebar, theme toggle, and the <Outlet /> where
-// the matched route renders its page. URL drives selection (see
-// `app/router.tsx`); this component holds no kernel data of its own.
+// What's here: TitleBar, Sidebar, and the <Outlet /> where the matched
+// route renders its page. URL drives selection (see `app/router.tsx`);
+// this component holds no kernel data of its own.
 //
 // Kernel data flows through TanStack Query hooks (see `api/queries.ts`):
 // every page fetches what it needs and the shared QueryClient
@@ -18,11 +18,10 @@
 //
 // Theme is no longer local to CalmApp — it lives in `app/theme.tsx`
 // (`ThemeProvider` mounted by `AppProviders`) and is read via the
-// `useTheme()` hook. The TitleBar's toggle button cycles only between
-// 'light' and 'dark' (an explicit user choice that pins the theme away
-// from the OS preference); the three-mode picker (Light/Dark/System)
-// lives on the Settings page (reachable via the Sidebar's settings
-// button). See issue #22.
+// `useTheme()` hook. The TitleBar no longer hosts a theme toggle; the
+// only place to change theme is the Settings page's Appearance section
+// (Light/Dark/System radio), reachable via the Sidebar avatar menu.
+// See issue #22.
 
 import { Suspense, useMemo } from 'react';
 import { Outlet, useRouterState } from '@tanstack/react-router';
@@ -38,12 +37,11 @@ import {
   useOverlaysByKindQuery,
 } from './api/queries';
 import { useGo } from './app/navigation';
-import { useTheme } from './app/theme';
+import { logout } from './api/auth';
 import type { KernelOverlay } from './api/wire';
 import type { Cove, Route as AppRoute, Wave } from './types';
 
 export function CalmApp() {
-  const { resolved: theme, setMode } = useTheme();
   const go = useGo();
 
   // Derive the current AppRoute shape from the router's location so the
@@ -115,15 +113,19 @@ export function CalmApp() {
 
   const createCove = useCreateCoveMutation();
 
+  // Sign-out wire — UI scaffold ahead of server `/api/auth/logout`. The
+  // POST may 404 today (calm-server has not implemented auth yet, see
+  // `api/auth.ts` header); the reload still runs and re-evaluates the
+  // (currently bypassed) AuthGate, so the user lands wherever boot puts
+  // them. When the server endpoint lands this becomes a real sign-out.
+  const handleSignOut = async () => {
+    await logout();
+    window.location.reload();
+  };
+
   return (
     <div className="win">
-      <TitleBar
-        theme={theme}
-        // Toggle button on the title bar always sets an explicit mode —
-        // tapping it pins away from 'system'. The three-way Light/Dark/
-        // System control lives on the Settings page.
-        onToggleTheme={() => setMode(theme === 'dark' ? 'light' : 'dark')}
-      />
+      <TitleBar />
       <div className="stage">
         <Sidebar
           coves={coves}
@@ -134,6 +136,7 @@ export function CalmApp() {
             await createCove.mutateAsync({ name, color });
           }}
           onOpenSettings={() => go({ name: 'settings' })}
+          onSignOut={handleSignOut}
         />
         <main className="page">
           <div className="scroll">

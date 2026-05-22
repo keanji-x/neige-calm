@@ -1,6 +1,6 @@
 import { useRef } from 'react';
 import { useState } from '../state';
-import { Icon } from '../../Icon';
+import { Menu, type MenuItem } from '../../ui/Menu/Menu';
 import type { Cove, Route, Wave } from '../../types';
 
 // ---------------- Sidebar ----------------
@@ -12,6 +12,7 @@ export function Sidebar({
   onGo,
   onCreateCove,
   onOpenSettings,
+  onSignOut,
 }: {
   coves: Cove[];
   waves: Wave[];
@@ -25,6 +26,9 @@ export function Sidebar({
   /** Open the app-global settings page. Optional so tests / sub-trees that
    *  render the sidebar without a router don't have to wire it up. */
   onOpenSettings?: () => void;
+  /** Sign the current user out. Optional so tests / sub-trees that render
+   *  the sidebar without a router don't have to wire it up. */
+  onSignOut?: () => void;
 }) {
   const waitingWaves = waves.filter((w) => w.status === 'waiting');
   // Sub-landmarks inside the outer <aside aria-label="Navigation">:
@@ -111,24 +115,62 @@ export function Sidebar({
       </nav>
 
       <span className="sp" />
-      <div className="me-row">
-        <span className="me">YK</span>
-        <span className="who">
-          Yuki K.
-          <div className="sub">Pro · 5 agents online</div>
-        </span>
-        {onOpenSettings && (
-          <button
-            className="me-settings"
-            onClick={onOpenSettings}
-            title="Settings"
-            aria-label="Open settings"
-          >
-            <Icon n="gear" s={14} />
-          </button>
-        )}
-      </div>
+      <UserMenu onOpenSettings={onOpenSettings} onSignOut={onSignOut} />
     </aside>
+  );
+}
+
+// ---------------- UserMenu ----------------
+//
+// The Sidebar's avatar row is the single user-menu trigger. Clicking it
+// (or pressing Enter/Space) opens a small popover anchored above with
+// Settings + Sign out items. Both callbacks are optional so the Sidebar
+// can be rendered without a router (e.g. in component tests); items
+// referencing a missing handler are simply no-ops.
+//
+// The trigger must be a single focusable <button>, so the `.sub` line
+// inside `.who` is a <span> with `display: block` (set in calm.css) —
+// no block elements inside a button per HTML.
+function UserMenu({
+  onOpenSettings,
+  onSignOut,
+}: {
+  onOpenSettings?: () => void;
+  onSignOut?: () => void;
+}) {
+  const items: MenuItem[] = [
+    { label: 'Settings', onSelect: () => onOpenSettings?.() },
+    { label: 'Sign out', onSelect: () => onSignOut?.() },
+  ];
+  return (
+    <Menu
+      items={items}
+      wrapClassName="me-menu"
+      menuClassName="me-menu-popover"
+      itemClassName="me-menu-item"
+      trigger={({
+        ref,
+        onClick,
+        'aria-haspopup': ariaHasPopup,
+        'aria-expanded': ariaExpanded,
+      }) => (
+        <button
+          ref={ref}
+          type="button"
+          className="me-row me-trigger"
+          onClick={onClick}
+          aria-haspopup={ariaHasPopup}
+          aria-expanded={ariaExpanded}
+          aria-label="Open user menu"
+        >
+          <span className="me">YK</span>
+          <span className="who">
+            Yuki K.
+            <span className="sub">Pro · 5 agents online</span>
+          </span>
+        </button>
+      )}
+    />
   );
 }
 

@@ -185,8 +185,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
  *
  * Returns `{ mode, resolved, setMode }`. Components that only care about
  * applying styles should read `resolved` (the effective light/dark);
- * components that surface a UI control (Settings radio, TitleBar toggle)
- * may also read `mode`.
+ * components that surface a UI control (the Settings page's Appearance
+ * radio) may also read `mode`.
  */
 export function useTheme(): ThemeContextValue {
   const ctx = useContext(ThemeContext);
