@@ -38,6 +38,7 @@
 //     and bounce the socket — the next reconnect comes up cold.
 
 import type { WireEvent } from './wire';
+import { fireUnauthorized } from './onUnauthorized';
 import { wireEventSchema } from './schemas';
 
 /**
@@ -225,7 +226,14 @@ export class EventStream {
     this.setConnectionState('connecting');
     const ws = new WebSocket(this.url);
     this.ws = ws;
+    // Issue #189 — track whether the upgrade succeeded so the close
+    // handler can discriminate "auth/handshake rejected" (close fires
+    // without `open` ever firing) from "server dropped a live socket".
+    // The former probes whoami so a 401-cookie can surface the
+    // unauthorized flow; the latter just continues the backoff loop.
+    let opened = false;
     ws.addEventListener('open', () => {
+      opened = true;
       this.backoffMs = 500;
       this.publishSub();
       // NOTE: don't transition to `connected` here. WS-open just means
@@ -250,6 +258,16 @@ export class EventStream {
         // immediately so any UI indicator can show "reconnecting" while
         // we wait, rather than appearing stale-but-connected.
         this.setConnectionState('connecting');
+        if (!opened) {
+          // Upgrade never completed — could be transient network or a
+          // 401-rejected handshake (axum's middleware turns an
+          // unauthenticated upgrade into a plain HTTP 401 rather than a
+          // ws frame, which the browser surfaces here as `close` without
+          // a prior `open`). Probe whoami: if it returns 401 the
+          // unauthorized listener (SessionProvider) takes over and
+          // closes the stream; if it returns 200 we just keep retrying.
+          probeUnauthorized();
+        }
         setTimeout(() => this.connect(), this.backoffMs);
         this.backoffMs = Math.min(this.backoffMs * 2, this.maxBackoff);
       }
@@ -370,6 +388,40 @@ export class EventStream {
     };
     this.ws.send(JSON.stringify(payload));
   }
+}
+
+/** Issue #189 — module-level guard against probe-storming. When the WS
+ *  upgrade fails (close without prior open), we hit `/api/auth/whoami`
+ *  once to discriminate auth-rejection from generic network failure.
+ *  Multiple EventStream instances all reconnecting at once would
+ *  otherwise pile up redundant probes.
+ *
+ *  Exported `_resetProbeForTest` lets unit tests reset the latch between
+ *  test cases that otherwise share module state. */
+let probeInFlight = false;
+function probeUnauthorized(): void {
+  if (probeInFlight) return;
+  probeInFlight = true;
+  // `credentials: 'include'` matches `auth.ts`'s whoami — the cookie
+  // ride-along is what the probe is actually testing.
+  fetch('/api/auth/whoami', { credentials: 'include' })
+    .then((res) => {
+      if (res.status === 401) {
+        fireUnauthorized();
+      }
+    })
+    .catch(() => {
+      // Network down entirely — nothing to do. The next reconnect tick
+      // will retry; if the network comes back and we're still
+      // unauthenticated, the probe runs again.
+    })
+    .finally(() => {
+      probeInFlight = false;
+    });
+}
+
+export function _resetProbeForTest(): void {
+  probeInFlight = false;
 }
 
 /** Read the persisted cursor from localStorage. Returns `null` on missing

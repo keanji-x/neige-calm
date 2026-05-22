@@ -1,6 +1,7 @@
 // REST client for calm-server. One function per kernel route; thin wrapper
 // over `fetch` that throws on non-2xx with the server's `{error, code}` body.
 
+import { fireUnauthorized } from './onUnauthorized';
 import type {
   CardPatchBody,
   CovePatchBody,
@@ -54,6 +55,16 @@ async function request<T>(
       if (typeof j?.error === 'string') msg = j.error;
     } catch {
       /* body wasn't json — keep the status text */
+    }
+    // Issue #189 — any 401 means our session is gone (cookie expired,
+    // server-side restart, owner logged out from a sibling tab). Flag
+    // it via the global `onUnauthorized` channel so the SessionProvider
+    // can wipe state + bounce back to LoginPage. We still throw the
+    // error so the caller's mutation/query reports the failure cleanly;
+    // the SessionProvider's cleanup runs in a microtask, decoupled from
+    // the unwind.
+    if (res.status === 401) {
+      fireUnauthorized();
     }
     throw new CalmApiError(res.status, code, msg);
   }

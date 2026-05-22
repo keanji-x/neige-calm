@@ -62,6 +62,41 @@ pub struct Config {
     /// you front calm-server with a proxy.
     #[arg(long, env = "CALM_CODEX_INGEST_URL")]
     pub codex_ingest_url: Option<String>,
+
+    // ---- auth (issue #189) -------------------------------------------------
+    //
+    // Single-user owner auth. The kernel runs in one of two modes:
+    //
+    //   * Production: `auth_dev_autologin = false`. `auth_password` is
+    //     REQUIRED — boot panics in `auth::AuthConfig::from_config` if
+    //     it's unset. The configured username/password is the only way
+    //     to obtain a session cookie. `auth_username` defaults to
+    //     `"owner"` if unset; downstream display name follows.
+    //
+    //   * Dev: `auth_dev_autologin = true`. The middleware promotes
+    //     every request to the owner principal without a cookie, and
+    //     `whoami` returns the owner shape unconditionally. Skips the
+    //     credential check; useful for `make dev` loops and e2e
+    //     fixtures where typing a password every reload is pure
+    //     friction. Production deploys MUST NOT enable this.
+    /// Configured owner username for `POST /api/auth/login`. Single-user
+    /// model — there's only ever one valid username. Defaults to `owner`.
+    #[arg(long, env = "CALM_AUTH_USERNAME", default_value = "owner")]
+    pub auth_username: Option<String>,
+
+    /// Configured owner password for `POST /api/auth/login`. Required when
+    /// `auth_dev_autologin` is off; boot panics otherwise. Plain string
+    /// today (no hashing) because this is the single-user owner model on a
+    /// local-only deployment — adding bcrypt/argon2 buys nothing when the
+    /// only attacker who can reach the process can already read its env.
+    #[arg(long, env = "CALM_AUTH_PASSWORD")]
+    pub auth_password: Option<String>,
+
+    /// Skip the cookie/login flow and promote every request to the owner
+    /// principal. ALWAYS off by default. Used by `make dev` loops; explicit
+    /// env/config opt-in only. Production deploys MUST NOT enable this.
+    #[arg(long, env = "CALM_DEV_AUTOLOGIN", default_value_t = false)]
+    pub auth_dev_autologin: bool,
 }
 
 impl Config {

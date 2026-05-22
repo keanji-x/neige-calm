@@ -19,7 +19,29 @@ pub mod terminal_cards;
 pub mod version;
 pub mod waves;
 
+/// Full REST surface. Includes both protected (`protected_router`) and
+/// public (`public_router`) trees. Kept as a single helper so tests and
+/// downstream consumers that don't care about auth can mount everything
+/// in one call (`Router::merge(routes::router())`).
+///
+/// The production binary in `main.rs` no longer uses this aggregator —
+/// it merges `protected_router` (behind the session middleware) and
+/// `public_router` (un-gated) separately so the session middleware can
+/// be applied to exactly the right subset of paths. See `auth::router`
+/// for the auth endpoints themselves, which sit outside both trees.
 pub fn router() -> Router<AppState> {
+    Router::new()
+        .merge(protected_router())
+        .merge(public_router())
+}
+
+/// Protected REST surface — everything that requires a valid session in
+/// production. The auth login/whoami/logout endpoints are intentionally
+/// NOT here (they live in `auth::router`), and `/api/version` +
+/// `/api/openapi.json` are in [`public_router`] so a pre-auth client can
+/// still read them (compat probes need version, openapi consumers want
+/// the spec without logging in).
+pub fn protected_router() -> Router<AppState> {
     Router::new()
         .merge(coves::router())
         .merge(waves::router())
@@ -32,6 +54,14 @@ pub fn router() -> Router<AppState> {
         .merge(codex_cards::router())
         .merge(fs::router())
         .merge(settings::router())
+}
+
+/// Public REST surface — endpoints that must remain reachable BEFORE
+/// auth. Today: `/api/version` (frontend compat gate hits this before
+/// it even knows whether it's logged in) and `/api/openapi.json` (build-
+/// time tooling consumes this with no creds).
+pub fn public_router() -> Router<AppState> {
+    Router::new()
         .merge(version::router())
         // OpenAPI document — the source-of-truth for web-calm's generated
         // TypeScript types. No swagger-ui — just the spec, served as JSON
