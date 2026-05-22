@@ -36,10 +36,47 @@ XDG_DIRS := \
   $(HOME)/.local/share/neige-calm/plugins \
   $(HOME)/.config/neige-calm/plugins
 
-BIN := target/release/calm-server
-DAEMON := target/release/calm-session-daemon
-BRIDGE := target/release/neige-codex-bridge
-DIST := web/dist
+# Override to build + serve a different worktree's code without leaving
+# the primary repo. Useful for validating a PR's branch state via docker
+# without polluting the primary working tree. Default = current dir.
+#
+#   make dev                                # build from cwd (default)
+#   make dev WORKTREE=/path/to/agent-XYZ    # build from that worktree
+#
+# Implementation: every source path the build touches is made absolute
+# relative to $(WORKTREE), and the four docker-compose env vars
+# (CALM_BIN / CALM_DAEMON_BIN / CALM_CODEX_BRIDGE_BIN / CALM_WEB_DIST)
+# are exported pointing at $(WORKTREE)'s target/release + web/dist so
+# the container picks up the right binaries.
+#
+# Caveat: the docker stack uses fixed container names
+# (neige-calm-server-1 etc.) and the host port CALM_PORT — running two
+# worktrees' stacks simultaneously will collide. Stop one before starting
+# the other, or override CALM_PORT + COMPOSE_PROJECT_NAME.
+WORKTREE ?= $(CURDIR)
+WORKTREE_INPUT := $(WORKTREE)
+# `override` is required because command-line `WORKTREE=...` assignments
+# would otherwise win over a plain `:=`, leaving WORKTREE un-resolved.
+override WORKTREE := $(realpath $(WORKTREE))
+ifeq ($(WORKTREE),)
+$(error WORKTREE=$(WORKTREE_INPUT) does not resolve to a real path)
+endif
+ifeq ($(wildcard $(WORKTREE)/Cargo.toml),)
+$(error WORKTREE=$(WORKTREE) is not a valid neige-calm checkout (no Cargo.toml))
+endif
+
+BIN    := $(WORKTREE)/target/release/calm-server
+DAEMON := $(WORKTREE)/target/release/calm-session-daemon
+BRIDGE := $(WORKTREE)/target/release/neige-codex-bridge
+DIST   := $(WORKTREE)/web/dist
+
+# Plumb the same paths into docker-compose so the container bind-mounts
+# the right binaries + web bundle. The `${VAR:-default}` form in
+# docker-compose.yml uses these when set, falls back to ./… otherwise.
+export CALM_BIN := $(BIN)
+export CALM_DAEMON_BIN := $(DAEMON)
+export CALM_CODEX_BRIDGE_BIN := $(BRIDGE)
+export CALM_WEB_DIST := $(DIST)
 
 .PHONY: help
 help: ## Show this help.
@@ -47,6 +84,7 @@ help: ## Show this help.
 	  /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 	@echo ""
 	@echo "Host port: $(CALM_PORT) (override: CALM_PORT=18080 make dev)"
+	@echo "Worktree:  $(WORKTREE) (override: WORKTREE=/path/to/other-worktree make dev)"
 
 # ---- build (on host, not in docker) -------------------------------------
 
@@ -56,12 +94,12 @@ build: $(BIN) $(DAEMON) $(BRIDGE) $(DIST) ## Build server, daemon, codex bridge,
 # Single cargo invocation builds all three binaries — cheaper than three
 # separate calls because deps overlap. Touch every output so the rule
 # re-fires only when sources change.
-$(BIN) $(DAEMON) $(BRIDGE) &: $(shell find crates -name '*.rs' -o -name 'Cargo.toml' 2>/dev/null) Cargo.toml Cargo.lock
-	cargo build --release -p calm-server -p calm-session -p calm-codex-bridge --bin calm-server --bin calm-session-daemon --bin neige-codex-bridge
+$(BIN) $(DAEMON) $(BRIDGE) &: $(shell find $(WORKTREE)/crates -name '*.rs' -o -name 'Cargo.toml' 2>/dev/null) $(WORKTREE)/Cargo.toml $(WORKTREE)/Cargo.lock
+	cargo build --manifest-path $(WORKTREE)/Cargo.toml --release -p calm-server -p calm-session -p calm-codex-bridge --bin calm-server --bin calm-session-daemon --bin neige-codex-bridge
 
-$(DIST): $(shell find web/src -type f 2>/dev/null) web/package.json web/vite.config.ts web/index.html
-	@if [ ! -d web/node_modules ]; then (cd web && npm install); fi
-	cd web && npm run build
+$(DIST): $(shell find $(WORKTREE)/web/src -type f 2>/dev/null) $(WORKTREE)/web/package.json $(WORKTREE)/web/vite.config.ts $(WORKTREE)/web/index.html
+	@if [ ! -d $(WORKTREE)/web/node_modules ]; then (cd $(WORKTREE)/web && npm install); fi
+	cd $(WORKTREE)/web && npm run build
 
 # ---- docker lifecycle ---------------------------------------------------
 
@@ -110,7 +148,7 @@ dirs:
 
 .PHONY: clean
 clean: ## Remove build artifacts (target/, web/dist).
-	cargo clean
+	cargo clean --manifest-path $(WORKTREE)/Cargo.toml
 	rm -rf $(DIST)
 
 .PHONY: clean-data

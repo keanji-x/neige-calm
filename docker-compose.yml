@@ -134,7 +134,7 @@ services:
     depends_on:
       - server
     volumes:
-      - ./web/dist:/usr/share/nginx/html/calm:ro
+      - ${CALM_WEB_DIST:-./web/dist}:/usr/share/nginx/html/calm:ro
       - ./docker/nginx.conf:/etc/nginx/conf.d/calm.conf:ro
     ports:
       - "${CALM_PORT:-4040}:8080"
