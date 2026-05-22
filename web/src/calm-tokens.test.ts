@@ -183,6 +183,24 @@ const SEMANTIC_MISC_TOKENS = [
   '--warn-border',
 ] as const;
 
+// Z-index scale (slice 4 of #165). Six semantic stacking tiers declared once
+// in `:root` as bare integer literals — no dark override (z-index is
+// structural, not visual). The tokens establish a SEMANTIC ordering, not value
+// preservation: every component selector reads through these, and stylelint
+// bans raw `z-index: N` literals in component selectors (see
+// `web/.stylelintrc.cjs` — `declaration-property-value-disallowed-list`).
+//
+// The order below is the contract — see Z_INDEX_TOKENS_ORDERED below for the
+// ascending-value invariant.
+const Z_INDEX_TOKENS = [
+  '--z-base',
+  '--z-raised',
+  '--z-sticky',
+  '--z-overlay',
+  '--z-modal',
+  '--z-toast',
+] as const;
+
 // ---------------------------------------------------------------------------
 // Parse helpers
 // ---------------------------------------------------------------------------
@@ -606,6 +624,58 @@ describe('calm.css token graph: semantic misc tokens (#137 slice 3d)', () => {
       });
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// (f3) Z-index scale tokens (slice 4 of #165).
+// ---------------------------------------------------------------------------
+//
+// Three invariants:
+//   1. Each token is declared in `:root` as a bare integer literal (the
+//      scale is value-based; no `var()` chains, no `calc()`).
+//   2. No dark override — z-index is structural, not visual.
+//   3. The values are strictly ascending in the declared order:
+//        --z-base < --z-raised < --z-sticky < --z-overlay < --z-modal < --z-toast
+//      This converts "the ordering is semantic" into a contract, so a
+//      future "let me bump --z-sticky to 50" can't silently invert tiers
+//      without the test failing.
+
+const INT_LITERAL = /^\d+$/;
+
+describe('calm.css token graph: z-index scale tokens (#165 slice 4)', () => {
+  for (const name of Z_INDEX_TOKENS) {
+    it(`${name} is declared in :root as a bare integer literal`, () => {
+      const value = rootDecls.get(name);
+      expect(value, `${name} missing from :root`).toBeDefined();
+      expect(
+        value,
+        `${name} should be a bare integer (the z-scale is value-based, no var()/calc()). Got: ${value}`,
+      ).toMatch(INT_LITERAL);
+    });
+
+    it(`${name} is NOT redeclared in [data-theme="dark"]`, () => {
+      expect(
+        darkDecls.has(name),
+        `${name} is a z-index token; z-index is structural, not visual — no dark override.`,
+      ).toBe(false);
+    });
+  }
+
+  it('values follow strictly ascending order base < raised < sticky < overlay < modal < toast', () => {
+    const values = Z_INDEX_TOKENS.map((name) => {
+      const raw = rootDecls.get(name);
+      expect(raw, `${name} missing from :root`).toBeDefined();
+      return { name, n: Number(raw) };
+    });
+    for (let i = 1; i < values.length; i++) {
+      const prev = values[i - 1];
+      const curr = values[i];
+      expect(
+        curr.n > prev.n,
+        `z-scale must strictly ascend: ${prev.name} (${prev.n}) must be < ${curr.name} (${curr.n})`,
+      ).toBe(true);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -133,6 +133,28 @@
   --overlay-hover-strong: oklch(0% 0 0 / 0.055);
   --overlay-active:       oklch(0% 0 0 / 0.05);
 
+  /* Z-index scale — slice 4 of #165. Six semantic tiers that establish a
+     SEMANTIC stacking order, not value preservation. Component selectors
+     read through these tokens; raw integer z-index in component selectors
+     is banned by stylelint. The tiers (in ascending order) are:
+       --z-base    — default flow content (rarely needed; documents the floor)
+       --z-raised  — close buttons over card content, dropdown menus / popovers,
+                     drag placeholder ghosts, terminal role badges over xterm canvas
+       --z-sticky  — sticky headers, tab bars, mid-state lifted UI (e.g. resizing
+                     grid cells that sit above placeholders but below an actively
+                     dragged card)
+       --z-overlay — surface overlays under modals; floating elements that lift
+                     above sticky layers (e.g. actively dragged grid cells)
+       --z-modal   — modal dialogs and their backdrops
+       --z-toast   — toast / notification banners; always on top
+     No dark-mode override — z-index is structural, not visual. */
+  --z-base:    0;
+  --z-raised:  2;
+  --z-sticky:  4;
+  --z-overlay: 10;
+  --z-modal:   100;
+  --z-toast:   1000;
+
   /* generous shape */
   --r: 14px;
   --shadow: 0 1px 2px rgba(20,30,55,.04), 0 12px 36px rgba(20,30,55,.06);
@@ -1066,7 +1088,7 @@ input, textarea { font: inherit; color: inherit; }
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.12s, background 0.1s, color 0.1s;
-  z-index: 4;
+  z-index: var(--z-raised);
 }
 .card-slot:hover .card-grid-close,
 .card-slot:focus-within .card-grid-close {
@@ -1138,7 +1160,7 @@ input, textarea { font: inherit; color: inherit; }
   box-shadow: var(--shadow);
   padding: 4px 0;
   list-style: none;
-  z-index: 20;
+  z-index: var(--z-raised);
   margin: 0;
 }
 .add-panel-menu-item {
@@ -1165,7 +1187,7 @@ input, textarea { font: inherit; color: inherit; }
 .modal-overlay {
   position: fixed;
   inset: 0;
-  z-index: 1000;
+  z-index: var(--z-modal);
   display: flex; align-items: center; justify-content: center;
   background: var(--overlay-scrim);
   backdrop-filter: blur(4px);
@@ -2648,7 +2670,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   border: 1px dashed var(--accent);
   border-radius: var(--r);
   opacity: 0.7;
-  z-index: 2;
+  z-index: var(--z-raised);
   transition-duration: 100ms;
 }
 [data-theme="dark"] .react-grid-item.react-grid-placeholder {
@@ -2659,7 +2681,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 /* Lift the card while dragging — same shadow grammar as `.attn` and the
    surf terminal, just a touch stronger so the displacement reads. */
 .react-grid-item.react-draggable-dragging {
-  z-index: 10;
+  z-index: var(--z-overlay);
   cursor: grabbing;
   box-shadow: 0 4px 14px rgba(20,30,55,.08), 0 22px 48px rgba(20,30,55,.12);
 }
@@ -2667,7 +2689,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   box-shadow: 0 4px 14px rgba(0,0,0,.4), 0 22px 48px rgba(0,0,0,.55);
 }
 .react-grid-item.resizing {
-  z-index: 5;
+  z-index: var(--z-sticky);
   opacity: 0.92;
 }
 
@@ -2799,7 +2821,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.12s, background 0.1s, color 0.1s;
-  z-index: 4;
+  z-index: var(--z-raised);
 }
 .wave-list-item:hover .card-list-close,
 .wave-list-item:focus-within .card-list-close,
@@ -2924,7 +2946,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   border-radius: 999px;
   pointer-events: none;
   /* z-index 比 xterm 渲染高一点，避免被 canvas 遮 */
-  z-index: 2;
+  z-index: var(--z-raised);
 }
 .xterm-role-owner {
   background: var(--accent-soft);
