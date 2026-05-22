@@ -575,32 +575,35 @@ test.describe('a11y · keyboard-only navigation', () => {
     await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
     const waveUrl = page.url();
 
-    // Add a second card so the reorder test has two list items to swap.
-    // The bootstrap path creates one terminal card; we add a second so
-    // Alt+ArrowDown has a neighbor to swap with. Keyboard-driven (focus
-    // + Enter on the trigger, then Enter on the focused menuitem) to
-    // keep the suite honest about its keyboard-only claim — card
-    // creation isn't the contract under test here, but it's still
-    // reachable from the keyboard and the rest of this test depends on
-    // the menu activating, so we exercise it via key events.
-    const addBtn = page.getByRole('button', { name: /\+\s*add/i });
-    await addBtn.focus();
-    await page.keyboard.press('Enter');
-    const menu = page.getByRole('menu');
-    await expect(menu).toBeVisible();
-    // The Menu primitive moves focus to the first menuitem on open
-    // (`initialIndex: 0`) — see Menu.tsx. Terminal is registered first
-    // in the cards registry (registerBuiltins in cards/builtins/index.ts),
-    // so it's already focused; Enter activates it without an ArrowDown.
-    const terminalItem = page.getByRole('menuitem', { name: /terminal/i }).first();
-    await expect(terminalItem).toBeFocused();
-    await page.keyboard.press('Enter');
-    // Give the new card a moment to land. The replay binary lacks a
-    // calm-session-daemon so the terminal create may surface a console
-    // error, but the kernel Card row is still inserted (the daemon
-    // spawn happens asynchronously after the card lands); the card
-    // body just falls back to its non-live rendering.
-    await page.waitForTimeout(500);
+    // Add two terminal cards so the reorder test has two list items to swap.
+    // Post-#175, the Atlas cove's Today wave is freshly minted by the e2e
+    // helper with zero cards (the default Today PTY now lives in the hidden
+    // system cove, not in user-created coves). We add both cards explicitly
+    // here. Keyboard-driven (focus + Enter on the trigger, then Enter on
+    // the focused menuitem) to keep the suite honest about its keyboard-only
+    // claim — card creation isn't the contract under test here, but it's
+    // still reachable from the keyboard and the rest of this test depends
+    // on the menu activating, so we exercise it via key events.
+    for (let i = 0; i < 2; i++) {
+      const addBtn = page.getByRole('button', { name: /\+\s*add/i });
+      await addBtn.focus();
+      await page.keyboard.press('Enter');
+      const menu = page.getByRole('menu');
+      await expect(menu).toBeVisible();
+      // The Menu primitive moves focus to the first menuitem on open
+      // (`initialIndex: 0`) — see Menu.tsx. Terminal is registered first
+      // in the cards registry (registerBuiltins in cards/builtins/index.ts),
+      // so it's already focused; Enter activates it without an ArrowDown.
+      const terminalItem = page.getByRole('menuitem', { name: /terminal/i }).first();
+      await expect(terminalItem).toBeFocused();
+      await page.keyboard.press('Enter');
+      // Give the new card a moment to land. The replay binary lacks a
+      // calm-session-daemon so the terminal create may surface a console
+      // error, but the kernel Card row is still inserted (the daemon
+      // spawn happens asynchronously after the card lands); the card
+      // body just falls back to its non-live rendering.
+      await page.waitForTimeout(500);
+    }
 
     // The toggle is a role="switch" with an accessible name like
     // "Switch wave to list view" (default state = grid).
