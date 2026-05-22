@@ -89,6 +89,21 @@ const DIFF_COLOR_TOKENS = [
   '--diff-rm-text',
 ] as const;
 
+// Overlay tokens (slice 3a of #137): transparent hover/active overlays.
+// 4-tier vocabulary that replaced ~42 inline `oklch(0% 0 0 / 0.0X)` /
+// `oklch(100% 0 0 / 0.0X)` literals scattered across hover and selected
+// selectors. Like positional + concrete surface tokens they carry oklch
+// literals with light + dark parity — the dark literal varies (it
+// lightens against the dark background) but both sides are concrete
+// oklch, not aliases. Migration was intentionally lossy; the rounding
+// policy lives in #137 (slice 3a body).
+const OVERLAY_TOKENS = [
+  '--overlay-hover-faint',
+  '--overlay-hover',
+  '--overlay-hover-strong',
+  '--overlay-active',
+] as const;
+
 // Alias tokens: `var(--other)` references declared once in `:root`. They
 // MUST NOT have a dark override — the underlying positional token already
 // swaps, and a dark override would just re-pin the alias to a different
@@ -279,7 +294,6 @@ describe('calm.css token graph: concrete surface tokens', () => {
   }
 });
 
-// ---------------------------------------------------------------------------
 // (c2) Prose / code surface tokens (slice 3c of #137): same shape contract
 // as CONCRETE_SURFACE_TOKENS — oklch literal in both blocks, theme-varying.
 // ---------------------------------------------------------------------------
@@ -310,6 +324,37 @@ describe('calm.css token graph: prose / code surface tokens', () => {
 
 describe('calm.css token graph: diff color tokens', () => {
   for (const name of DIFF_COLOR_TOKENS) {
+    it(`${name} has matching oklch() literals in :root and dark`, () => {
+      const light = rootDecls.get(name);
+      const dark = darkDecls.get(name);
+      expect(light, `${name} missing from :root`).toBeDefined();
+      expect(dark, `${name} missing from [data-theme="dark"]`).toBeDefined();
+      expect(
+        light,
+        `${name} light value should be an oklch() literal, got: ${light}`,
+      ).toMatch(OKLCH_LITERAL);
+      expect(
+        dark,
+        `${name} dark value should be an oklch() literal (not a var alias), got: ${dark}`,
+      ).toMatch(OKLCH_LITERAL);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// (c′) Overlay tokens have light + dark parity, both as oklch() literals.
+// ---------------------------------------------------------------------------
+//
+// Same contract as concrete surface tokens — declared in both `:root` and
+// `[data-theme="dark"]`, with concrete oklch values on each side. The light
+// literal uses `oklch(0% 0 0 / 0.0X)` (black at low alpha for cold paper);
+// the dark literal uses `oklch(100% 0 0 / 0.0X)` (white at low alpha for
+// warm graphite). We don't assert the inversion in regex form — that would
+// over-fit — but the structural shape (both are oklch literals) is the
+// gate that catches "oh I aliased it to a var() in dark" regressions.
+
+describe('calm.css token graph: overlay tokens', () => {
+  for (const name of OVERLAY_TOKENS) {
     it(`${name} has matching oklch() literals in :root and dark`, () => {
       const light = rootDecls.get(name);
       const dark = darkDecls.get(name);
