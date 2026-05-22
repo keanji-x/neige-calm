@@ -170,9 +170,20 @@
           "coves"
         ],
         "operationId": "list_coves",
+        "parameters": [
+          {
+            "name": "include_system",
+            "in": "query",
+            "description": "When true, also include `kind='system'` coves in the response.\nDefault false — the sidebar / Today UI consume the filtered list\nand never need the system cove. Documented opt-in for debug surfaces\nand integration tests.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
         "responses": {
           "200": {
-            "description": "List all coves",
+            "description": "List all coves (filtered to `kind='user'` unless `include_system=true` is set)",
             "content": {
               "application/json": {
                 "schema": {
@@ -214,6 +225,48 @@
         "responses": {
           "201": {
             "description": "Cove created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Cove"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/coves/system": {
+      "post": {
+        "tags": [
+          "coves"
+        ],
+        "summary": "Issue #175 — idempotent upsert for the singleton system cove that\nhosts the default Today terminal's wave + card. Returns 200 with the\nexisting row when one is present; otherwise mints a new row and\nreturns 201. The DB-level partial unique index on\n`coves(kind) WHERE kind = 'system'` enforces the at-most-one\ninvariant as a backstop, so two tabs racing this endpoint can both\nsafely call it: the loser of the write race re-reads on retry.",
+        "description": "The endpoint exists so the frontend's `useTodayTerminal` hook can\nbootstrap a default terminal without exposing the underlying system\ncove to the regular `POST /api/coves` surface (which the sidebar\n\"+ New cove\" affordance consumes and which would otherwise need a\nreserved-name policy).",
+        "operationId": "get_or_create_system_cove",
+        "responses": {
+          "200": {
+            "description": "System cove already existed; returned the existing row",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Cove"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "System cove minted",
             "content": {
               "application/json": {
                 "schema": {
@@ -1936,6 +1989,10 @@
           "id": {
             "type": "string"
           },
+          "kind": {
+            "$ref": "#/components/schemas/CoveKind",
+            "description": "Issue #175 — `User` for sidebar-visible coves, `System` for the\ninternal singleton that hosts the default Today terminal's wave.\nMirror of `CardRole` precedent on `Card`: persisted at storage\ntime via DB DEFAULT, never accepted on `POST /api/coves` (which\nhas no `kind` field — `NewCove` deliberately omits it).\n\n`#[serde(default)]` so wire payloads emitted before #175 landed\n(event-log replay fixtures, old test seeds) parse as `User`\nwithout forcing a fixture rewrite — matches the DB DEFAULT in\nmigration 0009."
+          },
           "name": {
             "type": "string"
           },
@@ -1948,6 +2005,14 @@
             "format": "int64"
           }
         }
+      },
+      "CoveKind": {
+        "type": "string",
+        "description": "Issue #175 — visibility / ownership gate persisted on each cove.\n\nThe kind decides whether the row participates in the user-visible\nworkspace surface (sidebar nav, default `GET /api/coves`) or is an\ninternal kernel-owned entity hidden from the regular UI.\n\n  * [`CoveKind::User`] is the default for every existing cove and\n    every cove minted via `POST /api/coves`. There is no\n    authorization difference from the pre-#175 product — these are\n    the only coves the user ever sees in the sidebar.\n  * [`CoveKind::System`] is a singleton (DB-enforced via a partial\n    unique index in migration 0009) hosting the default Today\n    terminal's wave + card. Created via `cove_create_system_tx`,\n    reachable via the idempotent `POST /api/coves/system` upsert.\n    `GET /api/coves` filters these out by default — opt-in via\n    `?include_system=true`. The user never interacts with this\n    cove directly; it's storage scaffolding, not UI.\n\nPersisted as a lowercase string in `coves.kind` (migration 0009).\nThe serde + sqlx `rename_all = \"lowercase\"` keeps the wire / storage\nshape stable; ts-rs exports the matching TS union\n(`\"user\" | \"system\"`) into `web/src/api/generated-events.ts` so the\nfrontend can validate against it. UI types intentionally don't\nsurface `kind` — the server's default filter already hides system\ncoves, so a one-line `.filter(c => c.kind === 'user')` in CalmApp /\nrouter belt-and-suspenders is the only frontend consumer.",
+        "enum": [
+          "user",
+          "system"
+        ]
       },
       "CovePatch": {
         "type": "object",

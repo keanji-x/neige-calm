@@ -25,9 +25,10 @@ describe('wireEventSchema', () => {
       ev: 'cove.updated',
       data: {
         id: 'cove_1',
-        name: 'Scratch',
+        name: 'Atlas',
         color: '#abc',
         sort: 0,
+        kind: 'user',
         created_at: 1000,
         updated_at: 2000,
       },
@@ -36,7 +37,29 @@ describe('wireEventSchema', () => {
     expect(parsed.ev).toBe('cove.updated');
     if (parsed.ev === 'cove.updated') {
       expect(parsed.data.id).toBe('cove_1');
-      expect(parsed.data.name).toBe('Scratch');
+      expect(parsed.data.name).toBe('Atlas');
+      expect(parsed.data.kind).toBe('user');
+    }
+  });
+
+  it('defaults cove.updated kind to "user" when absent (legacy wire payload)', () => {
+    // Issue #175 — `coveKindSchema` carries `.default('user')` so pre-#175
+    // wire payloads (event-log replay, legacy fixtures) parse without
+    // requiring a fixture migration.
+    const payload = {
+      ev: 'cove.updated',
+      data: {
+        id: 'cove_legacy',
+        name: 'Atlas',
+        color: '#abc',
+        sort: 0,
+        created_at: 1000,
+        updated_at: 2000,
+      },
+    };
+    const parsed = wireEventSchema.parse(payload);
+    if (parsed.ev === 'cove.updated') {
+      expect(parsed.data.kind).toBe('user');
     }
   });
 
@@ -234,10 +257,27 @@ describe('entity sub-schemas', () => {
       name: 'n',
       color: '#fff',
       sort: 0,
+      kind: 'user' as const,
       created_at: 1,
       updated_at: 2,
     };
     expect(coveSchema.parse(c)).toEqual(c);
+  });
+
+  it('coveSchema fills kind="user" when absent (legacy fixture)', () => {
+    // Issue #175 — same default story as the event-schema test above:
+    // pre-#175 wire payloads must round-trip without forcing a fixture
+    // migration on every recorded session.
+    const c = {
+      id: 'c1',
+      name: 'n',
+      color: '#fff',
+      sort: 0,
+      created_at: 1,
+      updated_at: 2,
+    };
+    const parsed = coveSchema.parse(c);
+    expect(parsed.kind).toBe('user');
   });
 
   it('waveSchema accepts archived_at: null', () => {

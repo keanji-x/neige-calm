@@ -57,6 +57,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/coves/system": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Issue #175 — idempotent upsert for the singleton system cove that
+         *     hosts the default Today terminal's wave + card. Returns 200 with the
+         *     existing row when one is present; otherwise mints a new row and
+         *     returns 201. The DB-level partial unique index on
+         *     `coves(kind) WHERE kind = 'system'` enforces the at-most-one
+         *     invariant as a backstop, so two tabs racing this endpoint can both
+         *     safely call it: the loser of the write race re-reads on retry.
+         * @description The endpoint exists so the frontend's `useTodayTerminal` hook can
+         *     bootstrap a default terminal without exposing the underlying system
+         *     cove to the regular `POST /api/coves` surface (which the sidebar
+         *     "+ New cove" affordance consumes and which would otherwise need a
+         *     reserved-name policy).
+         */
+        post: operations["get_or_create_system_cove"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/coves/{cove_id}/waves": {
         parameters: {
             query?: never;
@@ -477,12 +507,55 @@ export interface components {
             /** Format: int64 */
             created_at: number;
             id: string;
+            /**
+             * @description Issue #175 — `User` for sidebar-visible coves, `System` for the
+             *     internal singleton that hosts the default Today terminal's wave.
+             *     Mirror of `CardRole` precedent on `Card`: persisted at storage
+             *     time via DB DEFAULT, never accepted on `POST /api/coves` (which
+             *     has no `kind` field — `NewCove` deliberately omits it).
+             *
+             *     `#[serde(default)]` so wire payloads emitted before #175 landed
+             *     (event-log replay fixtures, old test seeds) parse as `User`
+             *     without forcing a fixture rewrite — matches the DB DEFAULT in
+             *     migration 0009.
+             */
+            kind?: components["schemas"]["CoveKind"];
             name: string;
             /** Format: double */
             sort: number;
             /** Format: int64 */
             updated_at: number;
         };
+        /**
+         * @description Issue #175 — visibility / ownership gate persisted on each cove.
+         *
+         *     The kind decides whether the row participates in the user-visible
+         *     workspace surface (sidebar nav, default `GET /api/coves`) or is an
+         *     internal kernel-owned entity hidden from the regular UI.
+         *
+         *       * [`CoveKind::User`] is the default for every existing cove and
+         *         every cove minted via `POST /api/coves`. There is no
+         *         authorization difference from the pre-#175 product — these are
+         *         the only coves the user ever sees in the sidebar.
+         *       * [`CoveKind::System`] is a singleton (DB-enforced via a partial
+         *         unique index in migration 0009) hosting the default Today
+         *         terminal's wave + card. Created via `cove_create_system_tx`,
+         *         reachable via the idempotent `POST /api/coves/system` upsert.
+         *         `GET /api/coves` filters these out by default — opt-in via
+         *         `?include_system=true`. The user never interacts with this
+         *         cove directly; it's storage scaffolding, not UI.
+         *
+         *     Persisted as a lowercase string in `coves.kind` (migration 0009).
+         *     The serde + sqlx `rename_all = "lowercase"` keeps the wire / storage
+         *     shape stable; ts-rs exports the matching TS union
+         *     (`"user" | "system"`) into `web/src/api/generated-events.ts` so the
+         *     frontend can validate against it. UI types intentionally don't
+         *     surface `kind` — the server's default filter already hides system
+         *     coves, so a one-line `.filter(c => c.kind === 'user')` in CalmApp /
+         *     router belt-and-suspenders is the only frontend consumer.
+         * @enum {string}
+         */
+        CoveKind: "user" | "system";
         CovePatch: {
             color?: string | null;
             name?: string | null;
@@ -1023,14 +1096,22 @@ export interface operations {
     };
     list_coves: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description When true, also include `kind='system'` coves in the response.
+                 *     Default false — the sidebar / Today UI consume the filtered list
+                 *     and never need the system cove. Documented opt-in for debug surfaces
+                 *     and integration tests.
+                 */
+                include_system?: boolean;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description List all coves */
+            /** @description List all coves (filtered to `kind='user'` unless `include_system=true` is set) */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1064,6 +1145,44 @@ export interface operations {
         };
         responses: {
             /** @description Cove created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Cove"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_or_create_system_cove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description System cove already existed; returned the existing row */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Cove"];
+                };
+            };
+            /** @description System cove minted */
             201: {
                 headers: {
                     [name: string]: unknown;

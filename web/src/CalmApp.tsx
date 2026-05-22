@@ -64,7 +64,16 @@ export function CalmApp() {
   // `kernelCoves` (and any downstream memo keyed on it) change identity
   // every render. The eslint-plugin-react-hooks `exhaustive-deps` check
   // explicitly flags this pattern.
-  const kernelCoves = useMemo(() => covesQ.data ?? [], [covesQ.data]);
+  //
+  // Belt-and-suspenders for issue #175: the server already filters
+  // `kind='system'` out of `GET /api/coves` by default, but we re-filter
+  // here so a future regression on the server side (or a debug build
+  // that opts into `?include_system=true`) never accidentally surfaces
+  // the system cove in the sidebar.
+  const kernelCoves = useMemo(
+    () => (covesQ.data ?? []).filter((c) => c.kind === 'user'),
+    [covesQ.data],
+  );
 
   const waveQueries = useQueries({
     queries: kernelCoves.map((c) => ({

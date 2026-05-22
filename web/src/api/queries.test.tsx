@@ -95,9 +95,10 @@ describe('useCovesQuery', () => {
     const fakeCoves = [
       {
         id: 'c1',
-        name: 'Scratch',
+        name: 'Atlas',
         color: '#abc',
         sort: 0,
+        kind: 'user' as const,
         created_at: 1,
         updated_at: 2,
       },

@@ -67,6 +67,21 @@ export const listCoves = () =>
   request<KernelCove[]>('GET', '/api/coves');
 export const createCove = (b: NewCoveBody) =>
   request<KernelCove>('POST', '/api/coves', b);
+
+/**
+ * Issue #175 — idempotent upsert for the singleton system cove that hosts
+ * the default Today terminal's wave + card. Returns the existing row when
+ * one is present (200), otherwise mints a fresh row (201). The
+ * `useTodayTerminal` hook calls this on bootstrap so the user's sidebar
+ * never sees the underlying scaffolding cove.
+ *
+ * The server-side `POST /api/coves/system` handler enforces the
+ * at-most-one invariant via a partial unique index on
+ * `coves(kind) WHERE kind='system'` (migration 0009) — two tabs racing
+ * this call are both safe.
+ */
+export const getOrCreateSystemCove = () =>
+  request<KernelCove>('POST', '/api/coves/system');
 export const updateCove = (id: string, b: CovePatchBody) =>
   request<KernelCove>('PATCH', `/api/coves/${encodeURIComponent(id)}`, b);
 export const deleteCove = (id: string) =>

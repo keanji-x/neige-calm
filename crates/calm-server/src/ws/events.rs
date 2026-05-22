@@ -409,7 +409,7 @@ fn render_envelope(env: &BroadcastEnvelope) -> Result<String, serde_json::Error>
 mod tests {
     use super::*;
     use crate::event::Event;
-    use crate::model::Cove;
+    use crate::model::{Cove, CoveKind};
 
     fn sample_cove() -> Cove {
         Cove {
@@ -417,6 +417,7 @@ mod tests {
             name: "n".into(),
             color: "#fff".into(),
             sort: 0.0,
+            kind: CoveKind::User,
             created_at: 0,
             updated_at: 0,
         }

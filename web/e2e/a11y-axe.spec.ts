@@ -44,16 +44,19 @@ const THEMES = ['light', 'dark'] as const;
 type Theme = (typeof THEMES)[number];
 
 // Wait for the auto-bootstrap to land. `useTodayTerminal` runs on first
-// paint of the Today page and creates "Scratch / Today / <terminal>"
-// when the kernel has no state — which is the replay binary's starting
-// position (events seeded, entity tables empty). The Sidebar's "Scratch"
-// button is the stable end-state of bootstrap; we anchor on it because
-// the trace buffer doesn't backfill events that fired before the WS
-// connect, so we can't anchor on the fixture's `overlay.set` directly.
+// paint of the Today page and creates a hidden system cove + "Today"
+// wave + terminal card (issue #175 — the system cove is no longer
+// visible in the sidebar). The stable end-state of bootstrap is the
+// `calm.todayCardId` entry in localStorage; we anchor on that since
+// the system cove now leaves no sidebar trace.
 async function waitForBootstrap(page: Page): Promise<void> {
-  await expect(
-    page.locator('aside.side').getByRole('button', { name: /scratch/i }),
-  ).toBeVisible({ timeout: 15_000 });
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() => window.localStorage.getItem('calm.todayCardId')),
+      { timeout: 15_000 },
+    )
+    .not.toBeNull();
 }
 
 // Flip the app into dark mode for the parallel dark-theme scans. Theme
@@ -142,37 +145,36 @@ function formatViolations(
     .join('\n');
 }
 
-// Resolve the auto-created Scratch cove + Today wave ids from the live
-// DOM rather than hard-coding them — they're kernel-generated UUIDs that
-// vary per run. We click sidebar / wave-row affordances directly here
-// (not keyboard-only) because this helper is just plumbing for the axe
-// scans; the keyboard-only contract lives in `a11y-keyboard.spec.ts`.
-//
-// The locator scoping matters: the Sidebar has its own "Today" button
-// (the nav-item back to /), and the cove page renders a WaveRow whose
-// title is also "Today" (the auto-bootstrapped wave). With the WaveRow
-// real-button refactor (#56/#60 follow-up) all three are now real
-// <button>s sharing the name "Today" — so we scope the wave row by the
-// `<section aria-label="Waves">` landmark that CovePage wraps around
-// the wave lists. See §2.2 of `docs/a11y-contract.md`.
+// Mint a fresh user cove + wave for the axe scans to operate on. After
+// issue #175 the kernel's default Today terminal lives in a hidden
+// system cove that the sidebar can't reach, so we always create our
+// own user cove for these tests. We click sidebar / wave-row
+// affordances directly here (not keyboard-only) because this helper is
+// just plumbing for the axe scans; the keyboard-only contract lives in
+// `a11y-keyboard.spec.ts`.
 async function ids(page: Page): Promise<{ coveId: string; waveId: string }> {
   await page.goto('/?trace=1');
   await waitForBootstrap(page);
-  await page
-    .locator('aside.side')
-    .getByRole('button', { name: /scratch/i })
-    .click();
+  // Mint a user cove via the sidebar "+ New cove" affordance.
+  const sidebarCoves = page.getByRole('navigation', { name: 'Coves' });
+  const coveName = `axe cove ${Date.now()}`;
+  await sidebarCoves.getByRole('button', { name: /new cove/i }).click();
+  const nameInput = sidebarCoves.getByPlaceholder(/name/i);
+  await expect(nameInput).toBeVisible();
+  await nameInput.fill(coveName);
+  await nameInput.press('Enter');
+  const coveBtn = sidebarCoves.getByRole('button', { name: new RegExp(coveName, 'i') });
+  await expect(coveBtn).toBeVisible();
+  await coveBtn.click();
   await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
   const coveId = new URL(page.url()).pathname.split('/').pop()!;
-  // WaveRow is now a real <button> (see WaveRow.tsx). The "Waves"
-  // region landmark on CovePage lets us scope past the colliding
-  // sidebar Today nav button and the Crumbs Today link without
-  // resorting to DOM-tag selectors.
-  await page
-    .getByRole('region', { name: 'Waves' })
-    .getByRole('button', { name: /today/i })
-    .first()
-    .click();
+  // Create a wave inside the new cove.
+  const waveTitle = `axe wave ${Date.now()}`;
+  await page.getByRole('button', { name: /new wave/i }).click();
+  const titleInput = page.getByPlaceholder(/wave title/i);
+  await expect(titleInput).toBeVisible();
+  await titleInput.fill(waveTitle);
+  await titleInput.press('Enter');
   await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
   const waveId = new URL(page.url()).pathname.split('/').pop()!;
   return { coveId, waveId };
@@ -213,9 +215,11 @@ test.describe('a11y · axe', () => {
         await page.goto(`/calm/cove/${coveId}?trace=1`);
         await waitForBootstrap(page);
         // CovePage paints its header (h1, eyebrow, …) synchronously once
-        // covesQuery resolves. Wait for the title before scanning so we
-        // don't catch a half-rendered skeleton.
-        await expect(page.getByRole('heading', { name: /scratch/i })).toBeVisible();
+        // covesQuery resolves. Wait for the H1 to appear before scanning
+        // so we don't catch a half-rendered skeleton. We anchor on the
+        // role rather than the cove name (which now varies per run since
+        // we mint our own in `ids()`).
+        await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
         await applyTheme(page, theme);
         const { violations } = await axe(page).analyze();
         expect(violations, formatViolations(violations)).toEqual([]);

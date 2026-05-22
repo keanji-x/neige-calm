@@ -68,6 +68,7 @@ function seedCove(client: QueryClient, name: string): KernelCove {
     name,
     color: '#abc',
     sort: 0,
+    kind: 'user',
     created_at: 1,
     updated_at: 2,
   };

@@ -190,7 +190,7 @@ pub fn enforce_role(
 mod tests {
     use super::*;
     use crate::ids::{CoveId, WaveId};
-    use crate::model::{Cove, Wave};
+    use crate::model::{Cove, CoveKind, Wave};
 
     fn wave(id: &str, cove: &str) -> Wave {
         Wave {
@@ -229,6 +229,7 @@ mod tests {
             name: "n".into(),
             color: "#fff".into(),
             sort: 1.0,
+            kind: CoveKind::User,
             created_at: 0,
             updated_at: 0,
         })

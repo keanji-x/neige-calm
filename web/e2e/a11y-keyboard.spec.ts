@@ -21,16 +21,19 @@
 // with a fixture preloaded. The replay binary seeds the events table but
 // does NOT project them onto the entity tables (see
 // `crates/calm-server/src/replay.rs`); that's intentional, so the entity
-// tables start empty. The web app's Today page then auto-creates a
-// "Scratch" cove + "Today" wave + terminal card via `useTodayTerminal` on
-// first paint, and that's the state the tests below operate on.
+// tables start empty. Issue #175 — the web app's Today page then
+// auto-creates a hidden **system** cove + "Today" wave + terminal card
+// via `useTodayTerminal` on first paint; that cove is filtered out of
+// `GET /api/coves` by default, so the sidebar never renders it. Each
+// `beforeEach` below mints a `Scratch` **user** cove via the REST API
+// so the keyboard tests have a stable sidebar anchor to navigate from.
 //
 // Where it matters, we pair the UI assertion with an event-trace
 // assertion (`getEventTrace` / `waitForEvent` from `helpers/trace.ts`) so
 // the test proves both halves of the role/name + event contract from #56.
 
 import { test, expect, type Page } from '@playwright/test';
-import { resetReplayServer } from './helpers/reset';
+import { createUserCove, createWaveInCove, resetReplayServer } from './helpers/reset';
 import { clearEventTrace, getEventTrace, waitForEvent } from './helpers/trace';
 
 interface FocusInfo {
@@ -136,11 +139,12 @@ async function tabUntil(
 }
 
 // Wait for the auto-bootstrap to land. `useTodayTerminal` runs on first
-// paint of the Today page and creates "Scratch / Today / <terminal>" if
-// the kernel has no state — which is the replay binary's starting
-// position (events seeded, entity tables empty). We anchor on the
-// sidebar's "Scratch" cove button becoming visible because that's the
-// stable end-state regardless of which background queries settle first.
+// paint of the Today page and creates a hidden system cove + "Today"
+// wave + terminal card (issue #175 — the system cove is not visible
+// in the sidebar). The `beforeEach` below also mints a `Scratch` user
+// cove via REST so the keyboard tests have a stable sidebar anchor;
+// this helper waits for that user cove to render (the WS feed
+// invalidates the coves query and the live render picks it up).
 async function waitForBootstrap(page: Page): Promise<void> {
   await expect(
     page.locator('aside.side').getByRole('button', { name: /scratch/i }),
@@ -159,6 +163,18 @@ test.describe('a11y · keyboard-only navigation', () => {
     // Without this hook, accumulating cove/wave/card mutations across
     // tests cause flakes — see issue #56 followup.
     await resetReplayServer(request);
+    // Issue #175 — the kernel hides the system cove that hosts the
+    // default Today terminal from the sidebar. Mint a user-visible
+    // `Scratch` cove + `Today` wave via the REST API so the keyboard
+    // tests below have a stable sidebar anchor (they all
+    // `tabUntil(... /scratch/i)`) and a Today wave under it (the
+    // WaveRow tests anchor on /today/i inside the Waves region). The
+    // replay server's `POST /api/coves` + `POST /api/waves` are the
+    // same handlers production uses; the live frontend invalidates the
+    // coves / waves queries on the resulting WS events and renders the
+    // new rows without a reload.
+    const scratch = await createUserCove(request, 'Scratch');
+    await createWaveInCove(request, scratch.id, 'Today');
     // Every spec opens the app with the trace ring buffer enabled so that
     // event assertions can read `window.__neigeEvents__`. baseURL is set
     // by the `a11y` project, so we just append the param.

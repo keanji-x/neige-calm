@@ -1,26 +1,32 @@
 // E2E: create a wave end-to-end and land on its detail page.
 //
-// Extends `golden-path.spec.ts` (sidebar → cove navigation) one step
-// further: inside the Scratch cove, click the "+ New wave" compose bar,
-// type a title, press Enter, then assert the URL transitions to
-// `/calm/wave/<id>` and the wave page renders.
+// After issue #175 there is no seeded `Scratch` cove in the sidebar.
+// We mint our own user cove first via the "+ New cove" affordance,
+// then navigate into it and create a wave there.
 //
-// Prereq (same as golden-path): `make dev` must be serving the docker
-// stack at http://localhost:4040 with the default seed. We use a unique
-// title per run (`E2E wave <timestamp>`) so re-runs don't collide with
-// existing waves left over from prior failed runs.
+// Prereq: `make dev` must be serving the docker stack at
+// http://localhost:4040 with the default seed. We use unique titles per
+// run (`E2E … <timestamp>`) so re-runs don't collide with leftovers.
 
 import { test, expect } from '@playwright/test';
 
-test('creates a new wave from the cove page and navigates to it', async ({ page }) => {
+test('creates a new wave from a fresh cove and navigates to it', async ({ page }) => {
   await page.goto('/calm/');
 
-  // Step 1 — sidebar → Scratch cove. Same anchor logic as golden-path.
-  // Accessible name is the cove name (optionally with " <N>" wave-count
-  // suffix) — see Sidebar.tsx:62-77.
-  const scratch = page.getByRole('button', { name: /scratch/i });
-  await expect(scratch).toBeVisible();
-  await scratch.click();
+  // Step 1 — sidebar → mint a new user cove (issue #175: the system
+  // cove that hosts the default Today terminal is hidden from the
+  // sidebar; we always start by creating our own cove for the test).
+  const sidebarCoves = page.getByRole('navigation', { name: 'Coves' });
+  const coveName = `E2E cove ${Date.now()}`;
+  await sidebarCoves.getByRole('button', { name: /new cove/i }).click();
+  const nameInput = sidebarCoves.getByPlaceholder(/name/i);
+  await expect(nameInput).toBeVisible();
+  await nameInput.fill(coveName);
+  await nameInput.press('Enter');
+
+  const coveBtn = sidebarCoves.getByRole('button', { name: new RegExp(coveName, 'i') });
+  await expect(coveBtn).toBeVisible();
+  await coveBtn.click();
   await expect(page).toHaveURL(/\/calm\/cove\/[^/]+$/);
 
   // Step 2 — open the "+ New wave" inline compose bar. The CTA is the

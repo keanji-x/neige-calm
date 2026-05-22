@@ -4,17 +4,18 @@
 //   1. Read `calm.todayCardId` from localStorage.
 //   2. If present, GET /api/cards/:id/terminal to validate the card still
 //      has a terminal row. Returns `{cardId, terminalId}` on success.
-//   3. On miss / 404 / network fail: bootstrap a fresh one inside a hidden
-//      "Scratch" cove + "Today" wave (lazily created if absent), then store
-//      the new cardId.
+//   3. On miss / 404 / network fail: bootstrap a fresh one inside the
+//      kernel-owned **system cove** (issue #175 — hidden from the
+//      sidebar, lookup via `POST /api/coves/system`), hosting a single
+//      internal "Today" wave + terminal card.
 //
 // Browser-scoped (not per-user) by design — auth and per-user state come
 // with M3. Clearing site data costs you the binding; the underlying
-// Terminal row stays in the Scratch cove until you delete the card.
+// Terminal row stays in the system cove until you delete the card.
 //
 // This hook is the one place in the app that performs an imperative
 // bootstrap sequence rather than a single mutation. We could decompose
-// it into `useCreateCoveMutation` etc., but the "ensureScratchCove → ensure
+// it into `useCreateCoveMutation` etc., but the "ensureSystemCove → ensure
 // TodayWave → ensureTerminalCard" chain is read-then-write three times
 // over, and modeling it as a single async resolver keeps the idempotency
 // invariants in one place. After mutating, we invalidate the affected
@@ -27,8 +28,11 @@ import * as api from '../api/calm';
 import { queryKeys } from '../api/queries';
 
 const STORAGE_KEY = 'calm.todayCardId';
-const SCRATCH_COVE_NAME = 'Scratch';
-const SCRATCH_COVE_COLOR = '#6a8';
+// Internal wave title inside the system cove. The user never sees this —
+// `GET /api/coves` filters the system cove out by default (kind='system'),
+// so the only consumer is this hook's `ensureTodayWave` lookup. The label
+// can stay human-readable for debugging without colliding with anything
+// the user names a wave (different cove, no name collision possible).
 const TODAY_WAVE_TITLE = 'Today';
 
 export interface TodayTerminal {
@@ -77,13 +81,18 @@ export function useTodayTerminal(): UseTodayTerminalResult {
       }
 
       // 2. Bootstrap path. Reuse existing infra where possible:
-      //    same Scratch cove, same Today wave, same first terminal card
-      //    (across browsers / cleared-storage cycles) so the kernel doesn't
+      //    same system cove (singleton enforced by the kernel — issue
+      //    #175), same Today wave, same first terminal card (across
+      //    browsers / cleared-storage cycles) so the kernel doesn't
       //    accumulate orphan cards.
-      const { cove, created: coveCreated } = await ensureScratchCove();
-      if (coveCreated) {
-        void qc.invalidateQueries({ queryKey: queryKeys.coves() });
-      }
+      //
+      //    Per #175 we cheaply invalidate the coves query unconditionally
+      //    rather than tracking a "created" flag — the system cove is
+      //    filtered out of the user-facing list by default, so the
+      //    invalidation is a no-op cache refresh in the common case and
+      //    not worth the round-trip parsing to gate.
+      const cove = await api.getOrCreateSystemCove();
+      void qc.invalidateQueries({ queryKey: queryKeys.coves() });
       const { wave, created: waveCreated } = await ensureTodayWave(cove.id);
       if (waveCreated) {
         void qc.invalidateQueries({ queryKey: queryKeys.wavesInCove(cove.id) });
@@ -142,17 +151,14 @@ export function useTodayTerminal(): UseTodayTerminalResult {
 
 // ---------------------------------------------------------------------------
 
-async function ensureScratchCove() {
-  const coves = await api.listCoves();
-  const existing = coves.find((c) => c.name === SCRATCH_COVE_NAME);
-  if (existing) return { cove: existing, created: false };
-  const cove = await api.createCove({
-    name: SCRATCH_COVE_NAME,
-    color: SCRATCH_COVE_COLOR,
-  });
-  return { cove, created: true };
-}
-
+/**
+ * Look up the single "Today" wave inside the kernel-owned system cove,
+ * minting it if absent. Identifying the wave by `title === 'Today'`
+ * inside the system cove is safe because the user can't reach this cove
+ * — `GET /api/coves` filters it out by default (issue #175) and the
+ * sidebar's "+ New wave" affordance always targets a user-visible cove.
+ * No collision risk with whatever a user names their own waves.
+ */
 async function ensureTodayWave(coveId: string) {
   const waves = await api.wavesInCove(coveId);
   const existing = waves.find((w) => w.title === TODAY_WAVE_TITLE);

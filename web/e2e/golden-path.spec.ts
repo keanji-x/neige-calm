@@ -1,14 +1,17 @@
-// Golden-path e2e: prove that the app loads, the sidebar renders the
-// seeded Scratch cove, and clicking it changes the route to `/cove/$id`.
+// Golden-path e2e: prove the app loads, the Today route bootstraps a
+// default terminal, and the user can create + navigate into their own
+// cove from the sidebar.
 //
 // Prereq: `make dev` (or any equivalent) must be serving the full stack
-// at http://localhost:4040. The docker MockRepo seeds a "Scratch" cove
-// by default — we anchor on its name rather than DOM index so future
-// seed reorderings don't flake this test.
+// at http://localhost:4040. Issue #175 — there is no longer a seeded
+// `Scratch` cove visible in the sidebar; the kernel mints a hidden
+// system cove behind the scenes for the default Today terminal, and
+// `GET /api/coves` filters it out of the sidebar surface. We mint our
+// own user-visible cove here and navigate into it.
 
 import { test, expect } from '@playwright/test';
 
-test('loads the calm shell and navigates into the Scratch cove', async ({ page }) => {
+test('loads the calm shell, bootstraps Today, then navigates into a new cove', async ({ page }) => {
   await page.goto('/calm/');
 
   // The sidebar `<aside class="side">` is the first thing the shell paints.
@@ -25,17 +28,46 @@ test('loads the calm shell and navigates into the Scratch cove', async ({ page }
       .getByRole('button', { name: 'Today' }),
   ).toBeVisible();
 
-  // Find the seeded "Scratch" cove row in the sidebar and click it.
-  // The Sidebar button's accessible name is the cove name (plus an
-  // optional " <N>" wave-count suffix when waves exist) — see
-  // Sidebar.tsx:62-77. A regex tolerates the suffix.
-  const scratch = page.getByRole('button', { name: /scratch/i });
-  await expect(scratch).toBeVisible();
-  await scratch.click();
+  // Bootstrap anchor for issue #175: after the Today page paints,
+  // `useTodayTerminal` writes the resolved card id into localStorage.
+  // Wait for that to land — it's the signal that the system cove +
+  // wave + terminal card all exist, even though none of them shows up
+  // in the sidebar surface.
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() => window.localStorage.getItem('calm.todayCardId')),
+      { timeout: 15_000 },
+    )
+    .not.toBeNull();
 
-  // URL changes to /calm/cove/<id>. The router declares basepath '/calm'
-  // (matching Vite's base) so internal navigation produces the prefixed
-  // URL. We don't pin the id — it depends on seed timestamp / repo.
+  // Cleanly demonstrate the system cove is NOT in the sidebar: there
+  // should be no cove-nav button before we mint our own user cove.
+  // (The "New cove" affordance carries label "New cove" — case-sensitive
+  // anchor avoids matching that button.)
+  const sidebarNav = page.getByRole('navigation', { name: 'Coves' });
+  // Locate cove-nav buttons that aren't "New cove" — they should be empty
+  // before the user mints anything.
+  await expect(
+    sidebarNav.locator('button.cove-nav').filter({ hasNotText: 'New cove' }),
+  ).toHaveCount(0);
+
+  // Step: create a user cove via the sidebar "+ New cove" affordance.
+  const coveName = `E2E cove ${Date.now()}`;
+  await sidebarNav.getByRole('button', { name: /new cove/i }).click();
+  const nameInput = sidebarNav.getByPlaceholder(/name/i);
+  await expect(nameInput).toBeVisible();
+  await nameInput.fill(coveName);
+  await nameInput.press('Enter');
+
+  // The new cove's nav row should appear in the sidebar, with the cove
+  // name as its accessible name (see Sidebar.tsx).
+  const coveBtn = sidebarNav.getByRole('button', { name: new RegExp(coveName, 'i') });
+  await expect(coveBtn).toBeVisible();
+  await coveBtn.click();
+
+  // URL transitions to /calm/cove/<id>. We don't pin the id — it's a
+  // kernel-generated UUID.
   await expect(page).toHaveURL(/\/calm\/cove\/[^/]+$/);
 
   // And the cove page itself rendered — sidebar still visible alongside it.
