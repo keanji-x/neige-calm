@@ -37,7 +37,7 @@ use crate::event::Event;
 use crate::model::{Card, new_id};
 use crate::routes::cards::card_scope;
 use crate::routes::settings::load_settings;
-use crate::routes::terminal::spawn_daemon_for;
+use crate::routes::terminal::{SpawnDaemonOpts, spawn_daemon_for_with_opts};
 use crate::state::AppState;
 use axum::{
     Json, Router,
@@ -96,6 +96,40 @@ pub struct NewCodexCardBody {
     /// full mechanism.
     #[serde(default)]
     pub prompt: Option<String>,
+    /// Host browser's current theme RGB (#177). When set, the kernel
+    /// stamps `--terminal-fg=r,g,b --terminal-bg=r,g,b` onto the
+    /// `calm-session-daemon` argv so the daemon's `TerminalModel` can
+    /// answer codex's OSC 10/11 startup probe with colors matching the
+    /// host theme — otherwise codex falls back to its built-in default
+    /// and visually clashes with the surrounding card background. When
+    /// missing the kernel passes no extra args and the daemon stays
+    /// silent on OSC queries (pre-#177 behaviour).
+    #[serde(default)]
+    pub theme: Option<RequestTheme>,
+}
+
+/// Wire shape of `NewCodexCardBody.theme`. Matches the
+/// `calm_session::TerminalTheme` value type one-for-one — duplicated
+/// here so the route can keep its own `ToSchema` derive (the
+/// `calm_session` crate is utoipa-free).
+#[derive(Deserialize, Debug, Clone, Copy, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RequestTheme {
+    pub fg: (u8, u8, u8),
+    pub bg: (u8, u8, u8),
+}
+
+impl RequestTheme {
+    /// Render `(r, g, b)` as the comma-decimal form `r,g,b` the
+    /// daemon CLI expects on `--terminal-fg` / `--terminal-bg`.
+    fn fg_arg(&self) -> String {
+        let (r, g, b) = self.fg;
+        format!("{r},{g},{b}")
+    }
+    fn bg_arg(&self) -> String {
+        let (r, g, b) = self.bg;
+        format!("{r},{g},{b}")
+    }
 }
 
 #[utoipa::path(
@@ -340,7 +374,17 @@ pub(crate) async fn create_codex_card(
     //    within its grace window. Matches the prior endpoint's semantics:
     //    a 500 tells the client the spawn failed, but the card/terminal
     //    pair is still in the DB until the sweeper runs.
-    spawn_daemon_for(&s, &term, &command_line, &cwd, &env).await?;
+    //
+    //    #177: stamp the host browser's current theme RGB onto the
+    //    daemon argv when the request carried one. When the body
+    //    doesn't include `theme` (e.g. older clients, scripted callers)
+    //    the daemon stays silent on OSC queries and codex falls back to
+    //    its built-in default.
+    let opts = SpawnDaemonOpts {
+        terminal_fg: p.theme.map(|t| t.fg_arg()),
+        terminal_bg: p.theme.map(|t| t.bg_arg()),
+    };
+    spawn_daemon_for_with_opts(&s, &term, &command_line, &cwd, &env, opts).await?;
 
     tracing::info!(
         card_id = %card.id,

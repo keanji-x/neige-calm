@@ -80,7 +80,7 @@ use crate::event::{
 use crate::ids::{ActorId, CardId, CoveId, WaveId};
 use crate::model::CardRole;
 use crate::routes::settings::load_settings;
-use crate::routes::terminal::spawn_daemon_with_parts;
+use crate::routes::terminal::{SpawnDaemonOpts, spawn_daemon_with_parts};
 use crate::spec_card::{SeededCardRole, build_codex_env_map, seed_codex_home_with_parts};
 use crate::state::{CodexClient, DaemonClient};
 
@@ -779,6 +779,11 @@ impl Inner {
             "codex",
             &cwd,
             &env_for_spawn,
+            // Dispatcher-spawned workers have no host browser to grab a
+            // theme from — leave OSC 10/11 silent (#177) so codex falls
+            // back to its built-in default. User-facing codex cards
+            // stamp theme through `SpawnDaemonOpts` in `routes::codex_cards`.
+            SpawnDaemonOpts::default(),
         )
         .await
         {
@@ -977,6 +982,10 @@ impl Inner {
             &cmd,
             &cwd_resolved,
             &env,
+            // Dispatcher-spawned workers have no host browser theme to
+            // forward (#177); terminal workers don't probe OSC 10/11
+            // anyway.
+            SpawnDaemonOpts::default(),
         )
         .await
         {

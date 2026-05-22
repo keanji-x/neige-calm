@@ -54,6 +54,20 @@ pub(crate) async fn get_terminal_for_card(
     Ok(Json(term))
 }
 
+/// Daemon-spawn options the caller may stamp on top of the defaults.
+/// All fields are `Option` so existing call sites can `..Default::default()`
+/// without churn.
+///
+/// `terminal_fg` / `terminal_bg` (#177): when set, the daemon advertises
+/// these RGB values on OSC 10/11 queries so codex's startup probe gets
+/// an answer matching the host browser's theme. The codex card route
+/// passes them through from `NewCodexCardBody.theme`.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct SpawnDaemonOpts {
+    pub terminal_fg: Option<String>,
+    pub terminal_bg: Option<String>,
+}
+
 /// Spawn a `calm-session-daemon` for the given terminal row, wait for its
 /// unix socket to accept connections, and persist the socket path as the
 /// row's `daemon_handle`. Used by `routes::terminal_cards::create_terminal_card`
@@ -66,7 +80,31 @@ pub(crate) async fn spawn_daemon_for(
     cwd: &str,
     env: &serde_json::Value,
 ) -> Result<()> {
-    spawn_daemon_with_parts(s.daemon.as_ref(), s.repo.as_ref(), term, program, cwd, env).await
+    spawn_daemon_for_with_opts(s, term, program, cwd, env, SpawnDaemonOpts::default()).await
+}
+
+/// Same as [`spawn_daemon_for`] but accepts extra knobs (theme color
+/// args, ...). Existing terminal-card callers go through the simpler
+/// wrapper; codex cards (#177) use this to stamp `--terminal-fg` /
+/// `--terminal-bg` onto the daemon argv.
+pub(crate) async fn spawn_daemon_for_with_opts(
+    s: &AppState,
+    term: &Terminal,
+    program: &str,
+    cwd: &str,
+    env: &serde_json::Value,
+    opts: SpawnDaemonOpts,
+) -> Result<()> {
+    spawn_daemon_with_parts(
+        s.daemon.as_ref(),
+        s.repo.as_ref(),
+        term,
+        program,
+        cwd,
+        env,
+        opts,
+    )
+    .await
 }
 
 /// PR6 (#136) — lower-level seam over `spawn_daemon_for` that takes the
@@ -75,6 +113,11 @@ pub(crate) async fn spawn_daemon_for(
 /// it's a kernel-internal worker that ships before AppState exists in
 /// the boot order). Identical semantics to `spawn_daemon_for`; the
 /// latter is now a one-line forwarder.
+///
+/// The trailing `opts` (#177) lets callers stamp extra daemon argv
+/// (e.g. `--terminal-fg` / `--terminal-bg`) without forcing every
+/// caller to construct one — `spawn_daemon_for` passes
+/// `SpawnDaemonOpts::default()` and the dispatcher does the same.
 pub(crate) async fn spawn_daemon_with_parts(
     daemon: &DaemonClient,
     repo: &dyn RouteRepo,
@@ -82,6 +125,7 @@ pub(crate) async fn spawn_daemon_with_parts(
     program: &str,
     cwd: &str,
     env: &serde_json::Value,
+    opts: SpawnDaemonOpts,
 ) -> Result<()> {
     let sock = daemon.sock_path(&term.id);
     if let Some(parent) = sock.parent() {
@@ -98,9 +142,14 @@ pub(crate) async fn spawn_daemon_with_parts(
     let mut cmd = tokio::process::Command::new(&daemon.session_daemon_bin);
     cmd.args(["--id", &term.id])
         .args(["--sock", &sock_str])
-        .args(["--cwd", cwd])
-        .arg("--")
-        .args(["/bin/sh", "-c", program]);
+        .args(["--cwd", cwd]);
+    if let Some(fg) = opts.terminal_fg.as_deref() {
+        cmd.args(["--terminal-fg", fg]);
+    }
+    if let Some(bg) = opts.terminal_bg.as_deref() {
+        cmd.args(["--terminal-bg", bg]);
+    }
+    cmd.arg("--").args(["/bin/sh", "-c", program]);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     if let Some(map) = env.as_object() {
