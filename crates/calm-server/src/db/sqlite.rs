@@ -29,7 +29,10 @@ use sqlx::SqlitePool;
 use sqlx::Transaction;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
-use super::{RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, WriteWithEventFn};
+use super::{
+    RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, WriteWithEventFn,
+    WriteWithEventsFn,
+};
 use crate::card_role_cache::CardRoleCache;
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VERSION};
@@ -774,6 +777,7 @@ pub async fn card_with_terminal_create_tx(
     program: String,
     cwd: String,
     env: serde_json::Value,
+    role: CardRole,
     card_role_cache: &CardRoleCache,
 ) -> Result<(Card, Terminal)> {
     // 1. Card row with placeholder payload — the terminal_id and schemaVersion
@@ -784,8 +788,11 @@ pub async fn card_with_terminal_create_tx(
     // `write_with_event` can stamp `EventScope::Card { card, .. }` on
     // the audit row without racing the txn.
     //
-    // PR3 (#136): role defaults to Plain — terminal cards are user-driven,
-    // not AI-driven, and `enforce_role` keeps them unrestricted.
+    // PR3 (#136): the user-facing `POST /api/waves/:id/terminal-cards`
+    // route passes `CardRole::Plain`; PR6 (#136) — the dispatcher's
+    // worker-terminal path passes `CardRole::Worker`. The cache
+    // write-through inside `card_create_with_id_tx` keeps the role
+    // visible to `enforce_role` calls later in the same tx.
     let card = card_create_with_id_tx(
         tx,
         card_id,
@@ -795,7 +802,7 @@ pub async fn card_with_terminal_create_tx(
             sort,
             payload: serde_json::Value::Null,
         },
-        CardRole::Plain,
+        role,
         card_role_cache,
     )
     .await?;
@@ -872,15 +879,21 @@ pub async fn card_with_codex_create_tx(
     cwd: String,
     env: serde_json::Value,
     prompt: Option<String>,
+    role: CardRole,
     card_role_cache: &CardRoleCache,
 ) -> Result<(Card, Terminal)> {
     // 1. Card row with placeholder payload — the terminal_id, cwd, and
     //    schemaVersion fields are stamped in step 5 once we have the
     //    terminal row.
     //
-    // PR3 (#136): role defaults to Plain. PR5 will introduce dispatcher-
-    // spawned worker codex cards with `CardRole::Worker`; this user-facing
-    // create endpoint stays Plain so the existing UX is unchanged.
+    // PR3 (#136): the user-facing `POST /api/waves/:id/codex-cards`
+    // route passes `CardRole::Plain`. PR6 (#136) — the wave-create
+    // route passes `CardRole::Spec` so the auto-minted spec card is
+    // recognized by `enforce_role` as a `WaveUpdated`-permitted
+    // emitter. PR5's dispatcher will pass `CardRole::Worker` once it
+    // moves off the standalone insert path. The cache write-through
+    // inside `card_create_with_id_tx` keeps the role visible to
+    // `enforce_role` calls later in the same tx.
     let card = card_create_with_id_tx(
         tx,
         card_id,
@@ -890,7 +903,7 @@ pub async fn card_with_codex_create_tx(
             sort,
             payload: serde_json::Value::Null,
         },
-        CardRole::Plain,
+        role,
         card_role_cache,
     )
     .await?;
@@ -1782,6 +1795,74 @@ impl RepoEventWrite for SqlxRepo {
             event,
         });
         Ok(event_id)
+    }
+
+    async fn write_with_events(
+        &self,
+        actor: ActorId,
+        correlation: Option<&str>,
+        bus: &EventBus,
+        card_role_cache: &CardRoleCache,
+        f: WriteWithEventsFn<'_>,
+    ) -> Result<Vec<i64>> {
+        let mut tx = self.pool.begin().await?;
+        // Run the caller-supplied entity write — closure returns one
+        // or more (scope, event) pairs for this tx.
+        let fut: BoxFuture<'_, Result<Vec<(EventScope, Event)>>> = f(&mut tx);
+        let events = match fut.await {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = tx.rollback().await;
+                return Err(e);
+            }
+        };
+        // Contract: at least one event per tx. An empty vec is a
+        // caller bug — refuse to commit so the closure's writes
+        // disappear with the rollback.
+        if events.is_empty() {
+            let _ = tx.rollback().await;
+            return Err(CalmError::Internal(
+                "write_with_events: closure returned an empty event batch".into(),
+            ));
+        }
+        // PR3 (#136) — authorization gate, per event. The cache is
+        // already write-through for any role insert the closure
+        // performed, so a wave-create-with-spec-card batch can mint
+        // the spec card in the closure and immediately have its
+        // role visible to the `WaveUpdated` enforce_role call below.
+        for (scope, event) in &events {
+            if let Err(violation) =
+                crate::role_gate::enforce_role(&actor, event, scope, card_role_cache)
+            {
+                let _ = tx.rollback().await;
+                return Err(CalmError::Forbidden(violation.to_string()));
+            }
+        }
+        // Persist every event in the same txn, in order.
+        let mut event_ids: Vec<i64> = Vec::with_capacity(events.len());
+        for (scope, event) in &events {
+            match Self::event_append_in_tx(&mut tx, &actor, scope, correlation, event).await {
+                Ok(id) => event_ids.push(id),
+                Err(e) => {
+                    let _ = tx.rollback().await;
+                    return Err(e);
+                }
+            }
+        }
+        // Commit before any externally-visible side effect.
+        tx.commit().await?;
+        // Commit-then-emit invariant: broadcast in the same order the
+        // closure produced.
+        for (id, (scope, event)) in event_ids.iter().zip(events) {
+            bus.emit_envelope(BroadcastEnvelope {
+                id: *id,
+                event_version: SYNC_EVENT_VERSION,
+                actor: actor.clone(),
+                scope,
+                event,
+            });
+        }
+        Ok(event_ids)
     }
 
     async fn log_pure_event(

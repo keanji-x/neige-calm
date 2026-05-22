@@ -11,9 +11,10 @@
 //! route's PTY spawn (`routes::codex`), and the WS attach path's
 //! auto-revive (`ws::terminal`).
 
+use crate::db::RouteRepo;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::model::Terminal;
-use crate::state::AppState;
+use crate::state::{AppState, DaemonClient};
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -65,7 +66,24 @@ pub(crate) async fn spawn_daemon_for(
     cwd: &str,
     env: &serde_json::Value,
 ) -> Result<()> {
-    let sock = s.daemon.sock_path(&term.id);
+    spawn_daemon_with_parts(s.daemon.as_ref(), s.repo.as_ref(), term, program, cwd, env).await
+}
+
+/// PR6 (#136) — lower-level seam over `spawn_daemon_for` that takes the
+/// constituent `DaemonClient` + `&dyn RouteRepo` instead of the full
+/// `AppState`. Used by the dispatcher (which doesn't own an `AppState` —
+/// it's a kernel-internal worker that ships before AppState exists in
+/// the boot order). Identical semantics to `spawn_daemon_for`; the
+/// latter is now a one-line forwarder.
+pub(crate) async fn spawn_daemon_with_parts(
+    daemon: &DaemonClient,
+    repo: &dyn RouteRepo,
+    term: &Terminal,
+    program: &str,
+    cwd: &str,
+    env: &serde_json::Value,
+) -> Result<()> {
+    let sock = daemon.sock_path(&term.id);
     if let Some(parent) = sock.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| CalmError::Internal(format!("mkdir sock parent: {e}")))?;
@@ -77,7 +95,7 @@ pub(crate) async fn spawn_daemon_for(
     }
     let sock_str = sock.to_string_lossy().to_string();
 
-    let mut cmd = tokio::process::Command::new(&s.daemon.session_daemon_bin);
+    let mut cmd = tokio::process::Command::new(&daemon.session_daemon_bin);
     cmd.args(["--id", &term.id])
         .args(["--sock", &sock_str])
         .args(["--cwd", cwd])
@@ -107,7 +125,7 @@ pub(crate) async fn spawn_daemon_for(
     // effort: a failed write here is a degraded-cleanup signal but must
     // not abort the spawn (the daemon is running fine — we just lose the
     // SIGTERM lever for that row until the next respawn).
-    if let Err(e) = s.repo.terminal_set_pid(&term.id, pid).await {
+    if let Err(e) = repo.terminal_set_pid(&term.id, pid).await {
         tracing::warn!(
             terminal_id = %term.id,
             pid = ?pid,
@@ -134,8 +152,6 @@ pub(crate) async fn spawn_daemon_for(
             term.id
         )));
     }
-    s.repo
-        .terminal_set_handle(&term.id, Some(&sock_str))
-        .await?;
+    repo.terminal_set_handle(&term.id, Some(&sock_str)).await?;
     Ok(())
 }

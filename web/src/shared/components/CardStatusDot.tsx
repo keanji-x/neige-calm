@@ -62,6 +62,16 @@ export function CardStatusDot({
     isStarting || isWorking ? 'live-dot' : undefined;
   return (
     <span
+      // role="img" gives the span a valid ARIA role so `aria-label`
+      // is no longer "prohibited on a span without a role" (axe rule
+      // `aria-prohibited-attr`). The dot is a stateful status glyph
+      // — semantically image-like, conveying meaning beyond the
+      // surrounding text — so `img` is the right shoe-horn until
+      // we promote it to a real `<output>` or `<status>` element.
+      // Surfaced by PR6: the new spec card on the wave page made
+      // the `Starting` dot visible to the a11y-axe scan of
+      // `/calm/wave/<id>`, which previously had no rendered card.
+      role="img"
       className={className}
       title={title ?? state}
       aria-label={`status ${state}`}

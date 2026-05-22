@@ -21,9 +21,10 @@ pub struct ErrorBody {
     /// Human-readable error message.
     pub error: String,
     /// Stable machine-readable code — one of `not_found`, `conflict`,
-    /// `bad_request`, `unauthorized`, `forbidden`, `plugin_install`,
-    /// `plugin_permission`, `plugin_conflict`, `plugin_kernel_too_old`,
-    /// `db_error`, `io_error`, `serde_error`, `internal`, `forbidden_tool`,
+    /// `idempotency_collision`, `bad_request`, `unauthorized`,
+    /// `forbidden`, `plugin_install`, `plugin_permission`,
+    /// `plugin_conflict`, `plugin_kernel_too_old`, `db_error`,
+    /// `io_error`, `serde_error`, `internal`, `forbidden_tool`,
     /// `not_a_card_tool`, `tool_call_failed`.
     pub code: String,
 }
@@ -35,6 +36,18 @@ pub enum CalmError {
 
     #[error("conflict: {0}")]
     Conflict(String),
+
+    /// 409 — dispatcher-internal sentinel emitted by the
+    /// SELECT-inside-tx idempotency check when a worker card with the
+    /// same `idempotency_key` already exists. Distinct from the generic
+    /// [`CalmError::Conflict`] so the spawn-side caller can match
+    /// precisely on "duplicate request, treat as success" vs. real
+    /// uniqueness violations bubbling up from the DB layer (terminal
+    /// already exists for card, card-id PK collision, etc.). Same HTTP
+    /// status as `Conflict` because no current route surfaces this
+    /// variant to clients — it never escapes the dispatcher closure.
+    #[error("dispatch idempotency collision: {0}")]
+    IdempotencyCollision(String),
 
     #[error("bad request: {0}")]
     BadRequest(String),
@@ -94,6 +107,7 @@ impl CalmError {
         match self {
             CalmError::NotFound(_) => "not_found",
             CalmError::Conflict(_) => "conflict",
+            CalmError::IdempotencyCollision(_) => "idempotency_collision",
             CalmError::BadRequest(_) => "bad_request",
             CalmError::Unauthorized => "unauthorized",
             CalmError::Forbidden(_) => "forbidden",
@@ -111,7 +125,9 @@ impl CalmError {
     pub fn status(&self) -> StatusCode {
         match self {
             CalmError::NotFound(_) => StatusCode::NOT_FOUND,
-            CalmError::Conflict(_) | CalmError::PluginConflict(_) => StatusCode::CONFLICT,
+            CalmError::Conflict(_)
+            | CalmError::IdempotencyCollision(_)
+            | CalmError::PluginConflict(_) => StatusCode::CONFLICT,
             CalmError::BadRequest(_) | CalmError::PluginInstall(_) => StatusCode::BAD_REQUEST,
             CalmError::Unauthorized => StatusCode::UNAUTHORIZED,
             CalmError::Forbidden(_) | CalmError::PluginPermission(_) => StatusCode::FORBIDDEN,

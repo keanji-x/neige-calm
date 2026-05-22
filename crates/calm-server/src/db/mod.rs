@@ -117,6 +117,32 @@ pub type WriteWithEventFn<'a> = Box<
         + 'a,
 >;
 
+/// PR6 (#136) — plural counterpart to [`WriteWithEventFn`]. Closure
+/// returns a `Vec<(EventScope, Event)>` so a single transaction can
+/// persist multiple events, each tagged with its own scope. Used by
+/// `routes::waves::create_wave` to atomically emit both
+/// `Event::WaveUpdated` (scope = Wave) and `Event::CardAdded`
+/// (scope = Card) for the auto-minted spec card.
+///
+/// Invariants:
+///   * The closure must return a non-empty vec — an empty vec is a
+///     contract violation and causes the trait method to roll back
+///     with `CalmError::Internal`.
+///   * Each `(scope, event)` is independently checked against
+///     `enforce_role` with the supplied `actor`. Any single
+///     `RoleViolation` rolls the entire batch back: neither the
+///     entity write nor any event row survives.
+///   * Events are persisted in vec order and broadcast in the same
+///     order post-commit. A subscriber that listens to multiple
+///     scopes sees the order the closure declared.
+pub type WriteWithEventsFn<'a> = Box<
+    dyn for<'tx> FnOnce(
+            &'tx mut Transaction<'_, Sqlite>,
+        ) -> BoxFuture<'tx, Result<Vec<(EventScope, Event)>>>
+        + Send
+        + 'a,
+>;
+
 // ---------------------------------------------------------------------------
 // Sub-trait split. See the "Trait capability split" section in the module
 // docs for the rationale. Each sub-trait carries `Send + Sync + 'static` so
@@ -261,6 +287,47 @@ pub trait RepoEventWrite: RepoRead {
         card_role_cache: &CardRoleCache,
         f: WriteWithEventFn<'_>,
     ) -> Result<i64>;
+
+    /// PR6 (#136) — plural counterpart to [`write_with_event`]. Persist
+    /// and broadcast **multiple events** from one transaction, each
+    /// tagged with its own [`EventScope`]. The single transaction
+    /// invariant (closure → enforce_role per event → persist all →
+    /// commit → broadcast all) is preserved; either every event lands
+    /// and is broadcast, or none of them do.
+    ///
+    /// All events in the batch share the supplied `actor` — the
+    /// "request initiator" is one per transaction. Per-event scopes
+    /// let a single mutation (e.g. wave create with auto-minted spec
+    /// card) emit both a wave-scoped and a card-scoped envelope so
+    /// subscribers filtered by either scope pick up the relevant
+    /// frame without re-routing through ancestors.
+    ///
+    /// Error semantics mirror `write_with_event`:
+    ///   * Closure returns `Err(e)`: txn rolls back; `Err(e)` bubbles
+    ///     up; no entity rows, no event rows, no broadcasts.
+    ///   * `enforce_role` denies any event in the batch: txn rolls
+    ///     back; the violation surfaces as `CalmError::Forbidden`;
+    ///     no rows survive.
+    ///   * Empty vec returned by the closure: txn rolls back with
+    ///     `CalmError::Internal` — every caller must emit at least
+    ///     one event (use `write_with_event` if the singular case is
+    ///     all you need).
+    ///   * Per-event `event_append_in_tx` failure mid-batch: txn
+    ///     rolls back; subsequent events in the batch are never
+    ///     persisted; the earlier-persisted events vanish with the
+    ///     rollback (commit-then-emit invariant: nothing was
+    ///     broadcast yet).
+    ///
+    /// Returns the assigned `events.id` for each persisted event, in
+    /// the order the closure produced them.
+    async fn write_with_events(
+        &self,
+        actor: ActorId,
+        correlation: Option<&str>,
+        bus: &crate::event::EventBus,
+        card_role_cache: &CardRoleCache,
+        f: WriteWithEventsFn<'_>,
+    ) -> Result<Vec<i64>>;
 
     /// Persist + broadcast a pure event (no associated entity write). Same
     /// commit-then-emit invariant as `write_with_event`, but no transaction
@@ -553,4 +620,69 @@ where
             )
         })?;
     Ok((row, event_id))
+}
+
+/// PR6 (#136) — generic plural counterpart to
+/// [`write_with_event_typed`]. Same `R`-capture trick (the trait
+/// method's closure can't return a typed row directly without
+/// breaking dyn-compatibility), now batched across multiple events.
+///
+/// The closure returns `(R, Vec<(EventScope, Event)>)` — one typed
+/// row + one or more `(scope, event)` pairs. Each event is
+/// independently authorized via `enforce_role` against the supplied
+/// `actor`; any violation rolls the whole transaction back.
+///
+/// Use this when a single mutation must emit multiple events tagged
+/// with different scopes — e.g. `routes::waves::create_wave`'s
+/// atomic spec-card binding emits a wave-scoped `WaveUpdated` plus a
+/// card-scoped `CardAdded` from the same tx so per-wave and per-card
+/// subscribers each see the relevant frame at first hand. For the
+/// usual single-event case stay on [`write_with_event_typed`].
+pub async fn write_with_events_typed<R, F>(
+    repo: &dyn RepoEventWrite,
+    actor: ActorId,
+    correlation: Option<&str>,
+    bus: &crate::event::EventBus,
+    card_role_cache: &CardRoleCache,
+    f: F,
+) -> Result<(R, Vec<i64>)>
+where
+    R: Send + 'static,
+    F: for<'tx> FnOnce(
+            &'tx mut Transaction<'_, Sqlite>,
+        ) -> BoxFuture<'tx, Result<(R, Vec<(EventScope, Event)>)>>
+        + Send
+        + 'static,
+{
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    let captured: Arc<Mutex<Option<R>>> = Arc::new(Mutex::new(None));
+    let captured_inner = Arc::clone(&captured);
+
+    let boxed: WriteWithEventsFn<'_> = Box::new(move |tx| {
+        let captured_inner = Arc::clone(&captured_inner);
+        Box::pin(async move {
+            let (row, events) = f(tx).await?;
+            *captured_inner.lock().await = Some(row);
+            Ok(events)
+        })
+    });
+
+    let event_ids = repo
+        .write_with_events(actor, correlation, bus, card_role_cache, boxed)
+        .await?;
+    let row = Arc::try_unwrap(captured)
+        .map_err(|_| {
+            crate::error::CalmError::Internal(
+                "write_with_events_typed: outstanding reference to captured row".into(),
+            )
+        })?
+        .into_inner()
+        .ok_or_else(|| {
+            crate::error::CalmError::Internal(
+                "write_with_events_typed: closure did not set row".into(),
+            )
+        })?;
+    Ok((row, event_ids))
 }
