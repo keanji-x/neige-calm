@@ -115,6 +115,19 @@ const FONT_ALIAS_TOKENS = [
   '--font-code',
 ] as const;
 
+// Semantic misc tokens added in slice 3d of #137. Each carries a concrete
+// color literal in both `:root` and `[data-theme="dark"]` — same parity
+// contract as POSITIONAL_TOKENS, but split out because the shape
+// invariant differs: `--overlay-scrim` is intentionally `rgba(...)` (the
+// dense modal dimmer has semantic intent — see the comment next to its
+// declaration in calm.css), the others are oklch literals.
+const SEMANTIC_MISC_TOKENS = [
+  '--overlay-scrim',
+  '--cal-event-waiting-bg',
+  '--error-text',
+  '--warn-border',
+] as const;
+
 // ---------------------------------------------------------------------------
 // Parse helpers
 // ---------------------------------------------------------------------------
@@ -330,6 +343,70 @@ describe('calm.css token graph: font-family aliases', () => {
         `${name} is a font alias; font stacks don't theme-vary. Remove from [data-theme="dark"].`,
       ).toBe(false);
     });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// (f2) Semantic misc tokens (slice 3d of #137): scrim, cal-waiting bg,
+// error text, warn border.
+// ---------------------------------------------------------------------------
+//
+// Same light+dark parity contract as POSITIONAL_TOKENS, but the value
+// shape differs by token:
+//   - `--overlay-scrim` is deliberately `rgba(...)` — the dense modal
+//     dimmer has semantic intent ("dim and slightly cool the background")
+//     that's awkward to express as a pure oklch with alpha. The
+//     declaration sits inside the block-disable from #149 so stylelint's
+//     ban on rgba() in component selectors doesn't fire; consumers read
+//     it through `var()`. This is the one deliberate exception to the
+//     "oklch literals only" rule for concrete tokens.
+//   - The others are oklch literals like the rest of the concrete tokens.
+
+const RGBA_LITERAL = /^rgba\(.+\)$/;
+
+describe('calm.css token graph: semantic misc tokens (#137 slice 3d)', () => {
+  for (const name of SEMANTIC_MISC_TOKENS) {
+    it(`${name} is declared in both :root and [data-theme="dark"]`, () => {
+      const inLight = rootDecls.has(name);
+      const inDark = darkDecls.has(name);
+      expect(
+        { token: name, light: inLight, dark: inDark },
+        `${name} must be defined in both blocks`,
+      ).toEqual({ token: name, light: true, dark: true });
+    });
+  }
+
+  // --overlay-scrim: rgba() form is deliberate (see header comment above).
+  for (const block of [
+    { name: ':root', decls: rootDecls },
+    { name: '[data-theme="dark"]', decls: darkDecls },
+  ]) {
+    it(`--overlay-scrim in ${block.name} is an rgba() literal (deliberate exception)`, () => {
+      const value = block.decls.get('--overlay-scrim');
+      expect(value, `--overlay-scrim missing from ${block.name}`).toBeDefined();
+      expect(
+        value,
+        `--overlay-scrim is intentionally rgba() — dense modal dimmer with semantic intent. Got: ${value}`,
+      ).toMatch(RGBA_LITERAL);
+    });
+  }
+
+  // Other semantic misc tokens follow the standard oklch-literal contract.
+  const OKLCH_ONLY = SEMANTIC_MISC_TOKENS.filter((n) => n !== '--overlay-scrim');
+  for (const name of OKLCH_ONLY) {
+    for (const block of [
+      { name: ':root', decls: rootDecls },
+      { name: '[data-theme="dark"]', decls: darkDecls },
+    ]) {
+      it(`${name} in ${block.name} is an oklch() literal`, () => {
+        const value = block.decls.get(name);
+        expect(value, `${name} missing from ${block.name}`).toBeDefined();
+        expect(
+          value,
+          `${name} should be an oklch() literal, got: ${value}`,
+        ).toMatch(OKLCH_LITERAL);
+      });
+    }
   }
 });
 

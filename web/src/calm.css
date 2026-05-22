@@ -75,6 +75,17 @@
      denser hover) can move without touching persistent .cal-toggle. */
   --surface-hover-overlay: var(--surface-toggle-overlay);
 
+  /* Misc semantic colors — slice 3d of #137. The scrim keeps its rgba()
+     form deliberately (the dense modal dimmer has semantic intent: "dim
+     and slightly cool the background", not a pure oklch swap). The
+     declaration sits inside the block-disable from #149 so stylelint's
+     ban on rgba() in component selectors doesn't fire here; component
+     consumers read `var(--overlay-scrim)` which is var(), not rgba(). */
+  --overlay-scrim: rgba(20, 30, 55, 0.32);
+  --cal-event-waiting-bg: oklch(97% 0.018 30);
+  --error-text: oklch(60% 0.15 25);  /* form validation, dirpicker errors */
+  --warn-border: oklch(85% 0.05 30); /* .attn.warn accent border */
+
   /* generous shape */
   --r: 14px;
   --shadow: 0 1px 2px rgba(20,30,55,.04), 0 12px 36px rgba(20,30,55,.06);
@@ -98,6 +109,10 @@
   --surface-chip: oklch(24% 0.01 245);
   --surface-panel-head: oklch(20% 0.009 245);
   --surface-toggle-overlay: oklch(100% 0 0 / 0.06);
+  --overlay-scrim: rgba(0, 0, 0, 0.55);
+  --cal-event-waiting-bg: oklch(24% 0.03 30);
+  --error-text: oklch(74% 0.14 25);   /* aligned with #137 3b standardization for dark status */
+  --warn-border: oklch(40% 0.05 30);  /* no existing .attn.warn dark override on main; derived from --warn dark */
   --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 36px rgba(0,0,0,.4);
 }
 /* stylelint-enable color-no-hex, declaration-property-value-disallowed-list */
@@ -522,8 +537,7 @@ input, textarea { font: inherit; color: inherit; }
   margin-bottom: 24px;
 }
 .attn.warn {
-  /* stylelint-disable-next-line declaration-property-value-disallowed-list */
-  border-color: oklch(85% 0.05 30);
+  border-color: var(--warn-border);
   background: linear-gradient(180deg, var(--warn-soft), var(--paper) 60%);
 }
 .attn .label {
@@ -1109,14 +1123,12 @@ input, textarea { font: inherit; color: inherit; }
   inset: 0;
   z-index: 1000;
   display: flex; align-items: center; justify-content: center;
-  /* stylelint-disable-next-line declaration-property-value-disallowed-list */
-  background: rgba(20, 30, 55, 0.32);
+  background: var(--overlay-scrim);
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
   padding: 24px;
 }
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-[data-theme="dark"] .modal-overlay { background: rgba(0, 0, 0, 0.55); }
+[data-theme="dark"] .modal-overlay { background: var(--overlay-scrim); }
 .modal-panel {
   width: min(620px, calc(100vw - 32px));
   /* Min-height keeps the panel from collapsing onto its content when a
@@ -1186,8 +1198,7 @@ input, textarea { font: inherit; color: inherit; }
 .schema-form { display: flex; flex-direction: column; gap: 10px; }
 .schema-form-field { display: flex; flex-direction: column; gap: 4px; }
 .schema-form-label { font-size: var(--text-sm); color: var(--text-2); }
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-.schema-form-required { color: oklch(60% 0.15 25); }
+.schema-form-required { color: var(--error-text); }
 .schema-form-input {
   font: inherit;
   padding: 6px 8px;
@@ -1363,8 +1374,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   font-size: var(--text-base);
   color: var(--text-3);
 }
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-.dirpicker-error { color: oklch(60% 0.15 25); }
+.dirpicker-error { color: var(--error-text); }
 .dirpicker-actions {
   flex: 0 0 auto;               /* never shrink the actions row */
   display: flex; justify-content: flex-end; gap: 8px;
@@ -2483,12 +2493,10 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 /* stylelint-disable-next-line declaration-property-value-disallowed-list */
 [data-theme="dark"] .cal-event:hover { background: oklch(100% 0 0 / 0.045); }
 .cal-event.waiting {
-  /* stylelint-disable-next-line declaration-property-value-disallowed-list */
-  background: oklch(97% 0.018 30);
+  background: var(--cal-event-waiting-bg);
 }
 [data-theme="dark"] .cal-event.waiting {
-  /* stylelint-disable-next-line declaration-property-value-disallowed-list */
-  background: oklch(24% 0.03 30);
+  background: var(--cal-event-waiting-bg);
 }
 .cal-event.waiting:hover {
   /* stylelint-disable-next-line declaration-property-value-disallowed-list */
@@ -2867,8 +2875,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   margin-top: 2px;
 }
 .settings-error {
-  /* stylelint-disable-next-line color-no-hex */
-  color: var(--warn, #c00);
+  color: var(--warn);
   font-size: var(--text-base);
   margin-top: 12px;
 }
