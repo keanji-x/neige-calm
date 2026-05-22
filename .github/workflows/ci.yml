@@ -210,6 +210,7 @@ jobs:
           cat > .env <<'EOF'
           CALM_CODEX_HOST_BIN=/bin/true
           CALM_EXTRA_MOUNT=/tmp
+          CALM_DEV_AUTOLOGIN=true
           HTTP_PROXY=
           HTTPS_PROXY=
           NO_PROXY=*
