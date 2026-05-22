@@ -26,7 +26,9 @@
 // the whole tree directing the user to refresh. Single check on mount;
 // no polling. See `docs/upgrade-stability.md` (Tier B).
 //
-// Devtools only mount in dev (Vite's `import.meta.env.DEV`).
+// Devtools (React Query + TanStack Router) live in `main.tsx` next to the
+// `RouterProvider`, *inside* `SessionProvider`. That keeps both devtools
+// scoped to the authed branch — they don't paint on the LoginPage.
 
 import {
   QueryClient,
@@ -34,7 +36,6 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query';
-import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
 import { useEffect, type ReactNode } from 'react';
 import { useState } from '../shared/state';
@@ -113,9 +114,6 @@ export function AppProviders({ children }: { children: ReactNode }) {
           <ServerCompatGate>{children}</ServerCompatGate>
         </ThemeProvider>
       </QueryRestoreGate>
-      {import.meta.env.DEV && (
-        <ReactQueryDevtools initialIsOpen={false} buttonPosition="bottom-left" />
-      )}
     </PersistQueryClientProvider>
   );
 }

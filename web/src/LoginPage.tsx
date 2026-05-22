@@ -44,10 +44,6 @@ export function LoginPage() {
       <div className="login-card">
         <div className="login-eyebrow">Neige · Calm</div>
         <h1 className="login-title">Sign in.</h1>
-        <p className="login-hint">
-          Use the owner credentials configured on the server
-          (<code>CALM_AUTH_USERNAME</code> / <code>CALM_AUTH_PASSWORD</code>).
-        </p>
         <form onSubmit={submit}>
           <input
             className="login-input"

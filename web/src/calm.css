@@ -2601,17 +2601,6 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   color: var(--text-3);
   margin: var(--space-0) var(--space-0) var(--space-10);
 }
-.login-hint code {
-  font-family: var(--font-code);
-  font-size: var(--text-sm);
-  /* stylelint-disable-next-line declaration-property-value-disallowed-list */
-  background: oklch(0% 0 0 / 0.04);
-  padding: var(--space-px) var(--space-3);
-  border-radius: var(--radius-md);
-  color: var(--text);
-}
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-[data-theme="dark"] .login-hint code { background: oklch(100% 0 0 / 0.06); }
 .login-input {
   display: block;
   width: 100%;
