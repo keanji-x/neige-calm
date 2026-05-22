@@ -10,7 +10,7 @@ use crate::actor::Actor;
 use crate::db::sqlite::{cove_create_tx, cove_delete_tx, cove_update_tx};
 use crate::db::write_with_event_typed;
 use crate::error::{ErrorBody, Result};
-use crate::event::Event;
+use crate::event::{Event, EventScope};
 use crate::model::{Cove, CovePatch, NewCove};
 use crate::state::AppState;
 use axum::{
@@ -58,9 +58,18 @@ pub(crate) async fn create_cove(
     actor: Actor,
     Json(p): Json<NewCove>,
 ) -> Result<(StatusCode, Json<Cove>)> {
+    // Judgment call (PR2 of #136): create uses `EventScope::System`
+    // rather than `EventScope::Cove { cove: <new_id> }`. The cove id is
+    // minted inside the txn closure; we don't know it before the write.
+    // Capturing the id post-commit to pass into the scope would make the
+    // commit-then-emit invariant racy. `System` is also defensible
+    // semantically — at the moment the event fires, the cove is new to
+    // every replica anyway, so per-cove subscribers can pick it up via
+    // the broader system-wide channel.
     let (cove, _id) = write_with_event_typed(
         s.repo.as_ref(),
-        actor.as_str(),
+        actor.to_actor_id(),
+        EventScope::System,
         None,
         &s.events,
         move |tx| {
@@ -92,9 +101,13 @@ pub(crate) async fn update_cove(
     Path(id): Path<String>,
     Json(p): Json<CovePatch>,
 ) -> Result<Json<Cove>> {
+    let scope = EventScope::Cove {
+        cove: id.clone().into(),
+    };
     let (cove, _id) = write_with_event_typed(
         s.repo.as_ref(),
-        actor.as_str(),
+        actor.to_actor_id(),
+        scope,
         None,
         &s.events,
         move |tx| {
@@ -124,9 +137,13 @@ pub(crate) async fn delete_cove(
     actor: Actor,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
+    let scope = EventScope::Cove {
+        cove: id.clone().into(),
+    };
     let (_unit, _id) = write_with_event_typed(
         s.repo.as_ref(),
-        actor.as_str(),
+        actor.to_actor_id(),
+        scope,
         None,
         &s.events,
         move |tx| {

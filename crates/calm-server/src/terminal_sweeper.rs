@@ -48,7 +48,8 @@ use tokio::net::UnixStream;
 use crate::db::sqlite::terminal_delete_tx;
 use crate::db::write_with_event_typed;
 use crate::error::Result;
-use crate::event::Event;
+use crate::event::{Event, EventScope};
+use crate::ids::ActorId;
 use crate::model::Terminal;
 use crate::state::AppState;
 use calm_session::{
@@ -58,9 +59,12 @@ use calm_session::{
 use uuid::Uuid;
 
 /// Actor stamped on every event the sweeper produces. Distinct from
-/// `"user"` (REST) and `"plugin:<id>"`; matches the convention used by
-/// `card_fsm` for kernel-internal projectors.
-const SWEEPER_ACTOR: &str = "kernel";
+/// [`ActorId::User`] (REST) and [`ActorId::Plugin`]; matches the convention
+/// used by `card_fsm` for kernel-internal projectors. PR2 of #136 typed
+/// this from the legacy `"kernel"` string.
+const fn sweeper_actor() -> ActorId {
+    ActorId::Kernel
+}
 
 /// How often the sweep runs. 30 s is comfortably below the 1-minute grace
 /// window — every orphan that exists at one tick is caught the next.
@@ -176,11 +180,30 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
     //    headline guarantee: regardless of how steps 1-3 went, the row
     //    leaves the kernel cleanly and any subscriber sees the
     //    `terminal.deleted` event.
+    //
+    //    Scope (PR2 of #136): try to resolve the card → wave → cove
+    //    chain so per-card subscribers see the reap. If the card has
+    //    already been deleted (the common case — the sweeper exists
+    //    precisely because card-delete may have left an orphan
+    //    terminal), fall back to `EventScope::System`. We don't refuse
+    //    the reap for a missing ancestor.
     let terminal_id = term.id.clone();
     let card_id = term.card_id.clone();
+    let scope = match state.repo.card_get(card_id.as_str()).await? {
+        Some(c) => match state.repo.wave_get(c.wave_id.as_str()).await? {
+            Some(w) => EventScope::Card {
+                card: c.id,
+                wave: w.id,
+                cove: w.cove_id,
+            },
+            None => EventScope::System,
+        },
+        None => EventScope::System,
+    };
     let (_unit, _event_id) = write_with_event_typed(
         state.repo.as_ref(),
-        SWEEPER_ACTOR,
+        sweeper_actor(),
+        scope,
         None,
         &state.events,
         move |tx| {

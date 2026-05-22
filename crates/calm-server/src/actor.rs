@@ -41,6 +41,7 @@ use axum::{
 };
 
 use crate::error::CalmError;
+use crate::ids::{ActorId, CardId};
 
 /// Declared identity of an event producer. Populated by
 /// [`actor_middleware`] reading `X-Calm-Actor` from request headers; defaults
@@ -65,6 +66,47 @@ impl Actor {
     /// `write_with_event_typed`.
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Map the legacy stringly-typed actor to the PR2 typed [`ActorId`].
+    ///
+    /// The middleware only accepts `"user"` or `"ai:<id>"` from the
+    /// header today — `"kernel"` and `"plugin:*"` are reserved for
+    /// server-internal sites that build the `ActorId` directly. So the
+    /// mapping here only needs to cover those two header-reachable
+    /// forms plus a defensive fallback:
+    ///
+    ///   * `"user"` → [`ActorId::User`].
+    ///   * `"ai:codex"` → [`ActorId::AiCodex`] with a placeholder card id
+    ///     (the REST surface has no card context at the actor-extraction
+    ///     point; PR3+ will reattribute via the wave/card the request
+    ///     touches). Other `"ai:<id>"` forms are unreachable via the
+    ///     middleware today.
+    ///   * Anything else (`"kernel"`, `"plugin:*"`, garbage) → [`ActorId::User`].
+    ///     The middleware would have already rejected these — this branch
+    ///     is defense-in-depth so a future relaxation can't quietly leak
+    ///     a malformed actor into the event log.
+    ///
+    /// Routes pass the result through to `write_with_event_typed`; the
+    /// trait then serializes it as JSON into the `events.actor` TEXT
+    /// column.
+    pub fn to_actor_id(&self) -> ActorId {
+        if self.0 == "user" {
+            return ActorId::User;
+        }
+        if self.0 == "ai:codex" {
+            // No card context at REST entry — leave the carried CardId
+            // empty. PR3 introduces the proper enforce_role gate that
+            // either looks up the card from the request path or refuses
+            // the write outright. Until then, the empty CardId is an
+            // honest "we know it's codex but don't know which card" tag.
+            return ActorId::AiCodex(CardId::from(""));
+        }
+        // Defensive default: the middleware should have already rejected
+        // anything else, but if it didn't (relaxation in some future PR),
+        // we attribute as User rather than synthesize a Kernel/Plugin
+        // identity from an attacker-controlled header.
+        ActorId::User
     }
 }
 

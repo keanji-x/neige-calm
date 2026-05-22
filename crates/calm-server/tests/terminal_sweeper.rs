@@ -258,7 +258,9 @@ async fn sweep_emits_terminal_deleted_with_kernel_actor() {
     .await
     .unwrap();
     assert_eq!(row.0, "terminal.deleted");
-    assert_eq!(row.1, "kernel");
+    // PR2 of #136: events.actor stores the typed ActorId JSON form.
+    let actor_json: serde_json::Value = serde_json::from_str(&row.1).unwrap();
+    assert_eq!(actor_json, serde_json::json!({"kind": "Kernel"}));
 }
 
 // ---------------------------------------------------------------------------

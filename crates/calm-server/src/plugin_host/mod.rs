@@ -48,7 +48,8 @@ pub use version::{KERNEL_VERSION, KernelTooOld, check_min_kernel_version};
 use tokio::sync::{Mutex, mpsc};
 
 use crate::db::RouteRepo;
-use crate::event::{Event, EventBus};
+use crate::event::{Event, EventBus, EventScope};
+use crate::ids::ActorId;
 
 use callbacks::{CallbackCtx, SubscriptionRecord};
 
@@ -615,9 +616,18 @@ impl PluginHost {
                 state: status.wire_name().to_string(),
                 last_error: status.last_error().map(String::from),
             };
+            // PR2 of #136: `ActorId::Plugin(id)` typed; `EventScope::System`
+            // because `Event::PluginState` is a server-lifecycle signal with
+            // no entity (cove/wave/card) scope.
             if let Err(e) = self
                 .repo
-                .log_pure_event(&format!("plugin:{}", id), None, bus, event)
+                .log_pure_event(
+                    ActorId::Plugin(id.to_string()),
+                    EventScope::System,
+                    None,
+                    bus,
+                    event,
+                )
                 .await
             {
                 tracing::warn!(plugin_id = %id, error = %e, "plugin_state event log failed");

@@ -26,7 +26,8 @@
 
 use crate::actor::Actor;
 use crate::error::Result;
-use crate::event::Event;
+use crate::event::{Event, EventScope};
+use crate::ids::ActorId;
 use crate::state::AppState;
 use axum::{
     Json, Router,
@@ -76,7 +77,7 @@ pub struct IngestQuery {
 /// which conflicts with its "reserved namespace" gate.)
 pub(crate) async fn ingest_hook(
     State(s): State<AppState>,
-    actor: Actor,
+    _actor: Actor,
     Query(q): Query<IngestQuery>,
     Json(payload): Json<Value>,
 ) -> Result<StatusCode> {
@@ -86,9 +87,37 @@ pub(crate) async fn ingest_hook(
         .unwrap_or("unknown");
     let kind = format!("hook.codex.{}", to_snake_case(event_name));
 
+    // PR2 of #136 — judgment call: the codex hook ingest stamps
+    // `ActorId::Kernel` (synthetic) rather than threading the header's
+    // declared actor. Rationale: the per-PR brief lists this route as
+    // `ActorId::Kernel`, and PR3's `AiCodex(card_id)` actor will be set
+    // by the dispatcher *after* the hook lands — not at the ingest
+    // boundary. The `_actor` extractor still runs (preserving the
+    // middleware's header-validation invariant) so a malformed header
+    // continues to 400 here; we just don't propagate the value.
+    //
+    // Scope: try to resolve the card → wave → cove chain so per-card
+    // subscribers see the hook. Falls back to `EventScope::System`
+    // when the card has been deleted between hook fire + ingest (the
+    // hook is best-effort attribution; we don't want to refuse the
+    // write for a stale row).
+    let card_id = q.card_id.clone();
+    let scope = match s.repo.card_get(&card_id).await? {
+        Some(c) => match s.repo.wave_get(c.wave_id.as_str()).await? {
+            Some(w) => EventScope::Card {
+                card: c.id,
+                wave: w.id,
+                cove: w.cove_id,
+            },
+            None => EventScope::System,
+        },
+        None => EventScope::System,
+    };
+
     s.repo
         .log_pure_event(
-            actor.as_str(),
+            ActorId::Kernel,
+            scope,
             None,
             &s.events,
             Event::CodexHook {

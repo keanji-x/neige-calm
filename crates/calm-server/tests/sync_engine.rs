@@ -33,7 +33,8 @@ use calm_server::db::sqlite::{
 };
 use calm_server::db::write_with_event_typed;
 use calm_server::error::CalmError;
-use calm_server::event::{Event, EventBus, SYNC_EVENT_VERSION};
+use calm_server::event::{Event, EventBus, EventScope, SYNC_EVENT_VERSION};
+use calm_server::ids::ActorId;
 use calm_server::model::{Cove, NewCard, NewCove, NewOverlay, NewWave, Wave};
 
 /// Boot an in-memory `SqlxRepo` and a fresh `EventBus`. Repo is returned
@@ -63,12 +64,19 @@ async fn write_with_event_persists_entity_and_event_in_one_txn() {
         color: "#000".into(),
         sort: None,
     };
-    let (cove, event_id) = write_with_event_typed(repo.as_ref(), "user", None, &bus, move |tx| {
-        Box::pin(async move {
-            let cove = cove_create_tx(tx, p).await?;
-            Ok((cove.clone(), Event::CoveUpdated(cove)))
-        })
-    })
+    let (cove, event_id) = write_with_event_typed(
+        repo.as_ref(),
+        ActorId::User,
+        EventScope::System,
+        None,
+        &bus,
+        move |tx| {
+            Box::pin(async move {
+                let cove = cove_create_tx(tx, p).await?;
+                Ok((cove.clone(), Event::CoveUpdated(cove)))
+            })
+        },
+    )
     .await
     .expect("write_with_event ok");
 
@@ -85,7 +93,10 @@ async fn write_with_event_persists_entity_and_event_in_one_txn() {
             .unwrap();
     assert_eq!(row.0, event_id);
     assert_eq!(row.1, "cove.updated");
-    assert_eq!(row.2, "user");
+    // PR2 of #136: events.actor stores the JSON form of the typed
+    // ActorId. The `User` unit variant serializes as `{"kind":"User"}`.
+    let actor_json: serde_json::Value = serde_json::from_str(&row.2).unwrap();
+    assert_eq!(actor_json, serde_json::json!({"kind": "User"}));
 
     // Bus saw the envelope with the right id.
     let env = sub.try_recv().expect("envelope delivered");
@@ -125,22 +136,29 @@ async fn closure_error_rolls_back_entity_and_event_rows() {
         .unwrap();
 
     let cove_id = cove.id.clone();
-    let err = write_with_event_typed::<Wave, _>(repo.as_ref(), "user", None, &bus, move |tx| {
-        Box::pin(async move {
-            // Real entity write succeeds inside the txn ...
-            let _w = wave_create_tx(
-                tx,
-                NewWave {
-                    cove_id,
-                    title: "doomed".into(),
-                    sort: None,
-                },
-            )
-            .await?;
-            // ... but then the closure deliberately fails.
-            Err::<(Wave, Event), CalmError>(CalmError::Internal("simulated".into()))
-        })
-    })
+    let err = write_with_event_typed::<Wave, _>(
+        repo.as_ref(),
+        ActorId::User,
+        EventScope::System,
+        None,
+        &bus,
+        move |tx| {
+            Box::pin(async move {
+                // Real entity write succeeds inside the txn ...
+                let _w = wave_create_tx(
+                    tx,
+                    NewWave {
+                        cove_id,
+                        title: "doomed".into(),
+                        sort: None,
+                    },
+                )
+                .await?;
+                // ... but then the closure deliberately fails.
+                Err::<(Wave, Event), CalmError>(CalmError::Internal("simulated".into()))
+            })
+        },
+    )
     .await
     .expect_err("closure failure must bubble");
     assert!(matches!(err, CalmError::Internal(ref m) if m == "simulated"));
@@ -192,23 +210,30 @@ async fn event_insert_failure_rolls_back_entity_write() {
 
     // Inject a tx hook that drops the events table *after* the entity
     // write but *before* the wrapper's event_append fires.
-    let res = write_with_event_typed(repo.as_ref(), "user", None, &bus, |tx| {
-        Box::pin(async move {
-            let cove = cove_create_tx(
-                tx,
-                NewCove {
-                    name: "c".into(),
-                    color: "#000".into(),
-                    sort: None,
-                },
-            )
-            .await?;
-            // Drop the events table so the wrapper's subsequent
-            // `INSERT INTO events` fails inside the same txn.
-            sqlx::query("DROP TABLE events").execute(&mut **tx).await?;
-            Ok((cove.clone(), Event::CoveUpdated(cove)))
-        })
-    })
+    let res = write_with_event_typed(
+        repo.as_ref(),
+        ActorId::User,
+        EventScope::System,
+        None,
+        &bus,
+        |tx| {
+            Box::pin(async move {
+                let cove = cove_create_tx(
+                    tx,
+                    NewCove {
+                        name: "c".into(),
+                        color: "#000".into(),
+                        sort: None,
+                    },
+                )
+                .await?;
+                // Drop the events table so the wrapper's subsequent
+                // `INSERT INTO events` fails inside the same txn.
+                sqlx::query("DROP TABLE events").execute(&mut **tx).await?;
+                Ok((cove.clone(), Event::CoveUpdated(cove)))
+            })
+        },
+    )
     .await;
     assert!(
         res.is_err(),
@@ -239,57 +264,78 @@ async fn replaying_events_table_yields_same_envelope_sequence_as_live_subscriber
     let mut live = bus.subscribe();
 
     // Drive a small write sequence through the wrapper.
-    let (cove, _) = write_with_event_typed(repo.as_ref(), "user", None, &bus, move |tx| {
-        Box::pin(async move {
-            let cove = cove_create_tx(
-                tx,
-                NewCove {
-                    name: "c1".into(),
-                    color: "#000".into(),
-                    sort: None,
-                },
-            )
-            .await?;
-            Ok((cove.clone(), Event::CoveUpdated(cove)))
-        })
-    })
+    let (cove, _) = write_with_event_typed(
+        repo.as_ref(),
+        ActorId::User,
+        EventScope::System,
+        None,
+        &bus,
+        move |tx| {
+            Box::pin(async move {
+                let cove = cove_create_tx(
+                    tx,
+                    NewCove {
+                        name: "c1".into(),
+                        color: "#000".into(),
+                        sort: None,
+                    },
+                )
+                .await?;
+                Ok((cove.clone(), Event::CoveUpdated(cove)))
+            })
+        },
+    )
     .await
     .unwrap();
     let cove_id = cove.id.clone();
 
-    let (wave, _) = write_with_event_typed(repo.as_ref(), "user", None, &bus, move |tx| {
-        Box::pin(async move {
-            let wave = wave_create_tx(
-                tx,
-                NewWave {
-                    cove_id,
-                    title: "w1".into(),
-                    sort: None,
-                },
-            )
-            .await?;
-            Ok((wave.clone(), Event::WaveUpdated(wave)))
-        })
-    })
+    let (wave, _) = write_with_event_typed(
+        repo.as_ref(),
+        ActorId::User,
+        EventScope::System,
+        None,
+        &bus,
+        move |tx| {
+            Box::pin(async move {
+                let wave = wave_create_tx(
+                    tx,
+                    NewWave {
+                        cove_id,
+                        title: "w1".into(),
+                        sort: None,
+                    },
+                )
+                .await?;
+                Ok((wave.clone(), Event::WaveUpdated(wave)))
+            })
+        },
+    )
     .await
     .unwrap();
 
     let wave_id = wave.id.clone();
-    let (_card, _) = write_with_event_typed(repo.as_ref(), "user", None, &bus, move |tx| {
-        Box::pin(async move {
-            let card = card_create_tx(
-                tx,
-                NewCard {
-                    wave_id,
-                    kind: "terminal".into(),
-                    sort: None,
-                    payload: serde_json::json!({}),
-                },
-            )
-            .await?;
-            Ok((card.clone(), Event::CardAdded(card)))
-        })
-    })
+    let (_card, _) = write_with_event_typed(
+        repo.as_ref(),
+        ActorId::User,
+        EventScope::System,
+        None,
+        &bus,
+        move |tx| {
+            Box::pin(async move {
+                let card = card_create_tx(
+                    tx,
+                    NewCard {
+                        wave_id,
+                        kind: "terminal".into(),
+                        sort: None,
+                        payload: serde_json::json!({}),
+                    },
+                )
+                .await?;
+                Ok((card.clone(), Event::CardAdded(card)))
+            })
+        },
+    )
     .await
     .unwrap();
 
@@ -340,20 +386,27 @@ async fn replay_then_live_dedup_under_concurrent_write() {
     for i in 0..3 {
         let cove_id = cove.id.clone();
         let title = format!("w{}", i);
-        write_with_event_typed(repo.as_ref(), "user", None, &bus, move |tx| {
-            Box::pin(async move {
-                let w = wave_create_tx(
-                    tx,
-                    NewWave {
-                        cove_id,
-                        title,
-                        sort: None,
-                    },
-                )
-                .await?;
-                Ok((w.clone(), Event::WaveUpdated(w)))
-            })
-        })
+        write_with_event_typed(
+            repo.as_ref(),
+            ActorId::User,
+            EventScope::System,
+            None,
+            &bus,
+            move |tx| {
+                Box::pin(async move {
+                    let w = wave_create_tx(
+                        tx,
+                        NewWave {
+                            cove_id,
+                            title,
+                            sort: None,
+                        },
+                    )
+                    .await?;
+                    Ok((w.clone(), Event::WaveUpdated(w)))
+                })
+            },
+        )
         .await
         .unwrap();
     }
@@ -392,20 +445,27 @@ async fn replay_then_live_dedup_under_concurrent_write() {
     // ----- inject a write while the replay is blocked --------------------
     {
         let cove_id = cove.id.clone();
-        write_with_event_typed(repo.as_ref(), "user", None, &bus, move |tx| {
-            Box::pin(async move {
-                let w = wave_create_tx(
-                    tx,
-                    NewWave {
-                        cove_id,
-                        title: "during-replay".into(),
-                        sort: None,
-                    },
-                )
-                .await?;
-                Ok((w.clone(), Event::WaveUpdated(w)))
-            })
-        })
+        write_with_event_typed(
+            repo.as_ref(),
+            ActorId::User,
+            EventScope::System,
+            None,
+            &bus,
+            move |tx| {
+                Box::pin(async move {
+                    let w = wave_create_tx(
+                        tx,
+                        NewWave {
+                            cove_id,
+                            title: "during-replay".into(),
+                            sort: None,
+                        },
+                    )
+                    .await?;
+                    Ok((w.clone(), Event::WaveUpdated(w)))
+                })
+            },
+        )
         .await
         .unwrap();
     }
@@ -481,12 +541,19 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
                 color: "#abc".into(),
                 sort: None,
             };
-            let (cove, _) = write_with_event_typed::<Cove, _>(repo, "user", None, bus, move |tx| {
-                Box::pin(async move {
-                    let c = cove_create_tx(tx, p).await?;
-                    Ok((c.clone(), Event::CoveUpdated(c)))
-                })
-            })
+            let (cove, _) = write_with_event_typed::<Cove, _>(
+                repo,
+                ActorId::User,
+                EventScope::System,
+                None,
+                bus,
+                move |tx| {
+                    Box::pin(async move {
+                        let c = cove_create_tx(tx, p).await?;
+                        Ok((c.clone(), Event::CoveUpdated(c)))
+                    })
+                },
+            )
             .await
             .unwrap();
             state.last_cove = Some(cove.id);
@@ -497,20 +564,27 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
                 return false;
             };
             let title = title.clone();
-            let (wave, _) = write_with_event_typed(repo, "user", None, bus, move |tx| {
-                Box::pin(async move {
-                    let w = wave_create_tx(
-                        tx,
-                        NewWave {
-                            cove_id,
-                            title,
-                            sort: None,
-                        },
-                    )
-                    .await?;
-                    Ok((w.clone(), Event::WaveUpdated(w)))
-                })
-            })
+            let (wave, _) = write_with_event_typed(
+                repo,
+                ActorId::User,
+                EventScope::System,
+                None,
+                bus,
+                move |tx| {
+                    Box::pin(async move {
+                        let w = wave_create_tx(
+                            tx,
+                            NewWave {
+                                cove_id,
+                                title,
+                                sort: None,
+                            },
+                        )
+                        .await?;
+                        Ok((w.clone(), Event::WaveUpdated(w)))
+                    })
+                },
+            )
             .await
             .unwrap();
             state.last_wave = Some(wave.id);
@@ -520,21 +594,28 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
             let Some(wave_id) = state.last_wave.clone() else {
                 return false;
             };
-            let (card, _) = write_with_event_typed(repo, "user", None, bus, move |tx| {
-                Box::pin(async move {
-                    let c = card_create_tx(
-                        tx,
-                        NewCard {
-                            wave_id,
-                            kind: "terminal".into(),
-                            sort: None,
-                            payload: serde_json::json!({}),
-                        },
-                    )
-                    .await?;
-                    Ok((c.clone(), Event::CardAdded(c)))
-                })
-            })
+            let (card, _) = write_with_event_typed(
+                repo,
+                ActorId::User,
+                EventScope::System,
+                None,
+                bus,
+                move |tx| {
+                    Box::pin(async move {
+                        let c = card_create_tx(
+                            tx,
+                            NewCard {
+                                wave_id,
+                                kind: "terminal".into(),
+                                sort: None,
+                                payload: serde_json::json!({}),
+                            },
+                        )
+                        .await?;
+                        Ok((c.clone(), Event::CardAdded(c)))
+                    })
+                },
+            )
             .await
             .unwrap();
             state.last_card = Some(card.id);
@@ -553,12 +634,19 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
                 kind: "status".into(),
                 payload: serde_json::json!({ "state": "Idle" }),
             };
-            let (_o, _) = write_with_event_typed(repo, "kernel", None, bus, move |tx| {
-                Box::pin(async move {
-                    let o = overlay_upsert_tx(tx, new_overlay).await?;
-                    Ok((o.clone(), Event::OverlaySet(o)))
-                })
-            })
+            let (_o, _) = write_with_event_typed(
+                repo,
+                ActorId::Kernel,
+                EventScope::System,
+                None,
+                bus,
+                move |tx| {
+                    Box::pin(async move {
+                        let o = overlay_upsert_tx(tx, new_overlay).await?;
+                        Ok((o.clone(), Event::OverlaySet(o)))
+                    })
+                },
+            )
             .await
             .unwrap();
             true
@@ -661,20 +749,27 @@ async fn event_version_round_trips_from_write_to_replay() {
     let (repo, concrete, bus) = boot().await;
 
     // Write one event through the production path.
-    let (_cove, event_id) = write_with_event_typed(repo.as_ref(), "user", None, &bus, move |tx| {
-        Box::pin(async move {
-            let cove = cove_create_tx(
-                tx,
-                NewCove {
-                    name: "version-rt".into(),
-                    color: "#000".into(),
-                    sort: None,
-                },
-            )
-            .await?;
-            Ok((cove.clone(), Event::CoveUpdated(cove)))
-        })
-    })
+    let (_cove, event_id) = write_with_event_typed(
+        repo.as_ref(),
+        ActorId::User,
+        EventScope::System,
+        None,
+        &bus,
+        move |tx| {
+            Box::pin(async move {
+                let cove = cove_create_tx(
+                    tx,
+                    NewCove {
+                        name: "version-rt".into(),
+                        color: "#000".into(),
+                        sort: None,
+                    },
+                )
+                .await?;
+                Ok((cove.clone(), Event::CoveUpdated(cove)))
+            })
+        },
+    )
     .await
     .expect("write_with_event ok");
 
@@ -692,9 +787,9 @@ async fn event_version_round_trips_from_write_to_replay() {
 
     // Replay path round-trips the version into the envelope.
     let log = repo.events_since(0, None).await.unwrap();
-    let (replayed_id, replayed_version, _ev) = log
+    let (replayed_id, replayed_version, _scope, _ev) = log
         .into_iter()
-        .find(|(id, _, _)| *id == event_id)
+        .find(|(id, _, _, _)| *id == event_id)
         .expect("replayed event present");
     assert_eq!(replayed_id, event_id);
     assert_eq!(
@@ -729,9 +824,64 @@ async fn replay_treats_unstamped_row_as_version_one() {
 
     let log = repo.events_since(0, None).await.unwrap();
     assert_eq!(log.len(), 1);
-    let (_id, version, _ev) = &log[0];
+    let (_id, version, _scope, _ev) = &log[0];
     assert_eq!(
         *version, 1,
         "post-migration default backfills unstamped rows to version 1"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// PR2 of #136: events_since NULL-scope fallback. A row whose `scope_*`
+// columns are NULL (pre-migration history, or any hand-inserted row) must
+// load back as `EventScope::System` — replay must never strand a client on
+// malformed scope.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn replay_falls_back_to_system_scope_on_null_columns() {
+    let (repo, concrete, _bus) = boot().await;
+
+    // Hand-insert a pre-PR2 row: only the columns that existed before
+    // migration 0007 are bound. The `scope_kind` column has a `NOT NULL
+    // DEFAULT 'system'` clause, so it backfills automatically; the
+    // ancestor cols (`scope_cove` / `scope_wave` / `scope_card`) stay
+    // NULL. This is exactly the shape any row written before PR2 lands
+    // takes after the migration's column defaults fire.
+    sqlx::query(
+        r##"INSERT INTO events (kind, payload, actor, at, correlation, event_version)
+           VALUES ('cove.updated', '{"id":"c","name":"n","color":"#000","sort":0,"created_at":0,"updated_at":0}',
+                   '"user"', 0, NULL, 1)"##,
+    )
+    .execute(concrete.pool())
+    .await
+    .unwrap();
+
+    // Hand-insert a post-PR2 row with full scope_* columns populated.
+    sqlx::query(
+        r##"INSERT INTO events (kind, payload, actor, at, correlation, event_version,
+                                 scope_kind, scope_cove, scope_wave, scope_card)
+           VALUES ('cove.updated', '{"id":"c2","name":"n2","color":"#000","sort":0,"created_at":0,"updated_at":0}',
+                   '"user"', 0, NULL, 1, 'cove', 'c2', NULL, NULL)"##,
+    )
+    .execute(concrete.pool())
+    .await
+    .unwrap();
+
+    let log = repo.events_since(0, None).await.unwrap();
+    assert_eq!(log.len(), 2);
+
+    let (_, _, scope, _) = &log[0];
+    assert_eq!(
+        *scope,
+        EventScope::System,
+        "NULL scope_* falls back to System"
+    );
+
+    let (_, _, scope, _) = &log[1];
+    assert_eq!(
+        *scope,
+        EventScope::Cove { cove: "c2".into() },
+        "post-PR2 row reconstructs typed scope"
     );
 }

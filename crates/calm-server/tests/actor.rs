@@ -25,7 +25,8 @@ use calm_server::actor::actor_middleware;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, overlay_upsert_tx};
 use calm_server::db::write_with_event_typed;
-use calm_server::event::{Event, EventBus};
+use calm_server::event::{Event, EventBus, EventScope};
+use calm_server::ids::ActorId;
 use calm_server::model::{NewCove, NewOverlay, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
@@ -107,24 +108,49 @@ async fn post_cove_and_read_actor(
 // 1. No header → actor recorded as "user".
 // ---------------------------------------------------------------------------
 
+/// PR2 of #136 typed the actor field. `events.actor` now stores the
+/// JSON form of [`ActorId`]; the route's `Actor::to_actor_id()` maps
+/// the header string back onto the typed enum. The middleware's
+/// validation surface is unchanged — only the on-disk shape moved.
+fn parse_actor_json(s: &str) -> serde_json::Value {
+    serde_json::from_str(s).expect("events.actor is JSON-serialized ActorId")
+}
+
 #[tokio::test]
 async fn missing_header_defaults_to_user_actor() {
     let (app, repo, _state) = boot().await;
     let (status, actor) = post_cove_and_read_actor(app, &repo, None).await;
     assert_eq!(status, StatusCode::CREATED);
-    assert_eq!(actor.as_deref(), Some("user"));
+    assert_eq!(
+        parse_actor_json(actor.as_deref().unwrap()),
+        serde_json::json!({"kind": "User"})
+    );
 }
 
 // ---------------------------------------------------------------------------
-// 2. Valid AI header → recorded verbatim.
+// 2. Valid AI header → mapped onto AiCodex; non-`codex` forms collapse to User.
 // ---------------------------------------------------------------------------
+//
+// PR2 of #136 — the route-level `Actor::to_actor_id()` mapping only
+// covers `"user"` → `User` and `"ai:codex"` → `AiCodex(<empty>)` today
+// (the only two header forms a production deploy actually emits; the
+// codex bridge stamps `ai:codex`, every other caller uses no header).
+// Any other `ai:<id>` form falls through to the defensive `User`
+// fallback — PR3+ will refine this once typed actors are wired into the
+// dispatcher.
 
 #[tokio::test]
 async fn valid_ai_actor_recorded() {
     let (app, repo, _state) = boot().await;
     let (status, actor) = post_cove_and_read_actor(app, &repo, Some("ai:codex")).await;
     assert_eq!(status, StatusCode::CREATED);
-    assert_eq!(actor.as_deref(), Some("ai:codex"));
+    // `AiCodex` with a placeholder (empty) CardId — REST has no card
+    // context at actor-extraction. PR3 will reattribute via the wave
+    // the request touches.
+    assert_eq!(
+        parse_actor_json(actor.as_deref().unwrap()),
+        serde_json::json!({"kind": "AiCodex", "id": ""})
+    );
 }
 
 #[tokio::test]
@@ -132,7 +158,12 @@ async fn valid_ai_actor_with_dashes_recorded() {
     let (app, repo, _state) = boot().await;
     let (status, actor) = post_cove_and_read_actor(app, &repo, Some("ai:claude-3-5")).await;
     assert_eq!(status, StatusCode::CREATED);
-    assert_eq!(actor.as_deref(), Some("ai:claude-3-5"));
+    // Non-`codex` AI ids collapse to the defensive `User` fallback in
+    // PR2. Documented in `Actor::to_actor_id` — PR3+ may refine.
+    assert_eq!(
+        parse_actor_json(actor.as_deref().unwrap()),
+        serde_json::json!({"kind": "User"})
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -286,11 +317,11 @@ async fn plugin_callback_path_writes_plugin_actor_regardless_of_middleware() {
         .unwrap();
 
     // Exactly what `plugin_host::callbacks::overlay_set` does after the
-    // perm check — the production code path is:
-    //   let actor = format!("plugin:{}", ctx.plugin_id);
-    //   write_with_event_typed(repo, &actor, None, &bus, |tx| { ... })
+    // perm check. PR2 of #136 typed the actor:
+    //   let actor = ActorId::Plugin(ctx.plugin_id.to_string());
+    //   write_with_event_typed(repo, actor, scope, None, &bus, |tx| { ... })
     let plugin_id = "hello-world";
-    let actor = format!("plugin:{plugin_id}");
+    let actor = ActorId::Plugin(plugin_id.to_string());
     let new_overlay = NewOverlay {
         plugin_id: plugin_id.to_string(),
         entity_kind: "wave".into(),
@@ -300,7 +331,11 @@ async fn plugin_callback_path_writes_plugin_actor_regardless_of_middleware() {
     };
     let (overlay, event_id) = write_with_event_typed(
         state.repo.as_ref(),
-        &actor,
+        actor,
+        EventScope::Wave {
+            wave: wave.id.clone(),
+            cove: cove.id.clone(),
+        },
         None,
         &state.events,
         move |tx| {
@@ -320,8 +355,92 @@ async fn plugin_callback_path_writes_plugin_actor_regardless_of_middleware() {
         .await
         .unwrap();
     assert_eq!(row.0, "overlay.set");
+    // PR2 of #136: events.actor stores the typed JSON form.
+    let actor_json: serde_json::Value = serde_json::from_str(&row.1).unwrap();
     assert_eq!(
-        row.1, "plugin:hello-world",
-        "plugin-callback path must stamp `plugin:<id>` even when REST middleware would reject it"
+        actor_json,
+        serde_json::json!({"kind": "Plugin", "id": "hello-world"}),
+        "plugin-callback path must stamp Plugin(<id>) even when REST middleware would reject it"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 7. PR2 of #136 end-to-end: POST /api/cards stamps the full scope chain.
+// ---------------------------------------------------------------------------
+//
+// Drive the REST surface end-to-end and assert the resulting `events` row
+// carries `scope_kind = 'card'` plus the full `scope_card` / `scope_wave`
+// / `scope_cove` ancestor chain. This is the spot-check the issue brief
+// calls out — a single test that exercises the whole pipeline (route →
+// `card_scope` helper → `write_with_event_typed` → `event_append_in_tx`
+// → SQL bind) instead of unit-testing the layers in isolation.
+
+#[tokio::test]
+async fn create_card_stamps_full_scope_chain() {
+    let (app, repo, _state) = boot().await;
+
+    // Seed a cove + wave so the card has somewhere to live.
+    let cove = repo
+        .cove_create(NewCove {
+            name: "c".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo
+        .wave_create(NewWave {
+            cove_id: cove.id.clone(),
+            title: "w".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+
+    let body = serde_json::json!({
+        "kind": "plugin:test:demo",
+        "payload": {}
+    })
+    .to_string();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/waves/{}/cards", wave.id))
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let resp_body = to_bytes(resp.into_body(), 8192).await.unwrap();
+    let card_json: serde_json::Value = serde_json::from_slice(&resp_body).unwrap();
+    let card_id = card_json["id"].as_str().expect("card id").to_string();
+
+    // The most recent event row is the one we just produced. Read every
+    // scope_* column and assert the full chain is populated.
+    let row: (String, Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT scope_kind, scope_cove, scope_wave, scope_card
+         FROM events ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(row.0, "card", "scope_kind == 'card' for card.added");
+    assert_eq!(
+        row.1.as_deref(),
+        Some(cove.id.as_str()),
+        "scope_cove populated"
+    );
+    assert_eq!(
+        row.2.as_deref(),
+        Some(wave.id.as_str()),
+        "scope_wave populated"
+    );
+    assert_eq!(
+        row.3.as_deref(),
+        Some(card_id.as_str()),
+        "scope_card populated with the freshly-minted card id"
     );
 }

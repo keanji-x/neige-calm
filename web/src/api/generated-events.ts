@@ -80,6 +80,26 @@ kind: string,
  */
 payload: unknown, } };
 
+/**
+ * Where an event lives in the cove → wave → card hierarchy.
+ *
+ * PR2 of #136 stamps a scope on every persisted event so future PRs can
+ * filter / route / authorize without re-parsing the event payload:
+ *
+ *   * PR3 (`enforce_role`) gates writes per card scope.
+ *   * PR5 (`SubscribeFilter` + `Dispatcher`) routes notifications + work
+ *     queues by wave scope.
+ *   * PR8 (`wait_for_events`) long-polls a scoped cursor for MCP tools.
+ *
+ * `EventScope::System` is the catch-all for events that genuinely don't
+ * belong to a single cove/wave/card (`Event::PluginState`, the
+ * CoveCreated case where the cove doesn't exist before the event, and
+ * the legacy NULL-on-replay fallback for pre-PR2 history rows). Pick
+ * `System` only when you've ruled out the more specific scopes — a
+ * `System`-tagged event opts out of every per-scope filter that follows.
+ */
+export type EventScope = { "kind": "System" } | { "kind": "Cove", "id": { cove: CoveId, } } | { "kind": "Wave", "id": { wave: WaveId, cove: CoveId, } } | { "kind": "Card", "id": { card: CardId, wave: WaveId, cove: CoveId, } };
+
 export type Overlay = { id: string, plugin_id: string, 
 /**
  * `"wave"` or `"card"`.

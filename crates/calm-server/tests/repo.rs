@@ -584,6 +584,7 @@ async fn card_with_terminal_create_tx_atomic_writes_card_terminal_and_payload_li
     let mut tx = repo.pool().begin().await.unwrap();
     let (card, term) = calm_server::db::sqlite::card_with_terminal_create_tx(
         &mut tx,
+        calm_server::model::new_id(),
         w.id.clone(),
         None,
         "bash".into(),
@@ -628,6 +629,7 @@ async fn card_with_terminal_create_tx_rolls_back_on_invalid_wave() {
     let mut tx = repo.pool().begin().await.unwrap();
     let err = calm_server::db::sqlite::card_with_terminal_create_tx(
         &mut tx,
+        calm_server::model::new_id(),
         "wave-that-does-not-exist".into(),
         None,
         "bash".into(),
@@ -665,6 +667,7 @@ async fn card_with_terminal_create_tx_uses_caller_supplied_sort() {
     let mut tx = repo.pool().begin().await.unwrap();
     let (card, _term) = calm_server::db::sqlite::card_with_terminal_create_tx(
         &mut tx,
+        calm_server::model::new_id(),
         w.id.clone(),
         Some(42.0),
         "bash".into(),
@@ -694,6 +697,7 @@ async fn card_with_terminal_create_tx_defaults_sort_when_none() {
     let mut tx = repo.pool().begin().await.unwrap();
     let (card, _term) = calm_server::db::sqlite::card_with_terminal_create_tx(
         &mut tx,
+        calm_server::model::new_id(),
         w.id.clone(),
         None,
         "bash".into(),

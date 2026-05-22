@@ -9,10 +9,11 @@
 //! per Scope A — see `routes/coves.rs` for the template.
 
 use crate::actor::Actor;
+use crate::db::RepoRead;
 use crate::db::sqlite::{overlay_delete_tx, overlay_upsert_tx};
 use crate::db::write_with_event_typed;
 use crate::error::{ErrorBody, Result};
-use crate::event::Event;
+use crate::event::{Event, EventScope};
 use crate::model::{NewOverlay, Overlay};
 use crate::state::AppState;
 use crate::validation::validate_overlay_payload;
@@ -24,6 +25,58 @@ use axum::{
 };
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
+
+/// Build an `EventScope` for an overlay write keyed by `(entity_kind, entity_id)`.
+/// PR2 of #136 — overlays are polymorphic, so we pattern-match on the
+/// declared `entity_kind`:
+///
+///   * `"card"` — resolve `card → wave → cove` and emit `EventScope::Card`.
+///   * `"wave"` — resolve `wave → cove` and emit `EventScope::Wave`.
+///   * anything else — fall back to `EventScope::System` (a plugin
+///     emitting on a kind the kernel doesn't model can't be routed by
+///     ancestor scope; the firehose still sees it).
+///
+/// Missing card / wave rows surface as `EventScope::System` rather than
+/// `NotFound` — overlay writes against a deleted entity are legal (the
+/// row just becomes a tombstone). We don't want to refuse the write for
+/// a stale row when the same write against a live row would succeed.
+pub(crate) async fn overlay_scope(
+    repo: &dyn RepoRead,
+    entity_kind: &str,
+    entity_id: &str,
+) -> Result<EventScope> {
+    match entity_kind {
+        "card" => {
+            let card = match repo.card_get(entity_id).await? {
+                Some(c) => c,
+                None => return Ok(EventScope::System),
+            };
+            let wave = match repo.wave_get(card.wave_id.as_str()).await? {
+                Some(w) => w,
+                None => return Ok(EventScope::System),
+            };
+            Ok(EventScope::Card {
+                card: card.id,
+                wave: wave.id,
+                cove: wave.cove_id,
+            })
+        }
+        "wave" => {
+            let wave = match repo.wave_get(entity_id).await? {
+                Some(w) => w,
+                None => return Ok(EventScope::System),
+            };
+            Ok(EventScope::Wave {
+                wave: wave.id,
+                cove: wave.cove_id,
+            })
+        }
+        // `view` and any other plugin-defined entity_kind: the kernel
+        // doesn't track an ancestor chain we can populate, so go System
+        // and let PR5's per-entity subscriber filter on the payload.
+        _ => Ok(EventScope::System),
+    }
+}
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -79,9 +132,11 @@ pub(crate) async fn upsert_overlay(
     // D4: kernel-owned overlay kinds (status/progress/eta/now) must match
     // their shape; plugin-defined kinds stay opaque.
     validate_overlay_payload(&p.kind, &p.payload)?;
+    let scope = overlay_scope(s.repo.as_ref(), &p.entity_kind, &p.entity_id).await?;
     let (overlay, _id) = write_with_event_typed(
         s.repo.as_ref(),
-        actor.as_str(),
+        actor.to_actor_id(),
+        scope,
         None,
         &s.events,
         move |tx| {
@@ -118,9 +173,11 @@ pub(crate) async fn delete_overlay(
     actor: Actor,
     Json(b): Json<OverlayDeleteBody>,
 ) -> Result<StatusCode> {
+    let scope = overlay_scope(s.repo.as_ref(), &b.entity_kind, &b.entity_id).await?;
     let (_unit, _id) = write_with_event_typed(
         s.repo.as_ref(),
-        actor.as_str(),
+        actor.to_actor_id(),
+        scope,
         None,
         &s.events,
         move |tx| {

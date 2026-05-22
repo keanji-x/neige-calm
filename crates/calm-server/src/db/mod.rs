@@ -87,7 +87,8 @@
 //! you're stepping outside the gate.
 
 use crate::error::Result;
-use crate::event::Event;
+use crate::event::{Event, EventScope};
+use crate::ids::ActorId;
 use crate::model::*;
 use async_trait::async_trait;
 use futures::future::BoxFuture;
@@ -201,14 +202,28 @@ pub trait RepoEventWrite: RepoRead {
     ///     see nothing, but that's fine (they have no live socket).
     ///
     /// `actor` is the declared identity of the producer
-    /// (`"user"`, `"kernel"`, `"plugin:<id>"`, `"ai:<id>"`). Not
-    /// authenticated — see design doc §1.1 disclaimer.
+    /// ([`ActorId::User`] / [`ActorId::Kernel`] / [`ActorId::Plugin`] /
+    /// [`ActorId::AiCodex`] / …). Not authenticated — see design doc
+    /// §1.1 disclaimer. PR2 of #136 typed this from `&str` to `ActorId`
+    /// so PR3's `enforce_role` can pattern-match on the variant cleanly.
+    /// The value is JSON-serialized into the existing `events.actor`
+    /// TEXT column (`serde_json::to_string(&actor)`) — forward-compatible
+    /// with future actor enrichment without a schema bump.
+    ///
+    /// `scope` is the event's "home scope" in the cove → wave → card
+    /// hierarchy. Persisted into the `events.scope_*` columns added in
+    /// migration 0007 so PR3/PR5/PR8 can filter / route / authorize
+    /// without re-parsing the event payload. Pick the most specific
+    /// scope you can determine at the call site; fall back to
+    /// [`EventScope::System`] only when no scope is determinable
+    /// (e.g. plugin state transitions, server-internal lifecycle).
     ///
     /// `correlation` is optional; populated for plugin tool-call writes
     /// per design §9 (`"user_tool_call:<call_id>"`).
     async fn write_with_event(
         &self,
-        actor: &str,
+        actor: ActorId,
+        scope: EventScope,
         correlation: Option<&str>,
         bus: &crate::event::EventBus,
         f: WriteWithEventFn<'_>,
@@ -222,9 +237,16 @@ pub trait RepoEventWrite: RepoRead {
     /// `routes::codex::ingest_hook`) and `Event::PluginState` (plugin
     /// supervisor lifecycle in `plugin_host::PluginHost::emit_state`).
     /// Returns the assigned `events.id`.
+    ///
+    /// PR2 of #136: `actor` is now typed [`ActorId`]; `scope` carries the
+    /// event's home scope (use [`EventScope::System`] for plugin-state
+    /// transitions which have no entity scope; use [`EventScope::Card`]
+    /// for codex hooks when the wave→cove chain is joinable, otherwise
+    /// fall back to [`EventScope::System`]).
     async fn log_pure_event(
         &self,
-        actor: &str,
+        actor: ActorId,
+        scope: EventScope,
         correlation: Option<&str>,
         bus: &crate::event::EventBus,
         event: Event,
@@ -248,17 +270,20 @@ pub trait RepoEventWrite: RepoRead {
     /// are logged + skipped, not propagated as an error — corrupt history
     /// shouldn't strand otherwise-connected clients.
     ///
-    /// Each tuple is `(events.id, event_version, Event)`. The
+    /// Each tuple is `(events.id, event_version, EventScope, Event)`. The
     /// `event_version` is the value persisted on the row (migration 0006);
     /// rows that predate the migration backfill to `1` via the column
-    /// default. The replay path stamps this onto the `BroadcastEnvelope`
-    /// so frame consumers see the version the row was written under, not
-    /// the kernel's current `SYNC_EVENT_VERSION`.
+    /// default. The `EventScope` is reconstructed from the `events.scope_*`
+    /// columns added in migration 0007 — rows that predate it (NULL
+    /// ancestor cols) load as [`EventScope::System`]. The replay path
+    /// stamps both onto the `BroadcastEnvelope` so frame consumers see the
+    /// version + scope the row was written under, not the kernel's current
+    /// constants.
     async fn events_since(
         &self,
         since_id: i64,
         limit: Option<i64>,
-    ) -> Result<Vec<(i64, u32, Event)>>;
+    ) -> Result<Vec<(i64, u32, EventScope, Event)>>;
 
     /// Lowest live `events.id`, or `None` if the table is empty.
     ///
@@ -450,7 +475,8 @@ impl<T> Repo for T where T: RouteRepo + RepoSyncDomainRaw + ?Sized {}
 /// commit-then-emit) come from the trait method.
 pub async fn write_with_event_typed<R, F>(
     repo: &dyn RepoEventWrite,
-    actor: &str,
+    actor: ActorId,
+    scope: EventScope,
     correlation: Option<&str>,
     bus: &crate::event::EventBus,
     f: F,
@@ -477,7 +503,7 @@ where
     });
 
     let event_id = repo
-        .write_with_event(actor, correlation, bus, boxed)
+        .write_with_event(actor, scope, correlation, bus, boxed)
         .await?;
     let row = Arc::try_unwrap(captured)
         .map_err(|_| {

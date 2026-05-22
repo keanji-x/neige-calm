@@ -40,6 +40,7 @@ use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus};
+use calm_server::ids::{ActorId, CardId};
 use calm_server::model::{NewCard, NewCove, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
@@ -377,7 +378,7 @@ async fn auto_submit_subscriber_skips_card_without_prompt() {
     // the card, the gate at `maybe_submit` should short-circuit
     // *before* it touches the daemon socket.
     events.emit(
-        "ai:codex",
+        ActorId::AiCodex(CardId::from("test")),
         Event::CodexHook {
             card_id: card.id.clone(),
             kind: "hook.codex.session_start".into(),
@@ -544,7 +545,7 @@ async fn route_to_subscriber_chain_skips_auto_submit_for_empty_or_absent_prompt(
             // subscriber's gate should short-circuit before touching
             // the socket.
             events.emit(
-                "ai:codex",
+                ActorId::AiCodex(CardId::from("test")),
                 Event::CodexHook {
                     card_id: card.id.clone(),
                     kind: "hook.codex.session_start".into(),

@@ -47,7 +47,8 @@ use serde::Deserialize;
 
 use crate::db::RepoEventWrite;
 use crate::db::sqlite::SqlxRepo;
-use crate::event::{Event, EventBus};
+use crate::event::{Event, EventBus, EventScope};
+use crate::ids::ActorId;
 use crate::plugin_host::{PluginHost, PluginRegistry};
 use crate::state::{AppState, CodexClient, DaemonClient};
 
@@ -68,7 +69,16 @@ pub struct Fixture {
 #[derive(Debug, Clone, Deserialize)]
 pub struct FixtureEvent {
     pub kind: String,
-    pub actor: String,
+    /// PR2 of #136 — accepts both shapes so the loader round-trips:
+    ///   * `"user"` / `"kernel"` / `"ai:codex"` — the pre-PR2 string
+    ///     audit grammar (still present in checked-in fixtures).
+    ///   * `{"kind": "User"}` / `{"kind": "AiCodex", "id": "..."}` —
+    ///     the typed [`ActorId`] JSON form the recorder now writes.
+    ///
+    /// [`seed_events`] maps either back onto the typed [`ActorId`] via
+    /// [`actor_from_legacy_string`] (string branch) or direct
+    /// deserialization (object branch).
+    pub actor: serde_json::Value,
     pub payload: serde_json::Value,
 }
 
@@ -202,10 +212,53 @@ pub async fn seed_events(
     for ev in &fixture.events {
         let event = Event::from_kind_and_payload(&ev.kind, ev.payload.clone())
             .map_err(|e| anyhow::anyhow!("reconstruct event {}: {}", ev.kind, e))?;
-        let id = repo.log_pure_event(&ev.actor, None, bus, event).await?;
+        // PR2 of #136: Fixtures predate typed actors/scope but the
+        // RECORD_SESSION recorder now writes the typed JSON form. Accept
+        // either:
+        //   * a bare string (`"user"` / `"kernel"` / `"ai:codex"` / `"plugin:foo"`)
+        //     — the legacy fixture grammar, mapped via `actor_from_legacy_string`,
+        //   * the typed `ActorId` JSON object (`{"kind":"User"}` etc.)
+        //     — directly deserialized.
+        // Scope is always `System` for fixtures — replays don't carry
+        // ancestor metadata and the NULL-fallback collapses it anyway.
+        // Tests that need scope assertions should write through the
+        // typed surface, not the fixture path.
+        let actor = if let Some(s) = ev.actor.as_str() {
+            actor_from_legacy_string(s)
+        } else {
+            serde_json::from_value(ev.actor.clone())
+                .map_err(|e| anyhow::anyhow!("invalid actor on fixture event: {e}"))?
+        };
+        let id = repo
+            .log_pure_event(actor, EventScope::System, None, bus, event)
+            .await?;
         out.push(id);
     }
     Ok(out)
+}
+
+/// Map a legacy fixture-actor string to an [`ActorId`]. The pre-PR2
+/// audit grammar was `"user"` / `"kernel"` / `"plugin:<id>"` / `"ai:<id>"`;
+/// PR2 of #136 superseded that with the typed enum. This helper preserves
+/// the round-trip for replay fixtures shipped under the old wire format.
+fn actor_from_legacy_string(s: &str) -> ActorId {
+    if s == "user" {
+        ActorId::User
+    } else if s == "kernel" {
+        ActorId::Kernel
+    } else if let Some(id) = s.strip_prefix("plugin:") {
+        ActorId::Plugin(id.to_string())
+    } else if s == "ai:codex" {
+        // Legacy fixtures don't carry a card id; PR3 will reattribute
+        // via the dispatcher. Use an empty CardId tag — honest "we know
+        // it's codex but the fixture doesn't say which card".
+        ActorId::AiCodex(crate::ids::CardId::from(""))
+    } else {
+        // Unknown legacy form — attribute as User rather than fabricate
+        // a typed identity from an attacker-controlled string. Replay
+        // fixtures are checked-in test data, so this is just paranoia.
+        ActorId::User
+    }
 }
 
 /// Wipe every row from the in-memory repo and re-seed the fixture's event
@@ -305,7 +358,7 @@ pub async fn assert_expected(repo: &SqlxRepo, fixture: &Fixture) -> anyhow::Resu
         // throughput target is 10k events per §6.4).
         let log = repo.events_since(0, None).await?;
         match log.last() {
-            Some((_, _, ev)) => {
+            Some((_, _, _, ev)) => {
                 let actual = ev.kind_tag();
                 if actual == expected_kind {
                     matched.push(format!("last_event_kind == {expected_kind}"));
@@ -405,7 +458,7 @@ pub async fn derive_layout_positions(
 ) -> anyhow::Result<Option<serde_json::Map<String, serde_json::Value>>> {
     let log = repo.events_since(0, None).await?;
     Ok(fold_layout_positions(
-        log.into_iter().map(|(_id, _ver, ev)| ev),
+        log.into_iter().map(|(_id, _ver, _scope, ev)| ev),
         wave_id,
     ))
 }

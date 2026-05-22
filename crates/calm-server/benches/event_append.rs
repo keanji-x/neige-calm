@@ -22,7 +22,8 @@ use std::sync::Arc;
 use calm_server::db::Repo;
 use calm_server::db::sqlite::{SqlxRepo, cove_create_tx};
 use calm_server::db::write_with_event_typed;
-use calm_server::event::{Event, EventBus};
+use calm_server::event::{Event, EventBus, EventScope};
+use calm_server::ids::ActorId;
 use calm_server::model::NewCove;
 use criterion::{Criterion, criterion_group, criterion_main};
 
@@ -62,15 +63,21 @@ fn event_append_bench(c: &mut Criterion) {
                     color: "#000".into(),
                     sort: None,
                 };
-                let (cove, _id) =
-                    write_with_event_typed(repo.as_ref(), "user", None, &bus, move |tx| {
+                let (cove, _id) = write_with_event_typed(
+                    repo.as_ref(),
+                    ActorId::User,
+                    EventScope::System,
+                    None,
+                    &bus,
+                    move |tx| {
                         Box::pin(async move {
                             let cove = cove_create_tx(tx, p).await?;
                             Ok((cove.clone(), Event::CoveUpdated(cove)))
                         })
-                    })
-                    .await
-                    .unwrap();
+                    },
+                )
+                .await
+                .unwrap();
                 criterion::black_box(cove);
             }
         });

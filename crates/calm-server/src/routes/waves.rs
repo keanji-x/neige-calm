@@ -8,7 +8,7 @@ use crate::actor::Actor;
 use crate::db::sqlite::{wave_create_tx, wave_delete_tx, wave_update_tx};
 use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
-use crate::event::Event;
+use crate::event::{Event, EventScope};
 use crate::model::{NewWave, Wave, WaveDetail, WavePatch};
 use crate::state::AppState;
 use axum::{
@@ -84,9 +84,18 @@ pub(crate) async fn create_wave(
     actor: Actor,
     Json(p): Json<NewWave>,
 ) -> Result<(StatusCode, Json<Wave>)> {
+    // Cove is known up-front (it's a required field on NewWave); the wave
+    // id is minted inside the txn, so we can't tag the create with
+    // `EventScope::Wave { wave: <new_id>, ... }` without racing the
+    // commit-then-emit invariant. `Cove`-scoped is the most specific
+    // scope we can stamp deterministically — a per-cove subscriber sees
+    // the create; a per-wave subscriber will pick it up via the cove
+    // channel (PR5 routes by ancestor too).
+    let cove = p.cove_id.clone();
     let (wave, _id) = write_with_event_typed(
         s.repo.as_ref(),
-        actor.as_str(),
+        actor.to_actor_id(),
+        EventScope::Cove { cove },
         None,
         &s.events,
         move |tx| {
@@ -118,9 +127,22 @@ pub(crate) async fn update_wave(
     Path(id): Path<String>,
     Json(p): Json<WavePatch>,
 ) -> Result<Json<Wave>> {
+    // Need cove_id for the scope. Wave rows are immutable wrt their
+    // parent cove, so reading outside the txn is safe (same rationale as
+    // the delete path below).
+    let existing = s
+        .repo
+        .wave_get(&id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("wave {id}")))?;
+    let scope = EventScope::Wave {
+        wave: existing.id.clone(),
+        cove: existing.cove_id.clone(),
+    };
     let (wave, _id) = write_with_event_typed(
         s.repo.as_ref(),
-        actor.as_str(),
+        actor.to_actor_id(),
+        scope,
         None,
         &s.events,
         move |tx| {
@@ -162,9 +184,14 @@ pub(crate) async fn delete_wave(
         .ok_or_else(|| CalmError::NotFound(format!("wave {id}")))?;
     let cove_id = wave.cove_id.clone();
     let wave_id = wave.id.clone();
+    let scope = EventScope::Wave {
+        wave: wave_id.clone(),
+        cove: cove_id.clone(),
+    };
     let (_unit, _id) = write_with_event_typed(
         s.repo.as_ref(),
-        actor.as_str(),
+        actor.to_actor_id(),
+        scope,
         None,
         &s.events,
         move |tx| {

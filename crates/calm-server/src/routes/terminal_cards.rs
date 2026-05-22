@@ -26,7 +26,8 @@ use crate::db::sqlite::card_with_terminal_create_tx;
 use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::Event;
-use crate::model::Card;
+use crate::model::{Card, new_id};
+use crate::routes::cards::card_scope;
 use crate::routes::terminal::spawn_daemon_for;
 use crate::state::AppState;
 use axum::{
@@ -118,20 +119,35 @@ pub(crate) async fn create_terminal_card(
     //    A single `card.added` envelope carries the final-state card to all
     //    peers — no intermediate `payload=null` snapshot, no follow-up
     //    `card.updated` patch.
+    //
+    //    PR2 of #136: pre-mint the card id so `EventScope::Card { card,
+    //    .. }` is determinable before the txn opens (matches the codex
+    //    endpoint's pattern from #117).
     let sort = p.sort;
+    let card_id = new_id();
     let program_for_tx = program.clone();
     let cwd_for_tx = cwd.clone();
     let env_for_tx = env.clone();
+    let scope = card_scope(
+        s.repo.as_ref(),
+        card_id.clone().into(),
+        wave_id.clone().into(),
+    )
+    .await?;
+    let card_id_for_tx = card_id.clone();
+    let wave_id_for_tx = wave_id;
     let (card, _id) = write_with_event_typed(
         s.repo.as_ref(),
-        actor.as_str(),
+        actor.to_actor_id(),
+        scope,
         None,
         &s.events,
         move |tx| {
             Box::pin(async move {
                 let (card, _term) = card_with_terminal_create_tx(
                     tx,
-                    wave_id.into(),
+                    card_id_for_tx,
+                    wave_id_for_tx.into(),
                     sort,
                     program_for_tx,
                     cwd_for_tx,
