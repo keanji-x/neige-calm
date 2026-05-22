@@ -7,8 +7,9 @@ use crate::config::Config;
 use crate::db::{Repo, RouteRepo};
 use crate::event::EventBus;
 use crate::plugin_host::{PluginHost, PluginRegistry};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Route-facing handle: the trait object `AppState::repo` exposes. Excludes
 /// `RepoSyncDomainRaw` — see `db/mod.rs` module doc for the capability split.
@@ -218,6 +219,188 @@ impl DaemonClient {
     /// Socket path for a given terminal id.
     pub fn sock_path(&self, terminal_id: &str) -> PathBuf {
         self.data_dir.join(format!("{terminal_id}.sock"))
+    }
+
+    /// Kernel-private transient stdin injection. Opens the daemon's unix
+    /// socket, frames a [`ClientHello`] asserting
+    /// `kernel_originated_input = true` so the daemon's owner-only gate
+    /// on [`ClientMsg::Input`] is relaxed for this connection, awaits
+    /// `ChildReady` if the snapshot says the child is not yet ready,
+    /// sends a single [`ClientMsg::Input`] with `input_seq = 1`, and
+    /// blocks until the matching [`DaemonMsg::InputAck`] confirms the
+    /// PTY write returned.
+    ///
+    /// The connection is closed (socket dropped) right after the ack
+    /// lands — no further frames are sent. The whole call is bounded by
+    /// `timeout` (5s in production); on timeout we log at warn and
+    /// return `Err(...)`, leaving the daemon untouched. Caller is
+    /// expected to degrade (the auto-submit path keeps the codex TUI
+    /// alive — the user can hit Enter manually).
+    ///
+    /// `terminal_id` is normalized to its hyphenated UUID form before
+    /// being placed on the handshake — `card.payload.terminal_id`
+    /// stores the simple no-dashes form (see `model::new_id`), and the
+    /// daemon validates against `Uuid::Display` (always hyphenated). If
+    /// the input isn't a valid UUID we pass it through verbatim and let
+    /// the daemon reject as `BadHandshake`.
+    ///
+    /// **Trust model**: this method is the *only* legitimate producer
+    /// of `kernel_originated_input = true`. It is reachable only from
+    /// in-process kernel code; the WS bridge in `ws/terminal.rs`
+    /// strips the bit unconditionally before forwarding any browser
+    /// `ClientHello`. See `ClientCapabilities` doc in `calm-session`
+    /// for the full trust model.
+    pub async fn inject_stdin(
+        &self,
+        sock_path: &Path,
+        terminal_id: &str,
+        bytes: &[u8],
+        timeout: Duration,
+    ) -> anyhow::Result<()> {
+        use calm_session::{
+            ClientCapabilities, ClientMsg, DaemonMsg, InitialScrollback, PROTOCOL_VERSION, PtySize,
+            RenderEncoding, Role, read_frame, write_frame,
+        };
+        use tokio::net::UnixStream;
+
+        let normalized = match uuid::Uuid::parse_str(terminal_id) {
+            Ok(u) => u.to_string(),
+            Err(_) => terminal_id.to_string(),
+        };
+
+        tokio::time::timeout(timeout, async move {
+            let mut stream = UnixStream::connect(sock_path).await.map_err(|e| {
+                anyhow::anyhow!(
+                    "connect daemon socket {}: {e}",
+                    sock_path.display()
+                )
+            })?;
+            let (mut rd, mut wr) = stream.split();
+
+            // ClientHello — Observer role (we are not the user, we are the
+            // kernel relaying input). `kernel_originated_input = true`
+            // unlocks the daemon's owner-only gate on `Input`. ResizeCommit
+            // and Kill remain owner-only even with this bit set — see
+            // `ClientCapabilities` doc.
+            let hello = ClientMsg::ClientHello {
+                protocol_version: PROTOCOL_VERSION,
+                terminal_id: normalized,
+                client_id: uuid::Uuid::new_v4(),
+                desired_size: PtySize {
+                    cols: 80,
+                    rows: 24,
+                    pixel_width: None,
+                    pixel_height: None,
+                },
+                cell_size: None,
+                initial_scrollback: InitialScrollback::None,
+                resume_from: None,
+                role_hint: Some(Role::Observer),
+                capabilities: ClientCapabilities {
+                    render_encodings: vec![RenderEncoding::Vt],
+                    supports_scrollback: false,
+                    supports_sixel: false,
+                    supports_images: false,
+                    kernel_originated_input: true,
+                },
+            };
+            write_frame(&mut wr, &hello).await?;
+
+            // Read ServerHello and learn whether the child is already
+            // ready. If not, wait for the one-shot ChildReady broadcast
+            // before injecting bytes — otherwise the input lands while
+            // codex is still loading its splash and gets eaten by the
+            // composer-init flush.
+            let server_hello: DaemonMsg = read_frame(&mut rd).await?;
+            let child_ready = match server_hello {
+                DaemonMsg::ServerHello {
+                    is_child_ready, ..
+                } => is_child_ready,
+                DaemonMsg::ProtocolError {
+                    code,
+                    message,
+                    expected_version,
+                } => {
+                    return Err(anyhow::anyhow!(
+                        "daemon ProtocolError {code:?}: {message} (expected_version={expected_version:?})"
+                    ));
+                }
+                other => {
+                    return Err(anyhow::anyhow!(
+                        "expected ServerHello as first frame, got {other:?}"
+                    ));
+                }
+            };
+
+            if !child_ready {
+                // Drain frames until ChildReady fires. RenderPatch /
+                // RenderSnapshot frames can interleave — skip them.
+                loop {
+                    let msg: DaemonMsg = read_frame(&mut rd).await?;
+                    match msg {
+                        DaemonMsg::ChildReady { .. } => break,
+                        DaemonMsg::TerminalExited { code, .. } => {
+                            return Err(anyhow::anyhow!(
+                                "daemon TerminalExited (code={code:?}) before ChildReady"
+                            ));
+                        }
+                        DaemonMsg::ProtocolError {
+                            code, message, ..
+                        } => {
+                            return Err(anyhow::anyhow!(
+                                "daemon ProtocolError {code:?}: {message}"
+                            ));
+                        }
+                        _ => continue,
+                    }
+                }
+            }
+
+            // Send the Input. `input_seq = 1` is monotonic for this
+            // ephemeral connection (which only ever sends one Input).
+            write_frame(
+                &mut wr,
+                &ClientMsg::Input {
+                    data: bytes.to_vec(),
+                    input_seq: 1,
+                },
+            )
+            .await?;
+
+            // Await the matching InputAck. The daemon emits acks in
+            // PTY-write completion order; since we only sent one Input,
+            // the next ack with `input_seq == 1` is ours. Skip any
+            // intervening RenderPatch / RenderSnapshot / etc.
+            loop {
+                let msg: DaemonMsg = read_frame(&mut rd).await?;
+                match msg {
+                    DaemonMsg::InputAck { input_seq: 1 } => break,
+                    DaemonMsg::TerminalExited { code, .. } => {
+                        return Err(anyhow::anyhow!(
+                            "daemon TerminalExited (code={code:?}) before InputAck"
+                        ));
+                    }
+                    DaemonMsg::ProtocolError {
+                        code, message, ..
+                    } => {
+                        return Err(anyhow::anyhow!(
+                            "daemon ProtocolError {code:?}: {message}"
+                        ));
+                    }
+                    _ => continue,
+                }
+            }
+
+            Ok::<(), anyhow::Error>(())
+        })
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "inject_stdin to {} timed out after {:?}",
+                sock_path.display(),
+                timeout
+            )
+        })?
     }
 }
 
