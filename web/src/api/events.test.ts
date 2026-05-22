@@ -320,3 +320,146 @@ describe('EventStream control frames', () => {
     expect(onEvent).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Connection-state observer (UI indicator for reconnect — issue follow-up)
+// ---------------------------------------------------------------------------
+
+describe('EventStream connection state', () => {
+  it('starts disconnected and emits the current state synchronously on subscribe', () => {
+    const s = new EventStream('ws://test/api/events');
+    const states: string[] = [];
+    s.onConnectionState((st) => states.push(st));
+    // Synchronous initial emission so React's useSyncExternalStore gets
+    // a defined snapshot on first render.
+    expect(states).toEqual(['disconnected']);
+    expect(s.state).toBe('disconnected');
+  });
+
+  it('transitions disconnected → connecting on start()', () => {
+    const s = new EventStream('ws://test/api/events');
+    const states: string[] = [];
+    s.onConnectionState((st) => states.push(st));
+    s.start();
+    expect(states).toEqual(['disconnected', 'connecting']);
+    expect(s.state).toBe('connecting');
+  });
+
+  it('does NOT transition to connected on WS open alone (replay window)', () => {
+    const s = new EventStream('ws://test/api/events');
+    s.subscribe(['*']);
+    s.start();
+    const ws = currentWs();
+
+    const states: string[] = [];
+    s.onConnectionState((st) => states.push(st));
+    // After subscribe — current state captured by the sync emission.
+    expect(states).toEqual(['connecting']);
+
+    ws.open();
+    // Just opening the socket is NOT "live" — server may still be
+    // streaming replay frames. State must stay `connecting` until
+    // `_replay_complete`.
+    expect(s.state).toBe('connecting');
+    expect(states).toEqual(['connecting']);
+  });
+
+  it('transitions to connected when _replay_complete arrives', () => {
+    const s = new EventStream('ws://test/api/events');
+    s.subscribe(['*']);
+    s.start();
+    const ws = currentWs();
+    ws.open();
+
+    const states: string[] = [];
+    s.onConnectionState((st) => states.push(st));
+    expect(states).toEqual(['connecting']);
+
+    ws.push({ _id: 1, ev: '_replay_complete' });
+    expect(s.state).toBe('connected');
+    expect(states).toEqual(['connecting', 'connected']);
+  });
+
+  it('transitions connected → connecting on socket close (reconnect path)', () => {
+    vi.useFakeTimers();
+    try {
+      const s = new EventStream('ws://test/api/events');
+      s.subscribe(['*']);
+      s.start();
+      const ws1 = currentWs();
+      ws1.open();
+      ws1.push({ _id: 1, ev: '_replay_complete' });
+      expect(s.state).toBe('connected');
+
+      const states: string[] = [];
+      s.onConnectionState((st) => states.push(st));
+      expect(states).toEqual(['connected']);
+
+      // Socket dies; auto-reconnect schedules another connect() via
+      // setTimeout(backoff). We must surface `connecting` IMMEDIATELY,
+      // not just when the next socket opens.
+      ws1.close();
+      expect(s.state).toBe('connecting');
+      expect(states).toEqual(['connected', 'connecting']);
+
+      // Drive the reconnect; a new ws is constructed but state stays
+      // `connecting` until the next `_replay_complete`.
+      vi.advanceTimersByTime(1000);
+      const ws2 = currentWs();
+      expect(ws2).not.toBe(ws1);
+      ws2.open();
+      expect(s.state).toBe('connecting');
+
+      ws2.push({ _id: 2, ev: '_replay_complete' });
+      expect(s.state).toBe('connected');
+      expect(states).toEqual(['connected', 'connecting', 'connected']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('transitions to disconnected on explicit close()', () => {
+    const s = new EventStream('ws://test/api/events');
+    s.subscribe(['*']);
+    s.start();
+    const ws = currentWs();
+    ws.open();
+    ws.push({ _id: 1, ev: '_replay_complete' });
+
+    const states: string[] = [];
+    s.onConnectionState((st) => states.push(st));
+    expect(states).toEqual(['connected']);
+
+    s.close();
+    expect(s.state).toBe('disconnected');
+    // After an explicit close, the WS close handler also fires —
+    // but `this.closed` is true, so the reconnect branch is skipped
+    // and no `connecting` transition is emitted.
+    expect(states).toEqual(['connected', 'disconnected']);
+  });
+
+  it('unsubscribe stops further notifications', () => {
+    const s = new EventStream('ws://test/api/events');
+    const states: string[] = [];
+    const off = s.onConnectionState((st) => states.push(st));
+    expect(states).toEqual(['disconnected']);
+    off();
+    s.start();
+    expect(states).toEqual(['disconnected']);
+  });
+
+  it('coalesces identical-state transitions (no duplicate emissions)', () => {
+    const s = new EventStream('ws://test/api/events');
+    const states: string[] = [];
+    s.onConnectionState((st) => states.push(st));
+    // After construct + sync emit.
+    expect(states).toEqual(['disconnected']);
+
+    s.start();
+    expect(states).toEqual(['disconnected', 'connecting']);
+
+    // A second `start()` is a no-op (the stream is already in `connecting`).
+    s.start();
+    expect(states).toEqual(['disconnected', 'connecting']);
+  });
+});
