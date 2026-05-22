@@ -31,6 +31,7 @@ pub mod card_role_cache;
 pub mod codex_auto_submit;
 pub mod config;
 pub mod db;
+pub mod dispatcher;
 pub mod error;
 pub mod event;
 pub mod ids;

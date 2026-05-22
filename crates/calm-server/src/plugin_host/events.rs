@@ -92,12 +92,35 @@ fn event_name(ev: &Event) -> &'static str {
 
 /// Plugin id carried by the event, if any. Only overlay events and plugin.state
 /// carry one in the current vocabulary.
+///
+/// PR5 of #136 hazard H1: every variant of `Event` is enumerated explicitly
+/// (no `_ =>` catch-all) so the compiler nags when a new variant lands and
+/// forces the author of that variant to make a deliberate
+/// has-a-plugin-id-or-not decision rather than silently inheriting `None`.
+/// The 4 PR4 dispatcher/task-lifecycle variants (`codex.job_requested`,
+/// `terminal.job_requested`, `task.completed`, `task.failed`) explicitly
+/// return `None` — they're kernel-internal signals with no plugin attribution.
 fn event_plugin_id(ev: &Event) -> Option<String> {
     match ev {
         Event::OverlaySet(o) => Some(o.plugin_id.clone()),
         Event::OverlayDeleted { plugin_id, .. } => Some(plugin_id.clone()),
         Event::PluginState { id, .. } => Some(id.clone()),
-        _ => None,
+
+        // Events without a plugin attribution — explicit-arm so the
+        // compiler flags any new variant for a deliberate decision.
+        Event::CoveUpdated(_)
+        | Event::CoveDeleted { .. }
+        | Event::WaveUpdated(_)
+        | Event::WaveDeleted { .. }
+        | Event::CardAdded(_)
+        | Event::CardUpdated(_)
+        | Event::CardDeleted { .. }
+        | Event::TerminalDeleted { .. }
+        | Event::CodexHook { .. }
+        | Event::CodexJobRequested { .. }
+        | Event::TerminalJobRequested { .. }
+        | Event::TaskCompleted { .. }
+        | Event::TaskFailed { .. } => None,
     }
 }
 
@@ -105,6 +128,13 @@ fn event_plugin_id(ev: &Event) -> Option<String> {
 /// concrete event variants onto the two kinds the kernel knows about; events
 /// that don't fit (e.g. cove.*, plugin.state) return None and therefore fail
 /// an `entity_kind` clause when one is present.
+///
+/// PR5 of #136 hazard H1: explicit-arm every variant (no `_ =>` catch-all)
+/// so the compiler flags when a new variant lands. The 4 PR4 variants are
+/// dispatcher/task-lifecycle signals with no `wave`/`card` entity surface
+/// — plugins that want to filter on those subscribe via the `events` glob
+/// clause and omit `entity_kind` / `entity_id`. Matches the parallel
+/// explicit-arm in [`event_entity_id`].
 fn event_entity_kind(ev: &Event) -> Option<String> {
     match ev {
         Event::WaveUpdated(_) | Event::WaveDeleted { .. } => Some("wave".into()),
@@ -114,7 +144,19 @@ fn event_entity_kind(ev: &Event) -> Option<String> {
         Event::OverlaySet(o) => Some(o.entity_kind.clone()),
         Event::OverlayDeleted { entity_kind, .. } => Some(entity_kind.clone()),
         Event::CodexHook { .. } => Some("card".into()),
-        _ => None,
+
+        // No entity-kind surface — explicit-arm so future variants force a
+        // deliberate decision (cove updates don't surface "cove" because
+        // plugin entity_kind today is exactly {"wave","card"}; the PR4
+        // dispatcher variants don't have an entity at all).
+        Event::CoveUpdated(_)
+        | Event::CoveDeleted { .. }
+        | Event::TerminalDeleted { .. }
+        | Event::PluginState { .. }
+        | Event::CodexJobRequested { .. }
+        | Event::TerminalJobRequested { .. }
+        | Event::TaskCompleted { .. }
+        | Event::TaskFailed { .. } => None,
     }
 }
 
