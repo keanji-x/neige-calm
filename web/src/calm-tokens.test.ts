@@ -269,6 +269,25 @@ const Z_INDEX_TOKENS = [
   '--z-toast',
 ] as const;
 
+// Motion duration scale (slice 5 of #165). Single-mode (motion doesn't
+// theme-vary) like the type scale — declared once in `:root` with a
+// concrete `Ns` (or `N.Ns`) literal, no dark override. Six tiers
+// (instant/quick/snappy/medium/slow/pulse) consolidate the ad-hoc
+// transition/animation durations scattered across the file; the migration
+// is intentionally lossy (e.g. 0.12s → quick, 1.4s → slow), with the
+// rounding policy living in the issue body.
+//
+// The unit is normalized to `s` here (no `ms`) so the s-vs-ms spelling
+// inconsistency that existed pre-consolidation can't sneak back in.
+const MOTION_TOKENS = [
+  '--motion-instant',
+  '--motion-quick',
+  '--motion-snappy',
+  '--motion-medium',
+  '--motion-slow',
+  '--motion-pulse',
+] as const;
+
 // ---------------------------------------------------------------------------
 // Parse helpers
 // ---------------------------------------------------------------------------
@@ -646,6 +665,38 @@ describe('calm.css token graph: spacing-scale tokens', () => {
       expect(
         darkDecls.has(name),
         `${name} is a spacing-scale token; spacing is shape, not color — no dark override.`,
+      ).toBe(false);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// (e1c) Motion-scale tokens (slice 5 of #165).
+// ---------------------------------------------------------------------------
+//
+// Same shape contract as the type scale: concrete literal in `:root`, never
+// re-declared in dark. The literal here is `Ns` (or `N.Ns`) — seconds
+// only, no `ms` form. The point of the scale is to normalize the
+// pre-consolidation s-vs-ms spelling drift (`240ms` next to `0.24s`); if
+// `ms` re-appears here that drift is back.
+
+const SECONDS_LITERAL = /^\d+(\.\d+)?s$/;
+
+describe('calm.css token graph: motion-scale tokens', () => {
+  for (const name of MOTION_TOKENS) {
+    it(`${name} is declared in :root as a numeric seconds literal`, () => {
+      const value = rootDecls.get(name);
+      expect(value, `${name} missing from :root`).toBeDefined();
+      expect(
+        value,
+        `${name} should be a concrete 'Ns' literal in seconds (no 'ms' form — that's the spelling we normalized away). Got: ${value}`,
+      ).toMatch(SECONDS_LITERAL);
+    });
+
+    it(`${name} is NOT redeclared in [data-theme="dark"]`, () => {
+      expect(
+        darkDecls.has(name),
+        `${name} is a motion-scale token; motion doesn't theme-vary — no dark override.`,
       ).toBe(false);
     });
   }
@@ -1088,6 +1139,67 @@ describe('calm.css spacing-scale: no raw spacing literals outside :root', () => 
       // eslint-disable-next-line no-console
       console.warn(
         `[calm-tokens] raw spacing px literals outside :root/dark token blocks (migrate to var(--space-*) per #165):\n  ${hits.join('\n  ')}`,
+      );
+    }
+    expect(true).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (g4) Soft drift detector: any `transition: ...` shorthand outside the
+// token blocks that still spells a raw duration (`0.1s` / `200ms`)
+// instead of `var(--motion-*)`. Soft on purpose — the stylelint regex
+// for `transition` shorthand is hard to write soundly (multi-property
+// commas, mixed `s`/`ms` units, optional easing keyword), so we warn
+// here and rely on PR review to catch drift. Promote to hard failure
+// once we trust the inventory (per #165 slice 5 plan).
+//
+// We deliberately scope to `transition:` (not `animation:`). Animations
+// in calm.css use named keyframes with idiosyncratic timings (`steps(2,
+// start)`, etc.) that resist a one-size-fits-all scale; the migration
+// table in #165 covers them by hand.
+//
+// `transition-duration:` (with `-duration`) is intentionally not matched
+// — the `prefers-reduced-motion` override uses `transition-duration:
+// 0.01ms !important` which is a deliberate accessibility hack, not drift.
+// ---------------------------------------------------------------------------
+
+describe('calm.css motion-scale: no raw transition durations outside :root (soft drift detector)', () => {
+  it('logs any transition shorthand with raw duration in component selectors (informational)', () => {
+    const rootStart = CSS.indexOf(':root {');
+    const rootBody = sliceBlock(CSS, ':root {');
+    const rootEnd = CSS.indexOf(rootBody, rootStart) + rootBody.length + 1;
+    const darkStart = CSS.indexOf('[data-theme="dark"] {');
+    const darkBody = sliceBlock(CSS, '[data-theme="dark"] {');
+    const darkEnd = CSS.indexOf(darkBody, darkStart) + darkBody.length + 1;
+
+    const lineCountIn = (s: string) => (s.match(/\n/g) || []).length;
+    const blank = (n: number) => '\n'.repeat(n);
+    const masked =
+      CSS.slice(0, rootStart) +
+      blank(lineCountIn(CSS.slice(rootStart, rootEnd))) +
+      CSS.slice(rootEnd, darkStart) +
+      blank(lineCountIn(CSS.slice(darkStart, darkEnd))) +
+      CSS.slice(darkEnd);
+
+    // Match `transition:` (word-boundary so `transition-duration:` is
+    // skipped) up to the next semicolon, then check whether the captured
+    // body still contains a raw `<number>s` or `<number>ms`. Sites that
+    // resolve entirely through `var(--motion-*)` pass.
+    const drifters: string[] = [];
+    const re = /\btransition:\s*([^;]+);/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(masked)) !== null) {
+      const body = m[1];
+      if (/\b\d+(?:\.\d+)?m?s\b/.test(body)) {
+        const line = masked.slice(0, m.index).split('\n').length;
+        drifters.push(`calm.css:${line}: ${m[0].trim()}`);
+      }
+    }
+    if (drifters.length > 0) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[calm-tokens] raw transition durations outside :root/dark token blocks (migrate to var(--motion-*) per #165):\n  ${drifters.join('\n  ')}`,
       );
     }
     expect(true).toBe(true);
