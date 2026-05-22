@@ -154,6 +154,10 @@ pub(crate) async fn create_terminal_card(
                     program_for_tx,
                     cwd_for_tx,
                     env_for_tx,
+                    // User-facing terminal cards stay Plain. The
+                    // dispatcher's worker-terminal path passes
+                    // `CardRole::Worker` directly.
+                    crate::model::CardRole::Plain,
                     &cache_for_tx,
                 )
                 .await?;

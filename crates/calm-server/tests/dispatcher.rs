@@ -305,6 +305,88 @@ async fn dispatcher_role_is_worker_via_role_cache() {
 // 3. Dispatcher idempotency.
 // ---------------------------------------------------------------------------
 
+/// PR6 followup (issue #136, note 1): the dispatcher's spawn path
+/// catches `CalmError::IdempotencyCollision` and treats it as a
+/// success short-circuit (the **second** emit produces no `task.failed`
+/// from the catch arm). A real `CalmError::Conflict` from the helper
+/// chain would now propagate as a failure — verifying the *positive*
+/// case here (the dedup arm is silent) gives us the end-to-end signal
+/// that the typed-variant catch arm is wired correctly. The negative
+/// case (real Conflict propagates) is unit-tested in the in-module
+/// `idempotency_collision_distinct_from_conflict` test.
+///
+/// Note: the stub `DaemonClient` points at a non-existent daemon
+/// binary, so the **first** (winning) dispatch still emits one
+/// `task.failed` from the post-commit `spawn_daemon_with_parts` step.
+/// Exactly one — not two — is the dedup signal we assert on. (Two
+/// would indicate the catch arm misfired and the second emit reran
+/// the spawn chain.)
+#[tokio::test]
+async fn dispatcher_dedup_does_not_double_emit_task_failed() {
+    let (repo, events, cache, wave_id, cove_id) = boot().await;
+    let _dispatcher = Dispatcher::spawn(
+        repo.clone(),
+        events.clone(),
+        cache.clone(),
+        stub_codex(),
+        stub_daemon(),
+        4,
+    );
+
+    // Subscribe before emitting so we don't miss a fast task.failed.
+    let mut rx = events.subscribe();
+
+    let idem = "dedup-single-fail";
+    for _ in 0..2 {
+        repo.log_pure_event(
+            ActorId::User,
+            wave_scope(&wave_id, &cove_id),
+            None,
+            &events,
+            &cache,
+            codex_req(idem, "g"),
+        )
+        .await
+        .unwrap();
+    }
+
+    // Give the dispatcher time to drain both emits + the daemon-
+    // spawn failure path on the winning one.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+
+    // Drain the bus and count `task.failed` events carrying our idem.
+    let mut failed_count = 0usize;
+    while let Ok(Ok(env)) = tokio::time::timeout(Duration::from_millis(50), rx.recv()).await {
+        if let Event::TaskFailed {
+            idempotency_key, ..
+        } = &env.event
+            && idempotency_key == idem
+        {
+            failed_count += 1;
+        }
+    }
+    // Exactly one — from the winning dispatch's daemon-spawn step
+    // (stub daemon binary is missing). The dedup'd second emit must
+    // not produce a second `task.failed`.
+    assert_eq!(
+        failed_count, 1,
+        "expected exactly one task.failed (from the winning dispatch's daemon spawn); got {failed_count}. \
+         A second event here would indicate the IdempotencyCollision catch arm misfired."
+    );
+
+    // Sanity check: exactly one worker card landed.
+    let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
+    let worker_cards: Vec<_> = cards
+        .iter()
+        .filter(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem))
+        .collect();
+    assert_eq!(
+        worker_cards.len(),
+        1,
+        "exactly one worker card for the dedup'd key"
+    );
+}
+
 #[tokio::test]
 async fn dispatcher_dedupes_same_idempotency_key() {
     let (repo, events, cache, wave_id, cove_id) = boot().await;
@@ -542,6 +624,99 @@ async fn dispatcher_card_added_emit_passes_role_gate() {
     })
     .await
     .expect("dispatcher write must pass enforce_role for ActorId::KernelDispatcher");
+}
+
+// ---------------------------------------------------------------------------
+// PR6 (#136) — Real concurrent idempotency-race test.
+//
+// PR5's dedup test fires sequentially (`for _ in 0..2`); the canonical
+// in-tx SELECT race window only opens when two emissions hit the
+// dispatcher within microseconds. We use a `Barrier` to release two
+// dispatcher tasks at the same moment after both have already
+// acquired their semaphore permit and entered the spawn fn.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn dispatcher_dedupes_under_real_concurrent_race() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let (repo, events, cache, wave_id, cove_id) = boot().await;
+    // Permits >= 2 so both racers can run concurrently.
+    let _dispatcher = Dispatcher::spawn(
+        repo.clone(),
+        events.clone(),
+        cache.clone(),
+        stub_codex(),
+        stub_daemon(),
+        4,
+    );
+
+    let idem = "race-key-pr6";
+    // Fire two emissions through `log_pure_event` from two parallel
+    // tokio tasks released by a barrier. Each task acquires a
+    // permit on a shared `Notify` after the barrier so the second
+    // emit lands on the bus only nanoseconds after the first.
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+
+    let emit_once = |label: &'static str| {
+        let repo = repo.clone();
+        let events = events.clone();
+        let cache = cache.clone();
+        let scope = wave_scope(&wave_id, &cove_id);
+        let barrier = barrier.clone();
+        async move {
+            // Synchronize so both tasks call log_pure_event at as
+            // close to the same instant as the scheduler allows.
+            barrier.wait().await;
+            repo.log_pure_event(
+                ActorId::User,
+                scope,
+                None,
+                &events,
+                &cache,
+                codex_req(idem, label),
+            )
+            .await
+            .expect("log_pure_event ok");
+        }
+    };
+
+    let (a, b) = tokio::join!(
+        tokio::spawn(emit_once("racer-a")),
+        tokio::spawn(emit_once("racer-b"))
+    );
+    a.unwrap();
+    b.unwrap();
+
+    // Give the dispatcher time to drain both envelopes through the
+    // spawn pipeline. We use `wait_for` not a fixed sleep so this
+    // doesn't hang the suite on a slow runner.
+    let _ = wait_for(Duration::from_secs(3), || async {
+        let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
+        let n = cards
+            .iter()
+            .filter(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem))
+            .count();
+        if n >= 1 { Some(n) } else { None }
+    })
+    .await;
+
+    // Settle: count worker cards.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
+    let worker_cards: Vec<_> = cards
+        .iter()
+        .filter(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem))
+        .collect();
+    assert_eq!(
+        worker_cards.len(),
+        1,
+        "exactly one worker card under barrier-synchronized concurrent emit; got {} cards: {:?}",
+        worker_cards.len(),
+        worker_cards
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect::<Vec<_>>(),
+    );
 }
 
 // ---------------------------------------------------------------------------

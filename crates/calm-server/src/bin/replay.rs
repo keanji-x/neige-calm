@@ -60,6 +60,27 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // CI tests pipe stdout/stderr through Node Playwright's setup
+    // worker, which exits immediately after spawning us and dropping
+    // its read end of the pipes. Without this guard, the first
+    // `tracing::info!` write to stderr returns EPIPE, Rust's default
+    // SIGPIPE handling on stdio writes kills the process, and clients
+    // see `socket hang up` mid-response (root-caused in debug PR
+    // #191). Ignoring SIGPIPE makes those writes return `EPIPE` to
+    // the writer; `tracing-subscriber` silently drops the failing
+    // write and the server keeps serving. This applies only to the
+    // replay (dev/CI) binary — production `calm-server` keeps the
+    // conventional shell-idiom SIGPIPE behavior.
+    #[cfg(unix)]
+    {
+        use nix::sys::signal::{SigHandler, Signal, signal};
+        // SAFETY: setting SIG_IGN is async-signal-safe and we run it
+        // before any other thread is spawned.
+        unsafe {
+            let _ = signal(Signal::SIGPIPE, SigHandler::SigIgn);
+        }
+    }
+
     // tracing-subscriber pulled in for `--serve` mode (the kernel
     // emits info-level logs from the routes; --assert mode is silent
     // unless something blows up). Filter mirrors `main.rs`'s default.

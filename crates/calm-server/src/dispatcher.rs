@@ -63,13 +63,14 @@
 //!   and this module's subscribe call together.
 
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
 use crate::card_role_cache::CardRoleCache;
+use crate::db::sqlite::card_with_codex_create_tx;
 use crate::db::write_with_event_typed;
 use crate::db::{Repo, RouteRepo};
 use crate::error::CalmError;
@@ -77,7 +78,10 @@ use crate::event::{
     BroadcastEnvelope, Event, EventBus, EventScope, SubscribeFilter, SubscribeScope,
 };
 use crate::ids::{ActorId, CardId, CoveId, WaveId};
-use crate::model::{CardRole, NewCard};
+use crate::model::CardRole;
+use crate::routes::settings::load_settings;
+use crate::routes::terminal::spawn_daemon_with_parts;
+use crate::spec_card::{SeededCardRole, build_codex_env_map, seed_codex_home_with_parts};
 use crate::state::{CodexClient, DaemonClient};
 
 /// Default number of permits when `NEIGE_DISPATCHER_PERMITS` is unset /
@@ -168,7 +172,7 @@ impl Dispatcher {
             codex,
             daemon,
             semaphore: Arc::clone(&semaphore),
-            recently_seen: Mutex::new(HashSet::new()),
+            recently_seen: Arc::new(Mutex::new(HashSet::new())),
         });
 
         // Filter: every event of either `*.Requested` kind, anywhere in
@@ -238,16 +242,17 @@ struct Inner {
     events: EventBus,
     card_role_cache: CardRoleCache,
     codex: Arc<CodexClient>,
-    #[allow(dead_code)]
     daemon: Arc<DaemonClient>,
     semaphore: Arc<Semaphore>,
     /// Recently-spawned idempotency keys. A fast-path short-circuit
-    /// before the tx-bound SELECT. Held under a `Mutex` rather than a
-    /// concurrent set because the operations are short (insert / remove
-    /// / contains under sub-microsecond hold time) and contention is
-    /// bounded by the semaphore. A scheduled cleanup tokio task purges
-    /// entries older than [`RECENT_KEYS_TTL`].
-    recently_seen: Mutex<HashSet<String>>,
+    /// before the tx-bound SELECT. Held under a `std::sync::Mutex`
+    /// (not `tokio::sync::Mutex`) so the [`RecentlySeenGuard`] Drop
+    /// impl can release the slot synchronously on panic; the operations
+    /// are short (insert / remove / contains under sub-microsecond hold
+    /// time) and never cross an `.await`, so the blocking mutex is
+    /// fine. A scheduled cleanup tokio task purges entries older than
+    /// [`RECENT_KEYS_TTL`].
+    recently_seen: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Inner {
@@ -300,26 +305,31 @@ impl Inner {
         // Fast-path: in-process recently-seen set. The canonical guard
         // is still the SELECT-inside-tx; this just short-circuits a
         // double-fire from the same source within the grace window.
-        {
-            let mut g = self.recently_seen.lock().await;
-            if g.contains(&idem) {
+        //
+        // PR6 (#136) cache-lifecycle fix: insert at start for race
+        // protection (two `*.Requested` envelopes hitting the
+        // dispatcher within microseconds — the in-tx SELECT also
+        // catches them but this short-circuits before we open the
+        // tx); the [`RecentlySeenGuard`] RAII handle returned by
+        // [`RecentlySeenGuard::install`] owns the cleanup contract:
+        //
+        //   * On panic anywhere in the dispatch path, the guard's
+        //     `Drop` impl removes the key so a retry within the TTL
+        //     window isn't silently dropped (PR6 followup of issue
+        //     #136 — note 2 from the original review).
+        //   * On failure paths that return normally, the guard is
+        //     dropped at scope end and removes the key.
+        //   * On success the caller calls `guard.commit()`, which
+        //     marks the guard so its `Drop` is a no-op, and the key
+        //     stays for `RECENT_KEYS_TTL` (a bounded cleanup task
+        //     scheduled below removes it).
+        let guard = match RecentlySeenGuard::install(self.recently_seen.clone(), idem.clone()) {
+            Some(g) => g,
+            None => {
                 tracing::debug!(idempotency_key = %idem, "dispatcher: recently-seen, skipping");
                 return;
             }
-            g.insert(idem.clone());
-        }
-        // Schedule cleanup of this key once the TTL elapses. Bounded
-        // task — sleep + remove + exit — so the spawn list can't grow
-        // without limit.
-        {
-            let key_for_cleanup = idem.clone();
-            let inner = Arc::clone(&self);
-            tokio::spawn(async move {
-                tokio::time::sleep(RECENT_KEYS_TTL).await;
-                let mut g = inner.recently_seen.lock().await;
-                g.remove(&key_for_cleanup);
-            });
-        }
+        };
 
         // Retry on transient SQLite BUSY/locked errors. With more
         // than one dispatcher in flight (permits > 1), SQLite can
@@ -354,6 +364,32 @@ impl Inner {
                 }
             }
         }
+        if last_err.is_none() {
+            // Success path: commit the guard so its Drop is a no-op,
+            // and schedule a bounded cleanup task to remove the key
+            // after `RECENT_KEYS_TTL`. The TTL retention is the whole
+            // point of the success path — keeps the in-process fast-
+            // path arm warm so a re-emit of the same envelope within
+            // the grace window short-circuits without opening a tx.
+            guard.commit();
+            let key_for_cleanup = idem.clone();
+            let inner = Arc::clone(&self);
+            tokio::spawn(async move {
+                tokio::time::sleep(RECENT_KEYS_TTL).await;
+                if let Ok(mut g) = inner.recently_seen.lock() {
+                    g.remove(&key_for_cleanup);
+                }
+            });
+        }
+        // Failure path: the guard goes out of scope here and its
+        // Drop impl removes the key from `recently_seen` so the
+        // request can be retried after the requester sees the
+        // task.failed event. (No explicit drop needed; this is the
+        // RAII point — but we keep `guard` live until after the
+        // success-path commit above so the success branch can opt
+        // out via `guard.commit()`.) The canonical SELECT-inside-tx
+        // guard still prevents a double-spawn if the retry races a
+        // late re-emit of the original event.
         if let Some(e) = last_err {
             tracing::warn!(
                 idempotency_key = %idem,
@@ -440,10 +476,18 @@ impl Inner {
         Ok(())
     }
 
-    /// Mint a worker codex card and (best-effort) spawn the codex
-    /// daemon. Idempotency: SELECT for an existing
-    /// `cards.payload.idempotency_key` inside the tx; if a row already
-    /// exists, return its id without minting a duplicate.
+    /// Mint a worker codex card and spawn the codex daemon. PR6 (#136)
+    /// activates the daemon spawn that PR5 left deferred.
+    ///
+    /// Idempotency strategy: the in-tx SELECT lives inside the closure;
+    /// when a row already exists for `idempotency_key`, the closure
+    /// returns `Err(CalmError::IdempotencyCollision)` to abort the tx
+    /// (no rows written, no events emitted). The caller pattern-matches
+    /// the typed variant and treats it as a success short-circuit. The
+    /// dedicated variant (PR6 followup) lets real `CalmError::Conflict`
+    /// errors from `card_with_codex_create_tx` (e.g. terminal-already-
+    /// exists from `terminal_create_tx`) propagate instead of being
+    /// silently swallowed as "duplicate request".
     async fn spawn_codex_worker(
         self: &Arc<Self>,
         wave_id: WaveId,
@@ -460,39 +504,48 @@ impl Inner {
 
         // Pre-mint id so we can stamp the EventScope::Card with the
         // soon-to-exist card id, matching the codex-cards route
-        // pattern. Drop into a closure so we can capture by move into
-        // the tx body without re-fetching.
+        // pattern.
         let new_card_id = crate::model::new_id();
         let new_card_id_for_tx = new_card_id.clone();
 
-        // Build the worker-card payload. The dispatcher writes the
-        // payload directly (not via `card_with_codex_create_tx`)
-        // because a worker card is NOT a user-facing codex card with
-        // a backing terminal yet — the terminal/daemon spawn happens
-        // out of band after commit, mirroring the
-        // `create_codex_card` shape. For PR5 we keep the payload
-        // minimal: `idempotency_key`, `goal`, `context`,
-        // `acceptance_criteria`, and a `role_request = "codex"`
-        // discriminator so the FSM / UI can distinguish worker codex
-        // cards from plain ones in PR6+.
-        let mut payload_map = serde_json::Map::new();
-        payload_map.insert(
+        // PR6: assemble the env map up-front (matches the user-create
+        // route + the wave-create spec-card path). Settings + codex
+        // home dir live on `self.codex`; the dispatcher is a kernel
+        // worker so it reads settings through its `self.repo` handle.
+        let settings = load_settings(self.repo.as_ref()).await?;
+        let env = build_codex_env_map(
+            self.codex.as_ref(),
+            &new_card_id,
+            settings.http_proxy.as_deref(),
+            settings.https_proxy.as_deref(),
+        );
+        let cwd = crate::routes::codex_cards::default_cwd();
+
+        // Worker-card payload — bookkeeping fields the FSM / UI use
+        // to distinguish worker codex cards from plain ones. The
+        // canonical `card_with_codex_create_tx` helper stamps
+        // `schemaVersion`, `terminal_id`, and `cwd` itself; we merge
+        // those fields after the helper runs by going through
+        // `card_update_tx` once more. (Simpler than threading payload
+        // overrides into the helper; the tx still commits atomically.)
+        let mut bookkeeping = serde_json::Map::new();
+        bookkeeping.insert(
             "idempotency_key".into(),
             serde_json::Value::String(idempotency_key.clone()),
         );
-        payload_map.insert(
+        bookkeeping.insert(
             "role_request".into(),
             serde_json::Value::String("codex".into()),
         );
-        payload_map.insert("goal".into(), serde_json::Value::String(goal.clone()));
-        payload_map.insert("context".into(), context.clone());
+        bookkeeping.insert("goal".into(), serde_json::Value::String(goal.clone()));
+        bookkeeping.insert("context".into(), context.clone());
         if let Some(ac) = acceptance_criteria.as_ref() {
-            payload_map.insert(
+            bookkeeping.insert(
                 "acceptance_criteria".into(),
                 serde_json::Value::String(ac.clone()),
             );
         }
-        let payload = serde_json::Value::Object(payload_map);
+        let bookkeeping_value = serde_json::Value::Object(bookkeeping);
 
         let scope = crate::routes::cards::card_scope(
             repo_for_scope.as_ref(),
@@ -501,99 +554,176 @@ impl Inner {
         )
         .await?;
 
-        // Idempotency check + worker-card insert in one tx. The
-        // closure-returned Option distinguishes "minted new" vs
-        // "already existed".
-        let payload_for_tx = payload.clone();
-        let (existing_or_new, _event_id) =
-            write_with_event_typed::<(CardId, /*minted_new=*/ bool), _>(
-                self.repo.as_ref(),
-                ActorId::KernelDispatcher,
-                scope.clone(),
-                None,
-                &self.events,
-                &self.card_role_cache,
-                move |tx| {
-                    Box::pin(async move {
-                        // SELECT-inside-tx idempotency check.
-                        if let Some(existing) =
-                            find_card_by_idempotency_key_tx(tx, &idem_for_tx).await?
-                        {
-                            // Existing row — return a synthetic `CardUpdated`
-                            // event so the wrapper has *something* to persist
-                            // (audit trail: the dispatcher saw a duplicate
-                            // request and short-circuited). The frontend
-                            // tolerates a repeat `card.updated` for the same
-                            // row without payload changes; this is a
-                            // pragmatic alternative to letting the helper
-                            // refuse to commit without an event. We pass
-                            // through `existing.clone()` so the emit is a
-                            // no-op delta — same payload, same
-                            // `updated_at` after the helper restamps it.
-                            let bumped = crate::db::sqlite::card_update_tx(
-                                tx,
-                                existing.id.as_ref(),
-                                crate::model::CardPatch {
-                                    kind: None,
-                                    sort: None,
-                                    payload: Some(existing.payload.clone()),
-                                },
-                            )
-                            .await?;
-                            let id = bumped.id.clone();
-                            return Ok(((id, false), Event::CardUpdated(bumped)));
-                        }
+        let cwd_for_tx = cwd.clone();
+        let env_for_tx = env.clone();
+        let bookkeeping_for_tx = bookkeeping_value.clone();
 
-                        // No existing row — mint a fresh worker card.
-                        let card = crate::db::sqlite::card_create_with_id_tx(
+        // Single tx: idempotency check + worker card + terminal row +
+        // bookkeeping merge + CardAdded event. Closure returns
+        // `Conflict` on duplicate, which rolls everything back
+        // (matches the issue v2 invariant: no spurious event when the
+        // request is a duplicate).
+        let card_id_result = write_with_event_typed::<CardId, _>(
+            self.repo.as_ref(),
+            ActorId::KernelDispatcher,
+            scope.clone(),
+            None,
+            &self.events,
+            &self.card_role_cache,
+            move |tx| {
+                Box::pin(async move {
+                    // SELECT-inside-tx idempotency check. SQLite's
+                    // per-connection write lock serializes the
+                    // INSERT step below against any concurrent
+                    // dispatcher tx, so two `*.Requested` events
+                    // with the same key can't both win.
+                    if let Some(existing) =
+                        find_card_by_idempotency_key_tx(tx, &idem_for_tx).await?
+                    {
+                        // Duplicate detected — abort the tx by
+                        // returning the typed `IdempotencyCollision`
+                        // sentinel. The caller below pattern-matches
+                        // this exact variant and treats it as a
+                        // success short-circuit. No event reaches the
+                        // bus. A generic `Conflict` from the helper
+                        // (e.g. terminal-already-exists for a re-used
+                        // card_id) is now propagated instead of
+                        // silently swallowed.
+                        return Err(CalmError::IdempotencyCollision(format!(
+                            "idempotency_key collision: existing card {}",
+                            existing.id
+                        )));
+                    }
+
+                    // Mint worker card + backing terminal +
+                    // canonical codex payload (schemaVersion,
+                    // terminal_id, cwd) in one helper call.
+                    let (mut card, _term) = card_with_codex_create_tx(
+                        tx,
+                        new_card_id_for_tx,
+                        wave_for_tx,
+                        None,
+                        cwd_for_tx,
+                        env_for_tx,
+                        None,
+                        CardRole::Worker,
+                        &cache_for_tx,
+                    )
+                    .await?;
+
+                    // Merge dispatcher-bookkeeping fields into
+                    // the payload (idempotency_key, goal, context,
+                    // acceptance_criteria, role_request). The
+                    // helper already wrote a Map payload; extend
+                    // it with our extras.
+                    if let Some(existing_map) = card.payload.as_object() {
+                        let mut merged = existing_map.clone();
+                        if let serde_json::Value::Object(extras) = bookkeeping_for_tx {
+                            for (k, v) in extras {
+                                merged.insert(k, v);
+                            }
+                        }
+                        card = crate::db::sqlite::card_update_tx(
                             tx,
-                            new_card_id_for_tx,
-                            NewCard {
-                                wave_id: wave_for_tx,
-                                kind: "codex".into(),
+                            card.id.as_ref(),
+                            crate::model::CardPatch {
+                                kind: None,
                                 sort: None,
-                                payload: payload_for_tx,
+                                payload: Some(serde_json::Value::Object(merged)),
                             },
-                            CardRole::Worker,
-                            &cache_for_tx,
                         )
                         .await?;
-                        let id = card.id.clone();
-                        Ok(((id, true), Event::CardAdded(card)))
-                    })
-                },
-            )
-            .await?;
+                    }
 
-        let (card_id, minted_new) = existing_or_new;
-        if !minted_new {
-            tracing::info!(
-                idempotency_key = %idempotency_key,
+                    let id = card.id.clone();
+                    Ok((id, Event::CardAdded(card)))
+                })
+            },
+        )
+        .await;
+
+        let card_id = match card_id_result {
+            Ok((id, _event_id)) => id,
+            Err(CalmError::IdempotencyCollision(msg)) => {
+                tracing::info!(
+                    idempotency_key = %idempotency_key,
+                    note = %msg,
+                    "dispatcher: short-circuit on existing worker card"
+                );
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
+
+        // Post-commit: seed CODEX_HOME and spawn the daemon. Failure
+        // here returns an error to the caller, which emits
+        // `Event::TaskFailed` for PR8's `wait_for_events` to surface.
+        if let Err(e) = seed_codex_home_with_parts(
+            self.codex.as_ref(),
+            card_id.as_str(),
+            &cwd,
+            wave_id.as_str(),
+            SeededCardRole::Worker,
+        ) {
+            tracing::error!(
                 card_id = %card_id,
-                "dispatcher: short-circuit on existing worker card"
+                wave_id = %wave_id,
+                error = %e,
+                "worker codex CODEX_HOME seed failed; card persisted; sweeper will reap terminal",
             );
-            return Ok(());
+            return Err(e);
         }
 
-        // PR5 keeps daemon spawn shallow: we don't actually fire codex
-        // because (a) no emitter exists yet for a real load test, and
-        // (b) the codex CLI is heavy and PR6/PR7 will wire the
-        // user-driven spawn that includes setting up CODEX_HOME, etc.
-        // We touch `self.codex` to keep the field "used" and to give a
-        // future PR a single seam to start running the real spawn.
+        // Fetch the terminal row the helper just minted. Guaranteed
+        // to exist post-commit.
+        let term = self
+            .repo
+            .terminal_get_by_card(card_id.as_str())
+            .await?
+            .ok_or_else(|| {
+                CalmError::Internal(format!(
+                    "worker terminal vanished after commit for card {card_id}",
+                ))
+            })?;
+
+        if let Err(e) = spawn_daemon_with_parts(
+            self.daemon.as_ref(),
+            self.repo.as_ref(),
+            &term,
+            "codex",
+            &cwd,
+            &env,
+        )
+        .await
+        {
+            tracing::error!(
+                card_id = %card_id,
+                wave_id = %wave_id,
+                terminal_id = %term.id,
+                error = %e,
+                "worker codex daemon spawn failed; card + terminal orphaned for sweeper",
+            );
+            return Err(e);
+        }
+
         tracing::info!(
             idempotency_key = %idempotency_key,
             card_id = %card_id,
+            terminal_id = %term.id,
             codex_bin = %self.codex.codex_bin,
-            "dispatcher: worker codex card minted (daemon spawn deferred to PR6+)"
+            "dispatcher: worker codex card + daemon spawned"
         );
 
         Ok(())
     }
 
-    /// Mint a worker terminal card. Same idempotency strategy as
-    /// `spawn_codex_worker`. PR5 keeps the terminal spawn deferred —
-    /// the card lands, PR6+ wires the actual `spawn_daemon_for` call.
+    /// Mint a worker terminal card and spawn its session daemon.
+    /// Same idempotency strategy as [`spawn_codex_worker`]: duplicate
+    /// requests roll the tx back with `CalmError::IdempotencyCollision`,
+    /// the caller treats that typed sentinel as a successful short-
+    /// circuit. Real `CalmError::Conflict` errors from
+    /// `card_with_terminal_create_tx` (e.g. terminal-already-exists)
+    /// now propagate instead of being silently swallowed.
     async fn spawn_terminal_worker(
         self: &Arc<Self>,
         wave_id: WaveId,
@@ -608,20 +738,56 @@ impl Inner {
         let new_card_id = crate::model::new_id();
         let new_card_id_for_tx = new_card_id.clone();
 
-        let mut payload_map = serde_json::Map::new();
-        payload_map.insert(
+        // Resolve cwd — empty / absent falls back to $HOME.
+        let cwd_resolved = cwd
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(crate::routes::codex_cards::default_cwd);
+
+        // Terminal-worker daemon env: no CODEX_HOME — terminal
+        // sessions don't need it. We still forward proxy vars so a
+        // child shell that hits the network honors operator config.
+        let settings = load_settings(self.repo.as_ref()).await?;
+        let mut env_map = serde_json::Map::new();
+        if let Some(p) = settings.http_proxy.as_deref().filter(|s| !s.is_empty()) {
+            env_map.insert(
+                "HTTP_PROXY".to_string(),
+                serde_json::Value::String(p.to_string()),
+            );
+            env_map.insert(
+                "http_proxy".to_string(),
+                serde_json::Value::String(p.to_string()),
+            );
+        }
+        if let Some(p) = settings.https_proxy.as_deref().filter(|s| !s.is_empty()) {
+            env_map.insert(
+                "HTTPS_PROXY".to_string(),
+                serde_json::Value::String(p.to_string()),
+            );
+            env_map.insert(
+                "https_proxy".to_string(),
+                serde_json::Value::String(p.to_string()),
+            );
+        }
+        let env = serde_json::Value::Object(env_map);
+
+        // Worker-terminal bookkeeping (idempotency_key, role_request,
+        // cmd, optional cwd). Merged into the canonical payload
+        // (schemaVersion + terminal_id) after the helper writes it.
+        let mut bookkeeping = serde_json::Map::new();
+        bookkeeping.insert(
             "idempotency_key".into(),
             serde_json::Value::String(idempotency_key.clone()),
         );
-        payload_map.insert(
+        bookkeeping.insert(
             "role_request".into(),
             serde_json::Value::String("terminal".into()),
         );
-        payload_map.insert("cmd".into(), serde_json::Value::String(cmd.clone()));
-        if let Some(c) = cwd.as_ref() {
-            payload_map.insert("cwd".into(), serde_json::Value::String(c.clone()));
-        }
-        let payload = serde_json::Value::Object(payload_map);
+        bookkeeping.insert("cmd".into(), serde_json::Value::String(cmd.clone()));
+        bookkeeping.insert(
+            "cwd".into(),
+            serde_json::Value::String(cwd_resolved.clone()),
+        );
+        let bookkeeping_value = serde_json::Value::Object(bookkeeping);
 
         let scope = crate::routes::cards::card_scope(
             self.repo.as_ref(),
@@ -630,66 +796,119 @@ impl Inner {
         )
         .await?;
 
-        let payload_for_tx = payload.clone();
-        let (existing_or_new, _event_id) =
-            write_with_event_typed::<(CardId, /*minted_new=*/ bool), _>(
-                self.repo.as_ref(),
-                ActorId::KernelDispatcher,
-                scope.clone(),
-                None,
-                &self.events,
-                &self.card_role_cache,
-                move |tx| {
-                    Box::pin(async move {
-                        if let Some(existing) =
-                            find_card_by_idempotency_key_tx(tx, &idem_for_tx).await?
-                        {
-                            let bumped = crate::db::sqlite::card_update_tx(
-                                tx,
-                                existing.id.as_ref(),
-                                crate::model::CardPatch {
-                                    kind: None,
-                                    sort: None,
-                                    payload: Some(existing.payload.clone()),
-                                },
-                            )
-                            .await?;
-                            let id = bumped.id.clone();
-                            return Ok(((id, false), Event::CardUpdated(bumped)));
+        let cwd_for_tx = cwd_resolved.clone();
+        let env_for_tx = env.clone();
+        let cmd_for_tx = cmd.clone();
+        let bookkeeping_for_tx = bookkeeping_value.clone();
+
+        let card_id_result = write_with_event_typed::<CardId, _>(
+            self.repo.as_ref(),
+            ActorId::KernelDispatcher,
+            scope.clone(),
+            None,
+            &self.events,
+            &self.card_role_cache,
+            move |tx| {
+                Box::pin(async move {
+                    if let Some(existing) =
+                        find_card_by_idempotency_key_tx(tx, &idem_for_tx).await?
+                    {
+                        return Err(CalmError::IdempotencyCollision(format!(
+                            "idempotency_key collision: existing card {}",
+                            existing.id
+                        )));
+                    }
+                    let (mut card, _term) = crate::db::sqlite::card_with_terminal_create_tx(
+                        tx,
+                        new_card_id_for_tx,
+                        wave_for_tx,
+                        None,
+                        cmd_for_tx,
+                        cwd_for_tx,
+                        env_for_tx,
+                        CardRole::Worker,
+                        &cache_for_tx,
+                    )
+                    .await?;
+
+                    // Merge dispatcher bookkeeping into the
+                    // helper-stamped payload.
+                    if let Some(existing_map) = card.payload.as_object() {
+                        let mut merged = existing_map.clone();
+                        if let serde_json::Value::Object(extras) = bookkeeping_for_tx {
+                            for (k, v) in extras {
+                                merged.insert(k, v);
+                            }
                         }
-                        let card = crate::db::sqlite::card_create_with_id_tx(
+                        card = crate::db::sqlite::card_update_tx(
                             tx,
-                            new_card_id_for_tx,
-                            NewCard {
-                                wave_id: wave_for_tx,
-                                kind: "terminal".into(),
+                            card.id.as_ref(),
+                            crate::model::CardPatch {
+                                kind: None,
                                 sort: None,
-                                payload: payload_for_tx,
+                                payload: Some(serde_json::Value::Object(merged)),
                             },
-                            CardRole::Worker,
-                            &cache_for_tx,
                         )
                         .await?;
-                        let id = card.id.clone();
-                        Ok(((id, true), Event::CardAdded(card)))
-                    })
-                },
-            )
-            .await?;
+                    }
+                    let id = card.id.clone();
+                    Ok((id, Event::CardAdded(card)))
+                })
+            },
+        )
+        .await;
 
-        let (card_id, minted_new) = existing_or_new;
-        if !minted_new {
-            tracing::info!(
-                idempotency_key = %idempotency_key,
+        let card_id = match card_id_result {
+            Ok((id, _event_id)) => id,
+            Err(CalmError::IdempotencyCollision(msg)) => {
+                tracing::info!(
+                    idempotency_key = %idempotency_key,
+                    note = %msg,
+                    "dispatcher: short-circuit on existing terminal worker card"
+                );
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
+
+        // Post-commit: spawn the terminal daemon. No CODEX_HOME
+        // seeding for the terminal worker — it's a plain shell
+        // session, not a codex one.
+        let term = self
+            .repo
+            .terminal_get_by_card(card_id.as_str())
+            .await?
+            .ok_or_else(|| {
+                CalmError::Internal(format!(
+                    "worker terminal vanished after commit for card {card_id}",
+                ))
+            })?;
+
+        if let Err(e) = spawn_daemon_with_parts(
+            self.daemon.as_ref(),
+            self.repo.as_ref(),
+            &term,
+            &cmd,
+            &cwd_resolved,
+            &env,
+        )
+        .await
+        {
+            tracing::error!(
                 card_id = %card_id,
-                "dispatcher: short-circuit on existing terminal worker card"
+                wave_id = %wave_id,
+                terminal_id = %term.id,
+                error = %e,
+                "worker terminal daemon spawn failed; card + terminal orphaned for sweeper",
             );
-            return Ok(());
+            return Err(e);
         }
+
         tracing::info!(
             idempotency_key = %idempotency_key,
             card_id = %card_id,
-            "dispatcher: worker terminal card minted (daemon spawn deferred to PR6+)"
+            terminal_id = %term.id,
+            "dispatcher: worker terminal card + daemon spawned"
         );
 
         Ok(())
@@ -722,17 +941,100 @@ async fn find_card_by_idempotency_key_tx(
 }
 
 /// Returns true when the given error is a transient SQLite BUSY /
-/// LOCKED status that the dispatcher should retry. sqlx surfaces these
-/// as a `Database(_)` error whose string contains "database is locked"
-/// or "deadlocked"; we match on substrings rather than re-typing
-/// against `sqlx::error::DatabaseError` because the latter requires
-/// down-casting through an `Any` boundary.
+/// LOCKED status that the dispatcher should retry. PR6 (#136)
+/// replaced the PR5 substring-on-stringified-error matcher with a
+/// proper downcast through `sqlx::Error::Database` so a future
+/// driver-message change (or an i18n'd error string) doesn't
+/// silently break the retry path.
+///
+/// See https://www.sqlite.org/rescode.html — code 5 = `SQLITE_BUSY`,
+/// code 6 = `SQLITE_LOCKED`. sqlx reports the code as a string on
+/// `DatabaseError::code()`.
 fn is_sqlite_busy(e: &crate::error::CalmError) -> bool {
-    let s = e.to_string();
-    s.contains("database is locked")
-        || s.contains("database is deadlocked")
-        || s.contains("(code: 5)")
-        || s.contains("(code: 6)")
+    // Walk the error chain looking for a `sqlx::Error` we own. The
+    // dispatcher's calls funnel through `CalmError::from(sqlx::Error)`
+    // which boxes the original under the `Sql` variant; everything
+    // else (Internal/etc) won't match.
+    let sqlx_err = match e {
+        crate::error::CalmError::Db(inner) => inner,
+        _ => return false,
+    };
+    let Some(db_err) = sqlx_err.as_database_error() else {
+        return false;
+    };
+    // SQLITE_BUSY = 5, SQLITE_LOCKED = 6 — both are transient
+    // contention on the per-connection write lock, retry-safe.
+    matches!(db_err.code().as_deref(), Some("5") | Some("6"))
+}
+
+/// RAII handle that owns a slot in the `recently_seen` set. PR6
+/// followup (note 2 from issue #136 review): without this, a panic
+/// inside the spawned dispatcher task between the `insert` and the
+/// explicit `g.remove(&idem)` would leave the idempotency key stuck
+/// in the set for `RECENT_KEYS_TTL`, silently dropping a retry within
+/// that window.
+///
+/// Semantics:
+///
+///   * [`RecentlySeenGuard::install`] tries to insert the key. Returns
+///     `Some(guard)` on success; `None` when the key was already
+///     present (the caller should short-circuit and skip the dispatch).
+///   * On `Drop` (normal scope exit or panic) the guard removes the
+///     key from the set — unless [`RecentlySeenGuard::commit`] was
+///     called, which sets a flag making the Drop a no-op. The success
+///     path calls `.commit()` and schedules a separate TTL cleanup
+///     task instead.
+///
+/// Tokio's task supervisor isolates panics from sibling tasks but
+/// still runs `Drop` on values captured by the panicking future
+/// (panics unwind through the future's drop chain), so the guard fires
+/// on panic the same way it does on a normal return. The blocking
+/// `std::sync::Mutex` is fine here because the critical sections are
+/// O(hash insert/remove) under sub-µs contention.
+struct RecentlySeenGuard {
+    set: Arc<Mutex<HashSet<String>>>,
+    key: String,
+    committed: bool,
+}
+
+impl RecentlySeenGuard {
+    /// Try to insert `key`. On success returns `Some(guard)`; on
+    /// duplicate (already present in the set) returns `None`, signalling
+    /// the caller to short-circuit. A poisoned mutex is treated as
+    /// "duplicate" — the dispatcher's lock recovery semantics prefer
+    /// dropping the request over panicking on a poisoned lock; the
+    /// next emit will retry.
+    fn install(set: Arc<Mutex<HashSet<String>>>, key: String) -> Option<Self> {
+        let mut g = set.lock().ok()?;
+        if g.contains(&key) {
+            return None;
+        }
+        g.insert(key.clone());
+        drop(g);
+        Some(Self {
+            set,
+            key,
+            committed: false,
+        })
+    }
+
+    /// Mark the slot as "successfully consumed". `Drop` becomes a
+    /// no-op; the caller takes responsibility for the eventual TTL
+    /// cleanup of the key.
+    fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for RecentlySeenGuard {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        if let Ok(mut g) = self.set.lock() {
+            g.remove(&self.key);
+        }
+    }
 }
 
 /// Variant shape extracted from a `*.Requested` envelope. Carrying this
@@ -816,5 +1118,111 @@ mod tests {
             Some(v) => set("NEIGE_DISPATCHER_PERMITS", &v),
             None => remove("NEIGE_DISPATCHER_PERMITS"),
         }
+    }
+
+    // ---------------------------------------------------------------
+    // PR6 followup (issue #136, note 2 from original review):
+    // [`RecentlySeenGuard`] behavior under success, failure, and
+    // panic. The guard is the RAII handle that owns each entry in
+    // `recently_seen`; the dispatcher relies on `Drop` running on
+    // panic so a stale key doesn't lock out a retry for the full
+    // `RECENT_KEYS_TTL`.
+    // ---------------------------------------------------------------
+
+    fn fresh_set() -> Arc<Mutex<HashSet<String>>> {
+        Arc::new(Mutex::new(HashSet::new()))
+    }
+
+    fn set_contains(set: &Arc<Mutex<HashSet<String>>>, key: &str) -> bool {
+        set.lock().unwrap().contains(key)
+    }
+
+    /// Two `install` calls for the same key should produce one Some
+    /// and one None — the second is the short-circuit signal.
+    #[test]
+    fn recently_seen_guard_install_dedupes() {
+        let set = fresh_set();
+        let g1 = RecentlySeenGuard::install(set.clone(), "k".into());
+        assert!(g1.is_some(), "first install should succeed");
+        let g2 = RecentlySeenGuard::install(set.clone(), "k".into());
+        assert!(
+            g2.is_none(),
+            "second install of the same key should short-circuit (None)"
+        );
+        // Drop g1 → the failure-path semantics remove the key.
+        drop(g1);
+        assert!(
+            !set_contains(&set, "k"),
+            "drop on un-committed guard must remove the key"
+        );
+    }
+
+    /// `commit()` makes Drop a no-op; the key stays in the set for
+    /// the TTL cleanup task to remove.
+    #[test]
+    fn recently_seen_guard_commit_keeps_key() {
+        let set = fresh_set();
+        let g = RecentlySeenGuard::install(set.clone(), "k".into()).expect("install ok");
+        g.commit();
+        // Guard dropped at end of `commit()`'s consume; ensure the
+        // key is still there.
+        assert!(
+            set_contains(&set, "k"),
+            "commit()'d guard must leave the key in the set"
+        );
+    }
+
+    /// Panic-cleanup: a future that panics with a live guard should
+    /// still see the guard's Drop remove the key. Mirrors the
+    /// tokio spawn case in the dispatcher.
+    #[tokio::test]
+    async fn recently_seen_guard_drops_on_panic() {
+        let set = fresh_set();
+        let set_for_task = set.clone();
+        let h = tokio::spawn(async move {
+            let _g = RecentlySeenGuard::install(set_for_task, "k".into()).expect("install ok");
+            // Deliberately panic with the guard live on the stack.
+            // tokio's task supervisor isolates the panic from the
+            // parent; the future's drop chain still runs, including
+            // `_g`'s Drop impl.
+            panic!("simulated dispatcher panic");
+        });
+        let err = h.await.expect_err("the spawned task should have panicked");
+        assert!(err.is_panic(), "expected panic JoinError, got {err:?}");
+        assert!(
+            !set_contains(&set, "k"),
+            "panic in the spawned task must drop the guard and remove the key"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // PR6 followup (issue #136, note 1 from original review):
+    // `CalmError::IdempotencyCollision` is a separate variant from
+    // `CalmError::Conflict`. The dispatcher catches only the typed
+    // sentinel; real conflicts from the helpers (terminal-already-
+    // exists, card-id PK collision) must propagate.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn idempotency_collision_distinct_from_conflict() {
+        let collision = crate::error::CalmError::IdempotencyCollision("k".into());
+        let conflict = crate::error::CalmError::Conflict("k".into());
+        // The catch arm in `spawn_codex_worker` / `spawn_terminal_worker`
+        // matches *only* `IdempotencyCollision`. A real `Conflict`
+        // must take the propagation branch.
+        assert!(matches!(
+            collision,
+            crate::error::CalmError::IdempotencyCollision(_)
+        ));
+        assert!(matches!(conflict, crate::error::CalmError::Conflict(_)));
+        // And the error codes the API surface emits are distinct.
+        assert_eq!(
+            crate::error::CalmError::IdempotencyCollision("x".into()).code(),
+            "idempotency_collision"
+        );
+        assert_eq!(
+            crate::error::CalmError::Conflict("x".into()).code(),
+            "conflict"
+        );
     }
 }

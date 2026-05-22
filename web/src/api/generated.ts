@@ -606,9 +606,10 @@ export interface components {
         ErrorBody: {
             /**
              * @description Stable machine-readable code — one of `not_found`, `conflict`,
-             *     `bad_request`, `unauthorized`, `forbidden`, `plugin_install`,
-             *     `plugin_permission`, `plugin_conflict`, `plugin_kernel_too_old`,
-             *     `db_error`, `io_error`, `serde_error`, `internal`, `forbidden_tool`,
+             *     `idempotency_collision`, `bad_request`, `unauthorized`,
+             *     `forbidden`, `plugin_install`, `plugin_permission`,
+             *     `plugin_conflict`, `plugin_kernel_too_old`, `db_error`,
+             *     `io_error`, `serde_error`, `internal`, `forbidden_tool`,
              *     `not_a_card_tool`, `tool_call_failed`.
              */
             code: string;

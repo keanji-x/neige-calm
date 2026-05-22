@@ -3,13 +3,44 @@
 //! Writes go through `Repo::write_with_event` (via the
 //! `write_with_event_typed` ergonomic wrapper). See `routes/coves.rs` for
 //! the migration pattern; this file follows the same shape.
+//!
+//! ## PR6 (#136) — atomic spec-card binding
+//!
+//! `create_wave` now mints a wave **and** a `CardRole::Spec` codex card
+//! in a single transaction via [`crate::db::write_with_events_typed`].
+//! Two events leave the tx: [`Event::WaveUpdated`] (scope = Wave) and
+//! [`Event::CardAdded`] (scope = Card). The spec card's backing
+//! `$CODEX_HOME` seed + daemon spawn happen **off the response hot
+//! path** — they're scheduled through [`tokio::spawn`] so the
+//! handler returns 201 the instant the tx commits, regardless of how
+//! long the daemon takes to come up (or fail to). All failures inside
+//! the background task log at `warn!` and are swallowed; the orphan-
+//! terminal sweeper reaps any dangling terminal row (~60s grace; see
+//! PR7+ for spec card cleanup).
+//!
+//! Why two iterations: the first PR6 fix downgraded daemon-spawn
+//! failure from 500 → warn + 201 but kept the `spawn_daemon_for`
+//! await on the hot path. In CI (no `codex` binary) the busy-poll
+//! wait-until-socket-ready loop inside `spawn_daemon_for` held the
+//! response open for ~3s, which combined with the front-end's create
+//! → wait-for-201 → router-navigate sequence blew past the web a11y
+//! test's 5s navigation budget (`web/e2e/a11y-keyboard.spec.ts`).
+//! The fix here moves the entire seed + spawn pipeline behind
+//! `tokio::spawn`, restoring the "201 returns on commit" contract.
+//!
+//! The wave-delete path does **not** yet cascade-clean the spec card's
+//! daemon — see TODO in [`delete_wave`].
 
 use crate::actor::Actor;
-use crate::db::sqlite::{wave_create_tx, wave_delete_tx, wave_update_tx};
-use crate::db::write_with_event_typed;
+use crate::db::sqlite::{
+    card_with_codex_create_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
+};
+use crate::db::{write_with_event_typed, write_with_events_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
-use crate::model::{NewWave, Wave, WaveDetail, WavePatch};
+use crate::model::{CardRole, NewWave, Wave, WaveDetail, WavePatch, new_id};
+use crate::routes::settings::load_settings;
+use crate::spec_card::{build_codex_env_map, seed_and_spawn_spec_daemon};
 use crate::state::AppState;
 use axum::{
     Json, Router,
@@ -84,29 +115,153 @@ pub(crate) async fn create_wave(
     actor: Actor,
     Json(p): Json<NewWave>,
 ) -> Result<(StatusCode, Json<Wave>)> {
-    // Cove is known up-front (it's a required field on NewWave); the wave
-    // id is minted inside the txn, so we can't tag the create with
-    // `EventScope::Wave { wave: <new_id>, ... }` without racing the
-    // commit-then-emit invariant. `Cove`-scoped is the most specific
-    // scope we can stamp deterministically — a per-cove subscriber sees
-    // the create; a per-wave subscriber will pick it up via the cove
-    // channel (PR5 routes by ancestor too).
-    let cove = p.cove_id.clone();
-    let (wave, _id) = write_with_event_typed(
+    // PR6 (#136) — wave create now atomically mints a `CardRole::Spec`
+    // codex card alongside the wave row. Both rows commit in one tx
+    // and both `Event::WaveUpdated` + `Event::CardAdded` envelopes
+    // emit from the same commit, each tagged with its own scope so
+    // per-wave and per-card subscribers each see the relevant frame
+    // without re-routing through ancestors.
+
+    // 1. Pre-mint the spec card id BEFORE the tx opens — we need it to
+    //    derive `CODEX_HOME = <codex_homes_dir>/<card_id>/` for the
+    //    env map we hand the daemon spawn post-commit. The wave id is
+    //    minted inside `wave_create_tx` (PR2 stopgap precedent in
+    //    `routes/coves.rs`); we read it back from the closure result.
+    let spec_card_id = new_id();
+
+    // 2. Resolve cwd + assemble env up front — these go into the
+    //    terminal row written inside the tx. Mirror of
+    //    `routes::codex_cards::create_codex_card` minus the user-
+    //    supplied cwd: the spec card's cwd defaults to `$HOME` (the
+    //    spec agent has no project-specific working directory; PR7+
+    //    may wire a wave-level cwd field).
+    let cwd = crate::routes::codex_cards::default_cwd();
+    let settings = load_settings(s.repo.as_ref()).await?;
+    let env = build_codex_env_map(
+        s.codex.as_ref(),
+        &spec_card_id,
+        settings.http_proxy.as_deref(),
+        settings.https_proxy.as_deref(),
+    );
+
+    // 3. Run the atomic tx: wave row + spec card row + spec terminal
+    //    row + two events in one commit.
+    //
+    //    Order of operations inside the closure matters:
+    //      a. `wave_create_tx` first (mints wave_id, validates cove)
+    //      b. `card_with_codex_create_tx` with `CardRole::Spec` second
+    //         (the write-through into `card_role_cache` makes the spec
+    //         card immediately visible to `enforce_role`, which the
+    //         outer plural-events writer calls per emitted event before
+    //         persisting)
+    //      c. Build the scopes from the actual minted wave + cove ids
+    //      d. Return `(Wave, Vec<(EventScope, Event)>)`
+    //
+    //    No `EventScope::Cove`-fallback dance: by the time the closure
+    //    runs, we know wave_id, so each event gets its tightest scope.
+    let actor_id = actor.to_actor_id();
+    let cache_for_tx = s.card_role_cache.clone();
+    let env_for_tx = env.clone();
+    let cwd_for_tx = cwd.clone();
+    let spec_card_id_for_tx = spec_card_id.clone();
+    let (wave, _event_ids) = write_with_events_typed(
         s.repo.as_ref(),
-        actor.to_actor_id(),
-        EventScope::Cove { cove },
+        actor_id,
         None,
         &s.events,
         &s.card_role_cache,
         move |tx| {
             Box::pin(async move {
+                // 3a. Wave row.
                 let wave = wave_create_tx(tx, p).await?;
-                Ok((wave.clone(), Event::WaveUpdated(wave)))
+                let wave_id = wave.id.clone();
+                let cove_id = wave.cove_id.clone();
+
+                // 3b. Spec card + terminal row. The helper's
+                // `card_create_with_id_tx` writes through into the
+                // role cache (`Spec` for this call) so the next
+                // `enforce_role` step sees it.
+                let (spec_card, _term) = card_with_codex_create_tx(
+                    tx,
+                    spec_card_id_for_tx,
+                    wave_id.clone(),
+                    None,       // sort: append to end
+                    cwd_for_tx, // codex's cwd
+                    env_for_tx, // terminal env
+                    None,       // prompt: spec cards don't use the
+                    // hands-free composer auto-submit
+                    // path — the system prompt lives in
+                    // $CODEX_HOME/config.toml instead
+                    CardRole::Spec, // <— the PR6 binding
+                    &cache_for_tx,
+                )
+                .await?;
+
+                // 3c. Per-event scopes — we now have the real ids.
+                let wave_scope = EventScope::Wave {
+                    wave: wave_id.clone(),
+                    cove: cove_id.clone(),
+                };
+                let card_scope = EventScope::Card {
+                    card: spec_card.id.clone(),
+                    wave: wave_id,
+                    cove: cove_id,
+                };
+                let events = vec![
+                    (wave_scope, Event::WaveUpdated(wave.clone())),
+                    (card_scope, Event::CardAdded(spec_card)),
+                ];
+                Ok((wave, events))
             })
         },
     )
     .await?;
+
+    // 4. Post-commit: hand off the seed + daemon spawn to a background
+    //    `tokio::spawn` task and return 201 immediately. This is a
+    //    PR6 second-fix iteration on top of the first warn-and-201
+    //    fix: even with the response status downgraded to 201, the
+    //    handler was still awaiting `spawn_daemon_for`, whose busy-
+    //    poll wait-until-socket-ready loop can hold the response open
+    //    for ~3s when the daemon binary is missing (CI shape) — that
+    //    delay blew past the web a11y test's 5s navigation timeout
+    //    after the route+frontend round-trip overhead.
+    //
+    //    Architectural contract: persisted rows (the wave + spec
+    //    card + spec terminal) and the two broadcast events are the
+    //    sync side of `create_wave`. The codex daemon is best-effort
+    //    async; the orphan-terminal sweeper reaps a row whose daemon
+    //    never came up (~60s grace) and PR7+ adds structured
+    //    tombstone events for spec-card-level cleanup automation.
+    //
+    //    `tokio::spawn` is synchronous: it returns a `JoinHandle`
+    //    without awaiting the future, so the 201 response leaves the
+    //    handler before the background task even acquires the
+    //    runtime. The discarded `JoinHandle` is the standard
+    //    fire-and-forget shape — failures inside the task log at
+    //    `warn!` and are swallowed; the helper itself takes care of
+    //    the logging.
+    {
+        let state_for_task = s.clone();
+        let spec_card_id_for_task = spec_card_id.clone();
+        let wave_id_for_task = wave.id.as_str().to_string();
+        tokio::spawn(async move {
+            seed_and_spawn_spec_daemon(
+                state_for_task,
+                spec_card_id_for_task,
+                wave_id_for_task,
+                cwd,
+                env,
+            )
+            .await;
+        });
+    }
+
+    tracing::info!(
+        card_id = %spec_card_id,
+        wave_id = %wave.id,
+        "spec card persisted; daemon spawn handed off to background task"
+    );
     Ok((StatusCode::CREATED, Json(wave)))
 }
 
@@ -174,6 +329,19 @@ pub(crate) async fn delete_wave(
     actor: Actor,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
+    // TODO(#136 PR7+): Spec card daemon cleanup on wave delete.
+    // Today the spec card row + its codex daemon are orphaned when a
+    // wave is deleted: the FK cascade nukes the cards/terminals rows
+    // (the schema has ON DELETE CASCADE), and the orphan-terminal
+    // sweeper reaps the now-card-less terminal row + sends SIGTERM
+    // to the persisted pid. But the codex daemon itself may linger
+    // between cascade-delete and sweeper sweep (worst case ~60s), and
+    // there is no `WaveDeleted` listener that proactively tears down
+    // the spec card's session. PR7+ will either (a) emit a
+    // `SpecCardEvicted` tombstone event the supervisor consumes, or
+    // (b) wire a direct daemon-kill in this handler before the FK
+    // cascade fires. PR6 ships the orphan-sweeper path as the MVP.
+    //
     // Look up first (outside the txn) so we know the cove_id for the
     // delete event. Reading outside the txn is fine — there's no
     // concurrent write that could change `wave.cove_id` between the
