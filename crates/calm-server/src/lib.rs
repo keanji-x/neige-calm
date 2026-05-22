@@ -27,6 +27,7 @@
 
 pub mod actor;
 pub mod card_fsm;
+pub mod codex_auto_submit;
 pub mod config;
 pub mod db;
 pub mod error;

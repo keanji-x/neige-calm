@@ -697,6 +697,7 @@ pub async fn card_with_codex_create_tx(
     sort: Option<f64>,
     cwd: String,
     env: serde_json::Value,
+    prompt: Option<String>,
 ) -> Result<(Card, Terminal)> {
     // 1. Card row with placeholder payload — the terminal_id, cwd, and
     //    schemaVersion fields are stamped in step 5 once we have the
@@ -740,6 +741,15 @@ pub async fn card_with_codex_create_tx(
     );
     if !cwd.is_empty() {
         payload.insert("cwd".into(), serde_json::Value::String(cwd));
+    }
+    // `prompt` — surfaces to the `codex_auto_submit` subscriber, which
+    // gates auto-Enter on this being a non-empty string. An empty /
+    // missing value here is the "user spawned codex without a hands-free
+    // prompt" path, identical to pre-#110 behaviour. Trimmed and empty-
+    // filtered so the subscriber's `.filter(|s| !s.is_empty())` is the
+    // single source of truth.
+    if let Some(p) = prompt.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        payload.insert("prompt".into(), serde_json::Value::String(p.to_string()));
     }
     let payload = serde_json::Value::Object(payload);
 

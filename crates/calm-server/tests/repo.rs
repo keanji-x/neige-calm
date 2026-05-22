@@ -736,6 +736,7 @@ async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_payload_link(
         None,
         "/workspace".into(),
         json!({"CODEX_HOME": "/tmp/cx"}),
+        None,
     )
     .await
     .expect("atomic codex create");
@@ -778,6 +779,7 @@ async fn card_with_codex_create_tx_rolls_back_on_invalid_wave() {
         None,
         "/workspace".into(),
         json!({}),
+        None,
     )
     .await
     .expect_err("unknown wave must error");
@@ -812,6 +814,7 @@ async fn card_with_codex_create_tx_uses_caller_supplied_sort() {
         Some(7.0),
         "/workspace".into(),
         json!({}),
+        None,
     )
     .await
     .unwrap();

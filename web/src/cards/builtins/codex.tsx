@@ -36,7 +36,11 @@ const XtermView = lazy(() =>
 
 const codexPayloadSchema = z.object({
   terminal_id: z.string().optional(),
-  initial_prompt: z.string().optional(),
+  // Hands-free seed prompt (#110 superseded). When set server-side, codex
+  // boots with the composer pre-filled and the kernel injects `\r` once
+  // `session_start` fires; the card itself doesn't read this field, but we
+  // keep it in the schema so payload validation passes.
+  prompt: z.string().optional(),
   model: z.string().optional(),
   cwd: z.string().optional(),
 });
