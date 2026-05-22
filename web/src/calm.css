@@ -12,10 +12,10 @@
 
   --text: oklch(20% 0.008 250);
   --text-2: oklch(45% 0.01 250);
-  --text-3: oklch(62% 0.01 250);
+  --text-3: oklch(52% 0.01 250);
   --text-4: oklch(76% 0.008 250);
 
-  --accent: oklch(54% 0.13 245);
+  --accent: oklch(53% 0.13 245);
   --accent-soft: oklch(95% 0.025 245);
 
   --warn: oklch(58% 0.16 30);
@@ -33,7 +33,7 @@
   --hairline-strong: oklch(36% 0.012 245);
   --text: oklch(96% 0.005 245);
   --text-2: oklch(72% 0.012 245);
-  --text-3: oklch(56% 0.012 245);
+  --text-3: oklch(64% 0.012 245);
   --text-4: oklch(42% 0.012 245);
   --accent: oklch(72% 0.14 245);
   --accent-soft: oklch(28% 0.05 245);
@@ -171,7 +171,11 @@ input, textarea { font: inherit; color: inherit; }
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--text-4);
+  /* Re-routed from --text-4 to --text-2 to clear WCAG AA on the
+     sidebar's section labels. Other --text-4 consumers (icons,
+     counts, swatch-plus, input placeholders) aren't axe-flagged —
+     keep the 4-tier hierarchy intact rather than collapsing tokens. */
+  color: var(--text-2);
   padding: 12px 10px 4px;
 }
 .side .nav-label.warn-text { color: var(--warn); }
