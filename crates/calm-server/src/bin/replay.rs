@@ -60,6 +60,19 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // DEBUG (PR #182 hangup diagnostic): install a panic hook **before
+    // anything else** so any panic anywhere in the process (handler task,
+    // background spawn, dispatcher, ws upgrade, …) lands on stderr with
+    // a full backtrace before the runtime tears down. Without this, a
+    // panic inside a `tokio::spawn`'d future would log via the runtime's
+    // default hook (which already does a reasonable job) but a panic
+    // mid-response on the main task can race with shutdown and lose its
+    // tail. Belt + suspenders.
+    std::panic::set_hook(Box::new(|info| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        eprintln!("[REPLAY-PANIC] {info}\n{backtrace}");
+    }));
+
     // tracing-subscriber pulled in for `--serve` mode (the kernel
     // emits info-level logs from the routes; --assert mode is silent
     // unless something blows up). Filter mirrors `main.rs`'s default.

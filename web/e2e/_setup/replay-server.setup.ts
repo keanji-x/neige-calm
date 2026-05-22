@@ -27,8 +27,8 @@
 // orphan after a hard crash is recoverable.
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { createWriteStream, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test as base } from '@playwright/test';
 import {
@@ -68,9 +68,21 @@ test('setup', async () => {
   // can SIGTERM the whole group. cargo wraps its child in another
   // process; killing only the cargo PID can leave the actual replay
   // server orphaned holding the port.
+  //
+  // DEBUG (PR #182 hangup diagnostic): force RUST_LOG so the verbose
+  // `tracing::info!` calls peppered through `routes/waves.rs::create_wave`
+  // actually emit. Without this the replay binary defaults to
+  // `warn,calm_server=info` which is fine for routine flows but masks
+  // the per-phase markers we need to see where the handler dies. We
+  // preserve the caller's RUST_LOG if they explicitly set one (local
+  // debugging), only filling in a default when unset.
+  const childEnv = {
+    ...process.env,
+    RUST_LOG: process.env.RUST_LOG ?? 'calm_server=info,tower_http=info',
+  };
   const child = spawn('cargo', args, {
     cwd: REPO_ROOT,
-    env: process.env,
+    env: childEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
   });
@@ -83,12 +95,39 @@ test('setup', async () => {
   mkdirSync(dirname(PID_FILE), { recursive: true });
   writeFileSync(PID_FILE, String(child.pid), 'utf8');
 
+  // DEBUG (PR #182 hangup diagnostic): tee the cargo child's stdout +
+  // stderr to a log file under `web/test-results/`. The Playwright CI
+  // workflow uploads that directory as the `playwright-report` artifact
+  // on failure, so the captured server-side trace travels along with the
+  // browser traces. Without this, calling `child.unref()` below detaches
+  // the streams from the setup worker (which exits) and any subsequent
+  // stderr line is lost to the void — exactly the blind spot the prior
+  // two fix iterations ran into.
+  //
+  // We pipe rather than read-and-write-line-by-line so we don't keep an
+  // active 'data' listener that would hold the event loop alive past the
+  // intended worker exit (Node's stream piping into a file descriptor
+  // doesn't count as an active listener for keep-alive purposes once the
+  // process is detached via `child.unref()`).
+  const logDir = resolve(REPO_ROOT, 'web', 'test-results');
+  mkdirSync(logDir, { recursive: true });
+  const logPath = join(logDir, 'replay-server.log');
+  const logStream = createWriteStream(logPath, { flags: 'a' });
+  logStream.write(
+    `\n--- replay-server log opened at ${new Date().toISOString()} (pid=${child.pid}) ---\n`,
+  );
+  child.stdout?.pipe(logStream);
+  child.stderr?.pipe(logStream);
+
   // Unref the cargo child so the setup worker process can exit cleanly;
   // the replay server keeps running until teardown kills it. We don't
   // unref the stdio streams individually — once we drop our listeners
   // (which we don't, on purpose, so a late stderr line still gets
   // surfaced), they don't keep the event loop alive on their own.
   child.unref();
+
+  // eslint-disable-next-line no-console
+  console.log(`[replay-server] stdout/stderr teed to ${logPath}`);
 
   // eslint-disable-next-line no-console
   console.log(

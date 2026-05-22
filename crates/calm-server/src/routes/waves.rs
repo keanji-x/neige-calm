@@ -122,6 +122,13 @@ pub(crate) async fn create_wave(
     // per-wave and per-card subscribers each see the relevant frame
     // without re-routing through ancestors.
 
+    tracing::info!(
+        debug = "pr182",
+        phase = "entered",
+        cove_id = %p.cove_id,
+        "waves::create_wave entered"
+    );
+
     // 1. Pre-mint the spec card id BEFORE the tx opens — we need it to
     //    derive `CODEX_HOME = <codex_homes_dir>/<card_id>/` for the
     //    env map we hand the daemon spawn post-commit. The wave id is
@@ -136,12 +143,28 @@ pub(crate) async fn create_wave(
     //    spec agent has no project-specific working directory; PR7+
     //    may wire a wave-level cwd field).
     let cwd = crate::routes::codex_cards::default_cwd();
+    tracing::info!(
+        debug = "pr182",
+        phase = "before_load_settings",
+        spec_card_id = %spec_card_id,
+        "about to load settings"
+    );
     let settings = load_settings(s.repo.as_ref()).await?;
+    tracing::info!(
+        debug = "pr182",
+        phase = "after_load_settings",
+        "settings loaded; building env map"
+    );
     let env = build_codex_env_map(
         s.codex.as_ref(),
         &spec_card_id,
         settings.http_proxy.as_deref(),
         settings.https_proxy.as_deref(),
+    );
+    tracing::info!(
+        debug = "pr182",
+        phase = "after_build_env",
+        "env map built; entering atomic tx"
     );
 
     // 3. Run the atomic tx: wave row + spec card row + spec terminal
@@ -164,6 +187,12 @@ pub(crate) async fn create_wave(
     let env_for_tx = env.clone();
     let cwd_for_tx = cwd.clone();
     let spec_card_id_for_tx = spec_card_id.clone();
+    tracing::info!(
+        debug = "pr182",
+        phase = "before_write_with_events",
+        spec_card_id = %spec_card_id,
+        "calling write_with_events_typed"
+    );
     let (wave, _event_ids) = write_with_events_typed(
         s.repo.as_ref(),
         actor_id,
@@ -211,11 +240,23 @@ pub(crate) async fn create_wave(
                     (wave_scope, Event::WaveUpdated(wave.clone())),
                     (card_scope, Event::CardAdded(spec_card)),
                 ];
+                tracing::info!(
+                    debug = "pr182",
+                    phase = "closure_returning",
+                    wave_id = %wave.id,
+                    "tx closure built (wave, events); returning to write_with_events_typed"
+                );
                 Ok((wave, events))
             })
         },
     )
     .await?;
+    tracing::info!(
+        debug = "pr182",
+        phase = "after_write_with_events",
+        wave_id = %wave.id,
+        "tx committed; events broadcast; about to queue bg spawn"
+    );
 
     // 4. Post-commit: hand off the seed + daemon spawn to a background
     //    `tokio::spawn` task and return 201 immediately. This is a
@@ -245,7 +286,23 @@ pub(crate) async fn create_wave(
         let state_for_task = s.clone();
         let spec_card_id_for_task = spec_card_id.clone();
         let wave_id_for_task = wave.id.as_str().to_string();
-        tokio::spawn(async move {
+        tracing::info!(
+            debug = "pr182",
+            phase = "before_spawn",
+            spec_card_id = %spec_card_id,
+            wave_id = %wave.id,
+            "queueing background daemon spawn"
+        );
+        let bg_card_id = spec_card_id.clone();
+        let bg_wave_id = wave.id.as_str().to_string();
+        let _bg = tokio::spawn(async move {
+            tracing::info!(
+                debug = "pr182_bg",
+                phase = "bg_start",
+                card_id = %bg_card_id,
+                wave_id = %bg_wave_id,
+                "background daemon spawn task entered"
+            );
             seed_and_spawn_spec_daemon(
                 state_for_task,
                 spec_card_id_for_task,
@@ -254,13 +311,31 @@ pub(crate) async fn create_wave(
                 env,
             )
             .await;
+            tracing::info!(
+                debug = "pr182_bg",
+                phase = "bg_end",
+                card_id = %bg_card_id,
+                wave_id = %bg_wave_id,
+                "background daemon spawn task finished"
+            );
         });
+        tracing::info!(
+            debug = "pr182",
+            phase = "after_spawn",
+            "background task queued (JoinHandle dropped)"
+        );
     }
 
     tracing::info!(
         card_id = %spec_card_id,
         wave_id = %wave.id,
         "spec card persisted; daemon spawn handed off to background task"
+    );
+    tracing::info!(
+        debug = "pr182",
+        phase = "before_response",
+        wave_id = %wave.id,
+        "returning 201 to client"
     );
     Ok((StatusCode::CREATED, Json(wave)))
 }
