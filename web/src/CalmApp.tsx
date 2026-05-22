@@ -10,15 +10,20 @@
 // mounted inside `AppProviders` so it sees the same QueryClient.
 //
 // What this component still owns:
-//   * theme (light/dark toggle on the TitleBar — local UI state).
 //   * the Sidebar's data shape: it wants `Cove[]` and `Wave[]` (across
 //     all coves) for the "running / waiting" badges. We fetch coves
 //     once and fan out wave queries with `useQueries`, then adapt to
 //     UI shapes inline. The result is shallow-stable enough for the
 //     Sidebar; per-cove invalidations naturally roll up.
+//
+// Theme is no longer local to CalmApp — it lives in `app/theme.tsx`
+// (`ThemeProvider` mounted by `AppProviders`) and is read via the
+// `useTheme()` hook. The TitleBar's toggle button cycles only between
+// 'light' and 'dark' (an explicit user choice that pins the theme away
+// from the OS preference); the three-mode picker (Light/Dark/System)
+// lives on the Settings page. See issue #22.
 
-import { Suspense, useEffect, useMemo } from 'react';
-import { useState } from './shared/state';
+import { Suspense, useMemo } from 'react';
 import { Outlet, useRouterState } from '@tanstack/react-router';
 import { useQueries } from '@tanstack/react-query';
 import { Sidebar } from './shared/components/Sidebar';
@@ -32,19 +37,13 @@ import {
   useOverlaysByKindQuery,
 } from './api/queries';
 import { useGo } from './app/navigation';
+import { useTheme } from './app/theme';
 import type { KernelOverlay } from './api/wire';
 import type { Cove, Route as AppRoute, Wave } from './types';
 
 export function CalmApp() {
-  const [theme, setTheme] = useState<'light' | 'dark'>('light');
+  const { resolved: theme, setMode } = useTheme();
   const go = useGo();
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    return () => {
-      delete document.documentElement.dataset.theme;
-    };
-  }, [theme]);
 
   // Derive the current AppRoute shape from the router's location so the
   // Sidebar's "highlight active" logic keeps working without props on
@@ -119,7 +118,10 @@ export function CalmApp() {
     <div className="win">
       <TitleBar
         theme={theme}
-        onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+        // Toggle button on the title bar always sets an explicit mode —
+        // tapping it pins away from 'system'. The three-way Light/Dark/
+        // System control lives on the Settings page.
+        onToggleTheme={() => setMode(theme === 'dark' ? 'light' : 'dark')}
         onOpenSettings={() => go({ name: 'settings' })}
       />
       <div className="stage">

@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo } from 'react';
 import { useState } from '../shared/state';
 import { coveOf, timeOfDay } from '../shared/components/helpers';
+import { useTheme } from '../app/theme';
 import type { Cove, Route, Wave } from '../types';
 
 // xterm.js is heavy and only mounts when the Today home panel resolves a
@@ -185,10 +186,11 @@ function TodayTerminalPanel({
 }
 
 function LiveTerminalSlot({ terminalId }: { terminalId: string }) {
+  const { resolved: theme } = useTheme();
   return (
     <div style={{ minHeight: 360 }}>
       <Suspense fallback={<div className="synth">Loading terminal…</div>}>
-        <XtermView terminalId={terminalId} />
+        <XtermView terminalId={terminalId} theme={theme} />
       </Suspense>
     </div>
   );

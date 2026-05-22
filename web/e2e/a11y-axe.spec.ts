@@ -42,18 +42,18 @@ async function waitForBootstrap(page: Page): Promise<void> {
   ).toBeVisible({ timeout: 15_000 });
 }
 
-// Flip the app into dark mode for the parallel dark-theme scans. The
-// theme is React state living in CalmApp (no localStorage) — the
-// effect mirrors `theme` into `document.documentElement.dataset.theme`.
-// We can't invoke the React setter from outside the bundle, but the
-// dataset attribute is exactly what the `[data-theme="dark"]` selectors
-// in `calm.css` consume — so writing it directly is sufficient to
-// re-paint the cascade for axe's color-contrast probe. We wait on a
-// `waitForFunction` checking the attribute *and* the computed background
-// color of <body> (which should darken once the cascade re-evaluates)
-// so the scan never races a half-applied theme. Note: the next user
-// action that triggers CalmApp's effect will overwrite our attribute,
-// which is fine — the scan runs to completion before any such action.
+// Flip the app into dark mode for the parallel dark-theme scans. Theme
+// is owned by ThemeProvider (web/src/app/theme.tsx), which mirrors
+// `resolved` into `document.documentElement.dataset.theme`. We can't
+// invoke its setter from outside the bundle, but the dataset attribute
+// is exactly what the `[data-theme="dark"]` selectors in `calm.css`
+// consume — so writing it directly is sufficient to re-paint the
+// cascade for axe's color-contrast probe. We wait on a `waitForFunction`
+// checking the attribute *and* the computed background color of <body>
+// (which should darken once the cascade re-evaluates) so the scan never
+// races a half-applied theme. The ThemeProvider effect only re-fires
+// when its React state changes, so our direct attribute write isn't
+// clobbered by the bundle during the scan window.
 async function enableDarkTheme(page: Page): Promise<void> {
   await page.evaluate(() => {
     document.documentElement.dataset.theme = 'dark';

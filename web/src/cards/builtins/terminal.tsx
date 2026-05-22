@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { TerminalCardData } from '../../types';
 import type { CardEntry } from '../registry';
 import { dlog } from '../../util/debug';
+import { useTheme } from '../../app/theme';
 import {
   TERMINAL_PAYLOAD_SCHEMA_VERSION,
   payloadSchemaVersion,
@@ -33,6 +34,7 @@ const terminalPayloadSchema = z.object({
 
 function TerminalCard({ card }: { card: TerminalCardData }) {
   const { title, lines, terminalId, unsupportedVersion } = card;
+  const { resolved: theme } = useTheme();
   if (unsupportedVersion !== undefined) {
     return (
       <div className="term term-unsupported-version">
@@ -64,7 +66,7 @@ function TerminalCard({ card }: { card: TerminalCardData }) {
       <div className="term-body">
         {live ? (
           <Suspense fallback={<div className="term-line k-cursor">Loading terminal…</div>}>
-            <XtermView terminalId={terminalId!} />
+            <XtermView terminalId={terminalId!} theme={theme} />
           </Suspense>
         ) : (
           <>
