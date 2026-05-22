@@ -225,6 +225,7 @@ async fn subscribe_without_since_only_live() {
             name: "n".into(),
             color: "#fff".into(),
             sort: 0.0,
+            kind: calm_server::model::CoveKind::User,
             created_at: 0,
             updated_at: 0,
         }),

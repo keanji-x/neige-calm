@@ -43,16 +43,23 @@ import { resetReplayServer } from './helpers/reset';
 const THEMES = ['light', 'dark'] as const;
 type Theme = (typeof THEMES)[number];
 
-// Wait for the auto-bootstrap to land. `useTodayTerminal` runs on first
-// paint of the Today page and creates "Scratch / Today / <terminal>"
-// when the kernel has no state — which is the replay binary's starting
-// position (events seeded, entity tables empty). The Sidebar's "Scratch"
-// button is the stable end-state of bootstrap; we anchor on it because
-// the trace buffer doesn't backfill events that fired before the WS
-// connect, so we can't anchor on the fixture's `overlay.set` directly.
+// Wait for the app shell to be ready. Pre-#175 this anchored on the
+// Sidebar "Scratch" button — a stable signal that `useTodayTerminal`
+// had minted the default cove and the coves query had refetched.
+// Post-#175 the system cove is hidden from the sidebar, so we anchor
+// on the Today nav button instead: it's rendered as soon as the
+// Sidebar mounts and is independent of whether useTodayTerminal's
+// full bootstrap (system cove → Today wave → terminal card) completes.
+// In the replay-binary harness the terminal-card POST may surface a
+// daemon-spawn error (no `calm-session-daemon` in CI) and never set
+// `localStorage['calm.todayCardId']`, so we can't anchor on that —
+// the Today nav button is the equivalent "app shell is mounted"
+// signal that works in both replay and live-daemon environments.
 async function waitForBootstrap(page: Page): Promise<void> {
   await expect(
-    page.locator('aside.side').getByRole('button', { name: /scratch/i }),
+    page
+      .getByRole('navigation', { name: 'Sidebar navigation' })
+      .getByRole('button', { name: /^today$/i }),
   ).toBeVisible({ timeout: 15_000 });
 }
 
@@ -142,37 +149,36 @@ function formatViolations(
     .join('\n');
 }
 
-// Resolve the auto-created Scratch cove + Today wave ids from the live
-// DOM rather than hard-coding them — they're kernel-generated UUIDs that
-// vary per run. We click sidebar / wave-row affordances directly here
-// (not keyboard-only) because this helper is just plumbing for the axe
-// scans; the keyboard-only contract lives in `a11y-keyboard.spec.ts`.
-//
-// The locator scoping matters: the Sidebar has its own "Today" button
-// (the nav-item back to /), and the cove page renders a WaveRow whose
-// title is also "Today" (the auto-bootstrapped wave). With the WaveRow
-// real-button refactor (#56/#60 follow-up) all three are now real
-// <button>s sharing the name "Today" — so we scope the wave row by the
-// `<section aria-label="Waves">` landmark that CovePage wraps around
-// the wave lists. See §2.2 of `docs/a11y-contract.md`.
+// Mint a fresh user cove + wave for the axe scans to operate on. After
+// issue #175 the kernel's default Today terminal lives in a hidden
+// system cove that the sidebar can't reach, so we always create our
+// own user cove for these tests. We click sidebar / wave-row
+// affordances directly here (not keyboard-only) because this helper is
+// just plumbing for the axe scans; the keyboard-only contract lives in
+// `a11y-keyboard.spec.ts`.
 async function ids(page: Page): Promise<{ coveId: string; waveId: string }> {
   await page.goto('/?trace=1');
   await waitForBootstrap(page);
-  await page
-    .locator('aside.side')
-    .getByRole('button', { name: /scratch/i })
-    .click();
+  // Mint a user cove via the sidebar "+ New cove" affordance.
+  const sidebarCoves = page.getByRole('navigation', { name: 'Coves' });
+  const coveName = `axe cove ${Date.now()}`;
+  await sidebarCoves.getByRole('button', { name: /new cove/i }).click();
+  const nameInput = sidebarCoves.getByPlaceholder(/name/i);
+  await expect(nameInput).toBeVisible();
+  await nameInput.fill(coveName);
+  await nameInput.press('Enter');
+  const coveBtn = sidebarCoves.getByRole('button', { name: new RegExp(coveName, 'i') });
+  await expect(coveBtn).toBeVisible();
+  await coveBtn.click();
   await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
   const coveId = new URL(page.url()).pathname.split('/').pop()!;
-  // WaveRow is now a real <button> (see WaveRow.tsx). The "Waves"
-  // region landmark on CovePage lets us scope past the colliding
-  // sidebar Today nav button and the Crumbs Today link without
-  // resorting to DOM-tag selectors.
-  await page
-    .getByRole('region', { name: 'Waves' })
-    .getByRole('button', { name: /today/i })
-    .first()
-    .click();
+  // Create a wave inside the new cove.
+  const waveTitle = `axe wave ${Date.now()}`;
+  await page.getByRole('button', { name: /new wave/i }).click();
+  const titleInput = page.getByPlaceholder(/wave title/i);
+  await expect(titleInput).toBeVisible();
+  await titleInput.fill(waveTitle);
+  await titleInput.press('Enter');
   await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
   const waveId = new URL(page.url()).pathname.split('/').pop()!;
   return { coveId, waveId };
@@ -213,9 +219,11 @@ test.describe('a11y · axe', () => {
         await page.goto(`/calm/cove/${coveId}?trace=1`);
         await waitForBootstrap(page);
         // CovePage paints its header (h1, eyebrow, …) synchronously once
-        // covesQuery resolves. Wait for the title before scanning so we
-        // don't catch a half-rendered skeleton.
-        await expect(page.getByRole('heading', { name: /scratch/i })).toBeVisible();
+        // covesQuery resolves. Wait for the H1 to appear before scanning
+        // so we don't catch a half-rendered skeleton. We anchor on the
+        // role rather than the cove name (which now varies per run since
+        // we mint our own in `ids()`).
+        await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
         await applyTheme(page, theme);
         const { violations } = await axe(page).analyze();
         expect(violations, formatViolations(violations)).toEqual([]);
@@ -293,7 +301,17 @@ test.describe('a11y · axe', () => {
         await waitForBootstrap(page);
         // Wait for the wave page to fully render before flipping the
         // toggle — WaveGrid is lazy-loaded.
-        await expect(page.getByRole('button', { name: /\+\s*add/i })).toBeVisible();
+        const addBtn = page.getByRole('button', { name: /\+\s*add/i });
+        await expect(addBtn).toBeVisible();
+        // Post-#175 the wave from `ids()` is freshly minted with zero
+        // cards (the default Today PTY lives in the hidden system cove,
+        // not user-created waves). Without at least one card the
+        // list-view `<ul>` collapses to 0 height and Playwright reports
+        // it as hidden. Add one card so the list view has something to
+        // render — what we're scanning is the populated list state.
+        await addBtn.click();
+        await page.getByRole('menuitem', { name: /terminal/i }).first().click();
+        await page.waitForTimeout(500);
         const toggle = page.getByRole('switch', { name: /switch wave to list view/i });
         await expect(toggle).toBeVisible();
         await toggle.click();

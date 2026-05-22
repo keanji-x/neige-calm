@@ -10,9 +10,13 @@ Playwright specs against the full running stack — kernel + sqlite + UI.
    make dev
    ```
 
-   This boots calm-server (on `:4040`) with the docker MockRepo. The
-   default seed includes a `Scratch` cove that the golden-path test
-   anchors on.
+   This boots calm-server (on `:4040`) with the docker MockRepo.
+   Issue #175 — the sidebar no longer ships with a seeded `Scratch`
+   cove; the kernel's default Today terminal lives in a hidden system
+   cove (filtered out of `GET /api/coves` by default). Each spec
+   creates the user-visible coves and waves it needs as part of its
+   setup, anchored on `localStorage['calm.todayCardId']` rather than
+   on a seeded cove name.
 
 2. One-time browser install (first run only):
 
@@ -38,9 +42,12 @@ boot the server (see the `webServer` comment in
 
 ## What's covered
 
-- `golden-path.spec.ts` — sidebar renders, clicking the seeded
-  `Scratch` cove navigates to `/calm/cove/$id`. Just enough to
-  catch a broken router or a broken `/api/coves` route.
+- `golden-path.spec.ts` — sidebar renders, the Today page bootstraps
+  a default terminal (system cove hidden — issue #175), and the user
+  can mint a new cove via "+ New cove" and navigate into it. Catches
+  a broken router, a broken `/api/coves` route, or a system-cove
+  filter regression that would leak the kernel scaffolding back into
+  the sidebar.
 
 - `a11y-trace-smoke.spec.ts` — smoke test for the event-trace
   exposure plumbing (issue #56 slice 5). Runs under the separate

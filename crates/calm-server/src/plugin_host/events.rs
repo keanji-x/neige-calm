@@ -213,7 +213,7 @@ fn glob_matches(pattern: &str, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Card, Cove, Overlay, Wave};
+    use crate::model::{Card, Cove, CoveKind, Overlay, Wave};
     use serde_json::json;
 
     fn cove(id: &str) -> Cove {
@@ -222,6 +222,7 @@ mod tests {
             name: "n".into(),
             color: "#fff".into(),
             sort: 1.0,
+            kind: CoveKind::User,
             created_at: 0,
             updated_at: 0,
         }

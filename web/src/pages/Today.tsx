@@ -118,9 +118,12 @@ export function TodayPage({
 //
 // Replaces the original mockup's static `SurfTerminal` (later renamed
 // `TodayTerminal` in the class-name cleanup pass) with an actual live
-// shell. The terminal binds to a single per-browser "Scratch / Today"
-// card (resolved by `useTodayTerminal` upstream and passed in as
-// `terminalId`). While the resolver runs we show a calm "Booting…" line.
+// shell. The terminal binds to a single per-browser card hosted inside
+// the kernel-owned system cove + "Today" wave (resolved by
+// `useTodayTerminal` upstream and passed in as `terminalId`). Issue
+// #175 hides the system cove from the sidebar; the user only ever
+// interacts with the terminal here. While the resolver runs we show a
+// calm "Booting…" line.
 //
 // `onReset` lets the upstream wipe the cached binding (e.g. if a future
 // "kill" affordance lands), forcing a fresh bootstrap on next render.

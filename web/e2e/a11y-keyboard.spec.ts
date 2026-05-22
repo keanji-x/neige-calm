@@ -21,16 +21,19 @@
 // with a fixture preloaded. The replay binary seeds the events table but
 // does NOT project them onto the entity tables (see
 // `crates/calm-server/src/replay.rs`); that's intentional, so the entity
-// tables start empty. The web app's Today page then auto-creates a
-// "Scratch" cove + "Today" wave + terminal card via `useTodayTerminal` on
-// first paint, and that's the state the tests below operate on.
+// tables start empty. Issue #175 — the web app's Today page then
+// auto-creates a hidden **system** cove + "Today" wave + terminal card
+// via `useTodayTerminal` on first paint; that cove is filtered out of
+// `GET /api/coves` by default, so the sidebar never renders it. Each
+// `beforeEach` below mints an `Atlas` **user** cove via the REST API
+// so the keyboard tests have a stable sidebar anchor to navigate from.
 //
 // Where it matters, we pair the UI assertion with an event-trace
 // assertion (`getEventTrace` / `waitForEvent` from `helpers/trace.ts`) so
 // the test proves both halves of the role/name + event contract from #56.
 
 import { test, expect, type Page } from '@playwright/test';
-import { resetReplayServer } from './helpers/reset';
+import { createUserCove, createWaveInCove, resetReplayServer } from './helpers/reset';
 import { clearEventTrace, getEventTrace, waitForEvent } from './helpers/trace';
 
 interface FocusInfo {
@@ -136,14 +139,15 @@ async function tabUntil(
 }
 
 // Wait for the auto-bootstrap to land. `useTodayTerminal` runs on first
-// paint of the Today page and creates "Scratch / Today / <terminal>" if
-// the kernel has no state — which is the replay binary's starting
-// position (events seeded, entity tables empty). We anchor on the
-// sidebar's "Scratch" cove button becoming visible because that's the
-// stable end-state regardless of which background queries settle first.
+// paint of the Today page and creates a hidden system cove + "Today"
+// wave + terminal card (issue #175 — the system cove is not visible
+// in the sidebar). The `beforeEach` below also mints an `Atlas` user
+// cove via REST so the keyboard tests have a stable sidebar anchor;
+// this helper waits for that user cove to render (the WS feed
+// invalidates the coves query and the live render picks it up).
 async function waitForBootstrap(page: Page): Promise<void> {
   await expect(
-    page.locator('aside.side').getByRole('button', { name: /scratch/i }),
+    page.locator('aside.side').getByRole('button', { name: /atlas/i }),
   ).toBeVisible({ timeout: 15_000 });
   // Also wait for the trace buffer to come into existence so subsequent
   // `clearEventTrace` / `waitForEvent` calls have a buffer to read.
@@ -159,6 +163,18 @@ test.describe('a11y · keyboard-only navigation', () => {
     // Without this hook, accumulating cove/wave/card mutations across
     // tests cause flakes — see issue #56 followup.
     await resetReplayServer(request);
+    // Issue #175 — the kernel hides the system cove that hosts the
+    // default Today terminal from the sidebar. Mint a user-visible
+    // `Atlas` cove + `Today` wave via the REST API so the keyboard
+    // tests below have a stable sidebar anchor (they all
+    // `tabUntil(... /atlas/i)`) and a Today wave under it (the
+    // WaveRow tests anchor on /today/i inside the Waves region). The
+    // replay server's `POST /api/coves` + `POST /api/waves` are the
+    // same handlers production uses; the live frontend invalidates the
+    // coves / waves queries on the resulting WS events and renders the
+    // new rows without a reload.
+    const atlas = await createUserCove(request, 'Atlas');
+    await createWaveInCove(request, atlas.id, 'Today');
     // Every spec opens the app with the trace ring buffer enabled so that
     // event assertions can read `window.__neigeEvents__`. baseURL is set
     // by the `a11y` project, so we just append the param.
@@ -173,9 +189,9 @@ test.describe('a11y · keyboard-only navigation', () => {
 
   test('Today → Cove via keyboard', async ({ page }) => {
     // Tab forward from the document start until focus lands on the
-    // Scratch cove button in the sidebar. Its accessible name is just
+    // Atlas cove button in the sidebar. Its accessible name is just
     // the cove name (see Sidebar.tsx).
-    await tabUntil(page, (info) => info.name?.toLowerCase().includes('scratch') === true);
+    await tabUntil(page, (info) => info.name?.toLowerCase().includes('atlas') === true);
     // Activate the cove. The Sidebar's cove rows are real <button>s, so
     // Enter is the canonical activation key — Space would also work, but
     // Enter is what a screen reader announces ("Activate").
@@ -184,14 +200,14 @@ test.describe('a11y · keyboard-only navigation', () => {
     // opaque (kernel-generated UUID), so we just match the prefix.
     await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
     // The CovePage's <h1> title button renders the cove name + period
-    // ("Scratch."). Asserting it is visible proves the route actually
+    // ("Atlas."). Asserting it is visible proves the route actually
     // mounted, not just that the URL changed.
-    await expect(page.getByRole('heading', { name: /scratch/i })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /atlas/i })).toBeVisible();
   });
 
   test('Cove → New wave via keyboard creates a wave', async ({ page }) => {
     // First land on the cove page via keyboard (same path as above).
-    await tabUntil(page, (info) => info.name?.toLowerCase().includes('scratch') === true);
+    await tabUntil(page, (info) => info.name?.toLowerCase().includes('atlas') === true);
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
 
@@ -229,8 +245,8 @@ test.describe('a11y · keyboard-only navigation', () => {
   test('Wave → AddPanel opens with Enter and closes with Escape', async ({ page }) => {
     // Navigate to a wave page via keyboard so the AddPanel trigger
     // exists in the DOM. We use the auto-created "Today" wave under the
-    // Scratch cove — it's the only wave that exists at this point.
-    await tabUntil(page, (info) => info.name?.toLowerCase().includes('scratch') === true);
+    // Atlas cove — it's the only wave that exists at this point.
+    await tabUntil(page, (info) => info.name?.toLowerCase().includes('atlas') === true);
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
     // From the cove page, the "Today" wave row is a real <button> with
@@ -273,9 +289,9 @@ test.describe('a11y · keyboard-only navigation', () => {
     page,
   }) => {
     // Navigate to a wave page via keyboard. We use the auto-created
-    // "Today" wave under the Scratch cove — the only one that exists at
+    // "Today" wave under the Atlas cove — the only one that exists at
     // bootstrap time on the replay fixture.
-    await tabUntil(page, (info) => info.name?.toLowerCase().includes('scratch') === true);
+    await tabUntil(page, (info) => info.name?.toLowerCase().includes('atlas') === true);
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
     // WaveRow is a real <button>; filter on `wave-row` className to
@@ -378,7 +394,7 @@ test.describe('a11y · keyboard-only navigation', () => {
     page,
   }) => {
     // Navigate to the wave page via keyboard.
-    await tabUntil(page, (info) => info.name?.toLowerCase().includes('scratch') === true);
+    await tabUntil(page, (info) => info.name?.toLowerCase().includes('atlas') === true);
     await page.keyboard.press('Enter');
     // WaveRow is a real <button>; filter on `wave-row` className to
     // disambiguate from the sidebar Today nav button and the Crumbs
@@ -471,7 +487,7 @@ test.describe('a11y · keyboard-only navigation', () => {
     page,
   }) => {
     // Land on the wave page via keyboard.
-    await tabUntil(page, (info) => info.name?.toLowerCase().includes('scratch') === true);
+    await tabUntil(page, (info) => info.name?.toLowerCase().includes('atlas') === true);
     await page.keyboard.press('Enter');
     // WaveRow is a real <button>; filter on `wave-row` className to
     // disambiguate from the sidebar Today nav button and the Crumbs
@@ -532,14 +548,14 @@ test.describe('a11y · keyboard-only navigation', () => {
     page,
   }) => {
     // Click (not keyboard) into the wave: skips tabUntil to avoid tab-count
-    // brittleness when previous tests accumulate waves. The Scratch cove
+    // brittleness when previous tests accumulate waves. The Atlas cove
     // and its auto-created Today wave are the stable entrypoints; this
     // test exercises the list-view toggle + Alt+Arrow reorder contract,
     // not the sidebar / cove navigation (those have their own keyboard
     // coverage elsewhere in this suite).
     await page
       .locator('aside.side')
-      .getByRole('button', { name: /scratch/i })
+      .getByRole('button', { name: /atlas/i })
       .click();
     await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
     // Click into the auto-bootstrapped "Today" wave row. WaveRow is a
@@ -559,32 +575,35 @@ test.describe('a11y · keyboard-only navigation', () => {
     await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
     const waveUrl = page.url();
 
-    // Add a second card so the reorder test has two list items to swap.
-    // The bootstrap path creates one terminal card; we add a second so
-    // Alt+ArrowDown has a neighbor to swap with. Keyboard-driven (focus
-    // + Enter on the trigger, then Enter on the focused menuitem) to
-    // keep the suite honest about its keyboard-only claim — card
-    // creation isn't the contract under test here, but it's still
-    // reachable from the keyboard and the rest of this test depends on
-    // the menu activating, so we exercise it via key events.
-    const addBtn = page.getByRole('button', { name: /\+\s*add/i });
-    await addBtn.focus();
-    await page.keyboard.press('Enter');
-    const menu = page.getByRole('menu');
-    await expect(menu).toBeVisible();
-    // The Menu primitive moves focus to the first menuitem on open
-    // (`initialIndex: 0`) — see Menu.tsx. Terminal is registered first
-    // in the cards registry (registerBuiltins in cards/builtins/index.ts),
-    // so it's already focused; Enter activates it without an ArrowDown.
-    const terminalItem = page.getByRole('menuitem', { name: /terminal/i }).first();
-    await expect(terminalItem).toBeFocused();
-    await page.keyboard.press('Enter');
-    // Give the new card a moment to land. The replay binary lacks a
-    // calm-session-daemon so the terminal create may surface a console
-    // error, but the kernel Card row is still inserted (the daemon
-    // spawn happens asynchronously after the card lands); the card
-    // body just falls back to its non-live rendering.
-    await page.waitForTimeout(500);
+    // Add two terminal cards so the reorder test has two list items to swap.
+    // Post-#175, the Atlas cove's Today wave is freshly minted by the e2e
+    // helper with zero cards (the default Today PTY now lives in the hidden
+    // system cove, not in user-created coves). We add both cards explicitly
+    // here. Keyboard-driven (focus + Enter on the trigger, then Enter on
+    // the focused menuitem) to keep the suite honest about its keyboard-only
+    // claim — card creation isn't the contract under test here, but it's
+    // still reachable from the keyboard and the rest of this test depends
+    // on the menu activating, so we exercise it via key events.
+    for (let i = 0; i < 2; i++) {
+      const addBtn = page.getByRole('button', { name: /\+\s*add/i });
+      await addBtn.focus();
+      await page.keyboard.press('Enter');
+      const menu = page.getByRole('menu');
+      await expect(menu).toBeVisible();
+      // The Menu primitive moves focus to the first menuitem on open
+      // (`initialIndex: 0`) — see Menu.tsx. Terminal is registered first
+      // in the cards registry (registerBuiltins in cards/builtins/index.ts),
+      // so it's already focused; Enter activates it without an ArrowDown.
+      const terminalItem = page.getByRole('menuitem', { name: /terminal/i }).first();
+      await expect(terminalItem).toBeFocused();
+      await page.keyboard.press('Enter');
+      // Give the new card a moment to land. The replay binary lacks a
+      // calm-session-daemon so the terminal create may surface a console
+      // error, but the kernel Card row is still inserted (the daemon
+      // spawn happens asynchronously after the card lands); the card
+      // body just falls back to its non-live rendering.
+      await page.waitForTimeout(500);
+    }
 
     // The toggle is a role="switch" with an accessible name like
     // "Switch wave to list view" (default state = grid).

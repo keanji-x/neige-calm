@@ -150,7 +150,11 @@ declare module '@tanstack/react-router' {
 function IndexComponent() {
   const go = useGo();
   const covesQ = useCovesQuery();
-  const kernelCoves = covesQ.data ?? [];
+  // Belt-and-suspenders for issue #175 — see CalmApp.tsx for the same
+  // filter. The server already hides `kind='system'` from
+  // `GET /api/coves` by default, but the second layer of defence keeps
+  // the system cove out of Today's calendar/clock fan-out as well.
+  const kernelCoves = (covesQ.data ?? []).filter((c) => c.kind === 'user');
 
   // Today's calendar + clock want a flat wave list across all coves.
   // One query per cove keeps cache granularity sensible (a wave moving

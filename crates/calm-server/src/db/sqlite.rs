@@ -313,14 +313,23 @@ pub async fn cove_create_tx(tx: &mut Transaction<'_, Sqlite>, p: NewCove) -> Res
     };
     let now = now_ms();
     let id = new_id();
+    // Issue #175: user-facing creates always land as `CoveKind::User`.
+    // The `coves.kind` column was added in migration 0009 with DEFAULT
+    // 'user'; we bind the variant explicitly here (mirroring the
+    // `card_create_with_id_tx` pattern that binds `CardRole::Plain`)
+    // so the storage shape stays self-documenting and a future kind
+    // addition surfaces here as a compile error rather than silently
+    // accepting the DB default. The system cove is minted exclusively
+    // via `cove_create_system_tx` below.
     sqlx::query(
-        r#"INSERT INTO coves (id, name, color, sort, created_at, updated_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
+        r#"INSERT INTO coves (id, name, color, sort, kind, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
     )
     .bind(&id)
     .bind(&p.name)
     .bind(&p.color)
     .bind(sort)
+    .bind(CoveKind::User)
     .bind(now)
     .bind(now)
     .execute(&mut **tx)
@@ -330,6 +339,56 @@ pub async fn cove_create_tx(tx: &mut Transaction<'_, Sqlite>, p: NewCove) -> Res
         name: p.name,
         color: p.color,
         sort,
+        kind: CoveKind::User,
+        created_at: now,
+        updated_at: now,
+    })
+}
+
+/// Issue #175 — mint the singleton system cove that hosts the default
+/// Today terminal's wave + card. The unique partial index on
+/// `coves(kind) WHERE kind = 'system'` from migration 0009 enforces the
+/// at-most-one invariant DB-side; the upsert endpoint
+/// (`POST /api/coves/system`) checks for existence before calling this
+/// helper, so a healthy production path never trips the index. We
+/// don't translate a uniqueness violation into a typed conflict here
+/// — if two callers race past the existence check we want the txn to
+/// roll back and the loser to retry via the upsert endpoint, which
+/// will re-read the now-existing row.
+///
+/// `name`, `color`, and `sort` are sentinel values the user never sees
+/// (system coves are filtered out of `GET /api/coves`). They exist
+/// because the underlying columns are `NOT NULL`; the chosen sentinels
+/// (`name = 'system'`, `color = '#000'`, `sort = -1.0`) are documented
+/// here so a debugger landing on a system row knows it's looking at
+/// scaffolding, not user data.
+pub async fn cove_create_system_tx(tx: &mut Transaction<'_, Sqlite>) -> Result<Cove> {
+    let now = now_ms();
+    let id = new_id();
+    // Sort sentinel: -1.0 places the system cove below any user cove
+    // (which start at 1.0 via `next_sort_scoped_in_tx`) if a debugger
+    // ever asks for `coves ORDER BY sort`. Hidden from `GET /api/coves`
+    // either way; this is just a debugger-friendly default.
+    let sort = -1.0_f64;
+    sqlx::query(
+        r#"INSERT INTO coves (id, name, color, sort, kind, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
+    )
+    .bind(&id)
+    .bind("system")
+    .bind("#000")
+    .bind(sort)
+    .bind(CoveKind::System)
+    .bind(now)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+    Ok(Cove {
+        id: id.into(),
+        name: "system".into(),
+        color: "#000".into(),
+        sort,
+        kind: CoveKind::System,
         created_at: now,
         updated_at: now,
     })
@@ -341,7 +400,7 @@ pub async fn cove_update_tx(
     p: CovePatch,
 ) -> Result<Cove> {
     let mut c = sqlx::query_as::<_, Cove>(
-        r#"SELECT id, name, color, sort, created_at, updated_at
+        r#"SELECT id, name, color, sort, kind, created_at, updated_at
            FROM coves WHERE id = ?1"#,
     )
     .bind(id)
@@ -360,6 +419,10 @@ pub async fn cove_update_tx(
     }
     c.updated_at = now_ms();
 
+    // `kind` is intentionally absent from `CovePatch` — issue #175
+    // forbids re-tagging a cove between user/system through the regular
+    // PATCH surface. The system cove is minted exactly once via
+    // `cove_create_system_tx` and never demoted; user coves stay user.
     sqlx::query(
         r#"UPDATE coves SET name = ?1, color = ?2, sort = ?3, updated_at = ?4
            WHERE id = ?5"#,
@@ -953,8 +1016,23 @@ impl RepoRead for SqlxRepo {
     // ---------------------------------------------------------------- coves
     async fn coves_list(&self) -> Result<Vec<Cove>> {
         let rows = sqlx::query_as::<_, Cove>(
-            r#"SELECT id, name, color, sort, created_at, updated_at
+            r#"SELECT id, name, color, sort, kind, created_at, updated_at
                FROM coves ORDER BY sort ASC"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    async fn coves_list_user_visible(&self) -> Result<Vec<Cove>> {
+        // Issue #175 — default surface for `GET /api/coves`. Filters out
+        // the singleton system cove that hosts the default Today
+        // terminal's wave + card. Pre-#175 callers that want every row
+        // (debug surfaces, integration tests asserting on the system
+        // cove's existence) use `coves_list` directly.
+        let rows = sqlx::query_as::<_, Cove>(
+            r#"SELECT id, name, color, sort, kind, created_at, updated_at
+               FROM coves WHERE kind = 'user' ORDER BY sort ASC"#,
         )
         .fetch_all(&self.pool)
         .await?;
@@ -963,10 +1041,25 @@ impl RepoRead for SqlxRepo {
 
     async fn cove_get(&self, id: &str) -> Result<Option<Cove>> {
         let row = sqlx::query_as::<_, Cove>(
-            r#"SELECT id, name, color, sort, created_at, updated_at
+            r#"SELECT id, name, color, sort, kind, created_at, updated_at
                FROM coves WHERE id = ?1"#,
         )
         .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    async fn cove_get_system(&self) -> Result<Option<Cove>> {
+        // Issue #175 — return the singleton system cove if it exists,
+        // `None` before the first call to the `POST /api/coves/system`
+        // upsert endpoint. Backed by the partial unique index on
+        // `coves(kind) WHERE kind = 'system'` from migration 0009 —
+        // there is at most one such row.
+        let row = sqlx::query_as::<_, Cove>(
+            r#"SELECT id, name, color, sort, kind, created_at, updated_at
+               FROM coves WHERE kind = 'system' LIMIT 1"#,
+        )
         .fetch_optional(&self.pool)
         .await?;
         Ok(row)

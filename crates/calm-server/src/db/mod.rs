@@ -136,8 +136,25 @@ pub type WriteWithEventFn<'a> = Box<
 #[async_trait]
 pub trait RepoRead: Send + Sync + 'static {
     // ---- coves
+    /// Every cove regardless of [`CoveKind`]. Internal callers (replay,
+    /// debug surfaces, integration tests that assert on the system
+    /// cove's existence) use this; the user-facing `GET /api/coves`
+    /// route prefers [`RepoRead::coves_list_user_visible`] so the
+    /// singleton system cove introduced by issue #175 stays hidden
+    /// from the sidebar surface.
     async fn coves_list(&self) -> Result<Vec<Cove>>;
+    /// Issue #175 — `coves_list` filtered to `kind = 'user'`. Default
+    /// read surface for `GET /api/coves` so the system cove that hosts
+    /// the default Today terminal's wave never reaches the sidebar.
+    /// Opt back into the full list via `?include_system=true` (calls
+    /// [`RepoRead::coves_list`]).
+    async fn coves_list_user_visible(&self) -> Result<Vec<Cove>>;
     async fn cove_get(&self, id: &str) -> Result<Option<Cove>>;
+    /// Issue #175 — fetch the singleton system cove if one exists.
+    /// Returns `None` until the first call to `POST /api/coves/system`
+    /// mints the row. Backed by the unique partial index on
+    /// `coves(kind) WHERE kind = 'system'` from migration 0009.
+    async fn cove_get_system(&self) -> Result<Option<Cove>>;
 
     // ---- waves
     async fn waves_by_cove(&self, cove_id: &str) -> Result<Vec<Wave>>;

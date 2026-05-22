@@ -72,13 +72,56 @@ export type CardId = string;
  */
 export type CardRole = "plain" | "spec" | "worker";
 
-export type Cove = { id: CoveId, name: string, color: string, sort: number, created_at: number, updated_at: number, };
+export type Cove = { id: CoveId, name: string, color: string, sort: number, 
+/**
+ * Issue #175 — `User` for sidebar-visible coves, `System` for the
+ * internal singleton that hosts the default Today terminal's wave.
+ * Mirror of `CardRole` precedent on `Card`: persisted at storage
+ * time via DB DEFAULT, never accepted on `POST /api/coves` (which
+ * has no `kind` field — `NewCove` deliberately omits it).
+ *
+ * `#[serde(default)]` so wire payloads emitted before #175 landed
+ * (event-log replay fixtures, old test seeds) parse as `User`
+ * without forcing a fixture rewrite — matches the DB DEFAULT in
+ * migration 0009.
+ */
+kind: CoveKind, created_at: number, updated_at: number, };
 
 /**
  * Cove identifier. UUID-shaped (32 hex, no dashes) in practice, but the
  * kernel treats the value as opaque; never parses it.
  */
 export type CoveId = string;
+
+/**
+ * Issue #175 — visibility / ownership gate persisted on each cove.
+ *
+ * The kind decides whether the row participates in the user-visible
+ * workspace surface (sidebar nav, default `GET /api/coves`) or is an
+ * internal kernel-owned entity hidden from the regular UI.
+ *
+ *   * [`CoveKind::User`] is the default for every existing cove and
+ *     every cove minted via `POST /api/coves`. There is no
+ *     authorization difference from the pre-#175 product — these are
+ *     the only coves the user ever sees in the sidebar.
+ *   * [`CoveKind::System`] is a singleton (DB-enforced via a partial
+ *     unique index in migration 0009) hosting the default Today
+ *     terminal's wave + card. Created via `cove_create_system_tx`,
+ *     reachable via the idempotent `POST /api/coves/system` upsert.
+ *     `GET /api/coves` filters these out by default — opt-in via
+ *     `?include_system=true`. The user never interacts with this
+ *     cove directly; it's storage scaffolding, not UI.
+ *
+ * Persisted as a lowercase string in `coves.kind` (migration 0009).
+ * The serde + sqlx `rename_all = "lowercase"` keeps the wire / storage
+ * shape stable; ts-rs exports the matching TS union
+ * (`"user" | "system"`) into `web/src/api/generated-events.ts` so the
+ * frontend can validate against it. UI types intentionally don't
+ * surface `kind` — the server's default filter already hides system
+ * coves, so a one-line `.filter(c => c.kind === 'user')` in CalmApp /
+ * router belt-and-suspenders is the only frontend consumer.
+ */
+export type CoveKind = "user" | "system";
 
 /**
  * The full set of WS event envelopes the kernel emits on `/api/events`.

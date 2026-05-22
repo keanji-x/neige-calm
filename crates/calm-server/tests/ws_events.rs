@@ -17,7 +17,7 @@ use std::time::Duration;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus};
 use calm_server::ids::ActorId;
-use calm_server::model::Cove;
+use calm_server::model::{Cove, CoveKind};
 use calm_server::plugin_host::PluginHost;
 use calm_server::state::{AppState, DaemonClient};
 use calm_server::ws;
@@ -67,6 +67,7 @@ fn sample_cove(id: &str) -> Cove {
         name: "n".into(),
         color: "#fff".into(),
         sort: 0.0,
+        kind: CoveKind::User,
         created_at: 0,
         updated_at: 0,
     }

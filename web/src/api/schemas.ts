@@ -30,12 +30,26 @@ import { z } from 'zod';
 export const cardRoleSchema = z.enum(['plain', 'spec', 'worker']);
 export type CardRole = z.infer<typeof cardRoleSchema>;
 
+/**
+ * Issue #175 — `model::CoveKind`. Marks whether a cove is part of the
+ * user-visible workspace (`'user'`) or is the kernel-owned singleton that
+ * hosts the default Today terminal's wave (`'system'`). The kernel already
+ * filters `kind='system'` out of `GET /api/coves` by default, so this
+ * frontend schema's main job is to type the field for the optional
+ * belt-and-suspenders `.filter(c => c.kind === 'user')` in CalmApp /
+ * router. Defaults to `'user'` so pre-#175 wire payloads (event-log
+ * replay, legacy fixtures) round-trip without forcing a fixture rewrite.
+ */
+export const coveKindSchema = z.enum(['user', 'system']).default('user');
+export type CoveKind = z.infer<typeof coveKindSchema>;
+
 /** `model::Cove` — cove metadata row. */
 export const coveSchema = z.object({
   id: z.string(),
   name: z.string(),
   color: z.string(),
   sort: z.number(),
+  kind: coveKindSchema,
   created_at: z.number(),
   updated_at: z.number(),
 });

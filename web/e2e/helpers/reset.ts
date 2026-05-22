@@ -38,3 +38,69 @@ export async function resetReplayServer(request: APIRequestContext): Promise<voi
     );
   }
 }
+
+/**
+ * Issue #175 — mint a user-facing cove via the kernel REST API so the
+ * keyboard-only tests have a stable anchor in the sidebar after the
+ * pre-#175 `Scratch` auto-bootstrap moved into a hidden system cove.
+ * The replay binary serves the same routes as production, so a direct
+ * `POST /api/coves` call here lands a real row backed by an
+ * `EventScope::System` `cove.updated` event — the live frontend picks
+ * it up on the WS feed and the sidebar renders the new cove without
+ * a reload.
+ *
+ * The default name `'Atlas'` matches the fixture sweep applied across
+ * the unit-test surface (`web/src/pages/Cove.test.tsx`,
+ * `web/src/app/eventBridge.test.tsx`, `web/src/api/schemas.test.ts`,
+ * `web/src/api/queries.test.tsx`) — keeping the e2e suite on the same
+ * sentinel makes "where did this cove come from?" greppable across the
+ * codebase.
+ *
+ * Returns the cove id (UUID, kernel-generated).
+ */
+export async function createUserCove(
+  request: APIRequestContext,
+  name = 'Atlas',
+  color = '#6a8',
+): Promise<{ id: string; name: string }> {
+  const url = `http://127.0.0.1:${REPLAY_PORT}/api/coves`;
+  const response = await request.post(url, {
+    data: { name, color },
+    headers: { 'content-type': 'application/json' },
+  });
+  if (!response.ok()) {
+    const body = await response.text().catch(() => '<unreadable body>');
+    throw new Error(
+      `createUserCove: POST ${url} → ${response.status()} ${response.statusText()}: ${body}`,
+    );
+  }
+  const cove = (await response.json()) as { id: string; name: string };
+  return cove;
+}
+
+/**
+ * Issue #175 — mint a wave inside an existing cove. Counterpart to
+ * `createUserCove`; the a11y keyboard suite uses both to set up an
+ * `Atlas` cove with a `Today` wave inside it, replacing the pre-#175
+ * auto-bootstrap that put the Today wave inside what is now the hidden
+ * system cove.
+ */
+export async function createWaveInCove(
+  request: APIRequestContext,
+  coveId: string,
+  title: string,
+): Promise<{ id: string; title: string }> {
+  const url = `http://127.0.0.1:${REPLAY_PORT}/api/waves`;
+  const response = await request.post(url, {
+    data: { cove_id: coveId, title },
+    headers: { 'content-type': 'application/json' },
+  });
+  if (!response.ok()) {
+    const body = await response.text().catch(() => '<unreadable body>');
+    throw new Error(
+      `createWaveInCove: POST ${url} → ${response.status()} ${response.statusText()}: ${body}`,
+    );
+  }
+  const wave = (await response.json()) as { id: string; title: string };
+  return wave;
+}

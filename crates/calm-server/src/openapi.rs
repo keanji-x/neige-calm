@@ -13,8 +13,8 @@
 use crate::error::ErrorBody;
 use crate::model::Terminal;
 use crate::model::{
-    Card, CardPatch, Cove, CovePatch, NewCard, NewCove, NewOverlay, NewWave, Overlay, Plugin, Wave,
-    WaveDetail, WavePatch,
+    Card, CardPatch, Cove, CoveKind, CovePatch, NewCard, NewCove, NewOverlay, NewWave, Overlay,
+    Plugin, Wave, WaveDetail, WavePatch,
 };
 use crate::routes::cards::{CreateCardBody, ViaToolCall};
 use crate::routes::codex_cards::NewCodexCardBody;
@@ -40,6 +40,7 @@ use utoipa::OpenApi;
         // ---- coves ----
         crate::routes::coves::list_coves,
         crate::routes::coves::create_cove,
+        crate::routes::coves::get_or_create_system_cove,
         crate::routes::coves::update_cove,
         crate::routes::coves::delete_cove,
         // ---- waves ----
@@ -87,6 +88,7 @@ use utoipa::OpenApi;
     components(schemas(
         // domain models
         Cove,
+        CoveKind,
         NewCove,
         CovePatch,
         Wave,
