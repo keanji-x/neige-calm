@@ -37,6 +37,7 @@ import {
 } from '@modelcontextprotocol/ext-apps/app-bridge';
 import type { Implementation } from '@modelcontextprotocol/sdk/types.js';
 import { useTheme } from '../app/theme';
+import { makeUuid } from '../util/uuid';
 
 /**
  * Parse a `ui://` resource URI into the (plugin_id, view_id) pair.
@@ -213,7 +214,7 @@ function PluginIframeCard({ card }: { card: PluginCardData }) {
           const result = (await toolCallFromIframe(plugin_id, {
             name: params.name,
             arguments: (params.arguments ?? {}) as Record<string, unknown>,
-            call_id: crypto.randomUUID(),
+            call_id: makeUuid(),
           })) as Record<string, unknown> | null;
           // The kernel dispatcher returns the inner `neige.*` handler's
           // value (e.g. `{ ok: true }`). Surface it under `structuredContent`

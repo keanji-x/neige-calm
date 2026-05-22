@@ -4,6 +4,7 @@ import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { dlog } from './util/debug';
+import { makeUuid } from './util/uuid';
 import type {
   ClientMsg,
   DaemonMsg,
@@ -199,9 +200,13 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
 
     // Per-connection client id. The daemon's `OwnerRegistry` keys on this
     // so the same browser tab survives WS reconnects without losing
-    // ownership. `crypto.randomUUID()` is available in every browser that
-    // supports xterm.js + WebSocket.
-    const clientId = crypto.randomUUID();
+    // ownership. We can't call `crypto.randomUUID()` directly: it is
+    // restricted to secure contexts (https + localhost), so the LAN-http
+    // case (http://192.168.x.x:4040) hits `TypeError: crypto.randomUUID
+    // is not a function`. `makeUuid()` falls back to a v4 synthesized
+    // from `crypto.getRandomValues`, which is always available — see
+    // `util/uuid.ts`.
+    const clientId = makeUuid();
     // Monotonic resize epoch. Bumped on every `ResizeCommit` so a
     // `ResizeApplied` echo can be matched to its request (and stale
     // applies from a previous epoch ignored).
