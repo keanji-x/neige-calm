@@ -162,6 +162,17 @@ impl AppState {
         // `terminal_sweeper` module docs and `docs/sync-engine-design.md` §10.
         crate::terminal_sweeper::spawn(state.clone());
 
+        // Codex hands-free auto-submit subscriber. Watches the bus for
+        // `hook.codex.session_start` and, when the originating card has
+        // a non-empty `payload.prompt`, injects `\r` to the codex daemon
+        // via `DaemonClient::inject_stdin`. Empty / absent prompt → no-op
+        // (the user spawned codex without a hands-free prompt).
+        crate::codex_auto_submit::spawn(
+            state.repo.clone(),
+            state.daemon.clone(),
+            state.events.clone(),
+        );
+
         Ok(state)
     }
 }
