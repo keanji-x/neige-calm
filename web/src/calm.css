@@ -720,10 +720,6 @@ input, textarea { font: inherit; color: inherit; }
   font-weight: 500;
   color: var(--text);
   border-radius: var(--radius-sm);
-  transition: box-shadow var(--motion-quick);
-}
-.side .cove-nav-edit input:focus-visible {
-  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 .side .cove-nav-edit input::placeholder { color: var(--text-decorative); }
 
@@ -885,9 +881,13 @@ input, textarea { font: inherit; color: inherit; }
   grid-template-columns: 26px 1fr auto;
   gap: var(--space-7);
   align-items: center;
-  /* Right padding leaves room for the hover-reveal × so it doesn't
-     overlap the eta/progress cluster on the right. */
-  padding: var(--space-9) var(--space-12) var(--space-9) var(--space-2);
+  /* Left padding zero so the glyph cell's leading edge sits at the
+     column-content edge — the same x as the page <h1> text. The dot
+     itself is `place-items: center start` (below) so its visible left
+     edge anchors to the cell-left, not the cell-center. Right padding
+     reserves a gutter for the hover-reveal × so it never overlaps the
+     eta/progress cluster (matching width is mirrored on .cove-head). */
+  padding: var(--space-7) var(--space-12) var(--space-7) var(--space-0);
   border: none;
   border-bottom: 1px solid var(--hairline);
   background: transparent;
@@ -903,7 +903,12 @@ input, textarea { font: inherit; color: inherit; }
 [data-theme="dark"] .wave-row:hover:not(:disabled) { background: var(--overlay-hover-faint); }
 .wave-row .glyph {
   width: 26px; height: 26px;
-  display: grid; place-items: center;
+  /* Left-anchored, vertically centered. The status dot is 7-8px, so a
+     `place-items: center` would visually offset it ~10px inward from the
+     cell edge — breaking alignment with the page title (at x=0) and the
+     "+" of the New-wave row (also at x=0). Left-anchoring keeps all
+     three optical edges on one column. */
+  display: grid; place-items: center start;
   color: var(--text-3);
 }
 .wave-row .body { min-width: 0; }
@@ -1085,9 +1090,6 @@ input, textarea { font: inherit; color: inherit; }
   min-width: 120px;
   border-radius: var(--radius-sm);
 }
-.wave-title-input:focus-visible {
-  box-shadow: 0 0 0 2px var(--accent-soft);
-}
 /* Click-to-rename button on CovePage. The button is nested inside an <h1>
    so heading semantics are preserved while the interactive role is carried
    by an intrinsic <button>. We strip the default button chrome so it reads
@@ -1111,20 +1113,125 @@ input, textarea { font: inherit; color: inherit; }
 }
 /* Click-to-rename inputs on CovePage. These reuse `.h-display` for typography
    and strip default chrome via inline styles; the matching focus indicator
-   lives here so keyboard users still get visible focus. */
+   lives here so keyboard users still get visible focus. The input lives
+   inside `.cove-head` (block-level) and must span the title's reserved
+   width — `display: block` + `width: 100%` keeps the rename input flush
+   with the page title's leading edge without needing a flex parent. */
 .cove-title-input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: var(--space-0);
+  margin: var(--space-0) var(--space-0) var(--space-10);
   border-radius: var(--radius-sm);
-  transition: box-shadow var(--motion-quick);
 }
-.cove-title-input:focus-visible {
-  box-shadow: 0 0 0 2px var(--accent-soft);
+
+/* ===== CovePage header + new-wave row =====
+   The page is a single sorted list of waves. Three optical anchors share
+   one column edge (x = 0 of the `.col.wide` content area):
+     - the page <h1> title text
+     - each wave-row's status dot (left-anchored inside its 26px glyph cell)
+     - the "+" of the trailing "+ New wave" affordance
+   And one anchor on the right (x = col-content-right − 6px) is shared by
+   both the title's × delete and each wave-row's hover-reveal ×.
+
+   `.cove-head` is the title row, laid out as a flex row so the × is
+   centered against the h1's line-box via `align-items: center`, then
+   nudged down 2px to optically correct for the U+00D7 `×` glyph sitting
+   on Plex Sans's math-axis (above em-box center). The default
+   `.h-display { margin: 0 0 var(--space-10) }` is moved onto `.cove-head`
+   itself; otherwise the flex row's height would inflate to (line-height
+   + 24px margin) and `align-items: center` would push the × below the
+   text midline. The 24px breath below the title stays the same — it now
+   lives on the header, matching Settings + Wave pages.
+
+   `.new-wave-cta` is a row-style affordance, NOT a dashed-border pill.
+   It shares `.wave-row`'s grid (26px glyph + 1fr body) so its "+" lands
+   in the same glyph cell column and its "New wave" label lines up with
+   the wave titles above. Hover background mirrors the wave-row's so the
+   user reads it as "the next slot in the list". */
+.cove-head {
+  display: flex;
+  align-items: center;
+  margin-bottom: var(--space-10);
+}
+.cove-head .h-display { margin: var(--space-0); }
+.cove-head-delete {
+  margin-left: auto;
+  margin-right: var(--space-3);
+  opacity: 0;
+  /* Optical correction: U+00D7 `×` is a math symbol positioned on the
+     font's math-axis (~30-40% above em-box center) in Plex Sans. Flex
+     centers the IconButton's em-box, but the visible glyph ink sits
+     above that center — at 18px glyph against 36px h1 line-box, the
+     bias is ~2px. Nudge down so × ink lands on the title's visual
+     midline. Off-scale by design — font-metric corrections don't
+     belong on the spacing scale. */
+  /* stylelint-disable-next-line declaration-property-value-disallowed-list */
+  transform: translateY(2px);
+  transition: opacity var(--motion-quick);
+}
+.cove-head:hover .cove-head-delete,
+.cove-head:focus-within .cove-head-delete { opacity: 1; }
+
+.new-wave-cta {
+  display: grid;
+  grid-template-columns: 26px 1fr auto;
+  gap: var(--space-7);
+  align-items: center;
+  padding: var(--space-7) var(--space-12) var(--space-7) var(--space-0);
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  font: inherit;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-quick), color var(--motion-quick);
+}
+.new-wave-cta:hover { background: var(--overlay-hover-faint); color: var(--text); }
+[data-theme="dark"] .new-wave-cta:hover { background: var(--overlay-hover-faint); }
+.new-wave-cta .new-wave-glyph {
+  width: 26px; height: 26px;
+  display: grid; place-items: center start;
+  font-size: var(--text-lg);
+  line-height: var(--leading-none);
+  color: var(--text-3);
+}
+.new-wave-cta:hover .new-wave-glyph { color: var(--text); }
+.new-wave-cta .new-wave-label {
+  font-size: var(--text-md);
+  font-weight: 500;
+}
+.new-wave-cta-open {
+  display: grid;
+  grid-template-columns: 26px 1fr auto;
+  gap: var(--space-7);
+  align-items: center;
+  padding: var(--space-7) var(--space-12) var(--space-7) var(--space-0);
+}
+.new-wave-cta-open .new-wave-glyph {
+  width: 26px; height: 26px;
+  display: grid; place-items: center start;
+  font-size: var(--text-lg);
+  line-height: var(--leading-none);
+  color: var(--text-3);
 }
 .new-wave-input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: var(--text-md);
+  font-weight: 500;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
   border-radius: var(--radius-sm);
-  transition: box-shadow var(--motion-quick);
-}
-.new-wave-input:focus-visible {
-  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 .wave-meta {
   display: flex; align-items: center; gap: var(--space-7);
@@ -1178,9 +1285,8 @@ input, textarea { font: inherit; color: inherit; }
 /* utility — used in a few spots for tabular numerals */
 .num { font-variant-numeric: tabular-nums; }
 
-/* warn text + section header variant */
+/* warn text */
 .warn-text { color: var(--warn); }
-.h-eyebrow.warn { color: var(--warn); }
 
 /* ===== Card slot (RGL grid cell) =====
    Each grid item is a flex column so the child card (.term/.doc/.git/.diff/
