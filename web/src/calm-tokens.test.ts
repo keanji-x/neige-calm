@@ -122,6 +122,26 @@ const TYPE_SCALE_TOKENS = [
   '--text-display',
 ] as const;
 
+// Status colors (slice 3b of #137). Positional-like: concrete oklch literals
+// in `:root` AND in `[data-theme="dark"]`. The dark side carries an extra
+// invariant — see DARK_STATUS_OKLCH below — locking in the L=74% standardize
+// decision so a future "let me tweak the green a hair" can't silently undo it.
+const STATUS_COLOR_TOKENS = [
+  '--success',
+  '--error',
+] as const;
+
+// Terminal traffic-light dot scale (slice 3b of #137). Positional pair of
+// three tiers in each theme. We don't pin the exact values here (the dot
+// hue/chroma is decorative, not a contrast-bound surface) but we do require
+// both blocks declare all three tokens as oklch literals — the same shape
+// contract as CONCRETE_SURFACE_TOKENS.
+const TERM_DOT_TOKENS = [
+  '--term-dot-light',
+  '--term-dot-medium',
+  '--term-dot-dark',
+] as const;
+
 // Font-family semantic aliases (slice 2 of #150). Same alias contract as
 // `ALIAS_TOKENS` above — declared in `:root`, never re-declared in dark
 // (font stacks don't theme-vary, so a dark override would just rot). The
@@ -372,6 +392,71 @@ describe('calm.css token graph: type-scale tokens', () => {
         darkDecls.has(name),
         `${name} is a type-scale token; type scale is shape, not color — no dark override.`,
       ).toBe(false);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// (e2) Status color tokens (slice 3b of #137).
+// ---------------------------------------------------------------------------
+//
+// `--success` / `--error` are positional in shape (literal in both blocks,
+// theme-vary), but they carry an extra contract: the dark side standardizes
+// at L=74% across the family. Pre-consolidation we had three values (72/74/78)
+// scattered across selectors; this regex pins the design call so a "let me
+// nudge the green" two months from now has to come back and update the test.
+
+const DARK_STATUS_OKLCH = /^oklch\(74% 0\.14 (145|25)\)$/;
+
+describe('calm.css token graph: status color tokens', () => {
+  for (const name of STATUS_COLOR_TOKENS) {
+    it(`${name} is declared in :root as an oklch() literal`, () => {
+      const value = rootDecls.get(name);
+      expect(value, `${name} missing from :root`).toBeDefined();
+      expect(
+        value,
+        `${name} should be a concrete oklch() literal in :root, got: ${value}`,
+      ).toMatch(OKLCH_LITERAL);
+    });
+
+    it(`${name} is declared in [data-theme="dark"] at L=74% (standardized)`, () => {
+      const value = darkDecls.get(name);
+      expect(value, `${name} missing from [data-theme="dark"]`).toBeDefined();
+      // Pin the standardization decision: dark-mode status colors collapse
+      // to L=74% / chroma 0.14, hue 145 (success) or 25 (error). If you're
+      // here to relax this, please link the design discussion in the PR.
+      expect(
+        value,
+        `${name} dark value must be 'oklch(74% 0.14 H)' (the slice 3b standardization). Got: ${value}`,
+      ).toMatch(DARK_STATUS_OKLCH);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// (e3) Terminal-dot scale tokens (slice 3b of #137).
+// ---------------------------------------------------------------------------
+//
+// Same shape contract as concrete surface tokens — literal in both blocks.
+// We don't pin the exact L values: the dot is a decorative traffic-light,
+// not a contrast-bound surface, and a future re-tune is acceptable as long
+// as the three-tier vocabulary stays intact.
+
+describe('calm.css token graph: terminal-dot scale tokens', () => {
+  for (const name of TERM_DOT_TOKENS) {
+    it(`${name} has matching oklch() literals in :root and dark`, () => {
+      const light = rootDecls.get(name);
+      const dark = darkDecls.get(name);
+      expect(light, `${name} missing from :root`).toBeDefined();
+      expect(dark, `${name} missing from [data-theme="dark"]`).toBeDefined();
+      expect(
+        light,
+        `${name} light value should be an oklch() literal, got: ${light}`,
+      ).toMatch(OKLCH_LITERAL);
+      expect(
+        dark,
+        `${name} dark value should be an oklch() literal, got: ${dark}`,
+      ).toMatch(OKLCH_LITERAL);
     });
   }
 });

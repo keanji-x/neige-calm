@@ -59,6 +59,21 @@
   --warn: oklch(58% 0.16 30);
   --warn-soft: oklch(96% 0.03 30);
 
+  /* Status colors — foreground for pass/fail / add/remove signals. Slice 3b
+     of #137. Chroma 0.14 is the consolidated status family (warn lives at
+     0.16 because amber needs more chroma to read as amber). The dark
+     overrides standardize on L=74% across the family — see the dark block. */
+  --success: oklch(54% 0.14 145);  /* test pass, git add */
+  --error:   oklch(56% 0.14 25);   /* test fail, git rm */
+
+  /* Terminal traffic-light dot scale (three tiers, low-chroma cool greys).
+     Slice 3b of #137. Light scale runs 85/80/75 L; dark inverts to 45/40/35.
+     Named light→medium→dark to match the .term-dot / .term-dot.b / .term-dot.c
+     visual cascade, not pinned to a single dot color. */
+  --term-dot-light:  oklch(85% 0.008 240);
+  --term-dot-medium: oklch(80% 0.008 240);
+  --term-dot-dark:   oklch(75% 0.008 240);
+
   /* Surface tokens — named backgrounds that text lands on. Slice 1 of #137:
      paper/bg are aliases for existing tokens; rail/card/chip/toggle-overlay
      replace inline oklch literals scattered across component selectors.
@@ -125,6 +140,17 @@
   --accent-soft: oklch(28% 0.05 245);
   --warn: oklch(70% 0.16 30);
   --warn-soft: oklch(28% 0.05 30);
+  /* Dark-mode status colors standardize at L=74% (slice 3b of #137).
+     Pre-consolidation we had three L values (72/74/78) scattered across
+     k-pass/k-fail, diff-add/rm, diff-line .diff-text, surf-live/host. The
+     74% landing collapses the family at the cost of small per-site drift
+     (78% sites drop 4 L; 72% sites gain 2 L) — accepted per the design
+     call. The 0.14 chroma matches the light side. */
+  --success: oklch(74% 0.14 145);
+  --error:   oklch(74% 0.14 25);
+  --term-dot-light:  oklch(45% 0.008 245);
+  --term-dot-medium: oklch(40% 0.008 245);
+  --term-dot-dark:   oklch(35% 0.008 245);
   --surface-rail: oklch(15% 0.008 245);
   --surface-card: oklch(21% 0.009 245);
   --surface-chip: oklch(24% 0.01 245);
@@ -1535,19 +1561,13 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 [data-theme="dark"] .term-head { background: var(--surface-card); }
 .term-dot {
   width: 9px; height: 9px; border-radius: 50%;
-  /* stylelint-disable-next-line declaration-property-value-disallowed-list */
-  background: oklch(85% 0.008 240);
+  background: var(--term-dot-light);
 }
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-.term-dot.b { background: oklch(80% 0.008 240); }
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-.term-dot.c { background: oklch(75% 0.008 240); }
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-[data-theme="dark"] .term-dot   { background: oklch(35% 0.008 245); }
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-[data-theme="dark"] .term-dot.b { background: oklch(40% 0.008 245); }
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-[data-theme="dark"] .term-dot.c { background: oklch(45% 0.008 245); }
+.term-dot.b { background: var(--term-dot-medium); }
+.term-dot.c { background: var(--term-dot-dark); }
+[data-theme="dark"] .term-dot   { background: var(--term-dot-dark); }
+[data-theme="dark"] .term-dot.b { background: var(--term-dot-medium); }
+[data-theme="dark"] .term-dot.c { background: var(--term-dot-light); }
 .term-title {
   margin-left: 6px;
   font-size: var(--text-xs);
@@ -1661,16 +1681,10 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .term-line.k-ask::before  { content: "?  "; color: var(--warn); font-weight: 700; }
 .term-line.k-hint { color: var(--text-3); font-style: italic; }
 .term-line.k-hint::before { content: "   "; }
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-.term-line.k-pass { color: oklch(54% 0.14 145); }
+.term-line.k-pass { color: var(--success); }
 .term-line.k-pass::before { content: ""; }
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-.term-line.k-fail { color: oklch(56% 0.14 25); font-weight: 600; }
+.term-line.k-fail { color: var(--error); font-weight: 600; }
 .term-line.k-fail::before { content: ""; }
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-[data-theme="dark"] .term-line.k-pass { color: oklch(74% 0.14 145); }
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-[data-theme="dark"] .term-line.k-fail { color: oklch(74% 0.14 25); }
 .term-line.k-cursor { padding-top: 2px; }
 .term-cursor {
   display: inline-block;
@@ -1825,14 +1839,8 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   font-family: var(--font-mono);
   font-size: var(--text-sm);
 }
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-.diff-add { color: oklch(54% 0.14 145); font-weight: 600; }
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-.diff-rm  { color: oklch(56% 0.14 25);  font-weight: 600; }
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-[data-theme="dark"] .diff-add { color: oklch(72% 0.14 145); }
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-[data-theme="dark"] .diff-rm  { color: oklch(72% 0.14 25);  }
+.diff-add { color: var(--success); font-weight: 600; }
+.diff-rm  { color: var(--error);   font-weight: 600; }
 .diff-body {
   font-family: var(--font-code);
   font-size: var(--text-sm);
@@ -2164,8 +2172,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-[data-theme="dark"] .surf-live { color: oklch(74% 0.14 145); }
+[data-theme="dark"] .surf-live { color: var(--success); }
 
 .surf-term-gap { height: 14px; }
 
@@ -2181,8 +2188,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   color: oklch(48% 0.13 145);
   font-weight: 600;
 }
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-[data-theme="dark"] .surf-host { color: oklch(72% 0.14 145); }
+[data-theme="dark"] .surf-host { color: var(--success); }
 .surf-tilde {
   color: var(--accent);
   font-weight: 600;
