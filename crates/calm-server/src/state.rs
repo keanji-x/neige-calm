@@ -6,6 +6,7 @@
 use crate::card_role_cache::CardRoleCache;
 use crate::config::Config;
 use crate::db::{Repo, RouteRepo};
+use crate::dispatcher::Dispatcher;
 use crate::event::EventBus;
 use crate::plugin_host::{PluginHost, PluginRegistry};
 use std::path::{Path, PathBuf};
@@ -52,6 +53,17 @@ pub struct AppState {
     /// into every `_tx`-suffixed card helper so the insert/delete path
     /// stays write-through inside the surrounding transaction.
     pub card_role_cache: CardRoleCache,
+    /// PR5 (#136) — dispatcher worker handle. Subscribes via
+    /// [`EventBus::subscribe_filtered`] to `*.job_requested` envelopes
+    /// and mints worker-roled cards (+ optionally spawns the codex /
+    /// session daemon) for each, gated by a global semaphore (default
+    /// 8 permits, override via `NEIGE_DISPATCHER_PERMITS`). Held as
+    /// `Arc<Dispatcher>` so tests can probe permit counts via
+    /// [`Dispatcher::permits`] / [`Dispatcher::semaphore`]; production
+    /// callers don't touch the field after construction. Dropping the
+    /// `AppState` doesn't immediately abort the dispatcher task —
+    /// closure happens when the event bus's `tx` drops too.
+    pub dispatcher: Arc<Dispatcher>,
     /// Full-capability handle. Held separately from `repo` so the gate at
     /// `AppState::repo` survives even though the underlying concrete impl
     /// is the same `SqlxRepo`. Kept private — callers must go through
@@ -101,6 +113,22 @@ impl AppState {
         card_role_cache: Option<CardRoleCache>,
     ) -> Self {
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
+        let card_role_cache = card_role_cache.unwrap_or_default();
+        // PR5 (#136): every `AppState` carries a live dispatcher. Test
+        // call sites that need to assert on dispatcher behavior reach
+        // through `state.dispatcher`; the rest see a passive worker
+        // that's silent until something emits a `*.job_requested`
+        // event. Permit count honors `NEIGE_DISPATCHER_PERMITS` for
+        // the rare test that twiddles the env var; the default 8 is
+        // the value tests will see otherwise.
+        let dispatcher = Arc::new(Dispatcher::spawn(
+            repo.clone(),
+            events.clone(),
+            card_role_cache.clone(),
+            codex.clone(),
+            daemon.clone(),
+            Dispatcher::permits_from_env(8),
+        ));
         Self {
             repo: route_repo,
             events,
@@ -112,7 +140,8 @@ impl AppState {
             // which is the right behavior: two tests sharing one binary
             // are conceptually two server "boots".
             db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
-            card_role_cache: card_role_cache.unwrap_or_default(),
+            card_role_cache,
+            dispatcher,
             raw: repo,
         }
     }
@@ -174,6 +203,33 @@ impl AppState {
         // for waves. See `card_fsm` module docs for the scope rationale.
         crate::card_fsm::spawn(repo.clone(), events.clone(), card_role_cache.clone());
 
+        // Share one `DaemonClient` + `CodexClient` between the
+        // dispatcher and the `AppState` fields — both are
+        // construction-cheap, but a single instance keeps the
+        // resolved-binary state consistent (the codex bin path
+        // resolution writes its result into the struct, so two
+        // instances could diverge if `current_exe()` shifts between
+        // calls, which is a no-op today but unnecessary risk).
+        let daemon = Arc::new(DaemonClient::new(cfg));
+        let codex = Arc::new(CodexClient::new(cfg));
+
+        // PR5 (#136) — dispatcher worker. Subscribes to
+        // `*.job_requested` envelopes and mints worker-roled cards
+        // (Cap: `NEIGE_DISPATCHER_PERMITS` env override, default 8).
+        // Spawned here (between role-cache seed and plugin autospawn)
+        // so the bus has at least one *.Requested-aware listener
+        // before plugins start emitting; the role cache is already
+        // seeded so the dispatcher's `card_create_with_id_tx` write-
+        // through into the cache sees the seeded state.
+        let dispatcher = Arc::new(crate::dispatcher::Dispatcher::spawn(
+            repo.clone(),
+            events.clone(),
+            card_role_cache.clone(),
+            codex.clone(),
+            daemon.clone(),
+            crate::dispatcher::Dispatcher::permits_from_env(8),
+        ));
+
         let plugin = Arc::new(PluginHost::new_full(
             Arc::new(registry),
             repo.clone(),
@@ -196,15 +252,16 @@ impl AppState {
         let state = Self {
             repo: route_repo,
             events,
-            daemon: Arc::new(DaemonClient::new(cfg)),
+            daemon,
             plugin,
-            codex: Arc::new(CodexClient::new(cfg)),
+            codex,
             // See struct doc for `db_instance_id`: one fresh UUID v4 per
             // process boot. `AppState::new` is called exactly once from
             // `main.rs`, so this is the boot-scoped id the rest of the
             // server hands out via `/api/version`.
             db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
             card_role_cache,
+            dispatcher,
             raw: repo,
         };
 

@@ -649,6 +649,153 @@ impl EventBus {
     pub fn subscribe(&self) -> broadcast::Receiver<BroadcastEnvelope> {
         self.tx.subscribe()
     }
+
+    /// PR5 of #136 — narrow-subscriber API. The returned receiver is the
+    /// raw broadcast receiver; callers run their own `recv` loop and
+    /// invoke [`SubscribeFilter::matches`] against each envelope. This
+    /// keeps the API dependency-free (no `tokio-stream` / `BroadcastStream`
+    /// wrapper) and surfaces `RecvError::Lagged` explicitly so each
+    /// subscriber can decide its own catch-up policy — the dispatcher,
+    /// for instance, treats a lag as a missed event whose next
+    /// `*.Requested` emit re-triggers the idempotency check, so it just
+    /// logs at `warn` and continues.
+    ///
+    /// The filter itself is server-internal — no wire format, no schema
+    /// cost. Plugins still subscribe through the WS `topics()` /
+    /// `plugin_host::events` filter API; `SubscribeFilter` is for the
+    /// dispatcher (PR5), `wait_for_events` (PR8), and any future
+    /// kernel-internal worker that needs a per-`EventScope` / per-`kind`
+    /// cut of the firehose.
+    ///
+    /// **Glob support for `kinds` is out of scope for PR5** — exact
+    /// kind-tag match only. A future extension can add prefix globs
+    /// (`"task.*"`) by widening [`SubscribeFilter::kinds`] semantics.
+    /// The dispatcher subscribes with explicit kind list
+    /// `["codex.job_requested", "terminal.job_requested"]`.
+    ///
+    /// Relationship to [`topics`]: `topics()` is the plugin-host /
+    /// WS-client filter grammar (`"card:<id>"`, `"plugin:*"`, glob over
+    /// event names). It runs *after* `SubscribeFilter` — i.e. plugins
+    /// always see the full firehose through `subscribe()` and then the
+    /// plugin host narrows via the topics dictionary. `SubscribeFilter`
+    /// is the parallel API for in-process workers that don't want to
+    /// pay the cost of running every event through their match logic.
+    pub fn subscribe_filtered(&self) -> broadcast::Receiver<BroadcastEnvelope> {
+        self.tx.subscribe()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SubscribeFilter (PR5 of #136)
+// ---------------------------------------------------------------------------
+
+/// Server-internal subscription filter. PR5 of #136 lands the type +
+/// matching logic; the dispatcher (`crate::dispatcher`) and PR8's
+/// `wait_for_events` are the only consumers today.
+///
+/// The filter combines a scope predicate (where in the cove→wave→card
+/// tree we care about) with an optional kind predicate (which event
+/// variants we care about). The kind check runs first because it's
+/// cheap (single string compare against the persisted kind tag).
+///
+/// See [`EventBus::subscribe_filtered`] for the receiver API. Callers
+/// own the loop — `matches()` is the only per-envelope work this type
+/// exposes.
+#[derive(Debug, Clone)]
+pub struct SubscribeFilter {
+    pub scope: SubscribeScope,
+    /// When true, a scope predicate matches *that scope and any
+    /// strictly-narrower scope* (e.g. `Cove(c)` with `descendants =
+    /// true` matches `Cove{c}`, `Wave{cove=c,...}`, and
+    /// `Card{cove=c,...}`). When false, only exact equality matches —
+    /// e.g. `Cove(c)` matches the cove-level event but not any wave
+    /// under it. The dispatcher uses `true` so a `*.job_requested`
+    /// emitted from any spec card scope (Card) routes upward.
+    pub include_descendants: bool,
+    /// `None` accepts any kind; `Some([...])` accepts only those exact
+    /// `kind_tag` strings. No glob support in PR5 — see
+    /// [`EventBus::subscribe_filtered`] docs for the extension story.
+    pub kinds: Option<Vec<String>>,
+}
+
+/// What part of the cove→wave→card tree (and which envelopes-without-
+/// a-tree-position) a [`SubscribeFilter`] cares about. Distinct from
+/// [`EventScope`] because we need wildcard variants (`AnyWave`,
+/// `AnyCard`, `Any`) the persisted-event type doesn't need.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubscribeScope {
+    /// Match envelopes with `EventScope::System` exactly.
+    System,
+    /// Match an exact cove (or any wave/card under it when
+    /// `include_descendants = true`).
+    Cove(CoveId),
+    /// Match an exact wave (or any card under it when
+    /// `include_descendants = true`).
+    Wave(WaveId),
+    /// Match an exact card. `include_descendants` is meaningless here
+    /// (cards have no children in the sync-engine hierarchy) but the
+    /// filter still honors the flag uniformly — true or false, only
+    /// the exact card matches.
+    Card(CardId),
+    /// Match any wave-scoped envelope. With `include_descendants =
+    /// true`, also matches any card-scoped envelope (a card scope is a
+    /// descendant of *some* wave).
+    AnyWave,
+    /// Match any card-scoped envelope.
+    AnyCard,
+    /// Match every envelope — equivalent to today's `subscribe()`
+    /// firehose. The dispatcher uses this because its kinds list
+    /// already narrows to two variants.
+    Any,
+}
+
+impl SubscribeFilter {
+    /// Test an envelope against the filter. Returns `true` iff the
+    /// caller should forward this envelope.
+    ///
+    /// Order:
+    ///   1. Kind check (cheap — single string compare against the
+    ///      cached `kind_tag()`).
+    ///   2. Scope check against `envelope.scope`, honoring
+    ///      `include_descendants`.
+    pub fn matches(&self, envelope: &BroadcastEnvelope) -> bool {
+        // 1. Kind predicate. `None` is "accept any kind".
+        if let Some(kinds) = self.kinds.as_ref() {
+            let tag = envelope.event.kind_tag();
+            if !kinds.iter().any(|k| k == tag) {
+                return false;
+            }
+        }
+
+        // 2. Scope predicate. Each variant of SubscribeScope decides
+        //    its own match logic; `include_descendants` widens the
+        //    Cove/Wave variants to also accept narrower scopes.
+        match &self.scope {
+            SubscribeScope::Any => true,
+            SubscribeScope::System => matches!(envelope.scope, EventScope::System),
+            SubscribeScope::Cove(c) => {
+                if self.include_descendants {
+                    envelope.scope.cove_id() == Some(c)
+                } else {
+                    matches!(&envelope.scope, EventScope::Cove { cove } if cove == c)
+                }
+            }
+            SubscribeScope::Wave(w) => {
+                if self.include_descendants {
+                    envelope.scope.wave_id() == Some(w)
+                } else {
+                    matches!(&envelope.scope, EventScope::Wave { wave, .. } if wave == w)
+                }
+            }
+            SubscribeScope::Card(card) => envelope.scope.card_id() == Some(card),
+            SubscribeScope::AnyWave => match &envelope.scope {
+                EventScope::Wave { .. } => true,
+                EventScope::Card { .. } => self.include_descendants,
+                _ => false,
+            },
+            SubscribeScope::AnyCard => matches!(&envelope.scope, EventScope::Card { .. }),
+        }
+    }
 }
 
 impl Default for EventBus {
@@ -1009,5 +1156,237 @@ mod scope_tests {
                 .unwrap_or_else(|e| panic!("replay decode failed for {kind}: {e}"));
             assert_eq!(ev.kind_tag(), kind, "round-trip kind mismatch");
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SubscribeFilter unit tests (PR5 of #136)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod filter_tests {
+    use super::*;
+
+    fn env(scope: EventScope, ev: Event) -> BroadcastEnvelope {
+        BroadcastEnvelope {
+            id: 1,
+            event_version: SYNC_EVENT_VERSION,
+            actor: ActorId::User,
+            scope,
+            event: ev,
+        }
+    }
+
+    fn card_added(card: &str, wave: &str) -> Event {
+        Event::CardAdded(crate::model::Card {
+            id: CardId::from(card),
+            wave_id: WaveId::from(wave),
+            kind: "terminal".into(),
+            sort: 1.0,
+            payload: serde_json::Value::Null,
+            created_at: 0,
+            updated_at: 0,
+        })
+    }
+
+    fn codex_req() -> Event {
+        Event::CodexJobRequested {
+            idempotency_key: "k".into(),
+            goal: "g".into(),
+            context: serde_json::Value::Null,
+            acceptance_criteria: None,
+        }
+    }
+
+    fn task_failed() -> Event {
+        Event::TaskFailed {
+            idempotency_key: "k".into(),
+            reason: "boom".into(),
+        }
+    }
+
+    fn card_scope() -> EventScope {
+        EventScope::Card {
+            card: CardId::from("k"),
+            wave: WaveId::from("w"),
+            cove: CoveId::from("c"),
+        }
+    }
+    fn wave_scope() -> EventScope {
+        EventScope::Wave {
+            wave: WaveId::from("w"),
+            cove: CoveId::from("c"),
+        }
+    }
+    fn cove_scope() -> EventScope {
+        EventScope::Cove {
+            cove: CoveId::from("c"),
+        }
+    }
+
+    #[test]
+    fn any_scope_accepts_everything() {
+        let f = SubscribeFilter {
+            scope: SubscribeScope::Any,
+            include_descendants: true,
+            kinds: None,
+        };
+        assert!(f.matches(&env(EventScope::System, codex_req())));
+        assert!(f.matches(&env(cove_scope(), card_added("c1", "w"))));
+        assert!(f.matches(&env(wave_scope(), card_added("c1", "w"))));
+        assert!(f.matches(&env(card_scope(), task_failed())));
+    }
+
+    #[test]
+    fn kinds_filter_exact_match() {
+        let f = SubscribeFilter {
+            scope: SubscribeScope::Any,
+            include_descendants: true,
+            kinds: Some(vec![
+                "codex.job_requested".into(),
+                "terminal.job_requested".into(),
+            ]),
+        };
+        assert!(f.matches(&env(EventScope::System, codex_req())));
+        assert!(!f.matches(&env(EventScope::System, task_failed())));
+        // Not a glob — `terminal.*` would not match here even if expressed
+        // as the literal pattern; we only have exact match.
+        assert!(!f.matches(&env(card_scope(), card_added("k", "w"))));
+    }
+
+    #[test]
+    fn kinds_none_accepts_all_kinds() {
+        let f = SubscribeFilter {
+            scope: SubscribeScope::Any,
+            include_descendants: false,
+            kinds: None,
+        };
+        assert!(f.matches(&env(EventScope::System, task_failed())));
+        assert!(f.matches(&env(card_scope(), card_added("k", "w"))));
+    }
+
+    #[test]
+    fn scope_system_matches_only_system() {
+        let f = SubscribeFilter {
+            scope: SubscribeScope::System,
+            include_descendants: true, // ignored for System
+            kinds: None,
+        };
+        assert!(f.matches(&env(EventScope::System, codex_req())));
+        assert!(!f.matches(&env(cove_scope(), codex_req())));
+        assert!(!f.matches(&env(card_scope(), codex_req())));
+    }
+
+    #[test]
+    fn scope_cove_exact_vs_descendants() {
+        let exact = SubscribeFilter {
+            scope: SubscribeScope::Cove(CoveId::from("c")),
+            include_descendants: false,
+            kinds: None,
+        };
+        assert!(exact.matches(&env(cove_scope(), codex_req())));
+        // No descendants: a wave under this cove is out.
+        assert!(!exact.matches(&env(wave_scope(), codex_req())));
+        assert!(!exact.matches(&env(card_scope(), codex_req())));
+
+        let desc = SubscribeFilter {
+            scope: SubscribeScope::Cove(CoveId::from("c")),
+            include_descendants: true,
+            kinds: None,
+        };
+        assert!(desc.matches(&env(cove_scope(), codex_req())));
+        assert!(desc.matches(&env(wave_scope(), codex_req())));
+        assert!(desc.matches(&env(card_scope(), codex_req())));
+        // Different cove out of scope.
+        let other = EventScope::Wave {
+            wave: WaveId::from("w2"),
+            cove: CoveId::from("c2"),
+        };
+        assert!(!desc.matches(&env(other, codex_req())));
+    }
+
+    #[test]
+    fn scope_wave_exact_vs_descendants() {
+        let exact = SubscribeFilter {
+            scope: SubscribeScope::Wave(WaveId::from("w")),
+            include_descendants: false,
+            kinds: None,
+        };
+        assert!(exact.matches(&env(wave_scope(), codex_req())));
+        assert!(!exact.matches(&env(card_scope(), codex_req())));
+
+        let desc = SubscribeFilter {
+            scope: SubscribeScope::Wave(WaveId::from("w")),
+            include_descendants: true,
+            kinds: None,
+        };
+        assert!(desc.matches(&env(wave_scope(), codex_req())));
+        assert!(desc.matches(&env(card_scope(), codex_req())));
+        // Cove-only scope: no wave -> out.
+        assert!(!desc.matches(&env(cove_scope(), codex_req())));
+    }
+
+    #[test]
+    fn scope_card_only_exact() {
+        let f = SubscribeFilter {
+            scope: SubscribeScope::Card(CardId::from("k")),
+            include_descendants: false,
+            kinds: None,
+        };
+        assert!(f.matches(&env(card_scope(), codex_req())));
+        let other = EventScope::Card {
+            card: CardId::from("k2"),
+            wave: WaveId::from("w"),
+            cove: CoveId::from("c"),
+        };
+        assert!(!f.matches(&env(other, codex_req())));
+        assert!(!f.matches(&env(wave_scope(), codex_req())));
+    }
+
+    #[test]
+    fn scope_anywave_with_and_without_descendants() {
+        let no_desc = SubscribeFilter {
+            scope: SubscribeScope::AnyWave,
+            include_descendants: false,
+            kinds: None,
+        };
+        assert!(no_desc.matches(&env(wave_scope(), codex_req())));
+        assert!(!no_desc.matches(&env(card_scope(), codex_req())));
+        assert!(!no_desc.matches(&env(cove_scope(), codex_req())));
+
+        let desc = SubscribeFilter {
+            scope: SubscribeScope::AnyWave,
+            include_descendants: true,
+            kinds: None,
+        };
+        assert!(desc.matches(&env(wave_scope(), codex_req())));
+        assert!(desc.matches(&env(card_scope(), codex_req())));
+        assert!(!desc.matches(&env(cove_scope(), codex_req())));
+    }
+
+    #[test]
+    fn scope_anycard_matches_only_card() {
+        let f = SubscribeFilter {
+            scope: SubscribeScope::AnyCard,
+            include_descendants: true,
+            kinds: None,
+        };
+        assert!(f.matches(&env(card_scope(), codex_req())));
+        assert!(!f.matches(&env(wave_scope(), codex_req())));
+        assert!(!f.matches(&env(EventScope::System, codex_req())));
+    }
+
+    #[test]
+    fn kind_then_scope_short_circuit() {
+        // Kind mismatch short-circuits before scope is examined.
+        let f = SubscribeFilter {
+            scope: SubscribeScope::Cove(CoveId::from("c")),
+            include_descendants: true,
+            kinds: Some(vec!["codex.job_requested".into()]),
+        };
+        // Right cove, but wrong kind.
+        assert!(!f.matches(&env(cove_scope(), task_failed())));
+        // Right kind + right cove (descendant card).
+        assert!(f.matches(&env(card_scope(), codex_req())));
     }
 }
