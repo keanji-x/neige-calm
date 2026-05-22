@@ -43,20 +43,24 @@ import { resetReplayServer } from './helpers/reset';
 const THEMES = ['light', 'dark'] as const;
 type Theme = (typeof THEMES)[number];
 
-// Wait for the auto-bootstrap to land. `useTodayTerminal` runs on first
-// paint of the Today page and creates a hidden system cove + "Today"
-// wave + terminal card (issue #175 — the system cove is no longer
-// visible in the sidebar). The stable end-state of bootstrap is the
-// `calm.todayCardId` entry in localStorage; we anchor on that since
-// the system cove now leaves no sidebar trace.
+// Wait for the app shell to be ready. Pre-#175 this anchored on the
+// Sidebar "Scratch" button — a stable signal that `useTodayTerminal`
+// had minted the default cove and the coves query had refetched.
+// Post-#175 the system cove is hidden from the sidebar, so we anchor
+// on the Today nav button instead: it's rendered as soon as the
+// Sidebar mounts and is independent of whether useTodayTerminal's
+// full bootstrap (system cove → Today wave → terminal card) completes.
+// In the replay-binary harness the terminal-card POST may surface a
+// daemon-spawn error (no `calm-session-daemon` in CI) and never set
+// `localStorage['calm.todayCardId']`, so we can't anchor on that —
+// the Today nav button is the equivalent "app shell is mounted"
+// signal that works in both replay and live-daemon environments.
 async function waitForBootstrap(page: Page): Promise<void> {
-  await expect
-    .poll(
-      () =>
-        page.evaluate(() => window.localStorage.getItem('calm.todayCardId')),
-      { timeout: 15_000 },
-    )
-    .not.toBeNull();
+  await expect(
+    page
+      .getByRole('navigation', { name: 'Sidebar navigation' })
+      .getByRole('button', { name: /^today$/i }),
+  ).toBeVisible({ timeout: 15_000 });
 }
 
 // Flip the app into dark mode for the parallel dark-theme scans. Theme
