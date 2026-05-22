@@ -103,14 +103,6 @@
   --success: oklch(54% 0.14 145);  /* test pass, git add */
   --error:   oklch(56% 0.14 25);   /* test fail, git rm */
 
-  /* Terminal traffic-light dot scale (three tiers, low-chroma cool greys).
-     Slice 3b of #137. Light scale runs 85/80/75 L; dark inverts to 45/40/35.
-     Named light→medium→dark to match the .term-dot / .term-dot.b / .term-dot.c
-     visual cascade, not pinned to a single dot color. */
-  --term-dot-light:  oklch(85% 0.008 240);
-  --term-dot-medium: oklch(80% 0.008 240);
-  --term-dot-dark:   oklch(75% 0.008 240);
-
   /* Surface tokens — named backgrounds that text lands on. Slice 1 of #137:
      paper/bg are aliases for existing tokens; rail/card/chip/toggle-overlay
      replace inline oklch literals scattered across component selectors.
@@ -261,10 +253,23 @@
      +1px drift consistent with #170's intentional lossiness on odd-pixel
      sites (the head's overall height is still tuned by the flex + padding
      combo and visual review against the old 9px showed no perceptible
-     change at typical card density). */
-  --card-head-pad-v: var(--space-5);
-  --card-head-pad-h: var(--space-7);
-  --card-head-gap:   var(--space-5);
+     change at typical card density).
+
+     The three `*-icon-size`, `*-close-size`, `*-close-inset` tokens below
+     track the geometry of two absolutely- (or visually-)positioned
+     elements inside a head: the leading 20×20 `.card-head-icon` avatar
+     slot and the 22×22 hover-revealed `.card-grid-close` X button. They
+     intentionally don't live on the 4px `--space-*` grid — they're
+     pixel-tuned hit targets and visual centers, not rhythm metrics. Pull
+     them out as tokens (vs. inline magic px) so `.card-head` padding-
+     right and `.card-grid-close` top/right/size all derive from a
+     single source of truth and can't drift apart in a future refactor. */
+  --card-head-pad-v:     var(--space-5);
+  --card-head-pad-h:     var(--space-7);
+  --card-head-gap:       var(--space-5);
+  --card-head-icon-size:  20px;  /* .card-head-icon (letter avatar / SVG slot) */
+  --card-head-close-size: 22px;  /* .card-grid-close hit target */
+  --card-head-close-inset: 8px;  /* X distance from card edge (top + right) */
 
   /* generous shape */
   /* Aliased to --radius-xl (10px). Pre-#165 this was a literal 14px used
@@ -303,9 +308,6 @@
      call. The 0.14 chroma matches the light side. */
   --success: oklch(74% 0.14 145);
   --error:   oklch(74% 0.14 25);
-  --term-dot-light:  oklch(45% 0.008 245);
-  --term-dot-medium: oklch(40% 0.008 245);
-  --term-dot-dark:   oklch(35% 0.008 245);
   --surface-rail: oklch(15% 0.008 245);
   --surface-card: oklch(21% 0.009 245);
   --surface-chip: oklch(24% 0.01 245);
@@ -1350,10 +1352,14 @@ input, textarea { font: inherit; color: inherit; }
    Stops mousedown from bubbling so clicks on it don't initiate a drag. */
 .card-grid-close {
   position: absolute;
-  top: 6px;
-  right: 8px;
-  width: 22px;
-  height: 22px;
+  /* Vertically centered on the head content row via the
+     icon-size − close-size offset (a half-pixel of asymmetry between the
+     22px button and the 20px icon row, derived from tokens so the X
+     stays aligned through any future card-head metric edits). */
+  top: calc(var(--card-head-pad-v) + (var(--card-head-icon-size) - var(--card-head-close-size)) / 2);
+  right: var(--card-head-close-inset);
+  width: var(--card-head-close-size);
+  height: var(--card-head-close-size);
   display: grid;
   place-items: center;
   border-radius: var(--radius-md);
@@ -1737,33 +1743,32 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .dirpicker-select:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ===== Card head (shared) =====
-   Base skeleton for card headers. Adopted by `.codex-card-head`,
-   `.term-head`, and `.today-term-head` via the typed `<CardHead>`
-   component (`web/src/cards/CardHead.tsx`); Plan/Doc/Git/Diff were
-   removed in the Wave 4 sweep and no longer have card heads.
-   Card-specific selectors layer character on top:
-     - `.term-head .card-head-title` keeps the uppercase / letter-spacing /
-       600-weight typography (the Terminal head's signature look).
+   Base skeleton for card headers. Adopted by every card with a head
+   (Codex, Terminal, Today-Term, Plugin Iframe, Unknown) via the typed
+   `<CardHead>` component (`web/src/cards/CardHead.tsx`). All consumers
+   render the same body-style title — 13px / weight 500 / `--text` /
+   uppercase + `--tracking-wider` — so the visual contract is uniform
+   across the surface.
    The base reserves right-padding for the absolutely-positioned
    `.card-grid-close` X button (it lives on `.card-slot`, not in the head,
    so it overlays every card's head's right edge on hover) — without this
    any right-aligned head content (Codex status bar, Terminal `· live`
    pip) would slide under the X.
-   `.card-head-decor` is the optional left-of-title decoration slot (the
-   three CRT dots on Terminal); future heads that want similar treatment
-   should reuse it instead of inventing a new wrapper class. */
+   `.card-head-icon` is the card-identity glyph block (caller-supplied
+   ReactNode or a synthesised letter-avatar) rendered before the title. */
 .card-head {
   display: flex;
   align-items: center;
   gap: var(--card-head-gap);
   padding: var(--card-head-pad-v) var(--card-head-pad-h);
-  /* Reserve space for absolute .card-grid-close (top:6 right:8 width:22).
-     38px is deliberately off-scale — it tracks the absolutely-positioned X
-     button's geometry, not the rhythm grid, same as the pre-#170 outlier
-     #170 documented on `.codex-card-head` before this slice folded that
-     selector into the base. */
-  /* stylelint-disable-next-line declaration-property-value-disallowed-list */
-  padding-right: 38px;
+  /* Reserve horizontal space for the absolute `.card-grid-close` X button so
+     right-aligned head content (the Codex/Terminal status dot) never slides
+     under it. Composition: `inset + close + inset` — the close button sits
+     `close-inset` from the card edge and we mirror that inset as the visual
+     gap between the button and the head content. Fully derived from the
+     card-head geometry tokens, so e.g. growing the hit-target keeps the
+     reserve in sync without revisiting this line. */
+  padding-right: calc(var(--card-head-close-inset) + var(--card-head-close-size) + var(--card-head-close-inset));
   border-bottom: 1px solid var(--hairline);
   background: var(--surface-card);
 }
@@ -1772,6 +1777,8 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   font-size: var(--text-base);
   font-weight: 500;
   color: var(--text);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wider);
 }
 .card-head-status {
   flex: 1;
@@ -1781,11 +1788,79 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   justify-content: flex-end;
   min-width: 0;
 }
-.card-head-decor {
+/* `.card-head-icon` is the card-identity glyph block at the very left of
+   the header — small rounded square hosting either a caller-supplied
+   ReactNode (`icon` prop on <CardHead>) or the default letter-avatar.
+   The shared frame (size, radius, centering) lives here; the letter
+   variant adds typography, and the palette variants (`--c0`..`--c7`)
+   add background + foreground colour. */
+.card-head-icon {
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  width: var(--card-head-icon-size);
+  height: var(--card-head-icon-size);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.card-head-icon--letter {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  line-height: var(--leading-none);
+  letter-spacing: var(--tracking-normal);
+  text-transform: uppercase;
+  /* stylelint-disable-next-line color-no-hex */
+  color: #fff;
+}
+/* Palette — eight muted hues at a shared L/C envelope so no single
+   avatar reads "loud" against the calm surface. L=62% on light, L=52%
+   on dark; C=0.09 across the family. The dark-mode L was lowered from
+   58% to 52% to keep `#fff` text comfortably above WCAG AA on the
+   light-perception hues (amber 70, sage 145) where L=58% sat on the
+   AA borderline. Hues are evenly distributed but skip the warm-red
+   corner (already owned by --warn / --error). The stylelint disable
+   is the same conceit as the :root token block: palette colours are
+   a definition, not a one-off literal. */
+/* stylelint-disable declaration-property-value-disallowed-list */
+.card-head-icon--c0 { background: oklch(62% 0.09 30); }   /* warm coral */
+.card-head-icon--c1 { background: oklch(62% 0.09 70); }   /* amber */
+.card-head-icon--c2 { background: oklch(62% 0.09 145); }  /* sage */
+.card-head-icon--c3 { background: oklch(62% 0.09 190); }  /* teal */
+.card-head-icon--c4 { background: oklch(62% 0.09 230); }  /* slate-blue */
+.card-head-icon--c5 { background: oklch(62% 0.09 270); }  /* indigo */
+.card-head-icon--c6 { background: oklch(62% 0.09 310); }  /* mauve */
+.card-head-icon--c7 { background: oklch(62% 0.09 350); }  /* dusk rose */
+[data-theme="dark"] .card-head-icon--c0 { background: oklch(52% 0.09 30); }
+[data-theme="dark"] .card-head-icon--c1 { background: oklch(52% 0.09 70); }
+[data-theme="dark"] .card-head-icon--c2 { background: oklch(52% 0.09 145); }
+[data-theme="dark"] .card-head-icon--c3 { background: oklch(52% 0.09 190); }
+[data-theme="dark"] .card-head-icon--c4 { background: oklch(52% 0.09 230); }
+[data-theme="dark"] .card-head-icon--c5 { background: oklch(52% 0.09 270); }
+[data-theme="dark"] .card-head-icon--c6 { background: oklch(52% 0.09 310); }
+[data-theme="dark"] .card-head-icon--c7 { background: oklch(52% 0.09 350); }
+/* stylelint-enable declaration-property-value-disallowed-list */
+
+/* ===== Unknown card (registry fallback) =====
+   Rendered by `UnknownCard.tsx` when `adaptKernelCard` can't claim a
+   kernel card. The dashed border + low opacity reads as a placeholder
+   so schema drift surfaces visually instead of silently dropping the
+   card. The flex-column stacks `<CardHead>` over the body so the body
+   fills the slot height when the wave gives the card more room. */
+.card-unknown {
+  border: 1px dashed var(--hairline-strong);
+  height: 100%;
+  box-sizing: border-box;
+  font-size: 13px;
+  opacity: 0.75;
+  display: flex;
+  flex-direction: column;
+}
+.card-unknown-body {
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
   gap: var(--space-3);
-  flex: 0 0 auto;
 }
 
 /* ===== Codex card ===== */
@@ -1803,49 +1878,10 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
    sizing — Codex has no further head-level overrides. */
 [data-theme="dark"] .codex-card-head { background: var(--surface-card); }
 
-/* Status bar: latest hook event + working/idle dot. Takes up the rest of
-   the header so the label can ellipsis without pushing the dot. */
-.codex-status-bar {
-  flex: 1;
-  display: flex; align-items: center; gap: var(--space-4);
-  min-width: 0; /* allow the label to actually shrink */
-  font-size: var(--text-xs);
-  font-family: var(--font-mono);
-  color: var(--text-2);
-}
-.codex-status-label {
-  flex: 1;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  min-width: 0;
-}
-.codex-status-count {
-  flex: 0 0 auto;
-  font-size: var(--text-xs);
-  color: var(--text-3);
-  padding: var(--space-px) var(--space-3);
-  border-radius: var(--radius-pill);
-  /* stylelint-disable-next-line declaration-property-value-disallowed-list */
-  background: oklch(93% 0.005 240);
-}
-/* stylelint-disable-next-line declaration-property-value-disallowed-list */
-[data-theme="dark"] .codex-status-count { background: oklch(26% 0.008 245); }
-.codex-status-dot {
-  flex: 0 0 auto;
-  width: 8px; height: 8px; border-radius: var(--radius-pill);
-  background: var(--text-4);
-  box-shadow: 0 0 0 2px rgba(0,0,0,0);
-  transition: background var(--motion-medium) ease, box-shadow var(--motion-medium) ease;
-}
-.codex-status-dot-working {
-  /* stylelint-disable-next-line declaration-property-value-disallowed-list */
-  background: oklch(74% 0.16 70); /* amber */
-  box-shadow: 0 0 0 3px oklch(74% 0.16 70 / 0.20);
-  animation: codex-dot-pulse var(--motion-pulse) ease-in-out infinite;
-}
-@keyframes codex-dot-pulse {
-  0%, 100% { box-shadow: 0 0 0 2px oklch(74% 0.16 70 / 0.18); }
-  50%      { box-shadow: 0 0 0 5px oklch(74% 0.16 70 / 0.32); }
-}
+/* Per-card status indicator is now the shared `CardStatusDot` component
+   (see `web/src/shared/components/CardStatusDot.tsx`) — no card-specific
+   status-bar CSS lives here anymore. The active-state pulse is the global
+   `.live-dot` keyframe declared near the top of this file. */
 
 .codex-card-pty {
   flex: 1;
@@ -1882,32 +1918,6 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 /* `.card-head` covers display/align/gap/padding/border/background; its
    `background: var(--surface-card)` is dark-aware, so no separate
    `[data-theme="dark"] .term-head` override is needed here. */
-.term-dot {
-  width: 9px; height: 9px; border-radius: var(--radius-pill);
-  background: var(--term-dot-light);
-}
-.term-dot.b { background: var(--term-dot-medium); }
-.term-dot.c { background: var(--term-dot-dark); }
-[data-theme="dark"] .term-dot   { background: var(--term-dot-dark); }
-[data-theme="dark"] .term-dot.b { background: var(--term-dot-medium); }
-[data-theme="dark"] .term-dot.c { background: var(--term-dot-light); }
-/* Terminal head keeps its "CRT typography" character — uppercase, wider
-   letter-spacing, smaller size, heavier weight — over the unified
-   `.card-head-title` base. Both Terminal and Surf-Term wrap their title
-   text in a `<span class="term-title">` that lives inside the
-   `<span class="card-head-title">` slot wrapper emitted by the
-   `<CardHead>` component (`web/src/cards/CardHead.tsx`); typography
-   rules below win because `.term-title` is more specific than the bare
-   `.card-head-title` selector that owns the slot. The legacy
-   `margin-left: var(--space-3)` is intentionally dropped — `.card-head`'s
-   parent `gap: var(--card-head-gap)` already spaces siblings. */
-.term-title {
-  font-size: var(--text-xs);
-  letter-spacing: var(--tracking-wider);
-  text-transform: uppercase;
-  color: var(--text-3);
-  font-weight: 600;
-}
 .term-body {
   font-family: var(--font-code);
   font-size: var(--text-sm);
@@ -1927,15 +1937,6 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   overflow: hidden;
   display: flex;
 }
-/* `.term-live-pip` is the sole child of `.card-head-status` in the new
-   DOM, so its spacing from the title comes from the parent `.card-head`
-   `gap` — no `margin-left` is needed here. */
-.term-live-pip {
-  color: var(--accent);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
 /* xterm container ----------------------------------------------------- */
 .xterm-view {
   position: relative;
@@ -2391,12 +2392,15 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 /* ============================================================
    Calendar (Week + Month) in the rail
    ============================================================ */
-.cal-head {
-  display: flex; align-items: center; justify-content: space-between;
+/* The week/month toggle row sits at the top of the calendar card body
+   (the calendar is intentionally a "headless" card — no <CardHead>).
+   `justify-content: flex-end` parks the segmented control on the right,
+   matching the old `.cal-head` layout's right-aligned toggle position. */
+.cal-toggle-row {
+  display: flex;
+  justify-content: flex-end;
   margin-bottom: var(--space-7);
 }
-.cal-head .h-eyebrow { margin: var(--space-0); }
-
 .cal-toggle {
   display: inline-flex;
   background: var(--surface-toggle-overlay);

@@ -124,13 +124,17 @@ function CodexCardImpl({ card }: { card: CodexCardData }) {
       <CardHead
         className="codex-card-head card-drag-handle"
         title="Codex"
+        // Dot-only status (unified with Terminal). The visible label is gone;
+        // the FSM state name + most recent hook summary live entirely in the
+        // dot's `title` tooltip + `aria-label`. The bare `<span aria-live>`
+        // wrapper keeps screen readers announcing state transitions — the
+        // dot itself can't carry aria-live because its className flips
+        // between `live-dot` and `undefined` on Working/Starting toggles,
+        // which is the kind of churn that confuses some AT.
         status={
-          <div className="codex-status-bar" aria-live="polite">
-            <span className="codex-status-label" title={`${fsm} — ${label}`}>
-              {fsm}: {label}
-            </span>
+          <span aria-live="polite">
             <CardStatusDot state={fsm} title={`${fsm} — ${label}`} />
-          </div>
+          </span>
         }
       />
       <div className="codex-card-pty">

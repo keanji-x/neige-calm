@@ -5,6 +5,7 @@ import type { CardEntry } from '../registry';
 import { dlog } from '../../util/debug';
 import { useTheme } from '../../app/theme';
 import { CardHead } from '../CardHead';
+import { CardStatusDot } from '../../shared/components/CardStatusDot';
 import {
   TERMINAL_PAYLOAD_SCHEMA_VERSION,
   payloadSchemaVersion,
@@ -41,7 +42,7 @@ function TerminalCard({ card }: { card: TerminalCardData }) {
       <div className="term term-unsupported-version">
         <CardHead
           className="term-head card-drag-handle"
-          title={<span className="term-title">{title || 'terminal'}</span>}
+          title={title || 'terminal'}
         />
         <div className="term-body">
           <div className="term-line k-warn">
@@ -58,15 +59,12 @@ function TerminalCard({ card }: { card: TerminalCardData }) {
     <div className={'term' + (live ? ' live' : '')}>
       <CardHead
         className="term-head card-drag-handle"
-        decor={
-          <>
-            <span className="term-dot" />
-            <span className="term-dot b" />
-            <span className="term-dot c" />
-          </>
-        }
-        title={<span className="term-title">{title || 'terminal'}</span>}
-        status={live ? <span className="term-live-pip">· live</span> : undefined}
+        title={title || 'terminal'}
+        // Status indicator unified with Codex: a `Working` dot when the PTY is
+        // attached, nothing when it isn't. The absence-of-dot reads as "not
+        // connected yet" without needing a dim placeholder, and matches the
+        // dot-only visual language now shared across cards (see Codex below).
+        status={live ? <CardStatusDot state="Working" /> : undefined}
       />
       <div className="term-body">
         {live ? (

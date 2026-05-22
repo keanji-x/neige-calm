@@ -141,14 +141,7 @@ function TodayTerminalPanel({
     <div className="today-term">
       <CardHead
         className="today-term-head"
-        decor={
-          <>
-            <span className="term-dot" />
-            <span className="term-dot b" />
-            <span className="term-dot c" />
-          </>
-        }
-        title={<span className="term-title">~ / neige · today</span>}
+        title="~ / neige · today"
         status={
           onReset ? (
             <button
@@ -286,13 +279,20 @@ function CalendarCard({
 
   return (
     <section className="today-card cal">
-      <div className="cal-head">
-        <div className="h-eyebrow">Calendar</div>
+      <div className="cal-toggle-row">
         <div className="cal-toggle">
-          <button className={view === 'week' ? 'on' : ''} onClick={() => setView('week')}>
+          <button
+            className={view === 'week' ? 'on' : ''}
+            aria-pressed={view === 'week'}
+            onClick={() => setView('week')}
+          >
             Week
           </button>
-          <button className={view === 'month' ? 'on' : ''} onClick={() => setView('month')}>
+          <button
+            className={view === 'month' ? 'on' : ''}
+            aria-pressed={view === 'month'}
+            onClick={() => setView('month')}
+          >
             Month
           </button>
         </div>

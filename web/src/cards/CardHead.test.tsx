@@ -12,20 +12,15 @@ import { render } from '@testing-library/react';
 import { CardHead } from './CardHead';
 
 describe('<CardHead>', () => {
-  it('renders all three slots into their slot wrappers when provided', () => {
+  it('renders title + status slots into their slot wrappers when provided', () => {
     const { container } = render(
       <CardHead
-        decor={<span data-testid="decor-inner">dots</span>}
         title="My Title"
         status={<span data-testid="status-inner">live</span>}
       />,
     );
     const root = container.querySelector('.card-head');
     expect(root).not.toBeNull();
-
-    const decor = container.querySelector('.card-head-decor');
-    expect(decor).not.toBeNull();
-    expect(decor?.querySelector('[data-testid="decor-inner"]')).not.toBeNull();
 
     const title = container.querySelector('.card-head-title');
     expect(title?.textContent).toBe('My Title');
@@ -38,7 +33,6 @@ describe('<CardHead>', () => {
   it('omits slot wrappers when the corresponding prop is undefined', () => {
     const { container } = render(<CardHead title="Only title" />);
     expect(container.querySelector('.card-head-title')).not.toBeNull();
-    expect(container.querySelector('.card-head-decor')).toBeNull();
     expect(container.querySelector('.card-head-status')).toBeNull();
   });
 
@@ -90,22 +84,65 @@ describe('<CardHead>', () => {
     expect(root.getAttribute('class')).toBe('card-head');
   });
 
-  it('places decor before title in DOM order', () => {
-    // The `.card-head-decor` slot is the optional left-of-title decoration
-    // (Terminal's 3 CRT dots); DOM order pins it left of the title in the
-    // flex parent.
-    const { container } = render(
-      <CardHead decor="D" title="T" />,
+  it('synthesises a letter-avatar icon when title is a string and `icon` is omitted', () => {
+    const { container } = render(<CardHead title="Codex" />);
+    const icon = container.querySelector('.card-head-icon');
+    expect(icon).not.toBeNull();
+    // First-letter uppercase from the title's first word.
+    expect(icon?.textContent).toBe('C');
+    // Letter variant + a palette modifier class are both applied so the
+    // calm.css typography + colour rules can hang off either.
+    expect(icon?.classList.contains('card-head-icon--letter')).toBe(true);
+    const hasPalette = Array.from(icon!.classList).some((c) =>
+      /^card-head-icon--c\d$/.test(c),
     );
+    expect(hasPalette).toBe(true);
+  });
+
+  it('letter-avatar palette is deterministic per title (same title → same palette class)', () => {
+    const a = render(<CardHead title="Terminal" />).container.querySelector(
+      '.card-head-icon',
+    )!;
+    const b = render(<CardHead title="Terminal" />).container.querySelector(
+      '.card-head-icon',
+    )!;
+    const paletteOf = (el: Element) =>
+      Array.from(el.classList).find((c) => /^card-head-icon--c\d$/.test(c));
+    expect(paletteOf(a)).toBe(paletteOf(b));
+  });
+
+  it('uses caller-supplied icon node instead of the letter-avatar fallback', () => {
+    const { container } = render(
+      <CardHead
+        title="Codex"
+        icon={<span data-testid="custom-icon">★</span>}
+      />,
+    );
+    const icon = container.querySelector('.card-head-icon');
+    expect(icon).not.toBeNull();
+    expect(icon?.querySelector('[data-testid="custom-icon"]')).not.toBeNull();
+    // No letter-avatar synthesis when a custom icon is provided.
+    expect(icon?.classList.contains('card-head-icon--letter')).toBe(false);
+  });
+
+  it('omits the icon when title is not a plain string and no `icon` is passed', () => {
+    const { container } = render(
+      <CardHead title={<span>rich</span>} />,
+    );
+    expect(container.querySelector('.card-head-icon')).toBeNull();
+  });
+
+  it('places the icon before the title in DOM order', () => {
+    const { container } = render(<CardHead title="Codex" />);
     const root = container.querySelector('.card-head')!;
     const children = Array.from(root.children);
-    const decorIdx = children.findIndex((el) =>
-      el.classList.contains('card-head-decor'),
+    const iconIdx = children.findIndex((el) =>
+      el.classList.contains('card-head-icon'),
     );
     const titleIdx = children.findIndex((el) =>
       el.classList.contains('card-head-title'),
     );
-    expect(decorIdx).toBeGreaterThanOrEqual(0);
-    expect(titleIdx).toBeGreaterThan(decorIdx);
+    expect(iconIdx).toBeGreaterThanOrEqual(0);
+    expect(titleIdx).toBeGreaterThan(iconIdx);
   });
 });

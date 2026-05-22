@@ -38,6 +38,7 @@ import {
 import type { Implementation } from '@modelcontextprotocol/sdk/types.js';
 import { useTheme } from '../app/theme';
 import { makeUuid } from '../util/uuid';
+import { CardHead } from './CardHead';
 
 /**
  * Parse a `ui://` resource URI into the (plugin_id, view_id) pair.
@@ -353,18 +354,10 @@ function PluginIframeCard({ card }: { card: PluginCardData }) {
         boxSizing: 'border-box',
       }}
     >
-      <div
-        className="plugin-iframe-head card-drag-handle"
-        style={{
-          fontSize: 12,
-          opacity: 0.7,
-          padding: '4px 8px',
-          userSelect: 'none',
-          borderBottom: '1px solid var(--hairline)',
-        }}
-      >
-        Plugin: {parsed.plugin_id}:{parsed.view_id}
-      </div>
+      <CardHead
+        className="card-drag-handle"
+        title={`${parsed.plugin_id}:${parsed.view_id}`}
+      />
       {error ? (
         <div
           className="plugin-iframe-error-body"
