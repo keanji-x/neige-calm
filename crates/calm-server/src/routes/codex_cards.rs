@@ -250,6 +250,11 @@ pub(crate) async fn create_codex_card(
                     cwd_for_tx,
                     env_for_tx,
                     prompt_for_tx,
+                    // User-facing codex cards stay Plain. The spec
+                    // role is exclusively minted by the wave-create
+                    // route (PR6), and the dispatcher mints Worker
+                    // role through the standalone card_create path.
+                    crate::model::CardRole::Plain,
                     &cache_for_tx,
                 )
                 .await?;
@@ -536,6 +541,11 @@ mod tests {
     /// `[mcp_servers.*]` block. MCP config is seeded from the host
     /// `$HOME/.codex/config.toml` via `copy_dir_recursive`; emitting
     /// one here would shadow the user's real config.
+    ///
+    /// PR7a will flip this when `[mcp_servers.calm]` block lands for
+    /// Spec/Worker cards (kernel-as-MCP-server). Plain cards (this
+    /// route's product) stay free of the block — they never expose
+    /// the kernel tools.
     #[test]
     fn config_toml_has_no_mcp_servers_block() {
         let s = build_codex_config_toml("/workspace");

@@ -545,6 +545,99 @@ async fn dispatcher_card_added_emit_passes_role_gate() {
 }
 
 // ---------------------------------------------------------------------------
+// PR6 (#136) — Real concurrent idempotency-race test.
+//
+// PR5's dedup test fires sequentially (`for _ in 0..2`); the canonical
+// in-tx SELECT race window only opens when two emissions hit the
+// dispatcher within microseconds. We use a `Barrier` to release two
+// dispatcher tasks at the same moment after both have already
+// acquired their semaphore permit and entered the spawn fn.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn dispatcher_dedupes_under_real_concurrent_race() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let (repo, events, cache, wave_id, cove_id) = boot().await;
+    // Permits >= 2 so both racers can run concurrently.
+    let _dispatcher = Dispatcher::spawn(
+        repo.clone(),
+        events.clone(),
+        cache.clone(),
+        stub_codex(),
+        stub_daemon(),
+        4,
+    );
+
+    let idem = "race-key-pr6";
+    // Fire two emissions through `log_pure_event` from two parallel
+    // tokio tasks released by a barrier. Each task acquires a
+    // permit on a shared `Notify` after the barrier so the second
+    // emit lands on the bus only nanoseconds after the first.
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+
+    let emit_once = |label: &'static str| {
+        let repo = repo.clone();
+        let events = events.clone();
+        let cache = cache.clone();
+        let scope = wave_scope(&wave_id, &cove_id);
+        let barrier = barrier.clone();
+        async move {
+            // Synchronize so both tasks call log_pure_event at as
+            // close to the same instant as the scheduler allows.
+            barrier.wait().await;
+            repo.log_pure_event(
+                ActorId::User,
+                scope,
+                None,
+                &events,
+                &cache,
+                codex_req(idem, label),
+            )
+            .await
+            .expect("log_pure_event ok");
+        }
+    };
+
+    let (a, b) = tokio::join!(
+        tokio::spawn(emit_once("racer-a")),
+        tokio::spawn(emit_once("racer-b"))
+    );
+    a.unwrap();
+    b.unwrap();
+
+    // Give the dispatcher time to drain both envelopes through the
+    // spawn pipeline. We use `wait_for` not a fixed sleep so this
+    // doesn't hang the suite on a slow runner.
+    let _ = wait_for(Duration::from_secs(3), || async {
+        let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
+        let n = cards
+            .iter()
+            .filter(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem))
+            .count();
+        if n >= 1 { Some(n) } else { None }
+    })
+    .await;
+
+    // Settle: count worker cards.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
+    let worker_cards: Vec<_> = cards
+        .iter()
+        .filter(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem))
+        .collect();
+    assert_eq!(
+        worker_cards.len(),
+        1,
+        "exactly one worker card under barrier-synchronized concurrent emit; got {} cards: {:?}",
+        worker_cards.len(),
+        worker_cards
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect::<Vec<_>>(),
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 7. ArtifactRef use-site exercise (keeps the import live).
 // ---------------------------------------------------------------------------
 

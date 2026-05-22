@@ -41,6 +41,7 @@ pub mod plugin_host;
 pub mod replay;
 pub mod role_gate;
 pub mod routes;
+pub mod spec_card;
 pub mod state;
 pub mod terminal_sweeper;
 pub mod validation;
