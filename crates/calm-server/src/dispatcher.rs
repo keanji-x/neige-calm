@@ -779,11 +779,29 @@ impl Inner {
             "codex",
             &cwd,
             &env_for_spawn,
-            // Dispatcher-spawned workers have no host browser to grab a
-            // theme from — leave OSC 10/11 silent (#177) so codex falls
-            // back to its built-in default. User-facing codex cards
-            // stamp theme through `SpawnDaemonOpts` in `routes::codex_cards`.
-            SpawnDaemonOpts::default(),
+            // #177: dispatcher-spawned workers have no host browser
+            // theme to forward (the spawn fires off a `*.job_requested`
+            // event, not a user click), but the resulting codex card
+            // is still rendered in the UI — so a silent OSC 10/11
+            // would leave the worker's composer painting against
+            // codex's built-in default and visually clashing with
+            // the surrounding card background, same hole #193 closed
+            // for user-created codex cards. Pick a sensible default:
+            // dark theme RGB matching `DARK_THEME_RGB` in
+            // `web/src/shared/themeRgb.ts`. Dark over light because
+            // (a) most operators run dark by default, and (b) if the
+            // operator browser ever flips to light, the worst-case
+            // mismatch is two-shades-off rather than the full-on
+            // codex-default-purple-on-white that "no theme" gives.
+            //
+            // We don't read the operator's resolved theme from
+            // settings because settings is per-server, not per-user
+            // (the dispatcher runs kernel-side; no browser context).
+            // A future per-user setting would be the right knob; for
+            // now dark-by-default is the pragmatic choice — see
+            // `dispatcher_codex_worker_spawns_with_dark_theme_default`
+            // for the regression guard.
+            default_worker_theme_opts(),
         )
         .await
         {
@@ -1033,6 +1051,20 @@ async fn find_card_by_idempotency_key_tx(
     .await
     .map_err(CalmError::from)?;
     Ok(row)
+}
+
+/// Default theme args (#177) the dispatcher stamps onto every
+/// codex-worker daemon spawn. Mirrors `DARK_THEME_RGB` in
+/// `web/src/shared/themeRgb.ts` — see the call site in
+/// `spawn_codex_worker` for the dark-by-default rationale. Lifted
+/// to a free helper so the `dispatcher_codex_worker_spawns_with_dark_theme_default`
+/// integration test can assert the exact RGB without re-deriving them
+/// at the assertion site.
+pub(crate) fn default_worker_theme_opts() -> SpawnDaemonOpts {
+    SpawnDaemonOpts {
+        terminal_fg: Some("216,219,226".to_string()),
+        terminal_bg: Some("15,20,24".to_string()),
+    }
 }
 
 /// Returns true when the given error is a transient SQLite BUSY /

@@ -739,3 +739,108 @@ fn artifact_ref_smoke() {
     let a = ArtifactRef::from("a-1");
     assert_eq!(a.as_str(), "a-1");
 }
+
+// ---------------------------------------------------------------------------
+// 8. #177 — dispatcher-spawned codex workers get the dark theme default
+//     stamped onto `--terminal-fg` / `--terminal-bg` so codex's OSC 10/11
+//     probe gets answered with colors matching most operators' browser
+//     theme. Without this default, autonomous codex workers would paint
+//     their composer against codex's built-in default and visually clash
+//     with the surrounding card background (the same hole #193 closed
+//     for user-created codex cards, and the wave-create handler closed
+//     for the spec-card spawn one commit earlier in this series).
+// ---------------------------------------------------------------------------
+
+/// Locate the argv-recorder fake daemon — same fixture used by
+/// `tests/wave_create_with_theme.rs`. Cargo drops it next to the test
+/// binary.
+fn locate_recorder_bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_argv-recorder-daemon"))
+}
+
+/// Wait up to `timeout` for any `*.argv` file under `data_dir` to land
+/// + return its lines. The fixture writes the file *before* binding
+///   the socket so by the time the kernel sees ready the contents are
+///   stable.
+async fn wait_for_argv_file(data_dir: &std::path::Path, timeout: Duration) -> Vec<String> {
+    let start = Instant::now();
+    loop {
+        if let Ok(read) = std::fs::read_dir(data_dir) {
+            for entry in read.flatten() {
+                let p = entry.path();
+                if p.extension().and_then(|s| s.to_str()) == Some("argv") {
+                    let content = std::fs::read_to_string(&p).expect("read argv file");
+                    return content.lines().map(String::from).collect();
+                }
+            }
+        }
+        if start.elapsed() > timeout {
+            panic!(
+                "no *.argv file landed under {data_dir:?} within {timeout:?} — \
+                 dispatcher daemon spawn never ran (or recorder fixture failed)"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+}
+
+#[tokio::test]
+async fn dispatcher_codex_worker_spawns_with_dark_theme_default() {
+    let (repo, events, cache, wave_id, cove_id) = boot().await;
+
+    // Point the daemon at the argv-recorder fixture (real binary that
+    // binds the socket + records its argv to a sidecar file) so the
+    // dispatcher's spawn actually completes — `stub_daemon()` uses a
+    // non-existent path so the spawn errors before any argv can be
+    // observed.
+    let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
+    let daemon = Arc::new(calm_server::state::DaemonClient {
+        data_dir: tmp.path().to_path_buf(),
+        session_daemon_bin: locate_recorder_bin(),
+    });
+
+    let _dispatcher = Dispatcher::spawn(
+        repo.clone(),
+        events.clone(),
+        cache.clone(),
+        stub_codex(),
+        daemon,
+        4,
+    );
+
+    // Emit a Wave-scoped CodexJobRequested envelope; the dispatcher
+    // picks it up, mints a worker card, and spawns the daemon.
+    let idem = "theme-default";
+    let req = codex_req(idem, "do thing");
+    let scope = wave_scope(&wave_id, &cove_id);
+    repo.log_pure_event(ActorId::User, scope, None, &events, &cache, req)
+        .await
+        .unwrap();
+
+    let argv = wait_for_argv_file(tmp.path(), Duration::from_secs(5)).await;
+
+    let pairs: Vec<(String, String)> = argv
+        .windows(2)
+        .map(|w| (w[0].clone(), w[1].clone()))
+        .collect();
+    // Exact dark RGB defaults — these mirror `DARK_THEME_RGB` in
+    // `web/src/shared/themeRgb.ts` and the kernel-side
+    // `dispatcher::default_worker_theme_opts` helper. Pinning the
+    // values here means a drift on either side (e.g. someone tweaks
+    // the dark theme bg in CSS) trips this test loudly instead of
+    // silently desyncing the daemon's OSC reply from the host paint.
+    assert!(
+        pairs
+            .iter()
+            .any(|(k, v)| k == "--terminal-fg" && v == "216,219,226"),
+        "dispatcher-spawned codex worker daemon argv must contain \
+         `--terminal-fg 216,219,226` (DARK_THEME_RGB.fg); got: {argv:?}"
+    );
+    assert!(
+        pairs
+            .iter()
+            .any(|(k, v)| k == "--terminal-bg" && v == "15,20,24"),
+        "dispatcher-spawned codex worker daemon argv must contain \
+         `--terminal-bg 15,20,24` (DARK_THEME_RGB.bg); got: {argv:?}"
+    );
+}
