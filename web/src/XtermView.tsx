@@ -196,6 +196,27 @@ export function XtermView({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(container);
+    // Tab-trap mitigation — issue #236 followup. xterm.js creates a
+    // `<textarea class="xterm-helper-textarea" tabindex="0">` inside the
+    // container; once focus lands on it, xterm's keydown handler captures
+    // every Tab (forwarded to the PTY as `\t`) so the browser never moves
+    // focus off the terminal. That's fine for users who clicked into the
+    // terminal deliberately — but it turns the terminal into a one-way
+    // focus trap during plain Tab navigation across the wave page, which
+    // breaks keyboard-only nav (`web/e2e/a11y-keyboard.spec.ts`) the
+    // moment a wave has any xterm-backed card. Demote the textarea out
+    // of the natural Tab order; users still engage the terminal by
+    // clicking (xterm.js's mousedown handler focuses it), and once
+    // focused all keys (including Tab → tab-completion) still flow to
+    // the PTY. The a11y contract (`docs/a11y-contract.md` §2.4) already
+    // documents "xterm.js owns keys once the body is interacted with" —
+    // this just makes the "interacted with" gate explicit.
+    const helperTextarea = container.querySelector<HTMLTextAreaElement>(
+      'textarea.xterm-helper-textarea',
+    );
+    if (helperTextarea) {
+      helperTextarea.setAttribute('tabindex', '-1');
+    }
     try {
       fit.fit();
       dlog('XtermView', 'fit DONE (initial)', {
