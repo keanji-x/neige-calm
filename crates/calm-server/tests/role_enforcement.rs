@@ -22,6 +22,7 @@ use calm_server::db::write_with_event_typed;
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::{ActorId, CardId};
 use calm_server::model::{CardRole, NewCove, NewWave, WavePatch};
+use calm_server::wave_cove_cache::WaveCoveCache;
 
 async fn boot() -> (Arc<SqlxRepo>, EventBus) {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -73,6 +74,8 @@ async fn spec_card_can_update_wave() {
 
     // Re-seed the role cache so it sees the new spec role.
     let cache = CardRoleCache::new();
+    let wcc = WaveCoveCache::new();
+    repo.seed_wave_cove_cache(&wcc).await.unwrap();
     repo.seed_card_role_cache(&cache).await.unwrap();
     assert_eq!(cache.get(&card.id), Some(CardRole::Spec));
 
@@ -88,6 +91,7 @@ async fn spec_card_can_update_wave() {
         None,
         &bus,
         &cache,
+        &wcc,
         move |tx| {
             Box::pin(async move {
                 let w = wave_update_tx(
@@ -155,6 +159,8 @@ async fn ai_codex_cannot_update_wave() {
     // codex card is denied for wave.updated.
 
     let cache = CardRoleCache::new();
+    let wcc = WaveCoveCache::new();
+    repo.seed_wave_cove_cache(&wcc).await.unwrap();
     repo.seed_card_role_cache(&cache).await.unwrap();
 
     let baseline_events: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM events")
@@ -175,6 +181,7 @@ async fn ai_codex_cannot_update_wave() {
         None,
         &bus,
         &cache,
+        &wcc,
         move |tx| {
             Box::pin(async move {
                 let w = wave_update_tx(
@@ -228,6 +235,8 @@ async fn ai_codex_cannot_update_wave() {
 async fn empty_codex_card_id_rejected() {
     let (repo, bus) = boot().await;
     let cache = CardRoleCache::new();
+    let wcc = WaveCoveCache::new();
+    repo.seed_wave_cove_cache(&wcc).await.unwrap();
     repo.seed_card_role_cache(&cache).await.unwrap();
     // Pure-event path with an empty CardId actor.
     let res = repo
@@ -237,6 +246,7 @@ async fn empty_codex_card_id_rejected() {
             None,
             &bus,
             &cache,
+            &wcc,
             Event::PluginState {
                 id: "plug".into(),
                 state: "Running".into(),

@@ -118,10 +118,13 @@ async fn boot_with_role(role: CardRole) -> CardBoot {
 
     let events = EventBus::new();
     let registry = build_default_registry();
+    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
     let server = McpServer::spawn(
         repo.clone(),
         events.clone(),
         card_role_cache,
+        wave_cove_cache,
         calm_server::event_cursor::EventCursorCache::new(),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
@@ -409,10 +412,13 @@ async fn dispatch_request_drives_dispatcher_to_mint_worker_card() {
     // anyway (the stub paths point to /nonexistent).
     let cache = CardRoleCache::new();
     b.repo.seed_card_role_cache(&cache).await.unwrap();
+    let wcc = calm_server::wave_cove_cache::WaveCoveCache::new();
+    b.repo.seed_wave_cove_cache(&wcc).await.unwrap();
     let _dispatcher = calm_server::dispatcher::Dispatcher::spawn(
         b.repo.clone(),
         b.events.clone(),
         cache.clone(),
+        wcc,
         Arc::new(calm_server::state::CodexClient::new_stub()),
         Arc::new(calm_server::state::DaemonClient {
             data_dir: PathBuf::from("/tmp/neige-mcp-e2e-noop"),

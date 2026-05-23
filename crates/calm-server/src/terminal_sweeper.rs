@@ -182,6 +182,7 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
         None,
         &state.events,
         &state.card_role_cache,
+        &state.wave_cove_cache,
         move |tx| {
             Box::pin(async move {
                 // The eager-teardown handlers (and a prior sweep tick)

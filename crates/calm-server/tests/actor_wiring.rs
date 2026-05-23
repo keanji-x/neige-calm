@@ -82,8 +82,10 @@ fn base_state(repo: Arc<SqlxRepo>, events: EventBus) -> AppState {
             Vec::new(),
             events,
             calm_server::card_role_cache::CardRoleCache::new(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
         )),
         Arc::new(CodexClient::new_stub()),
+        None,
         None,
     )
 }
@@ -144,9 +146,11 @@ async fn codex_hook_records_ai_codex_actor_from_card_id_query() {
             Vec::new(),
             events.clone(),
             cache.clone(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(cache),
+        Some(calm_server::wave_cove_cache::WaveCoveCache::new()),
     );
     let app = app(state);
 
@@ -324,6 +328,7 @@ async fn plugin_tool_call_threads_call_id_as_correlation() {
         Vec::new(),
         events.clone(),
         calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::wave_cove_cache::WaveCoveCache::new(),
     ));
 
     plugin_host.spawn(plugin_id).await.expect("spawn");
@@ -348,6 +353,7 @@ async fn plugin_tool_call_threads_call_id_as_correlation() {
         plugin_host.clone(),
         Arc::new(CodexClient::new_stub()),
         None, // PR3 (#136): card_role_cache — tests don't exercise role gating
+        None, // #234: wave_cove_cache — same rationale
     );
 
     let body = json!({
@@ -473,6 +479,7 @@ async fn plugin_tool_call_without_call_id_leaves_correlation_null() {
         Vec::new(),
         events.clone(),
         calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::wave_cove_cache::WaveCoveCache::new(),
     ));
 
     plugin_host.spawn(plugin_id).await.expect("spawn");
@@ -496,6 +503,7 @@ async fn plugin_tool_call_without_call_id_leaves_correlation_null() {
         plugin_host.clone(),
         Arc::new(CodexClient::new_stub()),
         None, // PR3 (#136): card_role_cache — tests don't exercise role gating
+        None, // #234: wave_cove_cache — same rationale
     );
 
     // No call_id field at all — exercises serde default + "no allocation"
@@ -617,6 +625,7 @@ async fn plugin_tool_call_treats_empty_call_id_as_absent() {
         Vec::new(),
         events.clone(),
         calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::wave_cove_cache::WaveCoveCache::new(),
     ));
 
     plugin_host.spawn(plugin_id).await.expect("spawn");
@@ -640,6 +649,7 @@ async fn plugin_tool_call_treats_empty_call_id_as_absent() {
         plugin_host.clone(),
         Arc::new(CodexClient::new_stub()),
         None, // PR3 (#136): card_role_cache — tests don't exercise role gating
+        None, // #234: wave_cove_cache — same rationale
     );
 
     // Empty-string call_id — must be normalized to absent, NOT produce

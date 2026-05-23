@@ -270,6 +270,7 @@ async fn update_wave_state(
             None,
             &ctx.events,
             &ctx.card_role_cache,
+            &ctx.wave_cove_cache,
             move |tx| {
                 let scope_inner = scope_for_tx.clone();
                 let wave_id_inner = wave_id.clone();
@@ -517,6 +518,7 @@ async fn update_task_meta(
         None,
         &ctx.events,
         &ctx.card_role_cache,
+        &ctx.wave_cove_cache,
         move |_tx| {
             let event = event.clone();
             Box::pin(async move { Ok(((), event)) })

@@ -75,6 +75,8 @@ async fn boot() -> Boot {
     });
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
+    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         events,
@@ -87,9 +89,11 @@ async fn boot() -> Boot {
             Vec::new(),
             EventBus::new(),
             card_role_cache.clone(),
+            wave_cove_cache.clone(),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache.clone()),
+        Some(wave_cove_cache.clone()),
     );
 
     let app = routes::router()

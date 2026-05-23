@@ -43,8 +43,10 @@ async fn fresh_state() -> AppState {
             Vec::new(),
             EventBus::new(),
             calm_server::card_role_cache::CardRoleCache::new(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
         )),
         Arc::new(CodexClient::new_stub()),
+        None,
         None,
     )
 }

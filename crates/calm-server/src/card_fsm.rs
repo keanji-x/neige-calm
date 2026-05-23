@@ -56,6 +56,7 @@ use crate::event::{Event, EventBus, EventScope};
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::NewOverlay;
 use crate::validation::OVERLAY_STATUS_SCHEMA_VERSION;
+use crate::wave_cove_cache::WaveCoveCache;
 
 /// Actor stamped on every event the FSM produces. Kernel-internal
 /// projector — distinct from [`ActorId::User`] / [`ActorId::Plugin`] /
@@ -157,11 +158,21 @@ fn codex_kind_to_state(kind: &str) -> Option<State> {
 /// sync-domain writes like `overlay_upsert` / `card_update` are
 /// deliberately unreachable here so a future contributor can't quietly
 /// bypass the event-log invariant (PR #41).
-pub fn spawn(repo: Arc<dyn RepoEventWrite>, bus: EventBus, card_role_cache: CardRoleCache) {
+pub fn spawn(
+    repo: Arc<dyn RepoEventWrite>,
+    bus: EventBus,
+    card_role_cache: CardRoleCache,
+    wave_cove_cache: WaveCoveCache,
+) {
     let mut rx = bus.subscribe();
     let bus_clone = bus.clone();
     tokio::spawn(async move {
-        let inner = Arc::new(Inner::new(repo, bus_clone, card_role_cache));
+        let inner = Arc::new(Inner::new(
+            repo,
+            bus_clone,
+            card_role_cache,
+            wave_cove_cache,
+        ));
         loop {
             match rx.recv().await {
                 Ok(env) => inner.handle(env.event).await,
@@ -185,6 +196,8 @@ struct Inner {
     /// `enforce_role` runs against the same map the rest of the server
     /// shares.
     card_role_cache: CardRoleCache,
+    /// #234 — parallel wave→cove cache used by the role gate.
+    wave_cove_cache: WaveCoveCache,
     /// `card_id → (committed_state, pending_downgrade_deadline)`.
     ///
     /// `pending_downgrade_deadline` is `Some(deadline)` only when a downgrade
@@ -208,11 +221,17 @@ struct PendingDowngrade {
 }
 
 impl Inner {
-    fn new(repo: Arc<dyn RepoEventWrite>, bus: EventBus, card_role_cache: CardRoleCache) -> Self {
+    fn new(
+        repo: Arc<dyn RepoEventWrite>,
+        bus: EventBus,
+        card_role_cache: CardRoleCache,
+        wave_cove_cache: WaveCoveCache,
+    ) -> Self {
         Self {
             repo,
             bus,
             card_role_cache,
+            wave_cove_cache,
             map: Mutex::new(HashMap::new()),
         }
     }
@@ -351,6 +370,7 @@ impl Inner {
             None,
             &self.bus,
             &self.card_role_cache,
+            &self.wave_cove_cache,
             move |tx| {
                 Box::pin(async move {
                     let o = overlay_upsert_tx(tx, new_overlay).await?;
@@ -440,6 +460,7 @@ impl Inner {
             None,
             &self.bus,
             &self.card_role_cache,
+            &self.wave_cove_cache,
             move |tx| {
                 Box::pin(async move {
                     let o = overlay_upsert_tx(tx, new_overlay).await?;
@@ -557,6 +578,7 @@ mod tests {
             repo.clone(),
             bus.clone(),
             crate::card_role_cache::CardRoleCache::new(),
+            crate::wave_cove_cache::WaveCoveCache::new(),
         );
         // Give the spawn a tick to subscribe.
         tokio::task::yield_now().await;
@@ -593,6 +615,7 @@ mod tests {
             repo.clone(),
             bus.clone(),
             crate::card_role_cache::CardRoleCache::new(),
+            crate::wave_cove_cache::WaveCoveCache::new(),
         );
         tokio::task::yield_now().await;
 
@@ -634,6 +657,7 @@ mod tests {
             repo.clone(),
             bus.clone(),
             crate::card_role_cache::CardRoleCache::new(),
+            crate::wave_cove_cache::WaveCoveCache::new(),
         );
         tokio::task::yield_now().await;
 

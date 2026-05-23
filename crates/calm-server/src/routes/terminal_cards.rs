@@ -144,6 +144,7 @@ pub(crate) async fn create_terminal_card(
         None,
         &s.events,
         &s.card_role_cache,
+        &s.wave_cove_cache,
         move |tx| {
             Box::pin(async move {
                 let (card, _term) = card_with_terminal_create_tx(

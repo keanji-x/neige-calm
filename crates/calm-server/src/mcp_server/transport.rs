@@ -39,6 +39,7 @@ use crate::mcp_server::framing::{
 };
 use crate::mcp_server::handshake::handle_initialize;
 use crate::mcp_server::registry::{AppContext, CardIdentity, ToolHandler, ToolRegistry};
+use crate::wave_cove_cache::WaveCoveCache;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -92,10 +93,12 @@ impl McpServer {
     /// socket file from a prior crashed boot would otherwise leave the
     /// listener stuck on `EADDRINUSE`. (Matches the pattern in
     /// `routes/terminal.rs`'s daemon socket setup.)
+    #[allow(clippy::too_many_arguments)]
     pub async fn spawn(
         repo: Arc<dyn RouteRepo>,
         events: crate::event::EventBus,
         card_role_cache: CardRoleCache,
+        wave_cove_cache: WaveCoveCache,
         event_cursor_cache: EventCursorCache,
         socket_path: PathBuf,
         shim_bin: PathBuf,
@@ -131,6 +134,7 @@ impl McpServer {
             repo,
             events,
             card_role_cache,
+            wave_cove_cache,
             event_cursor_cache,
         });
 

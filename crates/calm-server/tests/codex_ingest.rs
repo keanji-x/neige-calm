@@ -68,9 +68,11 @@ async fn ingest_emits_codex_hook_event() {
             Vec::new(),
             events.clone(),
             cache.clone(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(cache),
+        Some(calm_server::wave_cove_cache::WaveCoveCache::new()),
     );
     // Scope β: the actor middleware must be present — the `ingest_hook`
     // handler now extracts `Actor` from request extensions to honor the

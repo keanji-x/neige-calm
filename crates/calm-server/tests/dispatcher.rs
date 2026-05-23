@@ -39,8 +39,16 @@ use calm_server::event::{
 use calm_server::ids::{ActorId, CoveId, WaveId};
 use calm_server::model::{CardRole, NewCove, NewWave};
 use calm_server::state::{CodexClient, DaemonClient};
+use calm_server::wave_cove_cache::WaveCoveCache;
 
-async fn boot() -> (Arc<dyn Repo>, EventBus, CardRoleCache, WaveId, CoveId) {
+async fn boot() -> (
+    Arc<dyn Repo>,
+    EventBus,
+    CardRoleCache,
+    WaveCoveCache,
+    WaveId,
+    CoveId,
+) {
     let repo: Arc<dyn Repo> = Arc::new(
         SqlxRepo::open("sqlite::memory:")
             .await
@@ -65,7 +73,16 @@ async fn boot() -> (Arc<dyn Repo>, EventBus, CardRoleCache, WaveId, CoveId) {
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
     repo.seed_card_role_cache(&card_role_cache).await.unwrap();
-    (repo, events, card_role_cache, wave.id, cove.id)
+    let wave_cove_cache = WaveCoveCache::new();
+    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    (
+        repo,
+        events,
+        card_role_cache,
+        wave_cove_cache,
+        wave.id,
+        cove.id,
+    )
 }
 
 fn stub_daemon() -> Arc<DaemonClient> {
@@ -218,12 +235,13 @@ async fn subscribe_filtered_skips_lagged_without_panic() {
 
 #[tokio::test]
 async fn dispatcher_happy_path_mints_worker_card() {
-    let (repo, events, cache, wave_id, cove_id) = boot().await;
+    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
 
     let _dispatcher = Dispatcher::spawn(
         repo.clone(),
         events.clone(),
         cache.clone(),
+        wcc.clone(),
         stub_codex(),
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
@@ -235,7 +253,7 @@ async fn dispatcher_happy_path_mints_worker_card() {
     let idem = "happy-1";
     let req = codex_req(idem, "do thing");
     let scope = wave_scope(&wave_id, &cove_id);
-    repo.log_pure_event(ActorId::User, scope, None, &events, &cache, req)
+    repo.log_pure_event(ActorId::User, scope, None, &events, &cache, &wcc, req)
         .await
         .unwrap();
 
@@ -268,11 +286,12 @@ async fn dispatcher_happy_path_mints_worker_card() {
 async fn dispatcher_role_is_worker_via_role_cache() {
     // Variant of the happy-path test that doesn't need to crack open
     // the pool — we verify role=Worker via `card_role_cache.get(...)`.
-    let (repo, events, cache, wave_id, cove_id) = boot().await;
+    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
     let _dispatcher = Dispatcher::spawn(
         repo.clone(),
         events.clone(),
         cache.clone(),
+        wcc.clone(),
         stub_codex(),
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
@@ -286,6 +305,7 @@ async fn dispatcher_role_is_worker_via_role_cache() {
         None,
         &events,
         &cache,
+        &wcc,
         codex_req(idem, "g"),
     )
     .await
@@ -325,11 +345,12 @@ async fn dispatcher_role_is_worker_via_role_cache() {
 /// the spawn chain.)
 #[tokio::test]
 async fn dispatcher_dedup_does_not_double_emit_task_failed() {
-    let (repo, events, cache, wave_id, cove_id) = boot().await;
+    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
     let _dispatcher = Dispatcher::spawn(
         repo.clone(),
         events.clone(),
         cache.clone(),
+        wcc.clone(),
         stub_codex(),
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
@@ -347,6 +368,7 @@ async fn dispatcher_dedup_does_not_double_emit_task_failed() {
             None,
             &events,
             &cache,
+            &wcc,
             codex_req(idem, "g"),
         )
         .await
@@ -392,11 +414,12 @@ async fn dispatcher_dedup_does_not_double_emit_task_failed() {
 
 #[tokio::test]
 async fn dispatcher_dedupes_same_idempotency_key() {
-    let (repo, events, cache, wave_id, cove_id) = boot().await;
+    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
     let _dispatcher = Dispatcher::spawn(
         repo.clone(),
         events.clone(),
         cache.clone(),
+        wcc.clone(),
         stub_codex(),
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
@@ -412,6 +435,7 @@ async fn dispatcher_dedupes_same_idempotency_key() {
             None,
             &events,
             &cache,
+            &wcc,
             codex_req(idem, "g"),
         )
         .await
@@ -442,7 +466,7 @@ async fn dispatcher_dedupes_same_idempotency_key() {
 #[tokio::test]
 async fn dispatcher_semaphore_caps_concurrent_spawns() {
     let _ = tracing_subscriber::fmt::try_init();
-    let (repo, events, cache, wave_id, cove_id) = boot().await;
+    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
     // Permits = 2. The dispatcher's spawn-side acquire_owned holds a
     // permit across the work; with idempotency keys unique per
     // emission, 5 emits should all eventually succeed, but the
@@ -453,6 +477,7 @@ async fn dispatcher_semaphore_caps_concurrent_spawns() {
         repo.clone(),
         events.clone(),
         cache.clone(),
+        wcc.clone(),
         stub_codex(),
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
@@ -469,6 +494,7 @@ async fn dispatcher_semaphore_caps_concurrent_spawns() {
             None,
             &events,
             &cache,
+            &wcc,
             codex_req(&format!("idem-{i}"), "g"),
         )
         .await
@@ -525,11 +551,12 @@ async fn dispatcher_emits_task_failed_on_bad_scope() {
     // EventScope::System has no wave/cove — the dispatcher can't mint
     // a worker card without a parent wave, so it bails and emits a
     // task.failed event with the reason.
-    let (repo, events, cache, _wave_id, _cove_id) = boot().await;
+    let (repo, events, cache, wcc, _wave_id, _cove_id) = boot().await;
     let _dispatcher = Dispatcher::spawn(
         repo.clone(),
         events.clone(),
         cache.clone(),
+        wcc.clone(),
         stub_codex(),
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
@@ -546,6 +573,7 @@ async fn dispatcher_emits_task_failed_on_bad_scope() {
         None,
         &events,
         &cache,
+        &wcc,
         codex_req(idem, "g"),
     )
     .await
@@ -599,11 +627,12 @@ async fn dispatcher_card_added_emit_passes_role_gate() {
     // unrestricted (see `role_gate.rs:110`). This test verifies that
     // the dispatcher's actual write path (which goes through
     // `write_with_event` → `enforce_role`) doesn't get rejected.
-    let (repo, events, cache, wave_id, cove_id) = boot().await;
+    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
     let _dispatcher = Dispatcher::spawn(
         repo.clone(),
         events.clone(),
         cache.clone(),
+        wcc.clone(),
         stub_codex(),
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
@@ -617,6 +646,7 @@ async fn dispatcher_card_added_emit_passes_role_gate() {
         None,
         &events,
         &cache,
+        &wcc,
         codex_req(idem, "g"),
     )
     .await
@@ -646,12 +676,13 @@ async fn dispatcher_card_added_emit_passes_role_gate() {
 #[tokio::test]
 async fn dispatcher_dedupes_under_real_concurrent_race() {
     let _ = tracing_subscriber::fmt::try_init();
-    let (repo, events, cache, wave_id, cove_id) = boot().await;
+    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
     // Permits >= 2 so both racers can run concurrently.
     let _dispatcher = Dispatcher::spawn(
         repo.clone(),
         events.clone(),
         cache.clone(),
+        wcc.clone(),
         stub_codex(),
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
@@ -669,6 +700,7 @@ async fn dispatcher_dedupes_under_real_concurrent_race() {
         let repo = repo.clone();
         let events = events.clone();
         let cache = cache.clone();
+        let wcc = wcc.clone();
         let scope = wave_scope(&wave_id, &cove_id);
         let barrier = barrier.clone();
         async move {
@@ -681,6 +713,7 @@ async fn dispatcher_dedupes_under_real_concurrent_race() {
                 None,
                 &events,
                 &cache,
+                &wcc,
                 codex_req(idem, label),
             )
             .await

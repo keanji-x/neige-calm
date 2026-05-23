@@ -181,6 +181,7 @@ pub async fn boot_in_memory() -> anyhow::Result<(Arc<SqlxRepo>, EventBus, AppSta
     // (fixtures replay as `ActorId::User`, which the gate lets through
     // without a cache lookup). An empty cache is fine.
     let card_role_cache = crate::card_role_cache::CardRoleCache::new();
+    let wave_cove_cache = crate::wave_cove_cache::WaveCoveCache::new();
     let plugin = Arc::new(PluginHost::new_full(
         Arc::new(PluginRegistry::empty()),
         repo.clone(),
@@ -189,6 +190,7 @@ pub async fn boot_in_memory() -> anyhow::Result<(Arc<SqlxRepo>, EventBus, AppSta
         Vec::new(),
         events.clone(),
         card_role_cache.clone(),
+        wave_cove_cache.clone(),
     ));
     let state = AppState::from_parts(
         repo.clone(),
@@ -197,6 +199,7 @@ pub async fn boot_in_memory() -> anyhow::Result<(Arc<SqlxRepo>, EventBus, AppSta
         plugin,
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache),
+        Some(wave_cove_cache),
     );
     Ok((repo, events, state))
 }
@@ -223,6 +226,7 @@ pub async fn seed_events(
     // (replay should refuse to ingest events the live kernel would
     // refuse to mint).
     let cache = crate::card_role_cache::CardRoleCache::new();
+    let wcc = crate::wave_cove_cache::WaveCoveCache::new();
     for ev in &fixture.events {
         let event = Event::from_kind_and_payload(&ev.kind, ev.payload.clone())
             .map_err(|e| anyhow::anyhow!("reconstruct event {}: {}", ev.kind, e))?;
@@ -244,7 +248,7 @@ pub async fn seed_events(
                 .map_err(|e| anyhow::anyhow!("invalid actor on fixture event: {e}"))?
         };
         let id = repo
-            .log_pure_event(actor, EventScope::System, None, bus, &cache, event)
+            .log_pure_event(actor, EventScope::System, None, bus, &cache, &wcc, event)
             .await?;
         out.push(id);
     }

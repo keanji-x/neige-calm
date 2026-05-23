@@ -36,11 +36,12 @@ use super::{
 use crate::card_role_cache::CardRoleCache;
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VERSION};
-use crate::ids::ActorId;
+use crate::ids::{ActorId, WaveId};
 use crate::model::*;
 use crate::validation::{
     CODEX_PAYLOAD_SCHEMA_VERSION, TERMINAL_PAYLOAD_SCHEMA_VERSION, validate_card_payload,
 };
+use crate::wave_cove_cache::WaveCoveCache;
 
 pub struct SqlxRepo {
     pool: SqlitePool,
@@ -58,6 +59,14 @@ pub struct SqlxRepo {
     /// production while the repo-local view backs the test-only raw
     /// path.
     card_role_cache: CardRoleCache,
+    /// #234 — write-through `WaveId -> CoveId` cache, same rationale as
+    /// `card_role_cache` above: the raw `RepoSyncDomainRaw` wave write
+    /// paths (`wave_create` / `wave_delete`) keep this in sync via the
+    /// `_tx` helpers, while production `write_with_event` callers thread
+    /// `AppState::wave_cove_cache` (a separate instance that
+    /// `AppState::new` seeds from the same pool). Both converge on
+    /// the persisted `waves` table.
+    wave_cove_cache: WaveCoveCache,
 }
 
 impl SqlxRepo {
@@ -113,10 +122,13 @@ impl SqlxRepo {
         // which `AppState::new` re-seeds from the same pool.
         let card_role_cache = CardRoleCache::new();
         card_role_cache.seed_from_db(&pool).await?;
+        let wave_cove_cache = WaveCoveCache::new();
+        wave_cove_cache.seed_from_db(&pool).await?;
 
         Ok(Self {
             pool,
             card_role_cache,
+            wave_cove_cache,
         })
     }
 
@@ -139,6 +151,13 @@ impl SqlxRepo {
     /// `CardRoleCache: Clone` is cheap (`Arc<DashMap<…>>` under the hood).
     pub fn card_role_cache(&self) -> &CardRoleCache {
         &self.card_role_cache
+    }
+
+    /// #234 — borrow the repo's wave→cove cache. Mirrors
+    /// [`card_role_cache`](Self::card_role_cache). `AppState::new`
+    /// re-seeds its own clone from the same pool.
+    pub fn wave_cove_cache(&self) -> &WaveCoveCache {
+        &self.wave_cove_cache
     }
 
     /// **Private.** The raw events-table insert. Lives off the trait per
@@ -451,7 +470,11 @@ pub async fn cove_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Resul
     Ok(())
 }
 
-pub async fn wave_create_tx(tx: &mut Transaction<'_, Sqlite>, p: NewWave) -> Result<Wave> {
+pub async fn wave_create_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    p: NewWave,
+    wave_cove_cache: &WaveCoveCache,
+) -> Result<Wave> {
     let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM coves WHERE id = ?1")
         .bind(&p.cove_id)
         .fetch_optional(&mut **tx)
@@ -490,8 +513,14 @@ pub async fn wave_create_tx(tx: &mut Transaction<'_, Sqlite>, p: NewWave) -> Res
     .bind(now)
     .execute(&mut **tx)
     .await?;
+    // #234 — write-through into the wave→cove cache. Same semantics as
+    // the `card_role_cache` write-through in `card_create_with_id_tx`: a
+    // follow-up emit inside the same `write_with_event` closure can
+    // see the freshly-minted binding via `enforce_role`'s lookup.
+    let wave_id: WaveId = id.clone().into();
+    wave_cove_cache.insert(wave_id.clone(), p.cove_id.clone());
     Ok(Wave {
-        id: id.into(),
+        id: wave_id,
         cove_id: p.cove_id,
         title: p.title,
         sort,
@@ -553,7 +582,11 @@ pub async fn wave_update_tx(
     Ok(w)
 }
 
-pub async fn wave_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<()> {
+pub async fn wave_delete_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    wave_cove_cache: &WaveCoveCache,
+) -> Result<()> {
     let res = sqlx::query("DELETE FROM waves WHERE id = ?1")
         .bind(id)
         .execute(&mut **tx)
@@ -561,6 +594,9 @@ pub async fn wave_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Resul
     if res.rows_affected() == 0 {
         return Err(CalmError::NotFound(format!("wave {id}")));
     }
+    // #234 — keep the wave→cove cache in lockstep with the table. Mirror
+    // of the card-delete-side write-through in `card_delete_tx`.
+    wave_cove_cache.remove(&WaveId::from(id));
     Ok(())
 }
 
@@ -1455,6 +1491,11 @@ impl RepoRead for SqlxRepo {
         cache.seed_from_db(&self.pool).await
     }
 
+    // ------------------------------------------------------- wave-cove cache
+    async fn seed_wave_cove_cache(&self, cache: &WaveCoveCache) -> Result<()> {
+        cache.seed_from_db(&self.pool).await
+    }
+
     // ----------------------------------------------------------- mcp tokens
     async fn card_mcp_token_lookup_by_hash(
         &self,
@@ -1510,7 +1551,7 @@ impl RepoSyncDomainRaw for SqlxRepo {
     // ---------------------------------------------------------------- waves
     async fn wave_create(&self, p: NewWave) -> Result<Wave> {
         let mut tx = self.pool.begin().await?;
-        let out = wave_create_tx(&mut tx, p).await?;
+        let out = wave_create_tx(&mut tx, p, &self.wave_cove_cache).await?;
         tx.commit().await?;
         Ok(out)
     }
@@ -1524,7 +1565,7 @@ impl RepoSyncDomainRaw for SqlxRepo {
 
     async fn wave_delete(&self, id: &str) -> Result<()> {
         let mut tx = self.pool.begin().await?;
-        wave_delete_tx(&mut tx, id).await?;
+        wave_delete_tx(&mut tx, id, &self.wave_cove_cache).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -1894,6 +1935,7 @@ impl RepoEventWrite for SqlxRepo {
         correlation: Option<&str>,
         bus: &EventBus,
         card_role_cache: &CardRoleCache,
+        wave_cove_cache: &WaveCoveCache,
         f: WriteWithEventFn<'_>,
     ) -> Result<i64> {
         let mut tx = self.pool.begin().await?;
@@ -1914,7 +1956,7 @@ impl RepoEventWrite for SqlxRepo {
         // before the gate checks them. Violations roll back: no
         // entity write, no event row, no broadcast.
         if let Err(violation) =
-            crate::role_gate::enforce_role(&actor, &event, &scope, card_role_cache)
+            crate::role_gate::enforce_role(&actor, &event, &scope, card_role_cache, wave_cove_cache)
         {
             let _ = tx.rollback().await;
             return Err(CalmError::Forbidden(violation.to_string()));
@@ -1947,6 +1989,7 @@ impl RepoEventWrite for SqlxRepo {
         correlation: Option<&str>,
         bus: &EventBus,
         card_role_cache: &CardRoleCache,
+        wave_cove_cache: &WaveCoveCache,
         f: WriteWithEventsFn<'_>,
     ) -> Result<Vec<i64>> {
         let mut tx = self.pool.begin().await?;
@@ -1975,9 +2018,13 @@ impl RepoEventWrite for SqlxRepo {
         // the spec card in the closure and immediately have its
         // role visible to the `WaveUpdated` enforce_role call below.
         for (scope, event) in &events {
-            if let Err(violation) =
-                crate::role_gate::enforce_role(&actor, event, scope, card_role_cache)
-            {
+            if let Err(violation) = crate::role_gate::enforce_role(
+                &actor,
+                event,
+                scope,
+                card_role_cache,
+                wave_cove_cache,
+            ) {
                 let _ = tx.rollback().await;
                 return Err(CalmError::Forbidden(violation.to_string()));
             }
@@ -2016,6 +2063,7 @@ impl RepoEventWrite for SqlxRepo {
         correlation: Option<&str>,
         bus: &EventBus,
         card_role_cache: &CardRoleCache,
+        wave_cove_cache: &WaveCoveCache,
         event: Event,
     ) -> Result<i64> {
         let mut tx = self.pool.begin().await?;
@@ -2026,7 +2074,7 @@ impl RepoEventWrite for SqlxRepo {
         // identity; the gate's defense-in-depth checks (empty
         // CardId, unknown card) still apply.
         if let Err(violation) =
-            crate::role_gate::enforce_role(&actor, &event, &scope, card_role_cache)
+            crate::role_gate::enforce_role(&actor, &event, &scope, card_role_cache, wave_cove_cache)
         {
             let _ = tx.rollback().await;
             return Err(CalmError::Forbidden(violation.to_string()));

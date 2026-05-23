@@ -63,8 +63,10 @@ async fn boot() -> (AppState, String) {
             Vec::new(),
             EventBus::new(),
             calm_server::card_role_cache::CardRoleCache::new(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
         )),
         Arc::new(calm_server::state::CodexClient::new_stub()),
+        None,
         None,
     );
     (state, wave.id.to_string())

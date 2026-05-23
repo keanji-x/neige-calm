@@ -87,9 +87,11 @@ async fn boot() -> Boot {
             Vec::new(),
             events.clone(),
             cache.clone(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(cache.clone()),
+        Some(calm_server::wave_cove_cache::WaveCoveCache::new()),
     );
 
     Boot {
@@ -122,6 +124,7 @@ async fn emit_wave_event(boot: &Boot) -> i64 {
         None,
         &boot.state.events,
         &boot.role_cache,
+        &boot.state.wave_cove_cache,
         move |_tx| {
             let w = wave_clone.clone();
             Box::pin(async move { Ok((w.clone(), Event::WaveUpdated(w))) })
