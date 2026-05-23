@@ -159,6 +159,20 @@ pub(crate) async fn create_codex_card(
     //    card id, see module-level doc) before the row hits the DB.
     let card_id = new_id();
 
+    // #177 diagnostic — log the incoming theme at the codex-card entry
+    // so operators grepping docker logs can confirm whether the browser
+    // sent a theme on the user-create-card path (paired with the
+    // matching log in `wave_create` for the spec-card path). A `None`
+    // here pinpoints the bug to the web client; a `Some(..)` that
+    // doesn't reach `spawn_daemon_with_parts` pinpoints it to the
+    // intermediate `SpawnDaemonOpts` derivation below.
+    tracing::info!(
+        wave_id = %wave_id,
+        card_id = %card_id,
+        theme = ?p.theme,
+        "create_codex_card: theme received",
+    );
+
     // 3. Resolve cwd — empty / missing falls back to `$HOME`.
     let cwd = p
         .cwd

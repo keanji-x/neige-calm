@@ -165,6 +165,28 @@ pub(crate) async fn spawn_daemon_with_parts(
         .or(term.theme_bg.as_deref())
         .map(str::to_owned);
 
+    // #177 diagnostic — log the three theme inputs + chosen output
+    // right before they become daemon argv. Layered with the upstream
+    // logs in `wave_create` / `create_codex_card` / `seed_and_spawn_spec_daemon`,
+    // this row pinpoints the exact layer that dropped the theme:
+    //   - `opts.terminal_fg = None` + `term.theme_fg = None` ⇒ caller
+    //     never passed it (browser, route, or spawn helper layer).
+    //   - `opts.terminal_fg = Some(..)` but `chosen = None` ⇒ a future
+    //     refactor broke the priority logic in this function.
+    //   - `chosen = Some(..)` but the daemon never echoes correct OSC
+    //     11 ⇒ the bug is downstream in `calm-session-daemon` /
+    //     `RenderPlane::with_colors`.
+    tracing::info!(
+        terminal_id = %term.id,
+        opts_terminal_fg = ?opts.terminal_fg,
+        opts_terminal_bg = ?opts.terminal_bg,
+        term_theme_fg = ?term.theme_fg,
+        term_theme_bg = ?term.theme_bg,
+        chosen_fg = ?chosen_fg,
+        chosen_bg = ?chosen_bg,
+        "spawn_daemon_with_parts: theme arg derivation",
+    );
+
     let mut cmd = tokio::process::Command::new(&daemon.session_daemon_bin);
     cmd.args(["--id", &term.id])
         .args(["--sock", &sock_str])

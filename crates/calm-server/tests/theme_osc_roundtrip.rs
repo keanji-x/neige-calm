@@ -18,7 +18,7 @@
 //! This file closes the gap: real binary, real PTY, real OSC bytes
 //! flowing both ways, real assertion against the expected RGB.
 //!
-//! ## Two cases
+//! ## Three cases
 //!
 //! 1. `osc_roundtrip_codex_card_create_theme` — POST a codex card
 //!    with `theme: { fg, bg }`. Daemon spawns with `--terminal-fg/bg`.
@@ -29,6 +29,16 @@
 //!    `ClientMsg::TerminalThemeUpdate` mid-session over WS. Daemon
 //!    writes new OSC 10/11 to PTY. Fixture's second probe sees the
 //!    new RGB.
+//!
+//! 3. `spec_card_path_osc_roundtrip_light_theme` — POST a **wave**
+//!    with `theme: { fg, bg }`. Wave-create auto-mints a spec card
+//!    and fires a background task (`spec_card::seed_and_spawn_spec_daemon`)
+//!    that threads the theme into `SpawnDaemonOpts`. This is the
+//!    *separate* spawn code path from case 1: a regression that
+//!    drops theme on the spec-card path while leaving codex-cards
+//!    intact would slip past cases 1 and 2 entirely. The light-theme
+//!    RGB is the variable under test (case 1 used dark) — guards
+//!    against any layer that secretly hard-codes a dark default.
 //!
 //! ## How the fixture is invoked
 //!
@@ -642,5 +652,150 @@ async fn osc_roundtrip_mid_session_theme_update() {
     );
 
     let _ = ws.close(None).await;
+    restore_path(prev_path);
+}
+
+// ---------------------------------------------------------------------------
+// Case 3: wave-create → spec-card spawn path → OSC 11 reply (light theme)
+// ---------------------------------------------------------------------------
+
+/// Wave-create path: `POST /api/waves` with `theme: { fg, bg }`. The
+/// handler atomically mints a spec card + terminal row and fires
+/// `spec_card::seed_and_spawn_spec_daemon` as a background task; the
+/// helper passes the theme through `SpawnDaemonOpts` to
+/// `spawn_daemon_for_with_opts`. This is the **separate** spawn code
+/// path from cases 1 and 2 — those exercise `routes::codex_cards`'s
+/// inline spawn. A regression that drops theme inside
+/// `seed_and_spawn_spec_daemon` (or the `NewWave.theme` snapshot in
+/// `routes::waves::create_wave`) slips past cases 1+2 entirely.
+///
+/// Light-theme RGB is the variable under test on purpose: case 1
+/// uses dark (`bg = 15,20,24`) so if a future refactor secretly
+/// hard-codes a dark default into the spec-card path, this case
+/// catches it (light bg `252,254,255` would mismatch the dark
+/// default and the OSC 11 reply parse would FAIL).
+///
+/// Env propagation: the `osc-probe-child` fixture reads
+/// `NEIGE_OSC_RESULT_PATH` and `NEIGE_OSC_EXPECTED_BG` from its
+/// process env. `tokio::process::Command::spawn` inherits the parent
+/// process env by default (no `env_clear` anywhere in
+/// `spawn_daemon_with_parts`), so vars we set on the test process
+/// reach the daemon and then the PTY child unchanged — exactly the
+/// same chain cases 1 and 2 rely on. The per-card env_map built by
+/// `spec_card::build_codex_env_map` only **adds** overrides
+/// (`CODEX_HOME`, `NEIGE_CARD_ID`, ...); it does not clear the
+/// inherited PATH / `NEIGE_OSC_*` vars.
+#[tokio::test]
+async fn spec_card_path_osc_roundtrip_light_theme() {
+    let _guard = env_guard();
+    let tmp = TempDir::new().expect("tempdir for fixture staging");
+    let bin_dir = tmp.path().join("bin");
+    let result_path = tmp.path().join("probe-result.txt");
+    let trace_path = tmp.path().join("probe-trace.txt");
+
+    // Wire up: fake `codex` on PATH + light-theme expected bg env.
+    // Light theme RGB: fg = (42,47,58), bg = (252,254,255).
+    stage_fake_codex(&bin_dir);
+    let prev_path = prepend_path(&bin_dir);
+    set_env("NEIGE_OSC_RESULT_PATH", &result_path.to_string_lossy());
+    set_env("NEIGE_OSC_TRACE_PATH", &trace_path.to_string_lossy());
+    set_env("NEIGE_OSC_EXPECTED_BG", "252,254,255");
+    // Single probe — wave-create has no mid-session theme toggle in
+    // this test; the toggle path is already covered by case 2.
+    unset_env("NEIGE_OSC_PROBE_TWICE");
+
+    let boot = boot_full().await;
+
+    // POST /api/waves with the light-theme RGB. The handler:
+    //   1. Atomically mints wave + spec card + terminal rows in one
+    //      tx and returns 201.
+    //   2. Spawns `seed_and_spawn_spec_daemon` as a background task,
+    //      which threads the theme into `SpawnDaemonOpts` and calls
+    //      `spawn_daemon_for_with_opts`. The daemon argv carries
+    //      `--terminal-fg=42,47,58 --terminal-bg=252,254,255`.
+    //   3. Daemon launches `/bin/sh -c codex`; sh's PATH lookup
+    //      resolves `codex` → our `<tmp>/bin/codex` symlink → the
+    //      `osc-probe-child` fixture.
+    //   4. Fixture probes OSC 11, reads daemon's pre-seeded reply,
+    //      asserts RGB matches `NEIGE_OSC_EXPECTED_BG`.
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        json!({
+            "cove_id": boot.cove_id,
+            "title": "light-theme spec-card osc roundtrip",
+            "theme": { "fg": [42, 47, 58], "bg": [252, 254, 255] }
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "wave create with theme body={body}"
+    );
+
+    // The background task is fire-and-forget; poll the result file
+    // until the fixture lands its outcome. Same budget as case 1 —
+    // the spec-card path has an extra `seed_codex_home_for_card` hop
+    // (a handful of mkdir + small writes) on top of the daemon spawn
+    // but it's microseconds, well inside the 15s budget.
+    // Poll asynchronously so the background `tokio::spawn` task that
+    // calls `seed_and_spawn_spec_daemon` gets runtime time. Cases 1 and
+    // 2 use a synchronous `std::thread::sleep` poll because their spawn
+    // happens *inside* the POST handler — by the time `post().await`
+    // returns, the daemon process is already running natively (no tokio
+    // task needs further polling). The spec-card path differs: the
+    // handler returns 201 immediately and hands the spawn to a
+    // `tokio::spawn`'d future, which a sync sleep would starve under
+    // the default single-threaded `#[tokio::test]` runtime.
+    let result = {
+        let deadline = Instant::now() + ROUNDTRIP_BUDGET;
+        loop {
+            if let Ok(s) = std::fs::read_to_string(&result_path) {
+                if !s.is_empty() {
+                    break s;
+                }
+            }
+            if Instant::now() >= deadline {
+                // Walk both the fixture-staging tempdir AND the boot
+                // tempdir (daemon data dir, codex_homes parent) — they
+                // catch different failure modes: empty fixture tempdir
+                // ⇒ daemon never reached `exec(codex)`; empty boot
+                // tempdir ⇒ background task never ran at all.
+                let mut listing = Vec::<String>::new();
+                fn walk(p: &Path, out: &mut Vec<String>, depth: usize) {
+                    if depth > 4 {
+                        return;
+                    }
+                    if let Ok(rd) = std::fs::read_dir(p) {
+                        for e in rd.flatten() {
+                            let pp = e.path();
+                            out.push(format!("{}{}", "  ".repeat(depth), pp.display()));
+                            if pp.is_dir() {
+                                walk(&pp, out, depth + 1);
+                            }
+                        }
+                    }
+                }
+                walk(boot.tmp.path(), &mut listing, 0);
+                let trace =
+                    std::fs::read_to_string(&trace_path).unwrap_or_else(|_| "<no trace>".into());
+                panic!(
+                    "spec-card OSC roundtrip never produced a result within {ROUNDTRIP_BUDGET:?}.\n\
+                     Boot tempdir tree (daemon data + codex_homes):\n{}\n\
+                     Trace: {}",
+                    listing.join("\n"),
+                    trace
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    };
+    let trace = std::fs::read_to_string(&trace_path).unwrap_or_else(|_| "<no trace>".into());
+    assert!(
+        result.contains("OK"),
+        "spec-card OSC roundtrip failed; fixture result: {result:?}; trace: {trace}"
+    );
+
     restore_path(prev_path);
 }

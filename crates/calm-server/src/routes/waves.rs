@@ -155,6 +155,16 @@ pub(crate) async fn create_wave(
     // built-in default. Same back-compat shape as
     // `NewCodexCardBody.theme` on the codex-card route.
     let theme = p.theme;
+    // #177 diagnostic — log the incoming theme at the wave-create entry
+    // so operators grepping docker logs can see whether the browser
+    // even sent a theme. A `None` here pinpoints the bug to the web
+    // client; a `Some(...)` that doesn't reach the spawn step pinpoints
+    // it to the threading inside this handler / `seed_and_spawn_spec_daemon`.
+    tracing::info!(
+        card_id = %spec_card_id,
+        theme = ?theme,
+        "wave_create: theme received",
+    );
 
     // 2. Resolve cwd + assemble env up front — these go into the
     //    terminal row written inside the tx. Mirror of

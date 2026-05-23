@@ -425,6 +425,19 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
     env: serde_json::Value,
     theme: Option<RequestTheme>,
 ) {
+    // #177 diagnostic — log theme arrival at the background-task entry
+    // point. Paired with the `wave_create: theme received` log in
+    // `routes::waves`, this pinpoints whether the theme survives the
+    // `tokio::spawn` hand-off (clone of the snapshot, no further
+    // mutation). If the upstream log shows `Some(..)` but this one
+    // shows `None`, the bug is in `create_wave`'s threading.
+    tracing::info!(
+        card_id = %spec_card_id,
+        wave_id = %wave_id,
+        theme = ?theme,
+        "seed_and_spawn_spec_daemon: entry",
+    );
+
     // 1. Seed `$CODEX_HOME` for the spec card. Filesystem-only — fast,
     //    bounded by a handful of mkdir + small write_alls. Failure
     //    here means hooks.json / config.toml didn't land; the daemon
