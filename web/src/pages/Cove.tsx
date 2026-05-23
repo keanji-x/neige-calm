@@ -318,68 +318,22 @@ function EditableTitle({
 // text input on click. Visually rhymes with WavePage's `+ Add panel` so
 // the "compose at the bottom" idiom is consistent across pages.
 
-function NewWaveCTA({
-  onSubmit,
-}: {
+// Disabled until the task/calendar flow lands in #250 PR 3 — the
+// inline-title input would call POST /api/waves which now requires
+// `cwd` + `attach_folder`, and the surrounding caller still passes
+// the empty defaults. Re-enabled (or replaced by NewTaskForm) in PR 3.
+function NewWaveCTA(_: {
   onSubmit: (title: string) => void | Promise<void>;
 }) {
-  const [open, setOpen] = useState(false);
-  const [title, setTitle] = useState('');
-  const inputRef = useRef<HTMLInputElement | null>(null);
-
-  const openForm = () => {
-    setOpen(true);
-    queueMicrotask(() => inputRef.current?.focus());
-  };
-  const close = () => {
-    setOpen(false);
-    setTitle('');
-  };
-  const submit = async () => {
-    const trimmed = title.trim();
-    if (!trimmed) {
-      close();
-      return;
-    }
-    await onSubmit(trimmed);
-    close();
-  };
-
-  // Row-style affordance — same grid (26px glyph cell + 1fr body) as a
-  // WaveRow so the "+" lands in the same column as every status dot above
-  // it and the "New wave" label aligns with the wave titles. The collapsed
-  // <button> is the "new row" shell; clicking it swaps in the inline
-  // <input> within the same grid so the visible structure doesn't reflow.
-  if (!open) {
-    return (
-      <button
-        type="button"
-        className="new-wave-cta"
-        onClick={openForm}
-        title="New wave"
-      >
-        <span className="new-wave-glyph" aria-hidden>+</span>
-        <span className="new-wave-label">New wave</span>
-      </button>
-    );
-  }
   return (
-    <div className="new-wave-cta-open">
-      <span className="new-wave-glyph" aria-hidden>›</span>
-      <input
-        ref={inputRef}
-        value={title}
-        onChange={(e) => setTitle(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') void submit();
-          else if (e.key === 'Escape') close();
-        }}
-        onBlur={() => void submit()}
-        placeholder="Wave title…"
-        aria-label="New wave title"
-        className="new-wave-input"
-      />
-      <span aria-hidden style={{ color: 'var(--text-3)', fontSize: 12 }}>↵</span>
-    </div>
+    <button
+      type="button"
+      className="new-wave-cta"
+      disabled
+      title="Wave creation is being rebuilt for the task/calendar flow (#250 PR 3). Disabled until then."
+    >
+      <span className="new-wave-glyph" aria-hidden>+</span>
+      <span className="new-wave-label">New wave</span>
+    </button>
   );
 }

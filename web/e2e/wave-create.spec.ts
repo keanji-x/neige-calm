@@ -10,7 +10,11 @@
 
 import { test, expect } from '@playwright/test';
 
-test('creates a new wave from a fresh cove and navigates to it', async ({ page }) => {
+// Skipped until #250 PR 3: the cove-page "+ New wave" CTA is disabled
+// in this PR (compose-bar would post cwd='' and get 400). The wave-via-UI
+// contract this spec asserts is the explicit subject of PR 3's
+// NewTaskForm + PR 4's cove-page wiring, where it should be reinstated.
+test.skip('creates a new wave from a fresh cove and navigates to it', async ({ page }) => {
   await page.goto('/calm/');
 
   // Step 1 — sidebar → mint a new user cove (issue #175: the system

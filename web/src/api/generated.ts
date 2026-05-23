@@ -451,7 +451,15 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Issue #250 PR 2 — calendar / dashboard window query.
+         * @description `GET /api/waves?since=<ms>&until=<ms>&cove_id=<id>` — every
+         *     parameter is optional. Returns the full wave row (so the frontend
+         *     can render lifecycle / cove / terminal-at without an N+1 detail
+         *     fetch). Pre-#250 callers that hit `GET /api/waves` would 405 on
+         *     the old `POST`-only route; this is an additive contract.
+         */
+        get: operations["list_waves_window"];
         put?: never;
         post: operations["create_wave"];
         delete?: never;
@@ -900,7 +908,29 @@ export interface components {
             theme: components["schemas"]["RequestTheme"];
         };
         NewWave: {
+            /**
+             * @description Issue #250 PR 2 — opt-in for "claim this `cwd` for the body's
+             *     `cove_id` as a new folder, in the same transaction as the
+             *     wave-create write". Default `false`: the cwd must already be
+             *     covered by some existing folder under the same cove (the
+             *     `cove_folder_resolve` longest-prefix match runs at the route
+             *     layer). `true` adds a `cove_folder` row first and then the
+             *     wave; folder-conflict rules (equal/ancestor/descendant of any
+             *     existing claim) still apply and roll the whole tx back on
+             *     conflict.
+             */
+            attach_folder?: boolean;
             cove_id: string;
+            /**
+             * @description Issue #250 PR 2 — absolute filesystem path the spec daemon will
+             *     spawn under. Required (no `Option`): every wave-creating path
+             *     must declare a cwd or the spec daemon has no defensible
+             *     working directory. The `POST /api/waves` route enforces
+             *     absolute-path shape and the cove-folder claim check; the
+             *     inner `wave_create_tx` writes whatever the route lands here
+             *     verbatim.
+             */
+            cwd: string;
             /** Format: double */
             sort?: number | null;
             /**
@@ -1167,6 +1197,21 @@ export interface components {
             cove_id: string;
             /** Format: int64 */
             created_at: number;
+            /**
+             * @description Issue #250 PR 2 — the working directory the wave's spec daemon
+             *     runs in. **Required at the route layer**: `POST /api/waves`
+             *     rejects empty / non-absolute paths and refuses to create a wave
+             *     whose cwd isn't claimable by some cove (via
+             *     `cove_folder_resolve`, optionally creating a `cove_folders` row
+             *     when the body sets `attach_folder: true`).
+             *
+             *     `#[serde(default)]` mirrors the lifecycle precedent: replay of
+             *     a pre-#250 event log fixture (no `cwd` key on `WaveUpdated`)
+             *     hydrates as `""`, matching the DB DEFAULT in migration 0018.
+             *     Production wave-create paths inside this binary always stamp a
+             *     real path — the migration default is the "old data only" fallback.
+             */
+            cwd?: string;
             id: string;
             /**
              * @description Issue #145 — the wave's lifecycle state. **Required** (no
@@ -1183,6 +1228,27 @@ export interface components {
             lifecycle?: components["schemas"]["WaveLifecycle"];
             /** Format: double */
             sort: number;
+            /**
+             * Format: int64
+             * @description Issue #250 PR 2 — unix-ms timestamp the wave most recently
+             *     entered a terminal lifecycle state (Done / Canceled / Failed),
+             *     or `None` while the wave is non-terminal. Stamped inside the
+             *     same transaction as the `WaveLifecycleChanged` event by
+             *     `wave_update_tx`; cleared back to `None` on reopen
+             *     (Done/Canceled/Failed → Planning). The calendar window query
+             *     `GET /api/waves?since&until` uses `(terminal_at IS NULL OR
+             *     terminal_at >= since)` to keep open waves visible across every
+             *     day they span.
+             *
+             *     Backfill semantics: rows that existed before this migration
+             *     stay `None` even when their lifecycle is already terminal —
+             *     the event log carries the original transition timestamp but
+             *     the migration deliberately doesn't read from `events` (mixing
+             *     migration with replay is fragile). A user-driven reopen →
+             *     re-Done cycle stamps the column with the current time, which
+             *     is the first defensible point.
+             */
+            terminal_at?: number | null;
             title: string;
             /** Format: int64 */
             updated_at: number;
@@ -1271,6 +1337,47 @@ export interface components {
              *     [[required-over-option]] rule.
              */
             summary: string;
+        };
+        /**
+         * @description Issue #250 PR 2 — calendar window query parameters for
+         *     `GET /api/waves`. Every field is optional so omitting all three
+         *     degenerates to "every wave in the DB" (the route delegates to
+         *     `Repo::waves_window` which builds the SQL `WHERE` clause from the
+         *     non-`None` subset).
+         *
+         *     The semantic for `since` + `until` is **inclusive at both
+         *     endpoints**:
+         *       * `created_at <= until`  — exclude waves that hadn't been created
+         *         yet by the right edge of the window.
+         *       * `terminal_at IS NULL OR terminal_at >= since` — include any
+         *         wave that's still open (never reached a terminal lifecycle
+         *         state) or whose terminal stamp lands inside / past the left
+         *         edge.
+         *
+         *     Together the two predicates implement the "the wave is visible on
+         *     at least one day inside `[since, until]`" calendar contract from
+         *     the issue, even when the wave hasn't terminated yet.
+         */
+        WavesWindowQuery: {
+            /**
+             * @description Optional per-cove filter. Mirrors `list_waves_by_cove` for
+             *     callers that want one cove's window in a single endpoint.
+             */
+            cove_id?: string | null;
+            /**
+             * Format: int64
+             * @description Lower bound (inclusive) in unix milliseconds. Wave is included
+             *     when `terminal_at IS NULL OR terminal_at >= since`. Omitting
+             *     disables the lower-bound filter.
+             */
+            since?: number | null;
+            /**
+             * Format: int64
+             * @description Upper bound (inclusive) in unix milliseconds. Wave is included
+             *     when `created_at <= until`. Omitting disables the upper-bound
+             *     filter.
+             */
+            until?: number | null;
         };
     };
     responses: never;
@@ -2624,6 +2731,62 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VersionInfo"];
+                };
+            };
+        };
+    };
+    list_waves_window: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Lower bound (inclusive) in unix milliseconds. Wave is included
+                 *     when `terminal_at IS NULL OR terminal_at >= since`. Omitting
+                 *     disables the lower-bound filter.
+                 */
+                since?: number | null;
+                /**
+                 * @description Upper bound (inclusive) in unix milliseconds. Wave is included
+                 *     when `created_at <= until`. Omitting disables the upper-bound
+                 *     filter.
+                 */
+                until?: number | null;
+                /**
+                 * @description Optional per-cove filter. Mirrors `list_waves_by_cove` for
+                 *     callers that want one cove's window in a single endpoint.
+                 */
+                cove_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Waves overlapping the window, sorted by created_at */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Wave"][];
+                };
+            };
+            /** @description Inverted window (since > until) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
         };

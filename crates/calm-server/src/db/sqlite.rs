@@ -470,6 +470,67 @@ pub async fn cove_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Resul
     Ok(())
 }
 
+/// Issue #250 PR 2 — in-tx variant of [`SqlxRepo::cove_folder_create`].
+///
+/// Needed because the wave-create path with `attach_folder = true`
+/// claims a folder and writes the wave row in the **same** transaction:
+/// either both land or neither does. The route layer
+/// (`routes::waves::create_wave`) hands path normalization +
+/// conflict-classification responsibilities here (mirror of the route
+/// layer in `routes::cove_folders::create_folder`), but the conflict
+/// scan reuses the existing in-memory pass over `cove_folders_list_all`
+/// inside the same tx so a concurrent claim from another connection is
+/// detected by the UNIQUE constraint at INSERT time. Returns the
+/// inserted row; the caller emits whatever event/cache write it needs.
+pub async fn cove_folder_create_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    cove_id: &str,
+    path: &str,
+) -> Result<CoveFolder> {
+    let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM coves WHERE id = ?1")
+        .bind(cove_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    if exists.is_none() {
+        return Err(CalmError::NotFound(format!("cove {cove_id}")));
+    }
+    let now = now_ms();
+    let res =
+        sqlx::query("INSERT INTO cove_folders (cove_id, path, created_at) VALUES (?1, ?2, ?3)")
+            .bind(cove_id)
+            .bind(path)
+            .bind(now)
+            .execute(&mut **tx)
+            .await;
+    match res {
+        Ok(out) => Ok(CoveFolder {
+            id: out.last_insert_rowid(),
+            cove_id: cove_id.to_string().into(),
+            path: path.to_string(),
+            created_at: now,
+        }),
+        Err(sqlx::Error::Database(dbe)) if dbe.message().contains("UNIQUE") => Err(
+            CalmError::Conflict(format!("cove_folders.path already claims `{path}`")),
+        ),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Issue #250 PR 2 — in-tx variant of `cove_folders_list_all`. Used by
+/// the wave-create `attach_folder = true` path so the conflict scan
+/// reads consistent state alongside the row insert. SQLite serializes
+/// writers anyway, but routing through the same tx future-proofs the
+/// path against per-connection isolation surprises.
+pub async fn cove_folders_list_all_tx(tx: &mut Transaction<'_, Sqlite>) -> Result<Vec<CoveFolder>> {
+    let rows = sqlx::query_as::<_, CoveFolder>(
+        r#"SELECT id, cove_id, path, created_at
+           FROM cove_folders ORDER BY path ASC"#,
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows)
+}
+
 pub async fn wave_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
     p: NewWave,
@@ -499,16 +560,22 @@ pub async fn wave_create_tx(
     // future change to the seed value can't be reached by skipping
     // the column from the INSERT list.
     let lifecycle = crate::model::WaveLifecycle::Draft;
+    // Issue #250 PR 2 — `cwd` lands on the row verbatim from `NewWave`.
+    // The route layer (`POST /api/waves`) already validated absolute-
+    // path shape + cove-folder ownership; this writer stays mechanical.
+    // `terminal_at` is `NULL` on every fresh wave (Draft is non-terminal
+    // by construction; `WaveLifecycle::is_terminal` returns false for it).
     sqlx::query(
         r#"INSERT INTO waves
-           (id, cove_id, title, sort, archived_at, lifecycle, created_at, updated_at)
-           VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7)"#,
+           (id, cove_id, title, sort, archived_at, lifecycle, cwd, terminal_at, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, NULL, ?7, ?8)"#,
     )
     .bind(&id)
     .bind(&p.cove_id)
     .bind(&p.title)
     .bind(sort)
     .bind(lifecycle)
+    .bind(&p.cwd)
     .bind(now)
     .bind(now)
     .execute(&mut **tx)
@@ -526,6 +593,8 @@ pub async fn wave_create_tx(
         sort,
         archived_at: None,
         lifecycle,
+        cwd: p.cwd,
+        terminal_at: None,
         created_at: now,
         updated_at: now,
     })
@@ -537,7 +606,7 @@ pub async fn wave_update_tx(
     p: WavePatch,
 ) -> Result<Wave> {
     let mut w = sqlx::query_as::<_, Wave>(
-        r#"SELECT id, cove_id, title, sort, archived_at, lifecycle, created_at, updated_at
+        r#"SELECT id, cove_id, title, sort, archived_at, lifecycle, cwd, terminal_at, created_at, updated_at
            FROM waves WHERE id = ?1"#,
     )
     .bind(id)
@@ -562,19 +631,45 @@ pub async fn wave_update_tx(
     // and avoids threading `ActorId` through every call site that
     // patches the row. Production code paths that mutate
     // `lifecycle` must call `validate_transition` first.
-    if let Some(v) = p.lifecycle {
-        w.lifecycle = v;
+    //
+    // Issue #250 PR 2 — `terminal_at` rides on the lifecycle column:
+    // when this patch advances the wave into a terminal state we
+    // stamp the current time; when it reopens a terminal wave
+    // (terminal → planning, the only legal reopen edge today) we
+    // clear `terminal_at` back to NULL. A patch that doesn't touch
+    // `lifecycle` leaves `terminal_at` alone — that matches the
+    // archive precedent (changing `title` doesn't bump `archived_at`).
+    // The stamp happens inside the same transaction as the wave row
+    // update and the caller's `WaveLifecycleChanged` event, so a
+    // mid-tx crash leaves none of them behind.
+    if let Some(new_lifecycle) = p.lifecycle {
+        if new_lifecycle != w.lifecycle {
+            if new_lifecycle.is_terminal() {
+                w.terminal_at = Some(now_ms());
+            } else if w.lifecycle.is_terminal() {
+                // Reopen (terminal → non-terminal). Today the only
+                // legal edge here is `terminal → planning` (user-
+                // driven, gated by `validate_transition`). Clearing
+                // the stamp ensures a reopened wave doesn't render
+                // with a stale terminal date on the calendar.
+                w.terminal_at = None;
+            }
+        }
+        w.lifecycle = new_lifecycle;
     }
     w.updated_at = now_ms();
 
     sqlx::query(
-        r#"UPDATE waves SET title = ?1, sort = ?2, archived_at = ?3, lifecycle = ?4, updated_at = ?5
-           WHERE id = ?6"#,
+        r#"UPDATE waves
+           SET title = ?1, sort = ?2, archived_at = ?3, lifecycle = ?4,
+               terminal_at = ?5, updated_at = ?6
+           WHERE id = ?7"#,
     )
     .bind(&w.title)
     .bind(w.sort)
     .bind(w.archived_at)
     .bind(w.lifecycle)
+    .bind(w.terminal_at)
     .bind(w.updated_at)
     .bind(&w.id)
     .execute(&mut **tx)
@@ -1295,7 +1390,7 @@ impl RepoRead for SqlxRepo {
     // ---------------------------------------------------------------- waves
     async fn waves_by_cove(&self, cove_id: &str) -> Result<Vec<Wave>> {
         let rows = sqlx::query_as::<_, Wave>(
-            r#"SELECT id, cove_id, title, sort, archived_at, lifecycle, created_at, updated_at
+            r#"SELECT id, cove_id, title, sort, archived_at, lifecycle, cwd, terminal_at, created_at, updated_at
                FROM waves WHERE cove_id = ?1 ORDER BY sort ASC"#,
         )
         .bind(cove_id)
@@ -1306,7 +1401,7 @@ impl RepoRead for SqlxRepo {
 
     async fn wave_get(&self, id: &str) -> Result<Option<Wave>> {
         let row = sqlx::query_as::<_, Wave>(
-            r#"SELECT id, cove_id, title, sort, archived_at, lifecycle, created_at, updated_at
+            r#"SELECT id, cove_id, title, sort, archived_at, lifecycle, cwd, terminal_at, created_at, updated_at
                FROM waves WHERE id = ?1"#,
         )
         .bind(id)
@@ -1315,10 +1410,56 @@ impl RepoRead for SqlxRepo {
         Ok(row)
     }
 
+    async fn waves_window(
+        &self,
+        cove_id: Option<&str>,
+        since: Option<i64>,
+        until: Option<i64>,
+    ) -> Result<Vec<Wave>> {
+        // Build the WHERE clause dynamically because sqlx doesn't have
+        // good "optional bind" ergonomics — every binding has to be
+        // either materialized or excluded from the query string. The
+        // three predicates compose in any combination:
+        //   * `cove_id`     : `cove_id = ?`
+        //   * `until`       : `created_at <= ?`
+        //   * `since`       : `(terminal_at IS NULL OR terminal_at >= ?)`
+        let mut sql = String::from(
+            "SELECT id, cove_id, title, sort, archived_at, lifecycle, cwd, terminal_at, \
+             created_at, updated_at FROM waves",
+        );
+        let mut where_clauses: Vec<&str> = Vec::new();
+        if cove_id.is_some() {
+            where_clauses.push("cove_id = ?");
+        }
+        if until.is_some() {
+            where_clauses.push("created_at <= ?");
+        }
+        if since.is_some() {
+            where_clauses.push("(terminal_at IS NULL OR terminal_at >= ?)");
+        }
+        if !where_clauses.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&where_clauses.join(" AND "));
+        }
+        sql.push_str(" ORDER BY created_at ASC, id ASC");
+
+        let mut q = sqlx::query_as::<_, Wave>(&sql);
+        if let Some(c) = cove_id {
+            q = q.bind(c);
+        }
+        if let Some(u) = until {
+            q = q.bind(u);
+        }
+        if let Some(s) = since {
+            q = q.bind(s);
+        }
+        Ok(q.fetch_all(&self.pool).await?)
+    }
+
     async fn wave_detail(&self, id: &str) -> Result<Option<WaveDetail>> {
         let mut tx = self.pool.begin().await?;
         let wave = sqlx::query_as::<_, Wave>(
-            r#"SELECT id, cove_id, title, sort, archived_at, lifecycle, created_at, updated_at
+            r#"SELECT id, cove_id, title, sort, archived_at, lifecycle, cwd, terminal_at, created_at, updated_at
                FROM waves WHERE id = ?1"#,
         )
         .bind(id)

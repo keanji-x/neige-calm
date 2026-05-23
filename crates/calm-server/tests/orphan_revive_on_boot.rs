@@ -115,6 +115,8 @@ async fn seed_terminal_row(repo: &dyn Repo) -> String {
             cove_id: cove.id,
             title: "orphan-revive-test".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await

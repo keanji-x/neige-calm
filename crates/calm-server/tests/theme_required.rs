@@ -57,6 +57,8 @@ async fn boot() -> Boot {
             cove_id: cove.id.clone(),
             title: "theme-required-test".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await

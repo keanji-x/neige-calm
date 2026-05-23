@@ -29,6 +29,7 @@ use crate::routes::plugins::{
 use crate::routes::settings::{SettingsBag, SettingsPutBody};
 use crate::routes::terminal_cards::NewTerminalCardBody;
 use crate::routes::version::VersionInfo;
+use crate::routes::waves::WavesWindowQuery;
 use utoipa::OpenApi;
 
 #[derive(OpenApi)]
@@ -52,6 +53,7 @@ use utoipa::OpenApi;
         crate::routes::cove_folders::resolve_path,
         // ---- waves ----
         crate::routes::waves::list_waves_by_cove,
+        crate::routes::waves::list_waves_window,
         crate::routes::waves::get_wave_detail,
         crate::routes::waves::create_wave,
         crate::routes::waves::update_wave,
@@ -107,6 +109,7 @@ use utoipa::OpenApi;
         Wave,
         NewWave,
         WavePatch,
+        WavesWindowQuery,
         WaveDetail,
         Card,
         NewCard,

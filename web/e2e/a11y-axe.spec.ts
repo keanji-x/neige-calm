@@ -33,7 +33,7 @@
 
 import { test, expect, type Page } from '@playwright/test';
 import { AxeBuilder } from '@axe-core/playwright';
-import { resetReplayServer } from './helpers/reset';
+import { resetReplayServer, createWaveInCove } from './helpers/reset';
 
 /** Themes the axe matrix scans every route under. `light` is the default
  *  the app boots into; `dark` is applied via `enableDarkTheme()` below
@@ -193,16 +193,14 @@ async function ids(page: Page): Promise<{ coveId: string; waveId: string }> {
   await coveBtn.click();
   await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
   const coveId = new URL(page.url()).pathname.split('/').pop()!;
-  // Create a wave inside the new cove.
+  // Create a wave via the API helper — the cove-page "+ New wave" CTA
+  // is disabled in #250 PR 2 pending PR 3's NewTaskForm. axe scans
+  // operate on rendered pages, so the wave-create path is just plumbing.
   const waveTitle = `axe wave ${Date.now()}`;
-  await page.getByRole('button', { name: /new wave/i }).click();
-  const titleInput = page.getByPlaceholder(/wave title/i);
-  await expect(titleInput).toBeVisible();
-  await titleInput.fill(waveTitle);
-  await titleInput.press('Enter');
+  const wave = await createWaveInCove(page.request, coveId, waveTitle);
+  await page.goto(`/calm/wave/${wave.id}`);
   await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
-  const waveId = new URL(page.url()).pathname.split('/').pop()!;
-  return { coveId, waveId };
+  return { coveId, waveId: wave.id };
 }
 
 test.describe('a11y · axe', () => {

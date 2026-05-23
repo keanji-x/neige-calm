@@ -62,6 +62,8 @@ async fn boot_with_wave(
             cove_id: cove.id.clone(),
             title: "demo".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await

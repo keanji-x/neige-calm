@@ -204,7 +204,12 @@ test.describe('a11y · keyboard-only navigation', () => {
     await expect(page.getByRole('heading', { name: /atlas/i })).toBeVisible();
   });
 
-  test('Cove → New wave via keyboard creates a wave', async ({ page }) => {
+  // Skipped until #250 PR 3: the cove-page "+ New wave" CTA is
+  // disabled in this PR (compose-bar would post cwd='' and get 400).
+  // PR 3 introduces NewTaskForm and PR 4 wires it back in, at which
+  // point an equivalent keyboard-creates-a-wave assertion belongs on
+  // that new flow.
+  test.skip('Cove → New wave via keyboard creates a wave', async ({ page }) => {
     // First land on the cove page via keyboard (same path as above).
     await tabUntil(page, (info) => info.name?.toLowerCase().includes('atlas') === true);
     await page.keyboard.press('Enter');

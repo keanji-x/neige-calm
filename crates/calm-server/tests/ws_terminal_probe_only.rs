@@ -73,6 +73,8 @@ async fn boot_with_terminal_row() -> Boot {
             cove_id: cove.id,
             title: "probe-only-test".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await

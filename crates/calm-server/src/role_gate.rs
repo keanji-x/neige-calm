@@ -268,6 +268,8 @@ mod tests {
             sort: 1.0,
             archived_at: None,
             lifecycle: WaveLifecycle::Draft,
+            cwd: String::new(),
+            terminal_at: None,
             created_at: 0,
             updated_at: 0,
         }

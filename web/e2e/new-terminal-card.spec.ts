@@ -30,14 +30,34 @@ test('newly created terminal card appears without a reload', async ({ page }) =>
   await coveBtn.click();
   await expect(page).toHaveURL(/\/calm\/cove\/[^/]+$/);
 
-  // Step 2 — create a new wave inside this cove.
-  const newWaveBtn = page.getByRole('button', { name: /new wave/i });
-  await newWaveBtn.click();
+  // Step 2 — create a new wave inside this cove. The cove-page "+ New
+  // wave" CTA is disabled in #250 PR 2 pending PR 3's NewTaskForm, so
+  // we mint the wave via the kernel REST API directly. `page.request`
+  // resolves the relative URL against this project's baseURL (set in
+  // playwright.config.ts → 'chromium': http://localhost:4040/calm/).
+  // The helpers/reset.ts variant is replay-port-pinned and only safe
+  // for the a11y project.
+  const coveId = new URL(page.url()).pathname.split('/').pop()!;
   const waveTitle = `E2E new-terminal ${Date.now()}`;
-  const titleInput = page.getByPlaceholder(/wave title/i);
-  await titleInput.fill(waveTitle);
-  await titleInput.press('Enter');
-
+  const cwd = `/tmp/playwright-cove-${coveId}`;
+  const waveRes = await page.request.post('/api/waves', {
+    data: {
+      cove_id: coveId,
+      title: waveTitle,
+      cwd,
+      attach_folder: true,
+      // #177 — `theme` is a required NewWave field. Mirrors
+      // `DARK_THEME_RGB` in web/src/api/themeRgb.ts.
+      theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
+    },
+    headers: { 'content-type': 'application/json' },
+  });
+  if (!waveRes.ok()) {
+    const body = await waveRes.text().catch(() => '<unreadable>');
+    throw new Error(`POST /api/waves → ${waveRes.status()} ${waveRes.statusText()}: ${body}`);
+  }
+  const wave = (await waveRes.json()) as { id: string };
+  await page.goto(`/calm/wave/${wave.id}`);
   await expect(page).toHaveURL(/\/calm\/wave\/[^/]+$/);
   await expect(page.getByText(waveTitle, { exact: false }).first()).toBeVisible();
 

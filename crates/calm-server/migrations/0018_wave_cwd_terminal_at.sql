@@ -1,0 +1,49 @@
+-- Issue #250 PR 2 — Wave gets two new columns:
+--
+--   * `cwd TEXT NOT NULL DEFAULT ''`  — the working directory the wave's
+--     spec daemon runs in. Replaces the card-level cwd that the spec
+--     daemon used to inherit from `routes::codex_cards::default_cwd()`
+--     (`$HOME`). PR 2's `POST /api/waves` enforces a non-empty absolute
+--     path at the route layer; the DB DEFAULT exists only to satisfy
+--     `NOT NULL` for pre-#250 rows that backfill in place.
+--
+--   * `terminal_at INTEGER NULL`        — the unix-ms timestamp at
+--     which the wave most recently entered a terminal lifecycle state
+--     (Done / Canceled / Failed). Stamped inside the same transaction
+--     as the `WaveLifecycleChanged` event by `wave_update_tx`; cleared
+--     back to NULL when the user reopens a terminal wave. Drives the
+--     calendar window query `created_at <= until AND (terminal_at IS NULL
+--     OR terminal_at >= since)`.
+--
+-- Why required-not-Option for `cwd`: every PR2-era wave-create path must
+-- declare a cwd so the spec daemon has a stable working directory; an
+-- `Option<String>` with a serde default would silently let "no cwd"
+-- through (the spec daemon would silently fall back to `$HOME` and the
+-- wave would not be claimable by any cove). Per the project's
+-- "required over Option" preference the column is NOT NULL and the
+-- API rejects empty strings. The DB DEFAULT '' covers two cases that
+-- aren't reachable from the route:
+--
+--   1. Existing rows on a running deployment when this migration runs:
+--      they retroactively get cwd = ''. The frontend continues to
+--      render them; new lifecycle transitions still work. The calendar
+--      view filters them out implicitly via the (cove_id, cwd) chain
+--      that PR3 will introduce — pre-#250 waves predate the cove ↔
+--      folder concept anyway.
+--
+--   2. Replay of a pre-#250 event log over a fresh DB: serde's
+--      `#[serde(default)]` on `Wave.cwd` (mirroring the precedent on
+--      `Wave.lifecycle` from #145) hydrates absent fields as `""` so
+--      the replay completes; the resulting row matches what the
+--      `DEFAULT ''` would have produced if the wave had been minted
+--      in-binary.
+--
+-- `terminal_at` stays NULL on backfill — even for waves that landed in
+-- a terminal state pre-#250. There's no honest server-side timestamp
+-- to fill in (the lifecycle event log carries it but reading from
+-- `events` here would conflate the migration with a replay). A
+-- user-driven reopen → re-Done cycle stamps the new column with the
+-- current time, which is the first defensible point.
+
+ALTER TABLE waves ADD COLUMN cwd TEXT NOT NULL DEFAULT '';
+ALTER TABLE waves ADD COLUMN terminal_at INTEGER NULL;

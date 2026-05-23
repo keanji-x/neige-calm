@@ -211,6 +211,8 @@ async fn card_create_with_id_tx_round_trips_deletable_bit() {
             cove_id: cove.id.clone(),
             title: "w".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
@@ -297,7 +299,7 @@ async fn spec_card_minted_by_wave_create_is_undeletable() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "w", "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"cove_id": boot.cove_id, "title": "w", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "wave create returned: {body}");
@@ -349,7 +351,7 @@ async fn delete_card_returns_403_for_undeletable_spec_card() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "w", "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"cove_id": boot.cove_id, "title": "w", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
@@ -386,7 +388,7 @@ async fn delete_card_returns_204_for_deletable_plain_card() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "w", "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"cove_id": boot.cove_id, "title": "w", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
@@ -427,7 +429,7 @@ async fn wave_delete_cascades_to_undeletable_spec_card() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "w", "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"cove_id": boot.cove_id, "title": "w", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
@@ -469,7 +471,7 @@ async fn patch_card_with_deletable_returns_400() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "w", "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"cove_id": boot.cove_id, "title": "w", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");

@@ -40,6 +40,8 @@ async fn ingest_emits_codex_hook_event() {
             cove_id: cove.id.clone(),
             title: "w".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await

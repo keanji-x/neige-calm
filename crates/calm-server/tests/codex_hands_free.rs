@@ -103,6 +103,8 @@ async fn boot_full() -> (
             cove_id: cove.id,
             title: "hf".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
@@ -354,6 +356,8 @@ async fn auto_submit_subscriber_skips_card_without_prompt() {
             cove_id: cove.id,
             title: "gate".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
@@ -459,6 +463,8 @@ async fn route_to_subscriber_chain_skips_auto_submit_for_empty_or_absent_prompt(
             cove_id: cove.id,
             title: "no-prompt".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await

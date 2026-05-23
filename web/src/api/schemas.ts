@@ -96,6 +96,21 @@ export const waveSchema = z.object({
    * stamps a value on fresh writes.
    */
   lifecycle: waveLifecycleSchema,
+  /**
+   * Issue #250 PR 2 — wave's working directory (spec-daemon cwd).
+   * Defaulted to `""` at the schema layer for symmetry with the
+   * server-side `#[serde(default)]` on `Wave.cwd`: pre-#250 event-log
+   * replay fixtures (no `cwd` key on `WaveUpdated`) parse cleanly.
+   * Production rows always carry an absolute path.
+   */
+  cwd: z.string().default(''),
+  /**
+   * Issue #250 PR 2 — unix-ms stamp the wave most recently entered a
+   * terminal lifecycle state (Done / Canceled / Failed), or `null`
+   * while non-terminal. Defaulted to `null` so pre-#250 wire payloads
+   * (no key on the event) parse without churn.
+   */
+  terminal_at: z.number().nullable().default(null),
   created_at: z.number(),
   updated_at: z.number(),
 });

@@ -91,6 +91,12 @@ export async function createWaveInCove(
   title: string,
 ): Promise<{ id: string; title: string }> {
   const url = `http://127.0.0.1:${REPLAY_PORT}/api/waves`;
+  // #250 PR 2: cwd is required, and we ask the server to attach this
+  // path as a folder of `coveId` in the same tx so the helper stays a
+  // one-shot setup call. The cwd is derived from coveId so each test
+  // run's fresh cove gets its own folder claim and we don't trip
+  // cove_folders.UNIQUE(path) across reset boundaries.
+  //
   // `theme` is required end-to-end (#177): the kernel rejects a body
   // without it (422). Pass an inert dark-theme sentinel — the e2e
   // test doesn't probe OSC roundtrips so the concrete RGB doesn't
@@ -99,6 +105,8 @@ export async function createWaveInCove(
     data: {
       cove_id: coveId,
       title,
+      cwd: `/tmp/playwright-cove-${coveId}`,
+      attach_folder: true,
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },
     headers: { 'content-type': 'application/json' },

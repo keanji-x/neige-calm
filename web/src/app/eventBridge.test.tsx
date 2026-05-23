@@ -205,6 +205,11 @@ describe('EventBridge', () => {
         archived_at: null,
         // Issue #145 — `lifecycle` is now part of the wave wire shape.
         lifecycle: 'draft',
+        // Issue #250 PR 2 — cwd + terminal_at are part of the Wave
+        // wire shape. The bridge doesn't care about either today;
+        // future calendar/terminal-stamp subscribers will read them.
+        cwd: '',
+        terminal_at: null,
         created_at: 1,
         updated_at: 2,
       },

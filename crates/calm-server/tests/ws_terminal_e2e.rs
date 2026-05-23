@@ -111,6 +111,8 @@ async fn boot_full() -> (std::net::SocketAddr, axum::Router, String, TempDir) {
             cove_id: cove.id,
             title: "e2e".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
