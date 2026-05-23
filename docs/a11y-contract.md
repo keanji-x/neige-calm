@@ -68,7 +68,7 @@ A panel inside a wave. The kernel `KernelCard.kind` discriminates between subtyp
 
 Interactive PTY console.
 
-- Outer container: `<div className="term">` (no role). The dragging header `<div className="term-head card-drag-handle">` holds the term title; live state appends "` · live`" to the title. Source: `web/src/cards/builtins/terminal.tsx:53-83`.
+- Outer container: `<div className="term">` (no role; the `.live` modifier is appended while a PTY is attached). The dragging header is a `<CardHead>` instance — `<CardHead className="card-drag-handle" title={card.title || 'terminal'} status={…} onClose={…} closeAriaLabel="Remove panel" />` (per #178 / #213 / #227) — which renders a `<div className="card-head card-drag-handle">` wrapping slot wrappers (`.card-head-icon` letter-avatar, `.card-head-title`, optional `.card-head-status`). The fallback title is the literal `"terminal"`; the live-state " · live" suffix from the pre-unification head is gone. Source: `web/src/cards/builtins/terminal.tsx:75-100` and `web/src/cards/CardHead.tsx`.
 - xterm.js itself owns keyboard focus while the body is interacted with. We do not intercept keys at the React layer — the xterm renderer's own a11y story (which routes through a hidden textarea + live region) is the relevant contract from there. Source: `web/src/XtermView.tsx`.
 - "terminal" is the fallback title when the kernel hasn't supplied a `card.title` yet. Don't rename — the test suite expects this literal.
 
@@ -76,16 +76,16 @@ Interactive PTY console.
 
 Agent workload with live FSM-driven status.
 
-- Outer container: `<div className="codex-card">`. Header is `<div className="codex-card-head card-drag-handle">` with `<span className="codex-card-title">Codex</span>`.
-- **Live status region**: `<div className="codex-status-bar" aria-live="polite">` wrapping the FSM verb + most-recent-hook label + a `<CardStatusDot>`. Source: `web/src/cards/builtins/codex.tsx:117-127`. `aria-live="polite"` (not assertive) on purpose — codex hooks can fire several times per second; assertive would interrupt other narration.
-- Body: lazy `<XtermView>` once `card.terminalId` lands; otherwise placeholder text "Codex is starting… waiting for PTY." (`web/src/cards/builtins/codex.tsx:128-138`).
+- Outer container: `<div className="codex-card">`. Header is a `<CardHead>` instance with the same shape as Terminal — `<CardHead className="card-drag-handle" title="Codex" status={…} onClose={…} closeAriaLabel="Remove panel" />` (per #178 / #213 / #227). The title is pinned to the literal `"Codex"`; the pre-unification bespoke head classes are gone.
+- **Live status region**: the FSM verb + most-recent-hook summary + `<CardStatusDot>` live inside `<CardHead status={…}>`. The `<CardStatusDot>` carries the human-readable string in its `title` tooltip and `aria-label`; an `<span aria-live="polite">` wrapper around the dot announces state transitions (polite, not assertive — codex hooks can fire several times per second). When the daemon assigned the client `role === 'Observer'` (#213), a small `<span className="card-head-observing-pill">observing</span>` renders before the dot. Source: `web/src/cards/builtins/codex.tsx:158-180`.
+- Body: lazy `<XtermView>` once `card.terminalId` lands; otherwise placeholder text "Codex is starting… waiting for PTY." (`web/src/cards/builtins/codex.tsx:181-191`).
 
 ### 2.6 Plugin card (iframe)
 
 Sandboxed plugin app rendered into an `<iframe>`.
 
-- Outer container: `<div className="plugin-iframe-card">`. Header: `<div className="plugin-iframe-head card-drag-handle">` showing "Plugin: `<plugin_id>:<view_id>`". Source: `web/src/cards/plugin-iframe.tsx:283-294`.
-- The `<iframe>` itself carries `title="plugin <plugin_id>/<view_id>"` (accessible name for the frame). Source: `web/src/cards/plugin-iframe.tsx:305`. `jsx-a11y/iframe-has-title` would fail without it; the chosen title doubles as the test locator.
+- Outer container: `<div className="plugin-iframe-card">`. Header is a `<CardHead>` instance (migrated from the pre-unification bespoke head div in #213): `<CardHead className="card-drag-handle" title={`${plugin_id}:${view_id}`} onClose={…} closeAriaLabel="Remove panel" />`. The plugin id pair is passed as the `title` prop — no leading "Plugin: " label — so the head's accessible-name composition matches Terminal and Codex. Source: `web/src/cards/plugin-iframe.tsx:363-368`.
+- The `<iframe>` itself carries `title="plugin <plugin_id>/<view_id>"` (accessible name for the frame). Source: `web/src/cards/plugin-iframe.tsx:379`. `jsx-a11y/iframe-has-title` would fail without it; the chosen title doubles as the test locator.
 - `sandbox="allow-scripts allow-same-origin"` is set; the plugin owns a11y *inside* the frame and is out of scope for this doc. The host contract is that the frame must be reachable via `getByTitle` from outside.
 
 ### 2.7 Overlay / status
