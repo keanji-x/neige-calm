@@ -97,7 +97,8 @@ export function adaptWave(k: KernelWave, overlays: KernelOverlay[] = []): Wave {
  * `cards/builtins/*.tsx`; the registry iterates them and returns the first
  * non-null match. Plugin cards accept only the canonical `ui://<plugin>/<view>`
  * URI — M4's hard cut deleted the legacy `plugin:<id>:<view>` parser; the
- * only consumer (hello-world) is rewritten in M6.
+ * hello-world demo (its last consumer) was deleted alongside the
+ * WaveLifecycle unification.
  */
 export function adaptCard(k: KernelCard): WaveCardData | null {
   return adaptKernelCard(k);

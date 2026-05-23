@@ -13,19 +13,15 @@
 //   * Letting each site reimplement the badge would drift the
 //     vocabulary the moment a state shifts color.
 //
-// Color policy:
-//   * `done`            → accent (the "happy terminal" colour the
-//                         FSM dot already uses for `Working`).
-//   * `blocked` /       → warn (matches the dot + halo treatment for
-//     `reviewing`         `AwaitingInput`/`Errored`).
-//   * `failed`          → warn (no `--danger` token in the vocabulary
-//                         yet; consistent with `CardStatusDot`'s
-//                         `Errored` arm).
-//   * `working` /       → accent (live work in flight).
-//     `dispatching` /
-//     `planning`
-//   * `draft` /         → neutral (calm dim text; the wave isn't
-//     `canceled`          producing anything right now).
+// Color policy (two buckets, sharing the existing `.status-pill` tokens
+// from calm.css — no new design tokens):
+//   * `isWaitingForUser` (blocked / reviewing / failed) → `waiting`
+//     (warn token; same vocabulary as CardStatusDot's `AwaitingInput`).
+//     `failed` rides this bucket until a dedicated `--danger` token lands.
+//   * `isRunning`        (planning / dispatching / working) → `running`
+//     (accent token + live pulse).
+//   * everything else    (draft / done / canceled) → no modifier
+//     (neutral dim text; the wave isn't producing anything right now).
 
 import type { WaveLifecycle } from '../../types';
 import { isRunning, isWaitingForUser } from '../lifecycle';

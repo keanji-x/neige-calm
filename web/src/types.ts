@@ -86,8 +86,8 @@ export interface TerminalCardData {
 /**
  * Plugin-provided iframe card. The kernel card kind is the canonical MCP Apps
  * resource URI `ui://<plugin_id>/<view_id>`. The legacy Neige-dialect form
- * `plugin:<plugin_id>:<view_id>` was deleted in M4 — the only consumer
- * (hello-world) is rewritten in M6.
+ * `plugin:<plugin_id>:<view_id>` was deleted in M4; the hello-world demo
+ * (its last consumer) was deleted alongside the WaveLifecycle unification.
  *
  * `plugin_id` and `view_id` are not stored on the card; derive them lazily at
  * use sites via `parsePluginCardKind(resource_uri)` from `cards/plugin-iframe`.
