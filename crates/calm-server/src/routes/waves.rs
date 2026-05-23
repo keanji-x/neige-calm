@@ -147,19 +147,15 @@ pub(crate) async fn create_wave(
     //    `routes/coves.rs`); we read it back from the closure result.
     let spec_card_id = new_id();
 
-    // #177: snapshot the optional host-theme RGB off the body before
-    // the tx closure moves `p` — we need it post-commit to stamp
+    // #177: snapshot the host-theme RGB off the body before the tx
+    // closure moves `p` — we need it post-commit to stamp
     // `--terminal-fg` / `--terminal-bg` onto the spec-card daemon
-    // argv. When absent (older clients, scripted callers, tests) the
-    // daemon stays silent on OSC 10/11 and codex falls back to its
-    // built-in default. Same back-compat shape as
-    // `NewCodexCardBody.theme` on the codex-card route.
+    // argv. `theme` is required at the request boundary now: a body
+    // missing the field failed deserialize with 422 before we got
+    // here, so the snapshot is always a concrete `RequestTheme`.
     let theme = p.theme;
     // #177 diagnostic — log the incoming theme at the wave-create entry
-    // so operators grepping docker logs can see whether the browser
-    // even sent a theme. A `None` here pinpoints the bug to the web
-    // client; a `Some(...)` that doesn't reach the spawn step pinpoints
-    // it to the threading inside this handler / `seed_and_spawn_spec_daemon`.
+    // so operators grepping docker logs can see what the browser sent.
     tracing::info!(
         card_id = %spec_card_id,
         theme = ?theme,

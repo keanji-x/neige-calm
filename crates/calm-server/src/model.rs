@@ -175,20 +175,21 @@ pub struct NewWave {
     pub cove_id: CoveId,
     pub title: String,
     pub sort: Option<f64>,
-    /// Host browser's current theme RGB (#177). When set, the kernel
-    /// stamps `--terminal-fg=r,g,b --terminal-bg=r,g,b` onto the auto-
-    /// minted spec card's `calm-session-daemon` argv so codex's OSC
-    /// 10/11 startup probe gets matching colors. When missing, the
-    /// daemon stays silent on OSC queries and codex falls back to its
-    /// built-in default — same back-compat as the codex-card endpoint.
+    /// Host browser's current theme RGB (#177). Required end-to-end —
+    /// the kernel stamps `--terminal-fg=r,g,b --terminal-bg=r,g,b`
+    /// onto the auto-minted spec card's `calm-session-daemon` argv so
+    /// codex's OSC 10/11 startup probe gets matching colors. A body
+    /// missing this field is rejected at the deserialize layer (422):
+    /// the spec card is invisible to the user and a silent fallback
+    /// would mean every wave-from-the-UI spawned with a mis-tinted
+    /// composer (the bug that motivated this refactor).
     ///
-    /// Note: `NewWave` is consumed both inside the
-    /// `routes::waves::create_wave` handler (which honors this field)
-    /// and by `db::sqlite::wave_create_tx` directly via tests — the
-    /// txn-level helper ignores theme since spec-card spawning is
-    /// owned by the handler.
-    #[serde(default)]
-    pub theme: Option<crate::routes::theme::RequestTheme>,
+    /// Direct repo callers (`db::sqlite::wave_create_tx`, used by tests
+    /// and a couple of non-route helpers) still pass a value here even
+    /// though the txn-level helper does not consume it — spec-card
+    /// spawning is owned by `routes::waves::create_wave`. Tests can
+    /// use `RequestTheme::default_dark()` as a no-op sentinel.
+    pub theme: crate::routes::theme::RequestTheme,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, ToSchema)]

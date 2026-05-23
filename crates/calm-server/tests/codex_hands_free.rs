@@ -103,7 +103,7 @@ async fn boot_full() -> (
             cove_id: cove.id,
             title: "hf".into(),
             sort: None,
-            theme: None,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
@@ -353,7 +353,7 @@ async fn auto_submit_subscriber_skips_card_without_prompt() {
             cove_id: cove.id,
             title: "gate".into(),
             sort: None,
-            theme: None,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
@@ -458,7 +458,7 @@ async fn route_to_subscriber_chain_skips_auto_submit_for_empty_or_absent_prompt(
             cove_id: cove.id,
             title: "no-prompt".into(),
             sort: None,
-            theme: None,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
@@ -582,8 +582,15 @@ async fn route_to_subscriber_chain_skips_auto_submit_for_empty_or_absent_prompt(
 
     // Sub-case 1: explicit empty-string prompt. Route normalizes via
     // `.trim().filter(!empty)` before stamping, so payload.prompt ends
-    // up absent — subscriber gate matches the same shape.
-    run_case(json!({ "prompt": "" }), "empty-string prompt").await;
+    // up absent — subscriber gate matches the same shape. `theme` is
+    // required end-to-end (#177) so every body includes a sentinel
+    // value the request-boundary deserializer accepts.
+    let theme_field = json!({ "fg": [216, 219, 226], "bg": [15, 20, 24] });
+    run_case(
+        json!({ "prompt": "", "theme": theme_field.clone() }),
+        "empty-string prompt",
+    )
+    .await;
     // Reset: clear cards so the next case's lookup-by-no-prompt is
     // unambiguous (we want exactly one prompt-less card to find).
     // Issue #197 — `terminals.card_id` is now `ON DELETE RESTRICT`, so
@@ -600,5 +607,9 @@ async fn route_to_subscriber_chain_skips_auto_submit_for_empty_or_absent_prompt(
 
     // Sub-case 2: prompt field omitted entirely. Same expected
     // behavior — subscriber should not auto-submit.
-    run_case(json!({}), "absent prompt field").await;
+    run_case(
+        json!({ "theme": theme_field.clone() }),
+        "absent prompt field",
+    )
+    .await;
 }

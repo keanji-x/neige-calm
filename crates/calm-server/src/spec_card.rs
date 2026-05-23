@@ -423,14 +423,15 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
     wave_id: String,
     cwd: String,
     env: serde_json::Value,
-    theme: Option<RequestTheme>,
+    theme: RequestTheme,
 ) {
     // #177 diagnostic — log theme arrival at the background-task entry
     // point. Paired with the `wave_create: theme received` log in
     // `routes::waves`, this pinpoints whether the theme survives the
     // `tokio::spawn` hand-off (clone of the snapshot, no further
-    // mutation). If the upstream log shows `Some(..)` but this one
-    // shows `None`, the bug is in `create_wave`'s threading.
+    // mutation). `theme` is required at the API boundary now, so this
+    // log only documents the value — a missing field already failed
+    // deserialize with 422 before we got here.
     tracing::info!(
         card_id = %spec_card_id,
         wave_id = %wave_id,
@@ -486,19 +487,16 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
     //    socket-ready loop (up to ~3s); doing it off the response hot
     //    path is the whole point of this helper.
     //
-    //    #177: when the wave-create request carried a `theme` field,
-    //    stamp `--terminal-fg=r,g,b --terminal-bg=r,g,b` onto the
-    //    daemon argv so the spec card's codex composer answers OSC
-    //    10/11 with colors matching the host browser. Without this,
-    //    a wave created from the UI auto-spawns a spec card whose
-    //    codex TUI paints against codex's built-in default and
-    //    visually clashes with the surrounding card background — the
-    //    same hole PR #193 closed for the user-created codex card
-    //    path. When `theme` is `None` (older clients, scripted
-    //    callers, tests) the daemon stays silent on OSC queries.
+    //    #177: stamp the host browser's current theme RGB onto the
+    //    daemon argv unconditionally. `theme` is required at the API
+    //    boundary now (`NewWave.theme: RequestTheme`, no Option), so
+    //    every wave-create that reaches this background task has a
+    //    concrete RGB to forward. The old "stay silent when None"
+    //    fallback was where the bug lived — a caller that forgot to
+    //    include theme silently produced a mis-tinted composer.
     let opts = SpawnDaemonOpts {
-        terminal_fg: theme.map(|t| t.fg_arg()),
-        terminal_bg: theme.map(|t| t.bg_arg()),
+        terminal_fg: Some(theme.fg_arg()),
+        terminal_bg: Some(theme.bg_arg()),
     };
     if let Err(e) = spawn_daemon_for_with_opts(&state, &term, "codex", &cwd, &env, opts).await {
         tracing::warn!(

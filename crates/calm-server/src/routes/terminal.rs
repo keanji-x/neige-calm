@@ -388,7 +388,7 @@ mod tests {
                 cove_id: cove.id.clone(),
                 title: "respawn-theme-test".into(),
                 sort: None,
-                theme: None,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
             })
             .await
             .unwrap();

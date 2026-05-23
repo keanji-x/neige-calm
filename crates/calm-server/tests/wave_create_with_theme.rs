@@ -259,13 +259,21 @@ async fn wave_create_with_theme_stamps_terminal_fg_bg_args() {
     );
 }
 
-/// Back-compat: wave-create body without `theme` (older clients,
-/// scripted callers, tests) must not stamp the args — the daemon
-/// stays silent on OSC 10/11 and codex falls back to its built-in
-/// default. Regression guard so a future refactor doesn't accidentally
-/// hard-code a theme default for the wave-create path.
+/// Required-field gate (#177 followup): wave-create body without
+/// `theme` must be rejected at the deserialize layer. Previously this
+/// test asserted back-compat — the route silently fell back to "no
+/// theme args, daemon stays silent on OSC 10/11". That fallback was
+/// exactly the bug source: a web client that forgot to include theme
+/// (e.g. `useTodayTerminal.ts:168` before #177's wave-create theme
+/// thread-through) ended up with a mis-tinted composer with no signal
+/// at any layer. Forcing the field at the API boundary means a missing
+/// theme surfaces immediately as a 422 — the bug becomes a compile-
+/// time / first-request failure instead of a visual artifact.
+///
+/// `serde` returns 422 (Unprocessable Entity) on `Json<NewWave>`
+/// deserialize failures when a non-Option field is absent.
 #[tokio::test]
-async fn wave_create_without_theme_omits_terminal_fg_bg_args() {
+async fn wave_create_without_theme_is_rejected() {
     let boot = boot().await;
 
     let (status, _body) = post(
@@ -277,48 +285,9 @@ async fn wave_create_without_theme_omits_terminal_fg_bg_args() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED);
-
-    let argv = wait_for_argv_file(&boot.daemon_data_dir, Duration::from_secs(5)).await;
-    assert!(
-        !argv.iter().any(|a| a == "--terminal-fg"),
-        "no `--terminal-fg` should appear without theme; got: {argv:?}"
-    );
-    assert!(
-        !argv.iter().any(|a| a == "--terminal-bg"),
-        "no `--terminal-bg` should appear without theme; got: {argv:?}"
-    );
-
-    // #177 PR2 — the row's theme columns must remain NULL when the
-    // wave-create body carries no theme. Belt-and-braces: a future
-    // refactor that accidentally hard-codes a default would trip
-    // this regression alongside the argv assertions above.
-    let mut sock_arg: Option<String> = None;
-    let mut it = argv.iter().peekable();
-    while let Some(a) = it.next() {
-        if a == "--sock"
-            && let Some(v) = it.peek()
-        {
-            sock_arg = Some((*v).clone());
-            break;
-        }
-    }
-    let sock = sock_arg.expect("recorder must have seen --sock");
-    let terminal_id = PathBuf::from(&sock)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .map(String::from)
-        .expect("derive terminal id from sock path");
-    let term = boot
-        .repo
-        .terminal_get(&terminal_id)
-        .await
-        .expect("read terminal row")
-        .expect("terminal row must exist");
-    assert!(
-        term.theme_fg.is_none() && term.theme_bg.is_none(),
-        "untheme wave-create must leave theme columns NULL; got fg={:?}, bg={:?}",
-        term.theme_fg,
-        term.theme_bg
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "wave-create without theme must be rejected (422); got status={status}"
     );
 }

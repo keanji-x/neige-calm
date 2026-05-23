@@ -313,14 +313,20 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) 
     (status, json)
 }
 
-/// Create a wave under `cove_id`. Wave-create can carry theme too,
-/// but for these tests we want the codex card's body theme to be
-/// the variable under test — keep wave-create theme-less.
+/// Create a wave under `cove_id`. `theme` is required end-to-end
+/// (#177); the codex card's body theme is the variable under test in
+/// these cases, so pass an inert default sentinel here. The spec card
+/// the wave route auto-mints does spawn with these RGBs, but its
+/// daemon doesn't participate in the OSC roundtrip these cases probe.
 async fn create_wave(app: axum::Router, cove_id: &str) -> String {
     let (status, body) = post(
         app,
         "/api/waves",
-        json!({ "cove_id": cove_id, "title": "osc-e2e" }),
+        json!({
+            "cove_id": cove_id,
+            "title": "osc-e2e",
+            "theme": { "fg": [216, 219, 226], "bg": [15, 20, 24] },
+        }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "wave create body={body}");

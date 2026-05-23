@@ -36,6 +36,22 @@ impl RequestTheme {
         let (r, g, b) = self.bg;
         format!("{r},{g},{b}")
     }
+
+    /// Dark-theme sentinel for non-browser-stamped paths (dispatcher
+    /// workers, direct repo `wave_create` calls in tests) where there
+    /// is no user-visible theme to forward and the code still needs to
+    /// produce *a* concrete `RequestTheme`. Mirrors `DARK_THEME_RGB`
+    /// in `web/src/shared/themeRgb.ts` so dispatcher-spawned codex
+    /// workers paint against the same defaults a dark-mode browser
+    /// would have stamped. Never returned to the user-facing wave-
+    /// create / codex-card routes — those take theme from the request
+    /// body and 422 a missing field.
+    pub fn default_dark() -> Self {
+        Self {
+            fg: (216, 219, 226),
+            bg: (15, 20, 24),
+        }
+    }
 }
 
 #[cfg(test)]

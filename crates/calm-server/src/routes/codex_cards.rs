@@ -81,7 +81,15 @@ pub fn router() -> Router<AppState> {
 /// it will get a 422 — that's the intended fail-loud signal to update
 /// the caller. The interactive `prompt` channel is the one place
 /// callers should be putting text now.
-#[derive(Deserialize, Debug, Default, ToSchema)]
+///
+/// `theme` is required end-to-end (#177): callers MUST send the host
+/// browser's current foreground/background RGB. The kernel stamps it
+/// onto the `calm-session-daemon` argv so codex's OSC 10/11 startup
+/// probe gets matching colors. Forcing it at the type layer means a
+/// caller that forgets — the exact bug that motivated this refactor —
+/// fails at compile time (TS) or at the deserialize step (Rust/JSON,
+/// 422). No `Option`, no `#[serde(default)]`, no implicit fallback.
+#[derive(Deserialize, Debug, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NewCodexCardBody {
     /// Sort order within the wave. `None` defaults to "append to end".
@@ -97,16 +105,12 @@ pub struct NewCodexCardBody {
     /// full mechanism.
     #[serde(default)]
     pub prompt: Option<String>,
-    /// Host browser's current theme RGB (#177). When set, the kernel
+    /// Host browser's current theme RGB (#177). Required — the kernel
     /// stamps `--terminal-fg=r,g,b --terminal-bg=r,g,b` onto the
-    /// `calm-session-daemon` argv so the daemon's `TerminalModel` can
-    /// answer codex's OSC 10/11 startup probe with colors matching the
-    /// host theme — otherwise codex falls back to its built-in default
-    /// and visually clashes with the surrounding card background. When
-    /// missing the kernel passes no extra args and the daemon stays
-    /// silent on OSC queries (pre-#177 behaviour).
-    #[serde(default)]
-    pub theme: Option<RequestTheme>,
+    /// `calm-session-daemon` argv so the daemon's `TerminalModel`
+    /// answers codex's OSC 10/11 startup probe with colors matching
+    /// the host theme. A caller that omits this field gets 422.
+    pub theme: RequestTheme,
 }
 
 #[utoipa::path(
@@ -114,10 +118,11 @@ pub struct NewCodexCardBody {
     path = "/api/waves/{wave_id}/codex-cards",
     tag = "codex",
     params(("wave_id" = String, Path, description = "Wave id to create the codex card under")),
-    request_body(content = NewCodexCardBody, description = "Optional body — empty means use defaults"),
+    request_body(content = NewCodexCardBody, description = "Body required (theme is mandatory; cwd/prompt optional)"),
     responses(
         (status = 201, description = "Card + linked terminal created atomically; codex daemon spawned", body = Card),
         (status = 404, description = "Wave not found", body = ErrorBody),
+        (status = 422, description = "Body missing required fields (e.g. theme)", body = ErrorBody),
         (status = 500, description = "Daemon spawn failed (rows are persisted; sweeper reaps within ~60s)", body = ErrorBody),
     ),
 )]
@@ -125,10 +130,8 @@ pub(crate) async fn create_codex_card(
     State(s): State<AppState>,
     actor: Actor,
     Path(wave_id): Path<String>,
-    body: Option<Json<NewCodexCardBody>>,
+    Json(p): Json<NewCodexCardBody>,
 ) -> Result<(StatusCode, Json<Card>)> {
-    let Json(p) = body.unwrap_or_default();
-
     // 1. Parent wave must exist. Surfaces as 404 *before* we open the
     //    transaction — same shape as the terminal-card route. The
     //    `card_with_codex_create_tx` helper would surface a foreign-key
@@ -160,12 +163,11 @@ pub(crate) async fn create_codex_card(
     let card_id = new_id();
 
     // #177 diagnostic — log the incoming theme at the codex-card entry
-    // so operators grepping docker logs can confirm whether the browser
-    // sent a theme on the user-create-card path (paired with the
-    // matching log in `wave_create` for the spec-card path). A `None`
-    // here pinpoints the bug to the web client; a `Some(..)` that
-    // doesn't reach `spawn_daemon_with_parts` pinpoints it to the
-    // intermediate `SpawnDaemonOpts` derivation below.
+    // so operators grepping docker logs can confirm what the browser
+    // sent (paired with the matching log in `wave_create` for the
+    // spec-card path). `theme` is required end-to-end now: deserialize
+    // already rejected an absent field with 422, so a missing-theme
+    // bug at the web layer surfaces at the request boundary, not here.
     tracing::info!(
         wave_id = %wave_id,
         card_id = %card_id,
@@ -367,13 +369,13 @@ pub(crate) async fn create_codex_card(
     //    pair is still in the DB until the sweeper runs.
     //
     //    #177: stamp the host browser's current theme RGB onto the
-    //    daemon argv when the request carried one. When the body
-    //    doesn't include `theme` (e.g. older clients, scripted callers)
-    //    the daemon stays silent on OSC queries and codex falls back to
-    //    its built-in default.
+    //    daemon argv. `theme` is required at the request boundary, so
+    //    we render the args unconditionally — no `Option`, no implicit
+    //    "stay silent" fallback. Forgetting to send theme is impossible
+    //    by construction (deserialize rejects with 422).
     let opts = SpawnDaemonOpts {
-        terminal_fg: p.theme.map(|t| t.fg_arg()),
-        terminal_bg: p.theme.map(|t| t.bg_arg()),
+        terminal_fg: Some(p.theme.fg_arg()),
+        terminal_bg: Some(p.theme.bg_arg()),
     };
     spawn_daemon_for_with_opts(&s, &term, &command_line, &cwd, &env, opts).await?;
 

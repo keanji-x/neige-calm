@@ -1350,7 +1350,7 @@ mod pump_tests {
                 cove_id: cove.id.clone(),
                 title: "tu".into(),
                 sort: None,
-                theme: None,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
             })
             .await
             .unwrap();
@@ -1477,7 +1477,7 @@ mod cleanup_tests {
                 cove_id: cove.id,
                 title: "w".into(),
                 sort: None,
-                theme: None,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
             })
             .await
             .unwrap();
