@@ -171,9 +171,14 @@ async fn post_api_waves_mints_spec_card_atomically() {
     // produces (commit-then-emit invariant). The daemon spawn will
     // fail (binary doesn't exist) — that errors *after* the events
     // already broadcast, so the test still sees them.
+    // Issue #229 PR B — wave create now emits four envelopes in one
+    // tx: `WaveUpdated`, `CardAdded(spec)`, `CardAdded(report)`,
+    // `OverlaySet(layout)`. Order in the bus matches the order the
+    // closure pushes them. The two CardAdded envelopes are
+    // distinguishable by `card.kind` ("codex" vs "wave-report").
     let subscription = {
         let events = boot.events.clone();
-        tokio::spawn(async move { collect_envelopes(&events, 2).await })
+        tokio::spawn(async move { collect_envelopes(&events, 4).await })
     };
     // Tiny pause so the subscribe-before-emit ordering is reliable.
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -222,10 +227,10 @@ async fn post_api_waves_mints_spec_card_atomically() {
     );
     assert_eq!(envelopes[0].actor, ActorId::User);
 
-    // Second envelope: CardAdded, card-scoped, actor=User.
+    // Second envelope: CardAdded (spec), card-scoped, actor=User.
     assert!(
         matches!(&envelopes[1].event, Event::CardAdded(_)),
-        "second envelope must be CardAdded; got: {:?}",
+        "second envelope must be CardAdded(spec); got: {:?}",
         envelopes[1].event,
     );
     assert!(
@@ -235,11 +240,37 @@ async fn post_api_waves_mints_spec_card_atomically() {
     );
     assert_eq!(envelopes[1].actor, ActorId::User);
 
-    // Extract the spec card id from the second envelope.
+    // Third envelope: CardAdded (wave-report — PR B), card-scoped.
+    assert!(
+        matches!(&envelopes[2].event, Event::CardAdded(_)),
+        "third envelope must be CardAdded(wave-report); got: {:?}",
+        envelopes[2].event,
+    );
     let spec_card_id = match &envelopes[1].event {
-        Event::CardAdded(c) => c.id.clone(),
+        Event::CardAdded(c) => {
+            assert_eq!(c.kind, "codex", "second envelope is the spec card");
+            c.id.clone()
+        }
         _ => unreachable!(),
     };
+    match &envelopes[2].event {
+        Event::CardAdded(c) => {
+            assert_eq!(
+                c.kind, "wave-report",
+                "third envelope is the wave-report card"
+            );
+            assert!(!c.deletable, "wave-report card is kernel-owned");
+        }
+        _ => unreachable!(),
+    }
+
+    // Fourth envelope: OverlaySet(layout) — kernel-seeded layout
+    // overlay positioning the wave-report card at the top of the grid.
+    assert!(
+        matches!(&envelopes[3].event, Event::OverlaySet(_)),
+        "fourth envelope must be OverlaySet(layout); got: {:?}",
+        envelopes[3].event,
+    );
 
     // Cache write-through invariant: CardRole::Spec is visible.
     assert_eq!(
@@ -248,16 +279,23 @@ async fn post_api_waves_mints_spec_card_atomically() {
         "spec card's role must be Spec in the cache",
     );
 
-    // DB invariants: exactly one card under the wave, kind=codex,
-    // backing terminal row exists.
+    // DB invariants: spec + wave-report cards under the wave, kind=codex
+    // for the spec, backing terminal row exists.
     let wave_id = match &envelopes[0].event {
         Event::WaveUpdated(w) => w.id.clone(),
         _ => unreachable!(),
     };
     let cards = boot.repo.cards_by_wave(wave_id.as_str()).await.unwrap();
-    assert_eq!(cards.len(), 1, "exactly one spec card per wave at create");
-    assert_eq!(cards[0].kind, "codex");
-    assert_eq!(cards[0].id, spec_card_id);
+    assert_eq!(cards.len(), 2, "spec + wave-report card per wave at create",);
+    let spec_in_db = cards
+        .iter()
+        .find(|c| c.kind == "codex")
+        .expect("spec card in db");
+    assert_eq!(spec_in_db.id, spec_card_id);
+    assert!(
+        cards.iter().any(|c| c.kind == "wave-report"),
+        "wave-report card in db",
+    );
     let term = boot
         .repo
         .terminal_get_by_card(spec_card_id.as_str())

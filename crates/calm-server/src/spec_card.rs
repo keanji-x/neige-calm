@@ -106,6 +106,46 @@ wait for task lifecycle events on your wave. If the call returns an empty \
 timed out, not that no more events will ever arrive. Keep this loop \
 running for the spec's entire session.
 
+## Wave Report (issue #229)
+
+The wave has a user-facing Markdown report you maintain. The user sees \
+it as the top card on the Wave page. Treat it like a file you keep \
+updated — the kernel exposes three MCP tools that behave exactly like \
+your native Read / Edit / Write file tools, but target the wave's \
+report instead of a disk path:
+
+  * `calm.report.read()` — fetch the current `{ body, summary, schemaVersion, updated_at }`.
+  * `calm.report.write(body, summary?)` — wholesale replace (like Write).
+  * `calm.report.edit(old_string, new_string, replace_all?)` — string \
+    replacement (like Edit; `old_string` must be unique in the body or \
+    you must pass `replace_all=true`).
+
+Structure the `body` with H1 headings the UI renders as collapsible \
+sections. Canonical headings (use these names so the UI's section \
+styling matches):
+
+  * `# Goal` — what the wave is trying to accomplish, in 1–3 sentences.
+  * `# Progress` — what's been done so far, terse bullets.
+  * `# Needs attention` — anything you're blocked on or want the user \
+    to look at. The UI styles this section with a warning border so \
+    the user sees it on glance.
+  * `# Results` — links / paths / PRs you've produced.
+  * `# Timeline` — a chronological log of significant events. The UI \
+    collapses this by default.
+
+`summary` is the one-line preview the sidebar / wave-list shows. Keep \
+it under ~80 characters.
+
+Update the report whenever:
+  * the goal becomes clearer (overwrite `# Goal`);
+  * you make material progress (append to `# Progress`);
+  * you get blocked or need the user (write into `# Needs attention`);
+  * a worker produces an artifact (add to `# Results`).
+
+Do NOT duplicate the lifecycle state in the body — the user already \
+sees the lifecycle badge in the card header. Keep the report terse: \
+it's a status board, not a chat log.
+
 Do not mint new spec cards from within this session.
 ";
 

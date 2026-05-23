@@ -198,12 +198,19 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
     assert_eq!(waves.len(), 1);
     let wave = waves.into_iter().next().unwrap();
     let cards_after_wave = boot.repo.cards_by_wave(wave.id.as_str()).await.unwrap();
+    // Issue #229 PR B — wave create now mints two kernel-owned cards
+    // (spec + wave-report). Find the spec card by kind.
     assert_eq!(
         cards_after_wave.len(),
-        1,
-        "wave create mints exactly one spec card",
+        2,
+        "wave create mints spec + wave-report cards",
     );
-    let spec_card_id = cards_after_wave[0].id.clone();
+    let spec_card_id = cards_after_wave
+        .iter()
+        .find(|c| c.kind == "codex")
+        .expect("spec card present")
+        .id
+        .clone();
     assert_eq!(
         boot.card_role_cache.get(&spec_card_id),
         Some(CardRole::Spec),

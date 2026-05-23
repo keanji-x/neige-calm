@@ -67,6 +67,9 @@ use crate::model::Overlay;
 pub const TERMINAL_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Card.payload` when `kind == "codex"`.
 pub const CODEX_PAYLOAD_SCHEMA_VERSION: u32 = 1;
+/// `schemaVersion` for `Card.payload` when `kind == "wave-report"` (issue
+/// #229 PR B). Mirrors [`crate::wave_report::WaveReportPayload::SCHEMA_VERSION`].
+pub const WAVE_REPORT_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Overlay.payload` when `kind == "status"`.
 pub const OVERLAY_STATUS_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Overlay.payload` when `kind == "progress"`.
@@ -253,6 +256,29 @@ pub fn validate_card_payload(kind: &str, payload: &Value) -> Result<()> {
                 ));
             }
             check_schema_version(kind, payload, CODEX_PAYLOAD_SCHEMA_VERSION)
+        }
+        // Issue #229 PR B — wave-report cards carry a structured payload
+        // (schemaVersion + summary + body). Unlike codex's opaque blob,
+        // we pin the shape because three different callers all write it
+        // (HTTP `create_wave`, migration 0014 backfill, and the
+        // `calm.report.*` MCP tools). Forward-compat: extra fields are
+        // tolerated (serde ignores by default — we don't put
+        // `deny_unknown_fields`); future v2 additions just need a new
+        // optional field with a serde default + a constant bump.
+        "wave-report" => {
+            #[derive(Deserialize)]
+            #[allow(dead_code)]
+            #[serde(rename_all = "camelCase")]
+            struct WaveReportShape {
+                #[serde(default)]
+                schema_version: Option<u32>,
+                summary: String,
+                body: String,
+            }
+            check_schema_version(kind, payload, WAVE_REPORT_PAYLOAD_SCHEMA_VERSION)?;
+            serde_json::from_value::<WaveReportShape>(payload.clone())
+                .map(|_| ())
+                .map_err(|e| CalmError::BadRequest(format!("invalid wave-report payload: {e}")))
         }
         // Plugin-defined kinds are opaque per architectural invariant.
         _ => Ok(()),
@@ -756,6 +782,95 @@ mod tests {
             panic!("expected BadRequest");
         };
         assert!(msg.contains("codex"), "msg = {msg}");
+    }
+
+    // ---------------- Card: wave-report (issue #229 PR B) ----------------
+
+    #[test]
+    fn wave_report_happy() {
+        validate_card_payload(
+            "wave-report",
+            &json!({ "schemaVersion": 1, "summary": "", "body": "# Goal\n" }),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn wave_report_accepts_missing_schema_version() {
+        // Missing schemaVersion is treated as v1 (every kernel-owned
+        // kind today is v1, so absent-as-1 stays unambiguous).
+        validate_card_payload(
+            "wave-report",
+            &json!({ "summary": "hi", "body": "# Done\n" }),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn wave_report_rejects_missing_summary() {
+        let err = validate_card_payload(
+            "wave-report",
+            &json!({ "schemaVersion": 1, "body": "# Goal" }),
+        )
+        .unwrap_err();
+        let CalmError::BadRequest(msg) = err else {
+            panic!("expected BadRequest");
+        };
+        assert!(msg.contains("summary"), "msg = {msg}");
+    }
+
+    #[test]
+    fn wave_report_rejects_missing_body() {
+        let err = validate_card_payload(
+            "wave-report",
+            &json!({ "schemaVersion": 1, "summary": "x" }),
+        )
+        .unwrap_err();
+        let CalmError::BadRequest(msg) = err else {
+            panic!("expected BadRequest");
+        };
+        assert!(msg.contains("body"), "msg = {msg}");
+    }
+
+    #[test]
+    fn wave_report_rejects_wrong_field_type() {
+        let err = validate_card_payload(
+            "wave-report",
+            &json!({ "schemaVersion": 1, "summary": 42, "body": "x" }),
+        )
+        .unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(_)));
+    }
+
+    #[test]
+    fn wave_report_rejects_unknown_schema_version() {
+        let err = validate_card_payload(
+            "wave-report",
+            &json!({ "schemaVersion": 2, "summary": "", "body": "" }),
+        )
+        .unwrap_err();
+        let CalmError::BadRequest(msg) = err else {
+            panic!("expected BadRequest");
+        };
+        assert!(msg.contains("wave-report"), "msg = {msg}");
+        assert!(msg.contains('2'), "msg = {msg}");
+    }
+
+    #[test]
+    fn wave_report_tolerates_unknown_fields() {
+        // Forward-compat: extra fields are passed through (serde
+        // ignores by default). A v2 that adds e.g. `lastWriter` lands
+        // without an old-binary error.
+        validate_card_payload(
+            "wave-report",
+            &json!({
+                "schemaVersion": 1,
+                "summary": "",
+                "body": "x",
+                "futureField": "tolerated"
+            }),
+        )
+        .unwrap();
     }
 
     // ---------------- schemaVersion: overlay validators ----------------

@@ -17,6 +17,8 @@
 export const TERMINAL_PAYLOAD_SCHEMA_VERSION = 1;
 /** `schemaVersion` for `kind: "codex"` card payloads. */
 export const CODEX_PAYLOAD_SCHEMA_VERSION = 1;
+/** `schemaVersion` for `kind: "wave-report"` card payloads (issue #229 PR B). */
+export const WAVE_REPORT_PAYLOAD_SCHEMA_VERSION = 1;
 /** `schemaVersion` for `kind: "status"` overlay payloads. */
 export const OVERLAY_STATUS_SCHEMA_VERSION = 1;
 /** `schemaVersion` for `kind: "progress"` overlay payloads. */

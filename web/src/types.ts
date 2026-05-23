@@ -140,10 +140,30 @@ export interface CodexCardData {
   unsupportedVersion?: number;
 }
 
+/**
+ * Wave report card payload — issue #229.
+ *
+ * Kernel-owned card minted at wave-create time. One per wave. The
+ * payload is a single Markdown body plus a one-line summary; the
+ * frontend derives sections by splitting at H1 (`^# `) headings at
+ * render time. See `web/src/cards/builtins/wave-report.tsx`.
+ */
+export interface WaveReportCardData {
+  type: 'wave-report';
+  id?: string;
+  /** One-line preview used by sidebars / wave list rows. */
+  summary: string;
+  /** Markdown source — rendered as collapsible sections in the card. */
+  body: string;
+  /** See `TerminalCardData.unsupportedVersion`. */
+  unsupportedVersion?: number;
+}
+
 export type WaveCardData =
   | TerminalCardData
   | PluginCardData
-  | CodexCardData;
+  | CodexCardData
+  | WaveReportCardData;
 
 /**
  * A position in a Wave's card grid. Either a parsed UI card (the happy
