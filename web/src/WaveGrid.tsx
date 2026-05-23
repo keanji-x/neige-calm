@@ -8,6 +8,7 @@ import {
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 
+import { CloseIcon } from './shared/components/CloseIcon';
 import { WaveCard } from './shared/components/WaveCard';
 import { sizeFor, type CardSize } from './cards/registry';
 import { UnknownCard, UNKNOWN_CARD_SIZE } from './cards/UnknownCard';
@@ -257,7 +258,7 @@ export function WaveGrid({
                 title="Remove panel"
                 aria-label="Remove panel"
               >
-                ×
+                <CloseIcon />
               </button>
               {slot.kind === 'card' ? (
                 <WaveCard card={slot.card} />

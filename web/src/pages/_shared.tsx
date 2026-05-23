@@ -1,4 +1,5 @@
 import { useState } from '../shared/state';
+import { CloseIcon } from '../shared/components/CloseIcon';
 import { ConfirmDialog } from '../ui/ConfirmDialog/ConfirmDialog';
 
 // ---------------- Header actions: edit + delete ----------------
@@ -112,7 +113,7 @@ export function DeleteButton({
   return (
     <>
       <IconButton
-        glyph="×"
+        glyph={<CloseIcon />}
         label={label}
         tone="danger"
         fontSize={18}

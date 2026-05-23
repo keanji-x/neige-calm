@@ -1,5 +1,6 @@
 import type { Cove, Wave } from '../../types';
 import { CardStatusDot } from './CardStatusDot';
+import { CloseIcon } from './CloseIcon';
 import { ProgressBar } from './ProgressBar';
 import { WaveGlyph } from './WaveGlyph';
 
@@ -116,7 +117,7 @@ export function WaveRow({
           title={`Delete "${wave.title}"`}
           aria-label={`Delete "${wave.title}"`}
         >
-          ×
+          <CloseIcon />
         </button>
       )}
     </div>

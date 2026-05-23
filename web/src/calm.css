@@ -1139,14 +1139,19 @@ input, textarea { font: inherit; color: inherit; }
    both the title's × delete and each wave-row's hover-reveal ×.
 
    `.cove-head` is the title row, laid out as a flex row so the × is
-   centered against the h1's line-box via `align-items: center`, then
-   nudged down 2px to optically correct for the U+00D7 `×` glyph sitting
-   on Plex Sans's math-axis (above em-box center). The default
-   `.h-display { margin: 0 0 var(--space-10) }` is moved onto `.cove-head`
-   itself; otherwise the flex row's height would inflate to (line-height
-   + 24px margin) and `align-items: center` would push the × below the
-   text midline. The 24px breath below the title stays the same — it now
-   lives on the header, matching Settings + Wave pages.
+   centered against the h1's line-box via `align-items: center`. The
+   default `.h-display { margin: 0 0 var(--space-10) }` is moved onto
+   `.cove-head` itself; otherwise the flex row's height would inflate to
+   (line-height + 24px margin) and `align-items: center` would push the
+   × below the text midline. The 24px breath below the title stays the
+   same — it now lives on the header, matching Settings + Wave pages.
+
+   The × glyph itself is rendered by <CloseIcon /> (inline SVG centered
+   on its viewBox geometric center), so flex `align-items: center` lands
+   the visible ink exactly on the row midline with no optical correction
+   needed. Earlier versions of this rule used `transform: translateY(2px)`
+   to nudge the Unicode U+00D7 down off the font's math-axis; that hack
+   was font + size coupled and was removed when CloseIcon landed (#203).
 
    `.new-wave-cta` is a row-style affordance, NOT a dashed-border pill.
    It shares `.wave-row`'s grid (26px glyph + 1fr body) so its "+" lands
@@ -1163,15 +1168,6 @@ input, textarea { font: inherit; color: inherit; }
   margin-left: auto;
   margin-right: var(--space-3);
   opacity: 0;
-  /* Optical correction: U+00D7 `×` is a math symbol positioned on the
-     font's math-axis (~30-40% above em-box center) in Plex Sans. Flex
-     centers the IconButton's em-box, but the visible glyph ink sits
-     above that center — at 18px glyph against 36px h1 line-box, the
-     bias is ~2px. Nudge down so × ink lands on the title's visual
-     midline. Off-scale by design — font-metric corrections don't
-     belong on the spacing scale. */
-  /* stylelint-disable-next-line declaration-property-value-disallowed-list */
-  transform: translateY(2px);
   transition: opacity var(--motion-quick);
 }
 .cove-head:hover .cove-head-delete,
