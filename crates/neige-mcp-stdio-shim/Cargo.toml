@@ -31,3 +31,20 @@ tokio = { version = "1", features = [
     "io-util",
     "net",
 ] }
+
+[dev-dependencies]
+# PR7a.1 (#136 followup) — integration tests under `tests/` spawn the
+# shim binary against a stub UDS server and verify bytes flow in both
+# directions. `process` for `tokio::process::Command`; `time` for the
+# bounded per-test budget.
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "io-std",
+    "io-util",
+    "net",
+    "process",
+    "time",
+    "sync",
+] }
+tempfile = "3"

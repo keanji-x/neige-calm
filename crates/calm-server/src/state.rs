@@ -141,6 +141,9 @@ impl AppState {
             card_role_cache.clone(),
             codex.clone(),
             daemon.clone(),
+            // `from_parts` is the test / replay hatch — no live MCP
+            // server. PR7a.1 (#136 followup) added this slot.
+            None,
             Dispatcher::permits_from_env(8),
         ));
         Self {
@@ -230,6 +233,33 @@ impl AppState {
         let daemon = Arc::new(DaemonClient::new(cfg));
         let codex = Arc::new(CodexClient::new(cfg));
 
+        // PR7a (#136) — boot the kernel-as-MCP-server. Socket lives at
+        // `<data_dir>/mcp/kernel.sock`; `neige-mcp-stdio-shim` is the
+        // bridge binary the codex daemon launches per session. We
+        // build the tool registry now (PR7a registers the three emit
+        // tools; PR7b/PR8 will extend) and let `McpServer::spawn`
+        // own the listener task. Boot failure surfaces as a hard
+        // anyhow error — no MCP server means spec / worker cards
+        // can't emit events, which would silently break the wave
+        // FSM. The operator deserves a clear boot-time failure.
+        //
+        // PR7a.1 (#136 followup) — moved up before `Dispatcher::spawn`
+        // so the dispatcher can take an `Arc<McpServer>` at construction
+        // time and use it for worker codex daemon spawn (mirrors the
+        // spec card path in `routes::waves::create_wave`).
+        let mcp_socket_path = cfg.data_dir_resolved().join("mcp").join("kernel.sock");
+        let mcp_shim_bin = resolve_mcp_stdio_shim_bin();
+        let mcp_registry = crate::mcp_server::build_default_registry();
+        let mcp_server = crate::mcp_server::McpServer::spawn(
+            repo.clone(),
+            events.clone(),
+            card_role_cache.clone(),
+            mcp_socket_path,
+            mcp_shim_bin,
+            mcp_registry,
+        )
+        .await?;
+
         // PR5 (#136) — dispatcher worker. Subscribes to
         // `*.job_requested` envelopes and mints worker-roled cards
         // (Cap: `NEIGE_DISPATCHER_PERMITS` env override, default 8).
@@ -244,6 +274,10 @@ impl AppState {
             card_role_cache.clone(),
             codex.clone(),
             daemon.clone(),
+            // PR7a.1 — hand the MCP server handle to the dispatcher so
+            // worker codex spawns can join the same MCP wire the spec
+            // card uses.
+            Some(mcp_server.clone()),
             crate::dispatcher::Dispatcher::permits_from_env(8),
         ));
 
@@ -261,28 +295,6 @@ impl AppState {
         // inside `autospawn_enabled`; we never let one broken plugin block
         // the rest of the boot path.
         plugin.autospawn_enabled().await;
-
-        // PR7a (#136) — boot the kernel-as-MCP-server. Socket lives at
-        // `<data_dir>/mcp/kernel.sock`; `neige-mcp-stdio-shim` is the
-        // bridge binary the codex daemon launches per session. We
-        // build the tool registry now (PR7a registers the three emit
-        // tools; PR7b/PR8 will extend) and let `McpServer::spawn`
-        // own the listener task. Boot failure surfaces as a hard
-        // anyhow error — no MCP server means spec / worker cards
-        // can't emit events, which would silently break the wave
-        // FSM. The operator deserves a clear boot-time failure.
-        let mcp_socket_path = cfg.data_dir_resolved().join("mcp").join("kernel.sock");
-        let mcp_shim_bin = resolve_mcp_stdio_shim_bin();
-        let mcp_registry = crate::mcp_server::build_default_registry();
-        let mcp_server = crate::mcp_server::McpServer::spawn(
-            repo.clone(),
-            events.clone(),
-            card_role_cache.clone(),
-            mcp_socket_path,
-            mcp_shim_bin,
-            mcp_registry,
-        )
-        .await?;
 
         // Upcast the full `Arc<dyn Repo>` to the narrow `Arc<dyn RouteRepo>`
         // exposed via `AppState::repo`. Stable trait-object upcasting (Rust
