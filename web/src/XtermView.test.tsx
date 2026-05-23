@@ -40,6 +40,18 @@ interface MockTerm {
   open: ReturnType<typeof vi.fn>;
   loadAddon: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
+  /** #177 — xterm.js OSC suppressor surface. The component calls
+   *  `term.parser.registerOscHandler(10|11|12, () => true)` to silence
+   *  xterm.js's built-in OSC color reply so the daemon is the sole
+   *  responder. Mock records the registered handlers so tests can
+   *  inspect them. */
+  parser: {
+    registerOscHandler: ReturnType<typeof vi.fn>;
+  };
+  /** Map from OSC ident → registered handler, populated by the mock's
+   *  `parser.registerOscHandler`. Tests use this to simulate xterm.js
+   *  delivering an OSC sequence and verify the suppressor returns true. */
+  __oscHandlers: Map<number, () => boolean>;
   onData: (cb: (d: string) => void) => { dispose: () => void };
   __dataCb?: (d: string) => void;
 }
@@ -60,6 +72,22 @@ vi.mock('@xterm/xterm', () => {
     open = vi.fn();
     loadAddon = vi.fn();
     dispose = vi.fn();
+    // xterm.js exposes `options` as a mutable bag; the live-theme effect
+    // assigns `term.options.theme = ...` and the real impl picks it up
+    // on the next render cycle. For the mock we just need the slot to
+    // exist so the assignment doesn't throw.
+    options: Record<string, unknown> = {};
+    // #177 — minimal `parser.registerOscHandler` shim. The component
+    // calls this for slots 10/11/12 right after `term.open(container)`
+    // to silence xterm.js's built-in OSC color reply. The mock records
+    // each registered handler in `__oscHandlers` for inspection.
+    __oscHandlers = new Map<number, () => boolean>();
+    parser = {
+      registerOscHandler: vi.fn((ident: number, handler: () => boolean) => {
+        this.__oscHandlers.set(ident, handler);
+        return { dispose: () => this.__oscHandlers.delete(ident) };
+      }),
+    };
     onData(cb: (d: string) => void): { dispose: () => void } {
       // Expose the callback so a test can simulate typing.
       (this as unknown as MockTerm).__dataCb = cb;

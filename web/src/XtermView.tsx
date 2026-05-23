@@ -237,6 +237,19 @@ export function XtermView({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(container);
+    // #177 — suppress xterm.js's built-in OSC 10/11/12 auto-reply.
+    // The daemon is the sole authoritative responder (it knows the
+    // host browser's *real* surface color via `--terminal-fg/-bg`
+    // and the `TerminalThemeUpdate` stream below); xterm.js's local
+    // reply would race a wrong value back (its `clearColor` is the
+    // transparent `#ffffff00` we configure above, which serializes
+    // to `rgb:ffff/ffff/ffff/0000` and codex parses as pure white).
+    // Returning `true` from the OSC handler short-circuits xterm's
+    // default behavior — the bytes are consumed, no reply is sent,
+    // and the daemon's reply is the only thing on the wire.
+    term.parser.registerOscHandler(10, () => true);
+    term.parser.registerOscHandler(11, () => true);
+    term.parser.registerOscHandler(12, () => true);
     // Tab-trap mitigation — issue #236 followup. xterm.js creates a
     // `<textarea class="xterm-helper-textarea" tabindex="0">` inside the
     // container; once focus lands on it, xterm's keydown handler captures
