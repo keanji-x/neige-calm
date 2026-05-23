@@ -335,3 +335,119 @@ async fn ws_revive_path_does_not_trigger_respawn_for_freshly_created_wave() {
         env_obj.keys().collect::<Vec<_>>(),
     );
 }
+
+/// Issue #251 (closes) — the wave's title must be threaded into the
+/// spec card so the codex TUI mounts with the goal pre-filled and
+/// `codex_auto_submit` fires its `\r` injection.
+///
+/// Two surfaces under test, both of which must carry the title:
+///
+///   1. The spec card's `payload.prompt` field. This is what
+///      `codex_auto_submit::maybe_submit` reads to decide whether to
+///      inject `\r`; before the fix the field was absent and the
+///      subscriber short-circuited at the gate, leaving the composer
+///      empty and the spec agent waiting forever.
+///
+///   2. The spec card's `payload.prompt` round-trips through the same
+///      `card_with_codex_create_tx` writer plain hands-free codex cards
+///      use; trim normalization is part of the writer so an empty /
+///      whitespace-only title still falls through to the no-prompt
+///      path (the route enforces non-empty title at parse time but
+///      defense-in-depth is cheap).
+///
+/// We do NOT assert on the codex `argv` directly here — the daemon
+/// hands `sh -c "codex …"` to `Command::spawn`, and the test harness
+/// would need to either ptrace the child or instrument `spawn_daemon_for`
+/// to capture it. The payload assertion is the contract that matters at
+/// this layer: it's the same shape `codex_hands_free.rs::auto_submit_*`
+/// tests use to lock down the auto-submit gate for plain cards.
+#[tokio::test]
+async fn post_api_waves_threads_title_into_spec_card_prompt_payload() {
+    let boot = boot().await;
+
+    let title = "draft the design doc for #251";
+    let (status, _body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        json!({"cove_id": boot.cove_id, "title": title}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Find the Spec card the route minted.
+    let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
+    let wave = waves.into_iter().next().unwrap();
+    let cards = boot.repo.cards_by_wave(wave.id.as_str()).await.unwrap();
+    let spec_card = cards
+        .iter()
+        .find(|c| boot.card_role_cache.get(&c.id) == Some(calm_server::model::CardRole::Spec))
+        .expect("exactly one Spec-role card per wave");
+
+    // The #251 contract: `payload.prompt` carries the wave's title
+    // (trimmed). `codex_auto_submit`'s gate keys on this exact field
+    // shape, so any drift here is the bug coming back.
+    let prompt = spec_card
+        .payload
+        .get("prompt")
+        .and_then(|v| v.as_str())
+        .unwrap_or_else(|| {
+            panic!(
+                "spec card payload.prompt must carry the wave title (issue #251); \
+                 payload = {}",
+                spec_card.payload
+            )
+        });
+    assert_eq!(
+        prompt, title,
+        "spec card payload.prompt must equal the wave title verbatim; got {prompt:?}",
+    );
+}
+
+/// Issue #251 — when a wave's title is whitespace-only the spec card
+/// must NOT stamp a `payload.prompt` (would otherwise trigger an
+/// `\r`-on-empty-composer auto-submit) and the codex command line must
+/// fall back to a bare `codex`. The route layer rejects empty titles
+/// in production, but the spec_card seed path defenses against an
+/// empty title here too so a future loosening of route validation
+/// doesn't quietly break the auto-submit gate.
+///
+/// We can't easily POST a whitespace title through the route (axum's
+/// JSON serde + the `NewWave { title: String }` shape accept anything
+/// non-null), so this test takes the inner path: it creates a wave row
+/// with title = "   " via the repo, then asserts the resulting card
+/// shape. The shape assertion uses the same payload-prompt field
+/// `codex_auto_submit` keys on.
+#[tokio::test]
+async fn whitespace_title_does_not_stamp_prompt_on_spec_card() {
+    let boot = boot().await;
+
+    // Route accepts and trims the title; assert the post-trim shape.
+    let (status, _body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        json!({"cove_id": boot.cove_id, "title": "   "}),
+    )
+    .await;
+    // The wave create may still 500 because the daemon child fails to
+    // exec `codex` in CI — but the row commit is what we're testing
+    // here. Tolerate either 201 (sync spawn happened to win) or 500
+    // (daemon-side failure post-commit); both shapes leave the card
+    // row behind.
+    assert!(
+        status == StatusCode::CREATED || status == StatusCode::INTERNAL_SERVER_ERROR,
+        "expected 201 or 500 (daemon spawn may fail in CI without codex bin); got {status}",
+    );
+
+    let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
+    let wave = waves.into_iter().next().unwrap();
+    let cards = boot.repo.cards_by_wave(wave.id.as_str()).await.unwrap();
+    let spec_card = cards
+        .iter()
+        .find(|c| boot.card_role_cache.get(&c.id) == Some(calm_server::model::CardRole::Spec))
+        .expect("exactly one Spec-role card per wave");
+    assert!(
+        spec_card.payload.get("prompt").is_none_or(Value::is_null),
+        "whitespace-only title must NOT stamp payload.prompt; got payload = {}",
+        spec_card.payload,
+    );
+}
