@@ -397,11 +397,12 @@ pub enum ClientMsg {
         answers: HashMap<String, String>,
     },
     /// Browser-driven mid-session theme toggle (#177). Carries the new
-    /// host theme's foreground + background RGB. The daemon updates its
-    /// `TerminalModel::set_default_colors` AND emits a synthetic OSC 10
-    /// + OSC 11 reply (followed by a focus-in CSI `ESC [ I`) to the PTY
-    /// master so the child (codex / claude-tui / ...) re-queries default
-    /// colors and re-paints its composer at the new theme.
+    /// host theme's foreground + background RGB. The daemon updates
+    /// its `TerminalModel::set_default_colors` AND emits a synthetic
+    /// OSC-10 + OSC-11 reply (followed by a focus-in CSI `ESC [ I`)
+    /// to the PTY master so the child (codex / claude-tui / ...)
+    /// re-queries default colors and re-paints its composer at the
+    /// new theme.
     ///
     /// Owner-only — same gating as [`ClientMsg::Input`] including the
     /// `kernel_originated_input` exception, since the bytes ultimately
@@ -745,8 +746,10 @@ mod framing_tests {
     async fn framing_older_version_yields_unsupported_frame_version() {
         // Bytes pretending to be an older protocol version: same magic,
         // version=FRAME_VERSION-1, valid bincode. Post-#44 (and now #177)
-        // daemons MUST reject this — peers move in lockstep.
-        assert!(FRAME_VERSION >= 1, "FRAME_VERSION sanity");
+        // daemons MUST reject this — peers move in lockstep. Compile-
+        // time guard: `FRAME_VERSION >= 1` so the subtraction below is
+        // well-defined.
+        const _: () = assert!(FRAME_VERSION >= 1, "FRAME_VERSION sanity");
         let payload = encode_payload(&ClientMsg::Kill);
         let older = FRAME_VERSION - 1;
         let wire = build_frame(FRAME_MAGIC, older, &payload);

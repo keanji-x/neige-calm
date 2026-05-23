@@ -229,10 +229,10 @@ mod tests {
         let argv_path = format!("{sock}.argv");
         let start = Instant::now();
         loop {
-            if let Ok(text) = std::fs::read_to_string(&argv_path) {
-                if !text.is_empty() {
-                    return text.lines().map(String::from).collect();
-                }
+            if let Ok(text) = std::fs::read_to_string(&argv_path)
+                && !text.is_empty()
+            {
+                return text.lines().map(String::from).collect();
             }
             if start.elapsed() > Duration::from_secs(3) {
                 panic!("argv file {argv_path:?} never appeared / stayed empty");

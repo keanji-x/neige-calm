@@ -564,29 +564,25 @@ impl<H: TerminalHandler + ?Sized> Perform for VteProcessor<'_, H> {
                     self.handler.set_sgr(&flat);
                 }
             }
-            'n' => {
-                // DSR — Device Status Report. `CSI 6 n` asks for the
-                // cursor position; reply with `ESC [ row;col R`
-                // (1-indexed). Other DSR params (5 = "status",
-                // 25 = "DECSRC", ...) are ignored. Guard on empty
-                // intermediates so we don't mishandle DEC-private
-                // DSR variants like `CSI ? 6 n`.
-                if intermediates.is_empty() && Self::first_param_or(params, 0) == 6 {
-                    self.handler.device_status_report_cursor();
-                }
+            // DSR — Device Status Report. `CSI 6 n` asks for the
+            // cursor position; reply with `ESC [ row;col R`
+            // (1-indexed). Other DSR params (5 = "status",
+            // 25 = "DECSRC", ...) are ignored. Guard on empty
+            // intermediates so we don't mishandle DEC-private
+            // DSR variants like `CSI ? 6 n`.
+            'n' if intermediates.is_empty() && Self::first_param_or(params, 0) == 6 => {
+                self.handler.device_status_report_cursor();
             }
-            'c' => {
-                // DA1 — Primary Device Attributes. `CSI c` (or
-                // `CSI 0 c`) asks "what kind of terminal are you?".
-                // DA2 (`CSI > c`) and DA3 (`CSI = c`) carry the same
-                // final byte but live behind their own intermediates
-                // — gate on empty intermediates so we only answer DA1.
-                if intermediates.is_empty() {
-                    let p = Self::first_param_or(params, 0);
-                    if p == 0 {
-                        self.handler.device_attributes_primary();
-                    }
-                }
+            // DA1 — Primary Device Attributes. `CSI c` (or
+            // `CSI 0 c`) asks "what kind of terminal are you?".
+            // DA2 (`CSI > c`) and DA3 (`CSI = c`) carry the same
+            // final byte but live behind their own intermediates
+            // — gate on empty intermediates so we only answer DA1.
+            // Param defaults to 0 when omitted (per VT100 spec) so
+            // both `CSI c` and `CSI 0 c` route here; non-zero params
+            // fall through to the noop arm.
+            'c' if intermediates.is_empty() && Self::first_param_or(params, 0) == 0 => {
+                self.handler.device_attributes_primary();
             }
             // Unknown CSI: noop. NEVER panic — the protocol allows the
             // child to emit anything (mouse, bracketed paste, ...).
