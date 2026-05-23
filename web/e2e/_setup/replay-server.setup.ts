@@ -26,23 +26,26 @@
 // `node_modules/.cache/` (git-ignored, wiped by `npm ci`) so a stray
 // orphan after a hard crash is recoverable.
 
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
   openSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { delimiter, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test as base } from '@playwright/test';
 import {
+  CODEX_BIN_FILE,
+  CODEX_MISSING_SENTINEL,
   DEFAULT_FIXTURE,
   PID_FILE,
   READY_BANNER,
   READY_TIMEOUT_MS,
   REPLAY_PORT,
   REPO_ROOT,
+  resolveCodexBin,
 } from './replay-server.shared';
 
 // On-disk log target for the replay binary's stderr. Routing stderr
@@ -68,6 +71,43 @@ test('setup', async () => {
     );
   }
 
+  // ----- Pre-build the daemon + codex bridge binaries ----------------------
+  // #177 regression spec (`a11y-177-theme-toggle-no-remount.spec.ts`)
+  // depends on the `replay` binary spawning a real `calm-session-daemon`
+  // PTY when the kernel mints a wave's spec card. The daemon path
+  // resolver in `crates/calm-server/src/state.rs::resolve_session_daemon_bin`
+  // looks for the binary as a sibling of the running exe; the
+  // `cargo run --bin replay` invocation below puts `replay` into
+  // `target/debug/`, so we MUST have `calm-session-daemon` (and
+  // `neige-codex-bridge`, which codex calls via its hooks.json) built
+  // into the same directory beforehand. Otherwise the daemon-spawn step
+  // fails with `No such file or directory`, no PTY traffic flows, no
+  // RenderPatch events reach the browser, and the spec sees a
+  // "wave creates but XtermView never receives bytes" surface that does
+  // NOT reproduce the user's prod bug. `cargo build -p <pkg>` is
+  // idempotent + cached; on a warm tree it's a sub-second no-op.
+  mkdirSync(REPLAY_LOG_DIR, { recursive: true });
+  buildBinIfMissing('calm-session', 'calm-session-daemon');
+  buildBinIfMissing('calm-codex-bridge', 'neige-codex-bridge');
+
+  // ----- Resolve a usable codex CLI ---------------------------------------
+  // Production-shape factor #4 from `a11y-177-theme-toggle-no-remount.spec.ts`'s
+  // "candidates the test stack omits" docblock: codex's PTY traffic
+  // driving RenderPatch events. We try to put a real codex on PATH for
+  // the cargo-spawned replay binary, and we record the resolution
+  // outcome to `CODEX_BIN_FILE` so the spec can self-skip with a clear
+  // message when codex isn't installed locally. The probe lives in
+  // `replay-server.shared.ts::resolveCodexBin` — it covers env override,
+  // pinned nvm paths, common user-bin locations, and a login-shell
+  // `command -v` fallback. See that function's docblock for ordering.
+  const codexBin = resolveCodexBin();
+  mkdirSync(dirname(CODEX_BIN_FILE), { recursive: true });
+  writeFileSync(CODEX_BIN_FILE, codexBin ?? CODEX_MISSING_SENTINEL, 'utf8');
+  // eslint-disable-next-line no-console
+  console.log(
+    `[replay-server] codex resolution → ${codexBin ?? '(not found; #177 spec will skip)'}`,
+  );
+
   const args = [
     'run',
     '--quiet',
@@ -81,13 +121,38 @@ test('setup', async () => {
     String(REPLAY_PORT),
   ];
 
+  // Augment PATH for the spawned cargo child so the codex binary's
+  // directory is searchable even when this Playwright worker was
+  // launched from a context with a stripped PATH (the common case on
+  // macOS GUI sessions). The kernel spawns codex via `/bin/sh -c
+  // "codex"` (see `crates/calm-server/src/routes/codex_cards.rs`), so
+  // it's the cargo child's PATH that matters — not this Node
+  // process's. Prepending (not appending) ensures the resolved codex
+  // wins over any older system one. When codex wasn't found, we don't
+  // mutate PATH at all; the cargo child boots, the kernel still
+  // attempts to spawn codex, the daemon-spawn fails the same way it
+  // would in any codex-less env, and the spec's `test.skip` gate
+  // catches the gap before the assertion runs.
+  const childEnv = { ...process.env };
+  if (codexBin) {
+    const codexDir = dirname(codexBin);
+    childEnv.PATH = `${codexDir}${delimiter}${process.env.PATH ?? ''}`;
+    // Also export `CALM_CODEX_BIN` as a belt-and-suspenders measure
+    // for code paths that prefer the explicit env override (see
+    // `crates/calm-server/src/config.rs`). The replay binary itself
+    // uses `CodexClient::new_stub()` which hardcodes `"codex"`, so
+    // PATH augmentation is the load-bearing knob — this is just
+    // future-proofing if the replay stack moves to `CodexClient::new`.
+    childEnv.CALM_CODEX_BIN = codexBin;
+  }
+
   // Open the stderr log target as an append fd before spawning. The
   // kernel holds this fd open for the cargo grandchild even after
   // the Playwright setup worker exits — no pipe → no SIGPIPE
   // pathway when the replay binary's first `tracing::info!` writes
   // through `tracing-subscriber`. See debug PR #191 for the
-  // root-cause investigation.
-  mkdirSync(REPLAY_LOG_DIR, { recursive: true });
+  // root-cause investigation. (`REPLAY_LOG_DIR` was already created
+  // above as part of the `buildBinIfMissing` preamble.)
   const stderrFd = openSync(REPLAY_LOG_PATH, 'a');
 
   // detached:true puts the child in its own process group so teardown
@@ -101,9 +166,15 @@ test('setup', async () => {
   // pipe — that was the SIGPIPE-kill pathway diagnosed in debug PR
   // #191. The fd in the parent is dropped on worker exit; the child
   // inherits its own copy and keeps writing to the file.
+  //
+  // env: `childEnv` (built above) prepends the resolved codex
+  // directory to PATH so the kernel's `/bin/sh -c "codex"` spawn
+  // finds it, and sets `CALM_CODEX_BIN` as a redundant override.
+  // When codex wasn't located on this machine `childEnv` is a plain
+  // `process.env` copy — no behavioral change vs the pre-#177 setup.
   const child = spawn('cargo', args, {
     cwd: REPO_ROOT,
-    env: process.env,
+    env: childEnv,
     stdio: ['ignore', 'pipe', stderrFd],
     detached: true,
   });
@@ -173,4 +244,56 @@ function waitForBanner(child: ChildProcess): Promise<void> {
     });
     child.once('error', (err) => settle(err));
   });
+}
+
+/**
+ * Synchronously build a workspace binary into `target/debug/` if it
+ * isn't already there. Used to ensure `calm-session-daemon` and
+ * `neige-codex-bridge` are siblings of the `cargo run --bin replay`
+ * exe before the replay binary boots — the kernel's daemon-spawn
+ * helper resolves the binary as a sibling of `current_exe()` (see
+ * `crates/calm-server/src/state.rs::resolve_session_daemon_bin`), and
+ * if it's missing, every wave-create / spec-card / interactive-codex
+ * REST endpoint fails with `spawn calm-session-daemon: No such file or
+ * directory`. The #177 regression spec needs the daemon to actually
+ * spawn so codex's PTY traffic produces RenderPatch events in the
+ * browser; without that, the test reproduces a stub-codex env that
+ * doesn't carry the production factor the user-reported bug needs.
+ *
+ * `cargo build` is idempotent + content-hashed — on a warm tree this
+ * is a sub-second no-op. We only re-build when the binary is genuinely
+ * missing (the fast `existsSync` gate) so an in-place dev iteration
+ * (`cargo run` against a hot binary) isn't slowed down by a redundant
+ * build invocation here.
+ *
+ * Throws if cargo exits non-zero so a broken build fails the suite
+ * loudly rather than silently leaving the daemon missing and reading
+ * as "test stack doesn't repro #177".
+ */
+function buildBinIfMissing(pkg: string, binName: string): void {
+  const target = resolve(REPO_ROOT, 'target', 'debug', binName);
+  if (existsSync(target)) return;
+
+  // eslint-disable-next-line no-console
+  console.log(`[replay-server] building ${binName} (one-time, sibling-of-replay requirement)…`);
+  const result = spawnSync(
+    'cargo',
+    ['build', '--quiet', '-p', pkg, '--bin', binName],
+    {
+      cwd: REPO_ROOT,
+      env: process.env,
+      stdio: ['ignore', 'inherit', 'inherit'],
+    },
+  );
+  if (result.status !== 0) {
+    throw new Error(
+      `replay-setup: cargo build -p ${pkg} --bin ${binName} exited with ` +
+        `status=${result.status ?? 'null'} signal=${result.signal ?? 'null'}`,
+    );
+  }
+  if (!existsSync(target)) {
+    throw new Error(
+      `replay-setup: cargo build reported success but ${target} is still missing`,
+    );
+  }
 }

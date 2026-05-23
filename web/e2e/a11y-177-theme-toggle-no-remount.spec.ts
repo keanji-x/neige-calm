@@ -30,6 +30,32 @@
 // detail fetch on the wire). Playwright + real Chromium is our last lever
 // before stapling instrumentation directly into prod.
 //
+// Real-codex requirement (this revision)
+// --------------------------------------
+// An earlier shape of this spec used `CodexClient::new_stub()` as
+// supplied by `replay::boot_in_memory` and simply asserted on mount
+// counts. That env carried "the wave-create path schedules a spec
+// card" but its daemon spawn failed with
+//   `spawn calm-session-daemon: No such file or directory (os error 2)`
+// — no PTY traffic, no RenderPatch events, no codex-driven re-render
+// of the spec card. One of the candidate prod factors the docblock
+// already flags is "real PTY traffic from a codex / claude-tui daemon
+// driving render patches that interact with the theme-effect's
+// `prevThemeRef`". Without it, this test reproduces a CodexClient-less
+// stub world — not the user's prod reality. So this revision:
+//
+//   1. The `replay-setup` project pre-builds `calm-session-daemon` +
+//      `neige-codex-bridge` into `target/debug/` (the daemon resolver
+//      reads them as siblings of the running `replay` exe).
+//   2. The `replay-setup` project probes for a usable `codex` CLI via
+//      `resolveCodexBin` and prepends its directory to the PATH passed
+//      to the cargo child. The resolution outcome is recorded to
+//      `CODEX_BIN_FILE` so this spec can detect a codex-less machine.
+//   3. THIS spec reads `CODEX_BIN_FILE` synchronously at module load
+//      and `test.skip`s itself if codex isn't installed. Local-only
+//      tests get a clear "codex CLI not installed" message; CI without
+//      codex remains green.
+//
 // Test plumbing
 // -------------
 //  * `?testMounts=1` URL flag unlocks two production-side hooks:
@@ -54,10 +80,11 @@
 //     the user's prod-only remount. Hand-off to the fix PR with this
 //     spec as the regression anchor.
 //   * Test PASSES (mountsAfter === mountsBefore) → Playwright + the
-//     replay binary + Vite-dev together do NOT reproduce. That's
-//     useful data: it means the bug-triggering factor is something
-//     the test stack omits. Candidates (none are present in the a11y
-//     project):
+//     replay binary + Vite-dev + real codex CLI together do NOT
+//     reproduce. That's useful data: it means the bug-triggering
+//     factor is something the test stack still omits. Remaining
+//     candidates (none are present in the a11y project even with
+//     real codex):
 //       - the production webpack bundle (no strict-mode double-invoke,
 //         no React DEV warnings, different lazy-chunk preloader);
 //       - the persist-query-client's IDB store hydrating an actual
@@ -65,21 +92,38 @@
 //         binary boots cold every test);
 //       - the docker stack's nginx + cookies + dev_autologin combination
 //         producing a different SessionProvider re-render cadence;
-//       - real PTY traffic from a codex / claude-tui daemon driving
-//         render patches that interact with the theme-effect's
-//         `prevThemeRef`.
+//       - the production xterm dimensions / font-loading timing that
+//         differs between Vite-dev's "no font preload" and Nginx's
+//         hashed-asset cache headers.
 //     This spec stays valuable in both shapes: it pins the contract
 //     "an app theme toggle MUST NOT remount any visible XtermView",
 //     so any future regression that re-introduces a remount in *any*
 //     env trips this assertion.
 //
-// As of the commit that introduced this spec, the current env shape
-// is GREEN — the Playwright a11y stack does not reproduce. The test
-// remains in the suite as a regression anchor; pair it with the
-// production-bundle reproduction work tracked in #177.
+//   * Test SKIPPED ("codex CLI not installed") → setup-time `which
+//     codex` came up empty AND the pinned `~/.nvm/...` candidate
+//     wasn't there either. Install codex (`npm i -g @openai/codex`)
+//     or point `CALM_CODEX_BIN` at the binary to opt in. CI that
+//     doesn't install codex stays green here — the spec doesn't
+//     guard against a regression we can't observe without the
+//     dependency.
 
+import { readFileSync } from 'node:fs';
 import { test, expect } from '@playwright/test';
 import { createUserCove, createWaveInCove, resetReplayServer } from './helpers/reset';
+import { CODEX_BIN_FILE, CODEX_MISSING_SENTINEL } from './_setup/replay-server.shared';
+
+// Synchronous module-load probe so `test.skip(...)` can run at the
+// right time (before the `beforeEach` / test body). The marker file is
+// written by `replay-server.setup.ts` as part of the `replay-setup`
+// dependency project; by the time this spec module evaluates it MUST
+// exist (Playwright wouldn't have reached the a11y project otherwise).
+// We tolerate a missing file as "skip" rather than throw — running
+// this spec file standalone (without the setup project) shouldn't
+// crash; it should just self-skip with a useful message.
+const codexResolution = readCodexResolution();
+const codexAvailable =
+  codexResolution !== null && codexResolution !== CODEX_MISSING_SENTINEL;
 
 test.beforeEach(async ({ request }) => {
   // Hermetic per-test state — every test starts from the fixture's seed
@@ -92,11 +136,23 @@ test.beforeEach(async ({ request }) => {
 // budget is just barely enough on a warm machine and routinely blows on
 // the cold initial boot of this suite. The actual *work* of the spec is
 // cheap (two REST creates, two navigations, one button click, one JS
-// `evaluate`, one settle wait); 90s gives the first run room to compile
-// without masking real regressions.
-test.setTimeout(90_000);
+// `evaluate`, one settle wait); 120s gives the first run room to compile
+// AND for codex's first-paint to land — codex boots a real Node/Rust
+// process and its first OSC + render-patch cycle is ~1-2s on a warm box.
+test.setTimeout(120_000);
 
 test('#177 XtermView does not remount on app theme toggle', async ({ page }) => {
+  // Hard gate — without a usable codex binary the wave-create spec
+  // card spawns a daemon that can't exec its argv, no PTY traffic,
+  // no production-shape repro. Skip with a clear message; do NOT
+  // proceed to assert on a degraded env (false negatives would hide
+  // future regressions when codex is reinstated).
+  test.skip(
+    !codexAvailable,
+    `codex CLI not installed (looked at CALM_CODEX_BIN, ~/.nvm/versions/node/*/bin/codex, ~/.local/bin/codex, login-shell PATH). ` +
+      `Install codex or set CALM_CODEX_BIN to opt in. Resolution marker: ${codexResolution ?? '<missing>'}.`,
+  );
+
   // Step 1 — boot with the `?testMounts=1` instrumentation flag.
   // This installs `window.__xtermMounts__` (mount counter) and
   // `window.__calmSetTheme(mode)` (theme driver) inside the running app.
@@ -149,7 +205,33 @@ test('#177 XtermView does not remount on app theme toggle', async ({ page }) => 
     { timeout: 15_000 },
   );
 
-  // Let the strict-mode double-invoke settle. After both passes the
+  // Step 4b — wait for ACTUAL PTY traffic to land. The whole point of
+  // the real-codex requirement is that codex's render patches reach
+  // XtermView and drive the same xterm.js render path that exists in
+  // prod. We poll the `.xterm-rows` container for non-empty text
+  // content; xterm.js renders one `<div>` per visible terminal row
+  // and only writes the row spans once a screen update arrives. Empty
+  // rows = WS connected but no daemon output yet (= we'd toggle theme
+  // against a static null screen, which is the very degenerate state
+  // the unit tests already covered without seeing the bug).
+  //
+  // 30s is generous: codex on a warm box first-paints within ~1-2s
+  // (the startup banner + `> ` prompt are usually the first OSC +
+  // RenderPatch pair). 30s covers cold-boot CI runners where codex's
+  // first parse of `~/.codex/` config dominates.
+  await page.waitForFunction(
+    () => {
+      const rows = document.querySelector('.xterm-rows');
+      if (!rows) return false;
+      const text = (rows as HTMLElement).innerText ?? '';
+      return text.trim().length > 0;
+    },
+    null,
+    { timeout: 30_000 },
+  );
+
+  // Let the strict-mode double-invoke settle + give codex's
+  // post-first-paint cycle a moment to quiesce. After both passes the
   // counter sits at N (one live mount per XtermView on the page); we
   // snapshot it here as the baseline. 500ms is enough on real Chromium
   // — the post-stabilization read below is the actual gate, this is
@@ -221,4 +303,22 @@ test('#177 XtermView does not remount on app theme toggle', async ({ page }) => 
 // keeps the spec body readable.
 function request_(page: import('@playwright/test').Page) {
   return page.request;
+}
+
+// Helper: synchronous read of the codex-resolution marker file written
+// by `_setup/replay-server.setup.ts`. Returns the marker string on
+// success, or `null` if the file isn't there (running this spec file
+// standalone, ahead of the setup project, or after a manual cache
+// wipe). The caller treats `null` and the missing-sentinel identically
+// — `test.skip` either way — so the only thing we lose by tolerating a
+// missing file is an ability to distinguish "setup hasn't run" from
+// "setup ran and codex was absent". For the spec's purpose that
+// distinction doesn't matter; the message we emit covers both.
+function readCodexResolution(): string | null {
+  try {
+    const raw = readFileSync(CODEX_BIN_FILE, 'utf8').trim();
+    return raw.length === 0 ? null : raw;
+  } catch {
+    return null;
+  }
 }
