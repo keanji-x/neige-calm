@@ -153,20 +153,43 @@ struct Cli {
 }
 
 /// Events fanned out in chat mode. Each `Event` here is one already-
-/// serialized `NeigeEvent` JSON line.
+/// serialized `NeigeEvent` JSON line tagged with a monotonic `seq` so
+/// just-attached subscribers can filter out frames they already
+/// received via `HelloChat.replay` (issue #244).
 #[derive(Clone, Debug)]
 enum ChatEvt {
-    Event(String),
+    Event { seq: u64, json: String },
     Exit(Option<i32>),
 }
 
 /// Same chunk-granular eviction strategy as the terminal-mode [`ByteRing`]
-/// (in `calm_session::terminal_session`), but each chunk is
-/// one serialized NeigeEvent JSON line. Used in chat mode.
+/// (in `calm_session::terminal_session`), but each chunk is one
+/// serialized NeigeEvent JSON line. Used in chat mode.
+///
+/// Each event carries a monotonic `seq` allocated on `append`. Snapshots
+/// return both the payload and the highest seq stored at snapshot time,
+/// so a just-attached subscriber can tell its broadcast receiver to skip
+/// any frame whose seq is `<=` that watermark (issue #244 dedup).
 struct EventBuffer {
-    events: VecDeque<String>,
+    events: VecDeque<(u64, String)>,
     total_bytes: usize,
     max_bytes: usize,
+    /// Monotonic counter handing out the next `seq` on `append`. Starts at
+    /// 1 so a snapshot watermark of 0 unambiguously means "nothing in the
+    /// replay yet, accept every live frame".
+    next_seq: u64,
+}
+
+/// A snapshot of the chat-mode replay buffer plus the dedup watermark.
+///
+/// `last_seq` is the highest `seq` included in `events`, or `0` if the
+/// buffer was empty when the snapshot was taken. A client's broadcast
+/// receiver MUST skip any incoming `ChatEvt::Event { seq, .. }` with
+/// `seq <= last_seq` — those frames are already in `events` and would
+/// otherwise be delivered twice.
+struct BufferSnapshot {
+    events: Vec<String>,
+    last_seq: u64,
 }
 
 impl EventBuffer {
@@ -175,20 +198,31 @@ impl EventBuffer {
             events: VecDeque::new(),
             total_bytes: 0,
             max_bytes,
+            next_seq: 1,
         }
     }
 
-    fn append(&mut self, json: String) {
+    /// Append `json` to the ring and return the `seq` assigned to it.
+    /// The caller MUST forward `(seq, json)` to the broadcast channel
+    /// while still holding (or at least having held, atomically with)
+    /// this append — otherwise a concurrent snapshot could read a
+    /// `last_seq` that exceeds anything yet seen on the broadcast.
+    fn append(&mut self, json: String) -> u64 {
+        let seq = self.next_seq;
+        self.next_seq += 1;
         self.total_bytes += json.len();
-        self.events.push_back(json);
+        self.events.push_back((seq, json));
         while self.total_bytes > self.max_bytes && self.events.len() > 1 {
-            let dropped = self.events.pop_front().unwrap();
+            let (_, dropped) = self.events.pop_front().unwrap();
             self.total_bytes -= dropped.len();
         }
+        seq
     }
 
-    fn snapshot(&self) -> Vec<String> {
-        self.events.iter().cloned().collect()
+    fn snapshot(&self) -> BufferSnapshot {
+        let last_seq = self.events.back().map(|(s, _)| *s).unwrap_or(0);
+        let events = self.events.iter().map(|(_, j)| j.clone()).collect();
+        BufferSnapshot { events, last_seq }
     }
 }
 
@@ -653,10 +687,23 @@ fn spawn_chat_stdout_reader(
                     if line.trim().is_empty() {
                         continue;
                     }
-                    if let Ok(mut b) = buffer.lock() {
-                        b.append(line.clone());
-                    }
-                    let _ = event_tx.send(ChatEvt::Event(line));
+                    // Allocate the seq, append to replay, AND send onto the
+                    // broadcast channel — in that order — so a snapshot
+                    // taken on another task can never observe a `last_seq`
+                    // greater than what the broadcast has actually
+                    // delivered. The downstream dedup invariant is "frame
+                    // S included in snapshot → all `seq <= S` frames are
+                    // dupes from the new subscriber's perspective", which
+                    // requires snapshot's last_seq to never exceed the
+                    // broadcast's emitted-seq watermark.
+                    let seq = match buffer.lock() {
+                        Ok(mut b) => b.append(line.clone()),
+                        Err(_) => {
+                            tracing::warn!("chat event buffer poisoned; dropping line");
+                            continue;
+                        }
+                    };
+                    let _ = event_tx.send(ChatEvt::Event { seq, json: line });
                 }
                 Ok(None) => break, // EOF
                 Err(e) => {
@@ -1229,7 +1276,16 @@ async fn handle_chat_client(
         other => anyhow::bail!("expected ClientHello as first message, got {other:?}"),
     }
 
-    let replay = {
+    // Snapshot the replay buffer together with its dedup watermark.
+    // Any broadcast frame whose `seq` is `<= last_replay_seq` is already
+    // in `replay` and must be filtered out of the live fan-out, otherwise
+    // a frame appended-and-broadcast between this subscriber's
+    // `event_tx.subscribe()` and the snapshot below would be delivered
+    // twice (once via HelloChat, once via the broadcast). See issue #244.
+    let BufferSnapshot {
+        events: replay,
+        last_seq: last_replay_seq,
+    } = {
         let b = buffer.lock().unwrap();
         b.snapshot()
     };
@@ -1238,7 +1294,13 @@ async fn handle_chat_client(
     let down_task = tokio::spawn(async move {
         loop {
             match event_rx.recv().await {
-                Ok(ChatEvt::Event(json)) => {
+                Ok(ChatEvt::Event { seq, json }) => {
+                    // Skip frames already delivered to this subscriber
+                    // via the HelloChat replay snapshot — dedup gate
+                    // closing the broadcast-vs-replay race (issue #244).
+                    if seq <= last_replay_seq {
+                        continue;
+                    }
                     if write_frame(&mut wr, &DaemonMsg::ChatEvent { json })
                         .await
                         .is_err()
