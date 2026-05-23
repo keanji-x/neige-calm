@@ -178,6 +178,149 @@ describe('EventStream cursor', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Issue #198, concern 2: future-protocol eventVersion gate.
+//
+// A frame stamped with `eventVersion > syncEventVersion` (the value the
+// server declared on `/api/version`) is from a protocol the running
+// frontend wasn't compiled for. The stream must DROP such a frame WITHOUT
+// advancing the replay cursor — otherwise reconnecting under the same
+// cursor would skip the frame forever, and a later, compatible frontend
+// (e.g. after a hard refresh that loads a new bundle) would never see it.
+//
+// Contrast with the "malformed payload" path (zod parse failure for an
+// in-range eventVersion): there we DO advance the cursor, because the
+// frame's shape is wrong for *us* but its protocol version is one we
+// claimed to understand.
+// ---------------------------------------------------------------------------
+
+describe('EventStream future-protocol eventVersion gate (issue #198)', () => {
+  it('does not advance cursor on a frame whose eventVersion exceeds server-declared max', async () => {
+    // Drain any pending `requestIdleCallback` fallbacks from prior tests
+    // before snapshotting localStorage — otherwise a queued setTimeout from
+    // a sibling test that advanced the cursor can fire mid-await and pollute
+    // our null-assertion below. (Each test cleans up with `localStorage.
+    // clear()` in beforeEach, but the queued flush runs after that.)
+    await new Promise((r) => setTimeout(r, 0));
+    localStorage.clear();
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const s = new EventStream('ws://test/api/events');
+      // Server says: "I emit eventVersion up to 1."
+      s.setSyncEventVersion(1);
+      s.subscribe(['*']);
+      s.start();
+      const ws = currentWs();
+      ws.open();
+
+      // A frame stamped with eventVersion=99 — from-the-future.
+      ws.push({
+        _id: 42,
+        eventVersion: 99,
+        ev: 'cove.deleted',
+        data: { id: 'c-future' },
+      });
+
+      // Cursor MUST NOT advance.
+      expect(s.cursor).toBeNull();
+      // And localStorage should NOT have been written.
+      await new Promise((r) => setTimeout(r, 0));
+      expect(localStorage.getItem('calm:sync:cursor')).toBeNull();
+      // We logged the drop so an operator can see it.
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('still advances cursor on an in-range frame even if the payload is malformed', async () => {
+    // Distinguishes from-the-future drops from "payload shape wrong for us"
+    // drops. The latter should advance the cursor — otherwise a single bad
+    // frame would pin the cursor and trigger an endless re-replay.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const s = new EventStream('ws://test/api/events');
+      s.setSyncEventVersion(1);
+      s.subscribe(['*']);
+      s.start();
+      const ws = currentWs();
+      ws.open();
+
+      // eventVersion=1 is in-range; the zod schema rejects on `ev: 'mystery'`.
+      ws.push({
+        _id: 5,
+        eventVersion: 1,
+        ev: 'mystery.thing',
+        data: { foo: 'bar' },
+      });
+
+      // Cursor DID advance — this is not a future-protocol frame, so we
+      // accept the server's "you saw this row" claim.
+      expect(s.cursor).toBe(5);
+      await new Promise((r) => setTimeout(r, 0));
+      expect(localStorage.getItem('calm:sync:cursor')).toBe('5');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('without setSyncEventVersion (bootstrap window) does not gate', () => {
+    // Defensive path: if `setSyncEventVersion` was never called (the
+    // EventBridge sets it before subscribe, but a test or pre-mount path
+    // might not), the stream tolerates any eventVersion. This keeps
+    // legacy / synthetic frames working.
+    const s = new EventStream('ws://test/api/events');
+    s.subscribe(['*']);
+    s.start();
+    const ws = currentWs();
+    ws.open();
+
+    ws.push({
+      _id: 17,
+      eventVersion: 99,
+      ev: 'cove.deleted',
+      data: { id: 'c-x' },
+    });
+    expect(s.cursor).toBe(17);
+  });
+
+  it('frames with equal eventVersion are accepted (boundary)', () => {
+    const s = new EventStream('ws://test/api/events');
+    s.setSyncEventVersion(2);
+    s.subscribe(['*']);
+    s.start();
+    const ws = currentWs();
+    ws.open();
+
+    ws.push({
+      _id: 3,
+      eventVersion: 2,
+      ev: 'cove.deleted',
+      data: { id: 'c-z' },
+    });
+    expect(s.cursor).toBe(3);
+  });
+
+  it('exposes serverSyncEventVersion via the read-only getter', () => {
+    const s = new EventStream('ws://test/api/events');
+    expect(s.serverSyncEventVersion).toBeNull();
+    s.setSyncEventVersion(5);
+    expect(s.serverSyncEventVersion).toBe(5);
+    // Idempotent / safe with same value.
+    s.setSyncEventVersion(5);
+    expect(s.serverSyncEventVersion).toBe(5);
+    // Non-numeric / negative is ignored.
+    s.setSyncEventVersion(-1);
+    expect(s.serverSyncEventVersion).toBe(5);
+    s.setSyncEventVersion(Number.NaN);
+    expect(s.serverSyncEventVersion).toBe(5);
+    // null clears.
+    s.setSyncEventVersion(null);
+    expect(s.serverSyncEventVersion).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Reconnect → send `{sub, since}`
 // ---------------------------------------------------------------------------
 

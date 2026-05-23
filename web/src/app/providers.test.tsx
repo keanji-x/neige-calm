@@ -17,6 +17,19 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+
+// Issue #198 concern 1: mock EventBridge BEFORE importing providers so we
+// can assert that ServerCompatGate only mounts the bridge once compat is
+// confirmed. The bridge's real implementation opens a WebSocket on
+// `useEffect`; a probe component lets us verify mount/unmount cleanly.
+const eventBridgeMountSpy = vi.fn();
+vi.mock('./eventBridge', () => ({
+  EventBridge: (props: { syncEventVersion: number }) => {
+    eventBridgeMountSpy(props);
+    return <div data-testid="event-bridge-mock" data-version={props.syncEventVersion} />;
+  },
+}));
+
 import {
   DB_INSTANCE_ID_STORAGE_KEY,
   RefreshRequiredOverlay,
@@ -91,6 +104,7 @@ function renderWithClient(ui: React.ReactNode) {
 
 beforeEach(() => {
   cleanup();
+  eventBridgeMountSpy.mockClear();
   // Ensure cross-test isolation for the DB-instance check.
   try {
     localStorage.removeItem(DB_INSTANCE_ID_STORAGE_KEY);
@@ -336,5 +350,93 @@ describe('ServerCompatGate — dbInstanceId cache bust', () => {
     // Children are NOT rendered during the in-flight reload — we paint
     // null so the user doesn't see an empty-cache flash.
     expect(screen.queryByTestId('app')).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #198, concern 1: EventBridge gating.
+//
+// The bridge opens `/api/events` on mount, so an incompatible-frontend
+// scenario MUST NOT mount it — otherwise an old bundle would still talk
+// to a kernel it can't parse. We assert:
+//   1. Incompatible server (minWebCompatVersion > WEB_COMPAT_VERSION):
+//      modal renders, bridge does NOT mount.
+//   2. Compatible server: bridge mounts with the server-declared
+//      `syncEventVersion`.
+//   3. Version query in flight (`q.data` is undefined): bridge stays
+//      unmounted so no WS attempt happens before the gate verdict.
+// ---------------------------------------------------------------------------
+
+describe('ServerCompatGate — EventBridge gating (issue #198 concern 1)', () => {
+  it('does NOT mount EventBridge when the frontend is below the server minimum', async () => {
+    mockFetchVersion(
+      makeServerInfo({ minWebCompatVersion: WEB_COMPAT_VERSION + 1 }),
+    );
+
+    renderWithClient(
+      <ServerCompatGate>
+        <div data-testid="app">app body</div>
+      </ServerCompatGate>,
+    );
+
+    // Wait for the version query to resolve and the modal to paint.
+    await waitFor(() => {
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+    });
+    // Bridge must NOT mount — that's the load-bearing assertion.
+    expect(eventBridgeMountSpy).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('event-bridge-mock')).not.toBeInTheDocument();
+    // App body is hidden behind the modal.
+    expect(screen.queryByTestId('app')).not.toBeInTheDocument();
+  });
+
+  it('mounts EventBridge with syncEventVersion when the server is compatible', async () => {
+    mockFetchVersion(
+      makeServerInfo({
+        minWebCompatVersion: WEB_COMPAT_VERSION,
+        syncEventVersion: 3,
+      }),
+    );
+
+    renderWithClient(
+      <ServerCompatGate>
+        <div data-testid="app">app body</div>
+      </ServerCompatGate>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('event-bridge-mock')).toBeInTheDocument();
+    });
+    // The bridge received the server-declared eventVersion ceiling.
+    expect(screen.getByTestId('event-bridge-mock')).toHaveAttribute(
+      'data-version',
+      '3',
+    );
+    expect(eventBridgeMountSpy).toHaveBeenCalledWith({ syncEventVersion: 3 });
+    // And the app body renders alongside it.
+    expect(screen.getByTestId('app')).toBeInTheDocument();
+  });
+
+  it('keeps EventBridge unmounted while the version query is still in flight', () => {
+    // `fetch` never resolves in this test — simulates the cold-start window
+    // between mount and first /api/version response. The bridge must NOT
+    // mount in this state, even though the gate optimistically renders
+    // children so cached routes can paint from the persisted cache.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => new Promise(() => {})),
+    );
+
+    renderWithClient(
+      <ServerCompatGate>
+        <div data-testid="app">app body</div>
+      </ServerCompatGate>,
+    );
+
+    // Synchronously: children render (so persisted-cache paint isn't
+    // blocked on the version query), but the bridge stays unmounted.
+    expect(screen.getByTestId('app')).toBeInTheDocument();
+    expect(screen.queryByTestId('event-bridge-mock')).not.toBeInTheDocument();
+    expect(eventBridgeMountSpy).not.toHaveBeenCalled();
   });
 });

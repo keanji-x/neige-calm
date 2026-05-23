@@ -43,8 +43,17 @@ use axum::{Json, Router, extract::State, routing::get};
 use serde::Serialize;
 use utoipa::ToSchema;
 
-/// REST contract version. Bumped by hand when the wire shape changes in a
-/// way the web client needs to gate on; independent of `CARGO_PKG_VERSION`.
+/// REST contract version. Surfaced as `apiVersion` on `/api/version`.
+///
+/// **Diagnostic-only** — frontends MUST NOT gate behavior on this string.
+/// The load-bearing frontend↔backend compatibility checks live on:
+///   * `minWebCompatVersion` for the web bundle as a whole (whole-page
+///     hard-block via `ServerCompatGate`), and
+///   * `syncEventVersion` for individual `/api/events` frames (per-frame
+///     drop without advancing the replay cursor).
+///
+/// See issue #198 concern 3 and `docs/upgrade-stability.md`. Operators
+/// reading dashboards / logs are the intended audience for this field.
 pub const API_VERSION: &str = "1";
 
 /// Frontend ↔ backend compatibility version surfaced as `minWebCompatVersion`
@@ -74,6 +83,10 @@ pub fn router() -> Router<AppState> {
 #[serde(rename_all = "camelCase")]
 pub struct VersionInfo {
     pub kernel_version: String,
+    /// REST contract version. Diagnostic-only on the wire — the frontend
+    /// gates compatibility on `min_web_compat_version` (whole bundle) and
+    /// `sync_event_version` (per-event-frame). See `API_VERSION` for the
+    /// rationale. (Issue #198, concern 3.)
     pub api_version: String,
     pub sync_event_version: u32,
     pub mcp_protocol_version: String,
