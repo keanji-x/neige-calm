@@ -25,26 +25,13 @@ export type WaveLifecycle =
   | 'failed';
 
 /**
- * Wave status — kernel itself stores no status; plugins write it via overlays.
- * - `idle`    : no plugin has set status (the default). Visually calm.
- * - `waiting` : an overlay explicitly says the wave is waiting on the user.
- *               Only this surfaces in the sidebar's "Waiting on you" group.
- * - `running` : an overlay explicitly says work is in flight (renders the
- *               progress bar + pulse).
- *
- * This 3-state vocabulary stays the canonical Wave summary that the legacy
- * grouping (Sidebar / Today / Cove filters) reads. The per-card FSM
- * (`web/src/cards/builtins/codex.tsx`) writes 6-state values via the
- * `card_fsm` task — they're projected down to this enum in `adaptWave`. The
- * full FSM name and counts ride along on `Wave.fsmState` / `Wave.counts`
- * for the new dot + badge UI that wants the richer surface.
- */
-export type WaveStatus = 'idle' | 'running' | 'waiting';
-
-/**
- * 6-state per-card / per-wave FSM (see `crates/calm-server/src/card_fsm.rs`).
- * Wire names are PascalCase — kept identical between Rust and TS so a state
+ * 6-state per-card FSM (see `crates/calm-server/src/card_fsm.rs`). Wire
+ * names are PascalCase — kept identical between Rust and TS so a state
  * string round-trips through overlays unchanged.
+ *
+ * Wave-level state is owned by `WaveLifecycle` (above); per-card status
+ * dots on the codex card head still consume this enum directly via
+ * `web/src/cards/builtins/codex.tsx`.
  */
 export type FsmState =
   | 'Starting'
@@ -53,13 +40,6 @@ export type FsmState =
   | 'AwaitingInput'
   | 'Errored'
   | 'Done';
-
-/** Wave-level FSM payload `counts` block (only present on wave overlays). */
-export interface FsmCounts {
-  working: number;
-  awaiting: number;
-  errored: number;
-}
 
 export interface Cove {
   id: string;
@@ -106,8 +86,8 @@ export interface TerminalCardData {
 /**
  * Plugin-provided iframe card. The kernel card kind is the canonical MCP Apps
  * resource URI `ui://<plugin_id>/<view_id>`. The legacy Neige-dialect form
- * `plugin:<plugin_id>:<view_id>` was deleted in M4 — the only consumer
- * (hello-world) is rewritten in M6.
+ * `plugin:<plugin_id>:<view_id>` was deleted in M4; the hello-world demo
+ * (its last consumer) was deleted alongside the WaveLifecycle unification.
  *
  * `plugin_id` and `view_id` are not stored on the card; derive them lazily at
  * use sites via `parsePluginCardKind(resource_uri)` from `cards/plugin-iframe`.
@@ -201,24 +181,16 @@ export interface Wave {
   id: string;
   coveId: string;
   title: string;
-  status: WaveStatus;
   /**
    * Issue #145 — explicit lifecycle stamped by the kernel. Required: every
    * kernel-shaped wave carries one (defaulted to `'draft'` server-side).
-   * The Wave header + sidebar row render a badge from this; nothing else
-   * in the codebase should derive it (it is _not_ a projection of
-   * card-FSM state — the Spec Agent writes it explicitly).
+   * This is the single source of truth for wave-level state — Sidebar's
+   * "Waiting on you", Today's running/waiting counters, Cove's bucket
+   * sort, and the row/header status pill all derive from it via
+   * `shared/lifecycle.ts`. The Spec Agent writes it explicitly; nothing
+   * else in the codebase should re-derive it.
    */
   lifecycle: WaveLifecycle;
-  /**
-   * Richer FSM state for the new per-card-FSM-driven dot/badge UI. Optional
-   * because legacy plugin overlays still use the 3-state `status` field, and
-   * cards that aren't tracked by the kernel FSM (terminal, plugin — phase 2)
-   * leave this unset.
-   */
-  fsmState?: FsmState;
-  /** Per-state card counts inside this wave (only set when fsmState is set). */
-  counts?: FsmCounts;
   progress: number;
   eta: string;
   now: string;

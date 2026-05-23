@@ -1,5 +1,5 @@
 import type { Cove, Wave } from '../../types';
-import { CardStatusDot } from './CardStatusDot';
+import { isRunning } from '../lifecycle';
 import { CloseIcon } from './CloseIcon';
 import { ProgressBar } from './ProgressBar';
 import { WaveGlyph } from './WaveGlyph';
@@ -29,7 +29,8 @@ export function WaveRow({
   const showCoveTag = showCove && !!cove;
   const showNow = !!wave.now;
   const showEta = !!wave.eta;
-  const showProgress = wave.status === 'running' && wave.progress > 0;
+  const running = isRunning(wave.lifecycle);
+  const showProgress = running && wave.progress > 0;
 
   // The row is a real <button> so Enter/Space activation and focus
   // semantics come for free. The hover-reveal × delete is a SIBLING
@@ -53,30 +54,9 @@ export function WaveRow({
         onClick={onClick}
         disabled={!onClick}
       >
-        {wave.fsmState ? (
-          // Per-card FSM is driving this wave — render the 6-state dot inside
-          // the same glyph slot so wave row spacing stays identical.
-          <span className="glyph">
-            <CardStatusDot state={wave.fsmState} />
-          </span>
-        ) : (
-          <WaveGlyph status={wave.status} />
-        )}
+        <WaveGlyph lifecycle={wave.lifecycle} />
         <div className="body">
-          <div className="t">
-            {wave.title}
-            {/* Working-card count badge: only when more than one card is
-                actively working, since "Working (1)" reads as noise. */}
-            {wave.counts && wave.counts.working > 1 && (
-              <span
-                className="num"
-                style={{ marginLeft: 6, opacity: 0.65, fontSize: '0.85em' }}
-                title={`${wave.counts.working} cards working`}
-              >
-                ({wave.counts.working})
-              </span>
-            )}
-          </div>
+          <div className="t">{wave.title}</div>
           {(showCoveTag || showNow) && (
             <div className="s">
               {showCoveTag && (
@@ -109,9 +89,7 @@ export function WaveRow({
               minWidth: 110,
             }}
           >
-            {showProgress && (
-              <ProgressBar value={wave.progress} status="running" />
-            )}
+            {showProgress && <ProgressBar value={wave.progress} running />}
             {showEta && <span className="when">{wave.eta}</span>}
           </div>
         )}

@@ -1,16 +1,18 @@
-import type { WaveStatus } from '../../types';
-
 // ---------------- ProgressBar ----------------
+//
+// `running=true` adds the live-pulse class so the bar gets the accent
+// shimmer. Callers compute the boolean via `isRunning(wave.lifecycle)`
+// from `shared/lifecycle.ts`.
 
 export function ProgressBar({
   value,
-  status,
+  running,
 }: {
   value: number;
-  status?: WaveStatus;
+  running?: boolean;
 }) {
   return (
-    <div className={'fill ' + (status === 'running' ? 'running' : '')}>
+    <div className={'fill ' + (running ? 'running' : '')}>
       <div className="v" style={{ width: value * 100 + '%' }} />
     </div>
   );

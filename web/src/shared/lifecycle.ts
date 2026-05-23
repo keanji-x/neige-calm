@@ -1,0 +1,24 @@
+// Wave lifecycle helpers — single source of truth for "what bucket does
+// this wave belong to right now?". Used by Sidebar's "Waiting on you"
+// section, Today's running/waiting counters, Cove's bucket sort, and the
+// row/glyph/progress-bar treatment on WaveRow / WaveGlyph.
+//
+// The vocabulary mirrors the Rust `WaveLifecycle` enum
+// (`crates/calm-server/src/model.rs`). Two derived predicates capture
+// the two grouping concerns we surface today:
+//
+//   * `isWaitingForUser` — the wave needs human attention (blocked,
+//     reviewing, failed). These bubble to the top of the sidebar list.
+//   * `isRunning`        — the wave has work in flight (planning,
+//     dispatching, working). Rendered with a live pulse + progress bar.
+//
+// `done` / `draft` / `canceled` fall through both checks; the UI treats
+// them as quiet structural rows.
+
+import type { WaveLifecycle } from '../types';
+
+export const isWaitingForUser = (l: WaveLifecycle): boolean =>
+  l === 'blocked' || l === 'reviewing' || l === 'failed';
+
+export const isRunning = (l: WaveLifecycle): boolean =>
+  l === 'planning' || l === 'dispatching' || l === 'working';

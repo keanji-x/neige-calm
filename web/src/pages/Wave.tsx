@@ -3,11 +3,10 @@ import { useState } from '../shared/state';
 import { Icon } from '../Icon';
 import { AddPanel, type AddPanelKind } from '../shared/components/AddPanel';
 import type { AddPanelMenuItem } from '../shared/components/AddPanel';
-import type { Cove, FsmState, Route, Wave, WaveCardSlot } from '../types';
+import type { Cove, Route, Wave, WaveCardSlot } from '../types';
 import { Dialog } from '../ui/Dialog/Dialog';
 import { SchemaForm } from '../shared/components/SchemaForm';
 import { DirectoryBrowser } from '../shared/components/DirectoryPicker';
-import { CardStatusDot } from '../shared/components/CardStatusDot';
 import { WaveLifecycleBadge } from '../shared/components/WaveLifecycleBadge';
 import { WaveContext } from '../shared/components/WaveContext';
 import { DeleteButton } from './_shared';
@@ -45,25 +44,6 @@ const VIEW_MODE_DEFAULT: ViewModeOverlay = { mode: 'grid' };
  *  string drifting in from a future server schema. */
 function isViewMode(s: unknown): s is ViewMode {
   return s === 'grid' || s === 'list';
-}
-
-/** Short verb for each FSM state — used by the wave-header status pill. */
-function fsmVerb(s: FsmState): string {
-  switch (s) {
-    case 'Starting':
-      return 'Starting';
-    case 'Working':
-      return 'Working';
-    case 'AwaitingInput':
-      return 'Waiting on you';
-    case 'Errored':
-      return 'Errored';
-    case 'Done':
-      return 'Done';
-    case 'Idle':
-    default:
-      return 'Idle';
-  }
 }
 
 // ============================================================
@@ -173,8 +153,6 @@ export function WavePage({
     setEditingTitle(false);
   };
 
-  // Show eta pill only when there's text to show.
-  const showEtaPill = !!wave.eta;
   const showPct = wave.progress > 0 && wave.progress < 1.0;
 
   // Per-wave view-mode preference. Defaults to grid (no breaking change
@@ -310,42 +288,14 @@ export function WavePage({
           <AddPanel onSelect={beginAdd} />
           {/* Issue #145 — Wave lifecycle badge. The kernel always stamps a
               lifecycle on every wave (defaults to 'draft' on create); this
-              renders the current state as a small uppercase pill. The
-              card-FSM dot/verb below is orthogonal — that's the
-              card-aggregate execution view, this is the wave-level
-              contract state the Spec Agent drives explicitly. */}
+              renders the current state as a small uppercase pill. After
+              the WaveLifecycle unification (drop WaveStatus) this is the
+              sole status-pill on the wave header — the legacy secondary
+              status pill, plus the card-aggregate FSM dot/verb, used to
+              re-derive the same signal and have been folded back into the
+              lifecycle. The eta string survives in `wave.eta` and is
+              rendered separately when set. */}
           <WaveLifecycleBadge lifecycle={wave.lifecycle} />
-          {/* 6-state FSM dot + verb. Rendered whenever the kernel `card_fsm`
-              has assigned a state to this wave (only happens when at least
-              one tracked card — today: codex — exists in the wave). Falls
-              through to the legacy 3-state status pill when no FSM state is
-              present (older overlays, terminal-only waves). */}
-          {wave.fsmState ? (
-            <span className="status-pill" title={fsmVerb(wave.fsmState)}>
-              <CardStatusDot state={wave.fsmState} />
-              <span style={{ marginLeft: 6 }}>
-                {fsmVerb(wave.fsmState)}
-                {wave.counts && wave.counts.working > 1
-                  ? ` (${wave.counts.working})`
-                  : ''}
-              </span>
-            </span>
-          ) : (
-            <>
-              {wave.status === 'running' && (
-                <span className="status-pill running">
-                  <span className="status-pill-dot live-dot" />
-                  {wave.eta || 'running'}
-                </span>
-              )}
-              {wave.status === 'waiting' && showEtaPill && (
-                <span className="status-pill waiting">
-                  <span className="status-pill-dot warn" />
-                  {wave.eta}
-                </span>
-              )}
-            </>
-          )}
           {showPct && <span className="wave-percent num">{pct}%</span>}
           {onDeleteWave && (
             <DeleteButton

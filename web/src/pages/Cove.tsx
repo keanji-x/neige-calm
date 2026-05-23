@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef } from 'react';
 import { useState } from '../shared/state';
 import { WaveRow } from '../shared/components/WaveRow';
+import { isRunning, isWaitingForUser } from '../shared/lifecycle';
 import type { Cove, Route, Wave } from '../types';
 import { ConfirmDialog } from '../ui/ConfirmDialog/ConfirmDialog';
 import { DeleteButton } from './_shared';
@@ -68,17 +69,20 @@ export function CovePage({
   };
 
   // Single sorted list: waiting first (needs the user), then running
-  // (in-flight work), then idle (the default). Within each bucket we
-  // keep the caller's order — the parent already orders waves the way
-  // the user expects (by recency / sort field). A stable bucket sort
-  // expresses status without forking the layout into separate sections.
+  // (in-flight work), then other (draft/done/canceled — the quiet
+  // default). Within each bucket we keep the caller's order — the
+  // parent already orders waves the way the user expects (by recency /
+  // sort field). A stable bucket sort expresses status without forking
+  // the layout into separate sections. Bucket rank is derived from the
+  // wave's `WaveLifecycle` (the single source of truth for wave-level
+  // state — see `shared/lifecycle.ts`).
   const sortedWaves = useMemo(() => {
-    const rank: Record<Wave['status'], number> = {
-      waiting: 0,
-      running: 1,
-      idle: 2,
+    const rankOf = (w: Wave): number => {
+      if (isWaitingForUser(w.lifecycle)) return 0;
+      if (isRunning(w.lifecycle)) return 1;
+      return 2;
     };
-    return [...waves].sort((a, b) => rank[a.status] - rank[b.status]);
+    return [...waves].sort((a, b) => rankOf(a) - rankOf(b));
   }, [waves]);
 
   return (
