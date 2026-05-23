@@ -16,7 +16,7 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, cove_create_tx};
 use calm_server::db::write_with_event_typed;
 use calm_server::event::{Event, EventBus, EventScope};
-use calm_server::ids::{ActorId, CardId};
+use calm_server::ids::{ActorId, CardId, WaveId};
 use calm_server::model::{CardRole, NewCove};
 use calm_server::replay::spawn_session_recorder;
 use serde_json::{Value, json};
@@ -92,7 +92,11 @@ async fn recorder_captures_real_actor_per_envelope() {
     // PR3 (#136) — pre-seed the role cache with the card the
     // `AiCodex(...)` actor below references, so `enforce_role`'s
     // unknown-card guard doesn't refuse the write.
-    cache.insert(CardId::from("card-7"), CardRole::Plain);
+    cache.insert(
+        CardId::from("card-7"),
+        CardRole::Plain,
+        WaveId::from("wave-7"),
+    );
 
     // Three writes with three distinct actors that match the design doc's
     // grammar — exactly the shape RECORD_SESSION needs to preserve for
@@ -162,7 +166,11 @@ async fn envelope_carries_actor_alongside_event() {
     // Unit-level pin: the bus envelope itself carries `actor` so any
     // future subscriber (not just the recorder) can read it directly.
     let (repo, bus, cache, _tmp) = boot().await;
-    cache.insert(CardId::from("card-1"), CardRole::Plain);
+    cache.insert(
+        CardId::from("card-1"),
+        CardRole::Plain,
+        WaveId::from("wave-1"),
+    );
     let mut sub = bus.subscribe();
     let event_id = create_cove_as(
         &*repo,

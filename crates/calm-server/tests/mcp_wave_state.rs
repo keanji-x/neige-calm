@@ -102,8 +102,8 @@ async fn boot() -> Boot {
     // touch the role column (it lands at `Plain`); the tx-suffixed
     // mint helpers do the cache write-through. For this test, we mock
     // the post-mint state.
-    card_role_cache.insert(spec_card.id.clone(), CardRole::Spec);
-    card_role_cache.insert(worker_card.id.clone(), CardRole::Worker);
+    card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
+    card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, wave.id.clone());
 
     // Bypass the persisted-role update — `enforce_role` only reads
     // the cache, so a cache-only pin is sufficient to drive the gate.
