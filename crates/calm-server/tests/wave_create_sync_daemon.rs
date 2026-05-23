@@ -189,13 +189,27 @@ async fn post_api_waves_spec_terminal_has_daemon_handle_before_response() {
         "wave create returns 201 when daemon spawn succeeds synchronously; body={body}",
     );
 
-    // Drill down to the spec card the route minted.
+    // Drill down to the spec card the route minted. Filter by the
+    // role cache rather than asserting on `cards.len()` — main may
+    // co-mint kernel-owned cards alongside the spec card (issue #229
+    // PR B's wave-report card on every wave create is the first such
+    // sibling; future system-owned cards are likely). The #236
+    // contract is specifically about the SPEC card's terminal row, so
+    // pick the spec card by role and ignore the rest of the cohort.
     let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
     assert_eq!(waves.len(), 1);
     let wave = waves.into_iter().next().unwrap();
     let cards = boot.repo.cards_by_wave(wave.id.as_str()).await.unwrap();
-    assert_eq!(cards.len(), 1, "exactly one spec card per wave at create");
-    let spec_card_id = cards[0].id.clone();
+    let spec_cards: Vec<_> = cards
+        .iter()
+        .filter(|c| boot.card_role_cache.get(&c.id) == Some(calm_server::model::CardRole::Spec))
+        .collect();
+    assert_eq!(
+        spec_cards.len(),
+        1,
+        "exactly one Spec-role card per wave at create (cohort = {cards:?})",
+    );
+    let spec_card_id = spec_cards[0].id.clone();
 
     // Sanity: the role cache shows Spec (pre-existing PR6 invariant,
     // assertion left here so a future regression flips both signals
@@ -273,7 +287,14 @@ async fn ws_revive_path_does_not_trigger_respawn_for_freshly_created_wave() {
     let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
     let wave = waves.into_iter().next().unwrap();
     let cards = boot.repo.cards_by_wave(wave.id.as_str()).await.unwrap();
-    let spec_card_id = cards[0].id.clone();
+    // Filter by Spec role — see the first test for the rationale. Main
+    // may co-mint kernel-owned sibling cards (e.g. wave-report) that
+    // share the wave but don't carry the spec card's terminal row.
+    let spec_card_id = cards
+        .iter()
+        .find(|c| boot.card_role_cache.get(&c.id) == Some(calm_server::model::CardRole::Spec))
+        .map(|c| c.id.clone())
+        .expect("at least one Spec-role card per wave");
     let term = boot
         .repo
         .terminal_get_by_card(spec_card_id.as_str())

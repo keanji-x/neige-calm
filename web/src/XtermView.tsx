@@ -540,7 +540,33 @@ export function XtermView({
 
   return (
     <div className="xterm-view">
-      <div ref={containerRef} className="xterm-container" />
+      {/* The xterm container is the canvas-style render surface xterm.js
+       *  paints into — `.xterm-rows` / `.xterm-fg-*` spans the library
+       *  emits per-cell are presentational decoration, not navigable
+       *  text. Marking the wrapper `aria-hidden` (with `role=presentation`
+       *  for older AT) excludes the entire xterm DOM subtree from axe
+       *  scans and screen-reader content trees. The interactive surface
+       *  (typing, paste, accessibility tree) is the `xterm-helper-textarea`
+       *  xterm.js mounts inside the container — that node carries its
+       *  own ARIA wiring and bypasses `aria-hidden` because it's the
+       *  focusable input. Issue #236 followup: PR #239's sync-spawn
+       *  makes the daemon's bold-green `runner@runner` shell prompt
+       *  visible the moment the wave-list snapshot is taken, which
+       *  triggered a `.xterm-fg-10.xterm-bold` color-contrast 2.81:1
+       *  violation. Bumping xterm's palette to clear 4.5:1 would break
+       *  parity with the user's terminal expectations (and would still
+       *  flag the next palette index that happens to be brighter); the
+       *  semantically-correct path is to scope axe (and AT) to the real
+       *  text content, which lives outside the canvas render. The a11y
+       *  contract (`docs/a11y-contract.md` §2.4) already documents
+       *  "xterm.js owns keys once the body is interacted with" — this
+       *  just makes the AT side of that contract explicit. */}
+      <div
+        ref={containerRef}
+        className="xterm-container"
+        aria-hidden="true"
+        role="presentation"
+      />
       {status === 'connecting' && (
         <div className="xterm-status">connecting…</div>
       )}
