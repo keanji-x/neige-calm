@@ -1,7 +1,7 @@
 //! Integration tests for the cove ↔ folder mapping surface introduced
 //! in issue #250 PR 1.
 //!
-//! Coverage matrix (13 cases, matching the PR scope):
+//! Coverage matrix (16 cases, matching the PR scope):
 //!
 //!   1. `post_then_get_returns_the_folder`
 //!   2. `post_same_path_twice_409_equal`
@@ -16,6 +16,9 @@
 //!  11. `resolve_miss_returns_200_null`
 //!  12. `resolve_non_absolute_path_400`
 //!  13. `cascade_delete_cove_drops_its_folders`
+//!  14. `post_to_unknown_cove_returns_404`
+//!  15. `get_returns_only_own_cove_folders`
+//!  16. `delete_with_mismatched_cove_id_returns_404`
 //!
 //! No daemon binary is required — cove_folders is pure CRUD against
 //! the sqlite repo, no card / terminal side-effects.
@@ -371,7 +374,7 @@ async fn cascade_delete_cove_drops_its_folders() {
 
     // Drop the cove via the REST surface (the route handler does the
     // terminal-reap + cove_delete dance; cove_folders rows ride the
-    // FK cascade declared in migration 0014).
+    // FK cascade declared in migration 0015).
     let status = delete(b.app.clone(), &format!("/api/coves/{}", b.cove_id)).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
@@ -381,4 +384,114 @@ async fn cascade_delete_cove_drops_its_folders() {
         0,
         "cove_folders rows should cascade away with their cove"
     );
+}
+
+// (14) --------------------------------------------------------------
+
+#[tokio::test]
+async fn post_to_unknown_cove_returns_404() {
+    let b = boot().await;
+    // The cove_id in the path is a well-formed UUID that simply has
+    // no row in `coves`. The repo layer surfaces this as NotFound
+    // (see sqlite::cove_folder_create) instead of leaking the raw FK
+    // error to the REST caller.
+    let bogus = "00000000-0000-0000-0000-000000000000";
+    let (status, _) = post(
+        b.app.clone(),
+        &format!("/api/coves/{bogus}/folders"),
+        json!({"path": "/x"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// (15) --------------------------------------------------------------
+
+#[tokio::test]
+async fn get_returns_only_own_cove_folders() {
+    let b = boot().await;
+    // Boot already created cove A (`b.cove_id`); add a second cove B
+    // alongside it and claim a non-overlapping path under each.
+    let cove_b = b
+        .repo
+        .cove_create(NewCove {
+            name: "folders-test-b".into(),
+            color: "#111".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let cove_b_id = cove_b.id.to_string();
+
+    let (sa, _) = post(
+        b.app.clone(),
+        &format!("/api/coves/{}/folders", b.cove_id),
+        json!({"path": "/path-a"}),
+    )
+    .await;
+    assert_eq!(sa, StatusCode::CREATED);
+    let (sb, _) = post(
+        b.app.clone(),
+        &format!("/api/coves/{cove_b_id}/folders"),
+        json!({"path": "/path-b"}),
+    )
+    .await;
+    assert_eq!(sb, StatusCode::CREATED);
+
+    let (status, list_a) = get(b.app.clone(), &format!("/api/coves/{}/folders", b.cove_id)).await;
+    assert_eq!(status, StatusCode::OK);
+    let arr_a = list_a.as_array().unwrap();
+    assert_eq!(arr_a.len(), 1);
+    assert_eq!(arr_a[0]["path"].as_str().unwrap(), "/path-a");
+    assert_eq!(arr_a[0]["cove_id"].as_str().unwrap(), b.cove_id);
+
+    let (status, list_b) = get(b.app.clone(), &format!("/api/coves/{cove_b_id}/folders")).await;
+    assert_eq!(status, StatusCode::OK);
+    let arr_b = list_b.as_array().unwrap();
+    assert_eq!(arr_b.len(), 1);
+    assert_eq!(arr_b[0]["path"].as_str().unwrap(), "/path-b");
+    assert_eq!(arr_b[0]["cove_id"].as_str().unwrap(), cove_b_id);
+}
+
+// (16) --------------------------------------------------------------
+
+#[tokio::test]
+async fn delete_with_mismatched_cove_id_returns_404() {
+    let b = boot().await;
+    // Cove A is `b.cove_id`; add a second cove B to mismatch against.
+    let cove_b = b
+        .repo
+        .cove_create(NewCove {
+            name: "folders-test-b".into(),
+            color: "#222".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let cove_b_id = cove_b.id.to_string();
+
+    // Claim a folder under cove A.
+    let (_, body) = post(
+        b.app.clone(),
+        &format!("/api/coves/{}/folders", b.cove_id),
+        json!({"path": "/owned-by-a"}),
+    )
+    .await;
+    let folder_id = body["id"].as_i64().unwrap();
+
+    // Deleting via cove B's URL must not succeed — the route checks
+    // the folder's cove_id matches the path segment and surfaces a
+    // mismatch as NotFound (intentionally not 403, see route doc).
+    let status = delete(
+        b.app.clone(),
+        &format!("/api/coves/{cove_b_id}/folders/{folder_id}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // The folder still exists under cove A.
+    let (_, list) = get(b.app.clone(), &format!("/api/coves/{}/folders", b.cove_id)).await;
+    let arr = list.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["id"].as_i64().unwrap(), folder_id);
 }
