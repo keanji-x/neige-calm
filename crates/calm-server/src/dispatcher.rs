@@ -666,6 +666,13 @@ impl Inner {
                         CardRole::Worker,
                         true,
                         &cache_for_tx,
+                        // #177 — dispatcher workers have no host-browser
+                        // theme to forward (kernel-internal spawn). Use
+                        // the dark sentinel so the row still satisfies
+                        // theme_fg/_bg NOT NULL and the daemon argv
+                        // matches what a dark-mode browser would have
+                        // stamped on a hand-created card.
+                        crate::routes::theme::RequestTheme::default_dark(),
                     )
                     .await?;
 
@@ -948,6 +955,12 @@ impl Inner {
                         CardRole::Worker,
                         true,
                         &cache_for_tx,
+                        // #177 — kernel-internal worker spawn. No host
+                        // browser supplied a theme; use the dark
+                        // sentinel so theme_fg/_bg NOT NULL is
+                        // satisfied and the daemon argv matches
+                        // dark-mode defaults.
+                        crate::routes::theme::RequestTheme::default_dark(),
                     )
                     .await?;
 

@@ -53,7 +53,7 @@ pub fn router() -> Router<AppState> {
 /// to `$SHELL` then `/bin/sh`; empty `cwd` falls back to `$HOME` then the
 /// server's cwd. `env` is merged into the daemon's environment as additional
 /// vars on top of `TERM` / `COLORTERM` / inherited.
-#[derive(Deserialize, Debug, Default, ToSchema)]
+#[derive(Deserialize, Debug, ToSchema)]
 pub struct NewTerminalCardBody {
     /// Sort order within the wave. `None` defaults to "append to end".
     #[serde(default)]
@@ -68,6 +68,11 @@ pub struct NewTerminalCardBody {
     #[serde(default)]
     #[schema(value_type = Object)]
     pub env: serde_json::Value,
+    /// Host browser's current theme RGB (#177). Required — the kernel
+    /// writes it onto the terminal row inside the same transaction
+    /// that mints the card, and every spawn for this row reads
+    /// `term.theme_fg/_bg` to stamp `--terminal-fg/-bg` daemon argv.
+    pub theme: crate::routes::theme::RequestTheme,
 }
 
 #[utoipa::path(
@@ -75,10 +80,11 @@ pub struct NewTerminalCardBody {
     path = "/api/waves/{wave_id}/terminal-cards",
     tag = "terminals",
     params(("wave_id" = String, Path, description = "Wave id to create the terminal card under")),
-    request_body(content = NewTerminalCardBody, description = "Optional body — empty means use defaults"),
+    request_body(content = NewTerminalCardBody, description = "Body required (theme is mandatory; program/cwd/env optional)"),
     responses(
         (status = 201, description = "Card + linked terminal created atomically; daemon spawned", body = Card),
         (status = 404, description = "Wave not found", body = ErrorBody),
+        (status = 422, description = "Body missing required fields (e.g. theme)", body = ErrorBody),
         (status = 500, description = "Daemon spawn failed (rows are persisted; sweeper reaps within ~60s)", body = ErrorBody),
     ),
 )]
@@ -86,10 +92,8 @@ pub(crate) async fn create_terminal_card(
     State(s): State<AppState>,
     actor: Actor,
     Path(wave_id): Path<String>,
-    body: Option<Json<NewTerminalCardBody>>,
+    Json(p): Json<NewTerminalCardBody>,
 ) -> Result<(StatusCode, Json<Card>)> {
-    let Json(p) = body.unwrap_or_default();
-
     // 1. Parent wave must exist. Surfaces as 404 *before* we open the
     //    transaction. The card_with_terminal_create_tx helper would surface
     //    a foreign-key failure as a 500 (Internal) at txn commit which is
@@ -128,6 +132,10 @@ pub(crate) async fn create_terminal_card(
     let program_for_tx = program.clone();
     let cwd_for_tx = cwd.clone();
     let env_for_tx = env.clone();
+    // #177 — host browser's theme, written onto the terminal row in
+    // the same tx alongside the card. Spawn helper reads it back to
+    // stamp `--terminal-fg/-bg`.
+    let theme_for_tx = p.theme;
     let scope = card_scope(
         s.repo.as_ref(),
         card_id.clone().into(),
@@ -163,6 +171,7 @@ pub(crate) async fn create_terminal_card(
                     // user-deletable.
                     true,
                     &cache_for_tx,
+                    theme_for_tx,
                 )
                 .await?;
                 Ok((card.clone(), Event::CardAdded(card)))
