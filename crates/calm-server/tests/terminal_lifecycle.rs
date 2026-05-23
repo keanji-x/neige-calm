@@ -405,6 +405,132 @@ async fn wave_delete_reaps_every_terminal_under_wave() {
 }
 
 // ---------------------------------------------------------------------------
+// Cove delete eager teardown
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn cove_delete_reaps_every_terminal_under_cove() {
+    let state = fresh_state().await;
+    let raw = state.raw_repo();
+
+    // Seed: cove → wave → terminal card → terminal row pointing at a
+    // real spawned process + a real on-disk socket file. The cove-delete
+    // path walks waves → cards → terminals and must reap the terminal
+    // before the structural delete fires (else `terminals.card_id`'s
+    // RESTRICT FK would trip).
+    let cove = raw
+        .cove_create(NewCove {
+            name: "c".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = raw
+        .wave_create(NewWave {
+            cove_id: cove.id.clone(),
+            title: "w".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let card = raw
+        .card_create(NewCard {
+            wave_id: wave.id.clone(),
+            kind: "terminal".into(),
+            sort: None,
+            payload: json!({}),
+        })
+        .await
+        .unwrap();
+    let term = state
+        .repo
+        .terminal_create(NewTerminal {
+            card_id: card.id.clone(),
+            program: "/bin/true".into(),
+            cwd: "/tmp".into(),
+            env: json!({}),
+        })
+        .await
+        .unwrap();
+    let mut child = spawn_long_running_child();
+    let sock = make_socket_path("cove_delete");
+    state
+        .repo
+        .terminal_set_handle(&term.id, Some(sock.to_string_lossy().as_ref()))
+        .await
+        .unwrap();
+    state
+        .repo
+        .terminal_set_pid(&term.id, Some(child.id()))
+        .await
+        .unwrap();
+
+    assert!(sock.exists(), "socket file must exist pre-delete");
+    assert!(
+        state.repo.terminal_get(&term.id).await.unwrap().is_some(),
+        "terminal row exists pre-delete"
+    );
+
+    // DELETE /api/coves/{id}
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/coves/{}", cove.id.as_str()))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::NO_CONTENT,
+        "cove delete should return 204"
+    );
+
+    // Post-delete: child process gone, socket unlinked, and every row
+    // in the terminal/card/wave/cove subtree removed.
+    await_child_killed(&mut child).await;
+    assert!(
+        !sock.exists(),
+        "socket file must be unlinked after cove delete (still at {sock:?})"
+    );
+    assert!(
+        state.repo.terminal_get(&term.id).await.unwrap().is_none(),
+        "terminal row must be deleted with the cove"
+    );
+    assert!(
+        state
+            .repo
+            .card_get(card.id.as_str())
+            .await
+            .unwrap()
+            .is_none(),
+        "card row must be deleted with the cove"
+    );
+    assert!(
+        state
+            .repo
+            .wave_get(wave.id.as_str())
+            .await
+            .unwrap()
+            .is_none(),
+        "wave row must be deleted with the cove"
+    );
+    assert!(
+        state
+            .repo
+            .cove_get(cove.id.as_str())
+            .await
+            .unwrap()
+            .is_none(),
+        "cove row must be deleted"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Idempotency: card delete on a card that has no terminal
 // ---------------------------------------------------------------------------
 

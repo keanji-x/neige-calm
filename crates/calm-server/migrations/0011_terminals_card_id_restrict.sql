@@ -24,11 +24,16 @@
 --     COPY/DROP/RENAME dance is sound.
 --   * `PRAGMA foreign_keys` is connection-scoped — sqlx flips it on
 --     post-connect (see `crates/calm-server/src/db/sqlite.rs::SqlxRepo::open`).
---     We toggle it off explicitly here just for the duration of the
---     rebuild so the temporary `terminals_new` table doesn't get caught
---     mid-step by a stray FK validation; sqlite restores normal handling
---     on the next statement after the implicit `END` (the migration
---     wrapper commits).
+--     `PRAGMA defer_foreign_keys = ON` is the per-transaction lever we
+--     want here: it postpones FK enforcement to commit-time so the
+--     COPY/DROP/RENAME dance can run without intermediate FK trips
+--     against the temporary `terminals_new` table. SQLite auto-resets
+--     `defer_foreign_keys` to OFF when the current transaction commits
+--     (https://www.sqlite.org/pragma.html#pragma_defer_foreign_keys) —
+--     so the trailing `PRAGMA defer_foreign_keys = OFF` below is
+--     harmless belt-and-suspenders, not a correctness requirement, and
+--     subsequent migrations on the same connection are unaffected
+--     regardless.
 --   * Indexes on the renamed table need to be re-declared by hand — the
 --     SQLite `CREATE TABLE ... AS SELECT` / `RENAME` paths don't carry
 --     indexes across. The original `terminals` schema had no auxiliary
