@@ -19,6 +19,11 @@
 //     checks. Both at `error` so CI gates on drift. We deliberately do
 //     NOT pull in the plugin's `recommended-latest` config (which also
 //     enables the React-compiler rule pack); that's a separate scope.
+//   - `no-restricted-syntax` (card-head guard) — forbids bespoke
+//     `card-head` / `card-head-{decor,title,status,icon}` class names
+//     in JSX `className` attributes outside `src/cards/CardHead.tsx`.
+//     The typed slot component owns these classes; PR #213 cemented
+//     the contract. See issue #221.
 
 import tseslint from 'typescript-eslint';
 import tsParser from '@typescript-eslint/parser';
@@ -43,6 +48,72 @@ const restrictedReactImports = {
             "import useState/useReducer from '@/shared/state', not from 'react' — this preserves the Persistent<T> type guard.",
         },
       ],
+    },
+  ],
+};
+
+// `no-restricted-syntax` — card-head class-name guard (issue #221).
+//
+// What it bans: JSX `className` attributes containing any of the
+// CardHead-owned base classes:
+//   - `card-head`            (the root slot)
+//   - `card-head-decor`      (legacy slot from PR #178 era; kept in the
+//                             alternation as a safety arm even though
+//                             the class is now dead)
+//   - `card-head-title`      (title slot)
+//   - `card-head-status`     (status slot)
+//   - `card-head-icon`       (icon slot — PR #213 cemented this)
+// across three JSX shapes:
+//   - String literal:               <div className="card-head" />
+//   - Expression+literal:           <div className={"card-head"} />
+//   - Template element (any part):  <div className={`card-head ${x}`} />
+//
+// Why: PR #178 introduced `<CardHead>` as the typed slot component that
+// owns these classes; PR #213 finished the visual unification (uppercase
+// title, letter-avatar, dot status, observer pill) and made the slot
+// contract load-bearing. Bespoke usages outside the component would let
+// drift back in. The lint locks the contract.
+//
+// What's intentionally NOT banned (legitimate non-slot classes that
+// share a similar shape):
+//   - `card-head-observing-pill`    — Terminal/Codex render this directly
+//                                     inside the status slot; it's not a
+//                                     CardHead-owned base class.
+//   - `card-head-icon--letter`      — BEM modifier generated internally
+//   - `card-head-icon--c{0..7}`       by CardHead's LetterAvatar logic.
+//                                     External code shouldn't write these,
+//                                     but the lint doesn't try to enforce
+//                                     (boundary-anchored regex skips them).
+//   - `card-drag-handle`            — RGL drag-handle class legitimately
+//                                     passed by callers via the `className`
+//                                     prop on `<CardHead>`.
+//   - `codex-card-head`             — Codex's own card-head modifier
+//                                     class (preceded by `-`, not a word
+//                                     boundary), legitimately passed via
+//                                     the `className` prop.
+//
+// `CardHead.tsx` itself owns these classes and is exempted via the
+// `files` override block at the config tail.
+const bespokeCardHeadClassMessage =
+  'Bespoke card-head class names are forbidden. Use <CardHead> from web/src/cards/CardHead.tsx — it owns these classes. See PRs #178, #184 and issue #221.';
+
+const restrictedCardHeadSyntax = {
+  'no-restricted-syntax': [
+    'error',
+    {
+      selector:
+        'JSXAttribute[name.name="className"] > Literal[value=/(^|\\s)card-head(-(decor|title|status|icon))?($|\\s)/]',
+      message: bespokeCardHeadClassMessage,
+    },
+    {
+      selector:
+        'JSXAttribute[name.name="className"] > JSXExpressionContainer > Literal[value=/(^|\\s)card-head(-(decor|title|status|icon))?($|\\s)/]',
+      message: bespokeCardHeadClassMessage,
+    },
+    {
+      selector:
+        'TemplateElement[value.raw=/(^|\\s)card-head(-(decor|title|status|icon))?($|\\s)/]',
+      message: bespokeCardHeadClassMessage,
     },
   ],
 };
@@ -104,6 +175,7 @@ export default tseslint.config(
     },
     rules: {
       ...restrictedReactImports,
+      ...restrictedCardHeadSyntax,
       ...jsxA11y.configs.recommended.rules,
       ...reactHooksRules,
       'neige-calm/no-react-state-hook-members': 'error',
@@ -142,6 +214,14 @@ export default tseslint.config(
       'neige-calm/no-react-state-hook-members': 'error',
       'neige-calm/no-persistent-in-usestate': 'error',
       'neige-calm/no-raw-primitive-role': 'error',
+    },
+  },
+  // Exemption: `CardHead.tsx` itself owns the card-head slot classes and
+  // therefore must be allowed to write them as string literals. Issue #221.
+  {
+    files: ['src/cards/CardHead.tsx'],
+    rules: {
+      'no-restricted-syntax': 'off',
     },
   },
 );
