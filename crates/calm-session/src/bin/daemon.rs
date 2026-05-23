@@ -1459,4 +1459,171 @@ mod tests {
             r#"{"kind":"answer_question","question_id":"6b1f3a4d-2b5e-4d7e-9c1a-1b2c3d4e5f60","answers":{"Proceed?":"ok"}}"#
         );
     }
+
+    /// `EventBuffer::append` allocates strictly-increasing seqs and
+    /// `snapshot` returns `last_seq == seq of the most recent append`.
+    /// Empty buffer reports `last_seq == 0` (the dedup sentinel — "no
+    /// replay watermark, never skip").
+    #[test]
+    fn event_buffer_seq_is_monotonic_and_snapshot_reports_watermark() {
+        let mut buf = EventBuffer::new(64 * 1024);
+        let empty = buf.snapshot();
+        assert!(empty.events.is_empty());
+        assert_eq!(empty.last_seq, 0);
+
+        let s1 = buf.append("a".to_string());
+        let s2 = buf.append("b".to_string());
+        let s3 = buf.append("c".to_string());
+        assert!(s1 < s2 && s2 < s3, "seqs must be strictly increasing");
+
+        let snap = buf.snapshot();
+        assert_eq!(snap.events, vec!["a", "b", "c"]);
+        assert_eq!(snap.last_seq, s3);
+    }
+
+    /// Eviction shrinks the deque but `next_seq` keeps growing, so
+    /// `last_seq` after eviction is still the seq of the latest
+    /// `append` — never the seq of an evicted older frame.
+    #[test]
+    fn event_buffer_eviction_preserves_seq_monotonicity() {
+        // max_bytes=3 forces eviction once we hit 4 single-char frames.
+        let mut buf = EventBuffer::new(3);
+        let s1 = buf.append("a".to_string());
+        let s2 = buf.append("b".to_string());
+        let s3 = buf.append("c".to_string());
+        let s4 = buf.append("d".to_string()); // evicts "a"
+        assert_eq!(s1, 1);
+        assert_eq!(s4, 4);
+        let snap = buf.snapshot();
+        // "a" got evicted; "b","c","d" remain. Watermark is still s4 (4).
+        assert_eq!(snap.events, vec!["b", "c", "d"]);
+        assert_eq!(snap.last_seq, s4);
+        let _ = s2;
+        let _ = s3;
+    }
+
+    /// Reproduces issue #244 race deterministically with a synchronous
+    /// timeline, then asserts the daemon-side dedup filter (`seq <=
+    /// last_replay_seq → skip`) prevents double delivery.
+    ///
+    /// Timeline (matches the real chat-mode plumbing):
+    ///   T0  subscribe — receiver attached
+    ///   T1  writer appends frame A → snapshot would now include A
+    ///   T2  writer broadcasts frame A → receiver gets A live
+    ///   T3  handle_chat_client takes snapshot — `events=[A]`, last_seq=1
+    ///   T4  receiver loop pulls A off the channel — would deliver twice
+    ///       without the dedup gate
+    ///
+    /// Pre-fix expectation: receiver sees A via broadcast even though A
+    /// is in HelloChat.replay (the bug). Fix expectation: filter skips A.
+    #[tokio::test(flavor = "current_thread")]
+    async fn broadcast_dedup_skips_frame_already_in_hello_chat_replay() {
+        let buffer = std::sync::Arc::new(std::sync::Mutex::new(EventBuffer::new(64 * 1024)));
+        let (tx, mut rx) = broadcast::channel::<ChatEvt>(64);
+
+        // T0: subscriber attached (rx is alive).
+        // T1+T2: writer appends + broadcasts frame A (atomic from the
+        //        subscriber's POV — both happen before snapshot).
+        let seq_a = {
+            let mut b = buffer.lock().unwrap();
+            b.append(r#"{"type":"session_init","session_id":"A"}"#.to_string())
+        };
+        let _ = tx.send(ChatEvt::Event {
+            seq: seq_a,
+            json: r#"{"type":"session_init","session_id":"A"}"#.to_string(),
+        });
+
+        // T3: client takes the HelloChat snapshot.
+        let snap = buffer.lock().unwrap().snapshot();
+        assert_eq!(snap.events.len(), 1);
+        assert_eq!(snap.last_seq, seq_a);
+        let last_replay_seq = snap.last_seq;
+
+        // T4: receiver pulls the broadcast frame. Without dedup this
+        // would deliver "A" to the client a second time (the bug).
+        let delivered = match rx.try_recv() {
+            Ok(ChatEvt::Event { seq, json }) => {
+                if seq <= last_replay_seq {
+                    None // dedup gate skipped — correct
+                } else {
+                    Some(json) // bug: would forward to socket
+                }
+            }
+            Ok(other) => panic!("unexpected variant: {other:?}"),
+            Err(broadcast::error::TryRecvError::Empty) => {
+                panic!("broadcast did not deliver frame A — test setup wrong")
+            }
+            Err(e) => panic!("broadcast recv err: {e:?}"),
+        };
+        assert!(
+            delivered.is_none(),
+            "frame already in HelloChat.replay was re-delivered via broadcast: {delivered:?}"
+        );
+
+        // Sanity: a *new* frame B (seq > last_replay_seq) MUST still pass
+        // through — the dedup gate only suppresses dupes, not live data.
+        let seq_b = {
+            let mut b = buffer.lock().unwrap();
+            b.append(r#"{"type":"chat","content":"B"}"#.to_string())
+        };
+        let _ = tx.send(ChatEvt::Event {
+            seq: seq_b,
+            json: r#"{"type":"chat","content":"B"}"#.to_string(),
+        });
+        match rx.try_recv() {
+            Ok(ChatEvt::Event { seq, json }) => {
+                assert!(
+                    seq > last_replay_seq,
+                    "B's seq must exceed replay watermark"
+                );
+                assert!(
+                    json.contains("\"content\":\"B\""),
+                    "expected live B, got {json}"
+                );
+            }
+            other => panic!("expected live frame B, got {other:?}"),
+        }
+    }
+
+    /// Same race but in stress-loop form to catch any regression where
+    /// the seq allocation, broadcast, or filter drifts out of sync. 1000
+    /// iterations × 2 frames per iteration; each round MUST see exactly
+    /// one non-skipped live frame (the post-snapshot one) and zero
+    /// dupes.
+    #[tokio::test(flavor = "current_thread")]
+    async fn broadcast_dedup_stress_loop_no_dupes() {
+        for _ in 0..1000 {
+            let buffer = std::sync::Arc::new(std::sync::Mutex::new(EventBuffer::new(64 * 1024)));
+            let (tx, mut rx) = broadcast::channel::<ChatEvt>(64);
+
+            // Pre-snapshot frame (would-be dupe).
+            let s1 = buffer.lock().unwrap().append("pre".to_string());
+            let _ = tx.send(ChatEvt::Event {
+                seq: s1,
+                json: "pre".to_string(),
+            });
+
+            let snap = buffer.lock().unwrap().snapshot();
+            let last_replay_seq = snap.last_seq;
+
+            // Post-snapshot frame (live, must pass through).
+            let s2 = buffer.lock().unwrap().append("post".to_string());
+            let _ = tx.send(ChatEvt::Event {
+                seq: s2,
+                json: "post".to_string(),
+            });
+
+            let mut live_delivered: Vec<String> = Vec::new();
+            while let Ok(ChatEvt::Event { seq, json }) = rx.try_recv() {
+                if seq > last_replay_seq {
+                    live_delivered.push(json);
+                }
+            }
+            assert_eq!(
+                live_delivered,
+                vec!["post".to_string()],
+                "expected exactly one live frame (\"post\"); pre-snapshot frame must be filtered"
+            );
+        }
+    }
 }
