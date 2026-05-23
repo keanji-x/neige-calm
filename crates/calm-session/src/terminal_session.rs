@@ -504,6 +504,12 @@ impl TerminalSessionState {
                 // master (synthetic OSC 10/11 reply + focus-in CSI), so
                 // we MUST NOT let an observer rewrite another user's
                 // terminal colors through a forged WS frame.
+                tracing::info!(
+                    client_id = ?self.client_id,
+                    role = ?self.role,
+                    fg = ?fg, bg = ?bg,
+                    "ClientMsg::TerminalThemeUpdate received — emitting Effect"
+                );
                 let kernel_input = self
                     .capabilities
                     .as_ref()

@@ -1190,6 +1190,10 @@ async fn handle_client(
                     // claude-tui re-query default colors on focus-in
                     // events, which is the trigger we need to make the
                     // TUI re-paint its composer at the new theme.
+                    tracing::info!(
+                        fg = ?fg, bg = ?bg,
+                        "Effect::TerminalThemeUpdate — writing OSC 10/11 reply + focus-in to PTY"
+                    );
                     if let Ok(mut rp) = render_plane.lock() {
                         rp.set_default_colors(Some(fg), Some(bg));
                     }
@@ -1210,6 +1214,7 @@ async fn handle_client(
                     data.extend_from_slice(osc10.as_bytes());
                     data.extend_from_slice(osc11.as_bytes());
                     data.extend_from_slice(b"\x1b[I");
+                    let n_bytes = data.len();
                     if stdin_tx
                         .send(PtyWrite {
                             data,
@@ -1221,6 +1226,10 @@ async fn handle_client(
                         closed = true;
                         break;
                     }
+                    tracing::info!(
+                        bytes_written = n_bytes,
+                        "TerminalThemeUpdate bytes written to PTY"
+                    );
                 }
             }
         }

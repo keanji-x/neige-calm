@@ -353,6 +353,14 @@ pub async fn pump<T: DaemonTransport>(
                     // log and the daemon still gets the frame. Worst case
                     // a future respawn launches with the previous theme —
                     // the same status quo as before this PR.
+                    if let ClientMsg::TerminalThemeUpdate { fg, bg } = &parsed {
+                        tracing::info!(
+                            terminal_id = %terminal_id_up,
+                            fg = ?fg, bg = ?bg,
+                            has_repo = repo_for_theme_up.is_some(),
+                            "WS frame TerminalThemeUpdate — persisting + relaying to daemon"
+                        );
+                    }
                     if let ClientMsg::TerminalThemeUpdate { fg, bg } = parsed
                         && let Some(repo) = repo_for_theme_up.as_ref()
                     {
