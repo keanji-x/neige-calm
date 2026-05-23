@@ -410,45 +410,63 @@ impl Inner {
         self.recompute_wave_needs_input(&card.wave_id).await;
     }
 
-    /// Aggregate every tracked card under `wave_id` into a single boolean
+    /// Aggregate every card under `wave_id` into a single boolean
     /// `any_card_needs_input` overlay on the wave. Idempotent: if the
     /// computed value matches what's already on disk, no write fires
     /// (and no event is emitted). Issue #254.
+    ///
+    /// Pulls the canonical card set from `repo.cards_by_wave` rather
+    /// than scanning the global FSM map. Two reasons:
+    ///   - **No lock-across-IO.** The previous shape held `self.map.lock()`
+    ///     across a `card_get` round-trip per entry, blocking every other
+    ///     FSM handler for the duration. Reading the wave's cards out of
+    ///     the repo first, then taking the map lock once for an in-memory
+    ///     lookup, keeps the critical section sub-microsecond.
+    ///   - **Future-proof for phase 2.** Once terminal / plugin cards
+    ///     start populating the FSM map they'll be scoped to *their* wave
+    ///     automatically — the aggregator can't accidentally pick up a
+    ///     card from a sibling wave that happens to share the map.
+    /// Concurrent `commit()` callers can race the read-then-write
+    /// idempotency check below; the final write resolves via
+    /// `overlay_upsert_tx`'s `ON CONFLICT DO UPDATE` (last writer wins,
+    /// no lost writes — see `db/sqlite.rs::overlay_upsert_tx`).
     async fn recompute_wave_needs_input(&self, wave_id: &WaveId) {
-        // Read the current FSM map for cards under this wave. The map is
-        // the live source of truth — overlay rows are derived from it.
-        // Note: only codex cards (phase 1) populate the map, so this
-        // reflects "any tracked card", not "every card under the wave"
-        // — terminal / plugin cards don't currently contribute. When
-        // phase 2 lands they'll start populating the map and this
-        // aggregator will pick them up automatically.
-        let needs_input = {
-            let map = self.map.lock().await;
-            // We need to know which entries belong to this wave. The FSM
-            // map keys by card_id, so we look up the parent for each
-            // entry. To avoid an N-query hop we read it from the repo
-            // once per entry — entries are bounded by per-user active
-            // cards and the call is cheap (single-row indexed lookup).
-            let mut any = false;
-            for (cid, entry) in map.iter() {
-                if matches!(entry.committed, State::AwaitingInput | State::Errored) {
-                    // Confirm parent wave membership before claiming.
-                    match self.repo.card_get(cid.as_ref()).await {
-                        Ok(Some(c)) if &c.wave_id == wave_id => {
-                            any = true;
-                            break;
-                        }
-                        _ => continue,
-                    }
-                }
+        // 1. Snapshot the canonical card set for this wave. This is the
+        //    source of truth for "what cards belong to this wave" — the
+        //    FSM map is just our live state cache for those cards.
+        let cards = match self.repo.cards_by_wave(wave_id.as_str()).await {
+            Ok(cs) => cs,
+            Err(e) => {
+                tracing::warn!(
+                    wave_id = %wave_id,
+                    error = %e,
+                    "card_fsm: cards_by_wave failed during needs_input recompute"
+                );
+                return;
             }
-            any
         };
 
-        // Idempotency: read the existing wave overlay and skip the write
-        // when the boolean is unchanged. Without this the projector
-        // would churn an overlay event on every per-card transition,
-        // even when the wave-level answer didn't move.
+        // 2. Lock the map briefly for an in-memory lookup only — no awaits
+        //    inside the critical section. Cards that don't have an entry
+        //    in the FSM map (terminal/plugin cards in phase 1, or codex
+        //    cards we haven't yet observed an event for) contribute
+        //    nothing — they can't be in `AwaitingInput` / `Errored`
+        //    without first showing up in the map.
+        let needs_input = {
+            let map = self.map.lock().await;
+            cards.iter().any(|c| {
+                matches!(
+                    map.get(&c.id),
+                    Some(entry)
+                        if matches!(entry.committed, State::AwaitingInput | State::Errored)
+                )
+            })
+        };
+
+        // 3. Idempotency: read the existing wave overlay and skip the write
+        //    when the boolean is unchanged. Without this the projector
+        //    would churn an overlay event on every per-card transition,
+        //    even when the wave-level answer didn't move.
         let existing = match self
             .repo
             .overlays_for("wave", wave_id.as_str())
@@ -650,10 +668,14 @@ mod tests {
             .expect("status overlay written");
         assert_eq!(s.payload["state"], "Working");
 
-        // Regression: the projector must NOT write a wave-level overlay
-        // anymore — wave state lives on `WaveLifecycle` and is driven by
-        // the Spec Agent. A leftover write here would silently reintroduce
-        // the dual-source-of-truth bug we just removed.
+        // Regression guard from #248: the per-card FSM commit must not
+        // write a wave-level overlay of `kind == "status"` (the old union
+        // projection that #248 deleted — it was a dual source of truth
+        // with `WaveLifecycle`, owned by the Spec Agent). PR #260 (issue
+        // #254) re-introduces a narrower wave-level overlay
+        // `kind == "any_card_needs_input"`, which is expected here — this
+        // test asserts only that the deleted `"status"` projection has
+        // not silently returned.
         let wave_overlays = repo.overlays_for("wave", wave_id.as_str()).await.unwrap();
         assert!(
             wave_overlays.iter().all(|o| o.kind != "status"),
