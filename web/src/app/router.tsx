@@ -313,6 +313,13 @@ function WaveComponent() {
 
   // Wave detail is the source of truth for "does this wave exist?".
   if (!detailQ.data) {
+    // eslint-disable-next-line no-console
+    console.warn('[#177 WaveComponent EARLY-RETURN]', {
+      isLoading: detailQ.isLoading,
+      isFetching: detailQ.isFetching,
+      status: detailQ.status,
+      fetchStatus: detailQ.fetchStatus,
+    });
     if (detailQ.isLoading) return null;
     return <MissingShell label="Wave" onGo={go} />;
   }

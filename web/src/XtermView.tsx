@@ -124,6 +124,16 @@ interface ExitInfo {
 export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
   // eslint-disable-next-line no-console
   console.warn('[#177 XtermView render]', { theme, terminalId });
+  const instanceIdRef = useRef<string | undefined>(undefined);
+  if (!instanceIdRef.current) {
+    instanceIdRef.current = Math.random().toString(36).slice(2, 8);
+  }
+  // eslint-disable-next-line no-console
+  console.warn('[#177 XtermView instance]', {
+    theme,
+    terminalId,
+    instance: instanceIdRef.current,
+  });
   const containerRef = useRef<HTMLDivElement | null>(null);
   // Live ref to the active xterm.js Terminal instance so a sibling effect
   // can re-apply the theme without tearing down the WebSocket + replay
@@ -557,6 +567,11 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
     void ptySeq;
 
     return () => {
+      // eslint-disable-next-line no-console
+      console.warn('[#177 ws-mount CLEANUP RUNNING]', {
+        terminalId,
+        sendRefMatches: sendRef.current === send,
+      });
       ro.disconnect();
       dataSub.dispose();
       try {
