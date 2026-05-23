@@ -102,7 +102,14 @@ async fn boot() -> Boot {
     }
 }
 
-async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) {
+/// Returns `(status, json_or_null, raw_text)`. Axum's 422 surface from a
+/// serde-rejected `Json<T>` is `text/plain` like
+/// `"Failed to deserialize the JSON body into the target type: missing field 'theme' at line X column Y"` —
+/// not JSON. We keep both shapes: the JSON value for happy-path tests
+/// that want to drill into a structured response, and the raw text so
+/// the missing-field substring assertion below can pin `theme` as the
+/// rejected field even though the body itself isn't JSON.
+async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value, String) {
     let resp = app
         .oneshot(
             Request::builder()
@@ -116,8 +123,9 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) 
         .unwrap();
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let text = String::from_utf8_lossy(&bytes).to_string();
     let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    (status, json)
+    (status, json, text)
 }
 
 /// `POST /api/waves` with a body that omits the `theme` field must
@@ -129,16 +137,30 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) 
 #[tokio::test]
 async fn post_waves_without_theme_is_rejected_with_422() {
     let boot = boot().await;
-    let (status, body) = post(
+    // Body includes every other required field (cwd, attach_folder) so
+    // the 422 fires on the missing `theme` and not some other field. The
+    // body-substring assertion pins `theme` as the rejected field — if
+    // someone later turns `theme: Option<>`, this test starts failing
+    // even if 422 still happens (for a different reason).
+    let (status, _body, text) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({ "cove_id": boot.cove_id, "title": "no theme here" }),
+        json!({
+            "cove_id": boot.cove_id,
+            "title": "no theme here",
+            "cwd": "/tmp/issue-177-pr1-test",
+            "attach_folder": true,
+        }),
     )
     .await;
     assert_eq!(
         status,
         StatusCode::UNPROCESSABLE_ENTITY,
-        "expected 422 on missing `theme` field; body={body:?}",
+        "expected 422 on missing `theme` field; body={text}",
+    );
+    assert!(
+        text.contains("theme"),
+        "422 must name `theme` as the rejected field; got body={text}",
     );
 }
 
@@ -149,16 +171,29 @@ async fn post_waves_without_theme_is_rejected_with_422() {
 #[tokio::test]
 async fn post_waves_with_null_theme_is_rejected_with_422() {
     let boot = boot().await;
-    let (status, body) = post(
+    // Body includes every other required field so the 422 fires on
+    // `theme: null` and not a missing field. The body-substring assertion
+    // pins `theme` as the rejected field.
+    let (status, _body, text) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({ "cove_id": boot.cove_id, "title": "null theme", "theme": Value::Null }),
+        json!({
+            "cove_id": boot.cove_id,
+            "title": "null theme",
+            "cwd": "/tmp/issue-177-pr1-test",
+            "attach_folder": true,
+            "theme": Value::Null,
+        }),
     )
     .await;
     assert_eq!(
         status,
         StatusCode::UNPROCESSABLE_ENTITY,
-        "expected 422 on `theme: null`; body={body:?}",
+        "expected 422 on `theme: null`; body={text}",
+    );
+    assert!(
+        text.contains("theme"),
+        "422 must name `theme` as the rejected field; got body={text}",
     );
 }
 
@@ -169,7 +204,7 @@ async fn post_waves_with_null_theme_is_rejected_with_422() {
 #[tokio::test]
 async fn post_codex_cards_without_theme_is_rejected_with_422() {
     let boot = boot().await;
-    let (status, body) = post(
+    let (status, _body, text) = post(
         boot.app.clone(),
         &format!("/api/waves/{}/codex-cards", boot.wave_id),
         json!({ "cwd": "/tmp" }),
@@ -178,7 +213,7 @@ async fn post_codex_cards_without_theme_is_rejected_with_422() {
     assert_eq!(
         status,
         StatusCode::UNPROCESSABLE_ENTITY,
-        "expected 422 on `codex-cards` body missing `theme`; body={body:?}",
+        "expected 422 on `codex-cards` body missing `theme`; body={text}",
     );
 }
 
@@ -187,7 +222,7 @@ async fn post_codex_cards_without_theme_is_rejected_with_422() {
 #[tokio::test]
 async fn post_terminal_cards_without_theme_is_rejected_with_422() {
     let boot = boot().await;
-    let (status, body) = post(
+    let (status, _body, text) = post(
         boot.app.clone(),
         &format!("/api/waves/{}/terminal-cards", boot.wave_id),
         json!({ "program": "/bin/sh" }),
@@ -196,6 +231,6 @@ async fn post_terminal_cards_without_theme_is_rejected_with_422() {
     assert_eq!(
         status,
         StatusCode::UNPROCESSABLE_ENTITY,
-        "expected 422 on `terminal-cards` body missing `theme`; body={body:?}",
+        "expected 422 on `terminal-cards` body missing `theme`; body={text}",
     );
 }
