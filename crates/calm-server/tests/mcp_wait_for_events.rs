@@ -34,6 +34,7 @@ struct Boot {
     spec_card_id: CardId,
     worker_card_id: CardId,
     role_cache: CardRoleCache,
+    wave_cove_cache: calm_server::wave_cove_cache::WaveCoveCache,
 }
 
 async fn boot() -> Boot {
@@ -94,10 +95,13 @@ async fn boot() -> Boot {
     role_cache.insert(worker_card.id.clone(), CardRole::Worker, wave.id.clone());
 
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
+    let wcc = calm_server::wave_cove_cache::WaveCoveCache::new();
+    repo.seed_wave_cove_cache(&wcc).await.unwrap();
     let ctx = Arc::new(AppContext {
         repo: route_repo,
         events,
         card_role_cache: role_cache.clone(),
+        wave_cove_cache: wcc.clone(),
         event_cursor_cache: EventCursorCache::new(),
     });
 
@@ -115,6 +119,7 @@ async fn boot() -> Boot {
         spec_card_id: spec_card.id,
         worker_card_id: worker_card.id,
         role_cache,
+        wave_cove_cache: wcc,
     }
 }
 
@@ -157,6 +162,7 @@ async fn emit_wave_event_on(boot: &Boot, wave_id: &WaveId, cove_id: &CoveId) -> 
         None,
         &boot.ctx.events,
         &boot.role_cache,
+        &boot.wave_cove_cache,
         move |_tx| {
             let wave = wave.clone();
             Box::pin(async move { Ok((wave.clone(), Event::WaveUpdated(wave))) })
@@ -194,6 +200,7 @@ async fn emit_card_event_on(boot: &Boot, card_id: &CardId) -> i64 {
         None,
         &boot.ctx.events,
         &boot.role_cache,
+        &boot.wave_cove_cache,
         move |_tx| {
             let card = card_clone.clone();
             Box::pin(async move { Ok((card.clone(), Event::CardUpdated(card))) })

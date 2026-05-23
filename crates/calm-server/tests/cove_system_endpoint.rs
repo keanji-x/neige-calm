@@ -68,8 +68,10 @@ async fn boot_with_concrete() -> (axum::Router, Arc<dyn Repo>, Arc<SqlxRepo>) {
             Vec::new(),
             EventBus::new(),
             calm_server::card_role_cache::CardRoleCache::new(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
         )),
         Arc::new(CodexClient::new_stub()),
+        None,
         None,
     );
     let app = routes::router()

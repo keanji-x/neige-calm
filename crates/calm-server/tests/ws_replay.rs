@@ -64,8 +64,10 @@ async fn boot() -> (std::net::SocketAddr, Arc<SqlxRepo>, EventBus) {
             Vec::new(),
             events.clone(),
             calm_server::card_role_cache::CardRoleCache::new(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
         )),
         Arc::new(calm_server::state::CodexClient::new_stub()),
+        None,
         None,
     );
     let app = axum::Router::new().merge(ws::router()).with_state(state);
@@ -101,6 +103,7 @@ async fn seed_three(repo: &SqlxRepo, bus: &EventBus, names: [&str; 3]) -> Vec<(i
             None,
             bus,
             &calm_server::card_role_cache::CardRoleCache::new(),
+            &calm_server::wave_cove_cache::WaveCoveCache::new(),
             move |tx| {
                 Box::pin(async move {
                     let c = cove_create_tx(tx, p).await?;
@@ -309,6 +312,7 @@ async fn replay_then_live_no_drop_no_dupe() {
         None,
         &bus,
         &calm_server::card_role_cache::CardRoleCache::new(),
+        &calm_server::wave_cove_cache::WaveCoveCache::new(),
         move |tx| {
             Box::pin(async move {
                 let c = cove_create_tx(tx, new_cove).await?;
@@ -448,6 +452,7 @@ async fn seed_supported_and_future_overlays(repo: &SqlxRepo, bus: &EventBus) -> 
         None,
         bus,
         &calm_server::card_role_cache::CardRoleCache::new(),
+        &calm_server::wave_cove_cache::WaveCoveCache::new(),
         move |tx| {
             Box::pin(async move {
                 let o = overlay_upsert_tx(tx, supported).await?;
@@ -475,6 +480,7 @@ async fn seed_supported_and_future_overlays(repo: &SqlxRepo, bus: &EventBus) -> 
         None,
         bus,
         &calm_server::card_role_cache::CardRoleCache::new(),
+        &calm_server::wave_cove_cache::WaveCoveCache::new(),
         move |tx| {
             Box::pin(async move {
                 let o = overlay_upsert_tx(tx, future).await?;

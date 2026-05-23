@@ -52,8 +52,10 @@ async fn boot() -> (axum::Router, Arc<SqlxRepo>, AppState) {
             Vec::new(),
             events,
             calm_server::card_role_cache::CardRoleCache::new(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
         )),
         Arc::new(CodexClient::new_stub()),
+        None,
         None,
     );
     // Same shape as main.rs: middleware sits on the REST router only.
@@ -341,7 +343,7 @@ async fn plugin_callback_path_writes_plugin_actor_regardless_of_middleware() {
     // perm check. PR2 of #136 typed the actor; PR3 (#136) added the
     // role cache as another required arg:
     //   let actor = ActorId::Plugin(ctx.plugin_id.to_string());
-    //   write_with_event_typed(repo, actor, scope, None, &bus, &cache, |tx| { ... })
+    //   write_with_event_typed(repo, actor, scope, None, &bus, &cache, &wcc, |tx| { ... })
     let plugin_id = "hello-world";
     let actor = ActorId::Plugin(plugin_id.to_string());
     let new_overlay = NewOverlay {
@@ -361,6 +363,7 @@ async fn plugin_callback_path_writes_plugin_actor_regardless_of_middleware() {
         None,
         &state.events,
         &calm_server::card_role_cache::CardRoleCache::new(),
+        &calm_server::wave_cove_cache::WaveCoveCache::new(),
         move |tx| {
             Box::pin(async move {
                 let o = overlay_upsert_tx(tx, new_overlay).await?;

@@ -111,10 +111,13 @@ async fn boot() -> Boot {
     // both the row and the cache; PR7b's integration test doesn't
     // need to assert on the persisted column.)
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
+    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
     let ctx = Arc::new(AppContext {
         repo: route_repo,
         events,
         card_role_cache,
+        wave_cove_cache,
         event_cursor_cache: calm_server::event_cursor::EventCursorCache::new(),
     });
 

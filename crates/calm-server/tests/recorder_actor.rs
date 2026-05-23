@@ -25,7 +25,13 @@ use tempfile::NamedTempFile;
 /// Boot an in-memory repo, an event bus, and a tempfile-backed recorder.
 /// PR3 (#136): the cache is also returned so tests can pre-seed roles
 /// for `AiCodex(card_id)` actors used by the recorder coverage.
-async fn boot() -> (Arc<dyn Repo>, EventBus, CardRoleCache, NamedTempFile) {
+async fn boot() -> (
+    Arc<dyn Repo>,
+    EventBus,
+    CardRoleCache,
+    calm_server::wave_cove_cache::WaveCoveCache,
+    NamedTempFile,
+) {
     let repo: Arc<dyn Repo> = Arc::new(
         SqlxRepo::open("sqlite::memory:")
             .await
@@ -33,13 +39,14 @@ async fn boot() -> (Arc<dyn Repo>, EventBus, CardRoleCache, NamedTempFile) {
     );
     let bus = EventBus::new();
     let cache = CardRoleCache::new();
+    let wcc = calm_server::wave_cove_cache::WaveCoveCache::new();
     let tmp = NamedTempFile::new().expect("tempfile");
     spawn_session_recorder(&bus, tmp.path().to_path_buf());
     // Recorder subscribes inside `tokio::spawn` — give it a tick to land
     // its subscription before we start emitting.
     tokio::task::yield_now().await;
     tokio::time::sleep(Duration::from_millis(20)).await;
-    (repo, bus, cache, tmp)
+    (repo, bus, cache, wcc, tmp)
 }
 
 /// Drive one `write_with_event_typed` cove create with the supplied actor.
@@ -47,6 +54,7 @@ async fn create_cove_as(
     repo: &dyn Repo,
     bus: &EventBus,
     cache: &CardRoleCache,
+    wcc: &calm_server::wave_cove_cache::WaveCoveCache,
     actor: ActorId,
     name: &str,
 ) -> i64 {
@@ -62,6 +70,7 @@ async fn create_cove_as(
         None,
         bus,
         cache,
+        wcc,
         move |tx| {
             Box::pin(async move {
                 let c = cove_create_tx(tx, p).await?;
@@ -88,7 +97,7 @@ fn read_recorded(tmp: &NamedTempFile) -> Vec<Value> {
 
 #[tokio::test]
 async fn recorder_captures_real_actor_per_envelope() {
-    let (repo, bus, cache, tmp) = boot().await;
+    let (repo, bus, cache, wcc, tmp) = boot().await;
     // PR3 (#136) — pre-seed the role cache with the card the
     // `AiCodex(...)` actor below references, so `enforce_role`'s
     // unknown-card guard doesn't refuse the write.
@@ -104,11 +113,12 @@ async fn recorder_captures_real_actor_per_envelope() {
     // #136 typed the actor field; the recorder now writes the JSON form
     // of [`ActorId`] (`{"kind":"User"}`, etc.) — round-trippable into
     // the new typed surface without ambiguity.
-    let _id_user = create_cove_as(&*repo, &bus, &cache, ActorId::User, "u").await;
+    let _id_user = create_cove_as(&*repo, &bus, &cache, &wcc, ActorId::User, "u").await;
     let _id_ai = create_cove_as(
         &*repo,
         &bus,
         &cache,
+        &wcc,
         ActorId::AiCodex(CardId::from("card-7")),
         "a",
     )
@@ -123,6 +133,7 @@ async fn recorder_captures_real_actor_per_envelope() {
             None,
             &bus,
             &cache,
+            &wcc,
             Event::PluginState {
                 id: "todo".into(),
                 state: "Running".into(),
@@ -165,7 +176,7 @@ async fn recorder_captures_real_actor_per_envelope() {
 async fn envelope_carries_actor_alongside_event() {
     // Unit-level pin: the bus envelope itself carries `actor` so any
     // future subscriber (not just the recorder) can read it directly.
-    let (repo, bus, cache, _tmp) = boot().await;
+    let (repo, bus, cache, wcc, _tmp) = boot().await;
     cache.insert(
         CardId::from("card-1"),
         CardRole::Plain,
@@ -176,6 +187,7 @@ async fn envelope_carries_actor_alongside_event() {
         &*repo,
         &bus,
         &cache,
+        &wcc,
         ActorId::AiCodex(CardId::from("card-1")),
         "c",
     )

@@ -136,6 +136,7 @@ async fn boot(cfg: FxConfig<'_>) -> Fixture {
         Vec::new(),
         events.clone(),
         calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::wave_cove_cache::WaveCoveCache::new(),
     ));
 
     if cfg.run {
@@ -150,6 +151,7 @@ async fn boot(cfg: FxConfig<'_>) -> Fixture {
         plugin_host,
         Arc::new(calm_server::state::CodexClient::new_stub()),
         None, // PR3 (#136): card_role_cache — tests don't exercise role gating
+        None, // #234: wave_cove_cache — same rationale
     );
 
     Fixture {

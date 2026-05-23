@@ -111,10 +111,13 @@ async fn boot() -> Boot {
 
     let events = EventBus::new();
     let registry = build_default_registry();
+    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
     let server = McpServer::spawn(
         repo.clone(),
         events.clone(),
         card_role_cache,
+        wave_cove_cache,
         calm_server::event_cursor::EventCursorCache::new(),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"), // not used in handshake tests

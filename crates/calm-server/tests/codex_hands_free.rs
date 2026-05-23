@@ -123,8 +123,10 @@ async fn boot_full() -> (
             Vec::new(),
             EventBus::new(),
             calm_server::card_role_cache::CardRoleCache::new(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
         )),
         Arc::new(CodexClient::new_stub()),
+        None,
         None,
     );
 
@@ -481,8 +483,10 @@ async fn route_to_subscriber_chain_skips_auto_submit_for_empty_or_absent_prompt(
             Vec::new(),
             EventBus::new(),
             calm_server::card_role_cache::CardRoleCache::new(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
         )),
         Arc::new(CodexClient::new_stub()),
+        None,
         None,
     );
     let app = routes::router()

@@ -270,6 +270,7 @@ async fn record_session_roundtrips_through_loader() {
             None,
             &bus,
             &calm_server::card_role_cache::CardRoleCache::new(),
+            &calm_server::wave_cove_cache::WaveCoveCache::new(),
             ev,
         )
         .await
@@ -439,6 +440,7 @@ async fn reset_from_fixture_wipes_and_reseeds() {
             None,
             &bus,
             &calm_server::card_role_cache::CardRoleCache::new(),
+            &calm_server::wave_cove_cache::WaveCoveCache::new(),
             extra,
         )
         .await
@@ -766,6 +768,7 @@ fn build_full_app(repo: Arc<calm_server::db::sqlite::SqlxRepo>, events: EventBus
     use calm_server::state::{AppState, CodexClient, DaemonClient};
 
     let card_role_cache = CardRoleCache::new();
+    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
     let plugin = Arc::new(PluginHost::new_full(
         Arc::new(PluginRegistry::empty()),
         repo.clone(),
@@ -774,6 +777,7 @@ fn build_full_app(repo: Arc<calm_server::db::sqlite::SqlxRepo>, events: EventBus
         Vec::new(),
         events.clone(),
         card_role_cache.clone(),
+        wave_cove_cache.clone(),
     ));
     let state = AppState::from_parts(
         repo,
@@ -782,6 +786,7 @@ fn build_full_app(repo: Arc<calm_server::db::sqlite::SqlxRepo>, events: EventBus
         plugin,
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache),
+        Some(wave_cove_cache.clone()),
     );
     routes::router()
         .layer(axum::middleware::from_fn(

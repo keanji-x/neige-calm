@@ -58,8 +58,10 @@ async fn boot() -> (std::net::SocketAddr, Arc<SqlxRepo>, EventBus) {
             Vec::new(),
             events.clone(),
             CardRoleCache::new(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
         )),
         Arc::new(calm_server::state::CodexClient::new_stub()),
+        None,
         None,
     );
     let app = axum::Router::new().merge(ws::router()).with_state(state);
@@ -93,6 +95,7 @@ async fn seed_legacy_overlay(repo: &SqlxRepo, bus: &EventBus) -> i64 {
         None,
         bus,
         &CardRoleCache::new(),
+        &calm_server::wave_cove_cache::WaveCoveCache::new(),
         move |tx| {
             Box::pin(async move {
                 let o = overlay_upsert_tx(tx, legacy).await?;
@@ -183,6 +186,7 @@ async fn replay_mixes_legacy_pass_through_with_future_drop() {
         None,
         &bus,
         &CardRoleCache::new(),
+        &calm_server::wave_cove_cache::WaveCoveCache::new(),
         move |tx| {
             Box::pin(async move {
                 let o = overlay_upsert_tx(tx, future).await?;

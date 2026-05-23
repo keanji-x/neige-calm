@@ -77,6 +77,8 @@ async fn boot() -> Boot {
     });
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
+    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         events.clone(),
@@ -89,9 +91,11 @@ async fn boot() -> Boot {
             Vec::new(),
             EventBus::new(),
             card_role_cache.clone(),
+            wave_cove_cache.clone(),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache.clone()),
+        Some(wave_cove_cache.clone()),
     );
 
     let app = routes::router()
@@ -288,7 +292,14 @@ async fn spec_card_can_emit_wave_updated_via_enforce_role() {
         wave: "w".into(),
         cove: "c".into(),
     };
-    let res = enforce_role(&ActorId::AiSpec(spec_id.clone()), &evt, &scope, &cache);
+    let wcc = calm_server::wave_cove_cache::WaveCoveCache::new();
+    let res = enforce_role(
+        &ActorId::AiSpec(spec_id.clone()),
+        &evt,
+        &scope,
+        &cache,
+        &wcc,
+    );
     assert!(
         res.is_ok(),
         "AiSpec(spec-card) must be permitted to emit WaveUpdated: {res:?}",
@@ -312,13 +323,20 @@ async fn write_with_events_typed_persists_and_broadcasts_multiple_in_order() {
     );
     let events = EventBus::new();
     let cache = CardRoleCache::new();
+    let wcc = calm_server::wave_cove_cache::WaveCoveCache::new();
 
     let mut rx = events.subscribe_filtered();
 
     // The closure emits two distinct events: CoveUpdated under
     // EventScope::Cove, and WaveUpdated under EventScope::Wave.
-    let event_ids: Vec<i64> =
-        write_with_events_typed(repo.as_ref(), ActorId::User, None, &events, &cache, |tx| {
+    let event_ids: Vec<i64> = write_with_events_typed(
+        repo.as_ref(),
+        ActorId::User,
+        None,
+        &events,
+        &cache,
+        &wcc,
+        |tx| {
             Box::pin(async move {
                 let cove = cove_create_tx(
                     tx,
@@ -336,6 +354,7 @@ async fn write_with_events_typed_persists_and_broadcasts_multiple_in_order() {
                         title: "plural-wave".into(),
                         sort: None,
                     },
+                    &calm_server::wave_cove_cache::WaveCoveCache::new(),
                 )
                 .await?;
                 let cove_scope = EventScope::Cove {
@@ -353,10 +372,11 @@ async fn write_with_events_typed_persists_and_broadcasts_multiple_in_order() {
                     ],
                 ))
             })
-        })
-        .await
-        .expect("plural write succeeds")
-        .1;
+        },
+    )
+    .await
+    .expect("plural write succeeds")
+    .1;
 
     assert_eq!(event_ids.len(), 2, "two event ids returned");
     assert!(
@@ -393,6 +413,7 @@ async fn write_with_events_typed_rolls_back_when_closure_errors() {
     );
     let events = EventBus::new();
     let cache = CardRoleCache::new();
+    let wcc = calm_server::wave_cove_cache::WaveCoveCache::new();
 
     // Pre-check: no coves exist.
     assert!(repo.coves_list().await.unwrap().is_empty());
@@ -406,6 +427,7 @@ async fn write_with_events_typed_rolls_back_when_closure_errors() {
         None,
         &events,
         &cache,
+        &wcc,
         |tx| {
             Box::pin(async move {
                 let _cove = cove_create_tx(
@@ -459,6 +481,7 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
         CardRole::Worker,
         WaveId::from("worker-wave"),
     );
+    let wcc = calm_server::wave_cove_cache::WaveCoveCache::new();
 
     assert!(repo.coves_list().await.unwrap().is_empty());
 
@@ -469,6 +492,7 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
         None,
         &events,
         &cache,
+        &wcc,
         |tx| {
             Box::pin(async move {
                 let cove = cove_create_tx(
@@ -487,6 +511,7 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
                         title: "gated-wave".into(),
                         sort: None,
                     },
+                    &calm_server::wave_cove_cache::WaveCoveCache::new(),
                 )
                 .await?;
                 let cove_scope = EventScope::Cove {
