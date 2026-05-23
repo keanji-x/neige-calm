@@ -1,0 +1,62 @@
+{
+  "name": "schema-forward-compat",
+  "description": "Two `overlay.set` events on the same wave: (a) a v1-shaped status overlay with NO schemaVersion field (the only shape any pre-#198 row has ever had), (b) the same status overlay rewritten by a hypothetical future kernel at schemaVersion=999. Replay must surface BOTH envelopes verbatim (the WS replay path is wire-faithful — issue #198 PR-A on read = strict, write = strict, replay = transparent). The accompanying test then sanity-checks `payload_schema_version()` reads `1` for (a) and `999` for (b), and that `filter_unsupported_overlay_versions` would drop (b) on the read path while passing (a) through. The fixture is the upgrade-stability anchor: regenerating it from a real session must keep both shapes round-trippable through `seed_events → WS replay → loader`.",
+  "events": [
+    {
+      "kind": "cove.updated",
+      "actor": "user",
+      "payload": {
+        "id": "cove-fwd",
+        "name": "schema-fwd-compat",
+        "color": "#abc",
+        "kind": "user",
+        "sort": 0.0,
+        "created_at": 1,
+        "updated_at": 1
+      }
+    },
+    {
+      "kind": "wave.updated",
+      "actor": "user",
+      "payload": {
+        "id": "wave-fwd",
+        "cove_id": "cove-fwd",
+        "title": "schema-fwd-compat",
+        "sort": 0.0,
+        "archived_at": null,
+        "created_at": 2,
+        "updated_at": 2
+      }
+    },
+    {
+      "kind": "overlay.set",
+      "actor": "user",
+      "payload": {
+        "id": "ov-v1",
+        "plugin_id": "core",
+        "entity_kind": "wave",
+        "entity_id": "wave-fwd",
+        "kind": "status",
+        "payload": { "state": "ok" },
+        "updated_at": 3
+      }
+    },
+    {
+      "kind": "overlay.set",
+      "actor": "user",
+      "payload": {
+        "id": "ov-v999",
+        "plugin_id": "core",
+        "entity_kind": "wave",
+        "entity_id": "wave-fwd",
+        "kind": "status",
+        "payload": { "state": "ok", "schemaVersion": 999, "fromFuture": "yes" },
+        "updated_at": 4
+      }
+    }
+  ],
+  "expected": {
+    "last_event_kind": "overlay.set",
+    "layout_positions": {}
+  }
+}

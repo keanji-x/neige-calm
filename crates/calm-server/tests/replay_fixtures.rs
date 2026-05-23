@@ -480,3 +480,269 @@ async fn reset_from_fixture_wipes_and_reseeds() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Issue #199 — schemaVersion forward-compat replay + read-side guard.
+// ---------------------------------------------------------------------------
+//
+// Two complementary contracts have to hold simultaneously for the
+// upgrade-stability story (issue #198 PR-A) to be safe:
+//
+//   1. **Replay is wire-faithful.** The WS replay path streams the raw
+//      JSON envelope it persisted; it does NOT silently rewrite
+//      payloads to strip `schemaVersion` fields it doesn't recognize.
+//      A future-`schemaVersion` row must surface on the wire so a
+//      later-compatible frontend (or a downgraded one with the Tier A
+//      "drop unknown version" branch) can decide for itself.
+//
+//   2. **Read-side guard drops kernel-owned future versions on
+//      list_overlays.** The route guard
+//      (`routes::overlays::filter_unsupported_overlay_versions`) — and
+//      the equivalent on `GET /api/waves/{id}` — silently drops rows
+//      whose payload's `schemaVersion` exceeds what this binary
+//      supports for the kind. So the same DB row that surfaces
+//      transparently through replay is filtered out of the REST list,
+//      which gives the kernel a per-route choice on how strict to be
+//      about future shapes (audit vs UI consumption).
+//
+// The fixture (`schema_forward_compat.events.json`) carries both
+// shapes back-to-back. Replay sees both; `list_overlays` sees only
+// the v1 one.
+//
+// Why one combined test instead of two: the contract is "replay is
+// transparent AND the read-side guard is strict" — splitting them
+// would let either side regress while the other still passes (e.g. a
+// regression that has replay also filter out v999 would still tick
+// "read-side filter works" green). Composing them in one flow makes
+// the asymmetry the test pins.
+
+#[tokio::test]
+async fn schema_version_replay_transparent_but_read_guard_drops_future() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use calm_server::model::NewOverlay;
+    use calm_server::validation::{
+        OVERLAY_STATUS_SCHEMA_VERSION, max_supported_overlay_schema_version,
+        payload_schema_version,
+    };
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let fixture = load_fixture("schema_forward_compat.events.json");
+
+    // Sanity: helper reads `1` for the missing-field shape and `999`
+    // for the future-shape. These are the inputs to the read-side
+    // guard, so locking them here surfaces a payload_schema_version()
+    // refactor that drifts away from "absent → 1".
+    let v1_payload = &fixture.events[2].payload["payload"];
+    let v999_payload = &fixture.events[3].payload["payload"];
+    assert_eq!(
+        payload_schema_version(v1_payload),
+        1,
+        "missing schemaVersion must read as 1 (backward-compat default)"
+    );
+    assert_eq!(
+        payload_schema_version(v999_payload),
+        999,
+        "explicit schemaVersion=999 must round-trip through the helper"
+    );
+    assert_eq!(
+        max_supported_overlay_schema_version("status"),
+        Some(OVERLAY_STATUS_SCHEMA_VERSION),
+        "the kernel's status overlay support ceiling drives what the read guard accepts"
+    );
+
+    // ---- Replay arm: seed both events, drain over WS, assert BOTH
+    //                  overlay.set frames surface verbatim. The wire
+    //                  copy of the v999 envelope keeps its
+    //                  `schemaVersion: 999` field — silent stripping
+    //                  would be the regression this asserts against.
+    let (addr, repo, bus) = boot().await;
+    let ids = raw_insert_fixture_events(&repo, &bus, &fixture).await;
+    assert_eq!(ids.len(), fixture.events.len(), "seed inserted all events");
+
+    let url = format!("ws://{}/api/events", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("connect ws");
+    ws.send(TMessage::Text(r#"{"sub":["*"], "since": 0}"#.to_string()))
+        .await
+        .expect("send sub");
+
+    let mut overlay_frames: Vec<serde_json::Value> = Vec::new();
+    loop {
+        let frame = recv_json(&mut ws).await;
+        if frame["ev"] == "_replay_complete" {
+            break;
+        }
+        if frame["ev"] == "overlay.set" {
+            overlay_frames.push(frame);
+        }
+    }
+    assert_eq!(
+        overlay_frames.len(),
+        2,
+        "both overlay.set frames must replay (replay is wire-faithful, not version-filtered)"
+    );
+    let v1_frame = overlay_frames
+        .iter()
+        .find(|f| f["data"]["id"] == "ov-v1")
+        .expect("v1 overlay frame present in replay");
+    let v999_frame = overlay_frames
+        .iter()
+        .find(|f| f["data"]["id"] == "ov-v999")
+        .expect("v999 overlay frame present in replay — replay must NOT silently consume future versions");
+    // Confirm the v999 schemaVersion field rides through verbatim.
+    assert_eq!(
+        v999_frame["data"]["payload"]["schemaVersion"], 999,
+        "replay carries schemaVersion=999 transparently"
+    );
+    // And the v1 row genuinely has no schemaVersion key — the test
+    // would be uninformative if both rows secretly carried it.
+    assert!(
+        v999_frame["data"]["payload"]
+            .get("schemaVersion")
+            .is_some(),
+        "v999 frame retains its schemaVersion field"
+    );
+    assert!(
+        v1_frame["data"]["payload"]
+            .get("schemaVersion")
+            .is_none(),
+        "v1 frame retains its missing-field shape (not coerced to {{schemaVersion: 1}})"
+    );
+
+    // ---- Read-side arm: the WS bridge above demonstrated that the
+    // event log carries the future row. To exercise the REST read
+    // guard, we need the same shapes to also live in the OVERLAYS
+    // table. The fixture's `overlay.set` events only write to the
+    // events log, not the overlays table (the route handler does the
+    // upsert separately). So we mirror them via the repo's
+    // `overlay_upsert` to set up the read-side test bed. The write
+    // path's `validate_overlay_payload` would refuse the v999
+    // payload, which is exactly why we go through the repo trait
+    // directly — to simulate a "row written by a future kernel"
+    // scenario.
+    // Use two distinct overlay `kind`s so they coexist (the unique
+    // key on the overlays table is (plugin_id, entity_kind,
+    // entity_id, kind) — upserting the same kind would replace,
+    // not co-store).
+    //
+    //   * `status` v1 — the legacy row, no schemaVersion field
+    //   * `progress` v999 — the future-kernel row whose schemaVersion
+    //     exceeds the kernel's ceiling (both kinds cap at v1 today)
+    repo.overlay_upsert(NewOverlay {
+        plugin_id: "core".into(),
+        entity_kind: "wave".into(),
+        entity_id: "wave-fwd".into(),
+        kind: "status".into(),
+        payload: serde_json::json!({"state": "ok"}),
+    })
+    .await
+    .expect("upsert v1 status overlay (no schemaVersion)");
+    repo.overlay_upsert(NewOverlay {
+        plugin_id: "core".into(),
+        entity_kind: "wave".into(),
+        entity_id: "wave-fwd".into(),
+        kind: "progress".into(),
+        // The route's write-side validator (`validate_overlay_payload`)
+        // would reject this; going through `repo.overlay_upsert`
+        // bypasses the route layer on purpose — we're simulating "row
+        // landed via a future kernel binary writing the same DB" so
+        // the read-side guard's drop path actually has something to
+        // drop.
+        payload: serde_json::json!({
+            "value": 0.5,
+            "schemaVersion": 999,
+            "fromFuture": "yes",
+        }),
+    })
+    .await
+    .expect("upsert v999 progress overlay (future-kernel simulation)");
+
+    // Verify the raw repo returns BOTH rows — the filter is a route-
+    // layer concern, not a repo concern.
+    let raw = repo
+        .overlays_for("wave", "wave-fwd")
+        .await
+        .expect("repo overlays_for");
+    assert_eq!(
+        raw.len(),
+        2,
+        "repo.overlays_for returns the raw row count (filter happens at the route layer)"
+    );
+
+    // Mount the full router with the AppState the route handlers need.
+    // We can't reuse `boot()` here — it stands up a WS-only router.
+    // Build the full stack from `boot_in_memory` (re-using the same
+    // repo so the data we inserted above is visible).
+    let app = build_full_app(repo.clone(), bus.clone());
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/overlays?entity_kind=wave&entity_id=wave-fwd")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let listed: Vec<serde_json::Value> = serde_json::from_slice(&bytes).expect("decode list");
+    assert_eq!(
+        listed.len(),
+        1,
+        "read-side guard must drop the v999 row (kernel-owned `progress` kind, future version); \
+         got {} rows: {:?}",
+        listed.len(),
+        listed,
+    );
+    assert_eq!(
+        listed[0]["kind"], "status",
+        "the surviving row is the v1-shaped status overlay (no schemaVersion field)"
+    );
+    assert!(
+        listed[0]["payload"]
+            .get("schemaVersion")
+            .is_none(),
+        "the v1 row reaches the client without an added schemaVersion field"
+    );
+}
+
+/// Build the full kernel HTTP router (REST + WS + plugins + …) against
+/// an existing in-memory `SqlxRepo` and `EventBus`. Mirrors what
+/// `boot_in_memory()` does internally but with the repo + bus the
+/// caller already has — so the data inserted via the repo above is
+/// visible to the route handlers.
+fn build_full_app(repo: Arc<calm_server::db::sqlite::SqlxRepo>, events: EventBus) -> axum::Router {
+    use calm_server::card_role_cache::CardRoleCache;
+    use calm_server::plugin_host::{PluginHost, PluginRegistry};
+    use calm_server::routes;
+    use calm_server::state::{AppState, CodexClient, DaemonClient};
+
+    let card_role_cache = CardRoleCache::new();
+    let plugin = Arc::new(PluginHost::new_full(
+        Arc::new(PluginRegistry::empty()),
+        repo.clone(),
+        std::path::PathBuf::new(),
+        std::env::temp_dir().join("calm-plugins-data-schema-fwd"),
+        Vec::new(),
+        events.clone(),
+        card_role_cache.clone(),
+    ));
+    let state = AppState::from_parts(
+        repo,
+        events,
+        Arc::new(DaemonClient::new_stub()),
+        plugin,
+        Arc::new(CodexClient::new_stub()),
+        Some(card_role_cache),
+    );
+    routes::router()
+        .layer(axum::middleware::from_fn(
+            calm_server::actor::actor_middleware,
+        ))
+        .with_state(state)
+}
