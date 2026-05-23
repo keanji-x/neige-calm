@@ -217,6 +217,14 @@ export function ServerCompatGate({ children }: { children: ReactNode }) {
   // EventBridge stays unmounted, so no WS attempt happens until we know
   // the server is compatible. Once the query resolves on a compatible
   // server, the bridge mounts and opens the socket.
+  //
+  // Issue #198 followup (PR #215): children that call `sharedEventStream()`
+  // during this in-flight window (e.g. `useConnectionState`, codex's hook
+  // listener) USED TO trigger the singleton's auto-`start()`, opening a
+  // socket before the bridge ran. The singleton is now inert until the
+  // bridge calls `start()` explicitly, so the WS is genuinely not opened
+  // before the compat verdict lands — the documented invariant above
+  // holds verbatim, not merely in practice.
   return (
     <>
       {q.data ? <EventBridge syncEventVersion={q.data.syncEventVersion} /> : null}

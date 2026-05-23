@@ -47,6 +47,11 @@ const fakeStream = {
   // `subscribe`. The fake records the value so a test can assert ordering
   // (see the "syncEventVersion is set before subscribe" case).
   setSyncEventVersion: vi.fn(),
+  // Issue #198 followup: the bridge is the sole `start()` caller on the
+  // shared singleton (`sharedEventStream()` no longer auto-starts). The
+  // fake records the invocation so tests can assert it ran AFTER
+  // setSyncEventVersion / subscribe — see the ordering case below.
+  start: vi.fn(),
   on(fn: Listener) {
     this.listeners.add(fn);
     return () => {
@@ -80,6 +85,7 @@ const fakeStream = {
     this.snapshotRequiredListeners.clear();
     this.subscribe.mockClear();
     this.setSyncEventVersion.mockClear();
+    this.start.mockClear();
   },
 };
 
@@ -125,10 +131,14 @@ describe('EventBridge', () => {
     cleanup();
   });
 
-  it('issue #198 — calls setSyncEventVersion BEFORE subscribe', () => {
+  it('issue #198 — calls setSyncEventVersion BEFORE subscribe BEFORE start', () => {
     // The bridge must wire the server-declared sync event version into the
     // stream before any subscribe runs, so the very first frame the server
     // pushes (replay or live) is already gated by the eventVersion ceiling.
+    // The followup (PR #215) also moves the singleton's `start()` call here
+    // — `sharedEventStream()` no longer auto-starts — so the WS is genuinely
+    // not opened until the bridge has finished wiring the gate. Ordering
+    // must be: setSyncEventVersion → subscribe → start.
     const client = makeClient();
     const Wrapper = wrap(client);
     render(
@@ -139,12 +149,15 @@ describe('EventBridge', () => {
 
     expect(fakeStream.setSyncEventVersion).toHaveBeenCalledTimes(1);
     expect(fakeStream.setSyncEventVersion).toHaveBeenCalledWith(7);
+    expect(fakeStream.start).toHaveBeenCalledTimes(1);
 
-    // Ordering: setSyncEventVersion must be called before subscribe. We
-    // compare the vi.fn invocation order via `mock.invocationCallOrder`.
+    // Ordering: setSyncEventVersion → subscribe → start. We compare the
+    // vi.fn invocation order via `mock.invocationCallOrder`.
     const setOrder = fakeStream.setSyncEventVersion.mock.invocationCallOrder[0];
     const subOrder = fakeStream.subscribe.mock.invocationCallOrder[0];
+    const startOrder = fakeStream.start.mock.invocationCallOrder[0];
     expect(setOrder).toBeLessThan(subOrder);
+    expect(subOrder).toBeLessThan(startOrder);
     cleanup();
   });
 

@@ -606,3 +606,94 @@ describe('EventStream connection state', () => {
     expect(states).toEqual(['disconnected', 'connecting']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #198 followup: `sharedEventStream()` singleton lifecycle.
+//
+// PR #215 documented "EventBridge mounts after compat lands → WS opens"; in
+// practice `ServerCompatGate` renders children eagerly while `q.data` is in
+// flight, and any child that called `sharedEventStream()` (e.g. the
+// connection-indicator hook, codex's hook listener) would trigger the
+// singleton's auto-`start()` and open a socket BEFORE the compat verdict.
+// The per-frame eventVersion gate's "tolerate null syncEventVersion"
+// fallback kept this from being a correctness bug, but the documented
+// invariant — "WS unattempted until compat verdict lands" — was overstated.
+//
+// The fix is to make the singleton inert until something explicitly calls
+// `start()`. The EventBridge is the sole caller; sibling consumers only
+// register observers. These tests pin the new contract.
+// ---------------------------------------------------------------------------
+
+describe('sharedEventStream singleton (issue #198 followup)', () => {
+  let sharedEventStream: typeof import('./events').sharedEventStream;
+  let _resetSharedStreamForTest: typeof import('./events')._resetSharedStreamForTest;
+
+  beforeEach(async () => {
+    // Re-import to grab the new symbols alongside `EventStream` (the
+    // top-level `beforeEach` already calls `vi.resetModules`).
+    ({ sharedEventStream, _resetSharedStreamForTest } = await import('./events'));
+  });
+
+  afterEach(() => {
+    _resetSharedStreamForTest();
+  });
+
+  it('does NOT open a WebSocket on first access (in-flight race closed)', () => {
+    // Simulate the race: `ServerCompatGate` renders children eagerly while
+    // the version query is pending, and a child hook calls
+    // `sharedEventStream()` to register an observer. The old code path
+    // auto-`start()`ed the singleton here, which constructs a WebSocket
+    // before `EventBridge` has had a chance to stamp the syncEventVersion
+    // or even run at all. With the followup gate in place, no WS is
+    // constructed until something — and in production, only
+    // `EventBridge` — explicitly calls `start()`.
+    const before = instances.length;
+    const stream = sharedEventStream();
+    expect(stream).toBeDefined();
+    // The singleton was created but is inert: no FakeWebSocket constructor
+    // call happened, and the state remains the "nothing's happening yet"
+    // baseline. (Matches the disconnected→connecting→connected ladder's
+    // initial rung documented in the ConnectionState comment.)
+    expect(instances.length).toBe(before);
+    expect(stream.state).toBe('disconnected');
+  });
+
+  it('returns the same instance on repeated access (singleton contract)', () => {
+    const a = sharedEventStream();
+    const b = sharedEventStream();
+    expect(a).toBe(b);
+    // Still no WS — repeated access doesn't change the "inert until
+    // start()" invariant.
+    expect(instances.length).toBe(0);
+  });
+
+  it('observer registration (on / onConnectionState / addTopic) works without start()', () => {
+    // The whole point of the followup: callers that only OBSERVE (codex
+    // listening for `codex.hook`, the connection indicator surfacing
+    // `state`) must be able to call into the singleton during the in-
+    // flight window without triggering a connect. Registration is
+    // connection-agnostic by construction — these calls are safe no-ops
+    // on the wire side.
+    const stream = sharedEventStream();
+    const off = stream.on(() => {});
+    const offState = stream.onConnectionState(() => {});
+    stream.addTopic('card:foo');
+    // None of those triggered a socket.
+    expect(instances.length).toBe(0);
+    off();
+    offState();
+  });
+
+  it('explicit start() opens a WebSocket (EventBridge path)', () => {
+    // The bridge's contract: setSyncEventVersion → subscribe → start. We
+    // exercise just the start hop here — the bridge wiring itself is
+    // covered in `eventBridge.test.tsx`.
+    const stream = sharedEventStream();
+    stream.setSyncEventVersion(1);
+    stream.subscribe(['*']);
+    stream.start();
+    // Now (and only now) the WS constructor fires.
+    expect(instances.length).toBe(1);
+    expect(stream.state).toBe('connecting');
+  });
+});

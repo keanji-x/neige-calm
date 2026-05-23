@@ -174,6 +174,16 @@ export function EventBridge({ syncEventVersion }: EventBridgeProps) {
     // the `Per-frame eventVersion gate` comment in `api/events.ts`.
     stream.setSyncEventVersion(syncEventVersion);
     stream.subscribe(['*']);
+    // Issue #198 followup: the bridge is the sole `start()` caller for the
+    // shared singleton. Sibling components (`useConnectionState`, codex's
+    // hook listener) call `sharedEventStream()` to register observers, but
+    // those calls no longer open a WebSocket on their own — the singleton
+    // is intentionally inert until this line runs. That closes the
+    // in-flight window where `ServerCompatGate`'s eagerly-rendered children
+    // could trigger a connection BEFORE the compat verdict landed; an
+    // incompatible frontend now never opens `/api/events`. See the
+    // singleton-lifecycle comment in `api/events.ts`.
+    stream.start();
 
     // Resolve the trace gate once per mount. We literally short-circuit
     // on `import.meta.env.DEV` HERE (not just inside `isTraceEnabled`)
