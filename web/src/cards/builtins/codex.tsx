@@ -74,8 +74,6 @@ function CodexCard({ card }: { card: CodexCardData }) {
 function CodexCardImpl({ card }: { card: CodexCardData }) {
   const cardId = card.id;
   const { resolved: theme } = useTheme();
-  // eslint-disable-next-line no-console
-  console.warn('[#177 CodexCardImpl render]', { theme, cardId: card.id });
   // FSM state owned by the kernel `card_fsm` task. Defaults to "Starting"
   // until the first overlay.set lands (the kernel writes one on the
   // session_start hook, so this placeholder is usually visible for a few

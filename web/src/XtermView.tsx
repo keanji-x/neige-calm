@@ -122,19 +122,11 @@ interface ExitInfo {
  * tab so we leave it out of the capability set.
  */
 export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
-  // eslint-disable-next-line no-console
-  console.warn('[#177 XtermView render]', { theme, terminalId });
-  const instanceIdRef = useRef<string | undefined>(undefined);
-  if (!instanceIdRef.current) {
-    instanceIdRef.current = Math.random().toString(36).slice(2, 8);
-  }
-
   // #177 — Playwright instrumentation. Gated on `?testMounts=1` so production
   // users never carry the side effect (the counter is on `window`). A real
   // mount bumps `__xtermMounts__` by 1; unmount decrements. The e2e regression
-  // in `web/e2e/177-theme-toggle-no-remount.spec.ts` reads this between
-  // theme-toggle steps to detect the bug the user reproduced manually
-  // (instance id flipping `bscohp` → `zjqsq4` on theme change).
+  // in `web/e2e/a11y-177-theme-toggle-no-remount.spec.ts` reads this between
+  // theme-toggle steps to pin the "no remount on theme toggle" contract.
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const url = new URL(window.location.href);
@@ -146,12 +138,6 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
     };
   }, []);
 
-  // eslint-disable-next-line no-console
-  console.warn('[#177 XtermView instance]', {
-    theme,
-    terminalId,
-    instance: instanceIdRef.current,
-  });
   const containerRef = useRef<HTMLDivElement | null>(null);
   // Live ref to the active xterm.js Terminal instance so a sibling effect
   // can re-apply the theme without tearing down the WebSocket + replay
@@ -284,12 +270,6 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
     // no zombie message risk.
     const pendingFrames: ClientMsg[] = [];
     const send = (msg: ClientMsg) => {
-      // eslint-disable-next-line no-console
-      console.warn('[#177 send]', {
-        msg: Object.keys(msg)[0],
-        wsReadyState: ws.readyState,
-        action: ws.readyState === WebSocket.OPEN ? 'sent' : 'queued',
-      });
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(msg));
       } else {
@@ -307,8 +287,6 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
       send(pendingThemeRef.current);
       pendingThemeRef.current = null;
     }
-    // eslint-disable-next-line no-console
-    console.warn('[#177 ws-mount] sendRef populated');
 
     // Per-connection client id. The daemon's `OwnerRegistry` keys on this
     // so the same browser tab survives WS reconnects without losing
@@ -587,11 +565,6 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
     void ptySeq;
 
     return () => {
-      // eslint-disable-next-line no-console
-      console.warn('[#177 ws-mount CLEANUP RUNNING]', {
-        terminalId,
-        sendRefMatches: sendRef.current === send,
-      });
       ro.disconnect();
       dataSub.dispose();
       try {
@@ -610,8 +583,6 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
       // mount's installed sender.
       if (sendRef.current === send) {
         sendRef.current = null;
-        // eslint-disable-next-line no-console
-        console.warn('[#177 ws-mount] sendRef nulled (cleanup)');
       }
     };
     // `theme` deliberately omitted: a theme flip should NOT rebuild the
