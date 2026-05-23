@@ -111,7 +111,11 @@ async fn boot() -> Boot {
     }
 }
 
-async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) {
+/// Returns `(status, json_or_null, raw_text)`. Axum's 422 surface from a
+/// serde-rejected `Json<T>` is `text/plain` (not JSON); we keep both
+/// shapes so the missing-theme test below can substring-match against
+/// the raw text while the happy-path test still drills into the JSON.
+async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value, String) {
     let resp = app
         .oneshot(
             Request::builder()
@@ -125,8 +129,9 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) 
         .unwrap();
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let text = String::from_utf8_lossy(&bytes).to_string();
     let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    (status, json)
+    (status, json, text)
 }
 
 /// Wait up to `timeout` for any `*.argv` file under `data_dir`. The
@@ -167,12 +172,14 @@ async fn wave_create_with_theme_stamps_terminal_fg_bg_args() {
 
     // POST /api/waves with the dark-theme RGB the web client uses
     // (`DARK_THEME_RGB` in `web/src/shared/themeRgb.ts`).
-    let (status, body) = post(
+    let (status, body, _text) = post(
         boot.app.clone(),
         "/api/waves",
         json!({
             "cove_id": boot.cove_id,
             "title": "theme wave",
+            "cwd": "/tmp/issue-250-pr2-test",
+            "attach_folder": true,
             "theme": {
                 "fg": [216, 219, 226],
                 "bg": [15, 20, 24]
@@ -260,18 +267,30 @@ async fn wave_create_with_theme_stamps_terminal_fg_bg_args() {
 async fn wave_create_without_theme_is_rejected() {
     let boot = boot().await;
 
-    let (status, _body) = post(
+    // Body includes every other required field (cwd, attach_folder); only
+    // `theme` is missing. Without this guard the body's first missing
+    // required field (e.g. `cwd`) could fire the 422 instead, leaving the
+    // theme-required contract silently un-tested. The body-substring
+    // assertion below pins `theme` as the rejected field.
+    let (status, _body, text) = post(
         boot.app.clone(),
         "/api/waves",
         json!({
             "cove_id": boot.cove_id,
-            "title": "no theme wave"
+            "title": "no theme wave",
+            "cwd": "/tmp/issue-250-pr2-test",
+            "attach_folder": true,
         }),
     )
     .await;
     assert_eq!(
         status,
         StatusCode::UNPROCESSABLE_ENTITY,
-        "wave-create without theme must be rejected (422); got status={status}"
+        "wave-create without theme must be rejected (422); got status={status}, body={text}"
+    );
+    assert!(
+        text.contains("theme"),
+        "422 must name `theme` as the rejected field (so a future \
+         regression to `theme: Option<>` is caught); got body={text}"
     );
 }

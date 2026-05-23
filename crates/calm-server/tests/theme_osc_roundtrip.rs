@@ -328,6 +328,8 @@ async fn create_wave(app: axum::Router, cove_id: &str) -> String {
         json!({
             "cove_id": cove_id,
             "title": "osc-e2e",
+            "cwd": "/tmp/issue-250-pr2-test",
+            "attach_folder": true,
             "theme": { "fg": [216, 219, 226], "bg": [15, 20, 24] },
         }),
     )
@@ -748,6 +750,8 @@ async fn spec_card_path_osc_roundtrip_light_theme() {
         json!({
             "cove_id": boot.cove_id,
             "title": "light-theme spec-card osc roundtrip",
+            "cwd": "/tmp/issue-250-pr2-test",
+            "attach_folder": true,
             "theme": { "fg": [42, 47, 58], "bg": [252, 254, 255] }
         }),
     )
