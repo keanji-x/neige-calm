@@ -21,6 +21,7 @@
 // later without changing the public hook surface.
 
 import {
+  keepPreviousData,
   useMutation,
   useQuery,
   useQueryClient,
@@ -112,7 +113,28 @@ export function useWavesByCoveQuery(
   });
 }
 
-/** Wave detail (cards + overlays). Disabled when `waveId` falsy. */
+/** Wave detail (cards + overlays). Disabled when `waveId` falsy.
+ *
+ * #177: We use `placeholderData: keepPreviousData` so the query keeps its
+ * last successful value visible while a background refetch is in flight.
+ * Without it, `useWaveDetailQuery` would briefly surface `data: undefined`
+ * across an `invalidateQueries`-driven refetch (the wave detail route is
+ * invalidated by overlay.set / wave.updated / card.* events on the WS bus).
+ * `WaveComponent` early-returns `null` on `!detailQ.data`, which unmounts
+ * the entire wave subtree — including the lazy-loaded `XtermView` and its
+ * `prevThemeRef`. On remount, `prevThemeRef` is `null`, so the very next
+ * theme toggle can't fire the `TerminalThemeUpdate` OSC over the live WS
+ * (the effect compares to a null prev and treats it as the initial mount).
+ *
+ * Keeping previous data stops the unmount chain at the source: refetches
+ * become transparent to children, XtermView stays mounted across the
+ * overlay-update feedback loop on theme toggle, and the OSC fires.
+ *
+ * Follow-up (separate issue): the CSS `[data-theme="dark"]` swap on theme
+ * toggle triggers a layout change that RGL detects (likely a dimension-
+ * affecting variable) → onLayoutChange → PATCH overlay → overlay.set event
+ * → invalidate. That feedback loop is wasteful and worth investigating.
+ */
 export function useWaveDetailQuery(
   waveId: string | undefined | null,
   opts?: Partial<UseQueryOptions<KernelWaveDetail, Error>>,
@@ -120,6 +142,7 @@ export function useWaveDetailQuery(
   return useQuery<KernelWaveDetail, Error>({
     ...waveDetailQueryOptions(waveId ?? ''),
     enabled: !!waveId,
+    placeholderData: keepPreviousData,
     ...opts,
   });
 }
