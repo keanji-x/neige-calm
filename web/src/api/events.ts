@@ -520,14 +520,41 @@ function wsUrl(path: string): string {
 // ---------------- React-flavored helper (kept here so callers can pick) ----
 
 /**
- * Singleton stream. Lazily started on first subscribe; callers don't manage
- * its lifecycle. Module-level so a hot-reload doesn't churn the connection.
+ * Singleton stream. Module-level so a hot-reload doesn't churn the connection.
+ *
+ * Issue #198 followup (PR #215): we DO NOT auto-call `start()` here. The
+ * `/api/events` WebSocket may only be opened once `ServerCompatGate` has
+ * confirmed the server is compatible AND `EventBridge` has stamped the
+ * `syncEventVersion` onto the stream — otherwise an incompatible frontend
+ * could briefly hold a live socket before the compat verdict lands, and a
+ * subscriber could see frames the per-frame eventVersion gate is not yet
+ * configured to drop.
+ *
+ * The bridge is the singleton's sole `start()` caller: it sets the version,
+ * subscribes, THEN starts the socket (see `app/eventBridge.tsx`). Other
+ * consumers (`useConnectionState`, codex's hook listener) just register
+ * handlers — registration is connection-agnostic, so calling
+ * `sharedEventStream()` from a component that mounts before the bridge is
+ * now safe by construction: no socket is attempted until the bridge runs.
+ *
+ * For tests that need a connected stream without the bridge in scope,
+ * construct `new EventStream(url)` directly and call `start()` — the class
+ * surface is unchanged; only the singleton's lifecycle moved.
  */
 let _shared: EventStream | null = null;
 export function sharedEventStream(): EventStream {
   if (!_shared) {
     _shared = new EventStream();
-    _shared.start();
   }
   return _shared;
+}
+
+/** Test-only reset for the singleton. Mirrors `_resetProbeForTest` — used
+ *  by test suites that import this module across `vi.resetModules()` calls
+ *  to make sure each scenario starts from a clean singleton. Not part of
+ *  the public surface; the underscore prefix marks the unsupported escape
+ *  hatch. */
+export function _resetSharedStreamForTest(): void {
+  if (_shared) _shared.close();
+  _shared = null;
 }
