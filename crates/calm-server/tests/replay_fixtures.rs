@@ -560,6 +560,31 @@ async fn schema_version_replay_transparent_but_read_guard_drops_future() {
     let ids = raw_insert_fixture_events(&repo, &bus, &fixture).await;
     assert_eq!(ids.len(), fixture.events.len(), "seed inserted all events");
 
+    // Pre-check the events table directly to pin the failure layer if
+    // the WS assertion below misfires. The WS replay path is just
+    // `events_since(0) → render_envelope → tx.send` in sequence; if the
+    // DB-side already has both overlay.set rows, any frame-count
+    // mismatch on the wire is unambiguously a WS-layer regression
+    // (#199 CI flake — saved future debugging from re-deriving this).
+    let db_rows = repo
+        .events_since(0, None)
+        .await
+        .expect("events_since after seed");
+    assert_eq!(
+        db_rows.len(),
+        fixture.events.len(),
+        "events_since(0) returns every seeded row; seed-layer drift"
+    );
+    let db_overlay_count = db_rows
+        .iter()
+        .filter(|(_, _, _, ev)| ev.kind_tag() == "overlay.set")
+        .count();
+    assert_eq!(
+        db_overlay_count, 2,
+        "both overlay.set rows are persisted; if this passes but the WS \
+         assertion below fails, the bug is in `ws::events::run_replay`"
+    );
+
     let url = format!("ws://{}/api/events", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url)
         .await
@@ -568,20 +593,31 @@ async fn schema_version_replay_transparent_but_read_guard_drops_future() {
         .await
         .expect("send sub");
 
+    // Drain every frame in the replay window into `all_frames` so on
+    // failure we can print exactly what the server sent. The contract
+    // under test is "the replay window contains both overlay.set
+    // envelopes verbatim, terminated by `_replay_complete`"; the
+    // `recv_json` helper already bounds each per-frame wait at 2s, so
+    // a missing trailing frame surfaces as a timeout panic with the
+    // frames-so-far visible in `all_frames` via the assertion message.
+    let mut all_frames: Vec<serde_json::Value> = Vec::new();
     let mut overlay_frames: Vec<serde_json::Value> = Vec::new();
     loop {
         let frame = recv_json(&mut ws).await;
+        all_frames.push(frame.clone());
+        if frame["ev"] == "overlay.set" {
+            overlay_frames.push(frame.clone());
+        }
         if frame["ev"] == "_replay_complete" {
             break;
-        }
-        if frame["ev"] == "overlay.set" {
-            overlay_frames.push(frame);
         }
     }
     assert_eq!(
         overlay_frames.len(),
         2,
-        "both overlay.set frames must replay (replay is wire-faithful, not version-filtered)"
+        "both overlay.set frames must replay (replay is wire-faithful, not version-filtered); got {} overlay.set frames in the replay window. All frames: {:#?}",
+        overlay_frames.len(),
+        all_frames,
     );
     let v1_frame = overlay_frames
         .iter()
