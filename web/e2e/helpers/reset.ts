@@ -91,8 +91,16 @@ export async function createWaveInCove(
   title: string,
 ): Promise<{ id: string; title: string }> {
   const url = `http://127.0.0.1:${REPLAY_PORT}/api/waves`;
+  // `theme` is required end-to-end (#177): the kernel rejects a body
+  // without it (422). Pass an inert dark-theme sentinel — the e2e
+  // test doesn't probe OSC roundtrips so the concrete RGB doesn't
+  // matter, only that the request boundary accepts it.
   const response = await request.post(url, {
-    data: { cove_id: coveId, title },
+    data: {
+      cove_id: coveId,
+      title,
+      theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
+    },
     headers: { 'content-type': 'application/json' },
   });
   if (!response.ok()) {
