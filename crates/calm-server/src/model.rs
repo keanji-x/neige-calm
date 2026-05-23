@@ -165,6 +165,85 @@ pub struct CovePatch {
     pub sort: Option<f64>,
 }
 
+// ---------------- CoveFolder ----------------
+
+/// Issue #250 PR 1 — a filesystem path claimed by a cove.
+///
+/// One row per claimed directory; `path` is absolute and globally
+/// unique across the table. A folder transparently covers every
+/// descendant path — the kernel resolves a `cwd` to its owning cove
+/// via longest-prefix matching against this table (see
+/// `GET /api/coves/resolve`).
+///
+/// `id` is an autoincrement integer rather than the kernel's usual
+/// uuid-shaped TEXT id because cove_folders is a small, kernel-internal
+/// mapping that never appears in the sync engine's event log — there's
+/// no replay scenario where two replicas mint divergent ids that must
+/// later reconcile. The compact integer also keeps `/folders/:id` URLs
+/// readable.
+#[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema, TS)]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
+pub struct CoveFolder {
+    pub id: i64,
+    #[schema(value_type = String)]
+    pub cove_id: CoveId,
+    pub path: String,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, ToSchema)]
+pub struct NewCoveFolder {
+    /// Absolute filesystem path. Must start with `/`. The server trims
+    /// a trailing slash before insert (root `/` excepted) so equality
+    /// and prefix matching stay canonical.
+    pub path: String,
+}
+
+/// Issue #250 PR 1 — kind of overlap detected by the
+/// `POST /api/coves/:cove_id/folders` conflict check. Surfaces in the
+/// 409 response body so the frontend can render a precise message
+/// without re-parsing strings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
+pub enum FolderConflictKind {
+    /// Proposed path equals an existing folder's path exactly.
+    Equal,
+    /// Proposed path is an ancestor of an existing folder (claiming
+    /// `/a` while `/a/b` already exists). Forbidden — would silently
+    /// widen the existing claim.
+    Ancestor,
+    /// Proposed path is a descendant of an existing folder (claiming
+    /// `/a/b` while `/a` already exists). Forbidden — the existing
+    /// claim already covers it.
+    Descendant,
+}
+
+/// Issue #250 PR 1 — 409 body for the folder-create conflict case.
+/// Hand-written DTO so the frontend gets a structured shape rather
+/// than the generic `{error, code}` envelope.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
+pub struct FolderConflict {
+    pub folder_id: i64,
+    #[schema(value_type = String)]
+    pub cove_id: CoveId,
+    pub conflict_path: String,
+    pub conflict_kind: FolderConflictKind,
+}
+
+/// Issue #250 PR 1 — 200 body for `GET /api/coves/resolve`. The
+/// resolve endpoint returns `null` (not 404) on miss; this struct is
+/// the `Some(_)` payload.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
+pub struct CoveResolve {
+    #[schema(value_type = String)]
+    pub cove_id: CoveId,
+    pub folder_id: i64,
+    pub folder_path: String,
+}
+
 // ---------------- WaveLifecycle ----------------
 
 /// Issue #145 — Wave lifecycle state machine.

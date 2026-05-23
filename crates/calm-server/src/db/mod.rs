@@ -183,6 +183,20 @@ pub trait RepoRead: Send + Sync + 'static {
     /// `coves(kind) WHERE kind = 'system'` from migration 0009.
     async fn cove_get_system(&self) -> Result<Option<Cove>>;
 
+    // ---- cove_folders
+    /// Issue #250 PR 1 — folders claimed by a single cove, sorted by
+    /// path for stable UI ordering.
+    async fn cove_folders_by_cove(&self, cove_id: &str) -> Result<Vec<CoveFolder>>;
+    /// Issue #250 PR 1 — every folder across every cove. Used by the
+    /// resolve endpoint to do longest-prefix matching application-side
+    /// (SQLite has no native prefix function fast enough to outweigh
+    /// a Rust-side O(N) scan at the table sizes we expect — folders are
+    /// minted manually by users, not auto-discovered).
+    async fn cove_folders_list_all(&self) -> Result<Vec<CoveFolder>>;
+    /// Issue #250 PR 1 — single-row fetch for the DELETE handler's
+    /// existence check.
+    async fn cove_folder_get(&self, id: i64) -> Result<Option<CoveFolder>>;
+
     // ---- waves
     async fn waves_by_cove(&self, cove_id: &str) -> Result<Vec<Wave>>;
     async fn wave_get(&self, id: &str) -> Result<Option<Wave>>;
@@ -556,6 +570,22 @@ pub trait RepoOutOfDomain: RepoRead {
     // still upsert an empty value if they have a reason to).
     async fn settings_upsert(&self, key: &str, value: &str) -> Result<()>;
     async fn settings_delete(&self, key: &str) -> Result<()>;
+
+    // ---- cove_folders (issue #250 PR 1)
+    //
+    // Operational mapping table — not on the event-sourced sync domain
+    // path (no `Event::CoveFolderAdded`-style variants land in PR 1).
+    // Treated like terminals / plugins: server-private state, REST writes
+    // straight against the row without an event-log entry.
+    /// Insert a folder under `cove_id`. The caller is responsible for
+    /// path normalization + conflict detection — both run at the route
+    /// layer (`routes::cove_folders::create_folder`) so the structured
+    /// 409 body can be assembled with the conflicting row's metadata.
+    async fn cove_folder_create(&self, cove_id: &str, path: &str) -> Result<CoveFolder>;
+    /// Delete a folder by integer id. Returns `NotFound` when no row
+    /// exists. PR 2 will add a "has live wave referencing this path"
+    /// guard at the route layer; the repo primitive stays narrow.
+    async fn cove_folder_delete(&self, id: i64) -> Result<()>;
 }
 
 /// Prelude module that re-exports every sub-trait + `Repo` itself so test

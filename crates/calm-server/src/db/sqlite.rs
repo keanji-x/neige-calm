@@ -1237,6 +1237,39 @@ impl RepoRead for SqlxRepo {
         Ok(row)
     }
 
+    // -------------------------------------------------------- cove_folders
+    async fn cove_folders_by_cove(&self, cove_id: &str) -> Result<Vec<CoveFolder>> {
+        let rows = sqlx::query_as::<_, CoveFolder>(
+            r#"SELECT id, cove_id, path, created_at
+               FROM cove_folders WHERE cove_id = ?1 ORDER BY path ASC"#,
+        )
+        .bind(cove_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    async fn cove_folders_list_all(&self) -> Result<Vec<CoveFolder>> {
+        let rows = sqlx::query_as::<_, CoveFolder>(
+            r#"SELECT id, cove_id, path, created_at
+               FROM cove_folders ORDER BY path ASC"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    async fn cove_folder_get(&self, id: i64) -> Result<Option<CoveFolder>> {
+        let row = sqlx::query_as::<_, CoveFolder>(
+            r#"SELECT id, cove_id, path, created_at
+               FROM cove_folders WHERE id = ?1"#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
     // ---------------------------------------------------------------- waves
     async fn waves_by_cove(&self, cove_id: &str) -> Result<Vec<Wave>> {
         let rows = sqlx::query_as::<_, Wave>(
@@ -1915,6 +1948,56 @@ impl RepoOutOfDomain for SqlxRepo {
             .bind(key)
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    // ----------------------------------------------------- cove_folders
+    async fn cove_folder_create(&self, cove_id: &str, path: &str) -> Result<CoveFolder> {
+        // Parent cove must exist; surface as NotFound to mirror the
+        // terminal_create precedent above (FK error message would be
+        // less actionable for the REST caller).
+        let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM coves WHERE id = ?1")
+            .bind(cove_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        if exists.is_none() {
+            return Err(CalmError::NotFound(format!("cove {cove_id}")));
+        }
+        let now = now_ms();
+        // The UNIQUE constraint on `path` is the backstop here. The
+        // route layer has already done equality / ancestor / descendant
+        // conflict detection so a real-world INSERT failing the
+        // UNIQUE is a race (concurrent claim of the same path). Bubble
+        // it up as the generic Conflict so the surface is honest.
+        let res =
+            sqlx::query("INSERT INTO cove_folders (cove_id, path, created_at) VALUES (?1, ?2, ?3)")
+                .bind(cove_id)
+                .bind(path)
+                .bind(now)
+                .execute(&self.pool)
+                .await;
+        match res {
+            Ok(out) => Ok(CoveFolder {
+                id: out.last_insert_rowid(),
+                cove_id: cove_id.to_string().into(),
+                path: path.to_string(),
+                created_at: now,
+            }),
+            Err(sqlx::Error::Database(dbe)) if dbe.message().contains("UNIQUE") => Err(
+                CalmError::Conflict(format!("cove_folders.path already claims `{path}`")),
+            ),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    async fn cove_folder_delete(&self, id: i64) -> Result<()> {
+        let res = sqlx::query("DELETE FROM cove_folders WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        if res.rows_affected() == 0 {
+            return Err(CalmError::NotFound(format!("cove_folder {id}")));
+        }
         Ok(())
     }
 }

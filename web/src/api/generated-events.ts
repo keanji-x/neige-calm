@@ -115,6 +115,24 @@ export type Cove = { id: CoveId, name: string, color: string, sort: number,
 kind: CoveKind, created_at: number, updated_at: number, };
 
 /**
+ * Issue #250 PR 1 — a filesystem path claimed by a cove.
+ *
+ * One row per claimed directory; `path` is absolute and globally
+ * unique across the table. A folder transparently covers every
+ * descendant path — the kernel resolves a `cwd` to its owning cove
+ * via longest-prefix matching against this table (see
+ * `GET /api/coves/resolve`).
+ *
+ * `id` is an autoincrement integer rather than the kernel's usual
+ * uuid-shaped TEXT id because cove_folders is a small, kernel-internal
+ * mapping that never appears in the sync engine's event log — there's
+ * no replay scenario where two replicas mint divergent ids that must
+ * later reconcile. The compact integer also keeps `/folders/:id` URLs
+ * readable.
+ */
+export type CoveFolder = { id: number, cove_id: CoveId, path: string, created_at: number, };
+
+/**
  * Cove identifier. UUID-shaped (32 hex, no dashes) in practice, but the
  * kernel treats the value as opaque; never parses it.
  */
@@ -149,6 +167,13 @@ export type CoveId = string;
  * router belt-and-suspenders is the only frontend consumer.
  */
 export type CoveKind = "user" | "system";
+
+/**
+ * Issue #250 PR 1 — 200 body for `GET /api/coves/resolve`. The
+ * resolve endpoint returns `null` (not 404) on miss; this struct is
+ * the `Some(_)` payload.
+ */
+export type CoveResolve = { cove_id: CoveId, folder_id: number, folder_path: string, };
 
 /**
  * The full set of WS event envelopes the kernel emits on `/api/events`.
@@ -212,6 +237,21 @@ payload: unknown, } } | { "ev": "codex.job_requested", "data": { idempotency_key
  * `System`-tagged event opts out of every per-scope filter that follows.
  */
 export type EventScope = { "kind": "System" } | { "kind": "Cove", "id": { cove: CoveId, } } | { "kind": "Wave", "id": { wave: WaveId, cove: CoveId, } } | { "kind": "Card", "id": { card: CardId, wave: WaveId, cove: CoveId, } };
+
+/**
+ * Issue #250 PR 1 — 409 body for the folder-create conflict case.
+ * Hand-written DTO so the frontend gets a structured shape rather
+ * than the generic `{error, code}` envelope.
+ */
+export type FolderConflict = { folder_id: number, cove_id: CoveId, conflict_path: string, conflict_kind: FolderConflictKind, };
+
+/**
+ * Issue #250 PR 1 — kind of overlap detected by the
+ * `POST /api/coves/:cove_id/folders` conflict check. Surfaces in the
+ * 409 response body so the frontend can render a precise message
+ * without re-parsing strings.
+ */
+export type FolderConflictKind = "equal" | "ancestor" | "descendant";
 
 export type Overlay = { id: string, plugin_id: string, 
 /**

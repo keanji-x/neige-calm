@@ -13,11 +13,13 @@
 use crate::error::ErrorBody;
 use crate::model::Terminal;
 use crate::model::{
-    Card, CardPatch, Cove, CoveKind, CovePatch, NewCard, NewCove, NewOverlay, NewWave, Overlay,
-    Plugin, Wave, WaveDetail, WavePatch,
+    Card, CardPatch, Cove, CoveFolder, CoveKind, CovePatch, CoveResolve, FolderConflict,
+    FolderConflictKind, NewCard, NewCove, NewCoveFolder, NewOverlay, NewWave, Overlay, Plugin,
+    Wave, WaveDetail, WavePatch,
 };
 use crate::routes::cards::{CreateCardBody, ViaToolCall};
 use crate::routes::codex_cards::NewCodexCardBody;
+use crate::routes::cove_folders::ResolveQuery;
 use crate::routes::fs::{DirEntry, ListdirResponse};
 use crate::routes::overlays::{OverlayDeleteBody, OverlayQuery};
 use crate::routes::plugins::{
@@ -43,6 +45,11 @@ use utoipa::OpenApi;
         crate::routes::coves::get_or_create_system_cove,
         crate::routes::coves::update_cove,
         crate::routes::coves::delete_cove,
+        // ---- cove_folders (#250 PR 1) ----
+        crate::routes::cove_folders::list_folders,
+        crate::routes::cove_folders::create_folder,
+        crate::routes::cove_folders::delete_folder,
+        crate::routes::cove_folders::resolve_path,
         // ---- waves ----
         crate::routes::waves::list_waves_by_cove,
         crate::routes::waves::get_wave_detail,
@@ -91,6 +98,12 @@ use utoipa::OpenApi;
         CoveKind,
         NewCove,
         CovePatch,
+        CoveFolder,
+        NewCoveFolder,
+        CoveResolve,
+        FolderConflict,
+        FolderConflictKind,
+        ResolveQuery,
         Wave,
         NewWave,
         WavePatch,
@@ -130,6 +143,7 @@ use utoipa::OpenApi;
     )),
     tags(
         (name = "coves", description = "Cove CRUD"),
+        (name = "cove_folders", description = "Cove ↔ folder mapping: claim filesystem paths for a cove, resolve a cwd to its owning cove"),
         (name = "waves", description = "Wave CRUD + composite detail"),
         (name = "cards", description = "Card CRUD"),
         (name = "overlays", description = "Plugin-rendered overlays attached to waves/cards"),
