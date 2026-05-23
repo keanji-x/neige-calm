@@ -235,9 +235,19 @@ export function XtermView({
     }/api/terminals/${encodeURIComponent(terminalId)}`;
     const ws = new WebSocket(wsUrl);
 
+    // #177 — queue frames produced before the WS finishes its handshake.
+    // The theme-effect (sibling below) can fire between `new WebSocket(…)`
+    // and `ws.onopen` — the pre-#177 `send()` silently dropped such
+    // frames and the daemon never learned about the toggle. Buffer here
+    // and flush in `ws.onopen` (after the ClientHello). On WS close /
+    // teardown the queue is GC'd along with the closure, so there's no
+    // zombie-message risk.
+    const pendingFrames: ClientMsg[] = [];
     const send = (msg: ClientMsg) => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(msg));
+      } else {
+        pendingFrames.push(msg);
       }
     };
 
@@ -308,6 +318,17 @@ export function XtermView({
           },
         },
       });
+      // #177 — flush frames queued before the WS finished its handshake.
+      // Typical culprit: a theme toggle in the brief window between
+      // `new WebSocket(…)` and `ws.onopen`. Without this drain, the
+      // toggle would be silently dropped at the readyState check in
+      // `send()` and the daemon would never re-emit OSC matching the
+      // new host theme. Drains via `ws.send` directly (bypasses the
+      // queueing branch — we're definitely OPEN inside `onopen`).
+      while (pendingFrames.length > 0) {
+        const queued = pendingFrames.shift()!;
+        ws.send(JSON.stringify(queued));
+      }
     };
 
     ws.onmessage = (e) => {
