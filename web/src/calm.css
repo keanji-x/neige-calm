@@ -1337,9 +1337,9 @@ input, textarea { font: inherit; color: inherit; }
 }
 
 /* Card headers are RGL drag handles — give them the grab cursor and disable
-   text selection so the drag feels native. The styling of each head
-   (`.term-head`, `.codex-card-head`) lives in their own section; this
-   rule only adds the cursor. */
+   text selection so the drag feels native. The shared head styling lives on
+   `.card-head` (owned by the `<CardHead>` slot component); this rule only
+   adds the cursor. */
 .card-drag-handle {
   cursor: grab;
   user-select: none;
@@ -1465,7 +1465,7 @@ input, textarea { font: inherit; color: inherit; }
 
 /* ===== Modal (AddPanel schema form host) =====
    Mirrors the in-grid card aesthetic — same --r, --shadow, --hairline,
-   same head background as .codex-card-head / .config-card-head — so the
+   same head background as `.card-head` (var(--surface-card)) — so the
    modal reads as "a card detached from the grid", not a system dialog. */
 .modal-overlay {
   position: fixed;
@@ -1781,8 +1781,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
      the absolutely-positioned `.card-grid-close` off-center while leaving
      inline-block status dots stranded on the inflated text baseline).
      `--leading-none` is the right primitive: titles + glyph slots don't
-     wrap, so they don't need leading. Consistent with `.term-head` /
-     `.codex-card-head` history (both used `--leading-none` pre-unify). */
+     wrap, so they don't need leading. */
   line-height: var(--leading-none);
 }
 .card-head-title {
@@ -1931,7 +1930,6 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
    right-padding reserve for the in-head `.card-grid-close` X button)/
    border/background/font sizing — Codex has no further head-level
    overrides. */
-[data-theme="dark"] .codex-card-head { background: var(--surface-card); }
 
 /* Per-card status indicator is now the shared `CardStatusDot` component
    (see `web/src/shared/components/CardStatusDot.tsx`) — no card-specific
@@ -1971,8 +1969,8 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 [data-theme="dark"] .term { background: var(--surface-terminal); }
 /* `.card-head` covers display/align/gap/padding/border/background; its
-   `background: var(--surface-card)` is dark-aware, so no separate
-   `[data-theme="dark"] .term-head` override is needed here. */
+   `background: var(--surface-card)` is dark-aware, so no per-card head
+   override is needed here. */
 .term-body {
   font-family: var(--font-code);
   font-size: var(--text-sm);
@@ -2275,7 +2273,6 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
   padding-right: var(--card-head-pad-h);
   flex-shrink: 0;
 }
-[data-theme="dark"] .today-term-head { background: var(--surface-card); }
 /* The reset button now lives in the `.card-head-status` slot wrapper
    (which is right-aligned via the base's `justify-content: flex-end`),
    so `margin-left: auto` is no longer needed — the slot pins it. */

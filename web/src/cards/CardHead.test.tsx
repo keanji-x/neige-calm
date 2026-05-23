@@ -38,11 +38,10 @@ describe('<CardHead>', () => {
 
   it('merges caller className with the base `card-head` class', () => {
     const { container } = render(
-      <CardHead className="codex-card-head card-drag-handle" title="X" />,
+      <CardHead className="card-drag-handle" title="X" />,
     );
     const root = container.querySelector('.card-head');
     expect(root).not.toBeNull();
-    expect(root?.classList.contains('codex-card-head')).toBe(true);
     expect(root?.classList.contains('card-drag-handle')).toBe(true);
   });
 
