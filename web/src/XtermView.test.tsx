@@ -1,4 +1,4 @@
-// Unit tests for the v2 terminal protocol wiring in XtermView.
+// Unit tests for the v3 terminal protocol wiring in XtermView.
 //
 // We don't render real xterm.js — `@xterm/xterm` needs a real canvas and
 // `term.fit()` depends on layout that jsdom doesn't compute. Instead we
@@ -9,7 +9,7 @@
 //
 // What's locked here:
 //   - On WebSocket open, the component sends a `ClientHello` frame with
-//     protocol_version=2, terminal_id, a `client_id` UUID, the local
+//     protocol_version=3, terminal_id, a `client_id` UUID, the local
 //     viewport, `role_hint: 'Owner'`, and capabilities advertising `Vt`
 //     encoding + scrollback support but no images.
 //   - On `ServerHello`, the snapshot bytes are written to the term and
@@ -177,7 +177,7 @@ afterEach(() => {
 function serverHello(over: Record<string, unknown> = {}): unknown {
   return {
     ServerHello: {
-      protocol_version: 2,
+      protocol_version: 3,
       terminal_id: 'term_test',
       session_id: '11111111-1111-4111-8111-111111111111',
       client_role: 'Owner',
@@ -202,18 +202,23 @@ function serverHello(over: Record<string, unknown> = {}): unknown {
   };
 }
 
-describe('XtermView v2 handshake', () => {
-  it('sends ClientHello with protocol_version=2 and role_hint Owner on open', () => {
+describe('XtermView v3 handshake', () => {
+  it('sends ClientHello with protocol_version=3 and role_hint Owner on open', () => {
     render(<XtermView terminalId="term_test" />);
     const ws = currentWs();
     act(() => {
       ws.fireOpen();
     });
-    expect(ws.sentFrames).toHaveLength(1);
+    // #177 — every mount also dispatches a `TerminalThemeUpdate`
+    // (buffered before WS open, drained after onopen), so the wire
+    // carries ClientHello followed by at least one theme frame. This
+    // test only cares about the ClientHello shape; assert it's the
+    // first frame and inspect that one.
+    expect(ws.sentFrames.length).toBeGreaterThanOrEqual(1);
     const frame = JSON.parse(ws.sentFrames[0]!);
     expect(frame).toHaveProperty('ClientHello');
     const hello = frame.ClientHello;
-    expect(hello.protocol_version).toBe(2);
+    expect(hello.protocol_version).toBe(3);
     expect(hello.terminal_id).toBe('term_test');
     expect(typeof hello.client_id).toBe('string');
     expect(hello.role_hint).toBe('Owner');
@@ -278,7 +283,7 @@ describe('XtermView v2 handshake', () => {
   });
 });
 
-describe('XtermView v2 streaming', () => {
+describe('XtermView v3 streaming', () => {
   it('writes RenderPatch.data to the terminal', () => {
     render(<XtermView terminalId="term_test" />);
     const ws = currentWs();
@@ -356,7 +361,7 @@ describe('XtermView v2 streaming', () => {
   });
 });
 
-describe('XtermView v2 terminal states', () => {
+describe('XtermView v3 terminal states', () => {
   it('shows protocol-error overlay on ProtocolError', () => {
     render(<XtermView terminalId="term_test" />);
     const ws = currentWs();
@@ -377,7 +382,7 @@ describe('XtermView v2 terminal states', () => {
       screen.getByText(/protocol error: UnsupportedVersion/i),
     ).toBeInTheDocument();
     expect(screen.getByText(/kernel is v3/)).toBeInTheDocument();
-    expect(screen.getByText(/refresh required for protocol v2/i)).toBeInTheDocument();
+    expect(screen.getByText(/refresh required for protocol v3/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /refresh/i })).toBeInTheDocument();
   });
 
@@ -444,7 +449,7 @@ describe('XtermView v2 terminal states', () => {
   });
 });
 
-describe('XtermView v2 resize wiring', () => {
+describe('XtermView v3 resize wiring', () => {
   it('parses ResizeApplied without error', () => {
     render(<XtermView terminalId="term_test" />);
     const ws = currentWs();

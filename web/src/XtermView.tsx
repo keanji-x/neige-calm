@@ -12,6 +12,7 @@ import type {
   ProtocolErrorCode,
   Role,
 } from './api/generated-terminal';
+import { LIGHT_THEME_RGB, DARK_THEME_RGB } from './api/themeRgb';
 
 // Cool-neutral light xterm theme matching Calm's palette. Same numbers as
 // the previous useTerminalCore-backed version; only the wire below changed.
@@ -72,8 +73,10 @@ interface CloseInfo {
 
 /** Wire version the frontend speaks. Must match
  *  `crates/calm-session/src/lib.rs::PROTOCOL_VERSION`. A mismatch surfaces
- *  via `DaemonMsg::ProtocolError(UnsupportedVersion)` and the overlay below. */
-const PROTOCOL_VERSION = 2;
+ *  via `DaemonMsg::ProtocolError(UnsupportedVersion)` and the overlay below.
+ *  Bumped 2 → 3 in #177 for the `ClientMsg::TerminalThemeUpdate` variant
+ *  the daemon needs to re-emit OSC 10/11 on host theme toggles. */
+const PROTOCOL_VERSION = 3;
 
 /**
  * UI status for the v2 terminal protocol. Slimmed-down state machine
@@ -163,15 +166,53 @@ export function XtermView({
     setReconnectKey((k) => k + 1);
   };
 
+  // #177 — live `send` from the WS-mount effect, captured so the
+  // theme-effect can post `TerminalThemeUpdate` without owning the
+  // WebSocket itself. Cleared back to `null` on teardown.
+  const sendRef = useRef<((msg: ClientMsg) => void) | null>(null);
+  // #177 — buffer for a `TerminalThemeUpdate` produced before the WS
+  // effect populates `sendRef`. On a fresh mount the theme-effect can
+  // fire before the bridge-mount effect runs (React effects execute in
+  // declaration order, but the bridge-mount effect bails early on
+  // `!container` during the strict-mode double-invoke), so without this
+  // buffer the dispatch would no-op. The WS-mount effect drains this
+  // right after assigning `sendRef.current = send`.
+  const pendingThemeRef = useRef<ClientMsg | null>(null);
+
   // Live-apply theme changes without rebuilding the Terminal + WS.
   // xterm.js exposes `term.options` as a mutable bag; assigning
   // `term.options.theme = ...` is the official re-theming path. Putting
   // this in its own effect keeps the (heavy) bridge-mount effect's deps
   // small and lets us drop `theme` from there.
+  //
+  // #177 — also dispatch `TerminalThemeUpdate` over the WS on every
+  // run of this effect, including the initial mount. We deliberately
+  // do NOT gate on a "did theme change since last run?" check: a
+  // remount (Suspense flash, persist-query hydration, anything else
+  // that re-runs the lazy chunk) resets any per-component `prev`
+  // bookkeeping and would skip the dispatch — exactly the bug we're
+  // closing. The daemon's `TerminalThemeUpdate` handler is idempotent
+  // (same fg/bg → same OSC reply, codex re-probes harmlessly), so the
+  // worst case is one extra OSC round-trip per mount. Acceptable.
   useEffect(() => {
     const term = termRef.current;
-    if (!term) return;
-    term.options.theme = theme === 'dark' ? DARK_THEME : LIGHT_THEME;
+    if (term) {
+      term.options.theme = theme === 'dark' ? DARK_THEME : LIGHT_THEME;
+    }
+    const rgb = theme === 'dark' ? DARK_THEME_RGB : LIGHT_THEME_RGB;
+    const msg: ClientMsg = {
+      TerminalThemeUpdate: { fg: rgb.fg, bg: rgb.bg },
+    };
+    if (sendRef.current) {
+      sendRef.current(msg);
+    } else {
+      // WS effect hasn't installed `send` yet. Buffer here; the
+      // WS-mount effect drains immediately after assigning
+      // `sendRef.current` so the frame still reaches the daemon
+      // (via the `pendingFrames` queue inside `send` when readyState
+      // is CONNECTING, or directly once OPEN).
+      pendingThemeRef.current = msg;
+    }
   }, [theme]);
 
   useEffect(() => {
@@ -250,6 +291,20 @@ export function XtermView({
         pendingFrames.push(msg);
       }
     };
+    // #177 — surface `send` so the theme-effect (above) can post
+    // `TerminalThemeUpdate` without owning a WebSocket of its own.
+    // Cleared in the teardown below.
+    sendRef.current = send;
+    // #177 — drain a `TerminalThemeUpdate` buffered by the theme-effect
+    // before this WS effect ran. `send()` itself handles the
+    // not-yet-OPEN case via `pendingFrames`, so this works on a cold
+    // mount (where readyState is CONNECTING and the message rides the
+    // `pendingFrames` queue until `ws.onopen` drains it) AND on a
+    // reconnect (same path).
+    if (pendingThemeRef.current) {
+      send(pendingThemeRef.current);
+      pendingThemeRef.current = null;
+    }
 
     // Per-connection client id. The daemon's `OwnerRegistry` keys on this
     // so the same browser tab survives WS reconnects without losing
@@ -547,6 +602,13 @@ export function XtermView({
       // has already installed its own term; without this guard we'd null
       // out the new instance.
       if (termRef.current === term) termRef.current = null;
+      // #177 — symmetric guard for `sendRef`. Same strict-mode
+      // double-invoke risk as `termRef`: a teardown that runs after
+      // the next mount installed its own `send` would null out the
+      // new value. Only clear if we still own it.
+      if (sendRef.current === send) {
+        sendRef.current = null;
+      }
       // Parent should reset any role pill when the bridge tears down — the
       // next mount will re-emit on `ServerHello`. Sync here (not via
       // onclose) so a strict-mode unmount or a `terminalId` change clears
@@ -617,7 +679,7 @@ export function XtermView({
             protocol error: {protocolError.code}
             {protocolError.message ? ` — ${protocolError.message}` : ''}
             {protocolError.code === 'UnsupportedVersion'
-              ? ' (refresh required for protocol v2)'
+              ? ' (refresh required for protocol v3)'
               : ''}
           </span>
           <button
