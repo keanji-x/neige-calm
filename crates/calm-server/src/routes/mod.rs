@@ -17,6 +17,7 @@ pub mod plugins;
 pub mod settings;
 pub mod terminal;
 pub mod terminal_cards;
+pub mod theme;
 pub mod version;
 pub mod waves;
 
