@@ -9,6 +9,7 @@ use utoipa::OpenApi;
 pub mod cards;
 pub mod codex;
 pub mod codex_cards;
+pub mod cove_folders;
 pub mod coves;
 pub mod fs;
 pub mod overlays;
@@ -44,6 +45,7 @@ pub fn router() -> Router<AppState> {
 pub fn protected_router() -> Router<AppState> {
     Router::new()
         .merge(coves::router())
+        .merge(cove_folders::router())
         .merge(waves::router())
         .merge(cards::router())
         .merge(overlays::router())
