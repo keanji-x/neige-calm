@@ -1,0 +1,62 @@
+{
+  "name": "schema-forward-compat",
+  "description": "Two `overlay.set` events on the same wave: (a) a v1-shaped status overlay with NO schemaVersion field (the only shape any pre-#198 row has ever had), (b) the same status overlay rewritten by a hypothetical future kernel at schemaVersion=999. Post-#220 every client-facing read surface filters (b): WS `/api/events` replay drops the v999 row via `should_skip_event_for_overlay_version` (advancing `last_id` past it), and `GET /api/overlays` drops it via `filter_unsupported_overlay_versions`. So this fixture pins the symmetric forward-compat contract — both reads agree, frontend cannot observe v999. The accompanying test sanity-checks `payload_schema_version()` reads `1` for (a) and `999` for (b), then drives both client-facing reads against a seeded log to confirm only (a) surfaces. Regenerating from a real session must keep both shapes round-trippable through `seed_events → WS replay (filter applied) → loader`.",
+  "events": [
+    {
+      "kind": "cove.updated",
+      "actor": "user",
+      "payload": {
+        "id": "cove-fwd",
+        "name": "schema-fwd-compat",
+        "color": "#abc",
+        "kind": "user",
+        "sort": 0.0,
+        "created_at": 1,
+        "updated_at": 1
+      }
+    },
+    {
+      "kind": "wave.updated",
+      "actor": "user",
+      "payload": {
+        "id": "wave-fwd",
+        "cove_id": "cove-fwd",
+        "title": "schema-fwd-compat",
+        "sort": 0.0,
+        "archived_at": null,
+        "created_at": 2,
+        "updated_at": 2
+      }
+    },
+    {
+      "kind": "overlay.set",
+      "actor": "user",
+      "payload": {
+        "id": "ov-v1",
+        "plugin_id": "core",
+        "entity_kind": "wave",
+        "entity_id": "wave-fwd",
+        "kind": "status",
+        "payload": { "state": "ok" },
+        "updated_at": 3
+      }
+    },
+    {
+      "kind": "overlay.set",
+      "actor": "user",
+      "payload": {
+        "id": "ov-v999",
+        "plugin_id": "core",
+        "entity_kind": "wave",
+        "entity_id": "wave-fwd",
+        "kind": "status",
+        "payload": { "state": "ok", "schemaVersion": 999, "fromFuture": "yes" },
+        "updated_at": 4
+      }
+    }
+  ],
+  "expected": {
+    "last_event_kind": "overlay.set",
+    "layout_positions": {}
+  }
+}

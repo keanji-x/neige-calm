@@ -75,8 +75,11 @@ export const DB_INSTANCE_ID_STORAGE_KEY = 'calm:db_instance_id';
  * `api/events.ts`; we duplicate it here (rather than import) so the
  * cache-bust path doesn't pull the WS module into the providers'
  * import graph. The value MUST stay in sync with `events.ts`.
+ *
+ * Exported so tests can assert against the bust path's canonical key
+ * without re-hardcoding the string literal.
  */
-const WS_CURSOR_STORAGE_KEY = 'calm:sync:cursor';
+export const WS_CURSOR_STORAGE_KEY = 'calm:sync:cursor';
 
 export const queryClient = new QueryClient({
   defaultOptions: {
