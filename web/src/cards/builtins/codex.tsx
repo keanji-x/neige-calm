@@ -58,7 +58,7 @@ function UnsupportedCodexCard({
   return (
     <div className="codex-card codex-card-unsupported-version">
       <CardHead
-        className="codex-card-head card-drag-handle"
+        className="card-drag-handle"
         title="Codex"
         onClose={onClose}
         closeAriaLabel="Remove panel"
@@ -156,7 +156,7 @@ function CodexCardImpl({
   return (
     <div className="codex-card">
       <CardHead
-        className="codex-card-head card-drag-handle"
+        className="card-drag-handle"
         title="Codex"
         onClose={onClose}
         closeAriaLabel="Remove panel"

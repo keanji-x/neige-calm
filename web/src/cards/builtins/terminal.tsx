@@ -54,7 +54,7 @@ function TerminalCard({
     return (
       <div className="term term-unsupported-version">
         <CardHead
-          className="term-head card-drag-handle"
+          className="card-drag-handle"
           title={title || 'terminal'}
           onClose={onClose}
           closeAriaLabel="Remove panel"
@@ -73,7 +73,7 @@ function TerminalCard({
   return (
     <div className={'term' + (live ? ' live' : '')}>
       <CardHead
-        className="term-head card-drag-handle"
+        className="card-drag-handle"
         title={title || 'terminal'}
         onClose={onClose}
         closeAriaLabel="Remove panel"
