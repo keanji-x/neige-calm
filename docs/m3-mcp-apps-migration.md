@@ -1,6 +1,6 @@
 # M3 → MCP Apps Migration — Design
 
-**Status:** M1–M4 shipped on main as hard cuts. M5/M6 in flight.
+**Status:** M1–M6 shipped on main as hard cuts.
 **Scope:** migrate Neige's M3 plugin dialect (`neige.*` JSON-RPC + `plugin:<id>:<view>` card kinds + hand-rolled iframe sandbox + `/api/plugins/.../views/...` HTML asset) to the **MCP Apps** specification (`2026-01-26`, https://github.com/modelcontextprotocol/ext-apps) wherever the standard matches, while keeping Neige-unique extensions (overlay annotations, KV store) clearly bracketed as a custom namespace.
 
 Read alongside `/mnt/data2/kenji/neige/docs/m3-design.md`. Section numbers below match the structure of that doc where helpful (so §1 of the original maps onto §1 of the migration delta), but this is a standalone document — it does not require reading the old doc first to be useful.
@@ -207,70 +207,20 @@ The one regression to call out: AppBridge's sandbox uses `allow-same-origin` on 
 
 ## 4. Plugin authoring — what changes
 
-### 4.1 Hello-world today (215 LoC, `plugins/hello-world/src/main.rs`)
+### 4.1 Hello-world as shipped (`plugins/hello-world/src/main.rs`)
 
-Hand-rolls every byte of the wire: env intake, stdin line-reader, the JSON shape of `initialize` reply, the `serverInfo.echoed_token` field, one outbound `neige.overlay.set` request, SIGTERM handler, stdin EOF detection.
+The M6 rewrite at `plugins/hello-world/src/main.rs` (≈358 LoC, header `//! Hello-world reference plugin — M3-mcp-apps M6 rewrite.`) is the reference plugin for the new wire. It still hand-rolls the JSON-RPC framing — per resolved §7.6 row 4 there is no official Rust SDK on crates.io yet, and we deliberately do not pin a community crate — but every spec-shaped frame on the wire is now the MCP Apps shape:
 
-### 4.2 Hello-world after migration (pseudocode, ~40 LoC)
+- `initialize.params._meta["dev.neige/auth"].expected_echo` → mirrored back at `result._meta["dev.neige/auth"].echoed_token`, with the `experimental.dev.neige/kernel-callbacks` capability declared (M1).
+- `tools/list` advertises `make_status_card` with `_meta.ui.resourceUri = "ui://dev.neige.hello-world/status"` so AddPanel knows it is card-producing (M2 / §1.4).
+- `tools/call { name: "make_status_card" }` returns a `CallToolResult` carrying that `_meta.ui.resourceUri` plus a small `structuredContent` greeting; the kernel writes the Card row keyed by the URI (M2 path).
+- The autonomous overlay write from the pre-M6 binary is gone. Overlay mutation is now user-driven from the mounted iframe (`plugins/hello-world/views/status.html`), dispatched through AppBridge to the kernel's `/tool-call` route as `tools/call { name: "neige.overlay.set", … }`. Nothing in the plugin binary writes overlays anymore.
 
-Plugin authors pull in `mcp` (the official Rust SDK once it lands) or the TypeScript/Python SDK. The plugin's `main` becomes:
+### 4.2 The deferred `neige-plugin-ext` crate
 
-```rust
-// pseudocode — exact crate name TBD, currently mcp-spec/rust-sdk
-use mcp::{Server, ToolHandler, tool, init_capability};
-use mcp::ext::{NeigeExt};  // our thin shim — see §4.3
+The original M6 scope sketched a shared `neige-plugin-ext` Rust crate (and a `@neige/plugin-ext` TS counterpart) wrapping the `neige.*` JSON-RPC namespace as ergonomic methods. With only one plugin in tree, inline JSON-RPC turned out cheaper than a single-call shim, so the extraction is consciously deferred — see the `TODO(future-plugin)` comment at `plugins/hello-world/src/main.rs:27-30`. When a second plugin lands the shim becomes worth its weight; until then the inline wire stays.
 
-#[tokio::main]
-async fn main() {
-    let mut server = Server::new("neige-hello-world", "0.1.0");
-
-    // Standard MCP: register a tool that creates a card.
-    server.tool("hello.create_status_card", |args, ctx| async move {
-        let wave_id = args["wave_id"].as_str().ok_or("wave_id")?;
-        Ok(CallToolResult {
-            structured: json!({ "state": "running", "source": "hello-world" }),
-            meta: Some(json!({
-                "ui": { "resourceUri": "ui://dev.neige.hello-world/status" }
-            })),
-        })
-    });
-
-    // Standard MCP: register the HTML resource.
-    server.resource("ui://dev.neige.hello-world/status", |_| async {
-        Ok(ResourceContents {
-            mime_type: "text/html;profile=mcp-app".into(),
-            text: include_str!("../views/status.html").into(),
-            meta: Some(json!({ "ui": { "permissions": {}, "csp": {} }})),
-        })
-    });
-
-    // Neige extension (auth echo + overlay write).
-    let neige = NeigeExt::from_env().expect("Neige kernel env vars");
-    server.on_init(move |req| async move {
-        neige.echo_auth(req)?;
-        // Optionally also push an autonomous overlay on startup, matching
-        // hello-world's current "I'm up" behavior:
-        neige.overlay_set("wave", &neige.demo_wave(), "status",
-                           json!({ "state": "running" })).await?;
-        Ok(())
-    });
-
-    server.run_stdio().await.unwrap();
-}
-```
-
-What this collapses:
-
-- All JSON-RPC framing (~80 LoC currently) → SDK handles it.
-- The `initialize` echo round-trip → `NeigeExt::echo_auth` wraps it (~5 LoC of plugin).
-- The `neige.overlay.set` outbound call → `NeigeExt::overlay_set` (1 LoC of plugin).
-- The stdin-drain main loop → `server.run_stdio()` is the entire loop.
-
-The view HTML (`views/status.html`) stays unchanged but its iframe code switches from a Neige-bespoke postMessage envelope to the standard `@modelcontextprotocol/ext-apps/react` `useApp` hook (or the vanilla `App` class).
-
-### 4.3 The `NeigeExt` shim
-
-A small crate (`neige-plugin-ext` in Rust, `@neige/plugin-ext` in TypeScript) that wraps the `neige.*` JSON-RPC namespace as ergonomic methods. Holds the kernel-callback connection (which is just the same `mcp::Server` instance — the kernel and the plugin both speak MCP on the same stdio pair, and `neige.*` is a custom method prefix recognized on the client side via the `experimental.dev.neige/kernel-callbacks` capability). API sketch:
+The originally-planned API sketch is preserved here for when the extraction happens:
 
 ```rust
 impl NeigeExt {
@@ -282,7 +232,7 @@ impl NeigeExt {
 }
 ```
 
-Only the `neige.*` methods live here; standard MCP `tools/*`, `resources/*`, etc. come from the upstream SDK.
+Only the `neige.*` methods would live in the shim; standard MCP `tools/*`, `resources/*`, etc. would still ride on whatever inline (or, eventually, upstream-SDK) client the plugin author drops in.
 
 ---
 
@@ -294,7 +244,7 @@ The migration is a hard cut per §7.6 row 2. Hello-world is the only Neige plugi
 
 1. **`initialize.params.clientInfo.expected_echo` → `_meta["dev.neige/auth"]`** (M1, landed). Kernel reads the expected echo from `initialize.params._meta["dev.neige/auth"].expected_echo` and verifies the plugin's response at `result._meta["dev.neige/auth"].echoed_token` (`crates/calm-server/src/plugin_host/mcp.rs:282-426`). No dual-accept fallback.
 2. **`GET /api/plugins/:id/views/:view_id` → `GET /api/plugins/:id/resources/:view_id`** (M3, landed). The old `view_html` route is gone; the new endpoint maps the URL to `ui://<id>/<view_id>` and re-exposes the MCP `resources/read` payload over HTTP for the browser (`crates/calm-server/src/routes/plugins.rs:82-90`). Cookies removed.
-3. **`POST /api/plugins/:id/iframe-write` → `POST /api/plugins/:id/tool-call`** (M5 partial, landed). The new endpoint accepts iframe-originated `tools/call` frames; `name` MUST start with `neige.` (§7.6 row 5). The legacy iframe-write route + `IframeCookieCache` are deleted (`routes/plugins.rs:28`).
+3. **`POST /api/plugins/:id/iframe-write` → `POST /api/plugins/:id/tool-call`** (M5, landed). The new endpoint accepts iframe-originated `tools/call` frames; `name` MUST start with `neige.` (§7.6 row 5). The legacy iframe-write route + `IframeCookieCache` are deleted (`routes/plugins.rs:28`).
 4. **Card kind `plugin:<id>:<view>` → `ui://<plugin>/<view>`** (M4, landed). `web/src/api/adapt.ts` accepts **only** the canonical `ui://` URI; the legacy parser was deleted (`adapt.ts:174-176`). The kernel-side AddPanel catalog returns each entry's `resource_uri: "ui://<plugin>/<view>"` (`routes/plugins.rs:717-719`). Hello-world's card kind is rewritten as part of M6.
 5. **`neige.card.create` / `neige.overlay.set` / `neige.kv.*`** stay as Neige extensions on the same MCP connection. These are not legacy — they are the kernel-callback surface the spec deliberately doesn't cover (§2).
 
@@ -308,7 +258,7 @@ The plugin-host test suite was updated as M1/M3/M4 landed: `mcp.rs::tests` echo-
 
 Same shape as the original M3 design's §8. Six slices, sized for one worktree each. Slice ordering below is **integration order** (M1 must merge before M3, etc.); M5 + M6 can start in parallel with M3 once M2 is in.
 
-Status: **M1, M2, M3, M4 — shipped on main.** M5 — partial (host-side `POST /api/plugins/:id/tool-call` fan-out endpoint is in place; web-side AppBridge wiring is in flight). M6 — pending (hello-world rewrite + `neige-plugin-ext` crate).
+Status: **M1–M6 — shipped on main.** The `neige-plugin-ext` crate from the original M6 scope was deliberately cut — see Slice M6 below for the `TODO(future-plugin)` pointer.
 
 ### Slice M1 — adopt MCP standard `initialize` capability slot — shipped
 
@@ -371,9 +321,9 @@ Status: **M1, M2, M3, M4 — shipped on main.** M5 — partial (host-side `POST 
 
 **Test surface:** adapt.ts unit tests asserting `ui://` parse + reject of malformed; route-level test for `/api/plugins/views` emitting only `resource_uri`.
 
-### Slice M5 — drop in AppBridge on the UI side (replaces Slice F) — partial
+### Slice M5 — drop in AppBridge on the UI side (replaces Slice F) — shipped
 
-Kernel-side fan-out endpoint `POST /api/plugins/:id/tool-call` is in place (`routes/plugins.rs:89`). Web-side AppBridge wiring is pending — current code still uses the host-rolled iframe path until AppBridge integration lands.
+Kernel-side fan-out endpoint `POST /api/plugins/:id/tool-call` is live (`routes/plugins.rs:89`) and the web-calm host now mounts `@modelcontextprotocol/ext-apps` AppBridge per iframe (`web/src/cards/plugin-iframe.tsx:34-37, 182-294`): `new AppBridge(null, HOST_INFO, HOST_CAPABILITIES, …)`, `bridge.oncalltool` routes `neige.*` calls through `toolCallFromIframe`, `bridge.onloggingmessage` forwards iframe logs, and `await bridge.connect(new PostMessageTransport(...))` completes the handshake. `web/package.json:23-24` pins `@modelcontextprotocol/ext-apps ^1.7.2` and `@modelcontextprotocol/sdk ^1.29.0`.
 
 **Goal:** the plugin-iframe component uses `@modelcontextprotocol/ext-apps` AppBridge on the host (web-calm) side. The bridge owns the iframe element, the postMessage transport, the CSP, and the tool-call proxying.
 
@@ -389,15 +339,18 @@ Kernel-side fan-out endpoint `POST /api/plugins/:id/tool-call` is in place (`rou
 
 **Test surface:** Playwright/Vitest test that mounts the AppBridge against a stub kernel (the existing tools/call-stub from M2) and asserts the iframe's `ui/initialize` round-trips.
 
-### Slice M6 — migrate hello-world onto the new wire — pending
+### Slice M6 — migrate hello-world onto the new wire — shipped (hello-world plugin migrated)
 
-**Goal:** prove the wire end-to-end with a plugin written against the minimal inline MCP client + the `neige-plugin-ext` shim.
+`plugins/hello-world/src/main.rs` (≈358 LoC, header `//! Hello-world reference plugin — M3-mcp-apps M6 rewrite.`) now speaks the standard MCP Apps wire end-to-end: it reads the echo from `_meta["dev.neige/auth"]`, exposes `make_status_card` via `tools/list` with `_meta.ui.resourceUri = "ui://dev.neige.hello-world/status"`, and returns a `CallToolResult` on `tools/call`. The view code at `plugins/hello-world/views/status.html` drives outbound `tools/call { name: "neige.overlay.set", … }` through the AppBridge sandbox, replacing the old bespoke postMessage envelope.
 
-**Touch:**
-- `/mnt/data2/kenji/neige/plugins/hello-world/Cargo.toml` — depend on `neige-plugin-ext` workspace crate. **No external MCP SDK dependency** per resolved §7.6 row 4 — Anthropic's official Rust SDK isn't on crates.io yet and we don't pin to community packages.
-- `/mnt/data2/kenji/neige/plugins/hello-world/src/main.rs` — rewrite to ~40 LoC using `neige-plugin-ext`.
-- `/mnt/data2/kenji/neige/plugins/hello-world/views/status.html` — rewrite the iframe code to use `@modelcontextprotocol/ext-apps` via `<script type="module">` instead of the bespoke postMessage envelope.
-- `/mnt/data2/kenji/neige/crates/neige-plugin-ext/` — new workspace crate (~150 LoC) exposing `NeigeExt`, wrapping the `neige.*` JSON-RPC namespace and a minimal MCP `initialize`/`tools/list`/`tools/call`/`resources/read` client. When Anthropic ships an official Rust SDK, swap the inner client for it; the `NeigeExt` API stays.
+**Deliberately cut — `neige-plugin-ext` crate.** The original M6 scope envisioned a shared `neige-plugin-ext` workspace crate wrapping the `neige.*` namespace. With only one plugin in tree, inline JSON-RPC is cheaper than a one-call shim; the extraction is consciously deferred until a second plugin justifies the abstraction. See the `TODO(future-plugin)` comment at `plugins/hello-world/src/main.rs:27-30` for the pointer.
+
+**Goal (as shipped):** prove the wire end-to-end with the hello-world reference plugin written against the minimal inline MCP client.
+
+**Touch (as landed):**
+- `plugins/hello-world/Cargo.toml` — minimal deps (tokio + serde + serde_json). **No external MCP SDK dependency** per resolved §7.6 row 4 — Anthropic's official Rust SDK isn't on crates.io yet and we don't pin to community packages.
+- `plugins/hello-world/src/main.rs` — full rewrite around inline JSON-RPC. The `neige-plugin-ext` extraction is deferred (see above).
+- `plugins/hello-world/views/status.html` — rewrites the iframe code against the AppBridge sandbox; outbound writes are `tools/call { name: "neige.overlay.set", … }` over the bridge transport.
 
 **Public interface produced:** a reference plugin demonstrating the entire stack.
 

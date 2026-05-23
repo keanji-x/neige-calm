@@ -38,7 +38,7 @@ The rule is **negotiate at handshake, fail loudly on mismatch**. Every Tier B su
 
 Tier B surfaces in neige-calm today:
 
-- **MCP `protocolVersion`.** The kernel sends `KERNEL_PROTOCOL_VERSION = "2025-11-25"` on init and **enforces an exact match** on the plugin's echoed `result.protocolVersion`; a mismatch surfaces as `McpError::ProtocolVersionMismatch` and the plugin is refused (issue #45). See `crates/calm-server/src/plugin_host/mcp.rs:47` (constant) and `mcp.rs:404-417` (compare site).
+- **MCP `protocolVersion`.** The kernel sends `KERNEL_PROTOCOL_VERSION = "2025-11-25"` on init and **enforces an exact match** on the plugin's echoed `result.protocolVersion`; a mismatch surfaces as `McpError::ProtocolVersionMismatch` and the plugin is refused (issue #45). See `crates/calm-server/src/plugin_host/mcp.rs:47` (constant) and `mcp.rs:410-419` (compare site).
 - **MCP capability versions.** Inside `experimental.dev.neige/*`, each capability carries a `version` field. The kernel compares `version` exactly via `McpClient::has_kernel_callbacks_capability` (`mcp.rs:467-496`); any other value (missing entry, missing `version`, wrong type, wrong number) is treated as capability-absent with a `warn!` log so the divergence is visible during debugging. `KERNEL_CALLBACKS_CAPABILITY_VERSION = 1` at `mcp.rs:247`.
 - **Terminal daemon framing.** `calm-session-daemon` IPC carries `magic + version + length` framing (`FRAME_MAGIC = b"NEIG"`, `FRAME_VERSION = 2`) at `crates/calm-session/src/lib.rs:48-58`. Mismatch returns `FrameError::BadMagic` / `UnsupportedVersion` from the reader (`lib.rs:550-569`); the kernel-side caller treats this as fatal and respawns. Issue #44 (terminal v2) is closed.
 - **REST API.** Independent `apiVersion` exposed by `GET /api/version` (`crates/calm-server/src/routes/version.rs:48` — `API_VERSION = "1"`), surfaced in the camelCase `VersionInfo` response. Decoupled from `CARGO_PKG_VERSION` so the kernel can ship patches that leave the REST contract untouched.
@@ -78,7 +78,7 @@ Tier D surfaces in neige-calm today:
 | Sync event envelope | A | `event_version` column landed (migration `0006_events_version.sql`); `SYNC_EVENT_VERSION = 1` at `event.rs:254`; threaded through `BroadcastEnvelope` at `event.rs:573-578`. |
 | Card payload (kernel kinds) | A | `Card.payload` is `serde_json::Value`; per-kind `schemaVersion` + migrator still TBD. |
 | Plugin manifest | A | `manifest_version` hard-gated; `min_kernel_version` compared via semver at `plugin_host/mod.rs:317` (issue #45). |
-| MCP protocolVersion | B | **Landed.** Exact-match compare on plugin's echoed `result.protocolVersion` at `plugin_host/mcp.rs:404-417`; mismatch → `McpError::ProtocolVersionMismatch`. |
+| MCP protocolVersion | B | **Landed.** Exact-match compare on plugin's echoed `result.protocolVersion` at `plugin_host/mcp.rs:410-419`; mismatch → `McpError::ProtocolVersionMismatch`. |
 | MCP capability versions | B | **Landed.** Exact `version` compare via `has_kernel_callbacks_capability` at `plugin_host/mcp.rs:467-496`; any mismatch → treat as absent + `warn!` log. |
 | Terminal daemon framing | B | **Landed.** `FRAME_MAGIC = b"NEIG"` + `FRAME_VERSION = 2` at `crates/calm-session/src/lib.rs:48-58`; reader rejects mismatched magic/version at `lib.rs:550-569`. |
 | REST API | B | **Landed.** Independent `API_VERSION = "1"` constant at `routes/version.rs:48`, surfaced as `apiVersion` in `GET /api/version`. |
