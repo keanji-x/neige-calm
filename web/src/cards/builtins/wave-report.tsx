@@ -216,7 +216,7 @@ function UnsupportedWaveReportCard({
     <div className="wave-report-card wave-report-card-unsupported-version">
       <CardHead
         className="card-drag-handle"
-        title="Wave Report"
+        title="Report"
         onClose={onClose}
         closeAriaLabel="Remove panel"
       />
@@ -267,14 +267,13 @@ function WaveReportCardImpl({
     });
   };
 
-  const headerTitle = waveCtx ? waveCtx.title : 'Wave Report';
   const summaryLine = card.summary.trim();
 
   return (
     <div className="wave-report-card">
       <CardHead
         className="card-drag-handle"
-        title={headerTitle}
+        title="Report"
         onClose={onClose}
         closeAriaLabel="Remove panel"
         status={
@@ -309,11 +308,12 @@ function WaveReportCardImpl({
 export const WaveReportEntry: CardEntry<WaveReportCardData> = {
   type: 'wave-report',
   Component: WaveReportCard,
-  // Full-width, 4 rows tall — matches the kernel's seeded layout
-  // overlay (`{x: 0, y: 0, w: 12, h: 4}`). Min width keeps the
+  // Right half of the wave, full height — matches the kernel's
+  // seeded layout overlay (`{x: 6, y: 0, w: 6, h: 12}`) which
+  // pairs with the spec agent card on the left. Min width keeps
   // section headings readable; min height keeps at least one
   // section visible.
-  defaultSize: { w: 12, h: 4, minW: 6, minH: 3 },
+  defaultSize: { w: 6, h: 12, minW: 4, minH: 6 },
   fromKernel: (k) => {
     if (k.kind !== 'wave-report') return null;
     const candidate = k.payload ?? {};

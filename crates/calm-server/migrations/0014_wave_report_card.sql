@@ -73,7 +73,12 @@ WHERE NOT EXISTS (
 -- new report card id off the `cards` table via the role + wave_id
 -- join (`idx_cards_one_report_per_wave` makes this a unique lookup).
 
--- Pass 1: waves with no existing layout overlay — create one.
+-- Pass 1: waves with no existing layout overlay — create one with the
+-- canonical two-column layout (spec agent left, wave report right,
+-- both full height). For waves that have a spec card we seed both
+-- positions; for waves with no spec card (legacy / hand-crafted DBs)
+-- we still seed the report card's position so the WaveGrid renders
+-- it at the top-right.
 INSERT INTO overlays (id, plugin_id, entity_kind, entity_id, kind, payload, updated_at)
 SELECT
     lower(hex(randomblob(16))),
@@ -83,13 +88,20 @@ SELECT
     'layout',
     json_object(
         'schemaVersion', 1,
-        'positions', json_object(
-            c.id, json_object('x', 0, 'y', 0, 'w', 12, 'h', 4)
-        )
+        'positions', CASE
+            WHEN s.id IS NOT NULL THEN json_object(
+                s.id, json_object('x', 0, 'y', 0, 'w', 6, 'h', 12),
+                c.id, json_object('x', 6, 'y', 0, 'w', 6, 'h', 12)
+            )
+            ELSE json_object(
+                c.id, json_object('x', 6, 'y', 0, 'w', 6, 'h', 12)
+            )
+        END
     ),
     strftime('%s','now') * 1000
 FROM waves w
 JOIN cards c ON c.wave_id = w.id AND c.role = 'reportcard'
+LEFT JOIN cards s ON s.wave_id = w.id AND s.role = 'spec'
 WHERE NOT EXISTS (
     SELECT 1 FROM overlays o
     WHERE o.plugin_id = 'kernel'

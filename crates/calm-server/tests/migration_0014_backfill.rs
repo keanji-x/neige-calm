@@ -200,7 +200,9 @@ async fn backfill_seeds_layout_overlay_when_absent() {
     replay_migration(&pool).await;
 
     // The layout overlay now exists, with the report card pinned
-    // at (0, 0, 12, 4).
+    // at (6, 0, 6, 12) — the right column of the canonical two-column
+    // layout. (This wave has no spec card — see the test setup —
+    // so the spec position is absent from the seed.)
     let overlays = repo.overlays_for("view", wave.id.as_str()).await.unwrap();
     let layout = overlays
         .iter()
@@ -218,10 +220,10 @@ async fn backfill_seeds_layout_overlay_when_absent() {
         .get(report_id)
         .and_then(Value::as_object)
         .expect("report card has a position entry");
-    assert_eq!(pos.get("x").and_then(Value::as_i64), Some(0));
+    assert_eq!(pos.get("x").and_then(Value::as_i64), Some(6));
     assert_eq!(pos.get("y").and_then(Value::as_i64), Some(0));
-    assert_eq!(pos.get("w").and_then(Value::as_i64), Some(12));
-    assert_eq!(pos.get("h").and_then(Value::as_i64), Some(4));
+    assert_eq!(pos.get("w").and_then(Value::as_i64), Some(6));
+    assert_eq!(pos.get("h").and_then(Value::as_i64), Some(12));
 }
 
 #[tokio::test]

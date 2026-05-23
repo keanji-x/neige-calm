@@ -230,7 +230,7 @@ pub(crate) async fn create_wave(
                 // daemon.
                 let (spec_card, _term, mcp_token) = card_with_codex_create_tx(
                     tx,
-                    spec_card_id_for_tx,
+                    spec_card_id_for_tx.clone(),
                     wave_id.clone(),
                     None,       // sort: append to end
                     cwd_for_tx, // codex's cwd
@@ -291,14 +291,12 @@ pub(crate) async fn create_wave(
                 .await?;
 
                 // 3d. Seed the layout overlay so the WaveGrid renders
-                // the report card at (x=0, y=0, w=12, h=4) — the full
-                // grid width, four rows tall. Newly minted waves don't
-                // have any other cards yet (only spec + report at this
-                // point), so the spec card auto-packs underneath via
-                // `reconcile()` in `WaveGrid.tsx`. Stamping the report
-                // card explicitly here means a user who never opens
-                // the wave still gets the report-on-top layout from
-                // their first view.
+                // a side-by-side layout: spec agent on the left half
+                // (x=0, w=6) and wave report on the right half (x=6,
+                // w=6), both full height (h=12). Stamping both
+                // positions explicitly here means a user who never
+                // opens the wave still gets the canonical two-column
+                // layout from their first view.
                 //
                 // `plugin_id = "kernel"`, `entity_kind = "view"`,
                 // `entity_id = wave_id`, `kind = "layout"` — same
@@ -307,8 +305,11 @@ pub(crate) async fn create_wave(
                 let layout_payload = serde_json::json!({
                     "schemaVersion": 1,
                     "positions": {
+                        spec_card_id_for_tx.as_str(): {
+                            "x": 0, "y": 0, "w": 6, "h": 12
+                        },
                         report_card_id_for_tx.as_str(): {
-                            "x": 0, "y": 0, "w": 12, "h": 4
+                            "x": 6, "y": 0, "w": 6, "h": 12
                         }
                     }
                 });
