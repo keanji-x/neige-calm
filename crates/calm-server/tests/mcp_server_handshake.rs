@@ -76,6 +76,7 @@ async fn boot() -> Boot {
             cove_id: cove.id.clone(),
             title: "mcp-handshake-test".into(),
             sort: None,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();

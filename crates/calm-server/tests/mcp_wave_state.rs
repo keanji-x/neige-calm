@@ -74,6 +74,7 @@ async fn boot() -> Boot {
             cove_id: cove.id.clone(),
             title: "initial".into(),
             sort: None,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();

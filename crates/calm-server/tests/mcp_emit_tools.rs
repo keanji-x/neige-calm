@@ -71,6 +71,7 @@ async fn boot_with_role(role: CardRole) -> CardBoot {
             cove_id: cove.id.clone(),
             title: "mcp-emit-test".into(),
             sort: None,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();

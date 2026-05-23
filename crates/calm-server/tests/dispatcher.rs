@@ -805,6 +805,7 @@ async fn dispatcher_codex_worker_spawns_with_dark_theme_default() {
         cache.clone(),
         stub_codex(),
         daemon,
+        None,
         4,
     );
 

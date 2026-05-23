@@ -55,6 +55,7 @@ async fn boot() -> Boot {
             cove_id: cove.id.clone(),
             title: "wave-A".into(),
             sort: None,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
@@ -65,6 +66,7 @@ async fn boot() -> Boot {
             cove_id: cove.id.clone(),
             title: "wave-B".into(),
             sort: None,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
