@@ -13,7 +13,6 @@ This document defines four upgrade-stability tiers, classifies every surface in 
 Non-goals (repeated at the end):
 
 - **Not** implementing production-grade backward compat. A breaking change at a Tier B surface is allowed; what's not allowed is shipping it without bumping the version and updating the handshake.
-- **Not** designing terminal protocol v2 here — that is issue #44.
 - **Not** trying to make Tier C and Tier D surfaces stable. The doc explicitly forbids accidentally signalling stability for things that aren't.
 
 ## The four tiers
@@ -39,12 +38,12 @@ The rule is **negotiate at handshake, fail loudly on mismatch**. Every Tier B su
 
 Tier B surfaces in neige-calm today:
 
-- **MCP `protocolVersion`.** The kernel sends `KERNEL_PROTOCOL_VERSION = "2025-11-25"` on init; the plugin echoes back its supported version. Today this is sent but not compared — the comparison is what this tier requires.
-- **MCP capability versions.** Inside `experimental.dev.neige/*` (and any other capability namespace), each capability carries a `version` field. Today we check presence only (`mcp.rs:450`); the rule is to compare `version` and treat a mismatch as capability-absent (with a warn log).
-- **Terminal daemon framing.** The `calm-session-daemon` IPC carries bincode frames over a unix socket. Today the framing is length-prefixed only (`crates/calm-session/src/lib.rs:87`) — no magic, no version. The rule is `magic + version` in the frame header; on mismatch the kernel kills and respawns the daemon (or marks it `needs_restart`).
-- **REST API.** Today OpenAPI advertises `info.version = CARGO_PKG_VERSION`, conflating the API contract with the binary release. The rule is an independent `apiVersion` constant, bumped only when the wire shape changes. Old clients get a "please refresh" response.
-- **WebSocket envelope.** Today's frame is `{ "_id": ..., "ev": ..., "data": ... }` — no version. The rule adds `eventVersion`; an old frontend on a newer server is told to refresh.
-- **Frontend ↔ backend skew.** Today the cache buster is `PERSIST_BUSTER` at `web/src/api/persistConfig.ts:54`. The rule is to surface a `minWebCompatVersion` in `/api/version`; a frontend below the minimum is force-refreshed. Backend exposes `WEB_COMPAT_VERSION` (u32, bumped on breaking REST/WS changes) at `crates/calm-server/src/routes/version.rs`; the frontend ships a matching TS constant at `web/src/api/version.ts`. The two constants must be kept in lockstep across PRs — review discipline, not codegen.
+- **MCP `protocolVersion`.** The kernel sends `KERNEL_PROTOCOL_VERSION = "2025-11-25"` on init and **enforces an exact match** on the plugin's echoed `result.protocolVersion`; a mismatch surfaces as `McpError::ProtocolVersionMismatch` and the plugin is refused (issue #45). See `crates/calm-server/src/plugin_host/mcp.rs:47` (constant) and `mcp.rs:410-419` (compare site).
+- **MCP capability versions.** Inside `experimental.dev.neige/*`, each capability carries a `version` field. The kernel compares `version` exactly via `McpClient::has_kernel_callbacks_capability` (`mcp.rs:467-496`); any other value (missing entry, missing `version`, wrong type, wrong number) is treated as capability-absent with a `warn!` log so the divergence is visible during debugging. `KERNEL_CALLBACKS_CAPABILITY_VERSION = 1` at `mcp.rs:247`.
+- **Terminal daemon framing.** `calm-session-daemon` IPC carries `magic + version + length` framing (`FRAME_MAGIC = b"NEIG"`, `FRAME_VERSION = 2`) at `crates/calm-session/src/lib.rs:48-58`. Mismatch returns `FrameError::BadMagic` / `UnsupportedVersion` from the reader (`lib.rs:550-569`); the kernel-side caller treats this as fatal and respawns. Issue #44 (terminal v2) is closed.
+- **REST API.** Independent `apiVersion` exposed by `GET /api/version` (`crates/calm-server/src/routes/version.rs:48` — `API_VERSION = "1"`), surfaced in the camelCase `VersionInfo` response. Decoupled from `CARGO_PKG_VERSION` so the kernel can ship patches that leave the REST contract untouched.
+- **WebSocket envelope.** `BroadcastEnvelope` carries an `event_version` field (`crates/calm-server/src/event.rs:573-578`), defaulting to `SYNC_EVENT_VERSION = 1` (`event.rs:254`). Migration `0006_events_version.sql` adds the matching `event_version` column to the events table with `DEFAULT 1` for backfill.
+- **Frontend ↔ backend skew.** `WEB_COMPAT_VERSION` is published in `/api/version` as `minWebCompatVersion` (`crates/calm-server/src/routes/version.rs:65`, currently `2`). The frontend's matching TS constant must move in lockstep across PRs — review discipline, not codegen. A frontend below the minimum is force-refreshed by the compat-modal path.
 
 ### Tier C — Internal contracts (no version, no guarantee)
 
@@ -73,24 +72,36 @@ Tier D surfaces in neige-calm today:
 
 ## Per-surface classification table
 
-| Surface | Tier | Today | Required |
-|---|---|---|---|
-| DB schema | A | `sqlx::migrate!` forward-only at `crates/calm-server/src/db/sqlite.rs:68` | Add refusal of unknown future migrations |
-| Sync event envelope | A | `BroadcastEnvelope { id, actor, event }` at `crates/calm-server/src/event.rs:287` — no version | Add `eventVersion` |
-| Card payload (kernel kinds) | A | `Card.payload` is `serde_json::Value` at `crates/calm-server/src/model.rs:91` — no version | Per-kind `schemaVersion` + migrator |
-| Plugin manifest | A | `manifest_version` hard-gated; `min_kernel_version` parsed but unused | Wire `min_kernel_version` comparison |
-| MCP protocolVersion | B | `KERNEL_PROTOCOL_VERSION = "2025-11-25"` sent but not compared | Compare on handshake response |
-| MCP capability versions | B | Presence-only check at `mcp.rs:450` | Compare `version` field |
-| Terminal daemon framing | B | Length-prefixed bincode at `crates/calm-session/src/lib.rs:87` — no magic, no version | Add `magic + version` to frame |
-| REST API | B | OpenAPI `info.version = CARGO_PKG_VERSION` | Independent `apiVersion` constant |
-| WS envelope | B | No version | Add `eventVersion` |
-| Frontend cache | B | `PERSIST_BUSTER` at `web/src/api/persistConfig.ts:54` | Add `minWebCompatVersion` enforcement |
-| Repo trait | C | Recently split | Stays internal; no version |
-| Route handlers | C | — | Stays internal |
-| React components | C | — | Stays internal |
-| Sync engine internals | C | — | Stays internal |
-| TUI adapters | D | — | Mark experimental |
-| Claude/Codex parsers | D | — | Mark experimental |
+| Surface | Tier | Status |
+|---|---|---|
+| DB schema | A | `sqlx::migrate!` forward-only at `crates/calm-server/src/db/sqlite.rs`; old-binary-against-new-DB refusal still TBD. |
+| Sync event envelope | A | `event_version` column landed (migration `0006_events_version.sql`); `SYNC_EVENT_VERSION = 1` at `event.rs:254`; threaded through `BroadcastEnvelope` at `event.rs:573-578`. |
+| Card payload (kernel kinds) | A | `Card.payload` is `serde_json::Value`; per-kind `schemaVersion` + migrator still TBD. |
+| Plugin manifest | A | `manifest_version` hard-gated; `min_kernel_version` compared via semver at `plugin_host/mod.rs:317` (issue #45). |
+| MCP protocolVersion | B | **Landed.** Exact-match compare on plugin's echoed `result.protocolVersion` at `plugin_host/mcp.rs:410-419`; mismatch → `McpError::ProtocolVersionMismatch`. |
+| MCP capability versions | B | **Landed.** Exact `version` compare via `has_kernel_callbacks_capability` at `plugin_host/mcp.rs:467-496`; any mismatch → treat as absent + `warn!` log. |
+| Terminal daemon framing | B | **Landed.** `FRAME_MAGIC = b"NEIG"` + `FRAME_VERSION = 2` at `crates/calm-session/src/lib.rs:48-58`; reader rejects mismatched magic/version at `lib.rs:550-569`. |
+| REST API | B | **Landed.** Independent `API_VERSION = "1"` constant at `routes/version.rs:48`, surfaced as `apiVersion` in `GET /api/version`. |
+| WS envelope | B | **Landed.** `event_version` carried on `BroadcastEnvelope` (`event.rs:573-578`); persisted by migration `0006`. |
+| Frontend cache | B | **Landed.** `WEB_COMPAT_VERSION = 2` at `routes/version.rs:65`, exposed as `minWebCompatVersion`. Frontend TS constant kept in lockstep by PR discipline. |
+| Repo trait | C | Split into `RepoRead` / `RepoEventWrite` / `RepoSyncDomainRaw` / `RepoOutOfDomain`. Internal; no version. |
+| Route handlers | C | Internal; no version. |
+| React components | C | Internal; no version. |
+| Sync engine internals | C | Internal; no version. |
+| TUI adapters | D | Mark experimental. |
+| Claude/Codex parsers | D | Mark experimental. |
+
+## Version surfaces — relationship between the constants
+
+neige-calm exposes several version numbers, each tracking a distinct compatibility boundary. They are deliberately independent so a change at one surface doesn't force noise on the others. The wire shape lives on `GET /api/version` (camelCase per `VersionInfo` in `routes/version.rs`):
+
+- **`kernelVersion`** — Tier A. The `calm-server` crate's `CARGO_PKG_VERSION`. Bumped by normal semver on the kernel binary.
+- **`apiVersion`** — Tier B. REST contract version. Hand-bumped only when the REST wire shape changes in a way the web client must gate on. `API_VERSION` constant at `routes/version.rs:48`.
+- **`syncEventVersion`** — Tier A. The persisted `event_version` stamped onto every sync envelope. `SYNC_EVENT_VERSION` constant at `event.rs:254`, mirrored by migration `0006_events_version.sql`.
+- **`mcpProtocolVersion`** — Tier B. The MCP spec date the kernel advertises on `initialize`. Sourced from `KERNEL_PROTOCOL_VERSION` at `plugin_host/mcp.rs:47` so the response payload and the handshake compare never drift.
+- **`minWebCompatVersion`** — Tier B. The minimum frontend `WEB_COMPAT_VERSION` the kernel still considers wire-compatible. Frontends below this value hard-refresh. `WEB_COMPAT_VERSION` constant at `routes/version.rs:65`.
+
+**OpenAPI `info.version` is intentionally distinct.** The generated `openapi.json` ships `info.version = env!("CARGO_PKG_VERSION")` (`crates/calm-server/src/openapi.rs:36`) — that is the **kernel binary version**, not the wire-contract version. Clients that need wire-contract gating MUST read `apiVersion` from `GET /api/version`, not the OpenAPI document's `info.version`. The two are decoupled by design; bumping `CARGO_PKG_VERSION` to ship a patch should not force every frontend to re-handshake. A future cleanup may surface `apiVersion` separately inside the OpenAPI document for ergonomics, but the contract today is "read `/api/version`."
 
 ## Event evolution rules (Tier A detail)
 
@@ -119,8 +130,8 @@ Schema migrations live under `crates/calm-server/migrations/` and are picked up 
 Plugin compatibility straddles Tier A / Tier B: the manifest is persisted (Tier A), the running negotiation is cross-process (Tier B). The rules:
 
 - **`manifest_version = 1` is a hard gate.** Already enforced — a manifest with a different `manifest_version` is rejected at install. When we bump to version 2, version-1 manifests will either be auto-migrated at install or refused with a clear message.
-- **`min_kernel_version` is honored via semver compare.** The plugin declares the minimum kernel version it requires; on load, the kernel compares its own version against `min_kernel_version` using semver rules. Refusal message: `requires kernel >= X.Y.Z, got A.B.C`. Parsed today but not yet wired to the comparison — wiring it is the immediate next step.
-- **Capability versions inside `experimental.dev.neige/*` are matched exactly.** Both sides must agree on the exact version string for a capability to be considered available. Mismatched version = capability absent, warn-logged. This is deliberately stricter than today's presence-only check — a capability at v2 on one side and v3 on the other is **not** compatible.
+- **`min_kernel_version` is honored via semver compare.** Enforced at spawn time in `plugin_host/mod.rs:317` via the free `check_min_kernel_version` helper in `plugin_host/version.rs`. A plugin whose `min_kernel_version` exceeds the running kernel surfaces `HostError::KernelTooOld` and is refused; the autospawn loop logs and continues so one bad plugin doesn't block boot (issue #45).
+- **Capability versions inside `experimental.dev.neige/*` are matched exactly.** The kernel calls `McpClient::has_kernel_callbacks_capability` (`plugin_host/mcp.rs:467-496`) — only an exact `u64` match against `KERNEL_CALLBACKS_CAPABILITY_VERSION` counts as "declared." A missing entry, missing `version` field, wrong type, or wrong number is treated as the capability being absent and a `warn!` log makes the divergence visible.
 
 ## PR review checklist
 
@@ -136,7 +147,6 @@ Before opening a PR that touches any surface above, walk through this checklist 
 
 ## Non-goals (repeated)
 
-- **Not** implementing terminal protocol v2 — that work is tracked in issue #44.
 - **Not** enforcing production-grade backward compat. The goal of this policy is *intentional* breakage, not *zero* breakage. A PR that bumps `apiVersion` from 3 to 4 and breaks every existing browser tab is fine, provided the new version is communicated through the handshake and the failure behavior is documented. What's not fine is changing an event payload's shape without bumping `eventVersion` and discovering at runtime that an open tab silently drops half its UI.
 
 The four tiers exist so that "intentional" is a default, not a virtue we have to remember.

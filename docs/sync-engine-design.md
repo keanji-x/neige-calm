@@ -1,22 +1,10 @@
 # Sync Engine — Design Document
 
-**Status:** Draft v2 — incorporates reviewer feedback. No code yet.
+**Status:** Phases 1–3 shipped; #136 PR1–PR7b shipped (PR1 #141, PR2 #146, PR3 #162, PR4 #173, PR5 #179, PR6 #182, PR7a #202, PR7b #206). #136 PR8 (`wait_for_events` long-poll) is the remaining slice.
 **Author:** Codex agent, on behalf of @keanji-x.
-**Scope:** Extend the existing axum + React stack with a backend-authoritative event-sourced sync engine. Decision against Electric / LiveStore / Zero is final; this doc covers only the in-house build.
+**Scope:** Backend-authoritative event-sourced sync engine layered on top of the existing axum + React stack. Decision against Electric / LiveStore / Zero is final; this doc covers only the in-house build.
 
-This doc is the contract between the architectural decisions already locked in (see prompt) and the implementation that follows. Phases are independently shippable; each leaves `main` working.
-
-### Changelog — v2
-
-- **Phase 1 is now atomic (no transitional double-write).** The events-table migration, `write_with_event` wrapper, and every existing write handler convert in a single PR series; the `tokio::spawn` persist path in `EventBus::emit` is removed. The "one route file per PR" idea is recast as review-process pacing within the single Phase 1 milestone. (§3.3, §7)
-- **Retention default flipped to forever.** `config.events_retention_days = None`; pruner only runs when an operator configures a finite window. Per-actor retention noted as a forward-looking refinement, not first-version. (§2.3, §8)
-- **`event_append` is private.** Only `write_with_event` is public on `Repo`; the raw insert is `SqlxRepo`-private (or `#[cfg(test)]`-gated for replay-loader / fixture use). `card_fsm` projector writes overlays through the wrapper like everyone else. (§1.4, §8)
-- **ESLint `no-restricted-imports` for `useState`/`useReducer`** — added to §4.2 to make the shadowed `useState` shim unbypassable.
-- **Actor is declarative, not authenticated.** Disclaimer added at §1.1; a separate auth design is required before any externally-reachable surface ships.
-- **Concrete `layout` overlay payload schema** with grid-column bound from `WaveGrid.tsx::COLS`. (§5.2)
-- **In-flight client mutation during replay window** edge case documented. (§2.2)
-- **New §9 — Plugin compatibility.** `write_with_event` applies to `plugin_host/callbacks.rs` identically; tool-call writes carry `actor = "plugin:<id>"` with `correlation = "user_tool_call:<call_id>"`; plugin-defined overlay kinds remain opaque pass-through.
-- **Open questions trimmed.** Q2/Q3/Q4/Q5 resolved (now "Decisions (was open in v1)"); Q1 (Postgres) and Q6 (firehose topic) remain.
+This doc is the contract between the architectural decisions already locked in and the implementation that has shipped. Phases are independently shippable; each leaves `main` working.
 
 ---
 
@@ -24,39 +12,48 @@ This doc is the contract between the architectural decisions already locked in (
 
 ### 1.1 The `events` table
 
-A single new table, added in a new migration file `crates/calm-server/migrations/0004_events.sql`.
+Introduced in `crates/calm-server/migrations/0004_events.sql` and extended by `0006_events_version.sql` (event-version stamp) and `0007_events_scope.sql` (per-row home scope). The current cumulative shape:
 
 ```sql
 CREATE TABLE events (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    kind        TEXT    NOT NULL,            -- mirrors Event::serde tag, e.g. "wave.updated"
-    payload     TEXT    NOT NULL,            -- JSON, the `data` field of the wire envelope
-    actor       TEXT    NOT NULL,            -- "user", "ai:<agent_id>", "kernel", "plugin:<id>"
-    at          INTEGER NOT NULL,            -- unix ms, matches model::now_ms()
-    correlation TEXT                          -- optional request id for tracing/replay grouping
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind          TEXT    NOT NULL,                       -- mirrors Event::serde tag, e.g. "wave.updated"
+    payload       TEXT    NOT NULL,                       -- JSON, the `data` field of the wire envelope
+    actor         TEXT    NOT NULL,                       -- JSON-encoded ActorId (see below)
+    at            INTEGER NOT NULL,                       -- unix ms, matches model::now_ms()
+    correlation   TEXT,                                   -- optional request id for tracing/replay grouping
+    event_version INTEGER NOT NULL DEFAULT 1,             -- 0006: envelope schema version
+    scope_kind    TEXT    NOT NULL DEFAULT 'system',      -- 0007: 'system' | 'cove' | 'wave' | 'card'
+    scope_cove    TEXT,                                   -- 0007: populated for cove/wave/card scopes
+    scope_wave    TEXT,                                   -- 0007: populated for wave/card scopes
+    scope_card    TEXT                                    -- 0007: populated for card scope
 );
-CREATE INDEX idx_events_kind ON events(kind);
-CREATE INDEX idx_events_at   ON events(at);
+CREATE INDEX idx_events_kind        ON events(kind);
+CREATE INDEX idx_events_at          ON events(at);
+CREATE INDEX idx_events_scope_wave  ON events(scope_wave) WHERE scope_wave IS NOT NULL;
+CREATE INDEX idx_events_scope_cove  ON events(scope_cove) WHERE scope_cove IS NOT NULL;
 ```
 
 Justifications:
 
 - **`INTEGER PRIMARY KEY AUTOINCREMENT`** — SQLite reuses `rowid` after deletion without `AUTOINCREMENT`; the cursor protocol depends on strict monotonicity, so the small `sqlite_sequence` cost is worth it.
 - **`payload TEXT`** — same convention as `cards.payload` and `overlays.payload`; avoids dependency on `jsonb` builds.
-- **`actor`** — string, not enum: plugin and AI actors carry sub-ids. Validated at the handler boundary.
+- **`actor` is JSON-encoded `ActorId`.** Not a flat string. See `crates/calm-server/src/ids.rs` — `ActorId` is `#[serde(tag = "kind", content = "id")]`, so a row's `actor` column reads `{"kind":"AiCodex","id":"card-7"}`, `{"kind":"User"}`, `{"kind":"Plugin","id":"hello-world"}`, etc. The tagged enum guarantees the wire shape and lets later PRs add variants without column churn.
 - **`at`** vs `id` — wall-clock for humans (debug, audit), `id` for ordering and cursors. Never mix.
-- **`correlation`** — optional; threads multi-step mutations (e.g. the 3-step terminal-card create called out in `web/src/app/eventBridge.tsx:61-70`) for replay tooling.
+- **`correlation`** — optional; threads multi-step mutations (e.g. the 3-step terminal-card create) for replay tooling.
+- **`event_version`** — sync envelope schema stamp (0006). Mirrored by the Rust constant `SYNC_EVENT_VERSION` in `event.rs`; bumped together on envelope-shape changes so replicas can refuse incompatible logs.
+- **`scope_*`** — per-row "home scope" (0007). Lets PR3 filter authorization decisions by card scope, PR5's `SubscribeFilter` / `Dispatcher` route queues by wave scope, and PR8's `wait_for_events` long-poll seek against a scoped cursor. Old rows backfill to `scope_kind = 'system'` with NULL ancestor cols; the WS-replay path treats NULL `scope_*` as `EventScope::System`.
 - **No FK to entity tables.** Events outlive the rows they describe. Replay must handle "this card was deleted in event #5,300" gracefully.
 
-**Actor is a declared field, not an authenticated identity.** The `actor` column records who the producer of an event claims to be (`"user"`, `"ai:codex"`, `"plugin:<id>"`, `"kernel"`). In the single-user local-host deployment, this is trust-based — the calling subsystem populates it correctly. If neige-calm ever opens an externally-reachable API or accepts remote AI agents, **a separate auth design must precede that exposure** — `actor` becomes a security boundary at that point, not just a debug field. Today it is the latter.
+**Actor is a declared field, not an authenticated identity.** The `actor` column records who the producer of an event claims to be. In the single-user local-host deployment, this is trust-based — the calling subsystem populates the typed `ActorId` correctly. If neige-calm ever opens an externally-reachable API or accepts remote AI agents, **a separate auth design must precede that exposure** — `actor` becomes a security boundary at that point, not just a debug field. Today it is the latter.
 
-**Header plumbing (Scope G).** REST writes flow through an axum middleware (`calm_server::actor::actor_middleware`) that reads `X-Calm-Actor` from the incoming request and stamps an `Actor` extension on the request before the handler runs. Handlers extract `Actor` via a `FromRequestParts` impl and pass it straight to `write_with_event_typed`. Validation rules:
+**Header plumbing (Scope G).** REST writes flow through `calm_server::actor::actor_middleware`, which reads the legacy `X-Calm-Actor` header and stamps an `Actor` extension on the request. Handlers extract `Actor` via `FromRequestParts` and the wrapper converts to the typed `ActorId` (`Actor::to_actor_id` in `actor.rs`). The string-level validation rules are unchanged:
 
-- Header absent / empty → defaults to `"user"`. Preserves today's no-header UX for the web frontend.
-- `"user"` → accepted verbatim.
-- `"ai:<id>"` where `<id>` matches `[a-z0-9-]{1,64}` → accepted verbatim.
-- `"kernel"` → **rejected with 400**. Reserved for kernel-internal writes (card-FSM projector, codex hook ingest, orphan terminal sweeper). Those sites bypass the middleware entirely and call `write_with_event_typed` with `"kernel"` directly.
-- `"plugin:<id>"` → **rejected with 400**. Reserved for the plugin callback dispatcher (`plugin_host::callbacks`), which stamps the kernel-known plugin id from the connection context (`format!("plugin:{}", ctx.plugin_id)`) — plugins cannot spoof their own actor over either MCP or REST.
+- Header absent / empty → `ActorId::User`. Preserves today's no-header UX for the web frontend.
+- `"user"` → `ActorId::User`.
+- `"ai:codex"` → `ActorId::AiCodex(CardId)` (the card id is filled in by downstream code from the request context; the header alone carries the actor *kind*).
+- `"kernel"` → **rejected with 400**. Reserved for kernel-internal writes (card-FSM projector, codex hook ingest, orphan terminal sweeper). Those sites bypass the middleware entirely and pass `ActorId::Kernel` directly into `write_with_event_typed`.
+- `"plugin:<id>"` → **rejected with 400**. Reserved for the plugin callback dispatcher (`plugin_host::callbacks`), which builds `ActorId::Plugin("<id>")` from the connection context — plugins cannot spoof their own actor over either MCP or REST.
 - Anything else → rejected with 400.
 
 The middleware is layered on the REST router only; WebSocket endpoints (`/api/events`, `/api/terminals/:id`) are upgrade-style and do not write through the same path. Actor on WS frames is a separate (currently no-op) concern. The middleware is plumbing, not authentication — the §1.1 disclaimer above still applies: a real auth design must precede any externally-reachable surface before `actor` becomes a security boundary.
@@ -173,17 +170,19 @@ The client's `EventStream` does not need to gate writes on `_replay_complete`. O
 
 ### 2.3 Retention & snapshot-required fallback
 
-The events table grows monotonically, but the **default is to keep events forever**. `config.events_retention_days = None`; the nightly pruner is wired in phase 1 but only runs when an operator sets a finite value. When pruning runs, it does `DELETE FROM events WHERE at < ?`. When a client's `since` predates the oldest surviving row, the server replies with a first-class control frame:
+**Retention is permanent today.** The events table grows monotonically and no pruner runs at startup. There is no `config.events_retention_days` field on the `Config` struct (`crates/calm-server/src/config.rs`) and `main.rs` spawns no nightly pruner task. The knob + pruner remain unimplemented; activation work is tracked by **issue #36**.
+
+When a client's `since` predates the oldest surviving row, the server replies with a first-class control frame:
 
 ```json
 { "ev": "_snapshot_required", "data": { "earliest_id": 50000 } }
 ```
 
-The client treats this as "throw away IndexedDB cache + refetch from REST".
+The client treats this as "throw away IndexedDB cache + refetch from REST". Today this can only fire when an operator manually deletes from the events table — there is no kernel-driven path that drops rows.
 
 **Why forever is the right default.** Audit and replay are the architecture's headline value; defaulting to drop them inverts the value proposition. Storage cost is trivial for a single user: ~4 MB/year at 10k events/day. Premature pruning is a net negative; pruning policy can be added later when real storage pressure exists. Row-count rules of thumb: 10k events ≈ 2–4 MB; 100M events ≈ ~30 GB (replay scans get slow long before storage does). We won't approach the upper bound in single-user mode. Postgres later — see §8.
 
-**Forward-looking: per-actor retention.** When plugins emit high-frequency status/progress events, the simple global retention knob may grow blunt. A future refinement is per-actor policy — e.g. `plugin:*` retained 30 days, `user` / `ai:*` forever. Out of scope for first version, but it is the natural escape valve before reaching for global pruning.
+**Forward-looking: per-actor retention.** When plugins emit high-frequency status/progress events, a simple global retention knob may grow blunt. The natural future refinement is per-actor policy — e.g. `Plugin(_)` retained 30 days, `User` / `AiCodex(_)` forever. Out of scope for first version. See issue #36 for retention activation.
 
 ### 2.4 Event envelope on the wire
 
@@ -454,17 +453,17 @@ This is the unit-scale dry run of the e2e test that lives in `web/e2e/`.
 
 ### 6.3 The crown jewel: replay-based regression tests
 
-**Fixture format.** JSON files under `crates/calm-server/tests/fixtures/events/<name>.events.json`:
+**Fixture format.** JSON files under `crates/calm-server/tests/fixtures/events/<name>.events.json`. `actor` is the JSON-encoded `ActorId` shape (`{"kind": ..., "id": ...}`):
 
 ```json
 {
   "name": "bug-1234-card-rename-during-ai-move",
   "entities_seed": [ ... ],
   "events": [
-    { "id": 1, "kind": "card.added",   "actor": "user",     "payload": { ... } },
-    { "id": 2, "kind": "card.updated", "actor": "ai:codex", "payload": { ... } },
-    { "id": 3, "kind": "card.updated", "actor": "user",     "payload": { ... } },
-    { "id": 4, "kind": "card.deleted", "actor": "user",     "payload": { ... } }
+    { "id": 1, "kind": "card.added",   "actor": {"kind": "User"},                                 "payload": { ... } },
+    { "id": 2, "kind": "card.updated", "actor": {"kind": "AiCodex", "id": "card-7"},              "payload": { ... } },
+    { "id": 3, "kind": "card.updated", "actor": {"kind": "User"},                                 "payload": { ... } },
+    { "id": 4, "kind": "card.deleted", "actor": {"kind": "User"},                                 "payload": { ... } }
   ],
   "expected_state": { "cards": [], "overlays": [] }
 }
@@ -489,7 +488,7 @@ OK: 2/2 assertions matched (7 events seeded, last id=7, ...)
 
 The boot + seed pipeline lives in `calm_server::replay` and is shared with the `tests/replay_fixtures.rs` integration test, so the test harness and the binary cannot drift.
 
-**Recording.** `RECORD_SESSION=<path>` (env var honored by the regular `calm-server` `main.rs`) appends every bus-emitted event to `<path>` as line-delimited JSON in the fixture's per-event shape (`{"kind", "actor", "payload"}`). The loader (`load_fixture_from_path`) sniffs the first non-blank line to detect NDJSON (a `FixtureEvent` shape) vs. a curated fixture object, so a recorded file is replayable via `cargo run --bin replay -- --file <recorded.events.json> --assert` with no manual wrapping. Bug report = file + one `replay --assert` command. Bugs become reproducible artifacts — this is the headline capability. `BroadcastEnvelope` carries the producing `actor` from `write_with_event` / `log_pure_event`, so recorded traces preserve real attribution (`user` / `ai:codex` / `plugin:<id>`) end-to-end (closed by issue #39).
+**Recording.** `RECORD_SESSION=<path>` (env var honored by the regular `calm-server` `main.rs`) appends every bus-emitted event to `<path>` as line-delimited JSON in the fixture's per-event shape (`{"kind", "actor", "payload"}`). The loader (`load_fixture_from_path`) sniffs the first non-blank line to detect NDJSON (a `FixtureEvent` shape) vs. a curated fixture object, so a recorded file is replayable via `cargo run --bin replay -- --file <recorded.events.json> --assert` with no manual wrapping. Bug report = file + one `replay --assert` command. Bugs become reproducible artifacts — this is the headline capability. `BroadcastEnvelope` carries the producing `actor` from `write_with_event` / `log_pure_event` as a typed `ActorId`, so recorded traces preserve real attribution (`{"kind":"User"}` / `{"kind":"AiCodex","id":"<card>"}` / `{"kind":"Plugin","id":"<id>"}`) end-to-end (closed by issue #39).
 
 ### 6.4 Performance / load
 
@@ -497,31 +496,44 @@ The boot + seed pipeline lives in `calm_server::replay` and is shared with the `
 
 **Replay throughput.** Synthetic harness: pre-populate 10k events, connect a client with `since=0`, measure time-to-`_replay_complete`. Target: <500ms over loopback. If we miss, the fix is server-side streaming in chunks (already the natural shape) plus a small `LIMIT 1000 OFFSET` pagination *during the replay phase* — bookkeeping the cursor between chunks.
 
-**Storage growth.** Document the back-of-envelope numbers from §2.3 in the operator docs. The nightly compaction task is the safety valve.
+**Storage growth.** Document the back-of-envelope numbers from §2.3 in the operator docs. Once retention activation (issue #36) lands, that becomes the safety valve.
 
 ---
 
 ## 7. Migration path / phases
 
-Each phase ships independently, each merges cleanly, each leaves the app working.
+Phases 1–3 shipped; the schema, the wrapper, the cursor protocol, and the first `useOverlayState` migration are all on main.
 
-### Phase 1 — Schema + `write_with_event` + all handlers converted (atomic, no frontend changes)
+### Phase 1 — Schema + `write_with_event` + all handlers converted — shipped
 
-Migration `0004_events.sql`. New `Repo::write_with_event` (raw `event_append` stays private to `SqlxRepo`, see §1.4). **Every existing write handler converts in the same PR series** — `routes/*.rs` and `plugin_host/callbacks.rs` (§9). No transitional double-write; no `tokio::spawn` persist in `EventBus::emit`. `EventBus::emit` is now an internal detail of `write_with_event` rather than a public mutation path. After Phase 1, `grep -r "events.emit" crates/calm-server/src/{routes,plugin_host}` returns zero hits — that's the lint that proves the conversion is complete.
+Migration `0004_events.sql` plus the `Repo::write_with_event` wrapper. Every existing write handler in `routes/*.rs` and `plugin_host/callbacks.rs` (§9) converted in a single atomic series; no transitional double-write. `EventBus::emit` is an internal detail of the wrapper. `grep -r "events.emit" crates/calm-server/src/{routes,plugin_host}` returns zero hits — the lint that proved the conversion was complete.
 
-Existing tests pass; add §6.1 atomicity tests and the §6.4 microbench gate. Frontend untouched. Worst-case overhead: ~20µs per write. PR pacing inside the series is review convenience (§3.3), but all PRs in the series must merge before Phase 2 begins — partial conversion plus the absence of a transitional path would mean unconverted handlers crash the persistence invariant.
+### Phase 2 — WS `since` protocol + client cursor — shipped
 
-### Phase 2 — WS `since` protocol + client cursor
+`ws::events::handle` parses `since` and implements the subscribe-first-then-query pattern from §2.2. Client `EventStream` persists and sends `lastEventId`. `_replay_complete` and `_snapshot_required` synthetic frames handled. Visible benefit: a tab open across a server restart no longer misses events.
 
-`ws::events::handle` parses `since` and implements the subscribe-first-then-query pattern from §2.2. Client `EventStream` persists and sends `lastEventId`. `_replay_complete` and `_snapshot_required` synthetic frames handled. Visible benefit: a tab open across a server restart no longer misses events. New tests: §6.1's replay integration, §6.2's reconnect-replay component test.
+### Phase 3 — `useOverlayState` + `Persistent<T>` + WaveGrid migration — shipped
 
-### Phase 3 — `useOverlayState` + `Persistent<T>` + WaveGrid migration
+The hook, ESLint rule + brand type, `persistQueryClient` in `providers.tsx`, and WaveGrid migrated per §5. Layouts now sync across devices and survive reload with no flash.
 
-New hook file, ESLint rule + brand type, `persistQueryClient` in `providers.tsx`, WaveGrid migrated per §5. New tests: §6.2's round-trip, type-test, fixture-based replay tests for the layout overlay. First visible feature: layouts sync across devices and survive reload with no flash.
+### #136 (Wave-as-Actor) — PR1–PR7b shipped
+
+The follow-on Wave-as-Actor series (#136) refined the typed write path on top of Phase 1's wrapper:
+
+- **PR1** (#141) — typed ID newtypes `CoveId` / `WaveId` / `CardId` + the `ActorId` semantic enum (`crates/calm-server/src/ids.rs`).
+- **PR2** (#146) — `EventScope` carried on every event row (migration `0007_events_scope.sql`); `write_with_event_typed` signature.
+- **PR3** (#162) — `cards.role` (`plain` / `spec` / `worker`) + `enforce_role` gate + `CardRoleCache` (migration `0008_cards_role.sql`).
+- **PR4** (#173) — four new `Event` variants for dispatcher + task lifecycle.
+- **PR5** (#179) — `SubscribeFilter` + dispatcher worker + permit semaphore.
+- **PR6** (#182) — atomic spec card on wave create + dispatcher daemon spawn on wave activate.
+- **PR7a** (#202) — kernel-as-MCP-server infrastructure + 3 emit tools.
+- **PR7b** (#206) — MCP `wave_state` tools.
+
+**PR8** (`wait_for_events` long-poll) is the remaining slice and is pending.
 
 ### Phase 4+ — New persistent view state defaults to `useOverlayState`
 
-The Phase 1-3 push (PRs #18-#28, #37-#43) shipped the full infrastructure: `useOverlayState`, `Persistent<T>` brand, ESLint rule, validation, replay, capability-split traits, actor-through-envelope. The first migration target (WaveGrid layout) is live (§5).
+The Phase 1-3 push shipped the full infrastructure: `useOverlayState`, `Persistent<T>` brand, ESLint rule, validation, replay, capability-split traits, actor-through-envelope. The first migration target (WaveGrid layout) is live (§5).
 
 Earlier drafts of this doc enumerated a forecasted candidate list for Phase 4+ (cove ordering, sidebar collapse, card folding, per-wave filters, plugin settings). A May 2026 audit (PR-29 close-out) found that **most of those candidates don't actually exist as client-side state**:
 
@@ -534,7 +546,7 @@ The principle going forward, in lieu of a candidate list:
 
 **Any new persistable client-side state defaults to `useOverlayState({ entity_kind: 'view', ... })`.** Opting back to `useState` for transient/ephemeral UI (modal-open, input drafts, hover) is fine. Opting to `localStorage` for new state requires a reason (sync-engine-internal cursors are the precedent). The ESLint + `Persistent<T>` brand make this enforceable at the type level the moment a `Persistent` value enters the picture.
 
-The retention pruner cron is wired in Phase 1 but stays inert under the forever default (§2.3); no phase turns it on — an operator turns it on by setting `config.events_retention_days` to a finite value. Per-actor retention is forward-looking (issue #33).
+Retention/pruning is **not implemented** today — see §2.3. Activation work (config knob + pruner task) is tracked by issue #36.
 
 ---
 
@@ -545,12 +557,12 @@ Still open — reviewer input most valuable on:
 1. **Postgres now vs later.** Defer until multi-user lands or observable sqlite write contention. The repo trait is already Postgres-ready.
 2. **Topic for `view` overlays.** A `view:<waveId>` topic is consistent with today's `<entity_kind>:<entity_id>` pattern. Confirm we don't also want a `view:*` firehose for debugging.
 
-Decisions (was open in v1):
+Decisions:
 
-- **Retention default → forever.** `config.events_retention_days = None`; pruner only runs when an operator configures a finite window. Audit/replay is the architecture's headline value; defaulting to drop it is wrong. Per-actor retention is a forward-looking refinement (§2.3, §9.6). *Was v1 Q2.*
-- **Actor plumbing → axum middleware + typed request extension.** Shipped in Scope G. User → `"user"`. AI agents → `X-Calm-Actor: ai:<id>` header, validated against the `[a-z0-9-]{1,64}` id format. Plugins → existing hashed-token path; the callback dispatcher (`plugin_host::callbacks::dispatch`) stamps `"plugin:<id>"` — the plugin process cannot spoof its own actor. Kernel-internal writes (FSM, codex hook ingest) pass `"kernel"` directly without going through the middleware. `kernel` and `plugin:*` are explicitly rejected from the header so REST callers cannot impersonate either. Actor remains a declared field, not authenticated identity (§1.1); a separate auth design precedes any externally-reachable surface. *Was v1 Q3.*
-- **`event_append` visibility → wrapper only.** `Repo::write_with_event` is the sole public path; the raw insert is `SqlxRepo`-private (or `#[cfg(test)]`-gated for replay-loader / fixture use). Tightening later is hard; opening up later is trivial. *Was v1 Q4.*
-- **`view` entity_kind on Overlay → reuse Overlay table.** `entity_kind: "view"` rather than a new `view_state` table. Saves a concept; validators (§5.2) and the kernel-owned `view` kinds allowlist keep the namespace clean. *Was v1 Q5.*
+- **Retention default → forever, no pruner.** No config knob, no nightly pruner task. Audit/replay is the architecture's headline value; defaulting to drop it is wrong. Per-actor retention and the operator runbook for activating finite retention are tracked by issue #36.
+- **Actor plumbing → axum middleware + typed `ActorId`.** Shipped. REST writes flow through `actor_middleware` which builds an `Actor` extension from the `X-Calm-Actor` header; the write wrapper converts to the typed `ActorId` enum (`crates/calm-server/src/ids.rs`). Plugins → callback dispatcher stamps `ActorId::Plugin("<id>")`. Kernel-internal writes (FSM, codex hook ingest) pass `ActorId::Kernel` directly. `kernel` and `plugin:*` are explicitly rejected from the header so REST callers cannot impersonate either. Actor remains a declared field, not authenticated identity (§1.1).
+- **`event_append` visibility → wrapper only.** `Repo::write_with_event` is the sole public path; the raw insert is `SqlxRepo`-private (or `#[cfg(test)]`-gated for replay-loader / fixture use). Tightening later is hard; opening up later is trivial.
+- **`view` entity_kind on Overlay → reuse Overlay table.** `entity_kind: "view"` rather than a new `view_state` table. Saves a concept; validators (§5.2) and the kernel-owned `view` kinds allowlist keep the namespace clean.
 
 ---
 
@@ -595,19 +607,19 @@ Plugin write callbacks (`crates/calm-server/src/plugin_host/callbacks.rs`) follo
 
 1. **`write_with_event` covers plugin writes.** The Phase 1 atomic conversion (§3.3, §7) must include `plugin_host/callbacks.rs` alongside `routes/*.rs`. Same mechanical replacement: `repo.X(...) + emit(...)` becomes `write_with_event(actor, |tx| ...)`. Missing this means plugin writes broadcast live but never persist, breaking audit and replay for the most prolific writers in the system.
 
-2. **Actor format for plugins: `"plugin:<plugin_id>"`.** Populated by the callback dispatcher (`plugin_host::dispatch_neige_callback`), not by the plugin process — plugins cannot spoof their own actor. First version uses the plugin id only; the `correlation` field handles cases that need finer-grained tracing.
+2. **Actor for plugins: `ActorId::Plugin("<plugin_id>")`.** Populated by the callback dispatcher (`plugin_host::dispatch_neige_callback`), not by the plugin process — plugins cannot spoof their own actor. The typed enum carries the plugin id; the `correlation` field handles cases that need finer-grained tracing.
 
-3. **Tool-call writes (`routes::plugins::tool_call`) — actor is the plugin, correlation is the user trigger.** When a frontend iframe invokes `app.callServerTool({ name: "neige.overlay.set", ... })`, the resulting event's actor is still `"plugin:<id>"` (the entity making the kernel write), but the `correlation` field records `"user_tool_call:<call_id>"` to distinguish user-triggered plugin writes from autonomous plugin writes. Audit queries can join on correlation to reconstruct the user-driven causal chain.
+3. **Tool-call writes (`routes::plugins::tool_call`) — actor is the plugin, correlation is the user trigger.** When a frontend iframe invokes `app.callServerTool({ name: "neige.overlay.set", ... })`, the resulting event's actor is still `ActorId::Plugin("<id>")` (the entity making the kernel write), but the `correlation` field records `"user_tool_call:<call_id>"` to distinguish user-triggered plugin writes from autonomous plugin writes. Audit queries can join on correlation to reconstruct the user-driven causal chain.
 
 4. **Plugin event subscriptions (`neige.event.subscribe`) require no cursor changes.** Plugins are long-lived processes whose lifecycle is bound to the kernel: when calm-server restarts, plugin processes restart with it, getting a fresh subscription. Plugin disconnection across kernel restarts is not a use case. The `since` parameter on the WS protocol is browser-tab-replay; plugins continue to receive live broadcasts only.
 
 5. **Plugin-defined overlay kinds remain opaque pass-through.** The `validation.rs::validate_overlay_payload` function applies kernel-owned validation only; plugin-defined kinds are accepted as-is, as today. Sync engine does not change this semantics.
 
-6. **Per-actor retention as a future concern.** Plugins emitting frequent progress / status overlays (potentially many per second per plugin) will dominate event volume. The forever-retention default (§2.3) holds for first version, but a future enhancement may be per-actor retention policy: e.g. `plugin:*` retained 30 days, `user`/`ai:*` forever. Out of scope for first ship.
+6. **Per-actor retention as a future concern.** Plugins emitting frequent progress / status overlays (potentially many per second per plugin) will dominate event volume. The forever-retention default (§2.3) holds today, but once retention activation (issue #36) lands a natural follow-up is per-actor retention policy: e.g. `Plugin(_)` retained 30 days, `User`/`AiCodex(_)` forever.
 
 7. **Permission system unchanged.** `write_with_event` is a transaction wrapper; the permission check at the callback boundary (`perms.can_overlay_write(...)` etc., `callbacks.rs:197`) happens before the wrapper is called and is unaffected. Plugins still cannot write under `plugin_id: "kernel"` or violate their declared grants.
 
-8. **Headline net win: built-in plugin audit log.** `SELECT * FROM events WHERE actor LIKE 'plugin:%' ORDER BY at DESC` becomes a complete time-travel record of every plugin write. Today plugin writes broadcast and vanish; with persistence, they're queryable, replayable, and AI-readable. This alone justifies the design for plugin-heavy users.
+8. **Headline net win: built-in plugin audit log.** `SELECT * FROM events WHERE json_extract(actor, '$.kind') = 'Plugin' ORDER BY at DESC` is a complete time-travel record of every plugin write. With persistence, plugin writes are queryable, replayable, and AI-readable. This alone justifies the design for plugin-heavy users.
 
 ---
 
