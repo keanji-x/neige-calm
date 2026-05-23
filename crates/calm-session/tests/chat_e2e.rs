@@ -190,19 +190,11 @@ async fn chat_user_message_round_trips_through_runner() {
     )
     .await
     .unwrap();
-    // Post-#243 the live broadcast can re-deliver `session_init` to a
-    // client whose `HelloChat.replay` already contained it (the daemon
-    // broadcast doesn't dedup against replay — that's a separate fix
-    // tracked in #244). Tolerate a leading duplicate of `session_init`
-    // here so the assertion locks the post-input event.
-    let echo = {
-        let first = read_chat_event(&mut rd).await;
-        if first.contains("\"type\":\"session_init\"") {
-            read_chat_event(&mut rd).await
-        } else {
-            first
-        }
-    };
+    // The first live frame after handshake must be the stub_echo of the
+    // user message — `session_init` is always in HelloChat.replay (#243)
+    // and broadcast dedup (#244) guarantees it's never re-delivered on
+    // the live channel.
+    let echo = read_chat_event(&mut rd).await;
     assert!(echo.contains("stub_echo"), "got: {echo}");
     assert!(echo.contains("ping"), "got: {echo}");
 
