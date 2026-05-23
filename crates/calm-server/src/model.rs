@@ -354,7 +354,7 @@ pub struct Wave {
     ///
     /// `#[serde(default)]` mirrors the lifecycle precedent: replay of
     /// a pre-#250 event log fixture (no `cwd` key on `WaveUpdated`)
-    /// hydrates as `""`, matching the DB DEFAULT in migration 0016.
+    /// hydrates as `""`, matching the DB DEFAULT in migration 0018.
     /// Production wave-create paths inside this binary always stamp a
     /// real path — the migration default is the "old data only" fallback.
     #[serde(default)]
@@ -383,6 +383,7 @@ pub struct Wave {
 }
 
 #[derive(Clone, Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct NewWave {
     #[schema(value_type = String)]
     pub cove_id: CoveId,
@@ -407,6 +408,21 @@ pub struct NewWave {
     /// conflict.
     #[serde(default)]
     pub attach_folder: bool,
+    /// Host browser's current theme RGB (#177). Required end-to-end —
+    /// the kernel stamps `--terminal-fg=r,g,b --terminal-bg=r,g,b`
+    /// onto the auto-minted spec card's `calm-session-daemon` argv so
+    /// codex's OSC 10/11 startup probe gets matching colors. A body
+    /// missing this field is rejected at the deserialize layer (422):
+    /// the spec card is invisible to the user and a silent fallback
+    /// would mean every wave-from-the-UI spawned with a mis-tinted
+    /// composer (the bug that motivated this refactor).
+    ///
+    /// Direct repo callers (`db::sqlite::wave_create_tx`, used by tests
+    /// and a couple of non-route helpers) still pass a value here even
+    /// though the txn-level helper does not consume it — spec-card
+    /// spawning is owned by `routes::waves::create_wave`. Tests can
+    /// use `RequestTheme::default_dark()` as a no-op sentinel.
+    pub theme: crate::routes::theme::RequestTheme,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, ToSchema)]
@@ -557,6 +573,18 @@ pub struct Terminal {
     /// fails. `None` for rows that predate Scope C or for which the spawn
     /// returned no pid (kernel-level edge case).
     pub pid: Option<i64>,
+    /// #177 — host browser's foreground RGB at row-creation time, as
+    /// comma-decimal `r,g,b` (the daemon CLI's `--terminal-fg` arg
+    /// format). NOT NULL after migration 0017: every spawn path reads
+    /// these columns and stamps the daemon argv from them, so the
+    /// auto-revive in `ws::terminal` can no longer race a themed spawn
+    /// with an un-themed one (both candidates carry identical argv).
+    pub theme_fg: String,
+    /// #177 — host browser's background RGB at row-creation time.
+    /// Mirrors `theme_fg` semantics; both columns are written together
+    /// in the same row-creation transaction so they are never
+    /// independently NULL.
+    pub theme_bg: String,
     pub created_at: i64,
 }
 
@@ -569,6 +597,12 @@ pub struct NewTerminal {
     #[serde(default = "empty_object")]
     #[schema(value_type = Object)]
     pub env: serde_json::Value,
+    /// #177 — host browser's theme RGB, threaded into the row-creation
+    /// transaction. Required so the `terminals.theme_fg/_bg` NOT NULL
+    /// columns always get a value at the same instant the row mints,
+    /// closing the WS auto-revive race (see `ws::terminal::
+    /// resolve_live_sock` for the read side).
+    pub theme: crate::routes::theme::RequestTheme,
 }
 
 // ---------------- Plugin (M3) ----------------

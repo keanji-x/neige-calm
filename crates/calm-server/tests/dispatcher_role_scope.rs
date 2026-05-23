@@ -87,6 +87,7 @@ async fn seed_worker_in_wave(
             sort: None,
             cwd: String::new(),
             attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
@@ -521,6 +522,7 @@ async fn spec_emitting_wave_scope_is_accepted() {
             sort: None,
             cwd: String::new(),
             attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();

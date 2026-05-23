@@ -17,7 +17,6 @@
 
 use crate::db::{RepoOutOfDomain, RouteRepo};
 use crate::error::Result;
-use crate::routes::terminal::spawn_daemon_for;
 use crate::state::AppState;
 use axum::{
     Router,
@@ -84,9 +83,16 @@ async fn upgrade(
 ///   1. Read the terminal row from the repo.
 ///   2. If `daemon_handle` is set, probe the socket (`UnixStream::connect`).
 ///      If it connects, the daemon is alive — return the path.
-///   3. Otherwise re-spawn the daemon with the row's original program /
-///      cwd / env, wait for it to be ready, persist the new handle, and
-///      return that path.
+///   3. Otherwise return 500. The browser's existing "Reconnect" UI
+///      surfaces the failure.
+///
+/// #177 — this used to be an "auto-respawn on cold socket" path. That
+/// behaviour was the source of the WS race in PR #193: the un-themed
+/// respawn could win the socket against the initial themed spawn,
+/// silently dropping the OSC 10/11 theme reply. The legitimate
+/// "daemon died while server was down" recovery is now handled by
+/// `revive_orphans_on_boot` walked once at server startup; the per-
+/// request WS attach path is probe-only.
 async fn resolve_live_sock(s: &AppState, id: &str) -> Result<PathBuf> {
     let term = s
         .repo
@@ -99,73 +105,20 @@ async fn resolve_live_sock(s: &AppState, id: &str) -> Result<PathBuf> {
             // Live daemon — fast path.
             return Ok(PathBuf::from(handle));
         }
-        tracing::info!(
-            terminal_id = %term.id,
-            sock = %handle,
-            "daemon socket unreachable — respawning"
-        );
-    } else {
-        tracing::info!(terminal_id = %term.id, "terminal has no daemon_handle — spawning");
-    }
-
-    // Cold path: respawn. `spawn_daemon_for` updates `daemon_handle`
-    // when it succeeds, so we re-read to get the canonical path.
-    //
-    // Issue #236 defensive log: the terminal-row env is the **pre-MCP**
-    // shape (see `routes::waves::create_wave`); `NEIGE_MCP_TOKEN` /
-    // `NEIGE_MCP_SOCKET` are folded into the env only at spawn time
-    // in the create handler, never persisted. For Spec/Worker cards
-    // that means a respawn from `term.env` produces a daemon with no
-    // MCP env — the codex MCP handshake will then fail (the shim
-    // can't connect+authenticate). The proper fix (re-mint per-card
-    // MCP token + update the stored hash; see
-    // `mcp_server::auth::hash_token` — raw token is non-recoverable
-    // from the hash-only `card_mcp_tokens` row, so we must re-mint
-    // rather than re-derive) is deferred to a #236 follow-up. For
-    // now we warn loudly so the failure mode isn't silent.
-    if matches!(
-        s.card_role_cache.get(&term.card_id),
-        Some(crate::model::CardRole::Spec | crate::model::CardRole::Worker)
-    ) && !env_contains_mcp_vars(&term.env)
-    {
         tracing::warn!(
             terminal_id = %term.id,
-            card_id = %term.card_id,
-            "spec/worker card respawn missing MCP env — codex MCP handshake will fail; this is a known limitation, see #236 follow-up",
+            sock = %handle,
+            "daemon socket unreachable; no auto-respawn (PR1-#177) — client surfaces 'Reconnect'",
+        );
+    } else {
+        tracing::warn!(
+            terminal_id = %term.id,
+            "terminal has no daemon_handle; no auto-spawn (PR1-#177) — client surfaces 'Reconnect'",
         );
     }
-    let env = term.env.clone();
-    spawn_daemon_for(s, &term, &term.program, &term.cwd, &env).await?;
-    let refreshed = s.repo.terminal_get(id).await?.ok_or_else(|| {
-        crate::error::CalmError::Internal("terminal vanished after respawn".into())
-    })?;
-    let handle = refreshed.daemon_handle.ok_or_else(|| {
-        crate::error::CalmError::Internal(format!(
-            "terminal {id}: daemon_handle still missing after respawn"
-        ))
-    })?;
-    Ok(PathBuf::from(handle))
-}
-
-/// Returns true if the persisted terminal-row env contains both
-/// `NEIGE_MCP_SOCKET` and `NEIGE_MCP_TOKEN`. The kernel currently
-/// does NOT persist these vars into `terminals.env` (the wave-create
-/// handler folds them into a separate env clone for the initial
-/// `spawn_daemon_for` call only); so today this returns `false` for
-/// every Spec/Worker card respawn. The #236 follow-up that
-/// re-mints + persists MCP env will let this start returning `true`
-/// and the warn-log in `resolve_live_sock` will stop firing.
-fn env_contains_mcp_vars(env: &serde_json::Value) -> bool {
-    env.as_object()
-        .map(|m| {
-            m.get("NEIGE_MCP_SOCKET")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|s| !s.is_empty())
-                && m.get("NEIGE_MCP_TOKEN")
-                    .and_then(serde_json::Value::as_str)
-                    .is_some_and(|s| !s.is_empty())
-        })
-        .unwrap_or(false)
+    Err(crate::error::CalmError::Internal(format!(
+        "terminal {id}: no live daemon (probe-only resolve, see #177)"
+    )))
 }
 
 async fn handle(socket: WebSocket, sock: PathBuf, terminal_id: String, repo: Arc<dyn RouteRepo>) {
@@ -1260,6 +1213,7 @@ mod cleanup_tests {
                 sort: None,
                 cwd: String::new(),
                 attach_folder: false,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
             })
             .await
             .unwrap();
@@ -1278,6 +1232,7 @@ mod cleanup_tests {
                 program: "/bin/true".into(),
                 cwd: "/tmp".into(),
                 env: json!({}),
+                theme: crate::routes::theme::RequestTheme::default_dark(),
             })
             .await
             .unwrap();

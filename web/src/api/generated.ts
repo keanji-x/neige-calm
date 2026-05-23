@@ -818,6 +818,14 @@ export interface components {
          *     it will get a 422 — that's the intended fail-loud signal to update
          *     the caller. The interactive `prompt` channel is the one place
          *     callers should be putting text now.
+         *
+         *     `theme` is required end-to-end (#177): callers MUST send the host
+         *     browser's current foreground/background RGB. The kernel stamps it
+         *     onto the `calm-session-daemon` argv so codex's OSC 10/11 startup
+         *     probe gets matching colors. Forcing it at the type layer means a
+         *     caller that forgets — the exact bug that motivated this refactor —
+         *     fails at compile time (TS) or at the deserialize step (Rust/JSON,
+         *     422). No `Option`, no `#[serde(default)]`, no implicit fallback.
          */
         NewCodexCardBody: {
             /**
@@ -837,6 +845,14 @@ export interface components {
              * @description Sort order within the wave. `None` defaults to "append to end".
              */
             sort?: number | null;
+            /**
+             * @description Host browser's current theme RGB (#177). Required — the kernel
+             *     stamps `--terminal-fg=r,g,b --terminal-bg=r,g,b` onto the
+             *     `calm-session-daemon` argv so the daemon's `TerminalModel`
+             *     answers codex's OSC 10/11 startup probe with colors matching
+             *     the host theme. A caller that omits this field gets 422.
+             */
+            theme: components["schemas"]["RequestTheme"];
         };
         NewCove: {
             color: string;
@@ -883,6 +899,13 @@ export interface components {
              * @description Sort order within the wave. `None` defaults to "append to end".
              */
             sort?: number | null;
+            /**
+             * @description Host browser's current theme RGB (#177). Required — the kernel
+             *     writes it onto the terminal row inside the same transaction
+             *     that mints the card, and every spawn for this row reads
+             *     `term.theme_fg/_bg` to stamp `--terminal-fg/-bg` daemon argv.
+             */
+            theme: components["schemas"]["RequestTheme"];
         };
         NewWave: {
             /**
@@ -910,6 +933,23 @@ export interface components {
             cwd: string;
             /** Format: double */
             sort?: number | null;
+            /**
+             * @description Host browser's current theme RGB (#177). Required end-to-end —
+             *     the kernel stamps `--terminal-fg=r,g,b --terminal-bg=r,g,b`
+             *     onto the auto-minted spec card's `calm-session-daemon` argv so
+             *     codex's OSC 10/11 startup probe gets matching colors. A body
+             *     missing this field is rejected at the deserialize layer (422):
+             *     the spec card is invisible to the user and a silent fallback
+             *     would mean every wave-from-the-UI spawned with a mis-tinted
+             *     composer (the bug that motivated this refactor).
+             *
+             *     Direct repo callers (`db::sqlite::wave_create_tx`, used by tests
+             *     and a couple of non-route helpers) still pass a value here even
+             *     though the txn-level helper does not consume it — spec-card
+             *     spawning is owned by `routes::waves::create_wave`. Tests can
+             *     use `RequestTheme::default_dark()` as a no-op sentinel.
+             */
+            theme: components["schemas"]["RequestTheme"];
             title: string;
         };
         Overlay: {
@@ -992,6 +1032,24 @@ export interface components {
             state: string;
             version: string;
         };
+        /**
+         * @description Wire shape of `NewCodexCardBody.theme` / `NewWave.theme`. Matches the
+         *     `calm_session::TerminalTheme` value type one-for-one — duplicated
+         *     here so the route can keep its own `ToSchema` derive (the
+         *     `calm_session` crate is utoipa-free).
+         */
+        RequestTheme: {
+            bg: [
+                number,
+                number,
+                number
+            ];
+            fg: [
+                number,
+                number,
+                number
+            ];
+        };
         ResolveQuery: {
             /**
              * @description Absolute filesystem path to resolve against every cove's folder
@@ -1038,6 +1096,22 @@ export interface components {
              */
             pid?: number | null;
             program: string;
+            /**
+             * @description #177 — host browser's background RGB at row-creation time.
+             *     Mirrors `theme_fg` semantics; both columns are written together
+             *     in the same row-creation transaction so they are never
+             *     independently NULL.
+             */
+            theme_bg: string;
+            /**
+             * @description #177 — host browser's foreground RGB at row-creation time, as
+             *     comma-decimal `r,g,b` (the daemon CLI's `--terminal-fg` arg
+             *     format). NOT NULL after migration 0017: every spawn path reads
+             *     these columns and stamps the daemon argv from them, so the
+             *     auto-revive in `ws::terminal` can no longer race a themed spawn
+             *     with an un-themed one (both candidates carry identical argv).
+             */
+            theme_fg: string;
         };
         /**
          * @description M5: AppBridge → kernel tool-call wire body. Mirrors the JSON-RPC
@@ -1133,7 +1207,7 @@ export interface components {
              *
              *     `#[serde(default)]` mirrors the lifecycle precedent: replay of
              *     a pre-#250 event log fixture (no `cwd` key on `WaveUpdated`)
-             *     hydrates as `""`, matching the DB DEFAULT in migration 0016.
+             *     hydrates as `""`, matching the DB DEFAULT in migration 0018.
              *     Production wave-create paths inside this binary always stamp a
              *     real path — the migration default is the "old data only" fallback.
              */
@@ -2998,7 +3072,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        /** @description Optional body — empty means use defaults */
+        /** @description Body required (theme is mandatory; cwd/prompt optional) */
         requestBody: {
             content: {
                 "application/json": components["schemas"]["NewCodexCardBody"];
@@ -3016,6 +3090,15 @@ export interface operations {
             };
             /** @description Wave not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Body missing required fields (e.g. theme) */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3044,7 +3127,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        /** @description Optional body — empty means use defaults */
+        /** @description Body required (theme is mandatory; program/cwd/env optional) */
         requestBody: {
             content: {
                 "application/json": components["schemas"]["NewTerminalCardBody"];
@@ -3062,6 +3145,15 @@ export interface operations {
             };
             /** @description Wave not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Body missing required fields (e.g. theme) */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

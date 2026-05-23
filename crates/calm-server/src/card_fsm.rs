@@ -478,6 +478,7 @@ mod tests {
                 sort: None,
                 cwd: String::new(),
                 attach_folder: false,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
             })
             .await
             .unwrap();

@@ -292,7 +292,7 @@ lifecycle: WaveLifecycle,
  *
  * `#[serde(default)]` mirrors the lifecycle precedent: replay of
  * a pre-#250 event log fixture (no `cwd` key on `WaveUpdated`)
- * hydrates as `""`, matching the DB DEFAULT in migration 0016.
+ * hydrates as `""`, matching the DB DEFAULT in migration 0018.
  * Production wave-create paths inside this binary always stamp a
  * real path — the migration default is the "old data only" fallback.
  */

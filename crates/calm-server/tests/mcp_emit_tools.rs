@@ -73,6 +73,7 @@ async fn boot_with_role(role: CardRole) -> CardBoot {
             sort: None,
             cwd: String::new(),
             attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
@@ -96,6 +97,7 @@ async fn boot_with_role(role: CardRole) -> CardBoot {
         // the `false` path.
         true,
         &card_role_cache,
+        calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
     .expect("mint card");
@@ -112,6 +114,7 @@ async fn boot_with_role(role: CardRole) -> CardBoot {
         CardRole::Worker,
         true,
         &card_role_cache,
+        calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
     .expect("mint sidekick card");

@@ -38,6 +38,13 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState::new(&cfg, repo).await?;
 
+    // #177 — boot-time orphan-revive sweep. The WS upgrade path is
+    // probe-only (no auto-respawn); this is the ONLY kernel-internal
+    // path that re-mounts a daemon for an existing row. Runs once
+    // before the listener binds so a request that hits in flight can't
+    // race the sweep.
+    calm_server::revive_orphans_on_boot(&state).await;
+
     // Optional session-recording — when `RECORD_SESSION=<path>` is set,
     // every event broadcast on the bus is appended to that file as
     // line-delimited JSON in the replay-fixture per-event shape. The

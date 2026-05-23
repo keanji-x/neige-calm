@@ -86,6 +86,7 @@ async fn boot(cfg: StubConfig<'_>) -> Fixture {
             sort: None,
             cwd: String::new(),
             attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
@@ -112,8 +113,7 @@ async fn boot(cfg: StubConfig<'_>) -> Fixture {
             "command": "bin/stub",
             "env": { "STUB_TOOLCALL_MODE": cfg.mode }
         },
-        "permissions": perms
-    });
+        "permissions": perms, "theme": {"fg": [216,219,226], "bg": [15,20,24]} });
     let manifest: Manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest");
 
     let registry = PluginRegistry::empty();

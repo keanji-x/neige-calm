@@ -42,6 +42,7 @@ async fn ingest_emits_codex_hook_event() {
             sort: None,
             cwd: String::new(),
             attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();

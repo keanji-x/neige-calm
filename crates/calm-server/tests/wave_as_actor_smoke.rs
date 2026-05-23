@@ -168,7 +168,7 @@ async fn wave_as_actor_smoke_spec_dispatches_worker_via_kernel() {
     let (status, _body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "smoke wave", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true}),
+        json!({"cove_id": boot.cove_id, "title": "smoke wave", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(

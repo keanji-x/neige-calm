@@ -54,6 +54,7 @@ async fn spec_card_can_update_wave() {
             sort: None,
             cwd: String::new(),
             attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
@@ -147,6 +148,7 @@ async fn ai_codex_cannot_update_wave() {
             sort: None,
             cwd: String::new(),
             attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
@@ -292,6 +294,7 @@ async fn migration_backfills_role_plain_for_existing_cards() {
             sort: None,
             cwd: String::new(),
             attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
@@ -333,6 +336,7 @@ async fn unique_spec_card_per_wave_index_enforced() {
             sort: None,
             cwd: String::new(),
             attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();

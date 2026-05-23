@@ -184,6 +184,7 @@ async fn post_api_waves_uses_existing_folder_claim() {
             "title": "w-existing-claim",
             "cwd": "/workspace/sub/dir",
             "attach_folder": false,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),
     )
     .await;
@@ -220,6 +221,7 @@ async fn post_api_waves_with_attach_folder_creates_folder_and_wave() {
             "title": "w-attach",
             "cwd": "/srv/projects/alpha",
             "attach_folder": true,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),
     )
     .await;
@@ -250,6 +252,7 @@ async fn post_api_waves_rejects_unclaimed_cwd_without_attach_folder() {
             "title": "w-orphan",
             "cwd": "/unclaimed/path",
             "attach_folder": false,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),
     )
     .await;
@@ -294,6 +297,7 @@ async fn post_api_waves_attach_folder_conflict_rolls_back() {
             "title": "w-conflict",
             "cwd": "/shared/workspace/inner",
             "attach_folder": true,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),
     )
     .await;
@@ -344,6 +348,7 @@ async fn post_api_waves_rejects_cwd_owned_by_another_cove() {
             "title": "w-cross",
             "cwd": "/owned/by/other/sub",
             "attach_folder": false,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),
     )
     .await;
@@ -397,6 +402,7 @@ async fn post_api_waves_for_system_cove_skips_folder_claim() {
             "title": "Today",
             "cwd": "/",
             "attach_folder": true,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),
     )
     .await;
@@ -426,6 +432,7 @@ async fn post_api_waves_for_system_cove_skips_folder_claim() {
             "title": "user wave",
             "cwd": "/srv/projects/beta",
             "attach_folder": true,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),
     )
     .await;
@@ -451,6 +458,7 @@ async fn post_api_waves_rejects_non_absolute_cwd() {
             "title": "w-relative",
             "cwd": "relative/path",
             "attach_folder": true,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),
     )
     .await;
@@ -483,6 +491,7 @@ async fn seed_wave(repo: &Arc<dyn Repo>, cove_id: &str) -> calm_server::model::W
         sort: None,
         cwd: String::new(),
         attach_folder: false,
+        theme: calm_server::routes::theme::RequestTheme::default_dark(),
     })
     .await
     .unwrap()

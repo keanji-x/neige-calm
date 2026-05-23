@@ -78,6 +78,7 @@ async fn boot() -> Boot {
             sort: None,
             cwd: String::new(),
             attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
@@ -105,6 +106,7 @@ async fn boot() -> Boot {
         // wave-create path (`routes/waves.rs`).
         false,
         &card_role_cache,
+        calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
     .expect("mint spec card");

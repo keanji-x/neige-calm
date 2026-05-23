@@ -141,6 +141,8 @@ use utoipa::OpenApi;
         ViewCatalogEntry,
         ViewSizeWire,
         VersionInfo,
+        // #177 — required theme field on card/wave creation DTOs
+        crate::routes::theme::RequestTheme,
         // shared error response
         ErrorBody,
     )),

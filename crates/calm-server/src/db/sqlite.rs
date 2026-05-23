@@ -912,16 +912,25 @@ pub async fn terminal_create_tx(
     let now = now_ms();
     let id = new_id();
     let env_text = serde_json::to_string(&p.env)?;
+    // #177 — theme is a write-once row invariant. Render the
+    // `(r, g, b)` tuples to comma-decimal once at row creation so
+    // every spawn path that reads this row can stamp the daemon
+    // argv with zero allocation.
+    let theme_fg = p.theme.fg_arg();
+    let theme_bg = p.theme.bg_arg();
     sqlx::query(
         r#"INSERT INTO terminals
-               (id, card_id, program, cwd, env, daemon_handle, pid, created_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6)"#,
+               (id, card_id, program, cwd, env, daemon_handle, pid,
+                theme_fg, theme_bg, created_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6, ?7, ?8)"#,
     )
     .bind(&id)
     .bind(&p.card_id)
     .bind(&p.program)
     .bind(&p.cwd)
     .bind(&env_text)
+    .bind(&theme_fg)
+    .bind(&theme_bg)
     .bind(now)
     .execute(&mut **tx)
     .await?;
@@ -933,6 +942,8 @@ pub async fn terminal_create_tx(
         env: p.env,
         daemon_handle: None,
         pid: None,
+        theme_fg,
+        theme_bg,
         created_at: now,
     })
 }
@@ -966,6 +977,11 @@ pub async fn card_with_terminal_create_tx(
     // would pass `false`.
     deletable: bool,
     card_role_cache: &CardRoleCache,
+    // #177 — host browser's theme RGB, written onto the terminal row
+    // alongside the card so every spawn path reads it from the row and
+    // stamps consistent `--terminal-fg/-bg` argv (closes the WS auto-
+    // revive race observed in PR #193).
+    theme: crate::routes::theme::RequestTheme,
 ) -> Result<(Card, Terminal)> {
     // 1. Card row with placeholder payload — the terminal_id and schemaVersion
     //    are stamped in step 5 once we have the terminal row.
@@ -1003,6 +1019,7 @@ pub async fn card_with_terminal_create_tx(
             program,
             cwd,
             env,
+            theme,
         },
     )
     .await?;
@@ -1082,6 +1099,10 @@ pub async fn card_with_codex_create_tx(
     // user-facing `POST /api/waves/:id/codex-cards` route passes `true`.
     deletable: bool,
     card_role_cache: &CardRoleCache,
+    // #177 — host browser's theme RGB; written onto the terminal row
+    // in the same transaction so the codex daemon's spawn argv is
+    // deterministic regardless of which spawn path lands it.
+    theme: crate::routes::theme::RequestTheme,
 ) -> Result<(Card, Terminal, Option<String>)> {
     // 1. Card row with placeholder payload — the terminal_id, cwd, and
     //    schemaVersion fields are stamped in step 5 once we have the
@@ -1119,6 +1140,7 @@ pub async fn card_with_codex_create_tx(
             program: "codex".into(),
             cwd: cwd.clone(),
             env,
+            theme,
         },
     )
     .await?;
@@ -1527,7 +1549,8 @@ impl RepoRead for SqlxRepo {
     // ------------------------------------------------------------- terminals
     async fn terminal_get(&self, id: &str) -> Result<Option<Terminal>> {
         let row = sqlx::query_as::<_, Terminal>(
-            r#"SELECT id, card_id, program, cwd, env, daemon_handle, pid, created_at
+            r#"SELECT id, card_id, program, cwd, env, daemon_handle, pid,
+                      theme_fg, theme_bg, created_at
                FROM terminals WHERE id = ?1"#,
         )
         .bind(id)
@@ -1538,7 +1561,8 @@ impl RepoRead for SqlxRepo {
 
     async fn terminal_get_by_card(&self, card_id: &str) -> Result<Option<Terminal>> {
         let row = sqlx::query_as::<_, Terminal>(
-            r#"SELECT id, card_id, program, cwd, env, daemon_handle, pid, created_at
+            r#"SELECT id, card_id, program, cwd, env, daemon_handle, pid,
+                      theme_fg, theme_bg, created_at
                FROM terminals WHERE card_id = ?1"#,
         )
         .bind(card_id)
@@ -1556,7 +1580,8 @@ impl RepoRead for SqlxRepo {
         let cutoff = now_ms() - grace_seconds.saturating_mul(1000);
         let rows = sqlx::query_as::<_, Terminal>(
             r#"SELECT t.id, t.card_id, t.program, t.cwd, t.env,
-                      t.daemon_handle, t.pid, t.created_at
+                      t.daemon_handle, t.pid,
+                      t.theme_fg, t.theme_bg, t.created_at
                FROM terminals t
                WHERE NOT EXISTS (
                    SELECT 1 FROM cards c
@@ -1565,6 +1590,23 @@ impl RepoRead for SqlxRepo {
                AND t.created_at < ?1"#,
         )
         .bind(cutoff)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    async fn terminals_with_daemon_handle(&self) -> Result<Vec<Terminal>> {
+        // #177 — boot-time orphan-revive sweep input. Every row with a
+        // non-NULL `daemon_handle` was paired with a live daemon when
+        // the kernel previously exited; on startup we probe each one
+        // and respawn the unreachable ones.
+        let rows = sqlx::query_as::<_, Terminal>(
+            r#"SELECT id, card_id, program, cwd, env,
+                      daemon_handle, pid,
+                      theme_fg, theme_bg, created_at
+               FROM terminals
+               WHERE daemon_handle IS NOT NULL"#,
+        )
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
@@ -1822,16 +1864,24 @@ impl RepoOutOfDomain for SqlxRepo {
         let now = now_ms();
         let id = new_id();
         let env_text = serde_json::to_string(&p.env)?;
+        // #177 — render theme RGB once at row-creation; persisted in
+        // comma-decimal form so every spawn-path read is a zero-alloc
+        // string slice straight into the daemon argv.
+        let theme_fg = p.theme.fg_arg();
+        let theme_bg = p.theme.bg_arg();
         sqlx::query(
             r#"INSERT INTO terminals
-                   (id, card_id, program, cwd, env, daemon_handle, pid, created_at)
-               VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6)"#,
+                   (id, card_id, program, cwd, env, daemon_handle, pid,
+                    theme_fg, theme_bg, created_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6, ?7, ?8)"#,
         )
         .bind(&id)
         .bind(&p.card_id)
         .bind(&p.program)
         .bind(&p.cwd)
         .bind(&env_text)
+        .bind(&theme_fg)
+        .bind(&theme_bg)
         .bind(now)
         .execute(&self.pool)
         .await?;
@@ -1843,6 +1893,8 @@ impl RepoOutOfDomain for SqlxRepo {
             env: p.env,
             daemon_handle: None,
             pid: None,
+            theme_fg,
+            theme_bg,
             created_at: now,
         })
     }

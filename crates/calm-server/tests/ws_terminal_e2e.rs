@@ -113,6 +113,7 @@ async fn boot_full() -> (std::net::SocketAddr, axum::Router, String, TempDir) {
             sort: None,
             cwd: String::new(),
             attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
@@ -287,7 +288,7 @@ async fn v2_full_chain_happy_path() {
     let (status, card) = rest_post(
         app.clone(),
         format!("/api/waves/{wave_id}/terminal-cards"),
-        json!({ "program": "/bin/sh", "cwd": "", "env": {}, "sort": 1.0 }),
+        json!({ "program": "/bin/sh", "cwd": "", "env": {}, "sort": 1.0, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(

@@ -64,6 +64,7 @@ async fn boot_with_wave(
             sort: None,
             cwd: String::new(),
             attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
@@ -84,8 +85,7 @@ async fn boot_with_wave(
             "cards_read_all": true,
             "events_subscribe": ["*"],
             "kv_quota_bytes": 1048576
-        }
-    });
+        }, "theme": {"fg": [216,219,226], "bg": [15,20,24]} });
     let manifest: Manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest");
 
     let registry = PluginRegistry::empty();

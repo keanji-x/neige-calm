@@ -1,0 +1,29 @@
+-- Issue #177 — persist the host browser's theme RGB on each terminal row so
+-- *every* daemon-spawn path (initial codex-card create, spec-card create
+-- inside wave-create, dispatcher worker spawn, and the WS auto-revive in
+-- `ws::terminal::resolve_live_sock`) reads the same source of truth and
+-- stamps `--terminal-fg`/`--terminal-bg` consistently.
+--
+-- Without a row-level source of truth, the WS auto-revive path (which fires
+-- when the daemon has died between the row being created and the browser
+-- re-attaching) would re-spawn without theme args. The race observed in
+-- production:
+--   pid A (codex_cards path)   — HAS theme args
+--   pid B (ws::terminal revive) — NO theme args  ← wins the socket race
+-- so the codex composer never received the OSC 10/11 reply matching the
+-- host theme.
+--
+-- Persisting theme on the row closes the race: the revive path becomes
+-- "look up the row, pass row.theme_fg/bg" — same as the initial-spawn
+-- paths. This migration ships the columns as nullable so the in-place
+-- upgrade keeps existing rows valid; the immediately-following 0017
+-- migration backfills + ALTERs to NOT NULL after the codepath that
+-- requires a value at row-creation time lands.
+--
+-- Format: comma-decimal `r,g,b` matching `RequestTheme::fg_arg()` /
+-- `bg_arg()` and the daemon CLI's `--terminal-fg` / `--terminal-bg`
+-- arg shape. Storing the pre-rendered string keeps the read-side hot
+-- path (spawn) zero-allocation; the parse-step lives at write time
+-- (already done in the spawn entry points).
+ALTER TABLE terminals ADD COLUMN theme_fg TEXT;
+ALTER TABLE terminals ADD COLUMN theme_bg TEXT;

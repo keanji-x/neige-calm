@@ -121,6 +121,7 @@ async fn codex_hook_records_ai_codex_actor_from_card_id_query() {
             sort: None,
             cwd: String::new(),
             attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
@@ -282,6 +283,7 @@ async fn plugin_tool_call_threads_call_id_as_correlation() {
             sort: None,
             cwd: String::new(),
             attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
@@ -438,6 +440,7 @@ async fn plugin_tool_call_without_call_id_leaves_correlation_null() {
             sort: None,
             cwd: String::new(),
             attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
@@ -586,6 +589,7 @@ async fn plugin_tool_call_treats_empty_call_id_as_absent() {
             sort: None,
             cwd: String::new(),
             attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
