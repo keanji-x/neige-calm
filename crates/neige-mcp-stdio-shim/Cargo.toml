@@ -31,6 +31,13 @@ tokio = { version = "1", features = [
     "io-util",
     "net",
 ] }
+# Issue #236 followup — the shim now intercepts the first JSON-RPC frame
+# on stdin (the codex MCP `initialize` request) to inject the per-card
+# auth token from `NEIGE_MCP_TOKEN` into `params._meta["dev.neige/auth"]`.
+# Vanilla codex CLI 0.132 has no knowledge of the kernel's auth slot, so
+# the shim has to thread the token itself. Subsequent frames are byte-
+# pumped unchanged, so the JSON parser runs at most once per shim process.
+serde_json = "1"
 
 [dev-dependencies]
 # PR7a.1 (#136 followup) — integration tests under `tests/` spawn the
@@ -48,3 +55,6 @@ tokio = { version = "1", features = [
     "sync",
 ] }
 tempfile = "3"
+# #236 followup — the new `initialize_first_frame_gets_token_injected`
+# integration test parses the bytes the shim sends on the wire as JSON.
+serde_json = "1"

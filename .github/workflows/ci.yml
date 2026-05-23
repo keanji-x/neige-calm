@@ -201,9 +201,15 @@ jobs:
 
       # Build release binaries + web bundle the way `make dev` expects them.
       # We don't call `make dev` directly here so the cargo + npm steps stay
-      # visible in the GitHub Actions log timeline.
-      - name: cargo build --release (server + daemon + codex bridge)
-        run: cargo build --release -p calm-server -p calm-session -p calm-codex-bridge --bin calm-server --bin calm-session-daemon --bin neige-codex-bridge --locked
+      # visible in the GitHub Actions log timeline. Issue #236 followup
+      # added `neige-mcp-stdio-shim` to the list — docker-compose.yml bind-
+      # mounts it into /usr/local/bin so codex inside the container can
+      # spawn the kernel-as-MCP-server bridge per spec/worker card. The
+      # chromium-e2e specs don't exercise codex today, but the docker
+      # compose `up` step uses the same compose file as `make dev` and
+      # will fail trying to bind-mount a non-existent host path.
+      - name: cargo build --release (server + daemon + codex bridge + mcp-stdio shim)
+        run: cargo build --release -p calm-server -p calm-session -p calm-codex-bridge -p neige-mcp-stdio-shim --bin calm-server --bin calm-session-daemon --bin neige-codex-bridge --bin neige-mcp-stdio-shim --locked
 
       - name: npm run build (web bundle for nginx)
         working-directory: web
