@@ -285,6 +285,15 @@ async fn plugin_tool_call_threads_call_id_as_correlation() {
         "min_kernel_version": "0.0.1",
         "display_name": "Call-id correlation",
         "entrypoint": { "command": "bin/stub" },
+        // #198 concern 5: per-view permissions.tools is enforced on
+        // /api/plugins/:id/tool-call. The test exercises neige.overlay.set,
+        // so grant exactly that.
+        "views": [{
+            "view_id": "main",
+            "title": "Main",
+            "scope": "card",
+            "permissions": { "tools": ["neige.overlay.set"] }
+        }],
         "permissions": {
             "overlays_write": ["wave"],
             "cards_create": false,
@@ -428,6 +437,12 @@ async fn plugin_tool_call_without_call_id_leaves_correlation_null() {
         "min_kernel_version": "0.0.1",
         "display_name": "No-callid",
         "entrypoint": { "command": "bin/stub" },
+        "views": [{
+            "view_id": "main",
+            "title": "Main",
+            "scope": "card",
+            "permissions": { "tools": ["neige.overlay.set"] }
+        }],
         "permissions": {
             "overlays_write": ["wave"],
             "cards_create": false,
@@ -566,6 +581,12 @@ async fn plugin_tool_call_treats_empty_call_id_as_absent() {
         "min_kernel_version": "0.0.1",
         "display_name": "Empty-callid",
         "entrypoint": { "command": "bin/stub" },
+        "views": [{
+            "view_id": "main",
+            "title": "Main",
+            "scope": "card",
+            "permissions": { "tools": ["neige.overlay.set"] }
+        }],
         "permissions": {
             "overlays_write": ["wave"],
             "cards_create": false,

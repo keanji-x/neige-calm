@@ -58,6 +58,11 @@ struct FxConfig<'a> {
     /// `resources/read` response, and emitted as the
     /// `Content-Security-Policy` HTTP header).
     csp: Option<Value>,
+    /// Optional per-view `permissions.tools` allow-list (mirrored under
+    /// `_meta.ui.permissions.tools`). `None` means the view declares no
+    /// iframe-tool grants, which under the #198 deny-by-default rule blocks
+    /// every `tool-call` from the iframe.
+    view_tools: Option<Vec<&'a str>>,
     /// If true, spawn + wait for Running. Tests that only need the
     /// registry (iframe HTML) can skip the spawn cost.
     run: bool,
@@ -85,6 +90,9 @@ async fn boot(cfg: FxConfig<'_>) -> Fixture {
     });
     if let Some(csp) = &cfg.csp {
         view["csp"] = csp.clone();
+    }
+    if let Some(tools) = &cfg.view_tools {
+        view["permissions"] = json!({ "tools": tools });
     }
     let manifest_json = json!({
         "manifest_version": 1,
@@ -199,6 +207,7 @@ async fn view_html_returns_body_and_mcp_app_mime() {
         permissions: json!({}),
         view_html: Some("<!doctype html><html><body>hello m5</body></html>"),
         csp: None,
+        view_tools: None,
         run: false,
     })
     .await;
@@ -243,6 +252,7 @@ async fn view_html_emits_csp_header_when_manifest_declares_csp() {
             "script_src": ["'self'", "'unsafe-inline'"],
             "connect_src": ["'none'"],
         })),
+        view_tools: None,
         run: false,
     })
     .await;
@@ -289,6 +299,7 @@ async fn view_html_404_when_plugin_not_installed() {
         permissions: json!({}),
         view_html: Some("<html></html>"),
         csp: None,
+        view_tools: None,
         run: false,
     })
     .await;
@@ -315,6 +326,7 @@ async fn view_html_404_when_view_id_unknown() {
         permissions: json!({}),
         view_html: Some("<html></html>"),
         csp: None,
+        view_tools: None,
         run: false,
     })
     .await;
@@ -348,6 +360,9 @@ async fn tool_call_dispatches_neige_overlay_set_to_kernel() {
         }),
         view_html: Some("<html></html>"),
         csp: None,
+        // #198 concern 5: per-view tool allow-list is now enforced. The
+        // iframe can only call neige.* tools declared here.
+        view_tools: Some(vec!["neige.overlay.set"]),
         run: true,
     })
     .await;
@@ -406,6 +421,7 @@ async fn tool_call_rejects_non_neige_namespace() {
         }),
         view_html: Some("<html></html>"),
         csp: None,
+        view_tools: Some(vec!["neige.overlay.set"]),
         run: true,
     })
     .await;
@@ -443,6 +459,7 @@ async fn tool_call_404_when_plugin_not_running() {
         permissions: json!({}),
         view_html: Some("<html></html>"),
         csp: None,
+        view_tools: None,
         run: false,
     })
     .await;
@@ -463,4 +480,176 @@ async fn tool_call_404_when_plugin_not_running() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     let body = body_to_json(resp).await;
     assert_eq!(body["code"], "not_found");
+}
+
+// ---------------------------------------------------------------------------
+// #198 concern 5 — permissions.tools enforcement on tool-call
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn tool_call_403_when_tool_not_in_view_allowlist() {
+    // Plugin running with the *capability* to write overlays, but its
+    // view's `permissions.tools` only grants `neige.overlay.set` — the
+    // iframe must not be able to reach `neige.overlay.delete` (which the
+    // plugin process itself could call directly, but the iframe can't).
+    let fx = boot(FxConfig {
+        plugin_id: "m5.tc.toolperm.scoped",
+        permissions: json!({
+            "overlays_write": ["wave"],
+        }),
+        view_html: Some("<html></html>"),
+        csp: None,
+        view_tools: Some(vec!["neige.overlay.set"]),
+        run: true,
+    })
+    .await;
+
+    let resp = app(fx.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/plugins/{}/tool-call", fx.plugin_id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "neige.overlay.delete",
+                        "arguments": {
+                            "entity_kind": "wave",
+                            "entity_id": "wave-xyz",
+                            "kind": "status"
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = body_to_json(resp).await;
+    assert_eq!(body["code"], "forbidden_tool");
+    // The error string must name the offending tool so plugin authors can
+    // diagnose without grepping logs.
+    let err = body["error"].as_str().unwrap_or("");
+    assert!(
+        err.contains("neige.overlay.delete"),
+        "error should name the tool, got: {err}"
+    );
+
+    fx.state.plugin.stop(&fx.plugin_id).await.ok();
+}
+
+#[tokio::test]
+async fn tool_call_403_when_view_declares_no_tools() {
+    // Manifest's view has no `permissions.tools` block at all. Deny-by-
+    // default kicks in — every neige.* call is rejected even if the plugin
+    // is running with broad capability grants.
+    let fx = boot(FxConfig {
+        plugin_id: "m5.tc.toolperm.empty",
+        permissions: json!({
+            "overlays_write": ["wave"],
+        }),
+        view_html: Some("<html></html>"),
+        csp: None,
+        view_tools: None,
+        run: true,
+    })
+    .await;
+
+    let resp = app(fx.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/plugins/{}/tool-call", fx.plugin_id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "neige.overlay.set",
+                        "arguments": {
+                            "entity_kind": "wave",
+                            "entity_id": "wave-xyz",
+                            "kind": "status",
+                            "payload": {}
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = body_to_json(resp).await;
+    assert_eq!(body["code"], "forbidden_tool");
+
+    fx.state.plugin.stop(&fx.plugin_id).await.ok();
+}
+
+#[tokio::test]
+async fn tool_call_allows_prefix_glob_grant() {
+    // `neige.overlay.*` grants both `neige.overlay.set` and
+    // `neige.overlay.delete`. We verify by hitting `.set` (the dispatcher
+    // can actually service it given the overlay-write capability) — the
+    // glob form is the AppBridge-style way to grant a family of related
+    // tools without listing each explicitly.
+    let fx = boot(FxConfig {
+        plugin_id: "m5.tc.toolperm.glob",
+        permissions: json!({
+            "overlays_write": ["wave"],
+        }),
+        view_html: Some("<html></html>"),
+        csp: None,
+        view_tools: Some(vec!["neige.overlay.*"]),
+        run: true,
+    })
+    .await;
+
+    let resp = app(fx.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/plugins/{}/tool-call", fx.plugin_id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "neige.overlay.set",
+                        "arguments": {
+                            "entity_kind": "wave",
+                            "entity_id": "wave-glob",
+                            "kind": "status",
+                            "payload": { "state": "ok" }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "prefix glob should allow neige.overlay.set"
+    );
+
+    // And a sibling family is still denied — `neige.card.update` doesn't
+    // match `neige.overlay.*`.
+    let resp = app(fx.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/plugins/{}/tool-call", fx.plugin_id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "name": "neige.card.update", "arguments": {} }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = body_to_json(resp).await;
+    assert_eq!(body["code"], "forbidden_tool");
+
+    fx.state.plugin.stop(&fx.plugin_id).await.ok();
 }

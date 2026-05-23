@@ -912,7 +912,7 @@ fn csp_header_from_meta(meta: Option<&Value>) -> Option<String> {
     request_body = ToolCallBody,
     responses(
         (status = 200, description = "Tool result JSON (shape depends on dispatched neige.* callback)", body = Object),
-        (status = 403, description = "Non-neige.* tool requested from iframe", body = ErrorBody),
+        (status = 403, description = "Tool outside iframe-allowed scope (non-neige.* namespace, or not in manifest's permissions.tools)", body = ErrorBody),
         (status = 404, description = "Plugin not running", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
@@ -944,6 +944,37 @@ pub(crate) async fn plugin_tool_call(
             Json(serde_json::json!({
                 "error": format!("plugin `{id}` is not running"),
                 "code": "not_found",
+            })),
+        )
+            .into_response();
+    }
+
+    // #198 (concern 5): enforce the manifest's per-view `permissions.tools`
+    // allow-list. The struct was previously shipped to the iframe under
+    // `_meta.ui.permissions.tools` but never consulted server-side, so a
+    // compromised iframe could call any neige.* tool the plugin's running
+    // state allowed. We now reject anything not in scope with 403.
+    //
+    // Lookup is best-effort: a running plugin without a registry entry is
+    // an internal-state bug — treat it as denied rather than panic, and let
+    // the operator notice via the response code. (In practice the registry
+    // is populated at install + spawn time and dropped only on uninstall,
+    // by which point `status()` above would already have returned None.)
+    let manifest_allows = s
+        .plugin
+        .registry()
+        .get(&id)
+        .map(|m| m.can_call_tool(&body.name))
+        .unwrap_or(false);
+    if !manifest_allows {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": format!(
+                    "tool `{}` is not in plugin `{id}`'s declared permissions.tools",
+                    body.name
+                ),
+                "code": "forbidden_tool",
             })),
         )
             .into_response();
