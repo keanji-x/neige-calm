@@ -28,12 +28,19 @@
 //! The fix here moves the entire seed + spawn pipeline behind
 //! `tokio::spawn`, restoring the "201 returns on commit" contract.
 //!
-//! The wave-delete path does **not** yet cascade-clean the spec card's
-//! daemon — see TODO in [`delete_wave`].
+//! ## Wave-delete teardown (issue #197)
+//!
+//! `delete_wave` enumerates every card under the wave (including the
+//! spec card), reaps each terminal's daemon + socket via
+//! `terminal_sweeper::reap_terminal_artifacts`, then drops the terminal
+//! rows and the wave row in one transaction. The
+//! `terminals.card_id` FK is `ON DELETE RESTRICT` (migration 0011),
+//! so a missed cleanup surfaces as a transaction-level error rather
+//! than a silent daemon-process leak.
 
 use crate::actor::Actor;
 use crate::db::sqlite::{
-    card_with_codex_create_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
+    card_with_codex_create_tx, terminal_delete_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
 };
 use crate::db::{write_with_event_typed, write_with_events_typed};
 use crate::error::{CalmError, ErrorBody, Result};
@@ -42,6 +49,7 @@ use crate::model::{CardRole, NewWave, Wave, WaveDetail, WavePatch, new_id};
 use crate::routes::settings::load_settings;
 use crate::spec_card::{build_codex_env_map, seed_and_spawn_spec_daemon};
 use crate::state::AppState;
+use crate::terminal_sweeper::reap_terminal_artifacts;
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -369,24 +377,34 @@ pub(crate) async fn delete_wave(
     actor: Actor,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
-    // TODO(#136 PR7+): Spec card daemon cleanup on wave delete.
-    // Today the spec card row + its codex daemon are orphaned when a
-    // wave is deleted: the FK cascade nukes the cards/terminals rows
-    // (the schema has ON DELETE CASCADE), and the orphan-terminal
-    // sweeper reaps the now-card-less terminal row + sends SIGTERM
-    // to the persisted pid. But the codex daemon itself may linger
-    // between cascade-delete and sweeper sweep (worst case ~60s), and
-    // there is no `WaveDeleted` listener that proactively tears down
-    // the spec card's session. PR7+ will either (a) emit a
-    // `SpecCardEvicted` tombstone event the supervisor consumes, or
-    // (b) wire a direct daemon-kill in this handler before the FK
-    // cascade fires. PR6 ships the orphan-sweeper path as the MVP.
+    // Issue #197 — eager teardown for every terminal under the wave.
     //
-    // Look up first (outside the txn) so we know the cove_id for the
-    // delete event. Reading outside the txn is fine — there's no
-    // concurrent write that could change `wave.cove_id` between the
-    // read and the write_with_event start (wave rows are immutable
-    // wrt their parent cove).
+    // `terminals.card_id` is now `ON DELETE RESTRICT` (migration 0011)
+    // so the prior model — let the FK cascade nuke the rows under us
+    // and let the sweeper catch the leaked daemons ~60 s later —
+    // doesn't work anymore: the cascade aborts the wave-delete txn.
+    // This handler now owns the full subtree teardown:
+    //
+    //   1. Enumerate every card under the wave (`cards_by_wave`).
+    //   2. Resolve each card's terminal row (if any) via
+    //      `terminal_get_by_card`.
+    //   3. Call `reap_terminal_artifacts` for each — kills the daemon
+    //      + unlinks the socket. Spec cards (CardRole::Spec) take this
+    //      same path; the spec card daemon TODO from PR6 is now
+    //      handled here.
+    //   4. Inside the write txn, drop each terminal row first
+    //      (`terminal_delete_tx`), then drop the wave row. The cards
+    //      cascade away from the wave; the FK to terminals is honored
+    //      because we've already drained the table for this subtree.
+    //
+    // Reading outside the txn is fine — there's no concurrent write
+    // that could change `wave.cove_id` or grow the card list under us
+    // (the FK locks established by the wave-delete txn would serialize
+    // any racing create against the same wave). Worst case a racing
+    // `POST /api/cards` lands a new card on the wave between our read
+    // and the write — that card won't have a terminal row yet (the
+    // 3-step create takes another HTTP round trip), so the wave-delete
+    // FK cascade handles it.
     let wave = s
         .repo
         .wave_get(&id)
@@ -394,6 +412,16 @@ pub(crate) async fn delete_wave(
         .ok_or_else(|| CalmError::NotFound(format!("wave {id}")))?;
     let cove_id = wave.cove_id.clone();
     let wave_id = wave.id.clone();
+
+    let cards = s.repo.cards_by_wave(wave_id.as_str()).await?;
+    let mut terminal_ids: Vec<String> = Vec::new();
+    for card in &cards {
+        if let Some(t) = s.repo.terminal_get_by_card(card.id.as_str()).await? {
+            reap_terminal_artifacts(&t).await;
+            terminal_ids.push(t.id);
+        }
+    }
+
     let scope = EventScope::Wave {
         wave: wave_id.clone(),
         cove: cove_id.clone(),
@@ -407,6 +435,17 @@ pub(crate) async fn delete_wave(
         &s.card_role_cache,
         move |tx| {
             Box::pin(async move {
+                // Drop terminal rows first so the RESTRICT FK lets the
+                // wave delete cascade through cards cleanly.
+                // Idempotent: tolerate NotFound on each row in case a
+                // racing sweeper tick beat us to it.
+                for tid in &terminal_ids {
+                    match terminal_delete_tx(tx, tid).await {
+                        Ok(()) => {}
+                        Err(CalmError::NotFound(_)) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
                 wave_delete_tx(tx, wave_id.as_ref()).await?;
                 Ok((
                     (),

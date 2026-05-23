@@ -554,19 +554,38 @@ Decisions (was open in v1):
 
 ---
 
-## 10. Orphan terminal cleanup
+## 10. Terminal lifecycle cleanup (eager teardown + sweeper fallback)
 
-Terminal rows (and their associated `calm-session-daemon` processes + unix sockets) currently leak when a terminal card is deleted: `routes/cards.rs::card_delete` removes only the card row, leaving the terminal entity and its daemon process alive forever. Scope C closes this with a sweeper that walks for orphans and reaps them via the same `write_with_event` pipeline so the cleanup is audited.
+Terminal rows carry three pieces of operational state: the row itself, a `calm-session-daemon` process, and a unix socket. All three must be torn down when the owning card / wave / cove is deleted. Cleanup happens in two layers.
+
+### 10.1 Eager teardown — the happy path
+
+The `terminals.card_id` foreign key is `ON DELETE RESTRICT` (migration 0011). The schema refuses any card delete that would orphan a terminal row, surfacing missed cleanup as a transaction-level FK error instead of a silent daemon-process leak.
+
+Three route handlers (`routes/cards.rs::delete_card`, `routes/waves.rs::delete_wave`, `routes/coves.rs::delete_cove`) own the synchronous teardown:
+
+1. **Enumerate** every card under the entity being deleted (`cards_by_wave`, or `waves_by_cove` + `cards_by_wave` for the cove path).
+2. **Resolve the terminal row** (if any) via `terminal_get_by_card`.
+3. **Reap the daemon + socket** via `terminal_sweeper::reap_terminal_artifacts` — graceful `ClientMsg::Kill` via socket (5 s timeout) → SIGTERM via persisted PID → `unlink(socket)`. Idempotent against missing artifacts.
+4. **Drop the terminal row + the card/wave/cove row** in one `write_with_event_typed` transaction. The terminal-row delete is funneled through `terminal_delete_tx` and tolerates a `NotFound` race (a sweeper tick may have beaten us to it). The headline audit event is `Event::CardDeleted` / `WaveDeleted` / `CoveDeleted`; the terminal row delete rides under it without a separate event.
+
+The plugin-host `card_delete` callback (`plugin_host/callbacks.rs`) follows the same pattern even though plugin-deletable kinds (`ui://*`) don't carry terminals in practice — keeping the FK invariant inviolable across every write site.
+
+### 10.2 Sweeper — the crash-recovery fallback
+
+`terminal_sweeper` is a tokio task spawned at server start (modeled after `card_fsm::spawn`). It exists for the residual shape: a crashed server, a SIGKILL'd writer, or a partial-success transaction that left a terminal row whose `card_id` no longer matches any `cards.payload.terminal_id`. It is **not** the cleanup path for the user-initiated delete happy case — that's eager teardown.
 
 **Orphan definition**: a `terminals` row whose `id` is not referenced by any `cards.payload.terminal_id`, AND whose `created_at` is older than a grace window (default: 1 minute). The grace window absorbs the 3-step terminal-card creation race (POST card → POST terminal → PATCH card.payload — `eventBridge.tsx:60-70`).
 
-**Sweeper**: a tokio task spawned at server start (`main.rs`, modeled after `card_fsm::spawn`). Ticks every 30s. For each orphan: send `ClientMsg::Kill` via unix socket, fall back to SIGTERM after a 5s grace, remove socket file, then `write_with_event(actor="kernel", ...)` to delete the terminal row and emit `Event::TerminalDeleted`.
+**Tick cadence**: every 30 s. For each orphan: send `ClientMsg::Kill` via unix socket, fall back to SIGTERM after a 5 s grace, remove the socket file, then `write_with_event(actor=Kernel, ...)` to delete the terminal row and emit `Event::TerminalDeleted`. The audit event distinguishes the sweeper's crash-recovery path from the eager handler path (the latter emits `CardDeleted` / `WaveDeleted` / `CoveDeleted`, never `TerminalDeleted`).
 
-**Schema change**: add `pid INTEGER` column to `terminals` table so the SIGTERM fallback has a target.
+**Schema support**: the `pid INTEGER` column added in migration 0005 gives the SIGTERM fallback a target.
 
-**Why through `write_with_event`**: cleanup events show up in the audit log (`SELECT * FROM events WHERE kind='terminal.deleted' AND actor='kernel'`), and any UI subscribed to terminal events sees them disappear cleanly.
+### 10.3 Why two layers
 
-**Out-of-scope**: not handling user-initiated terminal deletion (today that endpoint doesn't exist; sweeper only catches orphans from deleted cards). If a future explicit "delete terminal" endpoint lands, it goes through `write_with_event` like any other write.
+Eager teardown owns the happy path because it gives the user (a) a synchronous "your terminal is gone" guarantee at the end of the HTTP request and (b) a coherent audit trail — the `CardDeleted` event is emitted only after the daemon is gone. The sweeper exists to ensure no terminal lingers indefinitely if a writer is killed mid-teardown; without it a crash between "row delete committed" and "daemon killed" would leak the process forever (the FK CASCADE used to nominally clean up the row before this design — but as issue #197 made clear, the sweeper couldn't catch what the FK had already nuked, so the daemon leaked anyway). Eager teardown + RESTRICT closes that gap; the sweeper handles the still-narrower remaining gap (writer crash *after* the row is created but *before* it's linked back via `cards.payload.terminal_id`).
+
+**Out of scope**: a user-initiated `DELETE /api/terminals/:id` endpoint. There's no current product need — terminals are dependents of cards, not first-class user entities.
 
 ---
 

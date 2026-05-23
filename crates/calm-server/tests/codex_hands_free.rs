@@ -583,7 +583,15 @@ async fn route_to_subscriber_chain_skips_auto_submit_for_empty_or_absent_prompt(
     run_case(json!({ "prompt": "" }), "empty-string prompt").await;
     // Reset: clear cards so the next case's lookup-by-no-prompt is
     // unambiguous (we want exactly one prompt-less card to find).
+    // Issue #197 — `terminals.card_id` is now `ON DELETE RESTRICT`, so
+    // we drop the terminal row first (the eager-teardown shape the
+    // route handler applies). The actual daemon process was never
+    // spawned (the bogus binary path made `spawn_daemon_for` 500
+    // immediately), so there's nothing to SIGTERM here.
     for c in repo.cards_by_wave(wave.id.as_str()).await.unwrap() {
+        if let Some(t) = repo.terminal_get_by_card(c.id.as_str()).await.unwrap() {
+            repo.terminal_delete(t.id.as_str()).await.unwrap();
+        }
         repo.card_delete(c.id.as_str()).await.unwrap();
     }
 

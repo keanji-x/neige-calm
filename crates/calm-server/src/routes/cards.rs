@@ -11,7 +11,9 @@
 
 use crate::actor::Actor;
 use crate::db::RepoRead;
-use crate::db::sqlite::{card_create_with_id_tx, card_delete_tx, card_update_tx};
+use crate::db::sqlite::{
+    card_create_with_id_tx, card_delete_tx, card_update_tx, terminal_delete_tx,
+};
 use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
@@ -20,6 +22,7 @@ use crate::model::new_id;
 use crate::model::{Card, CardPatch, CardRole, NewCard};
 use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
 use crate::state::AppState;
+use crate::terminal_sweeper::reap_terminal_artifacts;
 use crate::validation::validate_card_payload;
 
 use axum::{
@@ -418,6 +421,29 @@ pub(crate) async fn delete_card(
     let card_id = card.id.clone();
     let wave_id = card.wave_id.clone();
     let scope = card_scope(s.repo.as_ref(), card_id.clone(), wave_id.clone()).await?;
+
+    // Issue #197 — eager teardown. The `terminals.card_id` FK is
+    // `ON DELETE RESTRICT` (migration 0011); the row must be removed,
+    // and its daemon + socket reaped, *before* the card row delete
+    // fires. Pre-fetch the terminal (if any), kill the daemon, unlink
+    // the socket — all outside the write txn (no point holding it open
+    // for an I/O step that may take a few hundred ms in the worst
+    // graceful-Kill-timeout case). Then the write txn deletes both the
+    // terminal row and the card row inside one commit, keeping the
+    // audit signal coherent (`Event::CardDeleted` is the headline; the
+    // terminal row delete rides under it without a separate event —
+    // same shape as wave-delete cascading through cards). If cleanup
+    // fails *before* the txn opens we surface 500; the row stays and
+    // the sweeper retries on the next tick, so we don't end up with
+    // a half-torn-down terminal. Spec cards (CardRole::Spec) take the
+    // same path: both plain and spec terminals live in the same
+    // `terminals` table with no role-specific cleanup divergence.
+    let term = s.repo.terminal_get_by_card(card_id.as_str()).await?;
+    if let Some(t) = term.as_ref() {
+        reap_terminal_artifacts(t).await;
+    }
+    let terminal_id = term.map(|t| t.id);
+
     let cache = s.card_role_cache.clone();
     let (_unit, _id) = write_with_event_typed(
         s.repo.as_ref(),
@@ -428,6 +454,17 @@ pub(crate) async fn delete_card(
         &s.card_role_cache,
         move |tx| {
             Box::pin(async move {
+                // Drop the terminal row first so the RESTRICT FK lets the
+                // card delete through. Idempotent: NotFound is OK (the
+                // sweeper may have raced us, or the card had no terminal
+                // to begin with).
+                if let Some(tid) = terminal_id.as_deref() {
+                    match terminal_delete_tx(tx, tid).await {
+                        Ok(()) => {}
+                        Err(CalmError::NotFound(_)) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
                 card_delete_tx(tx, card_id.as_ref(), &cache).await?;
                 Ok((
                     (),

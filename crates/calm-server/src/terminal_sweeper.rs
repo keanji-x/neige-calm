@@ -1,22 +1,41 @@
-//! Orphan terminal cleanup sweeper. See `docs/sync-engine-design.md` §10.
+//! Orphan-terminal cleanup sweeper — **fallback** layer. See
+//! `docs/sync-engine-design.md` §10.
 //!
-//! A `terminals` row leaks (its row, its `calm-session-daemon` process, and
-//! its unix socket) when a terminal card is deleted today: `routes/cards.rs`
-//! `card_delete` removes the card row, but the daemon process keeps running.
-//! The FK cascade on `terminals.card_id` clears the row in production —
-//! still, the daemon process and socket file are left behind. This sweeper
-//! catches the leak by walking for terminals that no card points at via
-//! `cards.payload.terminal_id` and reaping them through the same
-//! `write_with_event` pipeline every other write uses. The cleanup lands in
-//! the audit log as an `Event::TerminalDeleted` with `actor = "kernel"`.
+//! ## Two-layer cleanup model (issue #197)
 //!
-//! ## Lifecycle
+//! Terminal rows are owned by a single card row via
+//! `terminals.card_id` (UNIQUE, NOT NULL). A `calm-session-daemon`
+//! process + unix socket live alongside the row. Cleanup happens in two
+//! layers:
 //!
-//! `spawn(state)` is called once at server boot from `AppState::new`,
-//! modeled after `card_fsm::spawn`. It runs a `tokio::time::interval`
-//! every `SWEEP_INTERVAL` and calls `sweep()` per tick. Errors from
-//! `sweep()` are logged but do not bring the task down — we'd rather
-//! recover next tick than crash the kernel.
+//!   1. **Eager teardown in the route handler.** When a user issues
+//!      `DELETE /api/cards/:id`, `DELETE /api/waves/:id`, or
+//!      `DELETE /api/coves/:id`, the handler walks the affected card
+//!      list, calls [`reap_terminal_artifacts`] to kill the daemon +
+//!      unlink the socket + delete the terminal row, *then* deletes the
+//!      card / wave / cove row. The `terminals.card_id` FK is
+//!      `ON DELETE RESTRICT` (migration 0011), so a missed cleanup
+//!      surfaces as a transaction-level FK error rather than a silent
+//!      daemon-process leak.
+//!   2. **This sweeper.** Catches the residual shape: a crashed server,
+//!      a SIGKILL'd writer, or a partial-success transaction that left
+//!      a terminal row whose `card_id` no longer matches any
+//!      `cards.payload.terminal_id`. The orphan SQL definition is
+//!      unchanged from the pre-#197 contract (see
+//!      [`crate::db::RepoRead::terminals_orphaned`]) so the
+//!      `eventBridge.tsx:60-70` 3-step terminal-card creation race
+//!      window is still absorbed by the 60-second grace.
+//!
+//! ## What the sweeper is *not*
+//!
+//! Pre-#197, the sweeper was documented as the cleanup path for the
+//! card-delete happy case: the FK cascade nuked the `terminals` row,
+//! and the sweeper was supposed to "catch the leak" — but in practice
+//! it had nothing to catch (the row was already gone) and the daemon
+//! process kept running until the next 30 s tick at best. That model
+//! was wrong; the design doc lied. Card / wave / cove delete now own
+//! their own teardown synchronously, and this sweeper exists only for
+//! crash-recovery / partial-write residue.
 //!
 //! ## Cleanup sequence per orphan
 //!
@@ -33,11 +52,14 @@
 //!    `Event::TerminalDeleted { id, card_id }` with `actor = "kernel"`.
 //!    This step IS the audit signal — steps 1-3 are housekeeping.
 //!
-//! ## Why not a user-initiated DELETE endpoint?
-//!
-//! Out of scope per the Scope C spec. If one lands later, it goes
-//! through `write_with_event` identically and emits the same event;
-//! the sweeper continues to catch leaked rows the explicit path missed.
+//! Steps 1-3 are also what the eager-teardown helper
+//! [`reap_terminal_artifacts`] runs from the route handler. The
+//! sweeper's row-delete step is what differentiates it: it happens
+//! through `write_with_event` to emit an audit event in the
+//! crash-recovery path, whereas the route-handler eager teardown
+//! deletes the row inside the same transaction that's about to delete
+//! the card and emits `Event::CardDeleted` (or `WaveDeleted` /
+//! `CoveDeleted`) as the audit signal.
 
 use std::path::Path;
 use std::time::Duration;
@@ -120,11 +142,93 @@ pub async fn sweep(state: &AppState) -> Result<()> {
     Ok(())
 }
 
-/// Reap a single orphan. Idempotent against missing artifacts: a
-/// pre-deceased daemon, an already-unlinked socket, or a stale `pid`
-/// pointing at a recycled OS process all collapse to "row delete still
-/// succeeds, audit event still emits".
+/// Reap a single orphan (sweeper path). Idempotent against missing
+/// artifacts: a pre-deceased daemon, an already-unlinked socket, or a
+/// stale `pid` pointing at a recycled OS process all collapse to "row
+/// delete still succeeds, audit event still emits".
 async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
+    // Steps 1-3: daemon + socket housekeeping, shared with the eager-
+    // teardown route handlers via `reap_terminal_artifacts`.
+    reap_terminal_artifacts(term).await;
+
+    // Step 4: audit-log + row delete in one transaction. This step is
+    // the headline guarantee: regardless of how steps 1-3 went, the row
+    // leaves the kernel cleanly and any subscriber sees the
+    // `terminal.deleted` event.
+    //
+    // Scope (PR2 of #136): try to resolve the card → wave → cove
+    // chain so per-card subscribers see the reap. If the card has
+    // already been deleted (the common case — the sweeper exists
+    // precisely because card-delete may have left an orphan
+    // terminal), fall back to `EventScope::System`. We don't refuse
+    // the reap for a missing ancestor.
+    let terminal_id = term.id.clone();
+    let card_id = term.card_id.clone();
+    let scope = match state.repo.card_get(card_id.as_str()).await? {
+        Some(c) => match state.repo.wave_get(c.wave_id.as_str()).await? {
+            Some(w) => EventScope::Card {
+                card: c.id,
+                wave: w.id,
+                cove: w.cove_id,
+            },
+            None => EventScope::System,
+        },
+        None => EventScope::System,
+    };
+    let (_unit, _event_id) = write_with_event_typed(
+        state.repo.as_ref(),
+        sweeper_actor(),
+        scope,
+        None,
+        &state.events,
+        &state.card_role_cache,
+        move |tx| {
+            Box::pin(async move {
+                // The eager-teardown handlers (and a prior sweep tick)
+                // may already have removed the row. Treat NotFound as
+                // "nothing to do, but still emit the audit event" — but
+                // the audit event itself only makes sense when there
+                // *was* something to clean up. We tolerate missing-row
+                // here by translating NotFound to Ok(()).
+                match terminal_delete_tx(tx, &terminal_id).await {
+                    Ok(()) => {}
+                    Err(crate::error::CalmError::NotFound(_)) => {
+                        tracing::debug!(
+                            terminal_id = %terminal_id,
+                            "terminal row already gone (eager teardown or prior sweep)"
+                        );
+                    }
+                    Err(e) => return Err(e),
+                }
+                Ok((
+                    (),
+                    Event::TerminalDeleted {
+                        id: terminal_id,
+                        card_id,
+                    },
+                ))
+            })
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+/// Daemon + socket housekeeping for a single terminal row, shared between
+/// the sweeper and the eager-teardown route handlers (issue #197).
+///
+/// Idempotent: missing socket, dead pid, and absent `daemon_handle` /
+/// `pid` all collapse to a clean return. The caller is responsible for
+/// the *row delete* step (eager teardown: inside the surrounding
+/// `card_delete_tx` / `wave_delete_tx` transaction; sweeper: inside its
+/// own `write_with_event` audit transaction).
+///
+/// This is the synchronous bottom-half of the cleanup contract: steps
+/// 1-3 in the module doc above. Bounded by `GRACEFUL_KILL_TIMEOUT` for
+/// the graceful path; SIGTERM is non-blocking. Safe to call inline from
+/// an HTTP handler — the worst-case latency is `GRACEFUL_KILL_TIMEOUT`
+/// (5 s) when the daemon is hung; the common case is single-digit ms.
+pub async fn reap_terminal_artifacts(term: &Terminal) {
     // 1. Graceful Kill via unix socket. Bounded by GRACEFUL_KILL_TIMEOUT.
     if let Some(sock) = term.daemon_handle.as_deref() {
         match tokio::time::timeout(
@@ -175,68 +279,6 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
     if let Some(sock) = term.daemon_handle.as_deref() {
         let _ = std::fs::remove_file(sock);
     }
-
-    // 4. Audit-log + row delete in one transaction. This step is the
-    //    headline guarantee: regardless of how steps 1-3 went, the row
-    //    leaves the kernel cleanly and any subscriber sees the
-    //    `terminal.deleted` event.
-    //
-    //    Scope (PR2 of #136): try to resolve the card → wave → cove
-    //    chain so per-card subscribers see the reap. If the card has
-    //    already been deleted (the common case — the sweeper exists
-    //    precisely because card-delete may have left an orphan
-    //    terminal), fall back to `EventScope::System`. We don't refuse
-    //    the reap for a missing ancestor.
-    let terminal_id = term.id.clone();
-    let card_id = term.card_id.clone();
-    let scope = match state.repo.card_get(card_id.as_str()).await? {
-        Some(c) => match state.repo.wave_get(c.wave_id.as_str()).await? {
-            Some(w) => EventScope::Card {
-                card: c.id,
-                wave: w.id,
-                cove: w.cove_id,
-            },
-            None => EventScope::System,
-        },
-        None => EventScope::System,
-    };
-    let (_unit, _event_id) = write_with_event_typed(
-        state.repo.as_ref(),
-        sweeper_actor(),
-        scope,
-        None,
-        &state.events,
-        &state.card_role_cache,
-        move |tx| {
-            Box::pin(async move {
-                // The FK cascade on `terminals.card_id` may have already
-                // removed the row when the card was deleted. Treat
-                // NotFound as "nothing to do, but still emit the audit
-                // event" — but the audit event itself only makes sense
-                // when there *was* something to clean up. So we tolerate
-                // missing-row here by translating NotFound to Ok(()).
-                match terminal_delete_tx(tx, &terminal_id).await {
-                    Ok(()) => {}
-                    Err(crate::error::CalmError::NotFound(_)) => {
-                        tracing::debug!(
-                            terminal_id = %terminal_id,
-                            "terminal row already gone (FK cascade or prior sweep)"
-                        );
-                    }
-                    Err(e) => return Err(e),
-                }
-                Ok((
-                    (),
-                    Event::TerminalDeleted {
-                        id: terminal_id,
-                        card_id,
-                    },
-                ))
-            })
-        },
-    )
-    .await?;
-    Ok(())
 }
 
 /// Open the daemon's unix socket, send the required v2 `ClientHello`
