@@ -86,12 +86,25 @@ async fn main() -> ExitCode {
     let mut stdout = tokio::io::stdout();
 
     // Two concurrent copy futures: stdin -> socket and socket -> stdout.
-    // `tokio::select!` exits as soon as either direction completes (EOF
-    // or error), at which point we close the other half so the kernel
-    // / codex notice the shutdown promptly.
+    // `tokio::join!` waits for BOTH directions to terminate — exiting
+    // as soon as one finishes (the previous `select!` shape) drops
+    // the still-pending direction mid-flight, which closes the FDs
+    // it owned and races the peer's last write into EPIPE. The two
+    // sides terminate independently:
+    //   * `stdin_to_sock` ends when codex closes our stdin (clean
+    //     handshake teardown) or stdin errors.
+    //   * `sock_to_stdout` ends when the kernel hangs up its UDS
+    //     write half (clean per-card MCP shutdown) or the socket
+    //     errors.
+    // Each side half-closes its write end after its copy completes so
+    // the peer sees EOF and reciprocates. Holding both halves until
+    // both directions have drained is the only way to guarantee no
+    // last-byte loss across a half-closed handover (e.g. codex closes
+    // stdin before the kernel flushes its final response).
     //
-    // We use `tokio::io::copy` for the heavy lifting — it does an
-    // internal 8 KiB buffer + read/write loop with periodic flushes.
+    // We use `tokio::io::copy` for the heavy lifting on the stdin
+    // side — it does an internal 8 KiB buffer + read/write loop with
+    // periodic flushes.
     let stdin_to_sock = async move {
         let _ = copy(&mut stdin, &mut sock_wr).await;
         // Half-close so the kernel reader sees EOF and drops its
@@ -122,10 +135,7 @@ async fn main() -> ExitCode {
         }
     };
 
-    tokio::select! {
-        _ = stdin_to_sock => {}
-        _ = sock_to_stdout => {}
-    }
+    tokio::join!(stdin_to_sock, sock_to_stdout);
 
     ExitCode::SUCCESS
 }
