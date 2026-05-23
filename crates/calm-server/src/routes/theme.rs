@@ -43,7 +43,7 @@ impl RequestTheme {
     /// workers, direct repo `wave_create` calls in tests) where there
     /// is no user-visible theme to forward and the code still needs to
     /// produce *a* concrete `RequestTheme`. Mirrors `DARK_THEME_RGB`
-    /// in `web/src/shared/themeRgb.ts` so dispatcher-spawned codex
+    /// in `web/src/api/themeRgb.ts` so dispatcher-spawned codex
     /// workers paint against the same defaults a dark-mode browser
     /// would have stamped. Never returned to the user-facing wave-
     /// create / codex-card routes — those take theme from the request

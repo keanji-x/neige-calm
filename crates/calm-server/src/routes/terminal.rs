@@ -98,14 +98,14 @@ pub(crate) async fn spawn_daemon_with_parts(
     // #177 — `term.theme_fg/_bg` are the single source of truth for
     // daemon OSC 10/11 reply colors (write-once at row create, NOT
     // NULL post-migration 0017). PR1 of the split lands the storage
-    // + read-from-row plumbing only; the matching daemon-side argv
-    // (`--terminal-fg/-bg`) and OSC reply land in PR2, at which point
-    // this builder will append the two flags here. Until then, the
-    // daemon stays silent on color queries (pre-#177 behavior) and
-    // the row columns exist as a deterministic carrier for the
-    // upcoming change.
-    let _theme_fg = term.theme_fg.as_str();
-    let _theme_bg = term.theme_bg.as_str();
+    // + read-from-row plumbing only; PR2 will append the matching
+    // daemon flags here via
+    //     .args(["--terminal-fg", &term.theme_fg])
+    //     .args(["--terminal-bg", &term.theme_bg])
+    // and the daemon will use them to answer OSC 10/11 probes. Until
+    // PR2 lands, the daemon stays silent on color queries (pre-#177
+    // behavior) and the row columns exist as a deterministic carrier
+    // for the upcoming change.
     let mut cmd = tokio::process::Command::new(&daemon.session_daemon_bin);
     cmd.args(["--id", &term.id])
         .args(["--sock", &sock_str])

@@ -21,7 +21,7 @@
 -- Backfill before ALTERing: any pre-#177 row (the in-place upgrade
 -- path) gets the dark-theme defaults that match
 -- `RequestTheme::default_dark()` and `DARK_THEME_RGB` in
--- `web/src/shared/themeRgb.ts`. This is a one-time stamp; subsequent
+-- `web/src/api/themeRgb.ts`. This is a one-time stamp; subsequent
 -- rows go through the codepath that requires a real value.
 UPDATE terminals
    SET theme_fg = '216,219,226'
