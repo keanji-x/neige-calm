@@ -4,10 +4,12 @@
 //! ## Why a loopback ingest
 //!
 //! Codex CLI invokes a configured "bridge" command on every lifecycle hook
-//! (SessionStart / PreToolUse / PostToolUse / Stop / …) via the
-//! `hooks.json` we seed into its `CODEX_HOME`. The bridge — `neige-codex-bridge`
-//! — POSTs the raw hook payload here; we extract `hook_event_name`, tag it
-//! `hook.codex.<snake_case_name>`, and emit `Event::CodexHook` on the bus.
+//! (SessionStart / PreToolUse / PostToolUse / Stop / …) via the policy-
+//! managed hook entries in `/etc/codex/requirements.toml` (bind-mounted
+//! via docker-compose; see `docker/codex-requirements.toml`). The bridge
+//! — `neige-codex-bridge` — POSTs the raw hook payload here; we extract
+//! `hook_event_name`, tag it `hook.codex.<snake_case_name>`, and emit
+//! `Event::CodexHook` on the bus.
 //!
 //! The handler is mounted under `/internal/*` rather than `/api/*` because
 //! the frontend never calls it directly — it's an internal contract between
@@ -21,8 +23,8 @@
 //! to a live codex PTY is gone (#117). The atomic
 //! `POST /api/waves/:wave_id/codex-cards` replaces it — see
 //! `routes::codex_cards`. The card-creation helpers (`host_codex_dir`,
-//! `copy_dir_recursive`, `build_hooks_json`, `default_cwd`) moved along with
-//! the endpoint. This file keeps only the loopback ingest.
+//! `copy_dir_recursive`, `default_cwd`) moved along with the endpoint.
+//! This file keeps only the loopback ingest.
 
 use crate::actor::Actor;
 use crate::error::{CalmError, Result};
@@ -201,7 +203,7 @@ pub(crate) async fn pending_events(
     // the long-poll's scope filter. 404 on miss (vs 500) gives the bridge
     // a clear signal "this card_id is stale; codex daemon spec/worker
     // pairing has drifted" so the operator can rebuild the per-card
-    // CODEX_HOME / hooks.json.
+    // CODEX_HOME (hooks come from the managed requirements.toml).
     let card_id_typed = CardId::from(card_id_str);
     let card = s
         .repo

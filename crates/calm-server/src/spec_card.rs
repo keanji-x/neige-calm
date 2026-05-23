@@ -14,10 +14,12 @@
 //!      block here.
 //!   2. [`seed_codex_home_for_card`] — a reusable helper that mirrors
 //!      what `routes::codex_cards` does (mkdir `$CODEX_HOME`, optional
-//!      host seed, write `hooks.json` + `config.toml`), but with a
+//!      host seed, write `config.toml`), but with a
 //!      [`crate::model::CardRole`] discriminator so spec cards get the
 //!      spec system prompt and worker cards get their own template
-//!      (PR8 wires the worker prompt; PR6 leaves it as a stub).
+//!      (PR8 wires the worker prompt; PR6 leaves it as a stub). Hooks
+//!      come from `/etc/codex/requirements.toml` (policy-managed) so no
+//!      per-card `hooks.json` is written here.
 //!
 //! Atomicity story for the spec card itself lives in
 //! `routes::waves::create_wave` — the spec card row, its terminal row,
@@ -30,7 +32,7 @@
 use std::path::PathBuf;
 
 use crate::error::{CalmError, Result};
-use crate::routes::codex_cards::{build_hooks_json, copy_dir_recursive, host_codex_dir};
+use crate::routes::codex_cards::{copy_dir_recursive, host_codex_dir};
 use crate::routes::terminal::spawn_daemon_for;
 use crate::state::{AppState, CodexClient};
 
@@ -322,10 +324,13 @@ impl SeededCardRole {
 ///   2. On a fresh dir, best-effort recursive copy from
 ///      `$HOME/.codex/` (so the spec/worker session reuses the
 ///      operator's auth.json and any preconfigured MCP servers).
-///   3. (Re)write `hooks.json` so codex's lifecycle hooks point at
-///      this server's bridge binary.
-///   4. Write `config.toml` with the role-typed system prompt and
+///   3. Write `config.toml` with the role-typed system prompt and
 ///      project trust.
+///
+/// Hooks are NOT seeded here — they come from
+/// `/etc/codex/requirements.toml` (bind-mounted, policy-managed). Per-card
+/// `$CODEX_HOME/hooks.json` would be treated as untrusted by codex and
+/// would re-arm the "Hooks need review" startup modal.
 ///
 /// Returns the resolved `CODEX_HOME` path so the caller can build the
 /// env map (`CODEX_HOME = <path>`) for `spawn_daemon_for`.
@@ -375,13 +380,9 @@ pub(crate) fn seed_codex_home_with_parts(
         tracing::warn!(error = %e, src = %src.display(), "codex seed copy failed; continuing without it");
     }
 
-    // hooks.json — always (re)write. Cheap, and a stale path from a
-    // previous spawn would otherwise break codex's hook dispatch.
-    let bridge_path = codex.bridge_bin.to_string_lossy().to_string();
-    let hooks_json = build_hooks_json(&bridge_path);
-    let hooks_path = codex_home.join("hooks.json");
-    std::fs::write(&hooks_path, hooks_json)
-        .map_err(|e| CalmError::Internal(format!("write hooks.json: {e}")))?;
+    // Hooks come from `/etc/codex/requirements.toml` (policy-managed,
+    // bind-mounted via docker-compose). No per-card hooks.json — codex
+    // would treat that as untrusted and re-arm the trust modal.
 
     // config.toml — role-typed. Spec and Worker cards bake the system
     // prompt directly into the file (codex reads `instructions` at
@@ -425,7 +426,7 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
 ) {
     // 1. Seed `$CODEX_HOME` for the spec card. Filesystem-only — fast,
     //    bounded by a handful of mkdir + small write_alls. Failure
-    //    here means hooks.json / config.toml didn't land; the daemon
+    //    here means config.toml didn't land; the daemon
     //    spawn below will still try, but the spec agent's instructions
     //    won't be loaded. Still better than 500ing the client.
     if let Err(e) =

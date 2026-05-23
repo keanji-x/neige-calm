@@ -13,19 +13,20 @@
 //!    peers — no `card.updated` follow-up, no intermediate
 //!    `payload=null` flash for the renderer's "Codex is starting…"
 //!    placeholder to react to.
-//! 2. After commit, the handler seeds the per-card `CODEX_HOME`, writes
-//!    `hooks.json`, and spawns `calm-session-daemon` via the same
-//!    `spawn_daemon_for` helper the terminal-card endpoint uses. A
-//!    daemon-spawn failure returns 500 to the client but does NOT roll
-//!    back the persisted rows: the orphan-terminal sweeper reaps them
-//!    within ~60s.
+//! 2. After commit, the handler seeds the per-card `CODEX_HOME` and
+//!    spawns `calm-session-daemon` via the same `spawn_daemon_for`
+//!    helper the terminal-card endpoint uses. Hooks come from
+//!    `/etc/codex/requirements.toml` (policy-managed, bind-mounted via
+//!    docker-compose) — no per-card `hooks.json` is written. A daemon-
+//!    spawn failure returns 500 to the client but does NOT roll back the
+//!    persisted rows: the orphan-terminal sweeper reaps them within ~60s.
 //!
 //! Why a pre-minted card_id (design option C)? The `CODEX_HOME` path is
 //! `<codex_homes_dir>/<card_id>/` — keyed on the card id so the daemon
 //! sees the same auth.json / state across container restarts. Pre-minting
 //! the id lets us derive that path *before* the row hits the DB and
 //! propagate it into the env map without a post-commit "stamp env" round
-//! trip. The seeding+hooks I/O still happens after commit (outside the
+//! trip. The seeding I/O still happens after commit (outside the
 //! transaction) because copying `$HOME/.codex` shouldn't hold a write
 //! txn open.
 
@@ -268,10 +269,13 @@ pub(crate) async fn create_codex_card(
     )
     .await?;
 
-    // 6. Post-commit (out of the transaction): seed CODEX_HOME and write
-    //    hooks.json. Copying `$HOME/.codex` shouldn't hold a write txn
-    //    open, and the daemon doesn't read these files until it spawns,
-    //    so doing the I/O here is safe.
+    // 6. Post-commit (out of the transaction): seed CODEX_HOME. Copying
+    //    `$HOME/.codex` shouldn't hold a write txn open, and the daemon
+    //    doesn't read these files until it spawns, so doing the I/O here
+    //    is safe. Hooks come from `/etc/codex/requirements.toml` (bind-
+    //    mounted via docker-compose) as policy-managed entries, so we no
+    //    longer write a per-card `$CODEX_HOME/hooks.json` — managed hooks
+    //    fire without a `/hooks` review step.
     let is_fresh = !codex_home.exists();
     std::fs::create_dir_all(&codex_home).map_err(|e| {
         CalmError::Internal(format!("mkdir codex_home {}: {e}", codex_home.display()))
@@ -283,14 +287,6 @@ pub(crate) async fn create_codex_card(
     {
         tracing::warn!(error = %e, src = %src.display(), "codex seed copy failed; continuing without it");
     }
-    // Always (re)write hooks.json — even if the seed brought one in, or a
-    // previous spawn wrote one with a stale bridge path. Cheap to overwrite
-    // and ensures upgrades pick up the new path.
-    let bridge_path = s.codex.bridge_bin.to_string_lossy().to_string();
-    let hooks_json = build_hooks_json(&bridge_path);
-    let hooks_path = codex_home.join("hooks.json");
-    std::fs::write(&hooks_path, hooks_json)
-        .map_err(|e| CalmError::Internal(format!("write hooks.json: {e}")))?;
 
     // Per-spawn `config.toml`. Required only for hands-free
     // (prompt-set) spawns: a fresh CODEX_HOME otherwise lands on
@@ -463,97 +459,9 @@ pub(crate) fn build_codex_config_toml(cwd: &str) -> String {
     )
 }
 
-pub(crate) fn build_hooks_json(bridge: &str) -> String {
-    // Bridge command — the binary path resolved by `state::CodexClient`.
-    // Codex spec: each hook entry is `{"type":"command", "command":"<argv>"}`.
-    // We rely on PATH lookup if `bridge` is a bare name.
-    let cmd =
-        serde_json::to_string(bridge).unwrap_or_else(|_| String::from("\"neige-codex-bridge\""));
-    // PR8 (#136) — Stop hook runs a synchronous 30s long-poll against
-    // `/internal/codex/pending_events`. Codex's default hook timeout
-    // (600s upstream) is overkill; we pin 60s to give the 30s long-poll
-    // a 30s margin (network blip, server warm-up, etc.) before codex
-    // kills the hook subprocess.
-    //
-    // Critically NO `"async": true` here — the Stop hook must remain
-    // SYNCHRONOUS so codex reads our decision frame from the
-    // subprocess's stdout. An async hook would let the agent idle while
-    // we're still polling, defeating the whole closed-loop story.
-    //
-    // Other hook entries deliberately keep the default timeout (600s
-    // upstream) — they're fast POSTs and we don't want to constrain
-    // SessionStart while the daemon is still warming up codex's TUI.
-    format!(
-        r#"{{
-  "hooks": {{
-    "SessionStart":     [{{ "hooks": [{{ "type": "command", "command": {c} }}] }}],
-    "PreToolUse":       [{{ "matcher": ".*", "hooks": [{{ "type": "command", "command": {c} }}] }}],
-    "PostToolUse":      [{{ "matcher": ".*", "hooks": [{{ "type": "command", "command": {c} }}] }}],
-    "PermissionRequest":[{{ "hooks": [{{ "type": "command", "command": {c} }}] }}],
-    "UserPromptSubmit": [{{ "hooks": [{{ "type": "command", "command": {c} }}] }}],
-    "Stop":             [{{ "hooks": [{{ "type": "command", "command": {c}, "timeout": 60 }}] }}]
-  }}
-}}
-"#,
-        c = cmd
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::Value;
-
-    #[test]
-    fn hooks_json_is_valid() {
-        let s = build_hooks_json("/usr/local/bin/neige-codex-bridge");
-        let v: Value = serde_json::from_str(&s).expect("valid JSON");
-        assert!(v["hooks"]["PreToolUse"].is_array());
-    }
-
-    /// PR8 (#136) — the Stop hook MUST carry an explicit `timeout: 60`
-    /// entry. The bridge's Stop handler runs a synchronous 30s long-poll
-    /// against `/internal/codex/pending_events`; codex's default hook
-    /// timeout is much shorter than the long-poll window in some
-    /// versions, so we pin the value here. Critically, the entry MUST
-    /// NOT carry `"async": true` — the hook needs to stay synchronous
-    /// so codex reads our `{decision:"block",...}` decision from stdout.
-    #[test]
-    fn stop_hook_has_explicit_timeout_and_is_sync() {
-        let s = build_hooks_json("/usr/local/bin/neige-codex-bridge");
-        let v: Value = serde_json::from_str(&s).expect("valid JSON");
-        let stop = &v["hooks"]["Stop"];
-        let entry = &stop[0]["hooks"][0];
-        assert_eq!(entry["type"], "command");
-        assert_eq!(entry["timeout"], 60, "Stop hook must have timeout=60");
-        assert!(
-            entry.get("async").is_none(),
-            "Stop hook must remain synchronous (no `async` field); got: {entry}"
-        );
-    }
-
-    /// Defense-in-depth: only the Stop hook gets the explicit timeout
-    /// override. Other hooks (PreToolUse, SessionStart, etc.) inherit
-    /// codex's default — adding a per-entry timeout would constrain
-    /// hooks that have no business being constrained.
-    #[test]
-    fn non_stop_hooks_keep_default_timeout() {
-        let s = build_hooks_json("/usr/local/bin/neige-codex-bridge");
-        let v: Value = serde_json::from_str(&s).expect("valid JSON");
-        for hook_name in [
-            "SessionStart",
-            "PreToolUse",
-            "PostToolUse",
-            "PermissionRequest",
-            "UserPromptSubmit",
-        ] {
-            let entry = &v["hooks"][hook_name][0]["hooks"][0];
-            assert!(
-                entry.get("timeout").is_none(),
-                "{hook_name} must NOT override timeout; got: {entry}",
-            );
-        }
-    }
 
     #[test]
     fn shell_single_quote_basic() {
