@@ -28,6 +28,8 @@ import { useState } from '../shared/state';
 import { useQueryClient } from '@tanstack/react-query';
 import * as api from '../api/calm';
 import { queryKeys } from '../api/queries';
+import { useTheme } from '../app/theme';
+import { DARK_THEME_RGB, LIGHT_THEME_RGB } from '../shared/themeRgb';
 
 const STORAGE_KEY = 'calm.todayCardId';
 // Internal wave title inside the system cove. The user never sees this —
@@ -56,6 +58,13 @@ export function useTodayTerminal(): UseTodayTerminalResult {
   const [error, setError] = useState<Error | null>(null);
   const inFlightRef = useRef(false);
   const qc = useQueryClient();
+  // #177: snapshot the host browser's current theme so the auto-mint
+  // wave-create POST (and any follow-up auto-card create) can stamp
+  // `theme: { fg, bg }` onto the body. Without this, the spec card
+  // daemon spawned for the Today wave came up with default colors and
+  // never advertised the matching theme on the codex composer's OSC
+  // 10/11 query, leaving the composer mis-tinted on first paint.
+  const { resolved: theme } = useTheme();
 
   const resolve = useCallback(async () => {
     if (inFlightRef.current) return;
@@ -95,7 +104,10 @@ export function useTodayTerminal(): UseTodayTerminalResult {
       //    not worth the round-trip parsing to gate.
       const cove = await api.getOrCreateSystemCove();
       void qc.invalidateQueries({ queryKey: queryKeys.coves() });
-      const { wave, created: waveCreated } = await ensureTodayWave(cove.id);
+      const { wave, created: waveCreated } = await ensureTodayWave(
+        cove.id,
+        theme,
+      );
       if (waveCreated) {
         void qc.invalidateQueries({ queryKey: queryKeys.wavesInCove(cove.id) });
       }
@@ -131,7 +143,7 @@ export function useTodayTerminal(): UseTodayTerminalResult {
     } finally {
       inFlightRef.current = false;
     }
-  }, [qc]);
+  }, [qc, theme]);
 
   useEffect(() => {
     void resolve();
@@ -161,11 +173,23 @@ export function useTodayTerminal(): UseTodayTerminalResult {
  * sidebar's "+ New wave" affordance always targets a user-visible cove.
  * No collision risk with whatever a user names their own waves.
  */
-async function ensureTodayWave(coveId: string) {
+async function ensureTodayWave(
+  coveId: string,
+  theme: 'light' | 'dark',
+) {
   const waves = await api.wavesInCove(coveId);
   const existing = waves.find((w) => w.title === TODAY_WAVE_TITLE);
   if (existing) return { wave: existing, created: false };
-  const wave = await api.createWave({ cove_id: coveId, title: TODAY_WAVE_TITLE });
+  // #177: stamp host theme on the create body so the auto-minted spec
+  // card daemon (spawned atomically with the wave on the server side)
+  // advertises matching colors on OSC 10/11. The manual wave-create
+  // path in `app/router.tsx` does the same — keep these in sync.
+  const rgb = theme === 'dark' ? DARK_THEME_RGB : LIGHT_THEME_RGB;
+  const wave = await api.createWave({
+    cove_id: coveId,
+    title: TODAY_WAVE_TITLE,
+    theme: { fg: rgb.fg, bg: rgb.bg },
+  });
   return { wave, created: true };
 }
 
