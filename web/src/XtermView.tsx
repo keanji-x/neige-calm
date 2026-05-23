@@ -195,7 +195,7 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
       });
     }
     // eslint-disable-next-line no-console
-    console.log('[#177 theme-effect]', {
+    console.warn('[#177 theme-effect]', {
       prev,
       next: theme,
       willSend: prev !== null && prev !== theme,
@@ -204,7 +204,7 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
     });
     if (prev !== null && prev !== theme) {
       // eslint-disable-next-line no-console
-      console.log('[#177 theme-effect] DISPATCHED TerminalThemeUpdate', {
+      console.warn('[#177 theme-effect] DISPATCHED TerminalThemeUpdate', {
         fg: theme === 'dark' ? DARK_THEME_RGB.fg : LIGHT_THEME_RGB.fg,
         bg: theme === 'dark' ? DARK_THEME_RGB.bg : LIGHT_THEME_RGB.bg,
       });
@@ -261,7 +261,7 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
     const pendingFrames: ClientMsg[] = [];
     const send = (msg: ClientMsg) => {
       // eslint-disable-next-line no-console
-      console.log('[#177 send]', {
+      console.warn('[#177 send]', {
         msg: Object.keys(msg)[0],
         wsReadyState: ws.readyState,
         action: ws.readyState === WebSocket.OPEN ? 'sent' : 'queued',
@@ -276,7 +276,7 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
     // closure). Cleared in the WS-effect's teardown below.
     sendRef.current = send;
     // eslint-disable-next-line no-console
-    console.log('[#177 ws-mount] sendRef populated');
+    console.warn('[#177 ws-mount] sendRef populated');
 
     // Per-connection client id. The daemon's `OwnerRegistry` keys on this
     // so the same browser tab survives WS reconnects without losing
@@ -574,7 +574,7 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
       if (sendRef.current === send) {
         sendRef.current = null;
         // eslint-disable-next-line no-console
-        console.log('[#177 ws-mount] sendRef nulled (cleanup)');
+        console.warn('[#177 ws-mount] sendRef nulled (cleanup)');
       }
     };
     // `theme` deliberately omitted: a theme flip should NOT rebuild the
