@@ -131,7 +131,18 @@ pub(crate) async fn list_overlays(
 /// Plugin-defined overlay kinds (`max_supported_overlay_schema_version`
 /// returns `None`) are passed through untouched: the kernel has no schema
 /// for them and explicitly opts out of any version policy on their payloads.
-fn filter_unsupported_overlay_versions(overlays: Vec<Overlay>) -> Vec<Overlay> {
+///
+/// Visibility note: `pub(super)` so `routes::waves::get_wave_detail` can apply
+/// the same guard to overlays returned alongside the wave row. The reviewer of
+/// PR #214 (issue #198 concern 4 follow-up) flagged that `GET /api/waves/{id}`
+/// is the primary read path the frontend uses to render status/progress/eta/
+/// now overlays on a wave's detail view, and a future-`schemaVersion` row
+/// would sail through that route while being correctly filtered out of
+/// `GET /api/overlays`. We keep the filter co-located here (rather than
+/// pushing it into the `Repo` trait) so both call-sites share one
+/// implementation without expanding the trait surface; any future read route
+/// returning overlays should also call this.
+pub(super) fn filter_unsupported_overlay_versions(overlays: Vec<Overlay>) -> Vec<Overlay> {
     overlays
         .into_iter()
         .filter(|o| {

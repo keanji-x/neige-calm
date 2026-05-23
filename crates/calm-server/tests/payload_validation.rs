@@ -74,9 +74,16 @@ fn app(state: AppState) -> axum::Router {
     // Scope G: the cards / overlays handlers extract `Actor` from request
     // extensions, which means the middleware that populates it must be
     // present. Mirror main.rs by layering it on the REST router.
+    //
+    // `waves::router` is also merged here so the PR #214 follow-up tests
+    // can exercise `GET /api/waves/{id}` for the wave-detail read-side
+    // schemaVersion guard. Adding the router is a no-op for the existing
+    // card/overlay tests; we only ever hit the wave route from the tests
+    // that explicitly construct that URI.
     axum::Router::new()
         .merge(routes::cards::router())
         .merge(routes::overlays::router())
+        .merge(routes::waves::router())
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
         ))
@@ -549,4 +556,84 @@ async fn list_overlays_by_kind_also_filters_future_versions() {
         !has_status,
         "future-version row must be filtered on the no-entity_id read path too, got {arr:?}"
     );
+}
+
+// --------------------------------------------------------------------------
+// Wave detail read-side guard (PR #214 review follow-up, issue #198 concern 4)
+//
+// `GET /api/waves/{id}` returns `WaveDetail { wave, cards, overlays }` and is
+// the primary read path the frontend uses to render status/progress/eta/now
+// overlays on a wave's detail view. The PR #214 reviewer flagged that the
+// initial fix only guarded `GET /api/overlays` — a future-`schemaVersion`
+// row would still sail through the wave-detail route. These tests assert
+// the same filter applies there.
+// --------------------------------------------------------------------------
+
+async fn get_wave_detail(app: axum::Router, wave_id: &str) -> axum::http::Response<Body> {
+    app.oneshot(
+        Request::builder()
+            .method("GET")
+            .uri(format!("/api/waves/{wave_id}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn wave_detail_filters_kernel_owned_future_schema_version() {
+    // Seed a kernel-owned status overlay with `schemaVersion = MAX + 1`
+    // (simulating a row a newer kernel binary left in the DB), then hit
+    // `GET /api/waves/{id}` and assert the future-version row is filtered
+    // out of `WaveDetail.overlays`. The frontend's `adaptWave` consumes
+    // exactly this field — without this guard a future row would defeat
+    // the PR #214 read-side check for the primary wave-rendering path.
+    let (state, wave_id) = boot().await;
+    seed_overlay(
+        &state,
+        "kernel",
+        "wave",
+        &wave_id,
+        "status",
+        json!({ "schemaVersion": 999, "state": "running" }),
+    )
+    .await;
+
+    let resp = get_wave_detail(app(state), &wave_id).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_to_json(resp).await;
+    let overlays = body["overlays"].as_array().expect("overlays array");
+    assert!(
+        overlays.is_empty(),
+        "future-version kernel-owned overlay must be filtered from wave detail, got {overlays:?}"
+    );
+}
+
+#[tokio::test]
+async fn wave_detail_keeps_kernel_owned_supported_schema_version() {
+    // Paired sanity check: a kernel-owned overlay at the supported version
+    // still surfaces through `GET /api/waves/{id}`, so the guard is not
+    // accidentally dropping everything.
+    let (state, wave_id) = boot().await;
+    seed_overlay(
+        &state,
+        "kernel",
+        "wave",
+        &wave_id,
+        "status",
+        json!({ "schemaVersion": 1, "state": "running" }),
+    )
+    .await;
+
+    let resp = get_wave_detail(app(state), &wave_id).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_to_json(resp).await;
+    let overlays = body["overlays"].as_array().expect("overlays array");
+    assert_eq!(
+        overlays.len(),
+        1,
+        "supported-version overlay must pass through wave detail"
+    );
+    assert_eq!(overlays[0]["kind"], "status");
 }
