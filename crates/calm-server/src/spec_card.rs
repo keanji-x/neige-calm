@@ -430,38 +430,39 @@ pub(crate) fn seed_codex_home_with_parts(
     Ok(codex_home)
 }
 
-/// PR6 (#136) — second-fix iteration: the response hot path on
-/// `POST /api/waves` no longer awaits the spec card's CODEX_HOME seed
-/// or `spawn_daemon_for` call. The handler commits the wave + spec
-/// card + terminal transaction (atomic) and immediately returns 201;
-/// this helper is then fired through [`tokio::spawn`] so the client
-/// never blocks on the busy-poll-until-socket-ready window inside
-/// `spawn_daemon_for` (~3s worst case when the daemon binary is
-/// missing entirely, which is the test-env shape that broke the
-/// `web/e2e/a11y-keyboard.spec.ts` 5s navigation timeout).
+/// Seed `$CODEX_HOME` for the spec card, then spawn the codex daemon
+/// bound to its terminal row.
 ///
-/// Failure handling: every error path is logged at `warn!` level.
-/// Persisted rows (the spec card + its terminal) survive in the DB
-/// regardless; the orphan-terminal sweeper reaps the dangling row
-/// within ~60s. The caller (the background task) does not need to
-/// react to errors beyond the log line.
+/// Issue #236 (closes): this used to be invoked from `tokio::spawn`
+/// off the response hot path. That opened a TOCTOU race against
+/// `ws::terminal::resolve_live_sock` (frontend WS attach between
+/// commit and background task → respawn from baked terminal-row env
+/// missing MCP vars → two daemons racing on one socket). The
+/// `create_wave` handler now awaits this inline; the return type is
+/// `Result<()>` so the route can surface a 5xx on failure rather
+/// than silently dropping the spawn.
+///
+/// On error: the persisted rows (wave + spec card + terminal) survive
+/// in the DB regardless. The route maps the error to a 500 so the
+/// client knows the wave is unusable and may retry; the
+/// orphan-terminal sweeper reaps the dangling terminal row within
+/// ~60 s if the user abandons it. Returning `Ok(())` on the spawn
+/// failure paths would let `create_wave` return 201 even though no
+/// daemon is running, which is exactly the kind of "looks fine but
+/// isn't" failure mode #236 was about.
 ///
 /// Inputs are owned (`String` / `CardId` / `WaveId` / `serde_json::Value`)
-/// so the spawned future is `'static`. The clones happen at the
-/// call site (`AppState::clone()` is `Arc` bumps; the small string
-/// allocations are O(card_id) + O(wave_id) + O(cwd), all sub-µs).
+/// for back-compat with prior `tokio::spawn` callsites; the
+/// `'static`-future cost is one clone of each at the route boundary.
 pub(crate) async fn seed_and_spawn_spec_daemon(
     state: AppState,
     spec_card_id: String,
     wave_id: String,
     cwd: String,
     env: serde_json::Value,
-) {
+) -> Result<()> {
     // 1. Seed `$CODEX_HOME` for the spec card. Filesystem-only — fast,
-    //    bounded by a handful of mkdir + small write_alls. Failure
-    //    here means config.toml didn't land; the daemon
-    //    spawn below will still try, but the spec agent's instructions
-    //    won't be loaded. Still better than 500ing the client.
+    //    bounded by a handful of mkdir + small write_alls.
     if let Err(e) =
         seed_codex_home_for_card(&state, &spec_card_id, &cwd, &wave_id, SeededCardRole::Spec)
     {
@@ -471,7 +472,7 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
             error = %e,
             "spec card CODEX_HOME seed failed; orphan terminal will be reaped by sweeper",
         );
-        return;
+        return Err(e);
     }
 
     // 2. Look up the terminal row. Guaranteed to exist post-commit
@@ -484,7 +485,9 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
                 wave_id = %wave_id,
                 "spec terminal row missing after commit; orphan terminal will be reaped by sweeper",
             );
-            return;
+            return Err(CalmError::Internal(format!(
+                "spec terminal row missing for card {spec_card_id}",
+            )));
         }
         Err(e) => {
             tracing::warn!(
@@ -493,7 +496,7 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
                 error = %e,
                 "spec terminal lookup failed; orphan terminal will be reaped by sweeper",
             );
-            return;
+            return Err(e);
         }
     };
 
@@ -502,8 +505,9 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
     //    `instructions` field, not as a composer prefill.
     //
     //    `spawn_daemon_for` includes a busy-poll wait-until-socket-
-    //    ready loop (up to ~3s); doing it off the response hot path
-    //    is the whole point of this helper.
+    //    ready loop (up to ~3 s). Since #236, this is on the response
+    //    hot path; #236 considered that an acceptable cost vs. the
+    //    correctness bug it closes.
     if let Err(e) = spawn_daemon_for(&state, &term, "codex", &cwd, &env).await {
         tracing::warn!(
             card_id = %spec_card_id,
@@ -511,15 +515,16 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
             error = %e,
             "spec card daemon spawn failed; orphan terminal will be reaped by sweeper",
         );
-        return;
+        return Err(e);
     }
 
     tracing::info!(
         card_id = %spec_card_id,
         wave_id = %wave_id,
         terminal_id = %term.id,
-        "spec card + daemon spawned for new wave (background task)"
+        "spec card + daemon spawned for new wave (synchronous on create)",
     );
+    Ok(())
 }
 
 #[cfg(test)]

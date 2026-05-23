@@ -110,6 +110,30 @@ async fn resolve_live_sock(s: &AppState, id: &str) -> Result<PathBuf> {
 
     // Cold path: respawn. `spawn_daemon_for` updates `daemon_handle`
     // when it succeeds, so we re-read to get the canonical path.
+    //
+    // Issue #236 defensive log: the terminal-row env is the **pre-MCP**
+    // shape (see `routes::waves::create_wave`); `NEIGE_MCP_TOKEN` /
+    // `NEIGE_MCP_SOCKET` are folded into the env only at spawn time
+    // in the create handler, never persisted. For Spec/Worker cards
+    // that means a respawn from `term.env` produces a daemon with no
+    // MCP env — the codex MCP handshake will then fail (the shim
+    // can't connect+authenticate). The proper fix (re-mint per-card
+    // MCP token + update the stored hash; see
+    // `mcp_server::auth::hash_token` — raw token is non-recoverable
+    // from the hash-only `card_mcp_tokens` row, so we must re-mint
+    // rather than re-derive) is deferred to a #236 follow-up. For
+    // now we warn loudly so the failure mode isn't silent.
+    if matches!(
+        s.card_role_cache.get(&term.card_id),
+        Some(crate::model::CardRole::Spec | crate::model::CardRole::Worker)
+    ) && !env_contains_mcp_vars(&term.env)
+    {
+        tracing::warn!(
+            terminal_id = %term.id,
+            card_id = %term.card_id,
+            "spec/worker card respawn missing MCP env — codex MCP handshake will fail; this is a known limitation, see #236 follow-up",
+        );
+    }
     let env = term.env.clone();
     spawn_daemon_for(s, &term, &term.program, &term.cwd, &env).await?;
     let refreshed = s.repo.terminal_get(id).await?.ok_or_else(|| {
@@ -121,6 +145,27 @@ async fn resolve_live_sock(s: &AppState, id: &str) -> Result<PathBuf> {
         ))
     })?;
     Ok(PathBuf::from(handle))
+}
+
+/// Returns true if the persisted terminal-row env contains both
+/// `NEIGE_MCP_SOCKET` and `NEIGE_MCP_TOKEN`. The kernel currently
+/// does NOT persist these vars into `terminals.env` (the wave-create
+/// handler folds them into a separate env clone for the initial
+/// `spawn_daemon_for` call only); so today this returns `false` for
+/// every Spec/Worker card respawn. The #236 follow-up that
+/// re-mints + persists MCP env will let this start returning `true`
+/// and the warn-log in `resolve_live_sock` will stop firing.
+fn env_contains_mcp_vars(env: &serde_json::Value) -> bool {
+    env.as_object()
+        .map(|m| {
+            m.get("NEIGE_MCP_SOCKET")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|s| !s.is_empty())
+                && m.get("NEIGE_MCP_TOKEN")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|s| !s.is_empty())
+        })
+        .unwrap_or(false)
 }
 
 async fn handle(socket: WebSocket, sock: PathBuf, terminal_id: String, repo: Arc<dyn RouteRepo>) {

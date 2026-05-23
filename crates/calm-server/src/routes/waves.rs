@@ -9,24 +9,41 @@
 //! `create_wave` now mints a wave **and** a `CardRole::Spec` codex card
 //! in a single transaction via [`crate::db::write_with_events_typed`].
 //! Two events leave the tx: [`Event::WaveUpdated`] (scope = Wave) and
-//! [`Event::CardAdded`] (scope = Card). The spec card's backing
-//! `$CODEX_HOME` seed + daemon spawn happen **off the response hot
-//! path** — they're scheduled through [`tokio::spawn`] so the
-//! handler returns 201 the instant the tx commits, regardless of how
-//! long the daemon takes to come up (or fail to). All failures inside
-//! the background task log at `warn!` and are swallowed; the orphan-
-//! terminal sweeper reaps any dangling terminal row (~60s grace; see
-//! PR7+ for spec card cleanup).
+//! [`Event::CardAdded`] (scope = Card).
 //!
-//! Why two iterations: the first PR6 fix downgraded daemon-spawn
-//! failure from 500 → warn + 201 but kept the `spawn_daemon_for`
-//! await on the hot path. In CI (no `codex` binary) the busy-poll
-//! wait-until-socket-ready loop inside `spawn_daemon_for` held the
-//! response open for ~3s, which combined with the front-end's create
-//! → wait-for-201 → router-navigate sequence blew past the web a11y
-//! test's 5s navigation budget (`web/e2e/a11y-keyboard.spec.ts`).
-//! The fix here moves the entire seed + spawn pipeline behind
-//! `tokio::spawn`, restoring the "201 returns on commit" contract.
+//! ## Issue #236 (closes) — synchronous spec daemon spawn
+//!
+//! Earlier iterations of this handler ran the post-commit
+//! `seed_and_spawn_spec_daemon` call inside `tokio::spawn` so the route
+//! could return 201 instantly. That introduced a TOCTOU race against
+//! the WS terminal revive path in `ws::terminal::resolve_live_sock`:
+//! the frontend would open the spec card's WS in the ~400 ms window
+//! between commit and the background task running, see
+//! `daemon_handle = None`, and respawn the daemon from the **baked
+//! terminal-row env**, which is missing `NEIGE_MCP_SOCKET` /
+//! `NEIGE_MCP_TOKEN` (those vars are folded in only on the post-commit
+//! env clone, never persisted to the terminal row). Two daemons would
+//! then race on the same `--sock` and the WS would attach to the
+//! no-MCP one, breaking the codex MCP handshake.
+//!
+//! The fix awaits the seed + spawn inline before returning 201, so the
+//! response payload never reflects a daemon-less spec card. If the
+//! daemon spawn fails the handler returns 500 — the wave is unusable
+//! without its daemon — but the DB tx is **not** rolled back: the wave
+//! row stays so the user can retry the daemon spawn out-of-band rather
+//! than losing their typed title. Persisted rows + the two events
+//! still survive on the 500 path; the orphan-terminal sweeper reaps
+//! the dangling terminal row (~60 s grace) if the user doesn't retry.
+//!
+//! The earlier rationale for the `tokio::spawn` form was the
+//! `spawn_daemon_for` busy-poll wait-until-socket-ready loop (~3 s
+//! worst case when the daemon binary is missing). That latency
+//! affected one specific test path (`web/e2e/a11y-keyboard.spec.ts`'s
+//! 5 s navigation budget when running without a real codex). The
+//! tradeoff was wrong: the WS race is a correctness bug for every
+//! production user, the a11y timeout is a CI-only ergonomic concern.
+//! The a11y test stack is expected to bump its navigation budget to
+//! accommodate.
 //!
 //! ## Wave-delete teardown (issue #197)
 //!
@@ -260,75 +277,82 @@ pub(crate) async fn create_wave(
     )
     .await?;
 
-    // 4. Post-commit: hand off the seed + daemon spawn to a background
-    //    `tokio::spawn` task and return 201 immediately. This is a
-    //    PR6 second-fix iteration on top of the first warn-and-201
-    //    fix: even with the response status downgraded to 201, the
-    //    handler was still awaiting `spawn_daemon_for`, whose busy-
-    //    poll wait-until-socket-ready loop can hold the response open
-    //    for ~3s when the daemon binary is missing (CI shape) — that
-    //    delay blew past the web a11y test's 5s navigation timeout
-    //    after the route+frontend round-trip overhead.
+    // 4. Post-commit: seed the spec card's `$CODEX_HOME` + spawn its
+    //    codex daemon **inline** before returning 201. Issue #236:
+    //    handing this off via `tokio::spawn` opened a TOCTOU race
+    //    where the frontend could open the spec card's WS in the
+    //    window between commit and the background task running,
+    //    observe `daemon_handle = None` in
+    //    `ws::terminal::resolve_live_sock`, and trigger that handler's
+    //    respawn branch using the terminal row's baked env — which
+    //    omits `NEIGE_MCP_SOCKET` / `NEIGE_MCP_TOKEN`. Two daemons
+    //    would then race on the same `--sock` path and the WS would
+    //    attach to the no-MCP one. Awaiting the spawn inline closes
+    //    the race by guaranteeing `daemon_handle` is `Some` by the
+    //    time the 201 reaches the client.
     //
-    //    Architectural contract: persisted rows (the wave + spec
-    //    card + spec terminal) and the two broadcast events are the
-    //    sync side of `create_wave`. The codex daemon is best-effort
-    //    async; the orphan-terminal sweeper reaps a row whose daemon
-    //    never came up (~60s grace) and PR7+ adds structured
-    //    tombstone events for spec-card-level cleanup automation.
+    //    PR7a (#136) — fold the freshly minted per-card MCP token +
+    //    kernel socket path into the env handed to the codex daemon
+    //    spawn. The shim_config lives on `AppState::mcp_server`; when
+    //    both the token and the shim are present we add
+    //    `NEIGE_MCP_TOKEN` + `NEIGE_MCP_SOCKET` so the codex daemon
+    //    forwards them to `neige-mcp-stdio-shim` per its
+    //    `[mcp_servers.calm].env` block for the handshake step.
+    //    Missing either side is a soft-fail: the daemon still starts,
+    //    but the spec agent can't reach the kernel-as-MCP-server.
     //
-    //    `tokio::spawn` is synchronous: it returns a `JoinHandle`
-    //    without awaiting the future, so the 201 response leaves the
-    //    handler before the background task even acquires the
-    //    runtime. The discarded `JoinHandle` is the standard
-    //    fire-and-forget shape — failures inside the task log at
-    //    `warn!` and are swallowed; the helper itself takes care of
-    //    the logging.
+    //    NOTE: this env augmentation is **not** persisted to the
+    //    terminal row (only the pre-MCP env was written inside the
+    //    tx; we don't have a hash→raw lookup for `card_mcp_tokens`
+    //    today — see `mcp_server::auth::hash_token`). A long-tail
+    //    daemon death + WS revive will hit the buggy "respawn from
+    //    baked env" branch in `ws::terminal::resolve_live_sock`
+    //    today; that branch now emits a defensive warn log when
+    //    MCP env is absent on a Spec card. The proper revive-side
+    //    fix (re-mint token + update hash) is deferred to an issue
+    //    #236 follow-up.
+    let mut env_for_spawn = env;
+    if let (Some(token), Some(server)) = (mcp_token.as_deref(), s.mcp_server.as_ref())
+        && let Some(map) = env_for_spawn.as_object_mut()
     {
-        let state_for_task = s.clone();
-        let spec_card_id_for_task = spec_card_id.clone();
-        let wave_id_for_task = wave.id.as_str().to_string();
-        // PR7a (#136) — fold the freshly minted per-card MCP token +
-        // kernel socket path into the env handed to the codex daemon
-        // spawn. The shim_config lives on `AppState::mcp_server`; when
-        // both the token and the shim are present we add
-        // `NEIGE_MCP_TOKEN` + `NEIGE_MCP_SOCKET` so the codex daemon
-        // forwards them to `neige-mcp-stdio-shim` per its
-        // `[mcp_servers.calm].env` block (PR6 baseline) for the
-        // handshake step. Missing either side is a soft-fail: the
-        // daemon still starts, but the spec agent can't reach the
-        // kernel-as-MCP-server.
-        let mut env_for_spawn = env;
-        if let (Some(token), Some(server)) = (mcp_token.as_deref(), s.mcp_server.as_ref())
-            && let Some(map) = env_for_spawn.as_object_mut()
-        {
-            map.insert(
-                "NEIGE_MCP_TOKEN".into(),
-                serde_json::Value::String(token.to_string()),
-            );
-            map.insert(
-                "NEIGE_MCP_SOCKET".into(),
-                serde_json::Value::String(
-                    server.shim_config.socket_path.to_string_lossy().to_string(),
-                ),
-            );
-        }
-        tokio::spawn(async move {
-            seed_and_spawn_spec_daemon(
-                state_for_task,
-                spec_card_id_for_task,
-                wave_id_for_task,
-                cwd,
-                env_for_spawn,
-            )
-            .await;
-        });
+        map.insert(
+            "NEIGE_MCP_TOKEN".into(),
+            serde_json::Value::String(token.to_string()),
+        );
+        map.insert(
+            "NEIGE_MCP_SOCKET".into(),
+            serde_json::Value::String(server.shim_config.socket_path.to_string_lossy().to_string()),
+        );
+    }
+
+    // Issue #236: synchronous spawn. On failure return 5xx; persisted
+    // rows + already-broadcast events stay (no rollback). The wave is
+    // recoverable out-of-band; rolling back would silently discard
+    // the user's typed title which is worse UX than a retriable error.
+    if let Err(e) = seed_and_spawn_spec_daemon(
+        s.clone(),
+        spec_card_id.clone(),
+        wave.id.as_str().to_string(),
+        cwd,
+        env_for_spawn,
+    )
+    .await
+    {
+        tracing::error!(
+            card_id = %spec_card_id,
+            wave_id = %wave.id,
+            error = %e,
+            "spec daemon spawn failed on wave create; wave row persisted, terminal will be reaped by sweeper",
+        );
+        return Err(CalmError::Internal(format!(
+            "spec daemon spawn failed: {e}",
+        )));
     }
 
     tracing::info!(
         card_id = %spec_card_id,
         wave_id = %wave.id,
-        "spec card persisted; daemon spawn handed off to background task"
+        "spec card persisted + daemon spawned inline",
     );
     Ok((StatusCode::CREATED, Json(wave)))
 }
