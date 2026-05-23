@@ -4,7 +4,10 @@ import type { TerminalCardData } from '../../types';
 import type { CardEntry } from '../registry';
 import { dlog } from '../../util/debug';
 import { useTheme } from '../../app/theme';
+import { useState } from '../../shared/state';
 import { CardHead } from '../CardHead';
+import { CardStatusDot } from '../../shared/components/CardStatusDot';
+import type { Role } from '../../api/generated-terminal';
 import {
   TERMINAL_PAYLOAD_SCHEMA_VERSION,
   payloadSchemaVersion,
@@ -33,15 +36,28 @@ const terminalPayloadSchema = z.object({
   terminal_id: z.string().optional(),
 });
 
-function TerminalCard({ card }: { card: TerminalCardData }) {
+function TerminalCard({
+  card,
+  onClose,
+}: {
+  card: TerminalCardData;
+  onClose?: () => void;
+}) {
   const { title, lines, terminalId, unsupportedVersion } = card;
   const { resolved: theme } = useTheme();
+  // Daemon-assigned role lifted out of `<XtermView>` so the head can render
+  // an "observing" pill in its status slot when this client doesn't hold
+  // write. `null` until handshake completes, and reset to `null` on
+  // disconnect/teardown — see XtermView's `onRoleChange` calls.
+  const [role, setRole] = useState<Role | null>(null);
   if (unsupportedVersion !== undefined) {
     return (
       <div className="term term-unsupported-version">
         <CardHead
           className="term-head card-drag-handle"
-          title={<span className="term-title">{title || 'terminal'}</span>}
+          title={title || 'terminal'}
+          onClose={onClose}
+          closeAriaLabel="Remove panel"
         />
         <div className="term-body">
           <div className="term-line k-warn">
@@ -58,20 +74,34 @@ function TerminalCard({ card }: { card: TerminalCardData }) {
     <div className={'term' + (live ? ' live' : '')}>
       <CardHead
         className="term-head card-drag-handle"
-        decor={
-          <>
-            <span className="term-dot" />
-            <span className="term-dot b" />
-            <span className="term-dot c" />
-          </>
+        title={title || 'terminal'}
+        onClose={onClose}
+        closeAriaLabel="Remove panel"
+        // Status indicator unified with Codex: a `Working` dot when the PTY is
+        // attached, nothing when it isn't. The absence-of-dot reads as "not
+        // connected yet" without needing a dim placeholder, and matches the
+        // dot-only visual language now shared across cards (see Codex below).
+        //
+        // Observer-only "observing" pill renders before the dot when the
+        // daemon assigned this client read-only access. Owners (the common
+        // single-user case) get no pill — just the dot — keeping the head
+        // calm by default. Dot stays rightmost so its anchor position is
+        // unchanged across roles.
+        status={
+          live ? (
+            <>
+              {role === 'Observer' && (
+                <span className="card-head-observing-pill">observing</span>
+              )}
+              <CardStatusDot state="Working" />
+            </>
+          ) : undefined
         }
-        title={<span className="term-title">{title || 'terminal'}</span>}
-        status={live ? <span className="term-live-pip">· live</span> : undefined}
       />
       <div className="term-body">
         {live ? (
           <Suspense fallback={<div className="term-line k-cursor">Loading terminal…</div>}>
-            <XtermView terminalId={terminalId!} theme={theme} />
+            <XtermView terminalId={terminalId!} theme={theme} onRoleChange={setRole} />
           </Suspense>
         ) : (
           <>
