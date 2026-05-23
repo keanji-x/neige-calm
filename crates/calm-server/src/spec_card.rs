@@ -32,7 +32,7 @@
 use std::path::PathBuf;
 
 use crate::error::{CalmError, Result};
-use crate::routes::codex_cards::{copy_dir_recursive, host_codex_dir};
+use crate::routes::codex_cards::{copy_dir_recursive, host_codex_dir, shell_single_quote};
 use crate::routes::terminal::spawn_daemon_for;
 use crate::state::{AppState, CodexClient};
 
@@ -560,6 +560,11 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
     cwd: String,
     env: serde_json::Value,
     mcp_token: Option<String>,
+    // Issue #251 — wave title threaded in as the positional `[PROMPT]`
+    // arg for codex. Empty / whitespace-only titles (defensively
+    // trimmed at the route boundary) fall back to launching codex with
+    // no positional arg so the TUI mounts on an empty composer.
+    wave_title: Option<String>,
 ) -> Result<()> {
     // 1. Seed `$CODEX_HOME` for the spec card. Filesystem-only — fast,
     //    bounded by a handful of mkdir + small write_alls.
@@ -605,15 +610,35 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
         }
     };
 
-    // 3. Spawn the daemon. `codex` (no positional prompt) — the spec
-    //    agent's system prompt is in $CODEX_HOME/config.toml's
-    //    `instructions` field, not as a composer prefill.
+    // 3. Spawn the daemon. The spec agent's system prompt lives in
+    //    `$CODEX_HOME/config.toml`'s `instructions` field (seeded
+    //    above); the positional arg here is the user's wave title /
+    //    goal — codex's `[PROMPT]` arg pre-fills the composer with it.
+    //    `codex_auto_submit` (kernel subscriber) then watches for
+    //    `hook.codex.session_start` and injects a `\r` so the goal is
+    //    submitted the moment the TUI is ready, kicking off the spec
+    //    agent's "Read the wave's goal…" loop. Issue #251 — before
+    //    this, the command line was a bare `codex` and the composer
+    //    mounted empty, leaving the spec agent waiting forever.
+    //
+    //    `shell_single_quote` mirrors the helper plain codex cards use
+    //    (see `routes::codex_cards::create_codex_card`): the command
+    //    is handed to `sh -c`, so any shell metacharacters in the
+    //    title must be quoted to land in codex's argv verbatim.
     //
     //    `spawn_daemon_for` includes a busy-poll wait-until-socket-
     //    ready loop (up to ~3 s). Since #236, this is on the response
     //    hot path; #236 considered that an acceptable cost vs. the
     //    correctness bug it closes.
-    if let Err(e) = spawn_daemon_for(&state, &term, "codex", &cwd, &env).await {
+    let command_line = match wave_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(p) => format!("codex {}", shell_single_quote(p)),
+        None => "codex".to_string(),
+    };
+    if let Err(e) = spawn_daemon_for(&state, &term, &command_line, &cwd, &env).await {
         tracing::warn!(
             card_id = %spec_card_id,
             wave_id = %wave_id,

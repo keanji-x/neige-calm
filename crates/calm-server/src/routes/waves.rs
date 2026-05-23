@@ -245,18 +245,38 @@ pub(crate) async fn create_wave(
                 // it as the row return so the post-commit closure
                 // can fold it into the env map handed to the codex
                 // daemon.
+                // Issue #251 — the wave title is the user's prompt /
+                // goal for the spec agent. Stamping it as the codex
+                // card's `payload.prompt` does two things:
+                //   1. surfaces it to `codex_auto_submit`, which gates
+                //      its `\r` injection on a non-empty payload prompt
+                //      (so the composer-pre-filled goal is submitted
+                //      the moment the codex TUI is ready); and
+                //   2. gives `seed_and_spawn_spec_daemon` a stable
+                //      input to append as codex's positional `[PROMPT]`
+                //      arg so the TUI mounts with the goal already in
+                //      the composer (the same hands-free shape plain
+                //      codex cards use).
+                // The system prompt itself still lives in
+                // `$CODEX_HOME/config.toml`'s `instructions` field
+                // (seeded by `seed_codex_home_for_card`); the prompt
+                // arg is the user-facing goal that the spec agent's
+                // loop ("Read the wave's goal…") reads.
+                let spec_prompt = wave.title.trim().to_string();
+                let spec_prompt_for_tx = if spec_prompt.is_empty() {
+                    None
+                } else {
+                    Some(spec_prompt.clone())
+                };
                 let (spec_card, _term, mcp_token) = card_with_codex_create_tx(
                     tx,
                     spec_card_id_for_tx.clone(),
                     wave_id.clone(),
-                    None,       // sort: append to end
-                    cwd_for_tx, // codex's cwd
-                    env_for_tx, // terminal env
-                    None,       // prompt: spec cards don't use the
-                    // hands-free composer auto-submit
-                    // path — the system prompt lives in
-                    // $CODEX_HOME/config.toml instead
-                    CardRole::Spec, // <— the PR6 binding
+                    None,               // sort: append to end
+                    cwd_for_tx,         // codex's cwd
+                    env_for_tx,         // terminal env
+                    spec_prompt_for_tx, // prompt = wave title (#251)
+                    CardRole::Spec,     // <— the PR6 binding
                     // Issue #229 PR A — the spec card is kernel-owned.
                     // Migration 0013 already backfilled `deletable = 0`
                     // for legacy spec rows; new spec cards minted here
@@ -431,6 +451,14 @@ pub(crate) async fn create_wave(
     // it to the shim subprocess; codex CLI 0.132 doesn't, so the shim
     // exited with `missing NEIGE_MCP_SOCKET`. The daemon-env path
     // stays as defense-in-depth.
+    // Issue #251 — thread the wave title through as codex's positional
+    // `[PROMPT]` arg. The same value lives in the spec card's
+    // `payload.prompt` (stamped inside the tx above) so the
+    // `codex_auto_submit` subscriber's gate (non-empty payload.prompt
+    // → inject `\r`) fires for spec cards just like it does for plain
+    // hands-free cards. Together: composer mounts pre-filled with the
+    // goal, `\r` is injected on `hook.codex.session_start`, spec
+    // agent's loop starts.
     if let Err(e) = seed_and_spawn_spec_daemon(
         s.clone(),
         spec_card_id.clone(),
@@ -438,6 +466,7 @@ pub(crate) async fn create_wave(
         cwd,
         env_for_spawn,
         mcp_token.clone(),
+        Some(wave.title.clone()),
     )
     .await
     {
