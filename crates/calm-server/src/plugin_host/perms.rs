@@ -23,8 +23,13 @@
 //!     `permissions.events_subscribe`. `"*"` matches everything (the firehose
 //!     pattern from `event.rs`'s topic grammar).
 //!   * `kv_quota_bytes()` — manifest value if set; default 1 MiB.
+//!   * `Manifest::can_call_tool(tool_name)` — iframe-initiated tool calls
+//!     (`POST /api/plugins/:id/tool-call`) must appear in **some** view's
+//!     `permissions.tools` allow-list. Empty / absent allow-lists deny by
+//!     default — see `UiPermissions::can_call_tool` for the per-view logic
+//!     and #198 (concern 5) for the design call.
 
-use super::manifest::Permissions;
+use super::manifest::{Manifest, Permissions, UiPermissions};
 
 /// Default per-plugin KV quota when the manifest doesn't pin one. Mirrors the
 /// `permissions.kv_quota_bytes` field in the design doc's example (§1.1).
@@ -104,6 +109,63 @@ impl Permissions {
             self.kv_quota_bytes
         }
     }
+}
+
+impl UiPermissions {
+    /// May an iframe call this `tool_name` via `app.callServerTool`?
+    ///
+    /// Matches `tool_name` against each entry in `self.tools` using the same
+    /// glob grammar as `events_subscribe`:
+    ///
+    ///   * `"*"` — matches every name (firehose grant).
+    ///   * `"<prefix>.*"` — matches anything whose name starts with
+    ///     `"<prefix>."` (e.g. `"neige.overlay.*"` matches `"neige.overlay.set"`
+    ///     and `"neige.overlay.delete"` but not `"neige.overlayx"`).
+    ///   * Anything else — literal equality.
+    ///
+    /// **Deny by default** (per #198 concern 5): an empty allow-list returns
+    /// `false`, matching the comment on the struct field. Granting tool calls
+    /// must be an explicit opt-in in the manifest — silent "everything goes"
+    /// is exactly the failure mode the issue calls out.
+    pub fn can_call_tool(&self, tool_name: &str) -> bool {
+        self.tools.iter().any(|p| tool_glob_matches(p, tool_name))
+    }
+}
+
+impl Manifest {
+    /// Aggregate `can_call_tool` across every view's `permissions.tools` list.
+    ///
+    /// The iframe transport is per-view in the spec (each `_meta.ui.permissions`
+    /// block is a property of a specific resource), but the kernel-side route
+    /// `POST /api/plugins/:id/tool-call` is per-plugin. We resolve the mismatch
+    /// conservatively by accepting the call if **any** view of the plugin would
+    /// have allowed it — that's the strongest grant the manifest could express.
+    /// Tightening this to per-view granularity requires the caller to thread the
+    /// view_id through (M5 transport will), so this signature is forward-compat
+    /// with that work.
+    ///
+    /// Deny-by-default: a plugin with no views, or with no view declaring this
+    /// tool, returns `false`. See `UiPermissions::can_call_tool` for per-list
+    /// glob semantics.
+    pub fn can_call_tool(&self, tool_name: &str) -> bool {
+        self.views
+            .iter()
+            .filter_map(|v| v.permissions.as_ref())
+            .any(|p| p.can_call_tool(tool_name))
+    }
+}
+
+/// Tool-name glob matcher. Mirrors `events.rs`'s `glob_matches`: literal
+/// equality, full wildcard `"*"`, or dot-anchored prefix wildcard `"<x>.*"`.
+fn tool_glob_matches(pattern: &str, name: &str) -> bool {
+    if pattern == "*" || pattern == name {
+        return true;
+    }
+    if let Some(prefix) = pattern.strip_suffix(".*") {
+        let with_dot = format!("{prefix}.");
+        return name.starts_with(&with_dot);
+    }
+    false
 }
 
 // ===========================================================================
@@ -245,5 +307,144 @@ mod tests {
     fn kv_quota_treats_zero_as_default() {
         let p = perms(r#"{ "kv_quota_bytes": 0 }"#);
         assert_eq!(p.kv_quota_bytes(), DEFAULT_KV_QUOTA_BYTES);
+    }
+
+    // ---- UiPermissions::can_call_tool --------------------------------------
+
+    fn ui_perms(json: &str) -> UiPermissions {
+        serde_json::from_str(json).expect("valid ui-perms json")
+    }
+
+    #[test]
+    fn tool_call_allows_listed_name() {
+        let p = ui_perms(r#"{ "tools": ["neige.overlay.set", "neige.card.update"] }"#);
+        assert!(p.can_call_tool("neige.overlay.set"));
+        assert!(p.can_call_tool("neige.card.update"));
+    }
+
+    #[test]
+    fn tool_call_denies_unlisted_name() {
+        let p = ui_perms(r#"{ "tools": ["neige.overlay.set"] }"#);
+        assert!(!p.can_call_tool("neige.card.update"));
+        assert!(!p.can_call_tool("neige.overlay.delete"));
+    }
+
+    #[test]
+    fn tool_call_denies_empty_allowlist() {
+        // The deny-by-default invariant from #198 concern 5: an empty (or
+        // absent) `tools` array must not silently let calls through.
+        let p = ui_perms(r#"{ "tools": [] }"#);
+        assert!(!p.can_call_tool("neige.overlay.set"));
+        let p2 = ui_perms("{}");
+        assert!(!p2.can_call_tool("neige.overlay.set"));
+    }
+
+    #[test]
+    fn tool_call_supports_wildcard_grant() {
+        let p = ui_perms(r#"{ "tools": ["*"] }"#);
+        assert!(p.can_call_tool("neige.overlay.set"));
+        assert!(p.can_call_tool("anything.at.all"));
+    }
+
+    #[test]
+    fn tool_call_supports_prefix_glob() {
+        let p = ui_perms(r#"{ "tools": ["neige.overlay.*"] }"#);
+        assert!(p.can_call_tool("neige.overlay.set"));
+        assert!(p.can_call_tool("neige.overlay.delete"));
+        // Prefix glob is dot-anchored: `neige.overlayx` must not slip through.
+        assert!(!p.can_call_tool("neige.overlayx"));
+        // And `neige.card.*` is unrelated.
+        assert!(!p.can_call_tool("neige.card.update"));
+    }
+
+    // ---- Manifest::can_call_tool -------------------------------------------
+
+    fn manifest_with_view_tools(view_tools: Option<&[&str]>) -> Manifest {
+        let perms_json = match view_tools {
+            Some(list) => {
+                let arr: Vec<_> = list.iter().map(|s| format!("\"{s}\"")).collect();
+                format!(", \"permissions\": {{ \"tools\": [{}] }}", arr.join(","))
+            }
+            None => String::new(),
+        };
+        let json = format!(
+            r#"{{
+                "manifest_version": 1,
+                "id": "dev.example",
+                "version": "0.1.0",
+                "min_kernel_version": "0.0.1",
+                "display_name": "X",
+                "entrypoint": {{ "command": "bin/x" }},
+                "views": [
+                    {{
+                        "view_id": "main",
+                        "title": "Main",
+                        "scope": "card"{perms_json}
+                    }}
+                ]
+            }}"#
+        );
+        Manifest::parse(&json).expect("valid manifest")
+    }
+
+    #[test]
+    fn manifest_tool_call_allows_when_any_view_grants() {
+        let m = manifest_with_view_tools(Some(&["neige.overlay.set"]));
+        assert!(m.can_call_tool("neige.overlay.set"));
+        assert!(!m.can_call_tool("neige.card.update"));
+    }
+
+    #[test]
+    fn manifest_tool_call_denies_when_view_has_no_permissions_block() {
+        // View exists but doesn't declare permissions at all → deny.
+        let m = manifest_with_view_tools(None);
+        assert!(!m.can_call_tool("neige.overlay.set"));
+    }
+
+    #[test]
+    fn manifest_tool_call_denies_when_no_views_declared() {
+        // Plugin with zero views can't grant any iframe tool calls — there's
+        // no iframe to call from in the first place.
+        let json = r#"{
+            "manifest_version": 1,
+            "id": "dev.headless",
+            "version": "0.1.0",
+            "min_kernel_version": "0.0.1",
+            "display_name": "Headless",
+            "entrypoint": { "command": "bin/x" }
+        }"#;
+        let m = Manifest::parse(json).expect("valid");
+        assert!(!m.can_call_tool("neige.overlay.set"));
+    }
+
+    #[test]
+    fn manifest_tool_call_unions_across_views() {
+        // Two views, each granting a different tool. Both must be reachable.
+        let json = r#"{
+            "manifest_version": 1,
+            "id": "dev.example",
+            "version": "0.1.0",
+            "min_kernel_version": "0.0.1",
+            "display_name": "X",
+            "entrypoint": { "command": "bin/x" },
+            "views": [
+                {
+                    "view_id": "a",
+                    "title": "A",
+                    "scope": "card",
+                    "permissions": { "tools": ["neige.overlay.set"] }
+                },
+                {
+                    "view_id": "b",
+                    "title": "B",
+                    "scope": "card",
+                    "permissions": { "tools": ["neige.card.update"] }
+                }
+            ]
+        }"#;
+        let m = Manifest::parse(json).expect("valid");
+        assert!(m.can_call_tool("neige.overlay.set"));
+        assert!(m.can_call_tool("neige.card.update"));
+        assert!(!m.can_call_tool("neige.overlay.delete"));
     }
 }
