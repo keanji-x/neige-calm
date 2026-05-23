@@ -50,7 +50,7 @@ import {
 } from '../api/queries';
 import { adaptCard, adaptCove, adaptWave } from '../api/adapt';
 import * as api from '../api/calm';
-import { DARK_THEME_RGB } from '../api/themeRgb';
+import { DARK_THEME_RGB, LIGHT_THEME_RGB } from '../api/themeRgb';
 import { useQueryClient, useQueries } from '@tanstack/react-query';
 import { queryKeys } from '../api/queries';
 import { queryClient } from './providers';
@@ -241,16 +241,23 @@ function CoveComponent() {
         // effectively a dead-end in PR 2. The TS compile-time
         // contract is the only thing this branch needs to satisfy.
         //
-        // #177 — `theme` is required end-to-end. PR4 wires the real
-        // host-browser theme read; until then every callsite passes
-        // `DARK_THEME_RGB` so the type-layer guard is satisfied with
-        // a sentinel that matches the server's `default_dark()`.
+        // #177 — stamp host browser's current theme onto the body so
+        // the auto-minted spec card's `calm-session-daemon` advertises
+        // matching colors on OSC 10/11. Read at click-time via the
+        // ThemeProvider's `<html data-theme>` mirror; see the codex
+        // create path below for the same rationale.
+        const theme: 'light' | 'dark' =
+          typeof document !== 'undefined' &&
+          document.documentElement.dataset.theme === 'light'
+            ? 'light'
+            : 'dark';
+        const rgb = theme === 'dark' ? DARK_THEME_RGB : LIGHT_THEME_RGB;
         const w = await createWave.mutateAsync({
           cove_id: cId,
           title,
           cwd: '',
           attach_folder: false,
-          theme: DARK_THEME_RGB,
+          theme: rgb,
         });
         go({ name: 'wave', id: w.id });
       }}
@@ -346,10 +353,33 @@ function WaveComponent() {
       cove={cove}
       onGo={go}
       onAddCard={async (wId, type) => {
-        await addCardOfKind(qc, wId, type);
+        // #177 — click-time host-theme read; see the matching
+        // comment on `onCreateCardWithBody` below. Same rationale
+        // (no `useTheme()` here → no theme-driven wave-subtree
+        // re-render → XtermView stays mounted across the toggle).
+        const theme: 'light' | 'dark' =
+          typeof document !== 'undefined' &&
+          document.documentElement.dataset.theme === 'light'
+            ? 'light'
+            : 'dark';
+        await addCardOfKind(qc, wId, type, theme);
       }}
       onCreateCardWithBody={async (wId, type, values) => {
-        await addCardWithValues(qc, wId, type, values);
+        // #177 — read the resolved theme at click-time from
+        // `<html data-theme>` rather than subscribing to
+        // ThemeContext via `useTheme()` in this component.
+        // Subscribing would re-render the wave subtree on every
+        // theme toggle and trip TanStack Router's `<Match>`
+        // Suspense boundary, remounting any live XtermView and
+        // wiping its `pendingThemeRef`. `ThemeProvider` mirrors
+        // `resolved` into `<html data-theme>` synchronously
+        // (see `app/theme.tsx`), so this read is always current.
+        const theme: 'light' | 'dark' =
+          typeof document !== 'undefined' &&
+          document.documentElement.dataset.theme === 'light'
+            ? 'light'
+            : 'dark';
+        await addCardWithValues(qc, wId, type, values, theme);
       }}
       onRemoveCard={async (_wId, idx) => {
         const target = detail.cards[idx];
@@ -407,26 +437,33 @@ async function addCardWithValues(
   waveId: string,
   type: AddPanelKind,
   values: Record<string, string>,
+  theme: 'light' | 'dark',
 ): Promise<void> {
   if (type !== 'codex') {
     // Falls through to the default "no-config" pathway. The AddPanel
     // shouldn't surface a schema form for kinds without `createSchema`,
     // so this is defensive only.
-    return addCardOfKind(qc, waveId, type);
+    return addCardOfKind(qc, waveId, type, theme);
   }
   try {
-    dlog('addCardWithValues', 'codex create START', { waveId, values });
+    dlog('addCardWithValues', 'codex create START', { waveId, values, theme });
     // Atomic codex-card create (#117). One round-trip writes the card row,
     // the linked terminal row, payload (with `terminal_id` + optional
     // `cwd`), AND spawns the codex daemon. Server emits a single
     // `card.added` event carrying the final payload — no intermediate
     // empty-payload flash for the renderer's "Codex is starting…"
     // placeholder to react to.
+    //
+    // #177 — stamp the host browser's current theme RGB onto the body.
+    // The kernel forwards this to the codex daemon's argv so its
+    // `TerminalModel` answers codex's OSC 10/11 startup probe with
+    // matching colors; without it the composer paints against codex's
+    // built-in default and clashes with the surrounding card background.
+    const rgb = theme === 'dark' ? DARK_THEME_RGB : LIGHT_THEME_RGB;
     const card = await api.createCodexCard(waveId, {
       cwd: values.cwd || undefined,
       prompt: values.prompt || undefined,
-      // #177 — placeholder until PR4 wires the real host theme read.
-      theme: DARK_THEME_RGB,
+      theme: rgb,
     });
     dlog('addCardWithValues', 'codex create DONE', { cardId: card.id });
   } catch (err) {
@@ -438,6 +475,7 @@ async function addCardOfKind(
   _qc: ReturnType<typeof useQueryClient>,
   waveId: string,
   _type: AddPanelKind,
+  theme: 'light' | 'dark',
 ): Promise<void> {
   // Atomic terminal-card create (#13). One round-trip handles card + linked
   // terminal row + daemon spawn, and emits a single `card.added` carrying
@@ -445,11 +483,16 @@ async function addCardOfKind(
   // suppression + manual invalidate to mask the intermediate `payload=null`
   // state; that whole scaffolding is gone — the bridge picks up the one
   // event and the cache converges naturally.
+  //
+  // #177 — `theme` is required on the wire (`NewTerminalCardBody.theme`);
+  // the kernel writes `term.theme_fg/_bg` on the terminal row in the same
+  // transaction and every later spawn for that row stamps the matching
+  // `--terminal-fg/-bg` daemon argv.
   try {
-    dlog('addCardOfKind', 'createTerminalCard START', { waveId });
+    dlog('addCardOfKind', 'createTerminalCard START', { waveId, theme });
+    const rgb = theme === 'dark' ? DARK_THEME_RGB : LIGHT_THEME_RGB;
     const card = await api.createTerminalCard(waveId, {
-      // #177 — placeholder until PR4 wires the real host theme read.
-      theme: DARK_THEME_RGB,
+      theme: rgb,
     });
     dlog('addCardOfKind', 'createTerminalCard DONE', {
       cardId: card.id,

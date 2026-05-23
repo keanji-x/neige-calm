@@ -27,7 +27,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { useState } from '../shared/state';
 import { useQueryClient } from '@tanstack/react-query';
 import * as api from '../api/calm';
-import { DARK_THEME_RGB } from '../api/themeRgb';
+import { DARK_THEME_RGB, LIGHT_THEME_RGB } from '../api/themeRgb';
 import { queryKeys } from '../api/queries';
 
 const STORAGE_KEY = 'calm.todayCardId';
@@ -123,9 +123,14 @@ export function useTodayTerminal(): UseTodayTerminalResult {
       // linked terminal row, AND spawns the daemon. The kernel stamps the
       // `schemaVersion` + `terminal_id` payload itself, and a single
       // `card.added` event drives the cache invalidate via EventBridge.
+      //
+      // #177 — pass host browser theme so the Today terminal's daemon
+      // answers codex's OSC 10/11 probe with matching colors. Read from
+      // `<html data-theme>` (the ThemeProvider's synchronous mirror)
+      // rather than via `useTheme()` so this hook stays cheap and
+      // doesn't re-render on theme toggle.
       const card = await api.createTerminalCard(wave.id, {
-        // #177 — placeholder until PR4 wires the real host theme read.
-        theme: DARK_THEME_RGB,
+        theme: readHostThemeRgb(),
       });
       const terminalId = (card.payload as { terminal_id: string }).terminal_id;
       localStorage.setItem(STORAGE_KEY, card.id);
@@ -183,10 +188,27 @@ async function ensureTodayWave(coveId: string) {
     title: TODAY_WAVE_TITLE,
     cwd: '/',
     attach_folder: false,
-    // #177 — placeholder until PR4 wires the real host theme read.
-    theme: DARK_THEME_RGB,
+    // #177 — same `readHostThemeRgb()` source as the terminal-card
+    // create below. The spec daemon that the wave-create txn spawns
+    // gets matching colors on its first paint.
+    theme: readHostThemeRgb(),
   });
   return { wave, created: true };
+}
+
+/**
+ * Read the current host theme from `<html data-theme>` (written
+ * synchronously by `ThemeProvider`) and return the matching RGB
+ * tuple. Default → dark when `document` is unavailable (SSR / test
+ * environments where the provider hasn't mounted yet); this mirrors
+ * the server-side `RequestTheme::default_dark()` sentinel so a
+ * pre-provider read can't crash and lands on a defensible value.
+ */
+function readHostThemeRgb() {
+  if (typeof document === 'undefined') return DARK_THEME_RGB;
+  return document.documentElement.dataset.theme === 'light'
+    ? LIGHT_THEME_RGB
+    : DARK_THEME_RGB;
 }
 
 function isNotFound(e: unknown): boolean {
