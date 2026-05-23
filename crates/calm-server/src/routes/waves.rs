@@ -329,12 +329,20 @@ pub(crate) async fn create_wave(
     // rows + already-broadcast events stay (no rollback). The wave is
     // recoverable out-of-band; rolling back would silently discard
     // the user's typed title which is worse UX than a retriable error.
+    // #236 followup — thread `mcp_token` through to the seed step so
+    // it lands in the per-card config.toml's `[mcp_servers.calm].env`
+    // block. The pre-followup code passed the token only via the
+    // daemon spawn env (above) on the assumption codex would forward
+    // it to the shim subprocess; codex CLI 0.132 doesn't, so the shim
+    // exited with `missing NEIGE_MCP_SOCKET`. The daemon-env path
+    // stays as defense-in-depth.
     if let Err(e) = seed_and_spawn_spec_daemon(
         s.clone(),
         spec_card_id.clone(),
         wave.id.as_str().to_string(),
         cwd,
         env_for_spawn,
+        mcp_token.clone(),
     )
     .await
     {

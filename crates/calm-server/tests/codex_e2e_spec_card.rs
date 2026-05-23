@@ -14,6 +14,12 @@
 //!   2. The codex process inherits `NEIGE_MCP_SOCKET` and
 //!      `NEIGE_MCP_TOKEN` in its `/proc/<pid>/environ` — hard
 //!      assertion (no soft-skip).
+//!   3. The spec card's `$CODEX_HOME/config.toml` carries a
+//!      `[mcp_servers.calm.env]` table containing both
+//!      `NEIGE_MCP_SOCKET` and `NEIGE_MCP_TOKEN` with non-empty
+//!      string values (#236 followup — codex CLI 0.132 doesn't
+//!      forward the daemon env to MCP server subprocesses, so the
+//!      env must live in the config.toml itself).
 //!
 //! Pre-fix (#236), the route returned 201 before the daemon was
 //! spawned; if a WS attach raced the background `tokio::spawn`, the
@@ -336,6 +342,105 @@ async fn spec_card_codex_daemon_env_contains_mcp_vars() {
         status,
         StatusCode::CREATED,
         "wave create returned non-201; body={body}",
+    );
+
+    // 1a. #236 followup — find the spec card the route just minted
+    //     and assert its per-card `$CODEX_HOME/config.toml` carries
+    //     the `[mcp_servers.calm.env]` block with both MCP vars baked
+    //     into it. This is the minimum-cost surface for the codex →
+    //     shim env boundary: the pre-followup code relied on codex
+    //     forwarding the daemon's env to MCP subprocesses, which
+    //     codex CLI 0.132 doesn't do — the shim exited with
+    //     `missing NEIGE_MCP_SOCKET` and the spec agent had no way
+    //     to reach the kernel.
+    let wave_id = body
+        .get("id")
+        .and_then(Value::as_str)
+        .expect("wave id in response");
+    let spec_cards_body = {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/api/waves/{wave_id}/cards"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null)
+    };
+    // The spec card is the only kernel-owned (`deletable = false`) card
+    // minted on a fresh wave (`model::Card::deletable` flips to `false`
+    // for spec cards per #229 PR A — see `create_wave` in
+    // `routes::waves`). `Card` doesn't expose the `role` field on the
+    // wire (that lives in `card_roles`); deletable is the next-best
+    // stable discriminator here.
+    let spec_card_id = spec_cards_body
+        .as_array()
+        .and_then(|cards| {
+            cards.iter().find_map(|c| {
+                if c.get("deletable").and_then(Value::as_bool) == Some(false) {
+                    c.get("id").and_then(Value::as_str).map(str::to_string)
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or_else(|| {
+            panic!("spec card present on freshly created wave; cards body: {spec_cards_body}")
+        });
+    let codex_home = state.codex.codex_homes_dir.join(&spec_card_id);
+    let cfg_path = codex_home.join("config.toml");
+    let cfg_text =
+        std::fs::read_to_string(&cfg_path).unwrap_or_else(|e| panic!("read {cfg_path:?}: {e}"));
+    eprintln!(
+        "[codex-e2e] spec card config.toml ({} bytes):\n{cfg_text}",
+        cfg_text.len(),
+    );
+    assert!(
+        cfg_text.contains("[mcp_servers.calm]"),
+        "spec card config.toml missing `[mcp_servers.calm]` block; got:\n{cfg_text}",
+    );
+    assert!(
+        cfg_text.contains("[mcp_servers.calm.env]"),
+        "spec card config.toml missing `[mcp_servers.calm.env]` block — codex won't pass MCP vars to the shim subprocess (#236 followup); got:\n{cfg_text}",
+    );
+    // Hard-assert both env keys are present with non-empty string
+    // values. We don't compare to the exact token (it's minted
+    // per-card and not surfaced through any read API), but we can
+    // verify the line shape and that the value isn't an empty
+    // string.
+    let env_socket_line = cfg_text
+        .lines()
+        .find(|l| l.trim_start().starts_with("NEIGE_MCP_SOCKET ="))
+        .expect("config.toml must declare NEIGE_MCP_SOCKET in env block");
+    let env_token_line = cfg_text
+        .lines()
+        .find(|l| l.trim_start().starts_with("NEIGE_MCP_TOKEN ="))
+        .expect("config.toml must declare NEIGE_MCP_TOKEN in env block");
+    // Pull the value out of `KEY = "value"` and assert non-empty.
+    let extract = |line: &str| -> String {
+        let value = line.split_once('=').map(|x| x.1.trim()).unwrap_or("");
+        value.trim_matches('"').to_string()
+    };
+    let socket_in_toml = extract(env_socket_line);
+    let token_in_toml = extract(env_token_line);
+    assert!(
+        !socket_in_toml.is_empty(),
+        "NEIGE_MCP_SOCKET value in config.toml is empty: {env_socket_line:?}",
+    );
+    assert!(
+        !token_in_toml.is_empty(),
+        "NEIGE_MCP_TOKEN value in config.toml is empty: {env_token_line:?}",
+    );
+    eprintln!(
+        "[codex-e2e] config.toml env block OK — NEIGE_MCP_SOCKET=\"{}\" (len {}), NEIGE_MCP_TOKEN=<len {}>",
+        socket_in_toml,
+        socket_in_toml.len(),
+        token_in_toml.len(),
     );
 
     // 2. Wait for a *new* codex process to appear. The shell -c

@@ -248,16 +248,27 @@ pub(crate) fn build_codex_env_map(
 ///     `~/.codex/config.toml` for `instructions` to prepend to every
 ///     turn; baking it here keeps spec/worker agents agent-typed
 ///     without an out-of-band registry.
-///   * `[mcp_servers.calm]` (PR7a) — points codex at the
-///     `neige-mcp-stdio-shim` binary which bridges stdio JSON-RPC to
-///     the kernel's UDS. Codex forwards
-///     `NEIGE_MCP_TOKEN` / `NEIGE_MCP_SOCKET` from the daemon env so
-///     the shim can connect + authenticate. Omitted when `mcp_shim`
-///     is `None` (Plain cards still hit
-///     `routes::codex_cards::build_codex_config_toml` which has no
-///     MCP block).
+///   * `[mcp_servers.calm]` + `[mcp_servers.calm.env]` (PR7a, #236
+///     followup) — points codex at the `neige-mcp-stdio-shim` binary
+///     which bridges stdio JSON-RPC to the kernel's UDS, and bakes
+///     `NEIGE_MCP_SOCKET` / `NEIGE_MCP_TOKEN` directly into the
+///     subprocess env. Pre-followup we relied on codex inheriting
+///     these from the daemon's env, but empirically (codex CLI 0.132)
+///     codex spawns MCP server subprocesses with a clean env: the
+///     shim would exit immediately with `missing NEIGE_MCP_SOCKET`.
+///     Baking the env into the toml block bypasses that boundary.
+///     Omitted entirely when `mcp_block` is `None` (Plain cards
+///     still hit `routes::codex_cards::build_codex_config_toml`
+///     which has no MCP block).
 ///   * Plain `[projects."<cwd>"] trust_level = "trusted"` matches the
 ///     Plain helper.
+///
+/// `mcp_block` pairs the shim config with the per-card raw MCP token:
+/// both are required together (a token without a socket is unusable,
+/// a socket without a token can't authenticate), so we take them as
+/// one `Option<(&McpShimConfig, &str)>` rather than two independent
+/// `Option`s. The single-option shape also forbids the only mis-paired
+/// state ("shim set, token forgotten") at the type level.
 ///
 /// Plain cards (the user-facing `POST /codex-cards` route) keep using
 /// `routes::codex_cards::build_codex_config_toml` and pass no
@@ -265,7 +276,7 @@ pub(crate) fn build_codex_env_map(
 pub(crate) fn build_codex_config_toml_with_prompt(
     cwd: &str,
     system_prompt: &str,
-    mcp_shim: Option<&crate::mcp_server::McpShimConfig>,
+    mcp_block: Option<(&crate::mcp_server::McpShimConfig, &str)>,
 ) -> String {
     // Hand-written TOML (no `toml` crate in the workspace). Both `cwd`
     // and `system_prompt` need their `"` / `\` escaped for basic-string
@@ -290,26 +301,43 @@ pub(crate) fn build_codex_config_toml_with_prompt(
          trust_level = \"trusted\"\n"
     );
 
-    if let Some(shim) = mcp_shim {
-        // PR7a — emit `[mcp_servers.calm]`. Codex's MCP client spec:
+    if let Some((shim, token)) = mcp_block {
+        // PR7a + #236 followup — emit `[mcp_servers.calm]` plus an
+        // explicit `[mcp_servers.calm.env]` table. Codex's MCP client
+        // spec:
         //   * `command` = absolute path to the shim binary.
         //   * `args` = optional argv tail (we ship empty — the shim
         //     reads the socket from the env).
-        //   * `env` table is omitted here because the shim inherits
-        //     `NEIGE_MCP_TOKEN` / `NEIGE_MCP_SOCKET` from the codex
-        //     daemon's env (set by `build_codex_env_map`). Codex's
-        //     MCP client passes the daemon env through to spawned
-        //     server processes by default.
+        //   * `env` table = exact env the shim subprocess sees. We
+        //     used to omit this and rely on the codex daemon's own
+        //     env being inherited; codex CLI 0.132 spawns MCP server
+        //     subprocesses with a clean env, so the shim's
+        //     `missing NEIGE_MCP_SOCKET` exit was the symptom. Baking
+        //     both vars here bypasses the inheritance boundary
+        //     entirely.
         let escaped_shim = shim
             .shim_bin
             .to_string_lossy()
             .replace('\\', "\\\\")
             .replace('"', "\\\"");
+        let escaped_socket = shim
+            .socket_path
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+        // The token is a base64url-ish opaque string today (see
+        // `mcp_server::auth::mint_token`), but escape defensively
+        // anyway in case the format ever picks up a `"` or `\`.
+        let escaped_token = token.replace('\\', "\\\\").replace('"', "\\\"");
         out.push_str(&format!(
             "\n\
              [mcp_servers.calm]\n\
              command = \"{escaped_shim}\"\n\
-             args = []\n"
+             args = []\n\
+             \n\
+             [mcp_servers.calm.env]\n\
+             NEIGE_MCP_SOCKET = \"{escaped_socket}\"\n\
+             NEIGE_MCP_TOKEN = \"{escaped_token}\"\n"
         ));
     }
 
@@ -371,6 +399,14 @@ impl SeededCardRole {
 /// `wave_id` is threaded in so the system prompt substitution can
 /// reference the wave the card is bound to.
 ///
+/// `mcp_token` is the per-card raw MCP token minted at card-create
+/// time (returned from `card_with_codex_create_tx`). When MCP is
+/// wired up on the AppState **and** the token is `Some`, the per-card
+/// `config.toml` gets a `[mcp_servers.calm].env` block baking the
+/// token + socket directly into the shim subprocess env (issue #236
+/// followup — codex CLI 0.132 doesn't inherit the daemon env into MCP
+/// server subprocesses, so the env must live in the config.toml).
+///
 /// Only [`SeededCardRole`] values are accepted — Plain cards must
 /// route through `routes::codex_cards` instead.
 pub(crate) fn seed_codex_home_for_card(
@@ -379,26 +415,39 @@ pub(crate) fn seed_codex_home_for_card(
     cwd: &str,
     wave_id: &str,
     role: SeededCardRole,
+    mcp_token: Option<&str>,
 ) -> Result<PathBuf> {
     let shim = s.mcp_server.as_ref().map(|m| m.shim_config.clone());
-    seed_codex_home_with_parts(s.codex.as_ref(), card_id, cwd, wave_id, role, shim.as_ref())
+    // Pair shim + token: only emit the `[mcp_servers.calm]` block
+    // when *both* are present. Missing either side leaves the
+    // config.toml MCP-less (codex won't try to start the shim).
+    let mcp_block = match (shim.as_ref(), mcp_token) {
+        (Some(s), Some(t)) => Some((s, t)),
+        _ => None,
+    };
+    seed_codex_home_with_parts(s.codex.as_ref(), card_id, cwd, wave_id, role, mcp_block)
 }
 
 /// PR6 (#136) — lower-level seam over [`seed_codex_home_for_card`] that
 /// takes a [`CodexClient`] directly. Used by the dispatcher, which
 /// doesn't own an `AppState`.
 ///
-/// `mcp_shim` is `Some(&shim_config)` for production callers that
-/// boot the kernel-as-MCP-server (`AppState::new`) and `None` for
-/// test paths that don't (`from_parts`). When `Some`, the per-card
-/// config.toml gets a matching `[mcp_servers.calm]` block.
+/// `mcp_block` carries the shim config + per-card raw MCP token as a
+/// single pair: `Some((&shim_config, &raw_token))` for production
+/// callers that boot the kernel-as-MCP-server (`AppState::new`) and
+/// have a token in scope (every Spec/Worker card_with_codex_create_tx
+/// mints one); `None` for test paths that don't boot the MCP server
+/// (`from_parts`). When `Some`, the per-card config.toml gets a
+/// matching `[mcp_servers.calm]` block including an `env` table that
+/// bakes `NEIGE_MCP_SOCKET` / `NEIGE_MCP_TOKEN` into the shim
+/// subprocess env (#236 followup — see `build_codex_config_toml_with_prompt`).
 pub(crate) fn seed_codex_home_with_parts(
     codex: &CodexClient,
     card_id: &str,
     cwd: &str,
     wave_id: &str,
     role: SeededCardRole,
-    mcp_shim: Option<&crate::mcp_server::McpShimConfig>,
+    mcp_block: Option<(&crate::mcp_server::McpShimConfig, &str)>,
 ) -> Result<PathBuf> {
     let codex_home = codex.codex_homes_dir.join(card_id);
     let is_fresh = !codex_home.exists();
@@ -422,7 +471,7 @@ pub(crate) fn seed_codex_home_with_parts(
     // launch). Plain cards are unrepresentable at this seam by
     // construction (see [`SeededCardRole`]).
     let system_prompt = render_system_prompt(role.prompt_template(), wave_id);
-    let cfg_text = build_codex_config_toml_with_prompt(cwd, &system_prompt, mcp_shim);
+    let cfg_text = build_codex_config_toml_with_prompt(cwd, &system_prompt, mcp_block);
     let cfg_path = codex_home.join("config.toml");
     std::fs::write(&cfg_path, cfg_text)
         .map_err(|e| CalmError::Internal(format!("write config.toml: {e}")))?;
@@ -454,18 +503,34 @@ pub(crate) fn seed_codex_home_with_parts(
 /// Inputs are owned (`String` / `CardId` / `WaveId` / `serde_json::Value`)
 /// for back-compat with prior `tokio::spawn` callsites; the
 /// `'static`-future cost is one clone of each at the route boundary.
+///
+/// `mcp_token` is the per-card raw MCP token freshly minted inside
+/// the `create_wave` transaction (returned from
+/// `card_with_codex_create_tx`). It's `Option` only because tests
+/// using `AppState::from_parts` without an MCP server still flow
+/// through this path; in production it's always `Some` for Spec
+/// cards. The token is threaded down into the per-card config.toml's
+/// `[mcp_servers.calm].env` block (#236 followup) so the shim
+/// subprocess sees it even though codex CLI 0.132 doesn't pass the
+/// daemon env through.
 pub(crate) async fn seed_and_spawn_spec_daemon(
     state: AppState,
     spec_card_id: String,
     wave_id: String,
     cwd: String,
     env: serde_json::Value,
+    mcp_token: Option<String>,
 ) -> Result<()> {
     // 1. Seed `$CODEX_HOME` for the spec card. Filesystem-only — fast,
     //    bounded by a handful of mkdir + small write_alls.
-    if let Err(e) =
-        seed_codex_home_for_card(&state, &spec_card_id, &cwd, &wave_id, SeededCardRole::Spec)
-    {
+    if let Err(e) = seed_codex_home_for_card(
+        &state,
+        &spec_card_id,
+        &cwd,
+        &wave_id,
+        SeededCardRole::Spec,
+        mcp_token.as_deref(),
+    ) {
         tracing::warn!(
             card_id = %spec_card_id,
             wave_id = %wave_id,
@@ -557,26 +622,71 @@ mod tests {
         );
     }
 
-    /// PR7a (#136) — `Some(shim)` injects a `[mcp_servers.calm]` block
-    /// pointing at the resolved shim binary. The kernel daemon
-    /// process inherits `NEIGE_MCP_TOKEN` / `NEIGE_MCP_SOCKET` from
-    /// `build_codex_env_map`; codex forwards those to the spawned
-    /// shim by default.
+    /// PR7a (#136) + #236 followup — `Some((shim, token))` injects a
+    /// `[mcp_servers.calm]` block pointing at the resolved shim binary
+    /// **and** an `[mcp_servers.calm.env]` table baking the socket
+    /// path + per-card raw token into the shim subprocess env. The
+    /// env-in-config-toml approach replaces the original "codex
+    /// forwards the daemon env by default" assumption, which turned
+    /// out to be wrong on codex CLI 0.132 (subprocesses got a clean
+    /// env and the shim exited with `missing NEIGE_MCP_SOCKET`).
     #[test]
     fn role_config_toml_has_mcp_servers_block_when_shim_present() {
         let shim = crate::mcp_server::McpShimConfig {
             shim_bin: std::path::PathBuf::from("/usr/local/bin/neige-mcp-stdio-shim"),
             socket_path: std::path::PathBuf::from("/var/lib/neige/mcp/kernel.sock"),
         };
-        let s =
-            build_codex_config_toml_with_prompt("/workspace", "you are a spec agent.", Some(&shim));
+        let s = build_codex_config_toml_with_prompt(
+            "/workspace",
+            "you are a spec agent.",
+            Some((&shim, "tok-abc123")),
+        );
         assert!(
             s.contains("[mcp_servers.calm]"),
-            "role-typed config.toml must contain the calm mcp_servers block when mcp_shim is Some; got:\n{s}"
+            "role-typed config.toml must contain the calm mcp_servers block when mcp_block is Some; got:\n{s}"
         );
         assert!(
             s.contains("command = \"/usr/local/bin/neige-mcp-stdio-shim\""),
             "shim binary path must appear as the command; got:\n{s}"
+        );
+        assert!(
+            s.contains("[mcp_servers.calm.env]"),
+            "role-typed config.toml must contain the calm mcp_servers env block (#236 followup); got:\n{s}"
+        );
+        assert!(
+            s.contains("NEIGE_MCP_SOCKET = \"/var/lib/neige/mcp/kernel.sock\""),
+            "env block must bake socket path so shim subprocess sees it; got:\n{s}"
+        );
+        assert!(
+            s.contains("NEIGE_MCP_TOKEN = \"tok-abc123\""),
+            "env block must bake per-card token so shim authenticates; got:\n{s}"
+        );
+    }
+
+    /// #236 followup — the env block must escape `"` and `\` in both
+    /// the socket path and the token. A pathological token containing
+    /// `"` would otherwise close the TOML basic string mid-value and
+    /// codex would reject the file with an opaque parse error.
+    #[test]
+    fn role_config_toml_escapes_env_block_values() {
+        let shim = crate::mcp_server::McpShimConfig {
+            shim_bin: std::path::PathBuf::from("/usr/local/bin/neige-mcp-stdio-shim"),
+            // Forward slashes only on unix — a `"` in a path is
+            // unusual but valid; defensive escape covers it.
+            socket_path: std::path::PathBuf::from(r#"/tmp/odd"path/kernel.sock"#),
+        };
+        let s = build_codex_config_toml_with_prompt(
+            "/workspace",
+            "prompt",
+            Some((&shim, r#"tok"with-quote"#)),
+        );
+        assert!(
+            s.contains(r#"NEIGE_MCP_SOCKET = "/tmp/odd\"path/kernel.sock""#),
+            "socket path with embedded quote must be escaped; got:\n{s}"
+        );
+        assert!(
+            s.contains(r#"NEIGE_MCP_TOKEN = "tok\"with-quote""#),
+            "token with embedded quote must be escaped; got:\n{s}"
         );
     }
 
