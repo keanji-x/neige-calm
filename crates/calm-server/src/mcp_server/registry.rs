@@ -35,6 +35,7 @@
 use crate::card_role_cache::CardRoleCache;
 use crate::db::RouteRepo;
 use crate::event::EventBus;
+use crate::event_cursor::EventCursorCache;
 use crate::ids::{ActorId, CardId};
 use crate::mcp_server::framing::RpcError;
 use crate::model::CardRole;
@@ -122,6 +123,12 @@ pub struct AppContext {
     /// Role cache, threaded through to `write_with_event_typed` so the
     /// in-tx role gate runs without a DB lookup.
     pub card_role_cache: CardRoleCache,
+    /// PR8 (#136) — per-card event cursor cache. Used by
+    /// `calm.wait_for_events` (this module's `tools/wait.rs`) and by
+    /// the `/internal/codex/pending_events` HTTP fallback so a wait
+    /// call defaults `since` to wherever the last call left off for
+    /// that card.
+    pub event_cursor_cache: EventCursorCache,
 }
 
 /// Boxed future returned by a tool handler. Handlers are async fns;

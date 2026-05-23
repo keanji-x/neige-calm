@@ -15,3 +15,15 @@ path = "src/main.rs"
 # Synchronous, blocking HTTP. The bridge is short-lived (one POST per
 # fork) — no runtime needed; keeping the dep tree slim.
 ureq = { version = "2", default-features = false, features = ["tls"] }
+# PR8 (#136) — Stop hook handler parses the hook payload to discriminate
+# `Stop` vs the other hook types, parses the long-poll response, and
+# constructs the `{decision:"block", reason:...}` decision frame. Still
+# tiny — serde_json + serde derive add ~300KB to the binary.
+serde_json = "1"
+
+# PR8 (#136) — integration tests run the compiled binary as a
+# subprocess and stub the calm-server HTTP endpoints with a tiny TCP
+# listener. tokio gives us the async test runtime + a real listener.
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net", "time"] }
+serde_json = "1"

@@ -469,6 +469,20 @@ pub(crate) fn build_hooks_json(bridge: &str) -> String {
     // We rely on PATH lookup if `bridge` is a bare name.
     let cmd =
         serde_json::to_string(bridge).unwrap_or_else(|_| String::from("\"neige-codex-bridge\""));
+    // PR8 (#136) — Stop hook runs a synchronous 30s long-poll against
+    // `/internal/codex/pending_events`. Codex's default hook timeout
+    // (600s upstream) is overkill; we pin 60s to give the 30s long-poll
+    // a 30s margin (network blip, server warm-up, etc.) before codex
+    // kills the hook subprocess.
+    //
+    // Critically NO `"async": true` here — the Stop hook must remain
+    // SYNCHRONOUS so codex reads our decision frame from the
+    // subprocess's stdout. An async hook would let the agent idle while
+    // we're still polling, defeating the whole closed-loop story.
+    //
+    // Other hook entries deliberately keep the default timeout (600s
+    // upstream) — they're fast POSTs and we don't want to constrain
+    // SessionStart while the daemon is still warming up codex's TUI.
     format!(
         r#"{{
   "hooks": {{
@@ -477,7 +491,7 @@ pub(crate) fn build_hooks_json(bridge: &str) -> String {
     "PostToolUse":      [{{ "matcher": ".*", "hooks": [{{ "type": "command", "command": {c} }}] }}],
     "PermissionRequest":[{{ "hooks": [{{ "type": "command", "command": {c} }}] }}],
     "UserPromptSubmit": [{{ "hooks": [{{ "type": "command", "command": {c} }}] }}],
-    "Stop":             [{{ "hooks": [{{ "type": "command", "command": {c} }}] }}]
+    "Stop":             [{{ "hooks": [{{ "type": "command", "command": {c}, "timeout": 60 }}] }}]
   }}
 }}
 "#,
@@ -495,6 +509,50 @@ mod tests {
         let s = build_hooks_json("/usr/local/bin/neige-codex-bridge");
         let v: Value = serde_json::from_str(&s).expect("valid JSON");
         assert!(v["hooks"]["PreToolUse"].is_array());
+    }
+
+    /// PR8 (#136) — the Stop hook MUST carry an explicit `timeout: 60`
+    /// entry. The bridge's Stop handler runs a synchronous 30s long-poll
+    /// against `/internal/codex/pending_events`; codex's default hook
+    /// timeout is much shorter than the long-poll window in some
+    /// versions, so we pin the value here. Critically, the entry MUST
+    /// NOT carry `"async": true` — the hook needs to stay synchronous
+    /// so codex reads our `{decision:"block",...}` decision from stdout.
+    #[test]
+    fn stop_hook_has_explicit_timeout_and_is_sync() {
+        let s = build_hooks_json("/usr/local/bin/neige-codex-bridge");
+        let v: Value = serde_json::from_str(&s).expect("valid JSON");
+        let stop = &v["hooks"]["Stop"];
+        let entry = &stop[0]["hooks"][0];
+        assert_eq!(entry["type"], "command");
+        assert_eq!(entry["timeout"], 60, "Stop hook must have timeout=60");
+        assert!(
+            entry.get("async").is_none(),
+            "Stop hook must remain synchronous (no `async` field); got: {entry}"
+        );
+    }
+
+    /// Defense-in-depth: only the Stop hook gets the explicit timeout
+    /// override. Other hooks (PreToolUse, SessionStart, etc.) inherit
+    /// codex's default — adding a per-entry timeout would constrain
+    /// hooks that have no business being constrained.
+    #[test]
+    fn non_stop_hooks_keep_default_timeout() {
+        let s = build_hooks_json("/usr/local/bin/neige-codex-bridge");
+        let v: Value = serde_json::from_str(&s).expect("valid JSON");
+        for hook_name in [
+            "SessionStart",
+            "PreToolUse",
+            "PostToolUse",
+            "PermissionRequest",
+            "UserPromptSubmit",
+        ] {
+            let entry = &v["hooks"][hook_name][0]["hooks"][0];
+            assert!(
+                entry.get("timeout").is_none(),
+                "{hook_name} must NOT override timeout; got: {entry}",
+            );
+        }
     }
 
     #[test]

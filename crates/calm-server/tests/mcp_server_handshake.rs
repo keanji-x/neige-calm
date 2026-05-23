@@ -110,6 +110,7 @@ async fn boot() -> Boot {
         repo.clone(),
         events.clone(),
         card_role_cache,
+        calm_server::event_cursor::EventCursorCache::new(),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"), // not used in handshake tests
         registry,

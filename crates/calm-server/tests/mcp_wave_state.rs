@@ -115,6 +115,7 @@ async fn boot() -> Boot {
         repo: route_repo,
         events,
         card_role_cache,
+        event_cursor_cache: calm_server::event_cursor::EventCursorCache::new(),
     });
 
     let mut registry = ToolRegistry::new();
