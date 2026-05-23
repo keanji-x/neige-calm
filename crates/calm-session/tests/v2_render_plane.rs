@@ -118,7 +118,9 @@ fn render_plane_without_default_colors_stays_silent_on_osc_query() {
     let mut rp = RenderPlane::new(80, 24, 4096, 100);
     let effects = rp.on_pty_chunk(b"\x1b]11;?\x1b\\".to_vec());
     assert!(
-        !effects.iter().any(|e| matches!(e, Effect::WriteToPty { .. })),
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::WriteToPty { .. })),
         "without default colors there must be no WriteToPty, got {effects:?}"
     );
 }

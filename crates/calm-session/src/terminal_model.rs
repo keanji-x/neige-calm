@@ -689,11 +689,7 @@ impl TerminalModel {
     /// Replace the default fg/bg. The next OSC 10/11 query will reflect
     /// the new value. Pre-existing `pending_osc_replies` are not
     /// rewritten — they correspond to a query that already happened.
-    pub fn set_default_colors(
-        &mut self,
-        fg: Option<(u8, u8, u8)>,
-        bg: Option<(u8, u8, u8)>,
-    ) {
+    pub fn set_default_colors(&mut self, fg: Option<(u8, u8, u8)>, bg: Option<(u8, u8, u8)>) {
         self.default_fg = fg;
         self.default_bg = bg;
     }
@@ -1219,16 +1215,14 @@ impl TerminalHandler for TerminalModel {
         // https://sw.kovidgoyal.net/kitty/keyboard-protocol/ ; we
         // intentionally advertise nothing so the child falls back to
         // legacy keycoding (what neige-calm has always done).
-        self.pending_osc_replies
-            .extend_from_slice(b"\x1b[?0u");
+        self.pending_osc_replies.extend_from_slice(b"\x1b[?0u");
     }
 
     fn device_attributes_primary(&mut self) {
         // DA1 reply — `ESC [ ? 1 ; 0 c` ("VT101, no options"). This
         // is the minimum xterm-compatible response and is enough to
         // satisfy codex's startup capability probe.
-        self.pending_osc_replies
-            .extend_from_slice(b"\x1b[?1;0c");
+        self.pending_osc_replies.extend_from_slice(b"\x1b[?1;0c");
     }
 
     fn osc_color_query(&mut self, slot: u8) {

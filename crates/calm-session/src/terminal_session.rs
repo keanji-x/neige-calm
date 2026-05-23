@@ -130,10 +130,7 @@ pub enum Effect {
     /// PTY (the trailing focus-in CSI nudges codex/claude-tui to
     /// re-query the default colors via crossterm's event queue, since
     /// those TUIs don't otherwise observe an unsolicited reply).
-    TerminalThemeUpdate {
-        fg: (u8, u8, u8),
-        bg: (u8, u8, u8),
-    },
+    TerminalThemeUpdate { fg: (u8, u8, u8), bg: (u8, u8, u8) },
 }
 
 /// Chunk-granular byte ring used to seed a fresh client's render snapshot.
@@ -861,11 +858,7 @@ impl RenderPlane {
     /// query. Drives the mid-session theme-toggle path (#177): the
     /// session-frame handler updates the model, then writes a synthetic
     /// OSC reply to the PTY master.
-    pub fn set_default_colors(
-        &mut self,
-        fg: Option<(u8, u8, u8)>,
-        bg: Option<(u8, u8, u8)>,
-    ) {
+    pub fn set_default_colors(&mut self, fg: Option<(u8, u8, u8)>, bg: Option<(u8, u8, u8)>) {
         self.model.set_default_colors(fg, bg);
     }
 

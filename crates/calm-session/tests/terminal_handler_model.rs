@@ -171,13 +171,7 @@ fn osc_11_query_yields_reply_with_configured_bg() {
 
 #[test]
 fn osc_10_query_yields_reply_with_configured_fg() {
-    let mut m = TerminalModel::with_colors(
-        80,
-        24,
-        100,
-        Some((216, 219, 226)),
-        Some((17, 20, 24)),
-    );
+    let mut m = TerminalModel::with_colors(80, 24, 100, Some((216, 219, 226)), Some((17, 20, 24)));
     m.feed(b"\x1b]10;?\x1b\\");
     let reply = m.take_pending_osc_replies();
     assert!(
@@ -264,10 +258,7 @@ fn da1_query_yields_vt101_reply() {
     let mut m = TerminalModel::new(80, 24, 100);
     m.feed(b"\x1b[c");
     let reply = m.take_pending_osc_replies();
-    assert_eq!(
-        reply, b"\x1b[?1;0c",
-        "expected DA1 reply, got {reply:?}",
-    );
+    assert_eq!(reply, b"\x1b[?1;0c", "expected DA1 reply, got {reply:?}",);
 
     // Explicit `CSI 0 c` should behave identically.
     m.feed(b"\x1b[0c");

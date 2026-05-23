@@ -829,7 +829,11 @@ fn owner_terminal_theme_update_yields_terminal_theme_update_effect() {
         &ctx(&broadcaster, session_id),
     );
 
-    assert_eq!(effects.len(), 1, "expected exactly one effect, got {effects:?}");
+    assert_eq!(
+        effects.len(),
+        1,
+        "expected exactly one effect, got {effects:?}"
+    );
     match &effects[0] {
         Effect::TerminalThemeUpdate { fg, bg } => {
             assert_eq!(*fg, (216, 219, 226));

@@ -31,10 +31,7 @@ fn daemon_bin() -> &'static str {
 /// return whichever happened first. Mirrors the kernel-side readiness
 /// poll (3s budget) but stops early on child exit so missing-flag tests
 /// don't waste their full timeout.
-fn wait_bind_or_exit(
-    child: &mut std::process::Child,
-    sock: &std::path::Path,
-) -> Outcome {
+fn wait_bind_or_exit(child: &mut std::process::Child, sock: &std::path::Path) -> Outcome {
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
         if let Some(status) = child.try_wait().expect("try_wait") {
