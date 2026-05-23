@@ -261,75 +261,50 @@ pub(crate) async fn create_wave(
     )
     .await?;
 
-    // 4. Post-commit: hand off the seed + daemon spawn to a background
-    //    `tokio::spawn` task and return 201 immediately. This is a
-    //    PR6 second-fix iteration on top of the first warn-and-201
-    //    fix: even with the response status downgraded to 201, the
-    //    handler was still awaiting `spawn_daemon_for`, whose busy-
-    //    poll wait-until-socket-ready loop can hold the response open
-    //    for ~3s when the daemon binary is missing (CI shape) — that
-    //    delay blew past the web a11y test's 5s navigation timeout
-    //    after the route+frontend round-trip overhead.
+    // 4. Post-commit: seed CODEX_HOME + spawn the spec card daemon
+    //    SYNCHRONOUSLY before returning 201. This is the #177 root-
+    //    cause refactor (commit 3): the prior `tokio::spawn` deferred-
+    //    spawn was the race source. The browser would open the
+    //    terminal WebSocket the instant it parsed the 201 response,
+    //    arrive before the deferred spawn finished, and the WS
+    //    handler's auto-revive (which has no theme context anyway)
+    //    won the socket race with un-themed argv. Sync spawn matches
+    //    the semantics already used by `POST /api/waves/:id/codex-cards`
+    //    — the 201 doesn't ship until the daemon is ready, costing
+    //    ~200ms in the happy path. A daemon spawn failure surfaces
+    //    as 500 to the client (consistent with the codex-card route);
+    //    the orphan-terminal sweeper still reaps the persisted rows.
     //
-    //    Architectural contract: persisted rows (the wave + spec
-    //    card + spec terminal) and the two broadcast events are the
-    //    sync side of `create_wave`. The codex daemon is best-effort
-    //    async; the orphan-terminal sweeper reaps a row whose daemon
-    //    never came up (~60s grace) and PR7+ adds structured
-    //    tombstone events for spec-card-level cleanup automation.
-    //
-    //    `tokio::spawn` is synchronous: it returns a `JoinHandle`
-    //    without awaiting the future, so the 201 response leaves the
-    //    handler before the background task even acquires the
-    //    runtime. The discarded `JoinHandle` is the standard
-    //    fire-and-forget shape — failures inside the task log at
-    //    `warn!` and are swallowed; the helper itself takes care of
-    //    the logging.
+    //    PR7a (#136) — fold the freshly minted per-card MCP token +
+    //    kernel socket path into the env handed to the codex daemon
+    //    spawn. Same gating as before; only differs in that we no
+    //    longer move `env_for_spawn` into a `tokio::spawn` closure.
+    let mut env_for_spawn = env;
+    if let (Some(token), Some(server)) = (mcp_token.as_deref(), s.mcp_server.as_ref())
+        && let Some(map) = env_for_spawn.as_object_mut()
     {
-        let state_for_task = s.clone();
-        let spec_card_id_for_task = spec_card_id.clone();
-        let wave_id_for_task = wave.id.as_str().to_string();
-        // PR7a (#136) — fold the freshly minted per-card MCP token +
-        // kernel socket path into the env handed to the codex daemon
-        // spawn. The shim_config lives on `AppState::mcp_server`; when
-        // both the token and the shim are present we add
-        // `NEIGE_MCP_TOKEN` + `NEIGE_MCP_SOCKET` so the codex daemon
-        // forwards them to `neige-mcp-stdio-shim` per its
-        // `[mcp_servers.calm].env` block (PR6 baseline) for the
-        // handshake step. Missing either side is a soft-fail: the
-        // daemon still starts, but the spec agent can't reach the
-        // kernel-as-MCP-server.
-        let mut env_for_spawn = env;
-        if let (Some(token), Some(server)) = (mcp_token.as_deref(), s.mcp_server.as_ref())
-            && let Some(map) = env_for_spawn.as_object_mut()
-        {
-            map.insert(
-                "NEIGE_MCP_TOKEN".into(),
-                serde_json::Value::String(token.to_string()),
-            );
-            map.insert(
-                "NEIGE_MCP_SOCKET".into(),
-                serde_json::Value::String(
-                    server.shim_config.socket_path.to_string_lossy().to_string(),
-                ),
-            );
-        }
-        tokio::spawn(async move {
-            seed_and_spawn_spec_daemon(
-                state_for_task,
-                spec_card_id_for_task,
-                wave_id_for_task,
-                cwd,
-                env_for_spawn,
-            )
-            .await;
-        });
+        map.insert(
+            "NEIGE_MCP_TOKEN".into(),
+            serde_json::Value::String(token.to_string()),
+        );
+        map.insert(
+            "NEIGE_MCP_SOCKET".into(),
+            serde_json::Value::String(server.shim_config.socket_path.to_string_lossy().to_string()),
+        );
     }
+    seed_and_spawn_spec_daemon(
+        s.clone(),
+        spec_card_id.clone(),
+        wave.id.as_str().to_string(),
+        cwd,
+        env_for_spawn,
+    )
+    .await;
 
     tracing::info!(
         card_id = %spec_card_id,
         wave_id = %wave.id,
-        "spec card persisted; daemon spawn handed off to background task"
+        "spec card + daemon spawned synchronously inside wave-create"
     );
     Ok((StatusCode::CREATED, Json(wave)))
 }

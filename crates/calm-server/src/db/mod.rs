@@ -207,6 +207,14 @@ pub trait RepoRead: Send + Sync + 'static {
     /// terminal-card create race (see `web/src/app/eventBridge.tsx:60-70`).
     /// Used exclusively by the `terminal_sweeper` background task.
     async fn terminals_orphaned(&self, grace_seconds: i64) -> Result<Vec<Terminal>>;
+    /// #177 root-cause refactor — return every terminal row whose
+    /// `daemon_handle IS NOT NULL`. Used at boot by
+    /// `revive_orphans_on_boot` to find rows that may need their
+    /// daemon respawned (kernel-restart-while-daemons-alive case).
+    /// Includes both rows whose daemon is still running (boot-time
+    /// no-op after probe) and rows whose daemon died with the
+    /// kernel (cold respawn).
+    async fn terminals_with_daemon_handle(&self) -> Result<Vec<Terminal>>;
 
     // ---- plugins (read-only)
     async fn plugins_list(&self) -> Result<Vec<Plugin>>;

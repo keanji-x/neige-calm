@@ -17,7 +17,6 @@
 
 use crate::db::{RepoOutOfDomain, RouteRepo};
 use crate::error::Result;
-use crate::routes::terminal::spawn_daemon_for;
 use crate::state::AppState;
 use axum::{
     Router,
@@ -79,14 +78,22 @@ async fn upgrade(
         .into_response()
 }
 
-/// Resolve the socket path for a terminal row, **revive a dead daemon if
-/// necessary**. The revive path:
-///   1. Read the terminal row from the repo.
-///   2. If `daemon_handle` is set, probe the socket (`UnixStream::connect`).
-///      If it connects, the daemon is alive — return the path.
-///   3. Otherwise re-spawn the daemon with the row's original program /
-///      cwd / env, wait for it to be ready, persist the new handle, and
-///      return that path.
+/// Resolve the socket path for a terminal row. Probe-only after the
+/// #177 root-cause refactor (commit 3): if the daemon's `unix` socket
+/// is unreachable, we surface 500 here and the browser's existing
+/// "Reconnect" UI handles the retry — we do **not** spawn from the
+/// WS handler anymore. The prior auto-revive lived here purely to
+/// recover from a kernel restart while daemons were still running;
+/// that one legitimate case is now handled at boot by
+/// [`crate::revive_orphans_on_boot`], which sees a live `AppState`
+/// and the terminal row's freshly stamped theme columns.
+///
+/// Why removed: the WS revive path had no access to the host
+/// browser's theme at the moment a WS upgrade arrived, so its spawn
+/// would race the row-creation spawn with mismatched argv. Removing
+/// it leaves exactly one spawn path per row (the create-time spawn)
+/// plus the boot-time orphan revival, both of which read theme from
+/// the row.
 async fn resolve_live_sock(s: &AppState, id: &str) -> Result<PathBuf> {
     let term = s
         .repo
@@ -94,37 +101,17 @@ async fn resolve_live_sock(s: &AppState, id: &str) -> Result<PathBuf> {
         .await?
         .ok_or_else(|| crate::error::CalmError::NotFound(format!("terminal {id}")))?;
 
-    if let Some(handle) = term.daemon_handle.as_ref() {
-        if let Ok(_probe) = UnixStream::connect(handle).await {
-            // Live daemon — fast path.
-            return Ok(PathBuf::from(handle));
-        }
+    let handle = term.daemon_handle.as_ref().ok_or_else(|| {
+        crate::error::CalmError::Internal(format!("terminal {id} has no live daemon"))
+    })?;
+    UnixStream::connect(handle).await.map_err(|e| {
         tracing::info!(
             terminal_id = %term.id,
             sock = %handle,
-            "daemon socket unreachable — respawning"
+            error = %e,
+            "daemon socket unreachable; WS upgrade rejected (browser will retry)"
         );
-    } else {
-        tracing::info!(terminal_id = %term.id, "terminal has no daemon_handle — spawning");
-    }
-
-    // Cold path: respawn. The daemon argv is reconstructed from the
-    // terminal row inside `spawn_daemon_for` — `term.theme_fg/bg`
-    // (NOT NULL via migration 0013) lands on argv unconditionally.
-    //
-    // Note: commit 3 of the #177 refactor removes this cold-path
-    // spawn entirely (this function becomes probe-only) once
-    // `revive_orphans_on_boot` is wired up. The lingering call here
-    // keeps current behaviour intact for commit 2.
-    let env = term.env.clone();
-    spawn_daemon_for(s, &term, &term.program, &term.cwd, &env).await?;
-    let refreshed = s.repo.terminal_get(id).await?.ok_or_else(|| {
-        crate::error::CalmError::Internal("terminal vanished after respawn".into())
-    })?;
-    let handle = refreshed.daemon_handle.ok_or_else(|| {
-        crate::error::CalmError::Internal(format!(
-            "terminal {id}: daemon_handle still missing after respawn"
-        ))
+        crate::error::CalmError::Internal(format!("terminal {id}: daemon socket unreachable ({e})"))
     })?;
     Ok(PathBuf::from(handle))
 }

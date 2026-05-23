@@ -38,6 +38,15 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState::new(&cfg, repo).await?;
 
+    // #177 root-cause refactor (commit 3) — kernel-restart auto-revive.
+    // Walks every terminal row with `daemon_handle IS NOT NULL`, probes
+    // the socket, and respawns the daemon when the socket is dead. This
+    // is the only auto-revive path in the binary: the WS upgrade
+    // handler is now probe-only (see `ws::terminal::resolve_live_sock`).
+    // Runs before `axum::serve` binds the listener so no client request
+    // arrives at a half-revived row.
+    calm_server::revive_orphans_on_boot(&state).await;
+
     // Optional session-recording — when `RECORD_SESSION=<path>` is set,
     // every event broadcast on the bus is appended to that file as
     // line-delimited JSON in the replay-fixture per-event shape. The

@@ -1305,6 +1305,18 @@ impl RepoRead for SqlxRepo {
         Ok(row)
     }
 
+    async fn terminals_with_daemon_handle(&self) -> Result<Vec<Terminal>> {
+        let rows = sqlx::query_as::<_, Terminal>(
+            r#"SELECT id, card_id, program, cwd, env, daemon_handle, pid,
+                      theme_fg, theme_bg, created_at
+               FROM terminals
+               WHERE daemon_handle IS NOT NULL"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     async fn terminals_orphaned(&self, grace_seconds: i64) -> Result<Vec<Terminal>> {
         // Orphan: no card.payload.terminal_id references this terminal row,
         // AND the row was created more than `grace_seconds` ago (absorbs the
