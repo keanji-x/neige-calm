@@ -1,6 +1,6 @@
 # M3 → MCP Apps Migration — Design
 
-**Status:** design ready for parallel implementation.
+**Status:** M1–M4 shipped on main as hard cuts. M5/M6 in flight.
 **Scope:** migrate Neige's M3 plugin dialect (`neige.*` JSON-RPC + `plugin:<id>:<view>` card kinds + hand-rolled iframe sandbox + `/api/plugins/.../views/...` HTML asset) to the **MCP Apps** specification (`2026-01-26`, https://github.com/modelcontextprotocol/ext-apps) wherever the standard matches, while keeping Neige-unique extensions (overlay annotations, KV store) clearly bracketed as a custom namespace.
 
 Read alongside `/mnt/data2/kenji/neige/docs/m3-design.md`. Section numbers below match the structure of that doc where helpful (so §1 of the original maps onto §1 of the migration delta), but this is a standalone document — it does not require reading the old doc first to be useful.
@@ -288,27 +288,19 @@ Only the `neige.*` methods live here; standard MCP `tools/*`, `resources/*`, etc
 
 ## 5. Backwards compatibility
 
-The migration breaks wire compatibility for plugins that hand-rolled the dialect. Hello-world is the only one shipped. The kernel can support both wires for one minor version.
+The migration is a hard cut per §7.6 row 2. Hello-world is the only Neige plugin in existence; rewriting it in M6 is the entire migration cost. The kernel does **not** ship dual-accept fallbacks for the legacy wire — every slice below either deletes the old shape or replaces it in place.
 
-### 5.1 What breaks
+### 5.1 What broke (and where the replacement landed)
 
-1. **`neige.card.create` is still callable** (we keep the handler for autonomous-card plugins) — no break.
-2. **`neige.overlay.set` is still callable** — no break.
-3. **Iframe HTML served via REST (`GET /api/plugins/:id/views/:view_id`)** stops setting an iframe cookie; existing iframes that posted to `/api/plugins/:id/iframe-write` break. Migration: the route is replaced by the `resources/read` MCP method routed through the host's postMessage handler. The HTTP route can be kept as a Slice M3-deprecated alias that returns the HTML body but no cookie; the iframe code (in `views/status.html`) must be rewritten to use `useApp` instead of hand-rolled postMessage. **Hello-world's `views/status.html` is the one file that has to be touched.**
-4. **Card-kind `plugin:<id>:<view>`** stays valid in the database; adapt.ts learns both forms (`plugin:` and `ui://`). New cards created via the AddPanel use `ui://`. Old rows continue to render. After two minor versions, deprecate the `plugin:` form via a migration that rewrites kinds in place.
-5. **`initialize.params.clientInfo.expected_echo`** moves to `initialize.params.clientInfo._meta["dev.neige/auth"].expected_echo`. The kernel accepts both during a deprecation window (one minor version); the hello-world plugin updates to read from the new location.
+1. **`initialize.params.clientInfo.expected_echo` → `_meta["dev.neige/auth"]`** (M1, landed). Kernel reads the expected echo from `initialize.params._meta["dev.neige/auth"].expected_echo` and verifies the plugin's response at `result._meta["dev.neige/auth"].echoed_token` (`crates/calm-server/src/plugin_host/mcp.rs:282-426`). No dual-accept fallback.
+2. **`GET /api/plugins/:id/views/:view_id` → `GET /api/plugins/:id/resources/:view_id`** (M3, landed). The old `view_html` route is gone; the new endpoint maps the URL to `ui://<id>/<view_id>` and re-exposes the MCP `resources/read` payload over HTTP for the browser (`crates/calm-server/src/routes/plugins.rs:82-90`). Cookies removed.
+3. **`POST /api/plugins/:id/iframe-write` → `POST /api/plugins/:id/tool-call`** (M5 partial, landed). The new endpoint accepts iframe-originated `tools/call` frames; `name` MUST start with `neige.` (§7.6 row 5). The legacy iframe-write route + `IframeCookieCache` are deleted (`routes/plugins.rs:28`).
+4. **Card kind `plugin:<id>:<view>` → `ui://<plugin>/<view>`** (M4, landed). `web/src/api/adapt.ts` accepts **only** the canonical `ui://` URI; the legacy parser was deleted (`adapt.ts:174-176`). The kernel-side AddPanel catalog returns each entry's `resource_uri: "ui://<plugin>/<view>"` (`routes/plugins.rs:717-719`). Hello-world's card kind is rewritten as part of M6.
+5. **`neige.card.create` / `neige.overlay.set` / `neige.kv.*`** stay as Neige extensions on the same MCP connection. These are not legacy — they are the kernel-callback surface the spec deliberately doesn't cover (§2).
 
 ### 5.2 Kernel tests
 
-We have ~110 tests touching the plugin host (`grep -c #\[test\]` across `plugin_host/` + `tests/plugin*`). Predicted impact:
-
-- **`callbacks.rs` tests** (~30 tests): unchanged for `neige.overlay.*`, `neige.kv.*`, `neige.event.subscribe`. The `neige.card.*` tests (~6) stay (we keep the handler) but get a parallel suite for the `tools/call`-routed path.
-- **`mcp.rs` tests** (5 tests, framing-only): unchanged.
-- **`auth.rs` tests** (~12 tests): one test asserting `clientInfo.expected_echo` shape needs to move to `clientInfo._meta["dev.neige/auth"].expected_echo`.
-- **`routes/plugins.rs` tests** (~30 tests): the `view_html` cookie test (~4 tests) gets deleted; new test asserts `resources/read` over the MCP wire returns the HTML.
-- **Hello-world e2e** (`tests/plugin_e2e.rs`): rewritten end-to-end to drive the new wire.
-
-Net: roughly 50 tests touched, 6 deleted, 12 added. No DB migrations.
+The plugin-host test suite was updated as M1/M3/M4 landed: `mcp.rs::tests` echo-path tests assert the `_meta["dev.neige/auth"]` location; the `view_html` cookie tests are gone; `adapt.ts` tests assert `ui://` parse + reject of `plugin:` form. The hello-world e2e is rewritten end-to-end in M6.
 
 ---
 
@@ -316,7 +308,9 @@ Net: roughly 50 tests touched, 6 deleted, 12 added. No DB migrations.
 
 Same shape as the original M3 design's §8. Six slices, sized for one worktree each. Slice ordering below is **integration order** (M1 must merge before M3, etc.); M5 + M6 can start in parallel with M3 once M2 is in.
 
-### Slice M1 — adopt MCP standard `initialize` capability slot
+Status: **M1, M2, M3, M4 — shipped on main.** M5 — partial (host-side `POST /api/plugins/:id/tool-call` fan-out endpoint is in place; web-side AppBridge wiring is in flight). M6 — pending (hello-world rewrite + `neige-plugin-ext` crate).
+
+### Slice M1 — adopt MCP standard `initialize` capability slot — shipped
 
 **Goal:** auth-echo handshake moves from top-level `clientInfo.expected_echo` to spec-blessed `_meta["dev.neige/auth"]`; `experimental.dev.neige/kernel-callbacks` capability is the formal opt-in for plugins that want to call `neige.*` back into the kernel.
 
@@ -330,7 +324,7 @@ Same shape as the original M3 design's §8. Six slices, sized for one worktree e
 
 **Test surface:** `mcp.rs::tests` echo path updated to assert the new location.
 
-### Slice M2 — replace `neige.card.create` with `tools/call` routing
+### Slice M2 — replace `neige.card.create` with `tools/call` routing — shipped
 
 **Goal:** card creation through AddPanel calls the plugin's tool via standard `tools/call`; the kernel's `tools/call` result handler writes the Card row. Autonomous card creation (`neige.card.create`) stays as a Neige extension for plugins that need it.
 
@@ -345,7 +339,7 @@ Same shape as the original M3 design's §8. Six slices, sized for one worktree e
 
 **Test surface:** integration test — a stub plugin registers a `make_status_card` tool returning `_meta.ui.resourceUri = "ui://stub/status"`; the kernel calls it; assert a Card row exists with that kind.
 
-### Slice M3 — replace iframe HTML asset path with `resources/read`
+### Slice M3 — replace iframe HTML asset path with `resources/read` — shipped
 
 **Goal:** the iframe HTML is served via MCP `resources/read` instead of the `GET /api/plugins/:id/views/:view_id` REST route. **Hard cut** per resolved §7.6 row 2 — the legacy REST route is deleted, not kept as an alias.
 
@@ -361,7 +355,7 @@ Same shape as the original M3 design's §8. Six slices, sized for one worktree e
 
 **Test surface:** new `resources.rs::tests` — round-trip a manifest declaring CSP, fetch the resource, assert `_meta.ui` carries it.
 
-### Slice M4 — `ui://` resource URI in `adapt.ts` and the card registry
+### Slice M4 — `ui://` resource URI in `adapt.ts` and the card registry — shipped
 
 **Goal:** the UI accepts **only** `ui://<plugin>/<view>` card kinds. AddPanel's data source becomes MCP `tools/list` filtered by `_meta.ui.resourceUri` present, not the kernel's manifest-derived `/api/plugins/views` catalog. **Hard cut** per resolved §7.6 row 2 — the legacy `plugin:<id>:<view>` parser is deleted; hello-world rewrites in M6.
 
@@ -377,7 +371,9 @@ Same shape as the original M3 design's §8. Six slices, sized for one worktree e
 
 **Test surface:** adapt.ts unit tests asserting `ui://` parse + reject of malformed; route-level test for `/api/plugins/views` emitting only `resource_uri`.
 
-### Slice M5 — drop in AppBridge on the UI side (replaces Slice F)
+### Slice M5 — drop in AppBridge on the UI side (replaces Slice F) — partial
+
+Kernel-side fan-out endpoint `POST /api/plugins/:id/tool-call` is in place (`routes/plugins.rs:89`). Web-side AppBridge wiring is pending — current code still uses the host-rolled iframe path until AppBridge integration lands.
 
 **Goal:** the plugin-iframe component uses `@modelcontextprotocol/ext-apps` AppBridge on the host (web-calm) side. The bridge owns the iframe element, the postMessage transport, the CSP, and the tool-call proxying.
 
@@ -393,7 +389,7 @@ Same shape as the original M3 design's §8. Six slices, sized for one worktree e
 
 **Test surface:** Playwright/Vitest test that mounts the AppBridge against a stub kernel (the existing tools/call-stub from M2) and asserts the iframe's `ui/initialize` round-trips.
 
-### Slice M6 — migrate hello-world onto the new wire
+### Slice M6 — migrate hello-world onto the new wire — pending
 
 **Goal:** prove the wire end-to-end with a plugin written against the minimal inline MCP client + the `neige-plugin-ext` shim.
 
