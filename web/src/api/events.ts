@@ -18,6 +18,24 @@
 // restarts can ask the server to **replay** any events missed during the
 // downtime.
 //
+// ## Per-frame eventVersion gate (issue #198, concern 2)
+//
+// Every wire envelope also carries `eventVersion: <n>` (set by the server
+// to the `events.event_version` column for replayed rows, or to
+// `SYNC_EVENT_VERSION` for fresh writes / control frames). The client
+// compares each frame's `eventVersion` against the server's declared
+// `syncEventVersion` from `/api/version`, which is set on the stream via
+// `setSyncEventVersion()` before WS subscribe.
+//
+// A frame whose `eventVersion` exceeds the client-known `syncEventVersion`
+// is from a future protocol the running frontend wasn't compiled to
+// understand. Such frames are LOGGED, DROPPED, AND THE REPLAY CURSOR IS
+// NOT ADVANCED — so a later, compatible frontend reconnecting under the
+// same cursor will receive the frame again. (Contrast with the malformed-
+// payload path below, where we DO advance the cursor: there the frame is
+// shaped wrong for *us*, not from-the-future, and re-replaying it on the
+// next reconnect would just pin the cursor forever.)
+//
 // On every open, we send `{ sub: [...], since: lastEventId }` when a
 // cursor is set; otherwise `{ sub: [...] }` (pre-Scope-D behavior, kept
 // for cold-start clients). The server streams missed events, then sends
@@ -134,6 +152,15 @@ export class EventStream {
   /** True while a localStorage flush is queued via `scheduleIdle`. Avoids
    *  stacking one flush per frame on busy streams. */
   private cursorFlushQueued = false;
+  /** Maximum `eventVersion` the server has declared via `/api/version`
+   *  (its `syncEventVersion` field). Set by the caller once the version
+   *  query resolves, BEFORE any WS subscribe runs — see `EventBridge`.
+   *  `null` means "version not yet known" → no per-frame gating (the
+   *  stream tolerates this for the bootstrap window, but in practice the
+   *  bridge sets this before invoking `subscribe`). A frame with
+   *  `eventVersion > syncEventVersion` is dropped without advancing the
+   *  cursor. See module docstring §"Per-frame eventVersion gate". */
+  private syncEventVersion: number | null = null;
 
   constructor(url = wsUrl('/api/events')) {
     this.url = url;
@@ -203,6 +230,27 @@ export class EventStream {
    *  observed. Exposed primarily for tests. */
   get cursor(): number | null {
     return this.lastEventId;
+  }
+
+  /** Server-declared maximum `eventVersion` (from `/api/version`). Once
+   *  set, the stream drops any frame whose envelope `eventVersion`
+   *  exceeds this value, WITHOUT advancing the cursor. Idempotent — the
+   *  caller (the EventBridge effect) sets it on every mount; a no-op
+   *  call with the same value is fine. Pass `null` to clear (currently
+   *  unused; reserved for tests). */
+  setSyncEventVersion(version: number | null): void {
+    if (version === null) {
+      this.syncEventVersion = null;
+      return;
+    }
+    if (!Number.isFinite(version) || version < 0) return;
+    this.syncEventVersion = version;
+  }
+
+  /** Current server-declared max `eventVersion`, or `null` if not yet set.
+   *  Exposed for tests. */
+  get serverSyncEventVersion(): number | null {
+    return this.syncEventVersion;
   }
 
   start(): void {
@@ -309,10 +357,36 @@ export class EventStream {
     }
 
     // ---- normal wire event -------------------------------------------
-    // Update cursor BEFORE zod parse so a malformed payload still
-    // advances the cursor (its `_id` is the server's idea of "you saw
-    // this row"). Otherwise a single bad frame could pin the cursor and
-    // force a re-replay on every reconnect.
+    // Issue #198, concern 2: gate cursor advance on `eventVersion`.
+    //
+    // A frame from a future protocol (eventVersion above what /api/version
+    // declared via `syncEventVersion`) must NOT advance the cursor — a
+    // future, compatible frontend reconnecting under the same cursor needs
+    // to receive that frame again. We log, drop, and bail BEFORE
+    // `advanceCursor`. Tolerant of a missing/non-numeric `eventVersion`
+    // (treat as "version unknown, don't gate") so legacy / synthetic frames
+    // continue to work; and tolerant of `syncEventVersion === null` (the
+    // version query hasn't resolved yet) — the EventBridge sets the value
+    // before subscribe, but this is the defensive path.
+    const envEventVersion = envelope.eventVersion;
+    if (
+      this.syncEventVersion !== null &&
+      typeof envEventVersion === 'number' &&
+      Number.isFinite(envEventVersion) &&
+      envEventVersion > this.syncEventVersion
+    ) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `event bus: dropping future-protocol frame (eventVersion=${envEventVersion} > syncEventVersion=${this.syncEventVersion}); cursor not advanced`,
+        raw,
+      );
+      return;
+    }
+
+    // Advance cursor BEFORE zod parse for any in-range frame, so a
+    // payload that's malformed for *us* (but not from-the-future) still
+    // moves the cursor forward — otherwise a single bad frame could pin
+    // the cursor and force a re-replay on every reconnect.
     this.advanceCursor(envelope._id);
 
     const result = wireEventSchema.safeParse(json);

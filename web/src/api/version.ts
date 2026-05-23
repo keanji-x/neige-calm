@@ -49,9 +49,32 @@ export const WEB_COMPAT_VERSION = 2;
  */
 export type ServerVersionInfo = {
   kernelVersion: string;
+  /**
+   * Diagnostic-only REST contract version. NOT used for compatibility
+   * gating — the frontend ↔ backend compat boundary is enforced via
+   * `minWebCompatVersion` for the web bundle, and via `syncEventVersion`
+   * on a per-event-frame basis. Surfaced here so operators / dashboards
+   * can read "what REST contract is the kernel claiming"; do NOT add a
+   * frontend check against this string. (See issue #198, concern 3.)
+   */
   apiVersion: string;
+  /**
+   * Maximum `eventVersion` the server stamps onto envelopes on `/api/events`.
+   * The client uses this as the per-frame compatibility gate: a frame with
+   * `eventVersion > syncEventVersion` is from a future protocol and must
+   * be dropped WITHOUT advancing the replay cursor (so a later, compatible
+   * frontend can still pick it up). Bumped in lockstep with
+   * `SYNC_EVENT_VERSION` on the backend.
+   */
   syncEventVersion: number;
   mcpProtocolVersion: string;
+  /**
+   * Minimum frontend `WEB_COMPAT_VERSION` the running kernel still
+   * considers wire-compatible. A frontend below this value is hard-blocked
+   * by `ServerCompatGate` until the user refreshes. This is the load-
+   * bearing whole-bundle compatibility gate (paired with
+   * `syncEventVersion` for per-frame gating).
+   */
   minWebCompatVersion: number;
   buildSha: string | null;
   dbInstanceId: string;

@@ -96,7 +96,6 @@ const persistOptions = buildPersistOptions();
 export function AppProviders({ children }: { children: ReactNode }) {
   return (
     <PersistQueryClientProvider client={queryClient} persistOptions={persistOptions}>
-      <EventBridge />
       <QueryRestoreGate>
         {/*
          * ThemeProvider lives INSIDE AppProviders (so it shares the same
@@ -105,6 +104,15 @@ export function AppProviders({ children }: { children: ReactNode }) {
          * inside routes call `useTheme()`; they need a single provider above
          * the entire route tree so a theme flip is observable across every
          * route at once. See issue #22.
+         *
+         * EventBridge is mounted INSIDE ServerCompatGate (not as a sibling
+         * of `children`). The bridge opens the `/api/events` WebSocket on
+         * first render and forwards every frame into the React Query cache;
+         * doing that before the compat check has run would let an
+         * incompatible frontend talk to a kernel it can't parse. ServerCompat
+         * Gate hard-blocks rendering its children (including the bridge)
+         * until `/api/version` confirms `minWebCompatVersion ≤ WEB_COMPAT_
+         * VERSION`. See issue #198, concern 1.
          */}
         <ThemeProvider>
           <ServerCompatGate>{children}</ServerCompatGate>
@@ -199,7 +207,22 @@ export function ServerCompatGate({ children }: { children: ReactNode }) {
     // the children with an empty cache.
     return null;
   }
-  return <>{children}</>;
+  // EventBridge only mounts once compat is confirmed (q.data is set and
+  // isCompatible). The `q.data` guard also gives us `syncEventVersion`,
+  // which the bridge wires into the stream so future-eventVersion frames
+  // are dropped without advancing the replay cursor. See issue #198.
+  //
+  // While `/api/version` is still in flight (cold-start), we render
+  // children eagerly so the route tree paints from cached data — but
+  // EventBridge stays unmounted, so no WS attempt happens until we know
+  // the server is compatible. Once the query resolves on a compatible
+  // server, the bridge mounts and opens the socket.
+  return (
+    <>
+      {q.data ? <EventBridge syncEventVersion={q.data.syncEventVersion} /> : null}
+      {children}
+    </>
+  );
 }
 
 // ---------------------------------------------------------------------------

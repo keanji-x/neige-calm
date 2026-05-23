@@ -43,6 +43,10 @@ const fakeStream = {
   replayCompleteListeners: new Set<ControlListener>(),
   snapshotRequiredListeners: new Set<ControlListener>(),
   subscribe: vi.fn(),
+  // Issue #198, concern 2: the bridge calls `setSyncEventVersion` before
+  // `subscribe`. The fake records the value so a test can assert ordering
+  // (see the "syncEventVersion is set before subscribe" case).
+  setSyncEventVersion: vi.fn(),
   on(fn: Listener) {
     this.listeners.add(fn);
     return () => {
@@ -75,6 +79,7 @@ const fakeStream = {
     this.replayCompleteListeners.clear();
     this.snapshotRequiredListeners.clear();
     this.subscribe.mockClear();
+    this.setSyncEventVersion.mockClear();
   },
 };
 
@@ -112,11 +117,34 @@ describe('EventBridge', () => {
     const Wrapper = wrap(client);
     render(
       <Wrapper>
-        <EventBridge />
+        <EventBridge syncEventVersion={1} />
       </Wrapper>,
     );
     // dispatcher should have asked the stream for ['*'] — every event variant.
     expect(fakeStream.subscribe).toHaveBeenCalledWith(['*']);
+    cleanup();
+  });
+
+  it('issue #198 — calls setSyncEventVersion BEFORE subscribe', () => {
+    // The bridge must wire the server-declared sync event version into the
+    // stream before any subscribe runs, so the very first frame the server
+    // pushes (replay or live) is already gated by the eventVersion ceiling.
+    const client = makeClient();
+    const Wrapper = wrap(client);
+    render(
+      <Wrapper>
+        <EventBridge syncEventVersion={7} />
+      </Wrapper>,
+    );
+
+    expect(fakeStream.setSyncEventVersion).toHaveBeenCalledTimes(1);
+    expect(fakeStream.setSyncEventVersion).toHaveBeenCalledWith(7);
+
+    // Ordering: setSyncEventVersion must be called before subscribe. We
+    // compare the vi.fn invocation order via `mock.invocationCallOrder`.
+    const setOrder = fakeStream.setSyncEventVersion.mock.invocationCallOrder[0];
+    const subOrder = fakeStream.subscribe.mock.invocationCallOrder[0];
+    expect(setOrder).toBeLessThan(subOrder);
     cleanup();
   });
 
@@ -126,7 +154,7 @@ describe('EventBridge', () => {
     const Wrapper = wrap(client);
     render(
       <Wrapper>
-        <EventBridge />
+        <EventBridge syncEventVersion={1} />
       </Wrapper>,
     );
     fakeStream.emit({
@@ -151,7 +179,7 @@ describe('EventBridge', () => {
     const Wrapper = wrap(client);
     render(
       <Wrapper>
-        <EventBridge />
+        <EventBridge syncEventVersion={1} />
       </Wrapper>,
     );
     fakeStream.emit({
@@ -184,7 +212,7 @@ describe('EventBridge', () => {
     const Wrapper = wrap(client);
     render(
       <Wrapper>
-        <EventBridge />
+        <EventBridge syncEventVersion={1} />
       </Wrapper>,
     );
     fakeStream.emit({
@@ -210,7 +238,7 @@ describe('EventBridge', () => {
     const Wrapper = wrap(client);
     render(
       <Wrapper>
-        <EventBridge />
+        <EventBridge syncEventVersion={1} />
       </Wrapper>,
     );
     fakeStream.emit({
@@ -229,7 +257,7 @@ describe('EventBridge', () => {
     const Wrapper = wrap(client);
     render(
       <Wrapper>
-        <EventBridge />
+        <EventBridge syncEventVersion={1} />
       </Wrapper>,
     );
     // The bridge calls `qc.invalidateQueries()` with no arguments — that's
@@ -251,7 +279,7 @@ describe('EventBridge', () => {
     const Wrapper = wrap(client);
     render(
       <Wrapper>
-        <EventBridge />
+        <EventBridge syncEventVersion={1} />
       </Wrapper>,
     );
     fakeStream.emitSnapshotRequired();
@@ -270,7 +298,7 @@ describe('EventBridge', () => {
     const Wrapper = wrap(client);
     render(
       <Wrapper>
-        <EventBridge />
+        <EventBridge syncEventVersion={1} />
       </Wrapper>,
     );
     expect(() =>
@@ -299,7 +327,7 @@ describe('EventBridge', () => {
     const Wrapper = wrap(client);
     render(
       <Wrapper>
-        <EventBridge />
+        <EventBridge syncEventVersion={1} />
       </Wrapper>,
     );
     // Cast through unknown to bypass the discriminator — simulates a payload
@@ -349,7 +377,7 @@ describe('EventBridge', () => {
       const Wrapper = wrap(client);
       render(
         <Wrapper>
-          <EventBridge />
+          <EventBridge syncEventVersion={1} />
         </Wrapper>,
       );
       return client;

@@ -144,11 +144,35 @@ function pushTraceEvent(buf: TraceEvent[], ev: WireEvent, meta: EventMeta): void
   }
 }
 
-export function EventBridge() {
+/**
+ * Props for `<EventBridge />`.
+ *
+ * `syncEventVersion` is the server's declared per-frame protocol version
+ * from `/api/version` — every frame received over `/api/events` carries
+ * an `eventVersion` field, and the stream drops any frame whose value
+ * exceeds this number WITHOUT advancing the replay cursor. The bridge
+ * pipes the value to `stream.setSyncEventVersion()` BEFORE `subscribe()`
+ * so the very first frame after socket open is already gated. (Issue
+ * #198, concern 2.)
+ *
+ * Required, not optional: the bridge is only mounted inside
+ * `ServerCompatGate` (issue #198, concern 1), so by construction the
+ * version query has already resolved and the caller knows the value.
+ */
+export interface EventBridgeProps {
+  syncEventVersion: number;
+}
+
+export function EventBridge({ syncEventVersion }: EventBridgeProps) {
   const queryClient = useQueryClient();
 
   useEffect(() => {
     const stream = sharedEventStream();
+    // MUST come before `subscribe()` so the very first frame the server
+    // pushes (typically the replay window) is already gated by the
+    // server-declared eventVersion ceiling. See issue #198 concern 2 and
+    // the `Per-frame eventVersion gate` comment in `api/events.ts`.
+    stream.setSyncEventVersion(syncEventVersion);
     stream.subscribe(['*']);
 
     // Resolve the trace gate once per mount. We literally short-circuit
@@ -193,7 +217,7 @@ export function EventBridge() {
       offReplay();
       offSnapshot();
     };
-  }, [queryClient]);
+  }, [queryClient, syncEventVersion]);
 
   return null;
 }
