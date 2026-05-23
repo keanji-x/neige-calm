@@ -13,6 +13,7 @@
 // Prereq: `make dev` serving http://localhost:4040 with the default seed.
 
 import { test, expect } from '@playwright/test';
+import { createWaveInCove } from './helpers/reset';
 
 test('newly created terminal card appears without a reload', async ({ page }) => {
   // Step 1 — mint a fresh user cove via the sidebar (issue #175).
@@ -30,14 +31,14 @@ test('newly created terminal card appears without a reload', async ({ page }) =>
   await coveBtn.click();
   await expect(page).toHaveURL(/\/calm\/cove\/[^/]+$/);
 
-  // Step 2 — create a new wave inside this cove.
-  const newWaveBtn = page.getByRole('button', { name: /new wave/i });
-  await newWaveBtn.click();
+  // Step 2 — create a new wave inside this cove. We use the API helper
+  // because the cove-page "+ New wave" CTA is disabled in #250 PR 2
+  // pending PR 3's NewTaskForm — this spec is about terminal-card
+  // mounting, not the wave-create UX, so the setup path is incidental.
+  const coveId = new URL(page.url()).pathname.split('/').pop()!;
   const waveTitle = `E2E new-terminal ${Date.now()}`;
-  const titleInput = page.getByPlaceholder(/wave title/i);
-  await titleInput.fill(waveTitle);
-  await titleInput.press('Enter');
-
+  const wave = await createWaveInCove(page.request, coveId, waveTitle);
+  await page.goto(`/calm/wave/${wave.id}`);
   await expect(page).toHaveURL(/\/calm\/wave\/[^/]+$/);
   await expect(page.getByText(waveTitle, { exact: false }).first()).toBeVisible();
 
