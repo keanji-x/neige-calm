@@ -128,6 +128,23 @@ export function XtermView({
   theme = 'light',
   onRoleChange,
 }: XtermViewProps) {
+  // #177 — Playwright instrumentation. Gated on `?testMounts=1` so
+  // production users never carry the side effect. A real mount bumps
+  // `window.__xtermMounts__` by 1; unmount decrements. The e2e
+  // regression spec (`web/e2e/a11y-177-theme-toggle-no-remount.spec.ts`)
+  // reads this between theme-toggle steps to pin "no remount on theme
+  // toggle" as a contract.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('testMounts') !== '1') return;
+    const w = window as unknown as { __xtermMounts__?: number };
+    w.__xtermMounts__ = (w.__xtermMounts__ ?? 0) + 1;
+    return () => {
+      if (w.__xtermMounts__ !== undefined) w.__xtermMounts__ -= 1;
+    };
+  }, []);
+
   const containerRef = useRef<HTMLDivElement | null>(null);
   // Live ref to the active xterm.js Terminal instance so a sibling effect
   // can re-apply the theme without tearing down the WebSocket + replay

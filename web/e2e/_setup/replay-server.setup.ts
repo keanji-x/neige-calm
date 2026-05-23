@@ -37,12 +37,15 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test as base } from '@playwright/test';
 import {
+  CODEX_BIN_FILE,
+  CODEX_MISSING_SENTINEL,
   DEFAULT_FIXTURE,
   PID_FILE,
   READY_BANNER,
   READY_TIMEOUT_MS,
   REPLAY_PORT,
   REPO_ROOT,
+  resolveCodexBin,
 } from './replay-server.shared';
 
 // On-disk log target for the replay binary's stderr. Routing stderr
@@ -127,6 +130,24 @@ test('setup', async () => {
   // eslint-disable-next-line no-console
   console.log(
     `[replay-server] ready at http://127.0.0.1:${REPLAY_PORT}/ (fixture=${fixture}, pid=${child.pid}, stderr=${REPLAY_LOG_PATH})`,
+  );
+
+  // #177 — probe for a usable codex CLI on this machine and write the
+  // result to CODEX_BIN_FILE. The theme-toggle-no-remount spec reads
+  // this marker synchronously at module load and `test.skip`s itself
+  // if codex isn't available. We do this AFTER the server is ready
+  // so a codex-resolution hiccup doesn't gate the rest of the a11y
+  // suite (only the spec that depends on codex).
+  const codexBin = resolveCodexBin();
+  mkdirSync(dirname(CODEX_BIN_FILE), { recursive: true });
+  writeFileSync(
+    CODEX_BIN_FILE,
+    codexBin ?? CODEX_MISSING_SENTINEL,
+    'utf8',
+  );
+  // eslint-disable-next-line no-console
+  console.log(
+    `[replay-server] codex resolution: ${codexBin ?? '<missing — codex-dependent specs will skip>'}`,
   );
 });
 
