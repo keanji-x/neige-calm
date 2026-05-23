@@ -188,12 +188,13 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
   // post `TerminalThemeUpdate` without owning the WebSocket itself.
   // Cleared back to `null` on disconnect (the WS-effect's cleanup).
   const sendRef = useRef<((msg: ClientMsg) => void) | null>(null);
-  // Tracks whether we've already dispatched a `TerminalThemeUpdate` for
-  // the current theme. On initial mount the codex-card POST already
-  // carried the theme (see `app/router.tsx`) so we MUST NOT also send
-  // an update — that would needlessly resize the daemon's reply buffer
-  // and (more importantly) double-trigger codex's focus-in re-probe.
-  const prevThemeRef = useRef<'light' | 'dark' | null>(null);
+  // #177 — buffer for a `TerminalThemeUpdate` produced before the WS
+  // effect populates `sendRef`. The theme-effect and the WS-mount
+  // effect run in declaration order; on a fresh mount the theme-effect
+  // fires first, so without this buffer the dispatch would no-op and
+  // the daemon would never learn the current theme on a re-mount. The
+  // WS-mount effect drains this after `sendRef.current = send`.
+  const pendingThemeRef = useRef<ClientMsg | null>(null);
 
   // Live-apply theme changes without rebuilding the Terminal + WS.
   // xterm.js exposes `term.options` as a mutable bag; assigning
@@ -201,43 +202,36 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
   // this in its own effect keeps the (heavy) bridge-mount effect's deps
   // small and lets us drop `theme` from there.
   //
-  // #177: also dispatch `TerminalThemeUpdate` over the WS on subsequent
-  // changes so the daemon's `TerminalModel` advertises the new fg/bg on
-  // future OSC 10/11 queries AND emits a focus-in nudge so codex /
-  // claude-tui re-paints their composer. The initial render skips this
-  // because the card-create POST already carried `theme`.
+  // #177: also dispatch `TerminalThemeUpdate` over the WS on every
+  // theme-effect run — including the initial mount. We previously
+  // gated this on a `prevThemeRef !== null` check to avoid a redundant
+  // send right after the card-create POST already carried `theme`,
+  // but empirical evidence (user prod DevTools) showed that XtermView
+  // is remounted on theme toggle in production for reasons we couldn't
+  // fully isolate (Suspense flash, persist-query hydration, etc.). On
+  // remount the prev-ref resets to `null` and the dispatch is skipped
+  // — exactly the bug. Accept remount as a fact: the daemon's
+  // `TerminalThemeUpdate` handler is idempotent (same fg/bg → same
+  // OSC reply, codex re-probes harmlessly), so the worst case is one
+  // extra OSC round-trip per mount. That cost is fine.
   useEffect(() => {
-    // Snapshot + advance the prev marker BEFORE the early return — the
-    // termRef may not be populated on the initial render (the bridge
-    // effect runs in declaration order); we still want to record that
-    // we've seen this theme so the next prop change correctly observes
-    // `prev !== null` and dispatches a `TerminalThemeUpdate`.
-    const prev = prevThemeRef.current;
-    prevThemeRef.current = theme;
     const term = termRef.current;
     if (term) {
       term.options.theme = theme === 'dark' ? DARK_THEME : LIGHT_THEME;
     }
-    if (prev !== null && prev !== theme) {
-      const rgb = theme === 'dark' ? DARK_THEME_RGB : LIGHT_THEME_RGB;
-      sendRef.current?.({
-        TerminalThemeUpdate: { fg: rgb.fg, bg: rgb.bg },
-      });
-    }
-    // eslint-disable-next-line no-console
-    console.warn('[#177 theme-effect]', {
-      prev,
-      next: theme,
-      willSend: prev !== null && prev !== theme,
-      sendRefPresent: !!sendRef.current,
-      termPresent: !!termRef.current,
-    });
-    if (prev !== null && prev !== theme) {
-      // eslint-disable-next-line no-console
-      console.warn('[#177 theme-effect] DISPATCHED TerminalThemeUpdate', {
-        fg: theme === 'dark' ? DARK_THEME_RGB.fg : LIGHT_THEME_RGB.fg,
-        bg: theme === 'dark' ? DARK_THEME_RGB.bg : LIGHT_THEME_RGB.bg,
-      });
+    const rgb = theme === 'dark' ? DARK_THEME_RGB : LIGHT_THEME_RGB;
+    const msg: ClientMsg = {
+      TerminalThemeUpdate: { fg: rgb.fg, bg: rgb.bg },
+    };
+    if (sendRef.current) {
+      sendRef.current(msg);
+    } else {
+      // WS effect hasn't installed `send` yet (initial mount). Buffer
+      // here; the WS-mount effect drains immediately after assigning
+      // `sendRef.current` so the frame still reaches the daemon (it
+      // either ships on `ws.onopen` or via the pre-existing
+      // `pendingFrames` queue inside the WS effect's `send`).
+      pendingThemeRef.current = msg;
     }
   }, [theme]);
 
@@ -305,6 +299,14 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
     // Surface `send` to the theme-effect (which lives outside this
     // closure). Cleared in the WS-effect's teardown below.
     sendRef.current = send;
+    // #177 — drain a `TerminalThemeUpdate` buffered by the theme-effect
+    // before this WS effect ran. `send()` itself handles the
+    // not-yet-OPEN case via `pendingFrames`, so this works on a cold
+    // mount AND on a reconnect (where readyState is CONNECTING).
+    if (pendingThemeRef.current) {
+      send(pendingThemeRef.current);
+      pendingThemeRef.current = null;
+    }
     // eslint-disable-next-line no-console
     console.warn('[#177 ws-mount] sendRef populated');
 

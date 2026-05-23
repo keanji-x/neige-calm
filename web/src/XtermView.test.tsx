@@ -214,7 +214,12 @@ describe('XtermView v2 handshake', () => {
     act(() => {
       ws.fireOpen();
     });
-    expect(ws.sentFrames).toHaveLength(1);
+    // #177 — every mount also dispatches a `TerminalThemeUpdate`
+    // (buffered before WS open, drained after onopen), so the wire
+    // carries ClientHello followed by at least one theme frame. This
+    // test only cares about the ClientHello shape; assert it's the
+    // first frame and inspect that one.
+    expect(ws.sentFrames.length).toBeGreaterThanOrEqual(1);
     const frame = JSON.parse(ws.sentFrames[0]!);
     expect(frame).toHaveProperty('ClientHello');
     const hello = frame.ClientHello;
@@ -450,9 +455,18 @@ describe('XtermView v2 terminal states', () => {
 });
 
 describe('XtermView theme toggle (#177)', () => {
-  it('does NOT send TerminalThemeUpdate on initial render', () => {
-    // The codex-card POST already carried the theme; sending it again
-    // would needlessly retrigger codex's focus-in re-probe.
+  it('sends TerminalThemeUpdate on initial render so daemon learns current theme on every mount', () => {
+    // #177 — the previous contract here was "do NOT send on initial
+    // mount", relying on a `prevThemeRef === null` guard plus the
+    // assumption that the card-create POST already carried the theme.
+    // That assumption broke in prod: XtermView is remounted in
+    // various scenarios we couldn't fully isolate (Suspense flash,
+    // persist-query hydration, etc.), and a remount resets the
+    // prev-ref so the dispatch silently no-ops. Now we always
+    // dispatch on every theme-effect run, including the initial
+    // mount. The daemon's `TerminalThemeUpdate` handler is
+    // idempotent: same fg/bg → same OSC reply, codex re-probes
+    // harmlessly. One extra OSC round-trip per mount is acceptable.
     render(<XtermView terminalId="term_test" theme="light" />);
     const ws = currentWs();
     act(() => {
@@ -462,7 +476,11 @@ describe('XtermView theme toggle (#177)', () => {
       ws.push(serverHello());
     });
     const sent = ws.sentFrames.map((f) => JSON.parse(f));
-    expect(sent.some((f) => 'TerminalThemeUpdate' in f)).toBe(false);
+    const themeFrame = sent.find((f) => 'TerminalThemeUpdate' in f);
+    expect(themeFrame).toBeTruthy();
+    // Light theme RGB.
+    expect(themeFrame.TerminalThemeUpdate.fg).toEqual([42, 47, 58]);
+    expect(themeFrame.TerminalThemeUpdate.bg).toEqual([252, 254, 255]);
   });
 
   it('sends TerminalThemeUpdate with new RGB when theme prop flips light→dark', async () => {
@@ -583,11 +601,16 @@ describe('XtermView theme toggle (#177)', () => {
     const sent = ws.sentFrames.map((f) => JSON.parse(f));
     // First: the ClientHello.
     expect(sent[0]).toHaveProperty('ClientHello');
-    // Then: the queued TerminalThemeUpdate with dark RGB.
-    const themeFrame = sent.find((f) => 'TerminalThemeUpdate' in f);
-    expect(themeFrame).toBeTruthy();
-    expect(themeFrame.TerminalThemeUpdate.fg).toEqual([216, 219, 226]);
-    expect(themeFrame.TerminalThemeUpdate.bg).toEqual([15, 20, 24]);
+    // Then: the queued TerminalThemeUpdate frames. Since #177 dropped
+    // the prev-guard, the initial-render's `light` dispatch is buffered
+    // first (pendingThemeRef → pendingFrames), then the `dark` rerender
+    // also buffers; both flush on onopen in order. The final state is
+    // `dark`, so the LAST theme frame must carry dark RGB.
+    const themeFrames = sent.filter((f) => 'TerminalThemeUpdate' in f);
+    expect(themeFrames.length).toBeGreaterThanOrEqual(1);
+    const lastTheme = themeFrames[themeFrames.length - 1];
+    expect(lastTheme.TerminalThemeUpdate.fg).toEqual([216, 219, 226]);
+    expect(lastTheme.TerminalThemeUpdate.bg).toEqual([15, 20, 24]);
   });
 });
 
