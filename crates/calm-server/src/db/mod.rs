@@ -235,14 +235,22 @@ pub trait RepoRead: Send + Sync + 'static {
     /// MCP server uses this during the `initialize` handshake to
     /// resolve which card identity to bind the connection to.
     ///
-    /// The caller is expected to pass `hash_token(presented)` and then
-    /// run `verify_token` against the returned hash for constant-time
-    /// equality before trusting the binding — `SELECT WHERE hashed_token = ?`
-    /// already operates on the hash, so the column-equality check is the
-    /// primary filter; the explicit verify is defense-in-depth against
-    /// a malformed `hashed_token` (e.g. truncated migration) somehow
-    /// matching a non-equivalent presented hash.
-    async fn card_mcp_token_lookup_by_hash(&self, hashed_token: &str) -> Result<Option<String>>;
+    /// Returns `Some((card_id, stored_hash))` on match, or `None` when
+    /// no row carries the queried hash. The caller is expected to pass
+    /// `hash_token(presented)` to look up the row, then immediately run
+    /// `verify_token(presented, &stored_hash)` against the returned hash
+    /// for constant-time equality before trusting the binding —
+    /// `SELECT WHERE hashed_token = ?` already operates on the hash, so
+    /// the column-equality check is the primary filter; the explicit
+    /// verify is defense-in-depth against a malformed `hashed_token`
+    /// (e.g. truncated migration) somehow matching a non-equivalent
+    /// presented hash. PR7a.1 (#136 followup) tightened this from
+    /// `Option<String>` to `Option<(String, String)>` so the handshake
+    /// can actually run that constant-time compare.
+    async fn card_mcp_token_lookup_by_hash(
+        &self,
+        hashed_token: &str,
+    ) -> Result<Option<(String, String)>>;
 }
 
 /// Eventized write surface. The **only** path that writes to the persistent

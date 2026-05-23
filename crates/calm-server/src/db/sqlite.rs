@@ -1387,13 +1387,24 @@ impl RepoRead for SqlxRepo {
     }
 
     // ----------------------------------------------------------- mcp tokens
-    async fn card_mcp_token_lookup_by_hash(&self, hashed_token: &str) -> Result<Option<String>> {
-        let row: Option<(String,)> =
-            sqlx::query_as(r#"SELECT card_id FROM card_mcp_tokens WHERE hashed_token = ?1"#)
-                .bind(hashed_token)
-                .fetch_optional(&self.pool)
-                .await?;
-        Ok(row.map(|(id,)| id))
+    async fn card_mcp_token_lookup_by_hash(
+        &self,
+        hashed_token: &str,
+    ) -> Result<Option<(String, String)>> {
+        // PR7a.1 (#136 followup) — return `(card_id, hashed_token)` so
+        // the handshake can run a constant-time compare on the stored
+        // hash. The `WHERE` clause already filtered on the hash, so the
+        // returned column is the same value the caller passed in; we
+        // still echo it back rather than hand off the input — that way
+        // a future migration that changes column storage (e.g. hex →
+        // bytes) doesn't break the contract silently.
+        let row: Option<(String, String)> = sqlx::query_as(
+            r#"SELECT card_id, hashed_token FROM card_mcp_tokens WHERE hashed_token = ?1"#,
+        )
+        .bind(hashed_token)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
     }
 }
 

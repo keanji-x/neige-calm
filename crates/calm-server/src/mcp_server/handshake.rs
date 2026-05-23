@@ -87,8 +87,11 @@ pub async fn handle_initialize(
 
     // 2. Hash + lookup. The lookup is a `WHERE hashed_token = ?`
     //    against the indexed column, so it's a single B-tree probe.
+    //    PR7a.1 (#136 followup) — the repo returns `(card_id,
+    //    stored_hash)` so step 3 can actually run the constant-time
+    //    compare promised in the doc above.
     let hashed = auth::hash_token(token);
-    let card_id_str = repo
+    let (card_id_str, stored_hash) = repo
         .card_mcp_token_lookup_by_hash(&hashed)
         .await
         .map_err(|e| RpcError::internal(format!("token lookup: {e}")))?
@@ -103,12 +106,17 @@ pub async fn handle_initialize(
     //    `hashed_token = ?`, but `verify_token` re-derives the hash and
     //    runs a constant-time compare against the persisted value —
     //    catches a truncated-hash migration or a malformed token row
-    //    that somehow slipped through the index. We have to re-fetch
-    //    the stored hash; in PR7a the repo only returns the card id,
-    //    so we re-compare locally against the derived hash and trust
-    //    the index. (Adding a second column to the return shape is a
-    //    PR7b change if we ever want stricter defense-in-depth here.)
-    //    For now we treat the index match as the binding signal.
+    //    that somehow slipped through the index. PR7a.1 (#136 followup)
+    //    wired this in: a mismatch returns the same `-32401`
+    //    "TOKEN_NOT_RECOGNIZED" error code as the lookup miss so
+    //    timing analysis can't distinguish "no row" from "row but
+    //    hash drifted".
+    if !auth::verify_token(token, &stored_hash) {
+        return Err(RpcError::custom(
+            TOKEN_NOT_RECOGNIZED_CODE,
+            "initialize: presented MCP token did not resolve to a known card",
+        ));
+    }
 
     // 4. Recover the role from the in-process cache. Boot-time
     //    `seed_card_role_cache` populated this; any card with a
@@ -165,4 +173,40 @@ pub fn invalid_initialize_params(msg: impl Into<String>) -> RpcError {
 #[allow(dead_code)]
 fn _force_arc_in_scope() -> Arc<()> {
     Arc::new(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! PR7a.1 (#136 followup) — defense-in-depth regression tests for
+    //! the `verify_token` step in the handshake. These don't drive a
+    //! real `RouteRepo`; they just pin the contract on
+    //! `auth::verify_token` so a future refactor that swaps the hash
+    //! algorithm without updating the handshake gets caught here.
+
+    use crate::mcp_server::auth;
+
+    #[test]
+    fn verify_token_rejects_mismatched_stored_hash() {
+        // Catches the regression PR7a.1 closed: the handshake used to
+        // skip `verify_token` and trust the `WHERE hashed_token = ?`
+        // index match. If a future migration ever stores something
+        // other than `sha256(token)` in the column, this assertion
+        // makes the drift loud at test time.
+        let token = "deadbeefcafebabe".repeat(4); // 64-char hex stand-in
+        let stored_hash = auth::hash_token("a-different-secret");
+        assert!(
+            !auth::verify_token(&token, &stored_hash),
+            "verify_token must reject a stored hash that doesn't match the presented token"
+        );
+    }
+
+    #[test]
+    fn verify_token_accepts_matching_stored_hash() {
+        let token = auth::CardMcpToken::generate();
+        let stored_hash = auth::hash_token(token.as_str());
+        assert!(
+            auth::verify_token(token.as_str(), &stored_hash),
+            "verify_token must accept the round-trip pair"
+        );
+    }
 }

@@ -226,7 +226,8 @@ async fn dispatcher_happy_path_mints_worker_card() {
         cache.clone(),
         stub_codex(),
         stub_daemon(),
-        4, // permits
+        None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
+        4,    // permits
     );
 
     // Emit a Wave-scoped CodexJobRequested envelope by going through
@@ -274,6 +275,7 @@ async fn dispatcher_role_is_worker_via_role_cache() {
         cache.clone(),
         stub_codex(),
         stub_daemon(),
+        None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         4,
     );
 
@@ -330,6 +332,7 @@ async fn dispatcher_dedup_does_not_double_emit_task_failed() {
         cache.clone(),
         stub_codex(),
         stub_daemon(),
+        None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         4,
     );
 
@@ -396,6 +399,7 @@ async fn dispatcher_dedupes_same_idempotency_key() {
         cache.clone(),
         stub_codex(),
         stub_daemon(),
+        None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         4,
     );
 
@@ -451,6 +455,7 @@ async fn dispatcher_semaphore_caps_concurrent_spawns() {
         cache.clone(),
         stub_codex(),
         stub_daemon(),
+        None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         2,
     ));
     assert_eq!(dispatcher.permits(), 2);
@@ -527,6 +532,7 @@ async fn dispatcher_emits_task_failed_on_bad_scope() {
         cache.clone(),
         stub_codex(),
         stub_daemon(),
+        None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         4,
     );
 
@@ -600,6 +606,7 @@ async fn dispatcher_card_added_emit_passes_role_gate() {
         cache.clone(),
         stub_codex(),
         stub_daemon(),
+        None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         4,
     );
 
@@ -647,6 +654,7 @@ async fn dispatcher_dedupes_under_real_concurrent_race() {
         cache.clone(),
         stub_codex(),
         stub_daemon(),
+        None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         4,
     );
 

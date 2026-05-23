@@ -151,12 +151,25 @@ impl Dispatcher {
     /// [`Dispatcher::permits_from_env`]`(DEFAULT_PERMITS)` so the
     /// `NEIGE_DISPATCHER_PERMITS` env var stays the single dial.
     /// Tests inject an explicit count.
+    ///
+    /// `mcp_server` is `Some` for the production boot path (`AppState::new`
+    /// constructs the kernel-as-MCP-server first, then hands the handle
+    /// to the dispatcher) and `None` for test fixtures that don't need
+    /// MCP wiring. When `Some`, the dispatcher folds `NEIGE_MCP_TOKEN` +
+    /// `NEIGE_MCP_SOCKET` into the env it hands to `spawn_daemon_with_parts`
+    /// for codex workers, and threads the shim config into
+    /// `seed_codex_home_with_parts` so each worker's `$CODEX_HOME/config.toml`
+    /// carries a `[mcp_servers.calm]` block — mirroring the spec card path
+    /// in `routes::waves::create_wave`. PR7a.1 (#136 followup) wired this
+    /// in; PR7a registered the MCP server but left the dispatcher's
+    /// worker-side plumbing as a deferred TODO.
     pub fn spawn(
         repo: Arc<dyn Repo>,
         events: EventBus,
         card_role_cache: CardRoleCache,
         codex: Arc<CodexClient>,
         daemon: Arc<DaemonClient>,
+        mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
         permits: usize,
     ) -> Self {
         let permits = if permits == 0 {
@@ -171,6 +184,7 @@ impl Dispatcher {
             card_role_cache,
             codex,
             daemon,
+            mcp_server,
             semaphore: Arc::clone(&semaphore),
             recently_seen: Arc::new(Mutex::new(HashSet::new())),
         });
@@ -243,6 +257,15 @@ struct Inner {
     card_role_cache: CardRoleCache,
     codex: Arc<CodexClient>,
     daemon: Arc<DaemonClient>,
+    /// PR7a.1 (#136 followup) — kernel-as-MCP-server handle. When `Some`,
+    /// every codex-worker spawn folds the per-card MCP token + kernel
+    /// socket path into the daemon env *and* seeds the per-card
+    /// `$CODEX_HOME/config.toml` with a `[mcp_servers.calm]` block. When
+    /// `None` (test fixtures / replay) the worker still spawns but
+    /// without a wire back into the kernel — fine for unit tests that
+    /// only assert on card creation. Terminal workers don't read this
+    /// (they don't run codex).
+    mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
     semaphore: Arc<Semaphore>,
     /// Recently-spawned idempotency keys. A fast-path short-circuit
     /// before the tx-bound SELECT. Held under a `std::sync::Mutex`
@@ -571,7 +594,15 @@ impl Inner {
         // `Conflict` on duplicate, which rolls everything back
         // (matches the issue v2 invariant: no spurious event when the
         // request is a duplicate).
-        let card_id_result = write_with_event_typed::<CardId, _>(
+        //
+        // PR7a.1 (#136 followup) — the closure returns `(card_id,
+        // mcp_token)` so the post-commit env-assembly path below can
+        // fold `NEIGE_MCP_TOKEN` into the daemon env (mirroring
+        // `routes::waves::create_wave`). The token is `Some` for every
+        // worker card (the helper mints one unconditionally for the
+        // `Worker` role), but we keep the `Option` shape to stay in
+        // step with the helper's return contract.
+        let card_id_result = write_with_event_typed::<(CardId, Option<String>), _>(
             self.repo.as_ref(),
             ActorId::KernelDispatcher,
             scope.clone(),
@@ -607,15 +638,12 @@ impl Inner {
                     // canonical codex payload (schemaVersion,
                     // terminal_id, cwd) in one helper call.
                     //
-                    // PR7a (#136) — the helper now returns a third
-                    // slot, the raw per-card MCP token. For worker
-                    // cards it's always `Some`; we drop it on the
-                    // floor inside the tx (the env handed to the
-                    // daemon spawn is pre-MCP for now — the worker
-                    // card MCP wiring is intentionally minimal in
-                    // PR7a, see followup PR7a.1 for the full
-                    // dispatcher → mcp_shim plumbing).
-                    let (mut card, _term, _mcp_token) = card_with_codex_create_tx(
+                    // PR7a.1 (#136 followup) — capture the
+                    // per-card MCP token returned by the helper
+                    // so the post-commit code can hand it to the
+                    // codex daemon's env. PR7a discarded this on
+                    // the floor as `_mcp_token`.
+                    let (mut card, _term, mcp_token) = card_with_codex_create_tx(
                         tx,
                         new_card_id_for_tx,
                         wave_for_tx,
@@ -653,14 +681,14 @@ impl Inner {
                     }
 
                     let id = card.id.clone();
-                    Ok((id, Event::CardAdded(card)))
+                    Ok(((id, mcp_token), Event::CardAdded(card)))
                 })
             },
         )
         .await;
 
-        let card_id = match card_id_result {
-            Ok((id, _event_id)) => id,
+        let (card_id, mcp_token) = match card_id_result {
+            Ok(((id, mcp_token), _event_id)) => (id, mcp_token),
             Err(CalmError::IdempotencyCollision(msg)) => {
                 tracing::info!(
                     idempotency_key = %idempotency_key,
@@ -675,20 +703,34 @@ impl Inner {
         // Post-commit: seed CODEX_HOME and spawn the daemon. Failure
         // here returns an error to the caller, which emits
         // `Event::TaskFailed` for PR8's `wait_for_events` to surface.
-        // PR7a (#136) — dispatcher path passes `None` for the MCP
-        // shim config: the worker codex daemon won't get a
-        // `[mcp_servers.calm]` block in its config.toml in PR7a.
-        // This intentionally defers worker→kernel MCP wiring to a
-        // followup (PR7a.1) so the infrastructure ships first; the
-        // spec card path (`routes::waves::create_wave`) already
-        // exercises the full MCP plumbing end-to-end.
+        //
+        // PR7a.1 (#136 followup) — wire the worker codex daemon into
+        // the kernel-as-MCP-server. Two mirror-image folds of what
+        // `routes::waves::create_wave` does for the spec card:
+        //
+        //   1. Pass the kernel's `McpShimConfig` to
+        //      `seed_codex_home_with_parts` so the worker's
+        //      `$CODEX_HOME/config.toml` carries a `[mcp_servers.calm]`
+        //      block. Without it, codex's MCP client never tries to
+        //      connect and the worker can't call `calm.task_completed`
+        //      / `calm.task_failed`.
+        //
+        //   2. Fold `NEIGE_MCP_TOKEN` + `NEIGE_MCP_SOCKET` into the
+        //      env handed to `spawn_daemon_with_parts`. The codex
+        //      daemon forwards these to the `neige-mcp-stdio-shim`
+        //      child it spawns from the config block above.
+        //
+        // Both folds are gated on `self.mcp_server.is_some()` so test
+        // fixtures (which pass `None`) still exercise the rest of the
+        // path without needing a live MCP server.
+        let mcp_shim = self.mcp_server.as_ref().map(|m| m.shim_config.clone());
         if let Err(e) = seed_codex_home_with_parts(
             self.codex.as_ref(),
             card_id.as_str(),
             &cwd,
             wave_id.as_str(),
             SeededCardRole::Worker,
-            None,
+            mcp_shim.as_ref(),
         ) {
             tracing::error!(
                 card_id = %card_id,
@@ -711,13 +753,32 @@ impl Inner {
                 ))
             })?;
 
+        // PR7a.1 — augment env with MCP token/socket before spawn.
+        // Soft-fail: if either side is missing we still spawn the
+        // daemon (it just won't have a wire back to the kernel).
+        let mut env_for_spawn = env;
+        if let (Some(token), Some(server)) = (mcp_token.as_deref(), self.mcp_server.as_ref())
+            && let Some(map) = env_for_spawn.as_object_mut()
+        {
+            map.insert(
+                "NEIGE_MCP_TOKEN".into(),
+                serde_json::Value::String(token.to_string()),
+            );
+            map.insert(
+                "NEIGE_MCP_SOCKET".into(),
+                serde_json::Value::String(
+                    server.shim_config.socket_path.to_string_lossy().to_string(),
+                ),
+            );
+        }
+
         if let Err(e) = spawn_daemon_with_parts(
             self.daemon.as_ref(),
             self.repo.as_ref(),
             &term,
             "codex",
             &cwd,
-            &env,
+            &env_for_spawn,
         )
         .await
         {
