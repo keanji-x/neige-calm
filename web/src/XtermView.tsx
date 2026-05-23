@@ -51,6 +51,15 @@ interface XtermViewProps {
   /** `Terminal.id` from the kernel — addresses the daemon socket on the server. */
   terminalId: string;
   theme?: 'light' | 'dark';
+  /**
+   * Lift the daemon-assigned role (from `ServerHello.client_role`) out to the
+   * parent card so the role indicator can live in `<CardHead>`'s status slot
+   * instead of as a corner overlay inside the xterm view. `null` is reported
+   * on reconnect / disconnect so the parent can clear any badge. Owners are
+   * the common single-user case and intentionally don't render a badge there
+   * — the parent decides what (if anything) to show per role.
+   */
+  onRoleChange?: (role: Role | null) => void;
 }
 
 /** Last close info, surfaced in the gray "disconnected" overlay so the user
@@ -104,12 +113,18 @@ interface ExitInfo {
  * Roles: this component always sends `role_hint: 'Owner'` — the browser is
  * the user's primary interaction surface. The daemon's `OwnerRegistry` may
  * still assign `Observer` (e.g. another client already holds owner), in
- * which case `Input` frames are rejected with `NotOwner`. Surfacing the
- * assigned role to the UI is intentionally minimal in this PR (small badge
- * in the corner). `kernel_originated_input` would never apply to a browser
- * tab so we leave it out of the capability set.
+ * which case `Input` frames are rejected with `NotOwner`. The assigned role
+ * is reported up to the parent card via `onRoleChange` so the
+ * `<CardHead>` status slot can render an `observing` pill when relevant;
+ * owners (the common single-user case) render no badge at all.
+ * `kernel_originated_input` would never apply to a browser tab so we leave
+ * it out of the capability set.
  */
-export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
+export function XtermView({
+  terminalId,
+  theme = 'light',
+  onRoleChange,
+}: XtermViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   // Live ref to the active xterm.js Terminal instance so a sibling effect
   // can re-apply the theme without tearing down the WebSocket + replay
@@ -127,7 +142,13 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
   const [closeInfo, setCloseInfo] = useState<CloseInfo | null>(null);
   const [protocolError, setProtocolError] = useState<ProtocolError | null>(null);
   const [exitInfo, setExitInfo] = useState<ExitInfo | null>(null);
-  const [role, setRole] = useState<Role | null>(null);
+  // Role lives entirely in the parent now (via `onRoleChange`) so the badge
+  // can sit in `<CardHead>`'s status slot instead of overlaying the terminal.
+  // We capture the latest callback into a ref so the heavy bridge-mount
+  // effect doesn't need it in its deps — a callback identity flip from the
+  // parent shouldn't tear down the WebSocket.
+  const onRoleChangeRef = useRef<XtermViewProps['onRoleChange']>(onRoleChange);
+  onRoleChangeRef.current = onRoleChange;
   // Bumping this re-runs the WS effect, which rebuilds the WS and re-attaches
   // to the daemon. The daemon survives WS disconnects (it owns the PTY and a
   // replay buffer / render rev), so reconnect is usually enough; if the
@@ -138,7 +159,7 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
     setCloseInfo(null);
     setProtocolError(null);
     setExitInfo(null);
-    setRole(null);
+    onRoleChangeRef.current?.(null);
     setReconnectKey((k) => k + 1);
   };
 
@@ -280,7 +301,7 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
       // `DaemonMsg` is sourced from `generated-terminal.ts`.
       if ('ServerHello' in msg) {
         const sh = msg.ServerHello;
-        setRole(sh.client_role);
+        onRoleChangeRef.current?.(sh.client_role);
         setStatus('connected');
         // Snapshot may be bigger or smaller than the viewport we opened
         // with; resize the local terminal to match before writing the
@@ -360,10 +381,13 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
         return;
       }
       if ('OwnerChanged' in msg) {
-        // Observer-side notification — owner moved to a different client.
-        // We don't surface this in the UI yet, but logging it makes a
-        // multi-client debug session readable. Once we add an "owner
-        // here" / "observing" badge, this is the dispatch point.
+        // Single-user mode only: role is set on ServerHello and never
+        // flips mid-session, so we just log for debug. When multi-client
+        // handoff lands, this is the dispatch point to call
+        // onRoleChangeRef.current?.(newRole) — but the daemon's payload
+        // here only carries `owner_client_id`, so we'd need to compare
+        // against our own clientId to derive the new role for THIS
+        // client. Defer wiring until that semantic is validated.
         dlog('XtermView', 'OwnerChanged', msg.OwnerChanged);
         return;
       }
@@ -398,12 +422,15 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
       setStatus((prev) =>
         prev === 'exited' || prev === 'protocol-error' ? prev : 'closed',
       );
+      // Role is undefined once the WS is gone — parent clears any pill.
+      onRoleChangeRef.current?.(null);
     };
     ws.onerror = (e) => {
       dlog('XtermView', 'WS error', e);
       setStatus((prev) =>
         prev === 'exited' || prev === 'protocol-error' ? prev : 'closed',
       );
+      onRoleChangeRef.current?.(null);
     };
 
     const dataSub = term.onData((d) => {
@@ -478,6 +505,11 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
       // has already installed its own term; without this guard we'd null
       // out the new instance.
       if (termRef.current === term) termRef.current = null;
+      // Parent should reset any role pill when the bridge tears down — the
+      // next mount will re-emit on `ServerHello`. Sync here (not via
+      // onclose) so a strict-mode unmount or a `terminalId` change clears
+      // the parent state even if no close frame fires.
+      onRoleChangeRef.current?.(null);
     };
     // `theme` deliberately omitted: a theme flip should NOT rebuild the
     // WebSocket / Terminal. The sibling effect above mutates
@@ -488,11 +520,6 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
   return (
     <div className="xterm-view">
       <div ref={containerRef} className="xterm-container" />
-      {role && status === 'connected' && (
-        <div className={`xterm-role xterm-role-${role.toLowerCase()}`}>
-          {role === 'Owner' ? 'owner' : 'observing'}
-        </div>
-      )}
       {status === 'connecting' && (
         <div className="xterm-status">connecting…</div>
       )}

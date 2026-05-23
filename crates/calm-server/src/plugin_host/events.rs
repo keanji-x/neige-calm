@@ -27,6 +27,7 @@
 
 use serde::Deserialize;
 
+use super::glob::glob_matches;
 use crate::event::Event;
 
 /// The filter clause the plugin sends. All fields optional; missing == match.
@@ -191,21 +192,6 @@ fn event_entity_id(ev: &Event) -> Option<String> {
     }
 }
 
-/// Tiny in-house glob matcher. Supports literal == name, `"*"`, and
-/// `"<prefix>.*"` (e.g. `"card.*"` → matches `"card.added"`, `"card.updated"`,
-/// `"card.deleted"`). Anything else falls through to literal match.
-fn glob_matches(pattern: &str, name: &str) -> bool {
-    if pattern == "*" || pattern == name {
-        return true;
-    }
-    if let Some(prefix) = pattern.strip_suffix(".*") {
-        // "card.*" matches "card.added" but not "cardx.added" — enforce the dot.
-        let with_dot = format!("{prefix}.");
-        return name.starts_with(&with_dot);
-    }
-    false
-}
-
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -341,16 +327,5 @@ mod tests {
         assert!(!f.matches(&Event::OverlaySet(overlay(
             "p", "card", "w-target", "status"
         ))));
-    }
-
-    #[test]
-    fn glob_matches_helper() {
-        assert!(glob_matches("*", "anything"));
-        assert!(glob_matches("card.added", "card.added"));
-        assert!(!glob_matches("card.added", "card.updated"));
-        assert!(glob_matches("card.*", "card.added"));
-        assert!(glob_matches("card.*", "card.x.y"));
-        assert!(!glob_matches("card.*", "cardx.added"));
-        assert!(!glob_matches("card.*", "wave.added"));
     }
 }

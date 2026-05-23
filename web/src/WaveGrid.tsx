@@ -8,7 +8,6 @@ import {
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 
-import { CloseIcon } from './shared/components/CloseIcon';
 import { WaveCard } from './shared/components/WaveCard';
 import { sizeFor, type CardSize } from './cards/registry';
 import { UnknownCard, UNKNOWN_CARD_SIZE } from './cards/UnknownCard';
@@ -247,23 +246,17 @@ export function WaveGrid({
           }}
         >
           {cards.map((slot, i) => (
-            <div key={slotKey(slot, i)} className="card-slot">
-              <button
-                className="card-grid-close"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onRemoveCard(i);
-                }}
-                onMouseDown={(e) => e.stopPropagation()}
-                title="Remove panel"
-                aria-label="Remove panel"
-              >
-                <CloseIcon />
-              </button>
+            <div key={slotKey(slot, i)} className="wave-card">
               {slot.kind === 'card' ? (
-                <WaveCard card={slot.card} />
+                <WaveCard
+                  card={slot.card}
+                  onClose={() => onRemoveCard(i)}
+                />
               ) : (
-                <UnknownCard kernelKind={slot.kernelKind} />
+                <UnknownCard
+                  kernelKind={slot.kernelKind}
+                  onClose={() => onRemoveCard(i)}
+                />
               )}
             </div>
           ))}

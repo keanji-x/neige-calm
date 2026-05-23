@@ -20,6 +20,7 @@ import { lazy, Suspense, useEffect } from 'react';
 import { useState } from '../../shared/state';
 import { z } from 'zod';
 import type { CodexCardData, FsmState } from '../../types';
+import type { Role } from '../../api/generated-terminal';
 import { sharedEventStream } from '../../api/events';
 import { CardStatusDot } from '../../shared/components/CardStatusDot';
 import { useTheme } from '../../app/theme';
@@ -47,10 +48,21 @@ const codexPayloadSchema = z.object({
   cwd: z.string().optional(),
 });
 
-function UnsupportedCodexCard({ version }: { version: number }) {
+function UnsupportedCodexCard({
+  version,
+  onClose,
+}: {
+  version: number;
+  onClose?: () => void;
+}) {
   return (
     <div className="codex-card codex-card-unsupported-version">
-      <CardHead className="codex-card-head card-drag-handle" title="Codex" />
+      <CardHead
+        className="card-drag-handle"
+        title="Codex"
+        onClose={onClose}
+        closeAriaLabel="Remove panel"
+      />
       <div className="codex-card-pty">
         <div className="codex-card-empty">
           Unsupported card payload version (got {version}, kernel supports{' '}
@@ -61,17 +73,34 @@ function UnsupportedCodexCard({ version }: { version: number }) {
   );
 }
 
-function CodexCard({ card }: { card: CodexCardData }) {
+function CodexCard({
+  card,
+  onClose,
+}: {
+  card: CodexCardData;
+  onClose?: () => void;
+}) {
   // Early bail-out for unsupported versions. Split into its own component
   // so React's rules-of-hooks stay satisfied — the hook calls below only
   // run on the supported path.
   if (card.unsupportedVersion !== undefined) {
-    return <UnsupportedCodexCard version={card.unsupportedVersion} />;
+    return (
+      <UnsupportedCodexCard
+        version={card.unsupportedVersion}
+        onClose={onClose}
+      />
+    );
   }
-  return <CodexCardImpl card={card} />;
+  return <CodexCardImpl card={card} onClose={onClose} />;
 }
 
-function CodexCardImpl({ card }: { card: CodexCardData }) {
+function CodexCardImpl({
+  card,
+  onClose,
+}: {
+  card: CodexCardData;
+  onClose?: () => void;
+}) {
   const cardId = card.id;
   const { resolved: theme } = useTheme();
   // FSM state owned by the kernel `card_fsm` task. Defaults to "Starting"
@@ -83,6 +112,11 @@ function CodexCardImpl({ card }: { card: CodexCardData }) {
   // most recent codex.hook event. Independent of the FSM state because the
   // label is a string and the FSM is a closed enum.
   const [label, setLabel] = useState<string>('starting…');
+  // Daemon-assigned role from the embedded `<XtermView>` handshake. Owners
+  // (the common single-user case) render no badge; Observers get a small
+  // "observing" pill in the head status slot. Cleared on disconnect — the
+  // XtermView callback re-emits on every state transition.
+  const [role, setRole] = useState<Role | null>(null);
 
   useEffect(() => {
     if (!cardId) return;
@@ -122,21 +156,32 @@ function CodexCardImpl({ card }: { card: CodexCardData }) {
   return (
     <div className="codex-card">
       <CardHead
-        className="codex-card-head card-drag-handle"
+        className="card-drag-handle"
         title="Codex"
+        onClose={onClose}
+        closeAriaLabel="Remove panel"
+        // Dot-only status (unified with Terminal). The visible label is gone;
+        // the FSM state name + most recent hook summary live entirely in the
+        // dot's `title` tooltip + `aria-label`. The bare `<span aria-live>`
+        // wrapper keeps screen readers announcing state transitions — the
+        // dot itself can't carry aria-live because its className flips
+        // between `live-dot` and `undefined` on Working/Starting toggles,
+        // which is the kind of churn that confuses some AT.
         status={
-          <div className="codex-status-bar" aria-live="polite">
-            <span className="codex-status-label" title={`${fsm} — ${label}`}>
-              {fsm}: {label}
+          <>
+            {role === 'Observer' && (
+              <span className="card-head-observing-pill">observing</span>
+            )}
+            <span aria-live="polite">
+              <CardStatusDot state={fsm} title={`${fsm} — ${label}`} />
             </span>
-            <CardStatusDot state={fsm} title={`${fsm} — ${label}`} />
-          </div>
+          </>
         }
       />
       <div className="codex-card-pty">
         {card.terminalId ? (
           <Suspense fallback={<div className="codex-card-empty">Loading terminal…</div>}>
-            <XtermView terminalId={card.terminalId} theme={theme} />
+            <XtermView terminalId={card.terminalId} theme={theme} onRoleChange={setRole} />
           </Suspense>
         ) : (
           <div className="codex-card-empty">

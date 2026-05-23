@@ -80,6 +80,7 @@ use crate::event::EventScope;
 use crate::event::{BroadcastEnvelope, SYNC_EVENT_VERSION};
 use crate::ids::ActorId;
 use crate::state::AppState;
+use crate::validation::should_skip_event_for_overlay_version;
 use axum::{
     Router,
     extract::{
@@ -192,6 +193,17 @@ async fn handle(socket: WebSocket, state: AppState) {
                     if env.id != 0 && env.id <= last_replayed_id {
                         continue;
                     }
+                    // Tier A read-side guard, broadcast surface (issue #198
+                    // concern 4, PR #214 follow-up): drop kernel-owned
+                    // overlay events whose persisted `schemaVersion` exceeds
+                    // what this binary supports. `should_skip_event_for_overlay_version`
+                    // already emits a structured warn for the drop. Filtered
+                    // BEFORE the topic check so the warn fires regardless of
+                    // who's subscribed — if the row exists at all, we want
+                    // operators to see it.
+                    if should_skip_event_for_overlay_version(&env.event) {
+                        continue;
+                    }
                     if event::topics(&env.event).iter().any(|t| subs.contains(t)) {
                         let payload = match render_envelope(&env) {
                             Ok(p) => p,
@@ -283,6 +295,18 @@ where
 
     let mut last_id = since;
     for (id, event_version, scope, ev) in rows {
+        // Tier A read-side guard, replay surface (issue #198 concern 4,
+        // PR #214 follow-up): the events table can hold an
+        // `Event::OverlaySet` row whose `schemaVersion` was written by a
+        // newer kernel binary against the same DB. Drop it before the
+        // topic check so the warn fires once per drop, then still advance
+        // the cursor so the client's next reconnect resumes past this id
+        // (matches the topic-filter skip semantics below — we never want
+        // the same client to re-poll a row we already decided to filter).
+        if should_skip_event_for_overlay_version(&ev) {
+            last_id = id;
+            continue;
+        }
         // Topic filter applies to replayed frames too: a cursor-aware
         // client that just changed waves shouldn't suddenly see history
         // for a wave it didn't subscribe to.

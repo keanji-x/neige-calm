@@ -63,11 +63,20 @@ export interface CreateSchema {
   fields: CreateField[];
 }
 
+/** Common props every built-in card component receives. Cards must forward
+ *  `onClose` (when provided) to `<CardHead>` so the X button renders inside
+ *  the head. Optional: contexts that own the close affordance elsewhere
+ *  (e.g. WaveList's row-level button) simply pass `undefined`. */
+export interface CardComponentProps<T extends WaveCardData = WaveCardData> {
+  card: T;
+  onClose?: () => void;
+}
+
 export interface CardEntry<T extends WaveCardData = WaveCardData> {
   /** The discriminator value used in `T['type']`, e.g. `'terminal'`, `'doc'`,
    *  or the sentinel `'plugin'` for `ui://`-backed iframe cards. */
   type: T['type'] | string;
-  Component: FC<{ card: T }>;
+  Component: FC<CardComponentProps<T>>;
   defaultSize: CardSize;
   /** Optional — kernel→UI adaptation. Receives the raw KernelCard;
    *  return null if this entry doesn't claim that kernel card. */
@@ -105,7 +114,10 @@ export function registerCard<T extends WaveCardData>(entry: CardEntry<T>): void 
   REGISTRY.set(entry.type, entry as unknown as CardEntry<WaveCardData>);
 }
 
-export function renderCard(card: WaveCardData): ReactNode {
+export function renderCard(
+  card: WaveCardData,
+  opts: { onClose?: () => void } = {},
+): ReactNode {
   const entry = REGISTRY.get(card.type);
   if (!entry) {
     warnOnce(`render:${card.type}`, `[cards] no registry entry for type "${card.type}"`);
@@ -116,7 +128,10 @@ export function renderCard(card: WaveCardData): ReactNode {
   // The discriminator (`card.type === entry.type`) guarantees runtime
   // alignment with the entry's Component prop type. createElement (not JSX)
   // so this file stays a plain .ts module — keeps the design-doc filename.
-  return createElement(entry.Component as FC<{ card: WaveCardData }>, { card });
+  return createElement(entry.Component as FC<CardComponentProps>, {
+    card,
+    onClose: opts.onClose,
+  });
 }
 
 export function sizeFor(card: WaveCardData): CardSize {

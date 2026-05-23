@@ -7,7 +7,16 @@ import type { WaveCardData } from '../../types';
 // importing `WaveCard` from `./ui` while the registry owns dispatch.
 // ============================================================
 
-export function WaveCard({ card }: { card: WaveCardData | null | undefined }) {
+export function WaveCard({
+  card,
+  onClose,
+}: {
+  card: WaveCardData | null | undefined;
+  /** Forwarded to the card component so its `<CardHead>` renders an X button.
+   *  Omit in contexts that own the close affordance themselves (WaveList's
+   *  row-level button). */
+  onClose?: () => void;
+}) {
   if (!card) return null;
-  return <>{renderCard(card)}</>;
+  return <>{renderCard(card, { onClose })}</>;
 }

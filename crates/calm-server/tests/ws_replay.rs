@@ -28,15 +28,16 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use calm_server::db::sqlite::{SqlxRepo, cove_create_tx};
+use calm_server::db::sqlite::{SqlxRepo, cove_create_tx, overlay_upsert_tx};
 use calm_server::db::{Repo, write_with_event_typed};
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::ActorId;
-use calm_server::model::NewCove;
+use calm_server::model::{NewCove, NewOverlay};
 use calm_server::plugin_host::PluginHost;
 use calm_server::state::{AppState, DaemonClient};
 use calm_server::ws;
 use futures_util::{SinkExt, StreamExt};
+use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message as TMessage;
@@ -415,4 +416,152 @@ async fn client_at_cursor_too_old_gets_snapshot_required() {
     // Connection closes shortly after — tolerate either an explicit close
     // frame, a transport-level closure, or a timeout falling through.
     let _ = timeout(Duration::from_millis(500), ws.next()).await;
+}
+
+// ---------------------------------------------------------------------------
+// 7. Tier A read-side guard, REPLAY surface (issue #198 concern 4, PR #214
+//    follow-up). The events table can hold an `Event::OverlaySet` row whose
+//    `schemaVersion` was written by a newer kernel binary against the same DB
+//    (downgrade or split-deploy scenario). PR #214 filtered such rows out of
+//    `/api/overlays` and `GET /api/waves/{id}`; this assertion locks the
+//    invariant on the replay leg of `/api/events` too.
+// ---------------------------------------------------------------------------
+
+/// Seed two `Event::OverlaySet` rows directly through `write_with_event_typed`
+/// (bypass route-layer `validate_overlay_payload` so the future-version row
+/// actually lands — same `raw_repo()`-equivalent bypass pattern PR #214 used
+/// for its HTTP read-side test). Returns the assigned event ids in seed
+/// order: `[supported_event_id, future_event_id]`.
+async fn seed_supported_and_future_overlays(repo: &SqlxRepo, bus: &EventBus) -> (i64, i64) {
+    // Supported: status overlay at the current schemaVersion.
+    let supported = NewOverlay {
+        plugin_id: "p1".into(),
+        entity_kind: "wave".into(),
+        entity_id: "w-1".into(),
+        kind: "status".into(),
+        payload: json!({ "schemaVersion": 1, "state": "running" }),
+    };
+    let (_o, supported_id) = write_with_event_typed(
+        repo as &dyn Repo,
+        ActorId::User,
+        EventScope::System,
+        None,
+        bus,
+        &calm_server::card_role_cache::CardRoleCache::new(),
+        move |tx| {
+            Box::pin(async move {
+                let o = overlay_upsert_tx(tx, supported).await?;
+                Ok((o.clone(), Event::OverlaySet(o)))
+            })
+        },
+    )
+    .await
+    .unwrap();
+
+    // Future: same kind, schemaVersion above the current max. Inserted via
+    // the same code path so both the overlay row and its event row land in
+    // the same transactional unit the replay path will read.
+    let future = NewOverlay {
+        plugin_id: "p1".into(),
+        entity_kind: "wave".into(),
+        entity_id: "w-1".into(),
+        kind: "status".into(),
+        payload: json!({ "schemaVersion": 999, "state": "from-future" }),
+    };
+    let (_o, future_id) = write_with_event_typed(
+        repo as &dyn Repo,
+        ActorId::User,
+        EventScope::System,
+        None,
+        bus,
+        &calm_server::card_role_cache::CardRoleCache::new(),
+        move |tx| {
+            Box::pin(async move {
+                let o = overlay_upsert_tx(tx, future).await?;
+                Ok((o.clone(), Event::OverlaySet(o)))
+            })
+        },
+    )
+    .await
+    .unwrap();
+
+    (supported_id, future_id)
+}
+
+#[tokio::test]
+async fn replay_skips_future_schema_version_overlay_set() {
+    let (addr, repo, bus) = boot().await;
+    let (supported_id, future_id) = seed_supported_and_future_overlays(&repo, &bus).await;
+
+    let url = format!("ws://{}/api/events", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+    // since=0 + firehose: every persisted event is in scope of the replay.
+    // The future-version row must NOT make it onto the wire, but `last_id`
+    // (carried in `_replay_complete._id`) must still advance to the future
+    // row's id — the read-side guard drops the frame but advances the
+    // cursor so the client never re-polls it.
+    ws.send(TMessage::Text(r#"{"sub":["*"], "since": 0}"#.to_string()))
+        .await
+        .unwrap();
+
+    // First frame: the supported overlay (older id). The overlay's own
+    // `data.id` is a server-side nanoid we can't predict, so we assert on
+    // the kernel-stamped fields instead.
+    let v = recv_json(&mut ws).await;
+    assert_eq!(v["_id"], supported_id);
+    assert_eq!(v["ev"], "overlay.set");
+    assert_eq!(v["data"]["kind"], "status");
+    assert_eq!(v["data"]["payload"]["state"], "running");
+    assert_eq!(v["data"]["payload"]["schemaVersion"], 1);
+
+    // Next frame: `_replay_complete`. The future-version overlay must
+    // NOT appear between the supported row and the terminator. The
+    // terminator's `_id` advances to the future row's id even though
+    // its payload was dropped — confirms the cursor invariant.
+    let done = recv_json(&mut ws).await;
+    assert_eq!(done["ev"], "_replay_complete");
+    assert_eq!(
+        done["_id"], future_id,
+        "cursor must advance past the dropped row so the client never re-polls it"
+    );
+}
+
+#[tokio::test]
+async fn replay_skips_future_schema_version_overlay_set_assertion_strict() {
+    // Belt-and-suspenders form of the previous test that asserts on the
+    // exact frame contents (not on overlay-id substring matching) so a
+    // regression where the future row leaks would fail loudly even if
+    // the supported row coincidentally shared a prefix. Reads frames
+    // until `_replay_complete` and checks no frame carries
+    // `schemaVersion: 999`.
+    let (addr, repo, bus) = boot().await;
+    let (_, future_id) = seed_supported_and_future_overlays(&repo, &bus).await;
+
+    let url = format!("ws://{}/api/events", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    ws.send(TMessage::Text(r#"{"sub":["*"], "since": 0}"#.to_string()))
+        .await
+        .unwrap();
+
+    let mut saw_future_payload = false;
+    let mut saw_complete = false;
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while !saw_complete && std::time::Instant::now() < deadline {
+        let v = recv_json(&mut ws).await;
+        if v["ev"] == "_replay_complete" {
+            saw_complete = true;
+            // Cursor must advance through the dropped row.
+            assert_eq!(v["_id"], future_id);
+            break;
+        }
+        if v["ev"] == "overlay.set" && v["data"]["payload"]["schemaVersion"] == 999 {
+            saw_future_payload = true;
+        }
+    }
+    assert!(saw_complete, "_replay_complete terminator must arrive");
+    assert!(
+        !saw_future_payload,
+        "future-schemaVersion overlay row must be filtered from replay"
+    );
 }

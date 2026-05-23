@@ -29,6 +29,7 @@
 //!     default — see `UiPermissions::can_call_tool` for the per-view logic
 //!     and #198 (concern 5) for the design call.
 
+use super::glob::glob_matches;
 use super::manifest::{Manifest, Permissions, UiPermissions};
 
 /// Default per-plugin KV quota when the manifest doesn't pin one. Mirrors the
@@ -128,7 +129,7 @@ impl UiPermissions {
     /// must be an explicit opt-in in the manifest — silent "everything goes"
     /// is exactly the failure mode the issue calls out.
     pub fn can_call_tool(&self, tool_name: &str) -> bool {
-        self.tools.iter().any(|p| tool_glob_matches(p, tool_name))
+        self.tools.iter().any(|p| glob_matches(p, tool_name))
     }
 }
 
@@ -153,19 +154,6 @@ impl Manifest {
             .filter_map(|v| v.permissions.as_ref())
             .any(|p| p.can_call_tool(tool_name))
     }
-}
-
-/// Tool-name glob matcher. Mirrors `events.rs`'s `glob_matches`: literal
-/// equality, full wildcard `"*"`, or dot-anchored prefix wildcard `"<x>.*"`.
-fn tool_glob_matches(pattern: &str, name: &str) -> bool {
-    if pattern == "*" || pattern == name {
-        return true;
-    }
-    if let Some(prefix) = pattern.strip_suffix(".*") {
-        let with_dot = format!("{prefix}.");
-        return name.starts_with(&with_dot);
-    }
-    false
 }
 
 // ===========================================================================
