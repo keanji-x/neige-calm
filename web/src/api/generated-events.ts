@@ -140,7 +140,7 @@ export type CoveKind = "user" | "system";
  * are emitted directly; tuple variants over a named struct (e.g.
  * `CoveUpdated(Cove)`) pull in the struct's own export.
  */
-export type Event = { "ev": "cove.updated", "data": Cove } | { "ev": "cove.deleted", "data": { id: CoveId, } } | { "ev": "wave.updated", "data": Wave } | { "ev": "wave.deleted", "data": { id: WaveId, cove_id: CoveId, } } | { "ev": "card.added", "data": Card } | { "ev": "card.updated", "data": Card } | { "ev": "card.deleted", "data": { id: CardId, wave_id: WaveId, } } | { "ev": "overlay.set", "data": Overlay } | { "ev": "overlay.deleted", "data": { plugin_id: string, entity_kind: string, entity_id: string, kind: string, } } | { "ev": "terminal.deleted", "data": { id: string, card_id: CardId, } } | { "ev": "plugin.state", "data": { id: string, state: string, 
+export type Event = { "ev": "cove.updated", "data": Cove } | { "ev": "cove.deleted", "data": { id: CoveId, } } | { "ev": "wave.updated", "data": Wave } | { "ev": "wave.deleted", "data": { id: WaveId, cove_id: CoveId, } } | { "ev": "wave.lifecycle_changed", "data": { id: WaveId, cove_id: CoveId, from: WaveLifecycle, to: WaveLifecycle, } } | { "ev": "card.added", "data": Card } | { "ev": "card.updated", "data": Card } | { "ev": "card.deleted", "data": { id: CardId, wave_id: WaveId, } } | { "ev": "overlay.set", "data": Overlay } | { "ev": "overlay.deleted", "data": { plugin_id: string, entity_kind: string, entity_id: string, kind: string, } } | { "ev": "terminal.deleted", "data": { id: string, card_id: CardId, } } | { "ev": "plugin.state", "data": { id: string, state: string, 
 /**
  * Crash reason / initialize-rejected message, surfaced to the WS so
  * the UI can show it without a separate `/log` fetch. `None` for
@@ -205,9 +205,45 @@ kind: string,
  */
 payload: unknown, updated_at: number, };
 
-export type Wave = { id: WaveId, cove_id: CoveId, title: string, sort: number, archived_at: number | null, created_at: number, updated_at: number, };
+export type Wave = { id: WaveId, cove_id: CoveId, title: string, sort: number, archived_at: number | null, 
+/**
+ * Issue #145 — the wave's lifecycle state. **Required** (no
+ * `Option`): every wave-creating code path must seed
+ * [`WaveLifecycle::Draft`] explicitly. Per the project's
+ * "required over Option" preference, Option here would silently
+ * hide missing-data bugs — the field is core kernel contract.
+ *
+ * `#[serde(default)]` lets wire payloads emitted before #145
+ * landed (event-log replay fixtures) parse as `Draft` without
+ * forcing a fixture rewrite — matches the DB DEFAULT in
+ * migration 0012.
+ */
+lifecycle: WaveLifecycle, created_at: number, updated_at: number, };
 
 /**
  * Wave identifier. See [`CoveId`] for the opacity contract.
  */
 export type WaveId = string;
+
+/**
+ * Issue #145 — Wave lifecycle state machine.
+ *
+ * One explicit state per wave, advanced through a typed state machine
+ * (see `crate::wave_lifecycle`). The Spec Agent drives the happy path
+ * (`draft → planning → dispatching → working → reviewing → done`);
+ * the user can cancel any non-terminal state and reopen terminals;
+ * worker cards have no authority to touch this field at all.
+ *
+ * **`archived` is intentionally NOT a lifecycle state.** Archive is
+ * visibility / history management, orthogonal to execution semantics —
+ * a `done`/`failed`/`canceled` wave can also be archived without
+ * destroying the lifecycle truth. Archival continues to live on the
+ * existing `archived_at: Option<i64>` field.
+ *
+ * Persisted as a lowercase string in `waves.lifecycle` (migration
+ * 0012). The serde + sqlx `rename_all = "lowercase"` keeps the wire
+ * and storage shape stable; ts-rs exports the matching TS union into
+ * `web/src/api/generated-events.ts` so the frontend can render the
+ * badge against the same vocabulary.
+ */
+export type WaveLifecycle = "draft" | "planning" | "dispatching" | "working" | "blocked" | "reviewing" | "done" | "canceled" | "failed";

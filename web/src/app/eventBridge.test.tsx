@@ -203,6 +203,8 @@ describe('EventBridge', () => {
         title: 'Hello',
         sort: 0,
         archived_at: null,
+        // Issue #145 — `lifecycle` is now part of the wave wire shape.
+        lifecycle: 'draft',
         created_at: 1,
         updated_at: 2,
       },

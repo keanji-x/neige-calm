@@ -47,7 +47,7 @@
 //! issue #5.
 
 use crate::ids::{ActorId, CardId, CoveId, WaveId};
-use crate::model::{Card, Cove, Overlay, Wave};
+use crate::model::{Card, Cove, Overlay, Wave, WaveLifecycle};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::broadcast;
@@ -278,6 +278,31 @@ pub enum Event {
     #[serde(rename = "wave.deleted")]
     WaveDeleted { id: WaveId, cove_id: CoveId },
 
+    /// Issue #145 — explicit Wave lifecycle transition.
+    ///
+    /// Emitted exactly once per (validated) `from → to` change. Carries
+    /// the wave id + the typed `from` / `to` so reducers downstream can
+    /// drive UI updates without re-parsing every `WaveUpdated` payload.
+    /// Wave-scoped: routes to `wave:<id>` and `cove:<cove>` subscribers.
+    ///
+    /// The state machine that gates which (from, to, actor) triples
+    /// produce this envelope lives in `crate::wave_lifecycle`. Illegal
+    /// transitions surface as `CalmError::Forbidden` at the call site
+    /// and **no event is persisted**.
+    ///
+    /// Cleaner than overloading `WaveUpdated`: lifecycle subscribers
+    /// (sidebar pills, Today schedule, the spec agent's own status
+    /// loop) can filter on `kind = wave.lifecycle_changed` without
+    /// inspecting every wave-row update for a possibly-unchanged
+    /// `lifecycle` field.
+    #[serde(rename = "wave.lifecycle_changed")]
+    WaveLifecycleChanged {
+        id: WaveId,
+        cove_id: CoveId,
+        from: WaveLifecycle,
+        to: WaveLifecycle,
+    },
+
     #[serde(rename = "card.added")]
     CardAdded(Card),
     #[serde(rename = "card.updated")]
@@ -424,6 +449,7 @@ impl Event {
             Event::CoveDeleted { .. } => "cove.deleted",
             Event::WaveUpdated(_) => "wave.updated",
             Event::WaveDeleted { .. } => "wave.deleted",
+            Event::WaveLifecycleChanged { .. } => "wave.lifecycle_changed",
             Event::CardAdded(_) => "card.added",
             Event::CardUpdated(_) => "card.updated",
             Event::CardDeleted { .. } => "card.deleted",
@@ -493,6 +519,12 @@ pub fn topics(ev: &Event) -> Vec<String> {
             "*".into(),
         ],
         Event::WaveDeleted { id, cove_id } => vec![
+            format!("wave:{}", id),
+            format!("cove:{}", cove_id),
+            "*".into(),
+        ],
+
+        Event::WaveLifecycleChanged { id, cove_id, .. } => vec![
             format!("wave:{}", id),
             format!("cove:{}", cove_id),
             "*".into(),

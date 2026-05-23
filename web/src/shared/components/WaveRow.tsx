@@ -3,6 +3,7 @@ import { CardStatusDot } from './CardStatusDot';
 import { CloseIcon } from './CloseIcon';
 import { ProgressBar } from './ProgressBar';
 import { WaveGlyph } from './WaveGlyph';
+import { WaveLifecycleBadge } from './WaveLifecycleBadge';
 
 // ---------------- WaveRow ----------------
 
@@ -88,6 +89,15 @@ export function WaveRow({
               {showNow && <span>{wave.now}</span>}
             </div>
           )}
+          {/* Issue #145 — secondary lifecycle pill on the wave row.
+              `compact` skips the leading dot so we don't double up
+              with the row's own status glyph on the left. The badge
+              shows up regardless of `now`/`cove` so the row's
+              lifecycle is always visible (the only "always present"
+              wave-level state). */}
+          <div className="s">
+            <WaveLifecycleBadge lifecycle={wave.lifecycle} compact />
+          </div>
         </div>
         {(showProgress || showEta) && (
           <div

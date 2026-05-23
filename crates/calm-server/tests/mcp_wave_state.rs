@@ -487,3 +487,161 @@ async fn update_task_meta_worker_refused_at_mcp_entry() {
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("Spec"));
 }
+
+// ---------------------------------------------------------------------------
+// Issue #145 — lifecycle transitions via update_wave_state
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn new_wave_defaults_to_draft_lifecycle() {
+    let boot = boot().await;
+    let wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        wave.lifecycle,
+        calm_server::model::WaveLifecycle::Draft,
+        "freshly minted wave starts in Draft"
+    );
+}
+
+#[tokio::test]
+async fn update_wave_state_lifecycle_happy_path_emits_change_event() {
+    let boot = boot().await;
+    let mut rx = boot.ctx.events.subscribe();
+
+    let out = call_tool(
+        &boot,
+        TOOL_UPDATE_WAVE_STATE,
+        spec_identity(&boot),
+        json!({"lifecycle": "planning"}),
+    )
+    .await
+    .expect("spec can drive draft -> planning");
+    assert_eq!(out.get("ok").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        out.get("wave")
+            .and_then(|w| w.get("lifecycle"))
+            .and_then(Value::as_str),
+        Some("planning"),
+        "response carries the new lifecycle"
+    );
+
+    // First envelope: WaveLifecycleChanged. Second envelope: WaveUpdated.
+    let env1 = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("bus delivers")
+        .expect("bus open");
+    match env1.event {
+        Event::WaveLifecycleChanged {
+            ref id,
+            ref cove_id,
+            from,
+            to,
+        } => {
+            assert_eq!(id, &boot.wave_id);
+            assert_eq!(cove_id, &boot.cove_id);
+            assert_eq!(from, calm_server::model::WaveLifecycle::Draft);
+            assert_eq!(to, calm_server::model::WaveLifecycle::Planning);
+        }
+        other => panic!("expected WaveLifecycleChanged first, got {other:?}"),
+    }
+
+    let env2 = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("bus delivers")
+        .expect("bus open");
+    assert!(matches!(env2.event, Event::WaveUpdated(_)));
+
+    // DB is also persisted.
+    let persisted = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        persisted.lifecycle,
+        calm_server::model::WaveLifecycle::Planning
+    );
+}
+
+#[tokio::test]
+async fn update_wave_state_lifecycle_illegal_transition_refused_no_persistence() {
+    let boot = boot().await;
+    let mut rx = boot.ctx.events.subscribe();
+
+    // draft -> done is illegal regardless of actor — the validator
+    // catches it before the row is written.
+    let err = call_tool(
+        &boot,
+        TOOL_UPDATE_WAVE_STATE,
+        spec_identity(&boot),
+        json!({"lifecycle": "done"}),
+    )
+    .await
+    .expect_err("draft -> done must be refused");
+    assert_eq!(err.code, -32403, "forbidden code");
+    assert!(
+        err.message.to_lowercase().contains("lifecycle"),
+        "error mentions lifecycle: {err:?}"
+    );
+
+    // DB row unchanged.
+    let persisted = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        persisted.lifecycle,
+        calm_server::model::WaveLifecycle::Draft,
+        "lifecycle still Draft — no row write"
+    );
+
+    // No envelope on the bus (commit-then-emit holds when the
+    // validator rejects up front).
+    let res = tokio::time::timeout(std::time::Duration::from_millis(150), rx.recv()).await;
+    assert!(
+        res.is_err(),
+        "no event should be broadcast on illegal transition (got {res:?})"
+    );
+}
+
+#[tokio::test]
+async fn update_wave_state_lifecycle_worker_actor_refused() {
+    // Worker cards may not transition lifecycle. The MCP soft gate
+    // refuses *any* update_wave_state call from a worker before we
+    // even reach validate_transition; this test pins that behavior.
+    let boot = boot().await;
+    let err = call_tool(
+        &boot,
+        TOOL_UPDATE_WAVE_STATE,
+        worker_identity(&boot),
+        json!({"lifecycle": "planning"}),
+    )
+    .await
+    .expect_err("worker can't call update_wave_state at all");
+    assert_eq!(err.code, -32602);
+}
+
+#[tokio::test]
+async fn update_wave_state_noop_lifecycle_refused() {
+    // Even a same-state lifecycle patch is rejected — `NoOp` arm of
+    // the validator. Clients that want to bump `updated_at` only
+    // should leave `lifecycle` absent.
+    let boot = boot().await;
+    let err = call_tool(
+        &boot,
+        TOOL_UPDATE_WAVE_STATE,
+        spec_identity(&boot),
+        json!({"lifecycle": "draft"}),
+    )
+    .await
+    .expect_err("noop lifecycle rejected");
+    assert_eq!(err.code, -32403);
+}

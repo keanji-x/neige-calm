@@ -2,6 +2,29 @@
 // Mirrors the design's seed data shape; renamed Sea → Cove.
 
 /**
+ * Issue #145 — Wave lifecycle state machine.
+ *
+ * Mirrors the Rust `WaveLifecycle` enum (`crates/calm-server/src/model.rs`)
+ * and the ts-rs-emitted union in `api/generated-events.ts`. Keep this
+ * vocabulary 1:1 with the kernel; the Spec Agent drives the happy path
+ * (`draft → planning → dispatching → working → reviewing → done`) and the
+ * UI projects it as a badge on the Wave header / row.
+ *
+ * `archived` is intentionally NOT a lifecycle state — archive is
+ * orthogonal visibility/history management on `Wave.archived_at`.
+ */
+export type WaveLifecycle =
+  | 'draft'
+  | 'planning'
+  | 'dispatching'
+  | 'working'
+  | 'blocked'
+  | 'reviewing'
+  | 'done'
+  | 'canceled'
+  | 'failed';
+
+/**
  * Wave status — kernel itself stores no status; plugins write it via overlays.
  * - `idle`    : no plugin has set status (the default). Visually calm.
  * - `waiting` : an overlay explicitly says the wave is waiting on the user.
@@ -144,6 +167,14 @@ export interface Wave {
   coveId: string;
   title: string;
   status: WaveStatus;
+  /**
+   * Issue #145 — explicit lifecycle stamped by the kernel. Required: every
+   * kernel-shaped wave carries one (defaulted to `'draft'` server-side).
+   * The Wave header + sidebar row render a badge from this; nothing else
+   * in the codebase should derive it (it is _not_ a projection of
+   * card-FSM state — the Spec Agent writes it explicitly).
+   */
+  lifecycle: WaveLifecycle;
   /**
    * Richer FSM state for the new per-card-FSM-driven dot/badge UI. Optional
    * because legacy plugin overlays still use the 3-state `status` field, and

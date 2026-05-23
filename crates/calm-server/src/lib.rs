@@ -48,4 +48,5 @@ pub mod spec_card;
 pub mod state;
 pub mod terminal_sweeper;
 pub mod validation;
+pub mod wave_lifecycle;
 pub mod ws;

@@ -1,0 +1,33 @@
+-- Issue #145 — Wave lifecycle state machine.
+--
+-- Every Wave now carries a single explicit `lifecycle` field that the
+-- Spec Agent (and the user) drive through a typed state machine:
+--
+--   draft → planning → dispatching → working → reviewing → done
+--
+-- with `blocked` / `canceled` / `failed` branches. See
+-- `crates/calm-server/src/wave_lifecycle.rs` for the full transition
+-- table, who may drive each edge, and how the validator runs inside
+-- the write transaction.
+--
+-- Why a typed column and not an overlay projection: the Spec Agent
+-- needs a single source of truth for "what state is this wave in?"
+-- that survives card-FSM noise and rebuilds (overlays are derived
+-- projections; the lifecycle is the kernel's own contract). Wave-level
+-- subscribers (sidebar, Today schedule, dashboard) read this column
+-- via `WaveUpdated` events without re-parsing card payloads or
+-- terminal text.
+--
+-- `archived` deliberately stays OUT of the lifecycle enum — archive is
+-- visibility/history management and orthogonal to execution state. A
+-- done/failed/canceled wave can also be archived (and unarchived);
+-- archival continues to live on the existing `archived_at` column.
+--
+-- All existing wave rows backfill to 'draft' via the column DEFAULT —
+-- pre-#145 history simply had no lifecycle, so 'draft' is the most
+-- honest seed (the user hadn't kicked them off through the Spec Agent
+-- contract yet). Replay of a pre-#145 event log over a fresh DB
+-- arrives at the same outcome: every wave starts as 'draft' until a
+-- `WaveLifecycleChanged` event advances it.
+
+ALTER TABLE waves ADD COLUMN lifecycle TEXT NOT NULL DEFAULT 'draft';

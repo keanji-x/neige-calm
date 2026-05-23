@@ -50,6 +50,7 @@ use crate::routes::settings::load_settings;
 use crate::spec_card::{build_codex_env_map, seed_and_spawn_spec_daemon};
 use crate::state::AppState;
 use crate::terminal_sweeper::reap_terminal_artifacts;
+use crate::wave_lifecycle::validate_transition;
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -353,17 +354,55 @@ pub(crate) async fn update_wave(
         wave: existing.id.clone(),
         cove: existing.cove_id.clone(),
     };
-    let (wave, _id) = write_with_event_typed(
+    let actor_id = actor.to_actor_id();
+
+    // Issue #145 — lifecycle transitions go through a typed state
+    // machine. The validator runs *before* the write so an illegal
+    // transition surfaces as `Forbidden` without persisting either
+    // the row update or the event. If `p.lifecycle == Some(same)`
+    // (no-op), the validator's `NoOp` arm still rejects — clients
+    // that want a metadata-only update should leave `lifecycle: None`
+    // and patch only the other fields.
+    let lifecycle_change = if let Some(to) = p.lifecycle {
+        validate_transition(existing.lifecycle, to, &actor_id)
+            .map_err(|e| CalmError::Forbidden(format!("wave lifecycle: {e}")))?;
+        Some((existing.lifecycle, to))
+    } else {
+        None
+    };
+
+    // When a lifecycle change is part of the patch we emit *two*
+    // events from the same txn: a `WaveLifecycleChanged` so dedicated
+    // subscribers don't have to inspect every `WaveUpdated`, plus the
+    // usual `WaveUpdated` so cache invalidation still sees the new
+    // row shape. Both share scope + actor; both land or neither does.
+    let cove_id_for_event = existing.cove_id.clone();
+    let wave_id_for_event = existing.id.clone();
+    let p_for_tx = p.clone();
+    let (wave, _ids) = write_with_events_typed(
         s.repo.as_ref(),
-        actor.to_actor_id(),
-        scope,
+        actor_id,
         None,
         &s.events,
         &s.card_role_cache,
         move |tx| {
+            let scope = scope.clone();
             Box::pin(async move {
-                let wave = wave_update_tx(tx, &id, p).await?;
-                Ok((wave.clone(), Event::WaveUpdated(wave)))
+                let wave = wave_update_tx(tx, &id, p_for_tx).await?;
+                let mut events: Vec<(EventScope, Event)> = Vec::new();
+                if let Some((from, to)) = lifecycle_change {
+                    events.push((
+                        scope.clone(),
+                        Event::WaveLifecycleChanged {
+                            id: wave_id_for_event.clone(),
+                            cove_id: cove_id_for_event.clone(),
+                            from,
+                            to,
+                        },
+                    ));
+                }
+                events.push((scope, Event::WaveUpdated(wave.clone())));
+                Ok((wave, events))
             })
         },
     )

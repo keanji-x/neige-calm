@@ -950,6 +950,19 @@ export interface components {
             /** Format: int64 */
             created_at: number;
             id: string;
+            /**
+             * @description Issue #145 — the wave's lifecycle state. **Required** (no
+             *     `Option`): every wave-creating code path must seed
+             *     [`WaveLifecycle::Draft`] explicitly. Per the project's
+             *     "required over Option" preference, Option here would silently
+             *     hide missing-data bugs — the field is core kernel contract.
+             *
+             *     `#[serde(default)]` lets wire payloads emitted before #145
+             *     landed (event-log replay fixtures) parse as `Draft` without
+             *     forcing a fixture rewrite — matches the DB DEFAULT in
+             *     migration 0012.
+             */
+            lifecycle?: components["schemas"]["WaveLifecycle"];
             /** Format: double */
             sort: number;
             title: string;
@@ -965,6 +978,29 @@ export interface components {
             overlays: components["schemas"]["Overlay"][];
             wave: components["schemas"]["Wave"];
         };
+        /**
+         * @description Issue #145 — Wave lifecycle state machine.
+         *
+         *     One explicit state per wave, advanced through a typed state machine
+         *     (see `crate::wave_lifecycle`). The Spec Agent drives the happy path
+         *     (`draft → planning → dispatching → working → reviewing → done`);
+         *     the user can cancel any non-terminal state and reopen terminals;
+         *     worker cards have no authority to touch this field at all.
+         *
+         *     **`archived` is intentionally NOT a lifecycle state.** Archive is
+         *     visibility / history management, orthogonal to execution semantics —
+         *     a `done`/`failed`/`canceled` wave can also be archived without
+         *     destroying the lifecycle truth. Archival continues to live on the
+         *     existing `archived_at: Option<i64>` field.
+         *
+         *     Persisted as a lowercase string in `waves.lifecycle` (migration
+         *     0012). The serde + sqlx `rename_all = "lowercase"` keeps the wire
+         *     and storage shape stable; ts-rs exports the matching TS union into
+         *     `web/src/api/generated-events.ts` so the frontend can render the
+         *     badge against the same vocabulary.
+         * @enum {string}
+         */
+        WaveLifecycle: "draft" | "planning" | "dispatching" | "working" | "blocked" | "reviewing" | "done" | "canceled" | "failed";
         WavePatch: {
             /**
              * Format: int64
@@ -972,6 +1008,7 @@ export interface components {
              *     or omit (`None`) to leave alone.
              */
             archived_at?: number | null;
+            lifecycle?: null | components["schemas"]["WaveLifecycle"];
             /** Format: double */
             sort?: number | null;
             title?: string | null;

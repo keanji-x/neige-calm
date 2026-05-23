@@ -292,4 +292,69 @@ describe('entity sub-schemas', () => {
     };
     expect(waveSchema.parse(w).archived_at).toBeNull();
   });
+
+  // ---------------- Issue #145 — Wave lifecycle ----------------
+
+  it('waveSchema defaults `lifecycle` to "draft" when the field is missing', () => {
+    // Pre-#145 wire payloads (event-log replay fixtures from older
+    // kernels, recorded sessions) carry no `lifecycle`. The schema
+    // default + the Rust struct's `#[serde(default)]` keep them
+    // parseable; the parsed value is always `draft` for the back-
+    // compat path.
+    const w = {
+      id: 'w1',
+      cove_id: 'c1',
+      title: 't',
+      sort: 0,
+      archived_at: null,
+      created_at: 1,
+      updated_at: 2,
+    };
+    expect(waveSchema.parse(w).lifecycle).toBe('draft');
+  });
+
+  it('waveSchema round-trips every lifecycle name', () => {
+    const all = [
+      'draft',
+      'planning',
+      'dispatching',
+      'working',
+      'blocked',
+      'reviewing',
+      'done',
+      'canceled',
+      'failed',
+    ] as const;
+    for (const lc of all) {
+      const w = {
+        id: 'w1',
+        cove_id: 'c1',
+        title: 't',
+        sort: 0,
+        archived_at: null,
+        lifecycle: lc,
+        created_at: 1,
+        updated_at: 2,
+      };
+      expect(waveSchema.parse(w).lifecycle).toBe(lc);
+    }
+  });
+
+  it('wireEventSchema parses wave.lifecycle_changed envelopes', () => {
+    const env = {
+      ev: 'wave.lifecycle_changed',
+      data: {
+        id: 'w1',
+        cove_id: 'c1',
+        from: 'draft',
+        to: 'planning',
+      },
+    };
+    const parsed = wireEventSchema.parse(env);
+    expect(parsed.ev).toBe('wave.lifecycle_changed');
+    if (parsed.ev === 'wave.lifecycle_changed') {
+      expect(parsed.data.from).toBe('draft');
+      expect(parsed.data.to).toBe('planning');
+    }
+  });
 });
