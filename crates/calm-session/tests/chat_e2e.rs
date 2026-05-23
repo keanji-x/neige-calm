@@ -80,8 +80,17 @@ fn node_available() -> bool {
         .unwrap_or(false)
 }
 
+/// Generous timeout for daemon→client frame reads. The stub itself is
+/// instant, but the live path (`session_init` not buffered before WS
+/// attach, see comment near the call site) ends up gated on Node cold
+/// start + pipe flush, which can spike to several seconds on contended
+/// CI runners. 5s was occasionally tight (issue #240); 20s gives ~10x
+/// headroom over the realistic worst case while still bounding hangs
+/// well under tokio's default 60s test timeout.
+const FRAME_READ_TIMEOUT: Duration = Duration::from_secs(20);
+
 async fn read_chat_event(rd: &mut tokio::net::unix::OwnedReadHalf) -> String {
-    match timeout(Duration::from_secs(5), read_frame::<DaemonMsg, _>(rd))
+    match timeout(FRAME_READ_TIMEOUT, read_frame::<DaemonMsg, _>(rd))
         .await
         .expect("daemon frame timeout")
         .expect("daemon frame decode")
@@ -136,7 +145,7 @@ async fn chat_user_message_round_trips_through_runner() {
     write_frame(&mut wr, &chat_hello(&id.to_string()))
         .await
         .unwrap();
-    let hello = timeout(Duration::from_secs(5), read_frame::<DaemonMsg, _>(&mut rd))
+    let hello = timeout(FRAME_READ_TIMEOUT, read_frame::<DaemonMsg, _>(&mut rd))
         .await
         .expect("HelloChat timeout")
         .unwrap();
@@ -201,7 +210,7 @@ async fn chat_user_message_round_trips_through_runner() {
     assert!(stop_ack.contains("stub_stop"), "got: {stop_ack}");
 
     // Daemon detects child exit and forwards ChildExited.
-    let exit = timeout(Duration::from_secs(5), read_frame::<DaemonMsg, _>(&mut rd))
+    let exit = timeout(FRAME_READ_TIMEOUT, read_frame::<DaemonMsg, _>(&mut rd))
         .await
         .expect("ChildExited timeout")
         .unwrap();
