@@ -1935,7 +1935,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "`\"terminal\"` for built-in PTY cards, `\"plugin:<plugin-id>:<view-id>\"`\nfor plugin-provided cards. Kernel never interprets beyond that prefix."
+            "description": "`\"terminal\"` for built-in PTY cards, `\"ui://<plugin>/<view>\"` for\nplugin-provided cards (the canonical MCP Apps resource URI). The\nkernel never interprets beyond that prefix. `[legacy]`\n`\"plugin:<plugin-id>:<view-id>\"` may also appear on rows persisted\nbefore the M4 cut-over and in server-side perms/manifest enforcement\n— see `docs/architecture/terminology-glossary.md` (plugin card kind)."
           },
           "payload": {
             "type": "object",
