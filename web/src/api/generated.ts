@@ -2039,7 +2039,7 @@ export interface operations {
                     "application/json": Record<string, never>;
                 };
             };
-            /** @description Non-neige.* tool requested from iframe */
+            /** @description Tool outside iframe-allowed scope (non-neige.* namespace, or not in manifest's permissions.tools) */
             403: {
                 headers: {
                     [name: string]: unknown;
