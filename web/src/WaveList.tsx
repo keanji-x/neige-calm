@@ -44,6 +44,7 @@
 
 import { useCallback, useMemo, useRef } from 'react';
 import { useRovingTabindex } from './ui/hooks/useRovingTabindex';
+import { CloseIcon } from './shared/components/CloseIcon';
 import { WaveCard } from './shared/components/WaveCard';
 import { UnknownCard } from './cards/UnknownCard';
 import { dlog } from './util/debug';
@@ -253,7 +254,7 @@ export function WaveList({
                 title="Remove panel"
                 aria-label={`Remove ${name}`}
               >
-                {'×'}
+                <CloseIcon />
               </button>
               {slot.kind === 'card' ? (
                 <WaveCard card={slot.card} />

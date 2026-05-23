@@ -37,6 +37,7 @@ import { createContext, useContext, useEffect, useMemo, useRef } from 'react';
 import type { RefObject } from 'react';
 import { useState } from '../../shared/state';
 import { createPortal } from 'react-dom';
+import { CloseIcon } from '../../shared/components/CloseIcon';
 
 export interface DialogProps {
   open: boolean;
@@ -368,7 +369,7 @@ export function Dialog({
                 aria-label="Close"
                 onClick={onClose}
               >
-                ×
+                <CloseIcon />
               </button>
             </div>
           )}
