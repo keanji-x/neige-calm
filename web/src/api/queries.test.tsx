@@ -148,6 +148,77 @@ describe('useWaveDetailQuery', () => {
     await waitFor(() => expect(result.current.data).toBeDefined());
     expect(api.getWaveDetail).toHaveBeenCalledWith('w1');
   });
+
+  it('keeps previous data visible across an invalidate-driven refetch (#177)', async () => {
+    // Regression guard for the `placeholderData: keepPreviousData` flip.
+    // Without it, an `invalidateQueries({ queryKey: ['wave', 'w1'] })`
+    // call would briefly surface `data: undefined` for the duration of
+    // the refetch — exactly the "subtree unmount" trigger that wiped
+    // XtermView's `pendingThemeRef` / `sendRef` and dropped the in-
+    // flight theme dispatch in the #177 bug chain.
+    const firstSnapshot = {
+      wave: {
+        id: 'w1',
+        cove_id: 'c1',
+        title: 'first',
+        sort: 0,
+        archived_at: null,
+        created_at: 1,
+        updated_at: 2,
+      },
+      cards: [],
+      overlays: [],
+    };
+    const secondSnapshot = {
+      wave: { ...firstSnapshot.wave, title: 'second', updated_at: 3 },
+      cards: [],
+      overlays: [],
+    };
+    // Two resolutions: initial mount + post-invalidate refetch. Use a
+    // delayed second promise so we can poll the hook state across the
+    // refetch window before letting it settle.
+    let releaseSecond!: (value: typeof secondSnapshot) => void;
+    const secondPromise = new Promise<typeof secondSnapshot>((resolve) => {
+      releaseSecond = resolve;
+    });
+    (api.getWaveDetail as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(firstSnapshot)
+      .mockReturnValueOnce(secondPromise);
+
+    const client = makeClient();
+    const { result } = renderHook(() => useWaveDetailQuery('w1'), {
+      wrapper: wrapper(client),
+    });
+
+    await waitFor(() =>
+      expect(result.current.data?.wave.title).toBe('first'),
+    );
+
+    // Kick off the refetch via invalidate. The returned promise only
+    // resolves after the refetch settles, so we don't await it here.
+    // Instead, we poll `result.current.data` to confirm it stays
+    // defined across the refetch window — that's the core invariant
+    // `placeholderData: keepPreviousData` provides.
+    const invalidated = client.invalidateQueries({
+      queryKey: queryKeys.waveDetail('w1'),
+    });
+
+    // Poll a few ticks; if `placeholderData` is missing, `data` would
+    // briefly flip to `undefined`. Polling avoids racing the initial
+    // refetch microtask.
+    for (let i = 0; i < 5; i += 1) {
+      await new Promise((r) => setTimeout(r, 10));
+      expect(result.current.data).toBeDefined();
+      expect(result.current.data!.wave.title).toBe('first');
+    }
+
+    // Release the second resolution; the hook should swap to the new data.
+    releaseSecond(secondSnapshot);
+    await invalidated;
+    await waitFor(() =>
+      expect(result.current.data?.wave.title).toBe('second'),
+    );
+  });
 });
 
 // --- mutations ----------------------------------------------------------
