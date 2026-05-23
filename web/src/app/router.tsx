@@ -283,6 +283,8 @@ function SettingsComponent() {
 }
 
 function WaveComponent() {
+  // eslint-disable-next-line no-console
+  console.warn('[#177 WaveComponent render]');
   const go = useGo();
   const { waveId } = useParams({ from: waveRoute.id });
   const detailQ = useWaveDetailQuery(waveId);

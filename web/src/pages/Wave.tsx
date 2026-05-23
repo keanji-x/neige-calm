@@ -97,6 +97,8 @@ export function WavePage({
   onRenameWave?: (waveId: string, title: string) => void | Promise<void>;
   onDeleteWave?: (waveId: string) => void | Promise<void>;
 }) {
+  // eslint-disable-next-line no-console
+  console.warn('[#177 WavePage render]', { waveId: wave.id });
   const pct = Math.round(wave.progress * 100);
   const cards: WaveCardSlot[] = wave.cards || [];
   // Schema-driven AddPanel selections open a modal SchemaForm — kept in
