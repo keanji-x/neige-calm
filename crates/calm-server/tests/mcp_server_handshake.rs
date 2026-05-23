@@ -76,6 +76,7 @@ async fn boot() -> Boot {
             cove_id: cove.id.clone(),
             title: "mcp-handshake-test".into(),
             sort: None,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
@@ -103,6 +104,7 @@ async fn boot() -> Boot {
         // wave-create path (`routes/waves.rs`).
         false,
         &card_role_cache,
+        calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
     .expect("mint spec card");

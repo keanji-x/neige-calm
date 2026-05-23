@@ -176,7 +176,7 @@ async fn post_api_waves_spec_terminal_has_daemon_handle_before_response() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "sync-spawn wave"}),
+        json!({"cove_id": boot.cove_id, "title": "sync-spawn wave", "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     // Real daemon binary → spawn succeeds (the daemon binds its socket
@@ -273,7 +273,7 @@ async fn ws_revive_path_does_not_trigger_respawn_for_freshly_created_wave() {
     let (status, _) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "ws-race wave"}),
+        json!({"cove_id": boot.cove_id, "title": "ws-race wave", "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -369,7 +369,7 @@ async fn post_api_waves_threads_title_into_spec_card_prompt_payload() {
     let (status, _body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": title}),
+        json!({"cove_id": boot.cove_id, "title": title, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -425,7 +425,7 @@ async fn whitespace_title_does_not_stamp_prompt_on_spec_card() {
     let (status, _body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "   "}),
+        json!({"cove_id": boot.cove_id, "title": "   ", "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     // The wave create may still 500 because the daemon child fails to

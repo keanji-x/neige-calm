@@ -67,6 +67,7 @@ async fn boot() -> (
             cove_id: cove.id.clone(),
             title: "dispatcher-test".into(),
             sort: None,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();

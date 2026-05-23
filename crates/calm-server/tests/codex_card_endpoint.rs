@@ -88,6 +88,7 @@ async fn boot_with_daemon(session_daemon_bin: PathBuf) -> Boot {
             cove_id: cove.id,
             title: "endpoint-test".into(),
             sort: None,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
@@ -160,7 +161,7 @@ async fn post_codex_card_atomic_returns_card_with_linked_payload() {
     let (status, card) = post(
         boot.app.clone(),
         format!("/api/waves/{}/codex-cards", boot.wave_id),
-        json!({ "cwd": "/workspace", "sort": 1.0 }),
+        json!({ "cwd": "/workspace", "sort": 1.0, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={card:?}");
@@ -202,7 +203,7 @@ async fn post_codex_card_atomic_emits_single_card_added_event() {
     let (status, _card) = post(
         boot.app.clone(),
         format!("/api/waves/{}/codex-cards", boot.wave_id),
-        json!({ "cwd": "/workspace", "sort": 1.0 }),
+        json!({ "cwd": "/workspace", "sort": 1.0, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -272,7 +273,7 @@ async fn post_codex_card_atomic_returns_500_on_daemon_spawn_failure_but_persists
     let (status, body) = post(
         boot.app.clone(),
         format!("/api/waves/{}/codex-cards", boot.wave_id),
-        json!({ "cwd": "/workspace" }),
+        json!({ "cwd": "/workspace", "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(
@@ -313,7 +314,7 @@ async fn post_codex_card_atomic_404_on_unknown_wave() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves/wave_does_not_exist/codex-cards".to_string(),
-        json!({}),
+        json!({ "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body:?}");
@@ -351,7 +352,7 @@ async fn post_codex_card_atomic_rejects_control_chars_in_cwd() {
         let (status, body) = post(
             boot.app.clone(),
             format!("/api/waves/{}/codex-cards", boot.wave_id),
-            json!({ "cwd": cwd, "prompt": "hi" }),
+            json!({ "cwd": cwd, "prompt": "hi", "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
         )
         .await;
         assert_eq!(
@@ -380,8 +381,9 @@ async fn post_codex_card_atomic_defaults_cwd_to_home() {
     let (status, card) = post(
         boot.app.clone(),
         format!("/api/waves/{}/codex-cards", boot.wave_id),
-        // Empty body — every field falls back to its default.
-        json!({}),
+        // Only required field (#177): theme. Every other field falls
+        // back to its default (cwd → $HOME, prompt → user-initiated).
+        json!({ "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={card:?}");

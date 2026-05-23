@@ -71,6 +71,7 @@ async fn boot_with_role(role: CardRole) -> CardBoot {
             cove_id: cove.id.clone(),
             title: "mcp-emit-test".into(),
             sort: None,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
@@ -94,6 +95,7 @@ async fn boot_with_role(role: CardRole) -> CardBoot {
         // the `false` path.
         true,
         &card_role_cache,
+        calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
     .expect("mint card");
@@ -110,6 +112,7 @@ async fn boot_with_role(role: CardRole) -> CardBoot {
         CardRole::Worker,
         true,
         &card_role_cache,
+        calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
     .expect("mint sidekick card");
