@@ -58,6 +58,16 @@ path = "tests/fixtures/stub-plugin-toolcall/main.rs"
 name = "argv-recorder-daemon"
 path = "tests/fixtures/argv-recorder-daemon/main.rs"
 
+# #177 e2e OSC roundtrip child: runs inside a real calm-session-daemon PTY,
+# performs the OSC 11 (default background) startup probe codex does, and
+# writes "OK" / "FAIL" to a sidecar result file the test driver polls. Used
+# by `tests/theme_osc_roundtrip.rs` — the only test that exercises the
+# full byte-level chain from `--terminal-fg/bg` argv through the daemon's
+# vte parser to a real PTY child's stdin.
+[[bin]]
+name = "osc-probe-child"
+path = "tests/fixtures/osc-probe-child/main.rs"
+
 [dependencies]
 # HTTP / WS
 axum = { version = "0.8", features = ["ws", "macros"] }
@@ -152,6 +162,13 @@ calm-session = { path = "../calm-session" }
 # described in design doc §2.4.
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["signal"] }
+# Required by the `osc-probe-child` test fixture bin (tests/fixtures/
+# osc-probe-child/main.rs) for raw termios + poll(2) syscalls. The
+# fixture is a `[[bin]]` of this crate so its deps must live here, not
+# under [dev-dependencies]. libc is already in the transitive graph via
+# tokio/sqlx; declaring it explicitly costs nothing and keeps the bin
+# self-contained. Production code paths in `calm-server` don't import it.
+libc = "0.2"
 
 [dev-dependencies]
 # Self-loop to auto-enable the `fixtures` feature when building

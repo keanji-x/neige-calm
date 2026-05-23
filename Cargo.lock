@@ -312,6 +312,7 @@ dependencies = [
  "futures-util",
  "hex",
  "http-body-util",
+ "libc",
  "nix 0.29.0",
  "rand 0.8.6",
  "semver",
