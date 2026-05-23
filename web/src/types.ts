@@ -191,6 +191,21 @@ export interface Wave {
    * else in the codebase should re-derive it.
    */
   lifecycle: WaveLifecycle;
+  /**
+   * Issue #254 — `true` when any card under this wave is in
+   * `AwaitingInput` or `Errored`. Derived from the wave-scoped
+   * `any_card_needs_input` overlay written by `card_fsm`. Required (not
+   * optional) — the adapter defaults it to `false` when the overlay is
+   * absent, matching the [[required-over-option]] convention so a
+   * forgotten field surfaces as a type error rather than silent
+   * `undefined`.
+   *
+   * Pairs with `lifecycle` at the sidebar "Waiting on you" filter
+   * (`waveNeedsUserAttention` in `shared/lifecycle.ts`): the two signals
+   * are orthogonal (Spec Agent owns lifecycle, card_fsm owns this) and
+   * OR'd together at the UI layer.
+   */
+  anyCardNeedsInput: boolean;
   progress: number;
   eta: string;
   now: string;

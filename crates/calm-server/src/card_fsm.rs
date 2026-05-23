@@ -10,10 +10,22 @@
 //! kind="status", payload={ state } }`. The codex card head consumes this
 //! overlay directly.
 //!
-//! Wave-level state is owned by the [`WaveLifecycle`](crate::model::WaveLifecycle)
+//! Wave-level lifecycle is owned by the [`WaveLifecycle`](crate::model::WaveLifecycle)
 //! enum stamped on the `waves` row (driven by the Spec Agent) — this projector
-//! deliberately does NOT write wave-level overlays anymore, so there's a single
-//! source of truth for "what's the wave doing right now".
+//! deliberately does NOT write that column. The two responsibilities stay split
+//! cleanly: Spec Agent owns the wave's lifecycle stage, the FSM owns per-card
+//! status, and the two get OR'd at the UI layer for the sidebar "Waiting on
+//! you" grouping (see issue #254).
+//!
+//! On top of the per-card overlay, the projector ALSO writes a single
+//! wave-scoped boolean overlay
+//! `{kind:"any_card_needs_input", payload:{value: bool}}` whenever any card
+//! under the wave is in `AwaitingInput` or `Errored`. This is **not** the old
+//! `recompute_wave` projection that #248 deleted: that one re-projected the
+//! whole 6-state FSM union onto the wave (a dual source of truth with
+//! `WaveLifecycle`). This new overlay is one bool with explicit semantics —
+//! "does any card under this wave currently need a human?" — and is
+//! complementary to lifecycle, not redundant with it (#254).
 //!
 //! ## Scope (phase 1)
 //!
@@ -56,9 +68,11 @@ use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::overlay_upsert_tx;
 use crate::db::{RepoEventWrite, write_with_event_typed};
 use crate::event::{Event, EventBus, EventScope};
-use crate::ids::{ActorId, CardId};
+use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::NewOverlay;
-use crate::validation::OVERLAY_STATUS_SCHEMA_VERSION;
+use crate::validation::{
+    OVERLAY_ANY_CARD_NEEDS_INPUT_SCHEMA_VERSION, OVERLAY_STATUS_SCHEMA_VERSION,
+};
 use crate::wave_cove_cache::WaveCoveCache;
 
 /// Actor stamped on every event the FSM produces. Kernel-internal
@@ -317,11 +331,11 @@ impl Inner {
         });
     }
 
-    /// Commit a card state change: write the card-level overlay. Emits
-    /// `Event::OverlaySet` so the WS bridge invalidates the right queries.
-    /// Wave-level state lives on the kernel `WaveLifecycle` enum and is
-    /// driven by the Spec Agent — this projector does not write wave-level
-    /// overlays.
+    /// Commit a card state change: write the card-level overlay and
+    /// recompute the wave-scoped `any_card_needs_input` aggregate. Both
+    /// writes emit `Event::OverlaySet` so the WS bridge invalidates the
+    /// right queries. The wave-level `WaveLifecycle` column is owned by
+    /// the Spec Agent — this projector still does not touch it.
     async fn commit(&self, card_id: &CardId, state: State) {
         // Look up the owning wave so the audit row carries the full
         // ancestor chain.
@@ -387,10 +401,121 @@ impl Inner {
         {
             tracing::warn!(card_id = %card_id, error = %e, "card_fsm: card overlay_upsert failed");
         }
-        // Wave-level state is owned by `WaveLifecycle` (kernel column on
-        // `waves`, driven by the Spec Agent). The projector deliberately
-        // does NOT write a wave-level overlay so there's a single source
-        // of truth.
+
+        // 2. Wave-scoped `any_card_needs_input` aggregate. Issue #254 —
+        //    OR'd at the UI layer with `WaveLifecycle` for the sidebar
+        //    "Waiting on you" grouping. Does NOT touch the lifecycle
+        //    column, so Spec Agent stays the single source of truth for
+        //    wave-level state.
+        self.recompute_wave_needs_input(&card.wave_id).await;
+    }
+
+    /// Aggregate every tracked card under `wave_id` into a single boolean
+    /// `any_card_needs_input` overlay on the wave. Idempotent: if the
+    /// computed value matches what's already on disk, no write fires
+    /// (and no event is emitted). Issue #254.
+    async fn recompute_wave_needs_input(&self, wave_id: &WaveId) {
+        // Read the current FSM map for cards under this wave. The map is
+        // the live source of truth — overlay rows are derived from it.
+        // Note: only codex cards (phase 1) populate the map, so this
+        // reflects "any tracked card", not "every card under the wave"
+        // — terminal / plugin cards don't currently contribute. When
+        // phase 2 lands they'll start populating the map and this
+        // aggregator will pick them up automatically.
+        let needs_input = {
+            let map = self.map.lock().await;
+            // We need to know which entries belong to this wave. The FSM
+            // map keys by card_id, so we look up the parent for each
+            // entry. To avoid an N-query hop we read it from the repo
+            // once per entry — entries are bounded by per-user active
+            // cards and the call is cheap (single-row indexed lookup).
+            let mut any = false;
+            for (cid, entry) in map.iter() {
+                if matches!(entry.committed, State::AwaitingInput | State::Errored) {
+                    // Confirm parent wave membership before claiming.
+                    match self.repo.card_get(cid.as_ref()).await {
+                        Ok(Some(c)) if &c.wave_id == wave_id => {
+                            any = true;
+                            break;
+                        }
+                        _ => continue,
+                    }
+                }
+            }
+            any
+        };
+
+        // Idempotency: read the existing wave overlay and skip the write
+        // when the boolean is unchanged. Without this the projector
+        // would churn an overlay event on every per-card transition,
+        // even when the wave-level answer didn't move.
+        let existing = match self
+            .repo
+            .overlays_for("wave", wave_id.as_str())
+            .await
+        {
+            Ok(rows) => rows
+                .into_iter()
+                .find(|o| o.kind == "any_card_needs_input" && o.plugin_id == KERNEL_PLUGIN_ID),
+            Err(e) => {
+                tracing::warn!(
+                    wave_id = %wave_id,
+                    error = %e,
+                    "card_fsm: overlays_for(wave) failed during needs_input recompute"
+                );
+                return;
+            }
+        };
+        if let Some(prev) = &existing
+            && prev.payload.get("value").and_then(|v| v.as_bool()) == Some(needs_input)
+        {
+            return; // unchanged — skip the write
+        }
+
+        // Resolve cove for the event scope. On failure, fall back to
+        // `EventScope::System` — same defensive policy as the per-card
+        // overlay write above.
+        let scope = match self.repo.wave_get(wave_id.as_str()).await {
+            Ok(Some(w)) => EventScope::Wave {
+                wave: w.id,
+                cove: w.cove_id,
+            },
+            _ => EventScope::System,
+        };
+        let payload = json!({
+            "schemaVersion": OVERLAY_ANY_CARD_NEEDS_INPUT_SCHEMA_VERSION,
+            "value": needs_input,
+        });
+        let new_overlay = NewOverlay {
+            plugin_id: KERNEL_PLUGIN_ID.to_string(),
+            entity_kind: "wave".to_string(),
+            entity_id: wave_id.to_string(),
+            kind: "any_card_needs_input".to_string(),
+            payload,
+        };
+        if let Err(e) = write_with_event_typed(
+            self.repo.as_ref(),
+            fsm_actor(),
+            scope,
+            None,
+            &self.bus,
+            &self.card_role_cache,
+            &self.wave_cove_cache,
+            move |tx| {
+                Box::pin(async move {
+                    let o = overlay_upsert_tx(tx, new_overlay).await?;
+                    Ok(((), Event::OverlaySet(o)))
+                })
+            },
+        )
+        .await
+        {
+            tracing::warn!(
+                wave_id = %wave_id,
+                error = %e,
+                "card_fsm: any_card_needs_input overlay_upsert failed"
+            );
+        }
     }
 }
 
@@ -627,5 +752,252 @@ mod tests {
         let card_overlays = repo.overlays_for("card", card_id.as_str()).await.unwrap();
         let s = card_overlays.iter().find(|o| o.kind == "status").unwrap();
         assert_eq!(s.payload["state"], "AwaitingInput");
+    }
+
+    // ----- #254 wave-scoped `any_card_needs_input` aggregator ----------------
+
+    #[tokio::test]
+    async fn needs_input_overlay_fires_on_awaiting_input() {
+        let (repo, bus, wave_id, card_id) = setup().await;
+        spawn(
+            repo.clone(),
+            bus.clone(),
+            crate::card_role_cache::CardRoleCache::new(),
+            crate::wave_cove_cache::WaveCoveCache::new(),
+        );
+        tokio::task::yield_now().await;
+
+        bus.emit(
+            ActorId::AiCodex(card_id.clone()),
+            Event::CodexHook {
+                card_id: card_id.clone(),
+                kind: "hook.codex.permission_request".into(),
+                payload: Value::Null,
+            },
+        );
+        tokio::time::sleep(StdDuration::from_millis(150)).await;
+
+        let wave_overlays = repo.overlays_for("wave", wave_id.as_str()).await.unwrap();
+        let o = wave_overlays
+            .iter()
+            .find(|o| o.kind == "any_card_needs_input")
+            .expect("any_card_needs_input overlay written");
+        assert_eq!(o.payload["value"], Value::Bool(true));
+        assert_eq!(o.plugin_id, KERNEL_PLUGIN_ID);
+    }
+
+    #[tokio::test]
+    async fn needs_input_overlay_clears_on_working() {
+        let (repo, bus, wave_id, card_id) = setup().await;
+        spawn(
+            repo.clone(),
+            bus.clone(),
+            crate::card_role_cache::CardRoleCache::new(),
+            crate::wave_cove_cache::WaveCoveCache::new(),
+        );
+        tokio::task::yield_now().await;
+
+        // Drive into AwaitingInput first.
+        bus.emit(
+            ActorId::AiCodex(card_id.clone()),
+            Event::CodexHook {
+                card_id: card_id.clone(),
+                kind: "hook.codex.permission_request".into(),
+                payload: Value::Null,
+            },
+        );
+        tokio::time::sleep(StdDuration::from_millis(150)).await;
+        // Sanity: overlay is true.
+        let v = repo
+            .overlays_for("wave", wave_id.as_str())
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|o| o.kind == "any_card_needs_input")
+            .unwrap()
+            .payload["value"]
+            .clone();
+        assert_eq!(v, Value::Bool(true));
+
+        // pre_tool_use is an upgrade from AwaitingInput? No — Working
+        // has lower severity than AwaitingInput. The 750ms downgrade
+        // window holds it. Sleep past the window.
+        bus.emit(
+            ActorId::AiCodex(card_id.clone()),
+            Event::CodexHook {
+                card_id: card_id.clone(),
+                kind: "hook.codex.pre_tool_use".into(),
+                payload: Value::Null,
+            },
+        );
+        tokio::time::sleep(StdDuration::from_millis(1100)).await;
+
+        let v = repo
+            .overlays_for("wave", wave_id.as_str())
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|o| o.kind == "any_card_needs_input")
+            .unwrap()
+            .payload["value"]
+            .clone();
+        assert_eq!(v, Value::Bool(false));
+    }
+
+    #[tokio::test]
+    async fn needs_input_overlay_is_idempotent() {
+        let (repo, bus, wave_id, card_id) = setup().await;
+        // Subscribe BEFORE spawn so we capture every overlay event from
+        // the moment the FSM is live.
+        let mut rx = bus.subscribe();
+        spawn(
+            repo.clone(),
+            bus.clone(),
+            crate::card_role_cache::CardRoleCache::new(),
+            crate::wave_cove_cache::WaveCoveCache::new(),
+        );
+        tokio::task::yield_now().await;
+
+        // First emit → card goes AwaitingInput, wave overlay flips to true.
+        bus.emit(
+            ActorId::AiCodex(card_id.clone()),
+            Event::CodexHook {
+                card_id: card_id.clone(),
+                kind: "hook.codex.permission_request".into(),
+                payload: Value::Null,
+            },
+        );
+        tokio::time::sleep(StdDuration::from_millis(150)).await;
+
+        // Second emit → STILL AwaitingInput (same severity, no actual
+        // transition), wave aggregate is unchanged. The idempotency
+        // guard should suppress the second overlay write.
+        bus.emit(
+            ActorId::AiCodex(card_id.clone()),
+            Event::CodexHook {
+                card_id: card_id.clone(),
+                kind: "hook.codex.permission_request".into(),
+                payload: Value::Null,
+            },
+        );
+        tokio::time::sleep(StdDuration::from_millis(150)).await;
+
+        // Drain the receiver and count wave-scoped `any_card_needs_input`
+        // OverlaySet events. There should be exactly ONE.
+        let mut wave_overlay_writes = 0usize;
+        while let Ok(env) = rx.try_recv() {
+            if let Event::OverlaySet(ref o) = env.event
+                && o.kind == "any_card_needs_input"
+                && o.entity_kind == "wave"
+                && o.entity_id == wave_id.to_string()
+            {
+                wave_overlay_writes += 1;
+            }
+        }
+        assert_eq!(
+            wave_overlay_writes, 1,
+            "expected exactly one any_card_needs_input write (idempotent), got {wave_overlay_writes}"
+        );
+    }
+
+    #[tokio::test]
+    async fn needs_input_overlay_ors_multiple_cards() {
+        // Two codex cards under the same wave. Driving ONE to
+        // AwaitingInput should light up the wave overlay even while the
+        // other stays Working; flipping both to Working should clear it.
+        let repo: Arc<dyn Repo> =
+            Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+        let bus = EventBus::new();
+        let cove = repo
+            .cove_create(NewCove {
+                name: "c".into(),
+                color: "#000".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let wave = repo
+            .wave_create(NewWave {
+                cove_id: cove.id.clone(),
+                title: "w".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let card_a = repo
+            .card_create(NewCard {
+                wave_id: wave.id.clone(),
+                kind: "codex".into(),
+                sort: None,
+                payload: Value::Null,
+            })
+            .await
+            .unwrap();
+        let card_b = repo
+            .card_create(NewCard {
+                wave_id: wave.id.clone(),
+                kind: "codex".into(),
+                sort: None,
+                payload: Value::Null,
+            })
+            .await
+            .unwrap();
+        spawn(
+            repo.clone(),
+            bus.clone(),
+            crate::card_role_cache::CardRoleCache::new(),
+            crate::wave_cove_cache::WaveCoveCache::new(),
+        );
+        tokio::task::yield_now().await;
+
+        // A → Working, B → AwaitingInput. Wave overlay should be true.
+        bus.emit(
+            ActorId::AiCodex(card_a.id.clone()),
+            Event::CodexHook {
+                card_id: card_a.id.clone(),
+                kind: "hook.codex.pre_tool_use".into(),
+                payload: Value::Null,
+            },
+        );
+        bus.emit(
+            ActorId::AiCodex(card_b.id.clone()),
+            Event::CodexHook {
+                card_id: card_b.id.clone(),
+                kind: "hook.codex.permission_request".into(),
+                payload: Value::Null,
+            },
+        );
+        tokio::time::sleep(StdDuration::from_millis(200)).await;
+        let v = repo
+            .overlays_for("wave", wave.id.as_str())
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|o| o.kind == "any_card_needs_input")
+            .expect("overlay present")
+            .payload["value"]
+            .clone();
+        assert_eq!(v, Value::Bool(true));
+
+        // Flip B back to Working — past the 750ms downgrade window.
+        bus.emit(
+            ActorId::AiCodex(card_b.id.clone()),
+            Event::CodexHook {
+                card_id: card_b.id.clone(),
+                kind: "hook.codex.pre_tool_use".into(),
+                payload: Value::Null,
+            },
+        );
+        tokio::time::sleep(StdDuration::from_millis(1100)).await;
+        let v = repo
+            .overlays_for("wave", wave.id.as_str())
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|o| o.kind == "any_card_needs_input")
+            .unwrap()
+            .payload["value"]
+            .clone();
+        assert_eq!(v, Value::Bool(false));
     }
 }

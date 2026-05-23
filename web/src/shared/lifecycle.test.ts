@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import type { WaveLifecycle } from '../types';
-import { isRunning, isWaitingForUser } from './lifecycle';
+import type { Wave, WaveLifecycle } from '../types';
+import { isRunning, isWaitingForUser, waveNeedsUserAttention } from './lifecycle';
 
 // Exhaustive mapping pinned to a `Record<WaveLifecycle, ...>` literal:
 // adding a new variant to `WaveLifecycle` without a row here is a type
@@ -38,4 +38,68 @@ describe('lifecycle predicates', () => {
       expect(isRunning(state) && isWaitingForUser(state)).toBe(false);
     }
   });
+});
+
+// Issue #254 — `waveNeedsUserAttention` ORs the pure-lifecycle bucket
+// with the kernel-derived `anyCardNeedsInput`. The 4-cell matrix below
+// pins the truth table exhaustively: `false` only when BOTH inputs are
+// false; `true` otherwise. The base-wave fixture uses a lifecycle that
+// is NOT in the `isWaitingForUser` set (`draft` → returns false) so the
+// false-base cases really do exercise the OR.
+function fixture(overrides: Partial<Wave>): Wave {
+  return {
+    id: 'w1',
+    coveId: 'c1',
+    title: 't',
+    lifecycle: 'draft',
+    anyCardNeedsInput: false,
+    progress: 0,
+    eta: '',
+    now: '',
+    ...overrides,
+  };
+}
+
+type Cell = {
+  lifecycle: WaveLifecycle;
+  anyCardNeedsInput: boolean;
+  expected: boolean;
+};
+
+// 2×2 matrix pinned to a Record so a future fifth row (or a forgotten
+// flip) is a type / compile error rather than a silent product
+// regression.
+const matrix: Record<string, Cell> = {
+  'lifecycle=draft, anyCardNeedsInput=false → false': {
+    lifecycle: 'draft',
+    anyCardNeedsInput: false,
+    expected: false,
+  },
+  'lifecycle=draft, anyCardNeedsInput=true → true (card-level signal alone)': {
+    lifecycle: 'draft',
+    anyCardNeedsInput: true,
+    expected: true,
+  },
+  'lifecycle=blocked, anyCardNeedsInput=false → true (lifecycle alone)': {
+    lifecycle: 'blocked',
+    anyCardNeedsInput: false,
+    expected: true,
+  },
+  'lifecycle=reviewing, anyCardNeedsInput=true → true (both)': {
+    lifecycle: 'reviewing',
+    anyCardNeedsInput: true,
+    expected: true,
+  },
+};
+
+describe('waveNeedsUserAttention', () => {
+  for (const [name, { lifecycle, anyCardNeedsInput, expected }] of Object.entries(
+    matrix,
+  )) {
+    it(name, () => {
+      expect(
+        waveNeedsUserAttention(fixture({ lifecycle, anyCardNeedsInput })),
+      ).toBe(expected);
+    });
+  }
 });

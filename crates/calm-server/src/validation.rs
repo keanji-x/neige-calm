@@ -22,6 +22,7 @@
 //! | `Overlay.payload` | `"eta"`       | `{ text: String }` |
 //! | `Overlay.payload` | `"now"`       | `{ text: String }` |
 //! | `Overlay.payload` | `"layout"`    | `{ positions: { <card_id>: { x,y,w,h: u32 }, … } }` |
+//! | `Overlay.payload` | `"any_card_needs_input"` | `{ value: bool }` (wave-scoped — see issue #254) |
 //!
 //! Anything else (`ui://*` cards, plugin-defined overlay kinds) is accepted
 //! unchanged — the validator returns `Ok(())` without inspecting the payload.
@@ -80,6 +81,9 @@ pub const OVERLAY_ETA_SCHEMA_VERSION: u32 = 1;
 pub const OVERLAY_NOW_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Overlay.payload` when `kind == "layout"`.
 pub const OVERLAY_LAYOUT_SCHEMA_VERSION: u32 = 1;
+/// `schemaVersion` for `Overlay.payload` when `kind == "any_card_needs_input"`
+/// — the wave-scoped boolean aggregate written by `card_fsm` (issue #254).
+pub const OVERLAY_ANY_CARD_NEEDS_INPUT_SCHEMA_VERSION: u32 = 1;
 
 /// Return the maximum `schemaVersion` this kernel knows how to interpret for
 /// an overlay `kind`. `Some(N)` for kernel-owned kinds; `None` for
@@ -102,6 +106,7 @@ pub fn max_supported_overlay_schema_version(kind: &str) -> Option<u32> {
         "eta" => Some(OVERLAY_ETA_SCHEMA_VERSION),
         "now" => Some(OVERLAY_NOW_SCHEMA_VERSION),
         "layout" => Some(OVERLAY_LAYOUT_SCHEMA_VERSION),
+        "any_card_needs_input" => Some(OVERLAY_ANY_CARD_NEEDS_INPUT_SCHEMA_VERSION),
         _ => None,
     }
 }
@@ -339,6 +344,28 @@ pub fn validate_overlay_payload(kind: &str, payload: &Value) -> Result<()> {
             check_schema_version(kind, payload, OVERLAY_LAYOUT_SCHEMA_VERSION)?;
             validate_layout_payload(payload)
         }
+        // Issue #254 — wave-scoped aggregate written by `card_fsm`:
+        // `{value: bool}`. Strict shape: missing or wrong-type `value`
+        // rejects so a future contributor can't write a malformed bool
+        // (e.g. {"value": "true"} as a string) that would then need
+        // defensive parsing in every UI consumer.
+        "any_card_needs_input" => {
+            #[derive(Deserialize)]
+            #[allow(dead_code)]
+            #[serde(deny_unknown_fields)]
+            struct AnyCardNeedsInputPayload {
+                #[serde(default)]
+                #[serde(rename = "schemaVersion")]
+                schema_version: Option<u32>,
+                value: bool,
+            }
+            check_schema_version(kind, payload, OVERLAY_ANY_CARD_NEEDS_INPUT_SCHEMA_VERSION)?;
+            serde_json::from_value::<AnyCardNeedsInputPayload>(payload.clone())
+                .map(|_| ())
+                .map_err(|e| {
+                    CalmError::BadRequest(format!("invalid any_card_needs_input payload: {e}"))
+                })
+        }
         // Plugin-defined overlay kinds stay opaque.
         _ => Ok(()),
     }
@@ -569,6 +596,40 @@ mod tests {
     #[test]
     fn now_rejects_wrong_type() {
         let err = validate_overlay_payload("now", &json!({ "text": null })).unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(_)));
+    }
+
+    // ---------------- Overlay: any_card_needs_input ----------------
+
+    #[test]
+    fn any_card_needs_input_happy_true() {
+        validate_overlay_payload("any_card_needs_input", &json!({ "value": true })).unwrap();
+    }
+
+    #[test]
+    fn any_card_needs_input_happy_false() {
+        validate_overlay_payload("any_card_needs_input", &json!({ "value": false })).unwrap();
+    }
+
+    #[test]
+    fn any_card_needs_input_with_schema_version() {
+        validate_overlay_payload(
+            "any_card_needs_input",
+            &json!({ "schemaVersion": 1, "value": true }),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn any_card_needs_input_rejects_missing_value() {
+        let err = validate_overlay_payload("any_card_needs_input", &json!({})).unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(_)));
+    }
+
+    #[test]
+    fn any_card_needs_input_rejects_wrong_type() {
+        let err = validate_overlay_payload("any_card_needs_input", &json!({ "value": "yes" }))
+            .unwrap_err();
         assert!(matches!(err, CalmError::BadRequest(_)));
     }
 
