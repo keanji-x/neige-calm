@@ -46,6 +46,10 @@ async fn protocol_error_targets_offending_client_only() {
         // Per the daemon's own CLI semantics, `--id` is also re-used as
         // the terminal_id by clients. We assert TID == id.to_string()
         // by sending a matching ClientHello.
+        // #177 PR2: terminal-mode daemon now requires theme RGB.
+        // Placeholders — this test doesn't exercise OSC replies.
+        .args(["--terminal-fg", "216,219,226"])
+        .args(["--terminal-bg", "15,20,24"])
         .args(["--cwd", workspace_root().to_string_lossy().as_ref()])
         .args(["--", "sh", "-c", "sleep 60"])
         .stdout(Stdio::null())

@@ -96,6 +96,12 @@ async fn spawn_daemon() -> (tokio::process::Child, std::path::PathBuf, String) {
         .args(["--mode", "terminal"])
         .args(["--id", &id.to_string()])
         .args(["--sock", &sock.to_string_lossy()])
+        // #177 PR2: terminal-mode daemon now requires theme RGB. The
+        // values are placeholders — this test exercises input-ack,
+        // not OSC replies. See `tests/daemon_cli_theme.rs` for the
+        // theme-specific coverage.
+        .args(["--terminal-fg", "216,219,226"])
+        .args(["--terminal-bg", "15,20,24"])
         .args(["--cwd", workspace_root().to_string_lossy().as_ref()])
         .args(["--", "sh", "-c", "sleep 60"])
         .stdout(Stdio::null())
