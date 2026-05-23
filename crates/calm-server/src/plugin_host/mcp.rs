@@ -763,8 +763,11 @@ fn flush_responders_with_error(responders: &ResponderMap, msg: &str) {
 // Framing
 // ---------------------------------------------------------------------------
 
+/// Decoded JSON-RPC frame. `pub(crate)` so PR7a's `mcp_server` reuses the
+/// same parsing logic for the inverse direction (kernel-as-server reading
+/// from the shim's UDS connection).
 #[derive(Debug)]
-enum Frame {
+pub(crate) enum Frame {
     Response {
         id: RequestId,
         body: Result<Value, RpcError>,
@@ -780,7 +783,7 @@ enum Frame {
     },
 }
 
-fn parse_frame(s: &str) -> Result<Frame, String> {
+pub(crate) fn parse_frame(s: &str) -> Result<Frame, String> {
     let v: Value = serde_json::from_str(s).map_err(|e| format!("json parse: {e}"))?;
     let obj = v
         .as_object()
@@ -831,7 +834,7 @@ fn parse_frame(s: &str) -> Result<Frame, String> {
     }
 }
 
-fn build_request_frame(id: &RequestId, method: &str, params: &Value) -> Vec<u8> {
+pub(crate) fn build_request_frame(id: &RequestId, method: &str, params: &Value) -> Vec<u8> {
     let mut s = serde_json::to_string(&json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -843,7 +846,7 @@ fn build_request_frame(id: &RequestId, method: &str, params: &Value) -> Vec<u8> 
     s.into_bytes()
 }
 
-fn build_notification_frame(method: &str, params: &Value) -> Vec<u8> {
+pub(crate) fn build_notification_frame(method: &str, params: &Value) -> Vec<u8> {
     let mut s = serde_json::to_string(&json!({
         "jsonrpc": "2.0",
         "method": method,
@@ -854,7 +857,7 @@ fn build_notification_frame(method: &str, params: &Value) -> Vec<u8> {
     s.into_bytes()
 }
 
-fn build_ok_response_frame(id: &RequestId, result: &Value) -> Vec<u8> {
+pub(crate) fn build_ok_response_frame(id: &RequestId, result: &Value) -> Vec<u8> {
     let mut s = serde_json::to_string(&json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -865,7 +868,7 @@ fn build_ok_response_frame(id: &RequestId, result: &Value) -> Vec<u8> {
     s.into_bytes()
 }
 
-fn build_error_response_frame(id: &RequestId, err: &RpcError) -> Vec<u8> {
+pub(crate) fn build_error_response_frame(id: &RequestId, err: &RpcError) -> Vec<u8> {
     let mut s = serde_json::to_string(&json!({
         "jsonrpc": "2.0",
         "id": id,

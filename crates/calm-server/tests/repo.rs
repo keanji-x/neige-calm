@@ -782,7 +782,10 @@ async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_payload_link(
 
     let card_id = calm_server::model::new_id();
     let mut tx = repo.pool().begin().await.unwrap();
-    let (card, term) = calm_server::db::sqlite::card_with_codex_create_tx(
+    // PR7a (#136) — third tuple slot is the raw per-card MCP token;
+    // `CardRole::Plain` always returns `None` (the helper only mints
+    // a token for Spec / Worker cards).
+    let (card, term, mcp_token) = calm_server::db::sqlite::card_with_codex_create_tx(
         &mut tx,
         card_id.clone(),
         w.id.clone(),
@@ -797,6 +800,10 @@ async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_payload_link(
     .expect("atomic codex create");
     tx.commit().await.unwrap();
 
+    assert!(
+        mcp_token.is_none(),
+        "Plain cards must not mint an MCP token (PR7a invariant); got {mcp_token:?}"
+    );
     assert_eq!(card.id.as_str(), card_id, "caller-supplied id must persist");
     let got_card = repo
         .card_get(card.id.as_str())
@@ -868,7 +875,9 @@ async fn card_with_codex_create_tx_uses_caller_supplied_sort() {
 
     let card_id = calm_server::model::new_id();
     let mut tx = repo.pool().begin().await.unwrap();
-    let (card, _term) = calm_server::db::sqlite::card_with_codex_create_tx(
+    // PR7a (#136) — third tuple slot is the raw per-card MCP token;
+    // unused here (Plain card path).
+    let (card, _term, _mcp_token) = calm_server::db::sqlite::card_with_codex_create_tx(
         &mut tx,
         card_id,
         w.id.clone(),

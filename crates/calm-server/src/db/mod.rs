@@ -229,6 +229,20 @@ pub trait RepoRead: Send + Sync + 'static {
     /// `CardRoleCache::seed_from_db` is private to the sqlite backend, but
     /// this trait method lets `AppState` seed through the dyn-trait alone).
     async fn seed_card_role_cache(&self, cache: &CardRoleCache) -> Result<()>;
+
+    /// PR7a (#136) — look up the card id bound to a presented MCP
+    /// token's `SHA-256` hash. Returns `None` if no row matches. The
+    /// MCP server uses this during the `initialize` handshake to
+    /// resolve which card identity to bind the connection to.
+    ///
+    /// The caller is expected to pass `hash_token(presented)` and then
+    /// run `verify_token` against the returned hash for constant-time
+    /// equality before trusting the binding — `SELECT WHERE hashed_token = ?`
+    /// already operates on the hash, so the column-equality check is the
+    /// primary filter; the explicit verify is defense-in-depth against
+    /// a malformed `hashed_token` (e.g. truncated migration) somehow
+    /// matching a non-equivalent presented hash.
+    async fn card_mcp_token_lookup_by_hash(&self, hashed_token: &str) -> Result<Option<String>>;
 }
 
 /// Eventized write surface. The **only** path that writes to the persistent

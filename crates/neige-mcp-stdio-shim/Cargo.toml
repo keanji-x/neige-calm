@@ -1,0 +1,33 @@
+[package]
+name = "neige-mcp-stdio-shim"
+version = "0.1.0"
+edition = "2024"
+
+# The codex CLI's MCP client speaks stdio JSON-RPC; the neige-calm kernel
+# exposes its MCP server over a Unix socket. This crate is the bridge: a
+# ~100 LOC binary the codex daemon launches per-card. It inherits the
+# kernel-issued `NEIGE_MCP_TOKEN` (raw per-card token) and
+# `NEIGE_MCP_SOCKET` (UDS path) from the codex daemon's env, connects to
+# the kernel, and proxies bytes bidirectionally between its own
+# stdin/stdout and the UDS.
+#
+# Why a separate crate (vs. an extra `[[bin]]` on calm-server):
+#   1. Small + dependency-light — no axum, no sqlx, no tokio "full"
+#      feature set — so build time + binary size stay tiny.
+#   2. Isolation: a crash in the shim has no chance of pulling down the
+#      kernel. The codex daemon respawns the shim if needed.
+#   3. Keeps `calm-server`'s `[[bin]]` table focused on the production
+#      server binary + the test-fixture stub plugins.
+
+[[bin]]
+name = "neige-mcp-stdio-shim"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "io-std",
+    "io-util",
+    "net",
+] }

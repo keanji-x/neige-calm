@@ -8,6 +8,7 @@ use crate::config::Config;
 use crate::db::{Repo, RouteRepo};
 use crate::dispatcher::Dispatcher;
 use crate::event::EventBus;
+use crate::mcp_server::McpServer;
 use crate::plugin_host::{PluginHost, PluginRegistry};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -64,6 +65,19 @@ pub struct AppState {
     /// `AppState` doesn't immediately abort the dispatcher task —
     /// closure happens when the event bus's `tx` drops too.
     pub dispatcher: Arc<Dispatcher>,
+    /// PR7a (#136) — kernel-as-MCP-server handle. Bound to a Unix domain
+    /// socket under `<data_dir>/mcp/kernel.sock`; per-card codex daemons
+    /// connect through `neige-mcp-stdio-shim` and authenticate via the
+    /// per-card token in `card_mcp_tokens`. The handle's `shim_config`
+    /// is read by `spec_card::build_codex_config_toml_with_prompt` so
+    /// the per-card `$CODEX_HOME/config.toml` carries a matching
+    /// `[mcp_servers.calm]` block.
+    ///
+    /// `Option` because `from_parts` (replay / unit tests) skips the
+    /// listener boot — neither the replay binary nor most integration
+    /// tests need a live MCP server. The production `AppState::new`
+    /// path always populates this.
+    pub mcp_server: Option<Arc<McpServer>>,
     /// Full-capability handle. Held separately from `repo` so the gate at
     /// `AppState::repo` survives even though the underlying concrete impl
     /// is the same `SqlxRepo`. Kept private — callers must go through
@@ -142,6 +156,9 @@ impl AppState {
             db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
             card_role_cache,
             dispatcher,
+            // `from_parts` is the test / replay-lib hatch — no live MCP
+            // server. Production goes through `new` below.
+            mcp_server: None,
             raw: repo,
         }
     }
@@ -245,6 +262,28 @@ impl AppState {
         // the rest of the boot path.
         plugin.autospawn_enabled().await;
 
+        // PR7a (#136) — boot the kernel-as-MCP-server. Socket lives at
+        // `<data_dir>/mcp/kernel.sock`; `neige-mcp-stdio-shim` is the
+        // bridge binary the codex daemon launches per session. We
+        // build the tool registry now (PR7a registers the three emit
+        // tools; PR7b/PR8 will extend) and let `McpServer::spawn`
+        // own the listener task. Boot failure surfaces as a hard
+        // anyhow error — no MCP server means spec / worker cards
+        // can't emit events, which would silently break the wave
+        // FSM. The operator deserves a clear boot-time failure.
+        let mcp_socket_path = cfg.data_dir_resolved().join("mcp").join("kernel.sock");
+        let mcp_shim_bin = resolve_mcp_stdio_shim_bin();
+        let mcp_registry = crate::mcp_server::build_default_registry();
+        let mcp_server = crate::mcp_server::McpServer::spawn(
+            repo.clone(),
+            events.clone(),
+            card_role_cache.clone(),
+            mcp_socket_path,
+            mcp_shim_bin,
+            mcp_registry,
+        )
+        .await?;
+
         // Upcast the full `Arc<dyn Repo>` to the narrow `Arc<dyn RouteRepo>`
         // exposed via `AppState::repo`. Stable trait-object upcasting (Rust
         // 1.86+) gives us this for free because `Repo: RouteRepo`.
@@ -262,6 +301,7 @@ impl AppState {
             db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
             card_role_cache,
             dispatcher,
+            mcp_server: Some(mcp_server),
             raw: repo,
         };
 
@@ -600,4 +640,21 @@ fn resolve_codex_bridge_bin() -> PathBuf {
         }
     }
     PathBuf::from("neige-codex-bridge")
+}
+
+/// PR7a (#136) — resolve the path to `neige-mcp-stdio-shim`. Same
+/// "sibling of running exe, else bare-name PATH lookup" pattern as the
+/// codex-bridge resolver. The codex daemon will spawn this binary
+/// from the path baked into each per-card `$CODEX_HOME/config.toml`'s
+/// `[mcp_servers.calm].command` entry.
+fn resolve_mcp_stdio_shim_bin() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let candidate = dir.join("neige-mcp-stdio-shim");
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    PathBuf::from("neige-mcp-stdio-shim")
 }

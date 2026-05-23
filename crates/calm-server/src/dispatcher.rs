@@ -513,11 +513,19 @@ impl Inner {
         // home dir live on `self.codex`; the dispatcher is a kernel
         // worker so it reads settings through its `self.repo` handle.
         let settings = load_settings(self.repo.as_ref()).await?;
+        // PR7a (#136) — env baked into the terminal row is the pre-MCP
+        // shape (no token/socket). The per-card MCP token is minted
+        // inside the tx by `card_with_codex_create_tx`; we fold it +
+        // the kernel socket path into the env handed to
+        // `spawn_daemon_with_parts` post-commit. Mirrors the spec
+        // card path in `routes::waves::create_wave`.
         let env = build_codex_env_map(
             self.codex.as_ref(),
             &new_card_id,
             settings.http_proxy.as_deref(),
             settings.https_proxy.as_deref(),
+            None,
+            None,
         );
         let cwd = crate::routes::codex_cards::default_cwd();
 
@@ -598,7 +606,16 @@ impl Inner {
                     // Mint worker card + backing terminal +
                     // canonical codex payload (schemaVersion,
                     // terminal_id, cwd) in one helper call.
-                    let (mut card, _term) = card_with_codex_create_tx(
+                    //
+                    // PR7a (#136) — the helper now returns a third
+                    // slot, the raw per-card MCP token. For worker
+                    // cards it's always `Some`; we drop it on the
+                    // floor inside the tx (the env handed to the
+                    // daemon spawn is pre-MCP for now — the worker
+                    // card MCP wiring is intentionally minimal in
+                    // PR7a, see followup PR7a.1 for the full
+                    // dispatcher → mcp_shim plumbing).
+                    let (mut card, _term, _mcp_token) = card_with_codex_create_tx(
                         tx,
                         new_card_id_for_tx,
                         wave_for_tx,
@@ -658,12 +675,20 @@ impl Inner {
         // Post-commit: seed CODEX_HOME and spawn the daemon. Failure
         // here returns an error to the caller, which emits
         // `Event::TaskFailed` for PR8's `wait_for_events` to surface.
+        // PR7a (#136) — dispatcher path passes `None` for the MCP
+        // shim config: the worker codex daemon won't get a
+        // `[mcp_servers.calm]` block in its config.toml in PR7a.
+        // This intentionally defers worker→kernel MCP wiring to a
+        // followup (PR7a.1) so the infrastructure ships first; the
+        // spec card path (`routes::waves::create_wave`) already
+        // exercises the full MCP plumbing end-to-end.
         if let Err(e) = seed_codex_home_with_parts(
             self.codex.as_ref(),
             card_id.as_str(),
             &cwd,
             wave_id.as_str(),
             SeededCardRole::Worker,
+            None,
         ) {
             tracing::error!(
                 card_id = %card_id,

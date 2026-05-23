@@ -242,7 +242,7 @@ pub(crate) async fn create_codex_card(
         &s.card_role_cache,
         move |tx| {
             Box::pin(async move {
-                let (card, _term) = card_with_codex_create_tx(
+                let (card, _term, _token) = card_with_codex_create_tx(
                     tx,
                     card_id_for_tx,
                     wave_id_for_tx.into(),
@@ -254,6 +254,10 @@ pub(crate) async fn create_codex_card(
                     // role is exclusively minted by the wave-create
                     // route (PR6), and the dispatcher mints Worker
                     // role through the standalone card_create path.
+                    // PR7a: Plain cards skip token minting, so the
+                    // third return slot is always `None` here — we
+                    // discard it explicitly to make the contract
+                    // obvious at the call site.
                     crate::model::CardRole::Plain,
                     &cache_for_tx,
                 )
