@@ -76,6 +76,31 @@ pub const OVERLAY_NOW_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Overlay.payload` when `kind == "layout"`.
 pub const OVERLAY_LAYOUT_SCHEMA_VERSION: u32 = 1;
 
+/// Return the maximum `schemaVersion` this kernel knows how to interpret for
+/// an overlay `kind`. `Some(N)` for kernel-owned kinds; `None` for
+/// plugin-defined kinds (which we keep fully opaque — no version policy).
+///
+/// Used by the overlay read-side guard (see `routes::overlays::list_overlays`)
+/// to filter out rows that a future kernel wrote at a higher `schemaVersion`
+/// than this binary supports. The write path's `check_schema_version` already
+/// rejects future versions on ingest; this helper lets the read path do the
+/// same for rows that snuck in via a newer binary on the same DB (downgrade
+/// or split-deploy scenarios — see issue #198 concern 4).
+///
+/// Bumping any of the kernel-owned constants above automatically widens what
+/// this returns, so the read guard tracks the write guard without a separate
+/// update.
+pub fn max_supported_overlay_schema_version(kind: &str) -> Option<u32> {
+    match kind {
+        "status" => Some(OVERLAY_STATUS_SCHEMA_VERSION),
+        "progress" => Some(OVERLAY_PROGRESS_SCHEMA_VERSION),
+        "eta" => Some(OVERLAY_ETA_SCHEMA_VERSION),
+        "now" => Some(OVERLAY_NOW_SCHEMA_VERSION),
+        "layout" => Some(OVERLAY_LAYOUT_SCHEMA_VERSION),
+        _ => None,
+    }
+}
+
 /// Read the `schemaVersion` field from a payload, defaulting to `1` when
 /// the field is absent or unparsable.
 ///
@@ -758,5 +783,43 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, CalmError::BadRequest(ref m) if m.contains("schemaVersion")));
+    }
+
+    // ---------------- max_supported_overlay_schema_version ----------------
+
+    #[test]
+    fn max_supported_overlay_schema_version_kernel_kinds() {
+        // Every kernel-owned overlay kind reports its compile-time version.
+        assert_eq!(
+            max_supported_overlay_schema_version("status"),
+            Some(OVERLAY_STATUS_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            max_supported_overlay_schema_version("progress"),
+            Some(OVERLAY_PROGRESS_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            max_supported_overlay_schema_version("eta"),
+            Some(OVERLAY_ETA_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            max_supported_overlay_schema_version("now"),
+            Some(OVERLAY_NOW_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            max_supported_overlay_schema_version("layout"),
+            Some(OVERLAY_LAYOUT_SCHEMA_VERSION)
+        );
+    }
+
+    #[test]
+    fn max_supported_overlay_schema_version_plugin_kinds_return_none() {
+        // Plugin-defined kinds opt out — the read guard must not touch them.
+        assert_eq!(max_supported_overlay_schema_version("custom-badge"), None);
+        assert_eq!(
+            max_supported_overlay_schema_version("ui://example/view"),
+            None
+        );
+        assert_eq!(max_supported_overlay_schema_version(""), None);
     }
 }
