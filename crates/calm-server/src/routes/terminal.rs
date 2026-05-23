@@ -122,8 +122,8 @@ pub(crate) async fn spawn_daemon_with_parts(
         }
     }
     cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
         .kill_on_drop(false);
 
     let mut child = cmd
