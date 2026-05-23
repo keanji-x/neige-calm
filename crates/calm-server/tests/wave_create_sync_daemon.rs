@@ -107,6 +107,13 @@ async fn boot() -> Boot {
     });
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
+    // #234 (rebase) — WaveCoveCache joined the AppState/PluginHost surface
+    // alongside CardRoleCache. Empty seed is fine here: no waves pre-exist
+    // in the freshly-opened in-memory repo, and the wave we create through
+    // `POST /api/waves` populates the cache write-through via
+    // `wave_create_tx`.
+    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         events,
@@ -119,9 +126,11 @@ async fn boot() -> Boot {
             Vec::new(),
             EventBus::new(),
             card_role_cache.clone(),
+            wave_cove_cache.clone(),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache.clone()),
+        Some(wave_cove_cache.clone()),
     );
 
     let app = routes::router()

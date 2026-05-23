@@ -115,9 +115,18 @@ jobs:
       # Playwright setup hook (`replay-server.setup.ts`) is effectively a
       # no-op rather than a cold compile that may bump up against the 60s
       # READY_TIMEOUT_MS banner-wait. --locked matches the `rust` job.
-      - name: cargo build --bin replay
+      #
+      # Also build `calm-session-daemon`: post-#236 `POST /api/waves` spawns
+      # the spec card's codex daemon **synchronously** and returns 500 if
+      # the spawn fails. The replay binary's `boot_in_memory` resolves the
+      # daemon binary as a sibling of its own exe (see
+      # state.rs::resolve_session_daemon_bin), so without this build step
+      # the daemon binary is absent from `target/debug/` and every
+      # `createWaveInCove` call in the a11y suite (web/e2e/helpers/reset.ts)
+      # would 500.
+      - name: cargo build --bin replay + calm-session-daemon
         working-directory: .
-        run: cargo build -p calm-server --bin replay --locked
+        run: cargo build -p calm-server -p calm-session --bin replay --bin calm-session-daemon --locked
 
       # Playwright browsers aren't bundled with `@playwright/test`; the
       # binary must be downloaded once per runner. `--with-deps` also
