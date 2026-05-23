@@ -32,6 +32,7 @@ async fn make_wave(repo: &SqlxRepo, cove_id: &str, title: &str) -> Wave {
         cove_id: cove_id.into(),
         title: title.into(),
         sort: None,
+        theme: calm_server::routes::theme::RequestTheme::default_dark(),
     })
     .await
     .expect("create wave")
@@ -139,6 +140,7 @@ async fn wave_crud_round_trip() {
             cove_id: "no-such-cove".into(),
             title: "x".into(),
             sort: None,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap_err();
@@ -293,6 +295,7 @@ async fn make_terminal(repo: &SqlxRepo, card_id: &str) -> Terminal {
         program: "bash".into(),
         cwd: "/tmp".into(),
         env: json!({}),
+        theme: calm_server::routes::theme::RequestTheme::default_dark(),
     })
     .await
     .expect("create terminal")
@@ -623,6 +626,7 @@ async fn terminal_create_rejects_duplicate_card_id() {
             program: "bash".into(),
             cwd: "/tmp".into(),
             env: json!({"FOO": "bar"}),
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
@@ -634,6 +638,7 @@ async fn terminal_create_rejects_duplicate_card_id() {
             program: "zsh".into(),
             cwd: "/tmp".into(),
             env: json!({}),
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap_err();
@@ -692,6 +697,7 @@ async fn card_with_terminal_create_tx_atomic_writes_card_terminal_and_payload_li
         calm_server::model::CardRole::Plain,
         true,
         &calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
     .expect("atomic create");
@@ -740,6 +746,7 @@ async fn card_with_terminal_create_tx_rolls_back_on_invalid_wave() {
         calm_server::model::CardRole::Plain,
         true,
         &calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
     .expect_err("unknown wave must error");
@@ -781,6 +788,7 @@ async fn card_with_terminal_create_tx_uses_caller_supplied_sort() {
         calm_server::model::CardRole::Plain,
         true,
         &calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
     .unwrap();
@@ -814,6 +822,7 @@ async fn card_with_terminal_create_tx_defaults_sort_when_none() {
         calm_server::model::CardRole::Plain,
         true,
         &calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
     .unwrap();
@@ -838,6 +847,7 @@ async fn terminal_create_tx_enforces_unique_card_id() {
             program: "zsh".into(),
             cwd: "/tmp".into(),
             env: json!({}),
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         },
     )
     .await
@@ -859,6 +869,7 @@ async fn terminal_create_tx_rejects_unknown_card_id() {
             program: "bash".into(),
             cwd: "/tmp".into(),
             env: json!({}),
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         },
     )
     .await
@@ -899,6 +910,7 @@ async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_payload_link(
         calm_server::model::CardRole::Plain,
         true,
         &calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
     .expect("atomic codex create");
@@ -953,6 +965,7 @@ async fn card_with_codex_create_tx_rolls_back_on_invalid_wave() {
         calm_server::model::CardRole::Plain,
         true,
         &calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
     .expect_err("unknown wave must error");
@@ -993,6 +1006,7 @@ async fn card_with_codex_create_tx_uses_caller_supplied_sort() {
         calm_server::model::CardRole::Plain,
         true,
         &calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
     .unwrap();

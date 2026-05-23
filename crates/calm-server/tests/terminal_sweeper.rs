@@ -88,6 +88,7 @@ async fn seed_linked_pair(state: &AppState) -> (String, String) {
             cove_id: cove.id.clone(),
             title: "w".into(),
             sort: None,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
@@ -108,6 +109,7 @@ async fn seed_linked_pair(state: &AppState) -> (String, String) {
             program: "/bin/true".into(),
             cwd: "/tmp".into(),
             env: json!({}),
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();

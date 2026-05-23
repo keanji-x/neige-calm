@@ -155,6 +155,7 @@ async fn closure_error_rolls_back_entity_and_event_rows() {
                         cove_id,
                         title: "doomed".into(),
                         sort: None,
+                        theme: calm_server::routes::theme::RequestTheme::default_dark(),
                     },
                     &calm_server::wave_cove_cache::WaveCoveCache::new(),
                 )
@@ -314,6 +315,7 @@ async fn replaying_events_table_yields_same_envelope_sequence_as_live_subscriber
                         cove_id,
                         title: "w1".into(),
                         sort: None,
+                        theme: calm_server::routes::theme::RequestTheme::default_dark(),
                     },
                     &calm_server::wave_cove_cache::WaveCoveCache::new(),
                 )
@@ -417,6 +419,7 @@ async fn replay_then_live_dedup_under_concurrent_write() {
                             cove_id,
                             title,
                             sort: None,
+                            theme: calm_server::routes::theme::RequestTheme::default_dark(),
                         },
                         &calm_server::wave_cove_cache::WaveCoveCache::new(),
                     )
@@ -479,6 +482,7 @@ async fn replay_then_live_dedup_under_concurrent_write() {
                             cove_id,
                             title: "during-replay".into(),
                             sort: None,
+                            theme: calm_server::routes::theme::RequestTheme::default_dark(),
                         },
                         &calm_server::wave_cove_cache::WaveCoveCache::new(),
                     )
@@ -603,6 +607,7 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
                                 cove_id,
                                 title,
                                 sort: None,
+                                theme: calm_server::routes::theme::RequestTheme::default_dark(),
                             },
                             &calm_server::wave_cove_cache::WaveCoveCache::new(),
                         )

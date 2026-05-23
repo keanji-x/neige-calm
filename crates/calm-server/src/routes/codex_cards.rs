@@ -81,7 +81,15 @@ pub fn router() -> Router<AppState> {
 /// it will get a 422 — that's the intended fail-loud signal to update
 /// the caller. The interactive `prompt` channel is the one place
 /// callers should be putting text now.
-#[derive(Deserialize, Debug, Default, ToSchema)]
+///
+/// `theme` is required end-to-end (#177): callers MUST send the host
+/// browser's current foreground/background RGB. The kernel stamps it
+/// onto the `calm-session-daemon` argv so codex's OSC 10/11 startup
+/// probe gets matching colors. Forcing it at the type layer means a
+/// caller that forgets — the exact bug that motivated this refactor —
+/// fails at compile time (TS) or at the deserialize step (Rust/JSON,
+/// 422). No `Option`, no `#[serde(default)]`, no implicit fallback.
+#[derive(Deserialize, Debug, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NewCodexCardBody {
     /// Sort order within the wave. `None` defaults to "append to end".
@@ -97,6 +105,12 @@ pub struct NewCodexCardBody {
     /// full mechanism.
     #[serde(default)]
     pub prompt: Option<String>,
+    /// Host browser's current theme RGB (#177). Required — the kernel
+    /// stamps `--terminal-fg=r,g,b --terminal-bg=r,g,b` onto the
+    /// `calm-session-daemon` argv so the daemon's `TerminalModel`
+    /// answers codex's OSC 10/11 startup probe with colors matching
+    /// the host theme. A caller that omits this field gets 422.
+    pub theme: crate::routes::theme::RequestTheme,
 }
 
 #[utoipa::path(
@@ -104,10 +118,11 @@ pub struct NewCodexCardBody {
     path = "/api/waves/{wave_id}/codex-cards",
     tag = "codex",
     params(("wave_id" = String, Path, description = "Wave id to create the codex card under")),
-    request_body(content = NewCodexCardBody, description = "Optional body — empty means use defaults"),
+    request_body(content = NewCodexCardBody, description = "Body required (theme is mandatory; cwd/prompt optional)"),
     responses(
         (status = 201, description = "Card + linked terminal created atomically; codex daemon spawned", body = Card),
         (status = 404, description = "Wave not found", body = ErrorBody),
+        (status = 422, description = "Body missing required fields (e.g. theme)", body = ErrorBody),
         (status = 500, description = "Daemon spawn failed (rows are persisted; sweeper reaps within ~60s)", body = ErrorBody),
     ),
 )]
@@ -115,10 +130,8 @@ pub(crate) async fn create_codex_card(
     State(s): State<AppState>,
     actor: Actor,
     Path(wave_id): Path<String>,
-    body: Option<Json<NewCodexCardBody>>,
+    Json(p): Json<NewCodexCardBody>,
 ) -> Result<(StatusCode, Json<Card>)> {
-    let Json(p) = body.unwrap_or_default();
-
     // 1. Parent wave must exist. Surfaces as 404 *before* we open the
     //    transaction — same shape as the terminal-card route. The
     //    `card_with_codex_create_tx` helper would surface a foreign-key
@@ -223,6 +236,12 @@ pub(crate) async fn create_codex_card(
     let cwd_for_tx = cwd.clone();
     let env_for_tx = env.clone();
     let prompt_for_tx = prompt.clone();
+    // #177 — host browser's theme is written onto the terminal row in
+    // the same tx that mints the card. The spawn helper below reads
+    // `term.theme_fg/bg` directly when stamping the daemon argv, so
+    // any spawn for this row (initial, auto-revive, dispatcher) gets
+    // identical `--terminal-fg/-bg` values by construction.
+    let theme_for_tx = p.theme;
     // Pre-built `EventScope::Card` — `card_id` is pre-minted on this
     // endpoint (see module-level doc), so the scope is fully determined
     // before the txn opens.
@@ -266,6 +285,7 @@ pub(crate) async fn create_codex_card(
                     // route via routes/waves.rs.
                     true,
                     &cache_for_tx,
+                    theme_for_tx,
                 )
                 .await?;
                 Ok((card.clone(), Event::CardAdded(card)))

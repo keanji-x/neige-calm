@@ -335,6 +335,7 @@ async fn plugin_callback_path_writes_plugin_actor_regardless_of_middleware() {
             cove_id: cove.id.clone(),
             title: "w".into(),
             sort: None,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
@@ -419,6 +420,7 @@ async fn create_card_stamps_full_scope_chain() {
             cove_id: cove.id.clone(),
             title: "w".into(),
             sort: None,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();

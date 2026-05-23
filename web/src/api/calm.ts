@@ -168,7 +168,7 @@ export const deleteOverlay = (b: {
  * 500 response means the daemon spawn failed; the persisted rows stay (the
  * orphan-terminal sweeper reaps them within ~60s).
  */
-export const createTerminalCard = (waveId: string, b: NewTerminalCardBody = {}) =>
+export const createTerminalCard = (waveId: string, b: NewTerminalCardBody) =>
   request<KernelCard>(
     'POST',
     `/api/waves/${encodeURIComponent(waveId)}/terminal-cards`,
@@ -197,7 +197,7 @@ export const getTerminalForCard = (cardId: string) =>
  * stay (the orphan-terminal sweeper reaps them within ~60s), matching
  * the terminal-card endpoint's contract.
  */
-export const createCodexCard = (waveId: string, b: NewCodexCardBody = {}) =>
+export const createCodexCard = (waveId: string, b: NewCodexCardBody) =>
   request<KernelCard>(
     'POST',
     `/api/waves/${encodeURIComponent(waveId)}/codex-cards`,

@@ -59,8 +59,7 @@ async fn boot_host(
         "version": "0.1.0",
         "min_kernel_version": "0.0.1",
         "display_name": "Auth Stub",
-        "entrypoint": { "command": "bin/stub", "env": env_map }
-    });
+        "entrypoint": { "command": "bin/stub", "env": env_map }, "theme": {"fg": [216,219,226], "bg": [15,20,24]} });
     let manifest: Manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest parses");
 
     let registry = PluginRegistry::empty();
@@ -320,6 +319,7 @@ async fn no_kernel_callbacks_capability_installs_method_not_found_drainer() {
             cove_id: cove.id.clone(),
             title: "demo".into(),
             sort: None,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
@@ -347,8 +347,7 @@ async fn no_kernel_callbacks_capability_installs_method_not_found_drainer() {
             "overlays_write": ["wave", "card"],
             "cards_create": true,
             "kv_quota_bytes": 1048576
-        }
-    });
+        }, "theme": {"fg": [216,219,226], "bg": [15,20,24]} });
     let manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest parses");
     let registry = PluginRegistry::empty();
     registry.insert(manifest, Some(install_dir.clone()));

@@ -188,7 +188,7 @@ async fn post_api_waves_mints_spec_card_atomically() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "first wave"}),
+        json!({"cove_id": boot.cove_id, "title": "first wave", "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     // Issue #236: spawn is synchronous on the response hot path. With
@@ -386,6 +386,7 @@ async fn write_with_events_typed_persists_and_broadcasts_multiple_in_order() {
                         cove_id: cove.id.clone(),
                         title: "plural-wave".into(),
                         sort: None,
+                        theme: calm_server::routes::theme::RequestTheme::default_dark(),
                     },
                     &calm_server::wave_cove_cache::WaveCoveCache::new(),
                 )
@@ -544,6 +545,7 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
                         cove_id: cove.id.clone(),
                         title: "gated-wave".into(),
                         sort: None,
+                        theme: calm_server::routes::theme::RequestTheme::default_dark(),
                     },
                     &wcc_for_tx,
                 )
