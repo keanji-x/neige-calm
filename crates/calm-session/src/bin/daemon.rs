@@ -105,6 +105,27 @@ struct Cli {
     #[arg(long, default_value_t = 24)]
     rows: u16,
 
+    /// Default foreground RGB the daemon advertises to the PTY child in
+    /// reply to OSC 10 color queries (#177). Format: `r,g,b` (decimal
+    /// 0..=255). REQUIRED in terminal mode — PR1 (#262) made
+    /// `terminals.theme_fg` NOT NULL (migration 0017), so every kernel-
+    /// side spawn site carries this. A missing flag in terminal mode
+    /// fails fast at clap parse so a regression that forgets to thread
+    /// theme through `spawn_daemon_with_parts` surfaces at daemon
+    /// startup rather than degrading silently to a built-in default.
+    /// Chat mode never instantiates a `TerminalModel` and ignores this.
+    #[arg(long, value_parser = parse_rgb, required_if_eq("mode", "terminal"))]
+    terminal_fg: Option<(u8, u8, u8)>,
+
+    /// Default background RGB the daemon advertises to the PTY child in
+    /// reply to OSC 11 color queries (#177). Same shape and required-
+    /// when-terminal posture as `--terminal-fg`. Codex's startup probe
+    /// (#177) reads this to pick a contrasting text color against the
+    /// host browser's theme; missing it would force codex to fall back
+    /// to its built-in default and visually clash with the host theme.
+    #[arg(long, value_parser = parse_rgb, required_if_eq("mode", "terminal"))]
+    terminal_bg: Option<(u8, u8, u8)>,
+
     /// Working directory for the spawned child. Defaults to the daemon's cwd.
     #[arg(long)]
     cwd: Option<PathBuf>,
@@ -151,6 +172,26 @@ struct Cli {
     /// `--program`).
     #[arg(last = true)]
     cmd: Vec<String>,
+}
+
+/// Parse `--terminal-fg`/`--terminal-bg` payloads. Format: three
+/// comma-separated decimal `u8` channels (e.g. `216,219,226`). Used by
+/// clap's value_parser; fails fast with a human-readable error so a
+/// typo on the spawn arg list surfaces before the daemon comes up.
+fn parse_rgb(s: &str) -> Result<(u8, u8, u8), String> {
+    let parts: Vec<&str> = s.split(',').collect();
+    if parts.len() != 3 {
+        return Err(format!(
+            "expected `r,g,b` (three comma-separated u8 channels), got {s:?}"
+        ));
+    }
+    let parse = |i: usize| -> Result<u8, String> {
+        parts[i]
+            .trim()
+            .parse::<u8>()
+            .map_err(|e| format!("channel {i} ({:?}): {e}", parts[i]))
+    };
+    Ok((parse(0)?, parse(1)?, parse(2)?))
 }
 
 /// Events fanned out in chat mode. Each `Event` here is one already-
@@ -297,6 +338,27 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn run_terminal(cli: Cli) -> anyhow::Result<()> {
+    // Fail-fast on missing theme. `required_if_eq("mode", "terminal")`
+    // only fires when `--mode` is set explicitly — when clap takes the
+    // default it doesn't, so we re-check here. PR1 (#262) made theme a
+    // NOT NULL row invariant; PR2 (#262 follow-up) wires the kernel-
+    // side spawn helper to thread it through. A missing flag at this
+    // point means a kernel-side regression — surface it loudly rather
+    // than degrade to a built-in default. See `--terminal-fg` /
+    // `--terminal-bg` docs on `Cli`.
+    if cli.terminal_fg.is_none() {
+        anyhow::bail!(
+            "--terminal-fg is required in terminal mode (#177). The kernel must \
+             thread `terminals.theme_fg` through `spawn_daemon_with_parts`."
+        );
+    }
+    if cli.terminal_bg.is_none() {
+        anyhow::bail!(
+            "--terminal-bg is required in terminal mode (#177). The kernel must \
+             thread `terminals.theme_bg` through `spawn_daemon_with_parts`."
+        );
+    }
+
     // ---- PTY + child ----
     let pty_system = native_pty_system();
     let pair = pty_system.openpty(PtPtySize {
@@ -325,11 +387,23 @@ async fn run_terminal(cli: Cli) -> anyhow::Result<()> {
         Arc::new(Mutex::new(child.clone_killer()));
     drop(pair.slave);
 
-    let render_plane: SharedRenderPlane = Arc::new(Mutex::new(RenderPlane::new(
+    // `with_colors` pre-seeds the OSC 10/11 reply colors so codex's
+    // startup probe (#177) gets an authoritative answer from the very
+    // first feed. `cli.terminal_fg/_bg` are `Option<(u8,u8,u8)>` on the
+    // struct only because the same struct doubles for chat mode (where
+    // the args don't apply); in terminal mode clap's
+    // `required_if_eq("mode", "terminal")` guarantees both are `Some`
+    // by the time we reach here. We still pass through `Option` to
+    // match `with_colors`' signature, which keeps `set_default_colors`
+    // (used by the mid-session ThemeUpdate path and unit tests) free
+    // to revert to "silent" semantics if a future feature needs it.
+    let render_plane: SharedRenderPlane = Arc::new(Mutex::new(RenderPlane::with_colors(
         cli.cols,
         cli.rows,
         cli.buffer_bytes,
         SCROLLBACK_MAX_LINES,
+        cli.terminal_fg,
+        cli.terminal_bg,
     )));
     let master: SharedMaster = Arc::new(Mutex::new(pair.master));
     // Daemon-level owner registry. Single instance shared across every

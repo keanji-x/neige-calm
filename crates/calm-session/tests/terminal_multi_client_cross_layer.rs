@@ -108,6 +108,10 @@ async fn spawn_daemon() -> (tokio::process::Child, PathBuf, String) {
         .args(["--mode", "terminal"])
         .args(["--id", &id.to_string()])
         .args(["--sock", &sock.to_string_lossy()])
+        // #177 PR2: terminal-mode daemon now requires theme RGB.
+        // Placeholders — this test doesn't exercise OSC replies.
+        .args(["--terminal-fg", "216,219,226"])
+        .args(["--terminal-bg", "15,20,24"])
         .args(["--cwd", workspace_root().to_string_lossy().as_ref()])
         // `sh -c 'sleep 60'` keeps the PTY child alive long enough for
         // every assertion below; mirrors `input_ack_e2e.rs`.
