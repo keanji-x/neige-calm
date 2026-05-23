@@ -158,6 +158,9 @@ pub(crate) async fn create_terminal_card(
                     // dispatcher's worker-terminal path passes
                     // `CardRole::Worker` directly.
                     crate::model::CardRole::Plain,
+                    // Issue #229 PR A — terminal cards are
+                    // user-deletable.
+                    true,
                     &cache_for_tx,
                 )
                 .await?;

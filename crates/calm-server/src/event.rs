@@ -1216,6 +1216,7 @@ mod filter_tests {
             kind: "terminal".into(),
             sort: 1.0,
             payload: serde_json::Value::Null,
+            deletable: true,
             created_at: 0,
             updated_at: 0,
         })

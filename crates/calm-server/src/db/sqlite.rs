@@ -577,6 +577,16 @@ pub async fn card_create_with_id_tx(
     id: String,
     p: NewCard,
     role: CardRole,
+    // Issue #229 PR A — explicit, required: every call site must decide
+    // whether the card is user-deletable. Per `[[required-over-option]]`
+    // an `Option<bool>` with a serde default would silently hide the
+    // wrong default at any future callsite (kernel-owned cards minted
+    // as deletable would be a security regression). The three live
+    // callers cover the policy:
+    //   * `card_create_tx`              → `true`  (plain user cards)
+    //   * dispatcher worker terminals    → `true`  (workers are user-facing)
+    //   * `card_with_codex_create_tx`    → caller decides (`false` for spec)
+    deletable: bool,
     card_role_cache: &CardRoleCache,
 ) -> Result<Card> {
     let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM waves WHERE id = ?1")
@@ -600,9 +610,15 @@ pub async fn card_create_with_id_tx(
     // (PR3, #136). PR3 callers always pass `CardRole::Plain`; PR6 will
     // pass `CardRole::Spec` from the wave-create path, PR5 will pass
     // `CardRole::Worker` from the dispatcher.
+    //
+    // `deletable` lands in the column added by migration 0013 (#229 PR A).
+    // SQLite has no native bool; we encode as `1` / `0`, matching the
+    // column's `INTEGER NOT NULL DEFAULT 1` shape. sqlx maps `bool ↔ i64`
+    // transparently via its `Encode<Sqlite>` impl, so the bind is direct.
     sqlx::query(
-        r#"INSERT INTO cards (id, wave_id, kind, sort, payload, role, created_at, updated_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"#,
+        r#"INSERT INTO cards
+               (id, wave_id, kind, sort, payload, role, deletable, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"#,
     )
     .bind(&id)
     .bind(&p.wave_id)
@@ -610,6 +626,7 @@ pub async fn card_create_with_id_tx(
     .bind(sort)
     .bind(&payload_text)
     .bind(role)
+    .bind(deletable)
     .bind(now)
     .bind(now)
     .execute(&mut **tx)
@@ -630,6 +647,7 @@ pub async fn card_create_with_id_tx(
         kind: p.kind,
         sort,
         payload: p.payload,
+        deletable,
         created_at: now,
         updated_at: now,
     })
@@ -640,7 +658,11 @@ pub async fn card_create_tx(
     p: NewCard,
     card_role_cache: &CardRoleCache,
 ) -> Result<Card> {
-    card_create_with_id_tx(tx, new_id(), p, CardRole::Plain, card_role_cache).await
+    // Plain user cards are user-deletable by default — the user added
+    // them via REST and can remove them the same way. Spec / report
+    // cards take the explicit `false` route via
+    // `card_with_codex_create_tx`.
+    card_create_with_id_tx(tx, new_id(), p, CardRole::Plain, true, card_role_cache).await
 }
 
 pub async fn card_update_tx(
@@ -649,7 +671,7 @@ pub async fn card_update_tx(
     p: CardPatch,
 ) -> Result<Card> {
     let mut c = sqlx::query_as::<_, Card>(
-        r#"SELECT id, wave_id, kind, sort, payload, created_at, updated_at
+        r#"SELECT id, wave_id, kind, sort, payload, deletable, created_at, updated_at
            FROM cards WHERE id = ?1"#,
     )
     .bind(id)
@@ -666,6 +688,12 @@ pub async fn card_update_tx(
     if let Some(v) = p.payload {
         c.payload = v;
     }
+    // Issue #229 PR A — `p.deletable` is intentionally ignored here.
+    // The route handler in `routes/cards.rs::update_card` returns 400
+    // when a client sends the field; the field exists on `CardPatch`
+    // only to make that 400 explicit (rather than serde silently
+    // dropping an unknown field). The UPDATE statement below also
+    // doesn't touch the `deletable` column — defense in depth.
     c.updated_at = now_ms();
     let payload_text = serde_json::to_string(&c.payload)?;
 
@@ -799,6 +827,13 @@ pub async fn card_with_terminal_create_tx(
     cwd: String,
     env: serde_json::Value,
     role: CardRole,
+    // Issue #229 PR A — required deletable bit, threaded through to
+    // `card_create_with_id_tx`. Dispatcher's worker-terminal path passes
+    // `true` (workers are user-facing — users can close them); the
+    // direct `POST /api/waves/:id/terminal-cards` path passes `true` for
+    // the same reason. Future kernel-owned terminal cards (none today)
+    // would pass `false`.
+    deletable: bool,
     card_role_cache: &CardRoleCache,
 ) -> Result<(Card, Terminal)> {
     // 1. Card row with placeholder payload — the terminal_id and schemaVersion
@@ -824,6 +859,7 @@ pub async fn card_with_terminal_create_tx(
             payload: serde_json::Value::Null,
         },
         role,
+        deletable,
         card_role_cache,
     )
     .await?;
@@ -860,6 +896,9 @@ pub async fn card_with_terminal_create_tx(
             kind: None,
             sort: None,
             payload: Some(payload),
+            // #229 PR A — kernel-internal callers never patch
+            // `deletable`; the route handler 400s clients that try.
+            deletable: None,
         },
     )
     .await?;
@@ -906,6 +945,11 @@ pub async fn card_with_codex_create_tx(
     env: serde_json::Value,
     prompt: Option<String>,
     role: CardRole,
+    // Issue #229 PR A — required deletable bit. The wave-create route
+    // passes `false` (the spec card is kernel-owned, must survive
+    // direct REST / plugin-callback delete attempts). The plain
+    // user-facing `POST /api/waves/:id/codex-cards` route passes `true`.
+    deletable: bool,
     card_role_cache: &CardRoleCache,
 ) -> Result<(Card, Terminal, Option<String>)> {
     // 1. Card row with placeholder payload — the terminal_id, cwd, and
@@ -930,6 +974,7 @@ pub async fn card_with_codex_create_tx(
             payload: serde_json::Value::Null,
         },
         role,
+        deletable,
         card_role_cache,
     )
     .await?;
@@ -987,6 +1032,9 @@ pub async fn card_with_codex_create_tx(
             kind: None,
             sort: None,
             payload: Some(payload),
+            // #229 PR A — kernel-internal callers never patch
+            // `deletable`; the route handler 400s clients that try.
+            deletable: None,
         },
     )
     .await?;
@@ -1190,7 +1238,7 @@ impl RepoRead for SqlxRepo {
         };
 
         let cards = sqlx::query_as::<_, Card>(
-            r#"SELECT id, wave_id, kind, sort, payload, created_at, updated_at
+            r#"SELECT id, wave_id, kind, sort, payload, deletable, created_at, updated_at
                FROM cards WHERE wave_id = ?1 ORDER BY sort ASC"#,
         )
         .bind(id)
@@ -1222,7 +1270,7 @@ impl RepoRead for SqlxRepo {
     // ---------------------------------------------------------------- cards
     async fn cards_by_wave(&self, wave_id: &str) -> Result<Vec<Card>> {
         let rows = sqlx::query_as::<_, Card>(
-            r#"SELECT id, wave_id, kind, sort, payload, created_at, updated_at
+            r#"SELECT id, wave_id, kind, sort, payload, deletable, created_at, updated_at
                FROM cards WHERE wave_id = ?1 ORDER BY sort ASC"#,
         )
         .bind(wave_id)
@@ -1233,7 +1281,7 @@ impl RepoRead for SqlxRepo {
 
     async fn card_get(&self, id: &str) -> Result<Option<Card>> {
         let row = sqlx::query_as::<_, Card>(
-            r#"SELECT id, wave_id, kind, sort, payload, created_at, updated_at
+            r#"SELECT id, wave_id, kind, sort, payload, deletable, created_at, updated_at
                FROM cards WHERE id = ?1"#,
         )
         .bind(id)

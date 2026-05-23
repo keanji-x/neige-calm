@@ -483,6 +483,22 @@ export interface components {
         Card: {
             /** Format: int64 */
             created_at: number;
+            /**
+             * @description Issue #229 PR A — system-card guard. `true` for user-facing cards
+             *     (the default; all pre-#229 rows backfill via the column DEFAULT in
+             *     migration 0013). `false` for kernel-owned cards that the user
+             *     cannot remove via REST / plugin callbacks — currently spec cards
+             *     (retroactively undeletable via the same migration's UPDATE) and
+             *     PR B's wave-report cards.
+             *
+             *     `#[serde(default = "default_deletable")]` so wire payloads emitted
+             *     before #229 landed (event-log replay fixtures, old test seeds)
+             *     parse as `true` without forcing a fixture rewrite — matches the
+             *     DB DEFAULT (1) in migration 0013. The default-fn lives below
+             *     because `bool::default()` would give `false` (the *un*safe
+             *     fallback for a deny-by-omission auth bit).
+             */
+            deletable?: boolean;
             id: string;
             /**
              * @description `"terminal"` for built-in PTY cards, `"ui://<plugin>/<view>"` for
@@ -506,6 +522,15 @@ export interface components {
             wave_id: string;
         };
         CardPatch: {
+            /**
+             * @description Issue #229 PR A — `deletable` is **not** patchable via API. We
+             *     surface it here only so a client sending `{"deletable": ...}`
+             *     gets a clear 400 (via the route handler's explicit check) rather
+             *     than a silent no-op. `card_update_tx` itself ignores this field
+             *     (it never writes the column); the route enforces the rejection
+             *     before reaching the txn.
+             */
+            deletable?: boolean | null;
             kind?: string | null;
             payload?: Record<string, never> | null;
             /** Format: double */

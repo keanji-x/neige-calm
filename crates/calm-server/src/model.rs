@@ -31,12 +31,19 @@ pub use crate::ids::{ActorId, CardId, CoveId, WaveId};
 ///     keeps AI workers from rewriting wave-level metadata.
 ///   * [`CardRole::Worker`] (PR5) is a dispatcher-spawned worker card.
 ///     Its events are scoped to the card itself and never broaden.
+///   * [`CardRole::ReportCard`] (#229 PR A) is the wave's auto-generated
+///     report card. Same kernel-ownership profile as `Spec` — minted by
+///     the wave-create path (PR B), one per wave (partial unique index
+///     in migration 0013), undeletable from REST / plugin-callback paths.
+///     Role-gate-wise it behaves like `Plain`: it only emits `CardUpdated`
+///     for its own scope; it does **not** emit `WaveUpdated` (only `Spec`
+///     does — preserving the #136 contract).
 ///
 /// Persisted as a lowercase string in `cards.role` (migration 0008). The
 /// serde + sqlx `rename_all = "lowercase"` keeps the wire / storage shape
 /// stable; ts-rs exports the matching TS union (`"plain" | "spec" |
-/// "worker"`) into `web/src/api/generated-events.ts` so the frontend can
-/// adopt the enum once any UI lands.
+/// "worker" | "reportcard"`) into `web/src/api/generated-events.ts` so the
+/// frontend can adopt the enum once any UI lands.
 #[derive(
     Debug,
     Default,
@@ -59,6 +66,11 @@ pub enum CardRole {
     Plain,
     Spec,
     Worker,
+    /// Issue #229 PR A — wave-report card role. See struct docs above
+    /// for the kernel-ownership contract. Stored as `"reportcard"`
+    /// (lowercase, no hyphen — matches the existing variant naming
+    /// convention).
+    ReportCard,
 }
 
 // ---------------- CoveKind ----------------
@@ -307,8 +319,31 @@ pub struct Card {
     /// feature-flag change can't silently widen / narrow the surface.
     #[ts(type = "unknown")]
     pub payload: serde_json::Value,
+    /// Issue #229 PR A — system-card guard. `true` for user-facing cards
+    /// (the default; all pre-#229 rows backfill via the column DEFAULT in
+    /// migration 0013). `false` for kernel-owned cards that the user
+    /// cannot remove via REST / plugin callbacks — currently spec cards
+    /// (retroactively undeletable via the same migration's UPDATE) and
+    /// PR B's wave-report cards.
+    ///
+    /// `#[serde(default = "default_deletable")]` so wire payloads emitted
+    /// before #229 landed (event-log replay fixtures, old test seeds)
+    /// parse as `true` without forcing a fixture rewrite — matches the
+    /// DB DEFAULT (1) in migration 0013. The default-fn lives below
+    /// because `bool::default()` would give `false` (the *un*safe
+    /// fallback for a deny-by-omission auth bit).
+    #[serde(default = "default_deletable")]
+    pub deletable: bool,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// Default for `Card.deletable` when wire payloads / replay fixtures omit
+/// the field. Matches the DB DEFAULT in migration 0013 (`1`). See
+/// [`Card::deletable`] for the security rationale on biasing the default
+/// toward "deletable" rather than `bool::default()`.
+fn default_deletable() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Deserialize, ToSchema)]
@@ -332,6 +367,13 @@ pub struct CardPatch {
     pub sort: Option<f64>,
     #[schema(value_type = Option<Object>)]
     pub payload: Option<serde_json::Value>,
+    /// Issue #229 PR A — `deletable` is **not** patchable via API. We
+    /// surface it here only so a client sending `{"deletable": ...}`
+    /// gets a clear 400 (via the route handler's explicit check) rather
+    /// than a silent no-op. `card_update_tx` itself ignores this field
+    /// (it never writes the column); the route enforces the rejection
+    /// before reaching the txn.
+    pub deletable: Option<bool>,
 }
 
 // ---------------- Overlay ----------------
@@ -487,6 +529,10 @@ mod card_role_tests {
             (CardRole::Plain, "\"plain\""),
             (CardRole::Spec, "\"spec\""),
             (CardRole::Worker, "\"worker\""),
+            // Issue #229 PR A — wave-report card role. Lowercase, no
+            // hyphen, matches the existing variant style. Migration
+            // 0013's partial unique index hardcodes the same literal.
+            (CardRole::ReportCard, "\"reportcard\""),
         ] {
             let s = serde_json::to_string(&role).expect("serialize");
             assert_eq!(s, json, "serialize mismatch for {role:?}");

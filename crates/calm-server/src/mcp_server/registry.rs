@@ -60,18 +60,26 @@ impl CardIdentity {
     /// Convert to the `ActorId` the role gate will see for any
     /// `write_with_event` call this connection drives. Mapping:
     ///
-    /// * `CardRole::Spec`   → [`ActorId::AiSpec`]
-    /// * `CardRole::Worker` → [`ActorId::AiCodex`]
-    /// * `CardRole::Plain`  → unreachable here (Plain cards have no
+    /// * `CardRole::Spec`       → [`ActorId::AiSpec`]
+    /// * `CardRole::Worker`     → [`ActorId::AiCodex`]
+    /// * `CardRole::Plain`      → unreachable here (Plain cards have no
     ///   token row by construction; see `card_with_codex_create_tx`).
     ///   We still map it to `AiCodex` for total-function-ness; the gate
     ///   itself denies the empty-CardId case, and a Plain card reaching
     ///   this code path would indicate a token-row leak we want surfaced
     ///   as a clear `Forbidden` rather than a panic.
+    /// * `CardRole::ReportCard` → unreachable here too (report cards are
+    ///   read-only kernel-projected payload and don't get an MCP token).
+    ///   Mapped to `AiCodex` for the same total-function reason — the
+    ///   role gate refuses report-card actors as soon as they try to
+    ///   emit `WaveUpdated`, so a token-row leak surfaces as a clear
+    ///   `Forbidden` rather than a panic.
     pub fn to_actor_id(&self) -> ActorId {
         match self.role {
             CardRole::Spec => ActorId::AiSpec(self.card_id.clone()),
-            CardRole::Worker | CardRole::Plain => ActorId::AiCodex(self.card_id.clone()),
+            CardRole::Worker | CardRole::Plain | CardRole::ReportCard => {
+                ActorId::AiCodex(self.card_id.clone())
+            }
         }
     }
 }

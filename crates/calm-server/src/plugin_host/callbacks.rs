@@ -448,9 +448,19 @@ async fn card_create(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         &ctx.card_role_cache,
         move |tx| {
             Box::pin(async move {
-                let stored =
-                    card_create_with_id_tx(tx, card_id_for_tx, new, CardRole::Plain, &cache_for_tx)
-                        .await?;
+                // Issue #229 PR A — plugin-driven creates are
+                // user-deletable. Plugins cannot today mint kernel-owned
+                // (undeletable) cards; only internal kernel paths
+                // (wave-create, dispatcher) hold that authority.
+                let stored = card_create_with_id_tx(
+                    tx,
+                    card_id_for_tx,
+                    new,
+                    CardRole::Plain,
+                    true,
+                    &cache_for_tx,
+                )
+                .await?;
                 Ok((stored.clone(), Event::CardAdded(stored)))
             })
         },
@@ -511,6 +521,11 @@ async fn card_update(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         kind: p.kind,
         sort: p.sort,
         payload: p.payload,
+        // #229 PR A — plugins cannot patch `deletable`. The
+        // `CardUpdateParams` deserialize struct has no `deletable`
+        // field; even if a future change added one, the route-level
+        // 400 in `routes::cards::update_card` is the canonical guard.
+        deletable: None,
     };
     let actor = ctx.actor();
     let correlation = ctx.correlation();
@@ -552,6 +567,18 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         .await
         .map_err(internal_repo_err)?
         .ok_or_else(|| entity_not_found(format!("card {}", p.card_id)))?;
+    // Issue #229 PR A — kernel-owned card guard. Same shape as the REST
+    // path in `routes::cards::delete_card`: undeletable cards (spec
+    // today, report card in PR B) refuse this entry point. In practice
+    // plugins can't reach a kernel-owned card via `can_card_delete`
+    // (which gates on kind ownership), but the guard runs first so the
+    // policy is greppable at every delete entry.
+    if !card.deletable {
+        return Err(permission_denied(format!(
+            "card `{}` is kernel-owned and cannot be deleted via plugin callback",
+            p.card_id
+        )));
+    }
     let perms = manifest_permissions(ctx)?;
     if !perms.can_card_delete(&card.kind, ctx.plugin_id) {
         return Err(permission_denied(format!(
@@ -868,6 +895,12 @@ mod tests {
     struct HarnessStorage {
         plugin_id: String,
         repo: Arc<dyn Repo>,
+        /// Issue #229 PR A — concrete handle kept alongside the trait
+        /// object so tests that need transactional helpers (e.g. mint
+        /// an undeletable card via `card_create_with_id_tx`) can grab
+        /// the sqlx pool. Production code never reaches the concrete
+        /// type; this is a test-only convenience.
+        sqlx_repo: Arc<SqlxRepo>,
         event_bus: Arc<EventBus>,
         registry: Arc<PluginRegistry>,
         mcp: Arc<McpClient>,
@@ -962,11 +995,12 @@ mod tests {
 
     impl Harness {
         async fn new(plugin_id: &str, manifest: Manifest) -> Self {
-            let repo: Arc<dyn Repo> = Arc::new(
+            let sqlx_repo = Arc::new(
                 SqlxRepo::open("sqlite::memory:")
                     .await
                     .expect("open in-memory sqlite repo"),
             );
+            let repo: Arc<dyn Repo> = sqlx_repo.clone();
             // Seed a plugin row so kv writes pass the FK check (the production
             // host always installs the plugin row before the child can call
             // `neige.kv.*`; we mirror that here).
@@ -1017,6 +1051,7 @@ mod tests {
                 ctx_storage: Arc::new(HarnessStorage {
                     plugin_id: plugin_id.to_string(),
                     repo,
+                    sqlx_repo,
                     event_bus,
                     registry,
                     mcp,
@@ -1272,6 +1307,54 @@ mod tests {
         assert_eq!(res, json!({}));
         let cards = h.ctx_storage.repo.cards_by_wave(&h.wave_id).await.unwrap();
         assert!(cards.is_empty());
+    }
+
+    /// Issue #229 PR A — kernel-owned cards refuse `neige.card.delete`
+    /// even when the plugin would otherwise be authorized for the
+    /// card kind (`can_card_delete` would say yes). We mint the
+    /// undeletable card via `card_create_with_id_tx` directly so the
+    /// test does not depend on the production wave-create→spec path
+    /// (which carries a terminal row and a daemon stub we don't need
+    /// here). Plugin-owned `plugin:p1:demo` kind ensures the kind
+    /// check would otherwise let the plugin through — proving the
+    /// `deletable` guard runs first.
+    #[tokio::test]
+    async fn card_delete_refused_for_undeletable_card() {
+        let h = Harness::new("p1", manifest_with_full_perms("p1")).await;
+        let cache = h.ctx_storage.card_role_cache.clone();
+        let mut tx = h.ctx_storage.sqlx_repo.pool().begin().await.unwrap();
+        let undeletable = crate::db::sqlite::card_create_with_id_tx(
+            &mut tx,
+            crate::model::new_id(),
+            NewCard {
+                wave_id: h.wave_id.clone().into(),
+                kind: "plugin:p1:demo".into(),
+                sort: None,
+                payload: json!({}),
+            },
+            CardRole::Plain,
+            false, // ← kernel-owned bit
+            &cache,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let cid = undeletable.id.as_str().to_string();
+
+        let err = dispatch(&h.ctx(), "neige.card.delete", json!({ "card_id": cid }))
+            .await
+            .expect_err("undeletable card must refuse plugin-callback delete");
+        // Plugin host uses `permission_denied` (-32001) for this class
+        // of refusal. Asserting on the code (not the message string)
+        // keeps the test resistant to wording tweaks.
+        assert_eq!(
+            err.code, -32001,
+            "expected permission_denied (-32001); got: {err:?}",
+        );
+
+        // Row still exists.
+        let still_there = h.ctx_storage.repo.card_get(&cid).await.unwrap();
+        assert!(still_there.is_some(), "undeletable card survives refusal");
     }
 
     // ----- kv ----------------------------------------------------------------
