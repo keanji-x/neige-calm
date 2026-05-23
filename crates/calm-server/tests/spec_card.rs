@@ -486,6 +486,7 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
     assert!(repo.coves_list().await.unwrap().is_empty());
 
     let mut rx = events.subscribe_filtered();
+    let wcc_for_tx = wcc.clone();
     let res = write_with_events_typed::<(), _>(
         repo.as_ref(),
         ActorId::AiCodex(worker_id),
@@ -493,7 +494,7 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
         &events,
         &cache,
         &wcc,
-        |tx| {
+        move |tx| {
             Box::pin(async move {
                 let cove = cove_create_tx(
                     tx,
@@ -511,7 +512,7 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
                         title: "gated-wave".into(),
                         sort: None,
                     },
-                    &calm_server::wave_cove_cache::WaveCoveCache::new(),
+                    &wcc_for_tx,
                 )
                 .await?;
                 let cove_scope = EventScope::Cove {
