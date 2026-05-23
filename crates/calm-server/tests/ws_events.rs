@@ -17,11 +17,12 @@ use std::time::Duration;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus};
 use calm_server::ids::ActorId;
-use calm_server::model::{Cove, CoveKind};
+use calm_server::model::{Cove, CoveKind, Overlay};
 use calm_server::plugin_host::PluginHost;
 use calm_server::state::{AppState, DaemonClient};
 use calm_server::ws;
 use futures_util::{SinkExt, StreamExt};
+use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message as TMessage;
@@ -192,5 +193,125 @@ async fn replaces_not_extends() {
         assert!(t.contains("c-002"));
     } else {
         panic!("not text");
+    }
+}
+
+/// Tier A read-side guard, broadcast surface (issue #198 concern 4,
+/// PR #214 follow-up).
+///
+/// Drives a real `bus.emit(Event::OverlaySet(...))` for two overlays:
+///
+///   * `o-supported` — kernel-owned `kind = "status"`, payload at the
+///     current `schemaVersion` — must reach the client.
+///   * `o-future` — same `kind`, payload at `schemaVersion = 999` — must
+///     be silently dropped (`tracing::warn!` emitted server-side; no
+///     frame goes over the wire).
+///
+/// We assert ordering by emitting the future-version row first so a
+/// regression (no filter) would land it on the wire before the supported
+/// frame, while the fix correctly skips it.
+#[tokio::test]
+async fn future_schema_version_overlay_set_is_filtered_on_live_broadcast() {
+    let (addr, bus) = boot().await;
+    let url = format!("ws://{}/api/events", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+    // Firehose so neither overlay is filtered out by the topic check —
+    // the only reason for a drop should be the schemaVersion guard.
+    ws.send(TMessage::Text(r#"{"sub":["*"]}"#.to_string()))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let future = Overlay {
+        id: "o-future".into(),
+        plugin_id: "p1".into(),
+        entity_kind: "wave".into(),
+        entity_id: "w-1".into(),
+        kind: "status".into(),
+        payload: json!({ "schemaVersion": 999, "state": "from-future" }),
+        updated_at: 0,
+    };
+    let supported = Overlay {
+        id: "o-supported".into(),
+        plugin_id: "p1".into(),
+        entity_kind: "wave".into(),
+        entity_id: "w-1".into(),
+        kind: "status".into(),
+        payload: json!({ "schemaVersion": 1, "state": "running" }),
+        updated_at: 0,
+    };
+
+    bus.emit(ActorId::User, Event::OverlaySet(future));
+    bus.emit(ActorId::User, Event::OverlaySet(supported));
+
+    // First (and only) frame must be the supported overlay. The future-
+    // version frame must not appear — confirmed by both the id check and
+    // the follow-up timeout that asserts no further frames arrive.
+    let msg = timeout(Duration::from_secs(2), ws.next())
+        .await
+        .expect("ws recv timed out")
+        .expect("ws closed")
+        .expect("ws error");
+    let text = match msg {
+        TMessage::Text(t) => t.to_string(),
+        other => panic!("expected text frame, got {:?}", other),
+    };
+    assert!(
+        text.contains("overlay.set"),
+        "expected overlay.set, got: {text}"
+    );
+    assert!(text.contains("o-supported"), "got: {text}");
+    assert!(
+        !text.contains("o-future"),
+        "future-schemaVersion overlay must not appear in any frame, got: {text}"
+    );
+
+    // No additional frames — the dropped overlay should never arrive.
+    let leftover = timeout(Duration::from_millis(300), ws.next()).await;
+    assert!(
+        leftover.is_err(),
+        "expected no further frames after the supported overlay, got {:?}",
+        leftover,
+    );
+}
+
+/// Companion to the previous test: a plugin-owned overlay kind (one for
+/// which `max_supported_overlay_schema_version` returns `None`) carries
+/// an arbitrarily high `schemaVersion` and must still pass through — the
+/// kernel has no version policy on opaque plugin payloads.
+#[tokio::test]
+async fn plugin_owned_overlay_passes_through_live_broadcast() {
+    let (addr, bus) = boot().await;
+    let url = format!("ws://{}/api/events", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+    ws.send(TMessage::Text(r#"{"sub":["*"]}"#.to_string()))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let opaque = Overlay {
+        id: "o-plugin".into(),
+        plugin_id: "p1".into(),
+        entity_kind: "wave".into(),
+        entity_id: "w-1".into(),
+        kind: "custom-badge".into(),
+        payload: json!({ "schemaVersion": 999, "anything": true }),
+        updated_at: 0,
+    };
+    bus.emit(ActorId::User, Event::OverlaySet(opaque));
+
+    let msg = timeout(Duration::from_secs(2), ws.next())
+        .await
+        .expect("ws recv timed out")
+        .expect("ws closed")
+        .expect("ws error");
+    if let TMessage::Text(t) = msg {
+        assert!(t.contains("overlay.set"), "got: {t}");
+        assert!(t.contains("o-plugin"), "got: {t}");
+        assert!(t.contains("custom-badge"), "got: {t}");
+    } else {
+        panic!("expected text frame");
     }
 }
