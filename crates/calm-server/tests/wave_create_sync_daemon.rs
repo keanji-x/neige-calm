@@ -176,7 +176,7 @@ async fn post_api_waves_spec_terminal_has_daemon_handle_before_response() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "sync-spawn wave"}),
+        json!({"cove_id": boot.cove_id, "title": "sync-spawn wave", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true}),
     )
     .await;
     // Real daemon binary → spawn succeeds (the daemon binds its socket
@@ -273,7 +273,7 @@ async fn ws_revive_path_does_not_trigger_respawn_for_freshly_created_wave() {
     let (status, _) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "ws-race wave"}),
+        json!({"cove_id": boot.cove_id, "title": "ws-race wave", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true}),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -369,7 +369,7 @@ async fn post_api_waves_threads_title_into_spec_card_prompt_payload() {
     let (status, _body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": title}),
+        json!({"cove_id": boot.cove_id, "title": title, "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true}),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -425,7 +425,7 @@ async fn whitespace_title_does_not_stamp_prompt_on_spec_card() {
     let (status, _body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "   "}),
+        json!({"cove_id": boot.cove_id, "title": "   ", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true}),
     )
     .await;
     // The wave create may still 500 because the daemon child fails to
@@ -449,5 +449,229 @@ async fn whitespace_title_does_not_stamp_prompt_on_spec_card() {
         spec_card.payload.get("prompt").is_none_or(Value::is_null),
         "whitespace-only title must NOT stamp payload.prompt; got payload = {}",
         spec_card.payload,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #250 PR 2 — wave.cwd → spec-daemon cwd contract
+// ---------------------------------------------------------------------------
+
+/// PR 2 contract: the spec daemon spawn uses `wave.cwd` (the value
+/// the route validated + persisted), not the pre-#250
+/// `routes::codex_cards::default_cwd()` fallback.
+///
+/// Three rows must observe the same cwd at commit time:
+///   1. `waves.cwd`               — the wave row's column.
+///   2. `terminals.cwd`           — baked into the terminal row from
+///      `card_with_codex_create_tx`.
+///   3. `cards.payload.cwd`       — surfaced on the spec card so the
+///      frontend can render the path hint.
+///
+/// We can't directly observe the daemon child's `current_dir` because
+/// `spawn_daemon_for` passes cwd as a `--cwd` CLI arg to
+/// `calm-session-daemon` (not via `Command::current_dir`); capturing
+/// argv would require ptrace or instrumenting the spawner. The
+/// terminal-row cwd is the equivalent persisted contract — it's what
+/// the WS revive path would re-pass on respawn (see
+/// `ws::terminal::resolve_live_sock`), so any cwd drift between
+/// `wave.cwd` and `terminal.cwd` would surface as a daemon spawned
+/// under the wrong directory after a revive.
+#[tokio::test]
+async fn post_api_waves_uses_wave_cwd_for_spec_daemon() {
+    let boot = boot().await;
+
+    let cwd = "/tmp/issue-250-pr2-cwd-contract";
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        json!({
+            "cove_id": boot.cove_id,
+            "title": "cwd-contract wave",
+            "cwd": cwd,
+            "attach_folder": true,
+        }),
+    )
+    .await;
+    // Real daemon binary: spawn succeeds (the daemon binds its socket
+    // before exec'ing the inner `/bin/sh -c codex`).
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "wave create returns 201 when daemon spawn succeeds; body={body}",
+    );
+
+    // Wave row carries cwd.
+    let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
+    assert_eq!(waves.len(), 1);
+    let wave = waves.into_iter().next().unwrap();
+    assert_eq!(wave.cwd, cwd);
+
+    // Terminal row baked the same cwd. This is the value the WS
+    // revive path would re-pass to `spawn_daemon_for` on respawn,
+    // so drift here would surface as a daemon spawned under the
+    // wrong cwd after a daemon death.
+    let cards = boot.repo.cards_by_wave(wave.id.as_str()).await.unwrap();
+    let spec_card = cards
+        .iter()
+        .find(|c| boot.card_role_cache.get(&c.id) == Some(calm_server::model::CardRole::Spec))
+        .expect("exactly one Spec-role card per wave");
+    let term = boot
+        .repo
+        .terminal_get_by_card(spec_card.id.as_str())
+        .await
+        .unwrap()
+        .expect("spec terminal row");
+    assert_eq!(
+        term.cwd, cwd,
+        "spec card's terminal row must store the wave.cwd (not the \
+         pre-#250 default_cwd() = $HOME); got terminal row = {term:?}",
+    );
+
+    // Spec card payload.cwd echoes the wave.cwd. This is the field
+    // the frontend reads to render a path hint on the card head.
+    let payload_cwd = spec_card
+        .payload
+        .get("cwd")
+        .and_then(Value::as_str)
+        .expect("spec card payload.cwd carries wave.cwd");
+    assert_eq!(payload_cwd, cwd);
+
+    // Folder claim landed inside the same tx (attach_folder = true).
+    let folders = boot.repo.cove_folders_by_cove(&boot.cove_id).await.unwrap();
+    assert_eq!(folders.len(), 1);
+    assert_eq!(folders[0].path, cwd);
+}
+
+/// Combined coverage: wave.cwd plumbs to the spec daemon AND the
+/// wave.title still threads as codex's `[PROMPT]` arg (#251). Pins
+/// both contracts on one create call so a regression touching either
+/// surface fails here.
+#[tokio::test]
+async fn post_api_waves_threads_cwd_and_title_together() {
+    let boot = boot().await;
+
+    let cwd = "/tmp/issue-250-pr2-combined";
+    let title = "do the thing for issue #250";
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        json!({
+            "cove_id": boot.cove_id,
+            "title": title,
+            "cwd": cwd,
+            "attach_folder": true,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body = {body}");
+
+    let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
+    let wave = waves.into_iter().next().unwrap();
+    assert_eq!(wave.cwd, cwd);
+    assert_eq!(wave.title, title);
+    assert_eq!(
+        wave.terminal_at, None,
+        "fresh wave starts non-terminal (lifecycle=Draft) so terminal_at must be None"
+    );
+
+    let cards = boot.repo.cards_by_wave(wave.id.as_str()).await.unwrap();
+    let spec_card = cards
+        .iter()
+        .find(|c| boot.card_role_cache.get(&c.id) == Some(calm_server::model::CardRole::Spec))
+        .expect("exactly one Spec-role card per wave");
+
+    // #251 contract: title lands in payload.prompt.
+    let prompt = spec_card
+        .payload
+        .get("prompt")
+        .and_then(Value::as_str)
+        .expect("spec payload.prompt carries wave.title");
+    assert_eq!(prompt, title);
+
+    // #250 PR 2 contract: cwd lands on the spec card's terminal row.
+    let term = boot
+        .repo
+        .terminal_get_by_card(spec_card.id.as_str())
+        .await
+        .unwrap()
+        .expect("spec terminal row");
+    assert_eq!(term.cwd, cwd);
+}
+
+/// Lifecycle terminal-state E2E from the route: after `POST /api/waves`
+/// + walking the wave to Done via the lifecycle state machine, the
+/// GET wave detail must surface `terminal_at = Some(_)`. Locks in the
+/// "route → lifecycle → repo" plumbing the calendar window query
+/// relies on.
+#[tokio::test]
+async fn post_api_waves_then_lifecycle_done_surfaces_terminal_at_in_get() {
+    use calm_server::model::WaveLifecycle;
+    let boot = boot().await;
+
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        json!({
+            "cove_id": boot.cove_id,
+            "title": "wave-to-done",
+            "cwd": "/tmp/issue-250-pr2-to-done",
+            "attach_folder": true,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body = {body}");
+    let wave_id = body
+        .get("id")
+        .and_then(Value::as_str)
+        .expect("wave id in response")
+        .to_string();
+
+    // March the wave through the happy path to Done. We use the repo
+    // directly (which routes through `wave_update_tx`) so we don't
+    // have to mint a SpecAgent actor at the route boundary; the
+    // route's lifecycle validator is unit-tested in
+    // `wave_lifecycle.rs`. The interesting wiring here is the
+    // wave_update_tx → terminal_at column write.
+    for step in [
+        WaveLifecycle::Planning,
+        WaveLifecycle::Dispatching,
+        WaveLifecycle::Working,
+        WaveLifecycle::Reviewing,
+        WaveLifecycle::Done,
+    ] {
+        boot.repo
+            .wave_update(
+                &wave_id,
+                calm_server::model::WavePatch {
+                    lifecycle: Some(step),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    // GET /api/waves/:id must surface the terminal_at stamp.
+    let resp = boot
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/waves/{wave_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let detail: Value =
+        serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let terminal_at = detail
+        .pointer("/wave/terminal_at")
+        .expect("wave/terminal_at in WaveDetail body");
+    assert!(
+        terminal_at.is_i64(),
+        "terminal_at must be a unix-ms integer after lifecycle → Done; got {terminal_at}",
     );
 }

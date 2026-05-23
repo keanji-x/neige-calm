@@ -50,7 +50,7 @@ pub fn router() -> Router<AppState> {
 /// * Does **not** validate that the path starts with `/` — that's a
 ///   separate concern surfaced as a 400 in the handler so the wire
 ///   error code is precise.
-fn normalize_path(raw: &str) -> String {
+pub(crate) fn normalize_path(raw: &str) -> String {
     if raw == "/" {
         return "/".to_string();
     }
@@ -64,7 +64,7 @@ fn normalize_path(raw: &str) -> String {
 /// Implementation: `parent == candidate` OR `candidate` starts with
 /// `parent + "/"`. The `+ "/"` guard prevents `/abc` from matching
 /// against parent `/ab`.
-fn is_descendant_of(parent: &str, candidate: &str) -> bool {
+pub(crate) fn is_descendant_of(parent: &str, candidate: &str) -> bool {
     if parent == candidate {
         return true;
     }

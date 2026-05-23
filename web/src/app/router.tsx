@@ -231,7 +231,20 @@ function CoveComponent() {
       waves={waves}
       onGo={go}
       onCreateWave={async (cId, title) => {
-        const w = await createWave.mutateAsync({ cove_id: cId, title });
+        // Issue #250 PR 2 — wave-create body now requires `cwd`.
+        // The existing "Create Wave" button on the cove page is a
+        // stopgap: PR 3 introduces `NewTaskForm` (cwd + cove auto-
+        // inference + prompt textarea) and PR 4 replaces this button
+        // with it entirely. Until PR 4 lands we pass an empty `cwd`,
+        // which the server rejects with 400 — the button is
+        // effectively a dead-end in PR 2. The TS compile-time
+        // contract is the only thing this branch needs to satisfy.
+        const w = await createWave.mutateAsync({
+          cove_id: cId,
+          title,
+          cwd: '',
+          attach_folder: false,
+        });
         go({ name: 'wave', id: w.id });
       }}
       onRenameCove={async (cId, name) => {

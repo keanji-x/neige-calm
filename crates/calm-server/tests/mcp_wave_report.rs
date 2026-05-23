@@ -80,6 +80,8 @@ async fn boot() -> Boot {
             cove_id: cove.id.clone(),
             title: "report wave".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
         })
         .await
         .unwrap();
@@ -557,6 +559,8 @@ async fn spec_from_different_wave_cannot_reach_this_wave_report() {
             cove_id: cove2.id,
             title: "wave 2".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
         })
         .await
         .unwrap();

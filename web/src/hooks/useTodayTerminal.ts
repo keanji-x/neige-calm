@@ -165,7 +165,19 @@ async function ensureTodayWave(coveId: string) {
   const waves = await api.wavesInCove(coveId);
   const existing = waves.find((w) => w.title === TODAY_WAVE_TITLE);
   if (existing) return { wave: existing, created: false };
-  const wave = await api.createWave({ cove_id: coveId, title: TODAY_WAVE_TITLE });
+  // Issue #250 PR 2 — `createWave` now requires `cwd`. The Today
+  // wave is a kernel-internal singleton inside the system cove (a
+  // cove the user never sees); its spec daemon doesn't need a
+  // meaningful project cwd. We pass `/` and `attach_folder: true`
+  // so the system cove auto-claims root for this one row. A
+  // subsequent call into this helper finds the existing wave and
+  // never re-mints (the `existing` short-circuit above).
+  const wave = await api.createWave({
+    cove_id: coveId,
+    title: TODAY_WAVE_TITLE,
+    cwd: '/',
+    attach_folder: true,
+  });
   return { wave, created: true };
 }
 

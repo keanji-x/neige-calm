@@ -52,6 +52,8 @@ async fn spec_card_can_update_wave() {
             cove_id: cove.id.clone(),
             title: "w".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
         })
         .await
         .unwrap();
@@ -143,6 +145,8 @@ async fn ai_codex_cannot_update_wave() {
             cove_id: cove.id.clone(),
             title: "w".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
         })
         .await
         .unwrap();
@@ -286,6 +290,8 @@ async fn migration_backfills_role_plain_for_existing_cards() {
             cove_id: cove.id,
             title: "w".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
         })
         .await
         .unwrap();
@@ -325,6 +331,8 @@ async fn unique_spec_card_per_wave_index_enforced() {
             cove_id: cove.id,
             title: "w".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
         })
         .await
         .unwrap();

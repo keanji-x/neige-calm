@@ -71,6 +71,8 @@ async fn boot_with_role(role: CardRole) -> CardBoot {
             cove_id: cove.id.clone(),
             title: "mcp-emit-test".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
         })
         .await
         .unwrap();

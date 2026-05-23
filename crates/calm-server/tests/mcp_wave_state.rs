@@ -74,6 +74,8 @@ async fn boot() -> Boot {
             cove_id: cove.id.clone(),
             title: "initial".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
         })
         .await
         .unwrap();

@@ -335,7 +335,7 @@ async fn spec_card_codex_daemon_env_contains_mcp_vars() {
     let (status, body) = post(
         app.clone(),
         "/api/waves",
-        json!({"cove_id": cove.id, "title": "codex-e2e wave"}),
+        json!({"cove_id": cove.id, "title": "codex-e2e wave", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true}),
     )
     .await;
     assert_eq!(

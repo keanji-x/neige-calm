@@ -48,6 +48,8 @@ async fn boot() -> (AppState, String) {
             cove_id: cove.id.clone(),
             title: "demo".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
         })
         .await
         .unwrap();

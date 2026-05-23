@@ -57,13 +57,17 @@
 
 use crate::actor::Actor;
 use crate::db::sqlite::{
-    card_create_with_id_tx, card_with_codex_create_tx, overlay_upsert_tx, terminal_delete_tx,
-    wave_create_tx, wave_delete_tx, wave_update_tx,
+    card_create_with_id_tx, card_with_codex_create_tx, cove_folder_create_tx, overlay_upsert_tx,
+    terminal_delete_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
 };
 use crate::db::{write_with_event_typed, write_with_events_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
-use crate::model::{CardRole, NewCard, NewOverlay, NewWave, Wave, WaveDetail, WavePatch, new_id};
+use crate::model::{
+    CardRole, FolderConflict, FolderConflictKind, NewCard, NewOverlay, NewWave, Wave, WaveDetail,
+    WavePatch, new_id,
+};
+use crate::routes::cove_folders::{is_descendant_of, normalize_path};
 use crate::routes::settings::load_settings;
 use crate::spec_card::{build_codex_env_map, seed_and_spawn_spec_daemon};
 use crate::state::AppState;
@@ -72,14 +76,17 @@ use crate::wave_lifecycle::validate_transition;
 use crate::wave_report::WaveReportPayload;
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
+    response::{IntoResponse, Response},
     routing::get,
 };
+use serde::Deserialize;
+use utoipa::{IntoParams, ToSchema};
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/api/waves", axum::routing::post(create_wave))
+        .route("/api/waves", get(list_waves_window).post(create_wave))
         .route(
             "/api/waves/{id}",
             get(get_wave_detail).patch(update_wave).delete(delete_wave),
@@ -102,6 +109,75 @@ pub(crate) async fn list_waves_by_cove(
     Path(cove_id): Path<String>,
 ) -> Result<Json<Vec<Wave>>> {
     let waves = s.repo.waves_by_cove(&cove_id).await?;
+    Ok(Json(waves))
+}
+
+/// Issue #250 PR 2 — calendar window query parameters for
+/// `GET /api/waves`. Every field is optional so omitting all three
+/// degenerates to "every wave in the DB" (the route delegates to
+/// `Repo::waves_window` which builds the SQL `WHERE` clause from the
+/// non-`None` subset).
+///
+/// The semantic for `since` + `until` is **inclusive at both
+/// endpoints**:
+///   * `created_at <= until`  — exclude waves that hadn't been created
+///     yet by the right edge of the window.
+///   * `terminal_at IS NULL OR terminal_at >= since` — include any
+///     wave that's still open (never reached a terminal lifecycle
+///     state) or whose terminal stamp lands inside / past the left
+///     edge.
+///
+/// Together the two predicates implement the "the wave is visible on
+/// at least one day inside `[since, until]`" calendar contract from
+/// the issue, even when the wave hasn't terminated yet.
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+pub struct WavesWindowQuery {
+    /// Lower bound (inclusive) in unix milliseconds. Wave is included
+    /// when `terminal_at IS NULL OR terminal_at >= since`. Omitting
+    /// disables the lower-bound filter.
+    pub since: Option<i64>,
+    /// Upper bound (inclusive) in unix milliseconds. Wave is included
+    /// when `created_at <= until`. Omitting disables the upper-bound
+    /// filter.
+    pub until: Option<i64>,
+    /// Optional per-cove filter. Mirrors `list_waves_by_cove` for
+    /// callers that want one cove's window in a single endpoint.
+    pub cove_id: Option<String>,
+}
+
+/// Issue #250 PR 2 — calendar / dashboard window query.
+///
+/// `GET /api/waves?since=<ms>&until=<ms>&cove_id=<id>` — every
+/// parameter is optional. Returns the full wave row (so the frontend
+/// can render lifecycle / cove / terminal-at without an N+1 detail
+/// fetch). Pre-#250 callers that hit `GET /api/waves` would 405 on
+/// the old `POST`-only route; this is an additive contract.
+#[utoipa::path(
+    get,
+    path = "/api/waves",
+    tag = "waves",
+    params(WavesWindowQuery),
+    responses(
+        (status = 200, description = "Waves overlapping the window, sorted by created_at", body = Vec<Wave>),
+        (status = 400, description = "Inverted window (since > until)", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn list_waves_window(
+    State(state): State<AppState>,
+    Query(q): Query<WavesWindowQuery>,
+) -> Result<Json<Vec<Wave>>> {
+    if let (Some(since), Some(until)) = (q.since, q.until)
+        && since > until
+    {
+        return Err(CalmError::BadRequest(format!(
+            "window query: `since` ({since}) must be <= `until` ({until})"
+        )));
+    }
+    let waves = state
+        .repo
+        .waves_window(q.cove_id.as_deref(), q.since, q.until)
+        .await?;
     Ok(Json(waves))
 }
 
@@ -151,14 +227,108 @@ pub(crate) async fn get_wave_detail(
 pub(crate) async fn create_wave(
     State(s): State<AppState>,
     actor: Actor,
-    Json(p): Json<NewWave>,
-) -> Result<(StatusCode, Json<Wave>)> {
+    Json(mut p): Json<NewWave>,
+) -> Result<Response> {
     // PR6 (#136) — wave create now atomically mints a `CardRole::Spec`
     // codex card alongside the wave row. Both rows commit in one tx
     // and both `Event::WaveUpdated` + `Event::CardAdded` envelopes
     // emit from the same commit, each tagged with its own scope so
     // per-wave and per-card subscribers each see the relevant frame
     // without re-routing through ancestors.
+    //
+    // Issue #250 PR 2 — the body now carries `cwd` (the wave's working
+    // directory) and `attach_folder`. The wave's cwd is the source of
+    // truth for the spec daemon's working directory (replacing the
+    // pre-#250 `routes::codex_cards::default_cwd()` = `$HOME`). The
+    // cwd must either resolve to the body's `cove_id` via the existing
+    // folder claims, or — when `attach_folder = true` — get atomically
+    // claimed as a new folder under that cove inside the same tx that
+    // mints the wave row.
+
+    // 0. Validate cwd up front before opening the tx. The route owns
+    //    every cross-cove correctness check so the inner writer
+    //    (`wave_create_tx`) stays a pure mechanical row insert. Order:
+    //    absolute-path shape → normalize → existing-claim resolution
+    //    → optional folder attach. All branches that surface a 4xx
+    //    short-circuit before any DB write.
+    if !p.cwd.starts_with('/') {
+        return Err(CalmError::BadRequest(format!(
+            "wave create: `cwd` must be absolute (start with `/`); got `{}`",
+            p.cwd
+        )));
+    }
+    let normalized_cwd = normalize_path(&p.cwd);
+    // Stamp the normalized cwd back onto the body before the wave row
+    // is minted — the `cove_folder.path` we may attach below is also
+    // the normalized form, so storing them in the same shape keeps
+    // future "resolve by exact cwd" lookups simple.
+    p.cwd = normalized_cwd.clone();
+
+    // Pre-tx claim scan. The route runs every cwd-vs-folder check
+    // outside the tx so the structured 409 (`FolderConflict`) can be
+    // returned without a custom in-tx error variant. The UNIQUE
+    // constraint on `cove_folders.path` provides a concurrent-insert
+    // backstop inside the tx; concurrent `attach_folder = true`
+    // requests for the same cwd surface as a generic 409 from the
+    // sqlite layer.
+    let existing_folders = s.repo.cove_folders_list_all().await?;
+    let attach_folder = p.attach_folder;
+    let body_cove_id = p.cove_id.as_str().to_string();
+
+    // Step 1 — find a covering folder (cwd is descendant of or equal
+    // to some claim). At most one row qualifies as the *longest*
+    // prefix; ancestor/equal claims under different coves are a
+    // hard conflict, under the same cove are a silent no-op.
+    let owner = existing_folders
+        .iter()
+        .filter(|f| is_descendant_of(&f.path, &normalized_cwd))
+        .max_by_key(|f| f.path.len());
+    if let Some(f) = owner {
+        if f.cove_id.as_str() != body_cove_id {
+            let body = FolderConflict {
+                folder_id: f.id,
+                cove_id: f.cove_id.clone(),
+                conflict_path: f.path.clone(),
+                // `Descendant` is the right label from the cwd's
+                // point of view: the cwd is a descendant of an
+                // existing folder owned by another cove.
+                conflict_kind: FolderConflictKind::Descendant,
+            };
+            return Ok((StatusCode::CONFLICT, Json(body)).into_response());
+        }
+        // Same cove already covers it — silently ignore
+        // `attach_folder`. Fall through to wave-only create.
+    } else if attach_folder {
+        // Step 2 — no claim covers the cwd, but the caller wants to
+        // mint one. Re-check for the *reverse* overlap: any existing
+        // folder that is a descendant of the proposed cwd. This is
+        // the `/a/b exists, claim /a` case that the cove_folders
+        // route refuses with `FolderConflictKind::Ancestor`. We
+        // refuse here for the same reason — silently widening an
+        // existing narrower claim would make resolution ambiguous.
+        if let Some(f) = existing_folders
+            .iter()
+            .find(|f| is_descendant_of(&normalized_cwd, &f.path))
+        {
+            let body = FolderConflict {
+                folder_id: f.id,
+                cove_id: f.cove_id.clone(),
+                conflict_path: f.path.clone(),
+                conflict_kind: FolderConflictKind::Ancestor,
+            };
+            return Ok((StatusCode::CONFLICT, Json(body)).into_response());
+        }
+        // Cwd is fully unclaimed (no ancestor, no descendant) — the
+        // in-tx `cove_folder_create_tx` will insert the row.
+    } else {
+        // No claim covers the cwd and the caller didn't opt in to
+        // attach. Refuse so accidentally typing a stray path doesn't
+        // create a "homeless" wave.
+        return Err(CalmError::Conflict(format!(
+            "wave create: cwd `{normalized_cwd}` is not claimed by any cove. \
+             Set `attach_folder: true` to claim it for cove `{body_cove_id}`."
+        )));
+    }
 
     // 1. Pre-mint the spec card id BEFORE the tx opens — we need it to
     //    derive `CODEX_HOME = <codex_homes_dir>/<card_id>/` for the
@@ -175,13 +345,14 @@ pub(crate) async fn create_wave(
     // invariant if a future code path races itself.
     let report_card_id = new_id();
 
-    // 2. Resolve cwd + assemble env up front — these go into the
-    //    terminal row written inside the tx. Mirror of
-    //    `routes::codex_cards::create_codex_card` minus the user-
-    //    supplied cwd: the spec card's cwd defaults to `$HOME` (the
-    //    spec agent has no project-specific working directory; PR7+
-    //    may wire a wave-level cwd field).
-    let cwd = crate::routes::codex_cards::default_cwd();
+    // 2. Issue #250 PR 2 — the spec daemon's cwd is the wave's cwd
+    //    (validated above). Pre-#250 this defaulted to `$HOME` because
+    //    waves had no cwd field; the new model is one cwd per wave,
+    //    inherited by the spec daemon and any future cwd-anchored
+    //    surfaces. The same string lands on three rows in the tx:
+    //    `waves.cwd`, the spec card's terminal row, and (when
+    //    `attach_folder = true`) a fresh `cove_folders.path` claim.
+    let cwd = normalized_cwd.clone();
     let settings = load_settings(s.repo.as_ref()).await?;
     // PR7a (#136) — env baked into the terminal row is the pre-MCP
     // shape (no `NEIGE_MCP_TOKEN` / `NEIGE_MCP_SOCKET` yet). The token
@@ -222,6 +393,8 @@ pub(crate) async fn create_wave(
     let cwd_for_tx = cwd.clone();
     let spec_card_id_for_tx = spec_card_id.clone();
     let report_card_id_for_tx = report_card_id.clone();
+    let cove_id_for_attach = body_cove_id.clone();
+    let normalized_cwd_for_tx = normalized_cwd.clone();
     let ((wave, mcp_token), _event_ids) = write_with_events_typed(
         s.repo.as_ref(),
         actor_id,
@@ -231,6 +404,23 @@ pub(crate) async fn create_wave(
         &s.wave_cove_cache,
         move |tx| {
             Box::pin(async move {
+                // 3.0. Issue #250 PR 2 — optional folder attach.
+                // Pre-tx the route ran the full ancestor/descendant
+                // scan and rejected every structured conflict with a
+                // typed `FolderConflict` body. Here we only need the
+                // insert; a concurrent claim from another connection
+                // between the pre-scan and now surfaces as the
+                // UNIQUE-constraint violation in `cove_folder_create_tx`
+                // (which maps it to `CalmError::Conflict`). That
+                // hands the caller a generic 409 rather than a
+                // structured body — acceptable for a race window
+                // measured in milliseconds; the typed shape is
+                // reserved for the deterministic prior-state case
+                // covered by the pre-scan.
+                if attach_folder {
+                    cove_folder_create_tx(tx, &cove_id_for_attach, &normalized_cwd_for_tx).await?;
+                }
+
                 // 3a. Wave row.
                 let wave = wave_create_tx(tx, p, &wcc_for_tx).await?;
                 let wave_id = wave.id.clone();
@@ -459,11 +649,18 @@ pub(crate) async fn create_wave(
     // hands-free cards. Together: composer mounts pre-filled with the
     // goal, `\r` is injected on `hook.codex.session_start`, spec
     // agent's loop starts.
+    // Issue #250 PR 2 — the spec daemon now spawns in `wave.cwd`,
+    // not `default_cwd()`. The committed wave's `cwd` is the
+    // authoritative source even though the route had its own
+    // `normalized_cwd` in scope: routing through `wave.cwd` keeps the
+    // contract narrow ("whatever ended up on the row is what the
+    // daemon runs under") and matches the same path the spec card's
+    // terminal-row write recorded.
     if let Err(e) = seed_and_spawn_spec_daemon(
         s.clone(),
         spec_card_id.clone(),
         wave.id.as_str().to_string(),
-        cwd,
+        wave.cwd.clone(),
         env_for_spawn,
         mcp_token.clone(),
         Some(wave.title.clone()),
@@ -486,7 +683,7 @@ pub(crate) async fn create_wave(
         wave_id = %wave.id,
         "spec card persisted + daemon spawned inline",
     );
-    Ok((StatusCode::CREATED, Json(wave)))
+    Ok((StatusCode::CREATED, Json(wave)).into_response())
 }
 
 #[utoipa::path(

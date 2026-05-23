@@ -56,6 +56,8 @@ async fn boot() -> Boot {
             cove_id: cove.id.clone(),
             title: "wave-A".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
         })
         .await
         .unwrap();
@@ -66,6 +68,8 @@ async fn boot() -> Boot {
             cove_id: cove.id.clone(),
             title: "wave-B".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
         })
         .await
         .unwrap();

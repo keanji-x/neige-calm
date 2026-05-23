@@ -201,6 +201,25 @@ pub trait RepoRead: Send + Sync + 'static {
     async fn waves_by_cove(&self, cove_id: &str) -> Result<Vec<Wave>>;
     async fn wave_get(&self, id: &str) -> Result<Option<Wave>>;
     async fn wave_detail(&self, id: &str) -> Result<Option<WaveDetail>>;
+    /// Issue #250 PR 2 — calendar window query.
+    ///
+    /// Returns every wave whose lifespan overlaps the half-open
+    /// `[since, until]` millisecond range (both endpoints inclusive
+    /// per the issue spec): `created_at <= until AND (terminal_at IS
+    /// NULL OR terminal_at >= since)`. `cove_id`, when `Some(_)`,
+    /// further restricts the result to a single cove.
+    ///
+    /// Any combination of the three filters is legal — when all three
+    /// are `None` the query degenerates to "every wave in the DB" so
+    /// callers that omit every parameter still get a sensible default.
+    /// Sorted by `created_at ASC, id ASC` for stable pagination later;
+    /// PR 2 returns the full window in one shot.
+    async fn waves_window(
+        &self,
+        cove_id: Option<&str>,
+        since: Option<i64>,
+        until: Option<i64>,
+    ) -> Result<Vec<Wave>>;
 
     // ---- cards
     async fn cards_by_wave(&self, wave_id: &str) -> Result<Vec<Card>>;

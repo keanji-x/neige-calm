@@ -185,7 +185,7 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
         boot.app.clone(),
         "/api/waves",
         Some("user"),
-        json!({"cove_id": boot.cove_id, "title": "real-auth wave"}),
+        json!({"cove_id": boot.cove_id, "title": "real-auth wave", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true}),
     )
     .await;
     assert_eq!(

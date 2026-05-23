@@ -118,6 +118,8 @@ async fn backfill_mints_report_card_per_wave() {
             cove_id: cove.id.clone(),
             title: "legacy".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
         })
         .await
         .unwrap();
@@ -159,6 +161,8 @@ async fn backfill_skips_waves_that_already_have_a_report_card() {
             cove_id: cove.id.clone(),
             title: "already migrated".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
         })
         .await
         .unwrap();
@@ -194,6 +198,8 @@ async fn backfill_seeds_layout_overlay_when_absent() {
             cove_id: cove.id.clone(),
             title: "no-layout-yet".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
         })
         .await
         .unwrap();
@@ -242,6 +248,8 @@ async fn backfill_patches_existing_layout_overlay() {
             cove_id: cove.id.clone(),
             title: "already-has-layout".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
         })
         .await
         .unwrap();

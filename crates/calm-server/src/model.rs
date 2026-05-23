@@ -345,6 +345,39 @@ pub struct Wave {
     /// migration 0012.
     #[serde(default)]
     pub lifecycle: WaveLifecycle,
+    /// Issue #250 PR 2 — the working directory the wave's spec daemon
+    /// runs in. **Required at the route layer**: `POST /api/waves`
+    /// rejects empty / non-absolute paths and refuses to create a wave
+    /// whose cwd isn't claimable by some cove (via
+    /// `cove_folder_resolve`, optionally creating a `cove_folders` row
+    /// when the body sets `attach_folder: true`).
+    ///
+    /// `#[serde(default)]` mirrors the lifecycle precedent: replay of
+    /// a pre-#250 event log fixture (no `cwd` key on `WaveUpdated`)
+    /// hydrates as `""`, matching the DB DEFAULT in migration 0016.
+    /// Production wave-create paths inside this binary always stamp a
+    /// real path — the migration default is the "old data only" fallback.
+    #[serde(default)]
+    pub cwd: String,
+    /// Issue #250 PR 2 — unix-ms timestamp the wave most recently
+    /// entered a terminal lifecycle state (Done / Canceled / Failed),
+    /// or `None` while the wave is non-terminal. Stamped inside the
+    /// same transaction as the `WaveLifecycleChanged` event by
+    /// `wave_update_tx`; cleared back to `None` on reopen
+    /// (Done/Canceled/Failed → Planning). The calendar window query
+    /// `GET /api/waves?since&until` uses `(terminal_at IS NULL OR
+    /// terminal_at >= since)` to keep open waves visible across every
+    /// day they span.
+    ///
+    /// Backfill semantics: rows that existed before this migration
+    /// stay `None` even when their lifecycle is already terminal —
+    /// the event log carries the original transition timestamp but
+    /// the migration deliberately doesn't read from `events` (mixing
+    /// migration with replay is fragile). A user-driven reopen →
+    /// re-Done cycle stamps the column with the current time, which
+    /// is the first defensible point.
+    #[serde(default)]
+    pub terminal_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -355,6 +388,25 @@ pub struct NewWave {
     pub cove_id: CoveId,
     pub title: String,
     pub sort: Option<f64>,
+    /// Issue #250 PR 2 — absolute filesystem path the spec daemon will
+    /// spawn under. Required (no `Option`): every wave-creating path
+    /// must declare a cwd or the spec daemon has no defensible
+    /// working directory. The `POST /api/waves` route enforces
+    /// absolute-path shape and the cove-folder claim check; the
+    /// inner `wave_create_tx` writes whatever the route lands here
+    /// verbatim.
+    pub cwd: String,
+    /// Issue #250 PR 2 — opt-in for "claim this `cwd` for the body's
+    /// `cove_id` as a new folder, in the same transaction as the
+    /// wave-create write". Default `false`: the cwd must already be
+    /// covered by some existing folder under the same cove (the
+    /// `cove_folder_resolve` longest-prefix match runs at the route
+    /// layer). `true` adds a `cove_folder` row first and then the
+    /// wave; folder-conflict rules (equal/ancestor/descendant of any
+    /// existing claim) still apply and roll the whole tx back on
+    /// conflict.
+    #[serde(default)]
+    pub attach_folder: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, ToSchema)]

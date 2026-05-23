@@ -177,6 +177,8 @@ async fn card_delete_reaps_daemon_and_unlinks_socket() {
             cove_id: cove.id.clone(),
             title: "w".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
         })
         .await
         .unwrap();
@@ -282,6 +284,8 @@ async fn wave_delete_reaps_every_terminal_under_wave() {
             cove_id: cove.id.clone(),
             title: "w".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
         })
         .await
         .unwrap();
@@ -433,6 +437,8 @@ async fn cove_delete_reaps_every_terminal_under_cove() {
             cove_id: cove.id.clone(),
             title: "w".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
         })
         .await
         .unwrap();
@@ -555,6 +561,8 @@ async fn card_delete_succeeds_when_card_has_no_terminal() {
             cove_id: cove.id.clone(),
             title: "w".into(),
             sort: None,
+            cwd: String::new(),
+            attach_folder: false,
         })
         .await
         .unwrap();

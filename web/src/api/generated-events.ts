@@ -281,7 +281,42 @@ export type Wave = { id: WaveId, cove_id: CoveId, title: string, sort: number, a
  * forcing a fixture rewrite — matches the DB DEFAULT in
  * migration 0012.
  */
-lifecycle: WaveLifecycle, created_at: number, updated_at: number, };
+lifecycle: WaveLifecycle, 
+/**
+ * Issue #250 PR 2 — the working directory the wave's spec daemon
+ * runs in. **Required at the route layer**: `POST /api/waves`
+ * rejects empty / non-absolute paths and refuses to create a wave
+ * whose cwd isn't claimable by some cove (via
+ * `cove_folder_resolve`, optionally creating a `cove_folders` row
+ * when the body sets `attach_folder: true`).
+ *
+ * `#[serde(default)]` mirrors the lifecycle precedent: replay of
+ * a pre-#250 event log fixture (no `cwd` key on `WaveUpdated`)
+ * hydrates as `""`, matching the DB DEFAULT in migration 0016.
+ * Production wave-create paths inside this binary always stamp a
+ * real path — the migration default is the "old data only" fallback.
+ */
+cwd: string, 
+/**
+ * Issue #250 PR 2 — unix-ms timestamp the wave most recently
+ * entered a terminal lifecycle state (Done / Canceled / Failed),
+ * or `None` while the wave is non-terminal. Stamped inside the
+ * same transaction as the `WaveLifecycleChanged` event by
+ * `wave_update_tx`; cleared back to `None` on reopen
+ * (Done/Canceled/Failed → Planning). The calendar window query
+ * `GET /api/waves?since&until` uses `(terminal_at IS NULL OR
+ * terminal_at >= since)` to keep open waves visible across every
+ * day they span.
+ *
+ * Backfill semantics: rows that existed before this migration
+ * stay `None` even when their lifecycle is already terminal —
+ * the event log carries the original transition timestamp but
+ * the migration deliberately doesn't read from `events` (mixing
+ * migration with replay is fragile). A user-driven reopen →
+ * re-Done cycle stamps the column with the current time, which
+ * is the first defensible point.
+ */
+terminal_at: number | null, created_at: number, updated_at: number, };
 
 /**
  * Wave identifier. See [`CoveId`] for the opacity contract.
