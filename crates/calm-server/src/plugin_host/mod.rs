@@ -20,6 +20,7 @@ pub mod auth;
 pub mod callbacks;
 pub mod error;
 pub mod events;
+mod glob;
 pub mod manifest;
 pub mod mcp;
 pub mod perms;
