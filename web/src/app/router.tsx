@@ -50,6 +50,7 @@ import {
 } from '../api/queries';
 import { adaptCard, adaptCove, adaptWave } from '../api/adapt';
 import * as api from '../api/calm';
+import { DARK_THEME_RGB } from '../api/themeRgb';
 import { useQueryClient, useQueries } from '@tanstack/react-query';
 import { queryKeys } from '../api/queries';
 import { queryClient } from './providers';
@@ -231,7 +232,15 @@ function CoveComponent() {
       waves={waves}
       onGo={go}
       onCreateWave={async (cId, title) => {
-        const w = await createWave.mutateAsync({ cove_id: cId, title });
+        // #177 — `theme` is required end-to-end. PR4 wires the real
+        // host-browser theme read; until then every callsite passes
+        // `DARK_THEME_RGB` so the type-layer guard is satisfied with
+        // a sentinel that matches the server's `default_dark()`.
+        const w = await createWave.mutateAsync({
+          cove_id: cId,
+          title,
+          theme: DARK_THEME_RGB,
+        });
         go({ name: 'wave', id: w.id });
       }}
       onRenameCove={async (cId, name) => {
@@ -405,6 +414,8 @@ async function addCardWithValues(
     const card = await api.createCodexCard(waveId, {
       cwd: values.cwd || undefined,
       prompt: values.prompt || undefined,
+      // #177 — placeholder until PR4 wires the real host theme read.
+      theme: DARK_THEME_RGB,
     });
     dlog('addCardWithValues', 'codex create DONE', { cardId: card.id });
   } catch (err) {
@@ -425,7 +436,10 @@ async function addCardOfKind(
   // event and the cache converges naturally.
   try {
     dlog('addCardOfKind', 'createTerminalCard START', { waveId });
-    const card = await api.createTerminalCard(waveId, {});
+    const card = await api.createTerminalCard(waveId, {
+      // #177 — placeholder until PR4 wires the real host theme read.
+      theme: DARK_THEME_RGB,
+    });
     dlog('addCardOfKind', 'createTerminalCard DONE', {
       cardId: card.id,
       payload: card.payload,

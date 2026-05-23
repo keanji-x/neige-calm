@@ -27,6 +27,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { useState } from '../shared/state';
 import { useQueryClient } from '@tanstack/react-query';
 import * as api from '../api/calm';
+import { DARK_THEME_RGB } from '../api/themeRgb';
 import { queryKeys } from '../api/queries';
 
 const STORAGE_KEY = 'calm.todayCardId';
@@ -122,7 +123,10 @@ export function useTodayTerminal(): UseTodayTerminalResult {
       // linked terminal row, AND spawns the daemon. The kernel stamps the
       // `schemaVersion` + `terminal_id` payload itself, and a single
       // `card.added` event drives the cache invalidate via EventBridge.
-      const card = await api.createTerminalCard(wave.id, {});
+      const card = await api.createTerminalCard(wave.id, {
+        // #177 — placeholder until PR4 wires the real host theme read.
+        theme: DARK_THEME_RGB,
+      });
       const terminalId = (card.payload as { terminal_id: string }).terminal_id;
       localStorage.setItem(STORAGE_KEY, card.id);
       setToday({ cardId: card.id, terminalId });
@@ -165,7 +169,12 @@ async function ensureTodayWave(coveId: string) {
   const waves = await api.wavesInCove(coveId);
   const existing = waves.find((w) => w.title === TODAY_WAVE_TITLE);
   if (existing) return { wave: existing, created: false };
-  const wave = await api.createWave({ cove_id: coveId, title: TODAY_WAVE_TITLE });
+  const wave = await api.createWave({
+    cove_id: coveId,
+    title: TODAY_WAVE_TITLE,
+    // #177 — placeholder until PR4 wires the real host theme read.
+    theme: DARK_THEME_RGB,
+  });
   return { wave, created: true };
 }
 

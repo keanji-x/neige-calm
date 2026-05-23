@@ -2030,7 +2030,7 @@
           }
         ],
         "requestBody": {
-          "description": "Optional body — empty means use defaults",
+          "description": "Body required (theme is mandatory; cwd/prompt optional)",
           "content": {
             "application/json": {
               "schema": {
@@ -2053,6 +2053,16 @@
           },
           "404": {
             "description": "Wave not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Body missing required fields (e.g. theme)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2092,7 +2102,7 @@
           }
         ],
         "requestBody": {
-          "description": "Optional body — empty means use defaults",
+          "description": "Body required (theme is mandatory; program/cwd/env optional)",
           "content": {
             "application/json": {
               "schema": {
@@ -2115,6 +2125,16 @@
           },
           "404": {
             "description": "Wave not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Body missing required fields (e.g. theme)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2537,7 +2557,10 @@
       },
       "NewCodexCardBody": {
         "type": "object",
-        "description": "Body for `POST /api/waves/:wave_id/codex-cards`.\n\nDeliberately omits `kind` (always `\"codex\"`) and `payload` (the kernel\nstamps `{schemaVersion, terminal_id, cwd?, prompt?}` itself). Empty\n`cwd` falls back to `$HOME` then the server's cwd.\n\n`prompt` is the hands-free entry point: when non-empty, the kernel\n  1. passes it to codex CLI as the positional `[PROMPT]` arg\n     (shell-single-quoted), which mounts the TUI with the composer\n     pre-filled,\n  2. writes a per-spawn `$CODEX_HOME/config.toml` that silences the\n     three first-run dialogs (approval, sandbox, project trust) so\n     injected stdin lands on the composer instead of a modal, and\n  3. stamps `prompt` onto the card payload — the\n     `codex_auto_submit` subscriber reads it and, once codex emits\n     `hook.codex.session_start`, opens a kernel-private connection\n     to the daemon and injects a `\\r` so the composer auto-submits.\n\nEmpty / absent `prompt` reverts to the user-initiated flow: codex\nboots, the composer is empty, the user types and hits Enter.\n\nNote: the old `initial_prompt` field (which had been a documented\nno-op since the codex-TUI port) was removed; serde rejects unknown\nfields with the default config, so a stale caller that still sends\nit will get a 422 — that's the intended fail-loud signal to update\nthe caller. The interactive `prompt` channel is the one place\ncallers should be putting text now.",
+        "description": "Body for `POST /api/waves/:wave_id/codex-cards`.\n\nDeliberately omits `kind` (always `\"codex\"`) and `payload` (the kernel\nstamps `{schemaVersion, terminal_id, cwd?, prompt?}` itself). Empty\n`cwd` falls back to `$HOME` then the server's cwd.\n\n`prompt` is the hands-free entry point: when non-empty, the kernel\n  1. passes it to codex CLI as the positional `[PROMPT]` arg\n     (shell-single-quoted), which mounts the TUI with the composer\n     pre-filled,\n  2. writes a per-spawn `$CODEX_HOME/config.toml` that silences the\n     three first-run dialogs (approval, sandbox, project trust) so\n     injected stdin lands on the composer instead of a modal, and\n  3. stamps `prompt` onto the card payload — the\n     `codex_auto_submit` subscriber reads it and, once codex emits\n     `hook.codex.session_start`, opens a kernel-private connection\n     to the daemon and injects a `\\r` so the composer auto-submits.\n\nEmpty / absent `prompt` reverts to the user-initiated flow: codex\nboots, the composer is empty, the user types and hits Enter.\n\nNote: the old `initial_prompt` field (which had been a documented\nno-op since the codex-TUI port) was removed; serde rejects unknown\nfields with the default config, so a stale caller that still sends\nit will get a 422 — that's the intended fail-loud signal to update\nthe caller. The interactive `prompt` channel is the one place\ncallers should be putting text now.\n\n`theme` is required end-to-end (#177): callers MUST send the host\nbrowser's current foreground/background RGB. The kernel stamps it\nonto the `calm-session-daemon` argv so codex's OSC 10/11 startup\nprobe gets matching colors. Forcing it at the type layer means a\ncaller that forgets — the exact bug that motivated this refactor —\nfails at compile time (TS) or at the deserialize step (Rust/JSON,\n422). No `Option`, no `#[serde(default)]`, no implicit fallback.",
+        "required": [
+          "theme"
+        ],
         "properties": {
           "cwd": {
             "type": [
@@ -2560,6 +2583,10 @@
             ],
             "format": "double",
             "description": "Sort order within the wave. `None` defaults to \"append to end\"."
+          },
+          "theme": {
+            "$ref": "#/components/schemas/RequestTheme",
+            "description": "Host browser's current theme RGB (#177). Required — the kernel\nstamps `--terminal-fg=r,g,b --terminal-bg=r,g,b` onto the\n`calm-session-daemon` argv so the daemon's `TerminalModel`\nanswers codex's OSC 10/11 startup probe with colors matching\nthe host theme. A caller that omits this field gets 422."
           }
         },
         "additionalProperties": false
@@ -2629,6 +2656,9 @@
       "NewTerminalCardBody": {
         "type": "object",
         "description": "Body for `POST /api/waves/:wave_id/terminal-cards`.\n\nDeliberately omits `kind` (always `\"terminal\"`) and `payload` (the kernel\nstamps `{schemaVersion, terminal_id}` itself). Empty `program` falls back\nto `$SHELL` then `/bin/sh`; empty `cwd` falls back to `$HOME` then the\nserver's cwd. `env` is merged into the daemon's environment as additional\nvars on top of `TERM` / `COLORTERM` / inherited.",
+        "required": [
+          "theme"
+        ],
         "properties": {
           "cwd": {
             "type": "string",
@@ -2649,6 +2679,10 @@
             ],
             "format": "double",
             "description": "Sort order within the wave. `None` defaults to \"append to end\"."
+          },
+          "theme": {
+            "$ref": "#/components/schemas/RequestTheme",
+            "description": "Host browser's current theme RGB (#177). Required — the kernel\nwrites it onto the terminal row inside the same transaction\nthat mints the card, and every spawn for this row reads\n`term.theme_fg/_bg` to stamp `--terminal-fg/-bg` daemon argv."
           }
         }
       },
@@ -2656,7 +2690,8 @@
         "type": "object",
         "required": [
           "cove_id",
-          "title"
+          "title",
+          "theme"
         ],
         "properties": {
           "cove_id": {
@@ -2669,10 +2704,15 @@
             ],
             "format": "double"
           },
+          "theme": {
+            "$ref": "#/components/schemas/RequestTheme",
+            "description": "Host browser's current theme RGB (#177). Required end-to-end —\nthe kernel stamps `--terminal-fg=r,g,b --terminal-bg=r,g,b`\nonto the auto-minted spec card's `calm-session-daemon` argv so\ncodex's OSC 10/11 startup probe gets matching colors. A body\nmissing this field is rejected at the deserialize layer (422):\nthe spec card is invisible to the user and a silent fallback\nwould mean every wave-from-the-UI spawned with a mis-tinted\ncomposer (the bug that motivated this refactor).\n\nDirect repo callers (`db::sqlite::wave_create_tx`, used by tests\nand a couple of non-route helpers) still pass a value here even\nthough the txn-level helper does not consume it — spec-card\nspawning is owned by `routes::waves::create_wave`. Tests can\nuse `RequestTheme::default_dark()` as a no-op sentinel."
+          },
           "title": {
             "type": "string"
           }
-        }
+        },
+        "additionalProperties": false
       },
       "Overlay": {
         "type": "object",
@@ -2884,6 +2924,59 @@
           }
         }
       },
+      "RequestTheme": {
+        "type": "object",
+        "description": "Wire shape of `NewCodexCardBody.theme` / `NewWave.theme`. Matches the\n`calm_session::TerminalTheme` value type one-for-one — duplicated\nhere so the route can keep its own `ToSchema` derive (the\n`calm_session` crate is utoipa-free).",
+        "required": [
+          "fg",
+          "bg"
+        ],
+        "properties": {
+          "bg": {
+            "type": "array",
+            "items": false,
+            "prefixItems": [
+              {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              }
+            ]
+          },
+          "fg": {
+            "type": "array",
+            "items": false,
+            "prefixItems": [
+              {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "ResolveQuery": {
         "type": "object",
         "required": [
@@ -2940,6 +3033,8 @@
           "program",
           "cwd",
           "env",
+          "theme_fg",
+          "theme_bg",
           "created_at"
         ],
         "properties": {
@@ -2975,6 +3070,14 @@
           },
           "program": {
             "type": "string"
+          },
+          "theme_bg": {
+            "type": "string",
+            "description": "#177 — host browser's background RGB at row-creation time.\nMirrors `theme_fg` semantics; both columns are written together\nin the same row-creation transaction so they are never\nindependently NULL."
+          },
+          "theme_fg": {
+            "type": "string",
+            "description": "#177 — host browser's foreground RGB at row-creation time, as\ncomma-decimal `r,g,b` (the daemon CLI's `--terminal-fg` arg\nformat). NOT NULL after migration 0017: every spawn path reads\nthese columns and stamps the daemon argv from them, so the\nauto-revive in `ws::terminal` can no longer race a themed spawn\nwith an un-themed one (both candidates carry identical argv)."
           }
         }
       },
