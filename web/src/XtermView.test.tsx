@@ -509,6 +509,50 @@ describe('XtermView theme toggle (#177)', () => {
     expect(themeFrame.TerminalThemeUpdate.bg).toEqual([252, 254, 255]);
   });
 
+  // #177 regression anchor: the bug chain ended in XtermView's theme
+  // effect failing to fire on a second toggle because the surrounding
+  // subtree (WaveComponent) had unmounted and remounted, wiping the
+  // `prevThemeRef` between toggles. At the XtermView level — i.e. across
+  // a STABLE component instance — three rerenders (light → dark → light)
+  // MUST emit two distinct TerminalThemeUpdate frames with the matching
+  // RGB pairs. If a future refactor accidentally nulls the ref between
+  // renders (instead of between unmounts), this catches it.
+  it('emits one TerminalThemeUpdate per prop flip across light→dark→light (stable instance)', async () => {
+    const { rerender } = render(
+      <XtermView terminalId="term_test" theme="light" />,
+    );
+    const ws = currentWs();
+    await act(async () => {
+      ws.fireOpen();
+    });
+    await act(async () => {
+      ws.push(serverHello());
+    });
+    const baselineCount = ws.sentFrames.length;
+
+    // light → dark
+    await act(async () => {
+      rerender(<XtermView terminalId="term_test" theme="dark" />);
+    });
+    // dark → light (second flip — would be lost if prevThemeRef were
+    // nulled between renders).
+    await act(async () => {
+      rerender(<XtermView terminalId="term_test" theme="light" />);
+    });
+
+    const themeFrames = ws.sentFrames
+      .slice(baselineCount)
+      .map((f) => JSON.parse(f))
+      .filter((f) => 'TerminalThemeUpdate' in f);
+    expect(themeFrames).toHaveLength(2);
+    // First flip carried dark RGB.
+    expect(themeFrames[0].TerminalThemeUpdate.fg).toEqual([216, 219, 226]);
+    expect(themeFrames[0].TerminalThemeUpdate.bg).toEqual([15, 20, 24]);
+    // Second flip carried light RGB.
+    expect(themeFrames[1].TerminalThemeUpdate.fg).toEqual([42, 47, 58]);
+    expect(themeFrames[1].TerminalThemeUpdate.bg).toEqual([252, 254, 255]);
+  });
+
   it('queues TerminalThemeUpdate frames sent before WS opens and flushes them on onopen', async () => {
     // #177 root-cause refactor (commit 4): the theme-effect can fire
     // between `new WebSocket(…)` and `ws.onopen` — pre-fix `send()`

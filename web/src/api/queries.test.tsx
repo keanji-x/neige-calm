@@ -148,6 +148,165 @@ describe('useWaveDetailQuery', () => {
     await waitFor(() => expect(result.current.data).toBeDefined());
     expect(api.getWaveDetail).toHaveBeenCalledWith('w1');
   });
+
+  // #177 regression: this is the load-bearing anchor for the entire bug
+  // chain. `WaveComponent` early-returns `null` when `!detailQ.data`,
+  // which unmounts the XtermView subtree and wipes its `prevThemeRef` —
+  // so the next theme toggle's `TerminalThemeUpdate` OSC never fires.
+  //
+  // The fix is `placeholderData: keepPreviousData` on the wave detail
+  // query. The clearest behavioral anchor is the "query key switch"
+  // case: when the hook's `waveId` changes from w1→w2 while w2's fetch
+  // is in flight, `data` STILL holds the previous wave (w1) instead of
+  // briefly going `undefined`. Without `placeholderData`, the gap is
+  // visible to consumers and triggers the early-return + unmount chain.
+  //
+  // This test would FAIL if `placeholderData: keepPreviousData` were
+  // removed from `useWaveDetailQuery` — verified locally by commenting
+  // out the line and re-running.
+  it('keeps previous data visible across a waveId switch (#177)', async () => {
+    const waveA = {
+      wave: {
+        id: 'w1',
+        cove_id: 'c1',
+        title: 'A',
+        sort: 0,
+        archived_at: null,
+        created_at: 1,
+        updated_at: 2,
+      },
+      cards: [],
+      overlays: [],
+    };
+    const waveB = {
+      wave: {
+        id: 'w2',
+        cove_id: 'c1',
+        title: 'B',
+        sort: 1,
+        archived_at: null,
+        created_at: 3,
+        updated_at: 4,
+      },
+      cards: [],
+      overlays: [],
+    };
+
+    // Gated mock: w1 resolves immediately, w2 hangs on a manually-
+    // released promise so we can inspect the hook state during the
+    // cross-key transition window.
+    let releaseB!: (value: typeof waveB) => void;
+    const bPending = new Promise<typeof waveB>((resolve) => {
+      releaseB = resolve;
+    });
+    (api.getWaveDetail as ReturnType<typeof vi.fn>).mockImplementation(
+      (id: string) =>
+        id === 'w1' ? Promise.resolve(waveA) : bPending,
+    );
+
+    // Use a client without gcTime:0 so the observer doesn't get torn down
+    // between key switches; production keeps queries cached across nav.
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const { result, rerender } = renderHook(
+      ({ id }: { id: string }) => useWaveDetailQuery(id),
+      {
+        wrapper: wrapper(client),
+        initialProps: { id: 'w1' },
+      },
+    );
+
+    // Initial fetch resolves to waveA.
+    await waitFor(() => expect(result.current.data).toEqual(waveA));
+
+    // Switch the hook's waveId to w2. The cache has no entry for w2 yet
+    // and the mock for w2 is gated. WITHOUT `keepPreviousData`, the
+    // hook's `data` would be `undefined` in this transition window.
+    rerender({ id: 'w2' });
+
+    // The critical anchor: data is the previous wave (waveA), NOT
+    // undefined. WaveComponent's `if (!detailQ.data)` guard reads
+    // truthy here, so the subtree stays mounted.
+    expect(result.current.data).toEqual(waveA);
+    expect(result.current.data).toBeTruthy();
+    // RQ flags this explicitly as the placeholder window.
+    expect(result.current.isPlaceholderData).toBe(true);
+
+    // Release w2's fetch — data transitions to waveB.
+    releaseB(waveB);
+    await waitFor(() => expect(result.current.data).toEqual(waveB));
+    expect(result.current.isPlaceholderData).toBe(false);
+  });
+
+  // #177 follow-on: `WaveComponent` (router.tsx) early-returns `null` on
+  // `!detailQ.data`, which would unmount the lazy XtermView subtree mid-
+  // transition. We record `detailQ.data` truthiness on EVERY render
+  // across the waveId switch and assert it never flips to falsy after
+  // the first resolve — the exact guard the route component depends on.
+  it('detailQ.data stays truthy on every render across waveId switch (#177 guard)', async () => {
+    const waveA = {
+      wave: {
+        id: 'wa',
+        cove_id: 'c1',
+        title: 'A',
+        sort: 0,
+        archived_at: null,
+        created_at: 1,
+        updated_at: 2,
+      },
+      cards: [],
+      overlays: [],
+    };
+    const waveB = {
+      ...waveA,
+      wave: { ...waveA.wave, id: 'wb', title: 'B' },
+    };
+    let releaseB!: (v: typeof waveB) => void;
+    const bPending = new Promise<typeof waveB>((r) => {
+      releaseB = r;
+    });
+    (api.getWaveDetail as ReturnType<typeof vi.fn>).mockImplementation(
+      (id: string) => (id === 'wa' ? Promise.resolve(waveA) : bPending),
+    );
+
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const renders: { id: string; data: unknown }[] = [];
+    const { result, rerender } = renderHook(
+      ({ id }: { id: string }) => {
+        const q = useWaveDetailQuery(id);
+        renders.push({ id, data: q.data });
+        return q;
+      },
+      { wrapper: wrapper(client), initialProps: { id: 'wa' } },
+    );
+
+    await waitFor(() => expect(result.current.data).toEqual(waveA));
+    rerender({ id: 'wb' });
+    // Don't release B yet — let the placeholder window be observable.
+    // One more synchronous tick to flush.
+    await Promise.resolve();
+    releaseB(waveB);
+    await waitFor(() => expect(result.current.data).toEqual(waveB));
+
+    // After the FIRST render that surfaced data (the initial waveA
+    // resolve), no later render may drop back to falsy. The mid-switch
+    // render with id='wb' is the bug window — placeholderData makes it
+    // hold waveA there too.
+    const firstResolvedIdx = renders.findIndex((r) => !!r.data);
+    expect(firstResolvedIdx).toBeGreaterThanOrEqual(0);
+    const post = renders.slice(firstResolvedIdx);
+    expect(post.length).toBeGreaterThan(1);
+    // Confirm at least one render in `post` was for the switched id —
+    // i.e. we actually exercised the cross-key transition.
+    expect(post.some((r) => r.id === 'wb')).toBe(true);
+    // The critical anchor: no render in the post-resolve series drops data.
+    for (const r of post) {
+      expect(r.data).toBeTruthy();
+    }
+  });
 });
 
 // --- mutations ----------------------------------------------------------
