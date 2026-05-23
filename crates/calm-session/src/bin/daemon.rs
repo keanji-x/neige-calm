@@ -39,7 +39,8 @@ use portable_pty::{CommandBuilder, MasterPty, PtySize as PtPtySize, native_pty_s
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::process::{ChildStdin, Command};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
+use tokio::time::timeout;
 use uuid::Uuid;
 
 use calm_session::terminal_model::ScrollbackLimit;
@@ -240,6 +241,25 @@ type SharedOwnerRegistry = Arc<Mutex<OwnerRegistry>>;
 /// vanilla default. Surfaced as a constant so we can parameterize later
 /// without re-threading through every call site.
 const SCROLLBACK_MAX_LINES: usize = 2000;
+
+/// Bounded fallback timeout for the chat-mode attach handshake to wait on
+/// the runner's first emitted frame before sending `HelloChat` (issue #243).
+///
+/// Normal path: the Node runner emits `session_init` synchronously on
+/// startup, well under a second even on contended CI. Attach handshakes
+/// wait on that frame so the client's `HelloChat.replay` always contains
+/// `session_init` and the post-`HelloChat` live broadcast never has to
+/// deliver startup frames.
+///
+/// Fallback: if the runner is broken (missing binary, crashed before any
+/// stdout, infinite startup hang) we still need the handshake to complete
+/// so the client gets a clear "empty replay, then ChildExited" signal
+/// rather than hanging forever. 5 s mirrors the pre-#241 frame-read
+/// timeout — long enough that a healthy-but-slow node cold start has
+/// plenty of headroom (worst observed ~165 ms under 6× CPU contention,
+/// see #240 diagnostics) while still bounding the handshake within the
+/// chat client's own retry budget.
+const CHAT_FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -485,7 +505,18 @@ async fn run_chat(cli: Cli) -> anyhow::Result<()> {
     let (event_tx, _) = broadcast::channel::<ChatEvt>(2048);
     let (stdin_tx, stdin_rx) = mpsc::unbounded_channel::<ChatControl>();
 
-    spawn_chat_stdout_reader(child_stdout, buffer.clone(), event_tx.clone());
+    // Signals "runner has emitted at least one frame" (issue #243). The
+    // attach handshake awaits this with a bounded timeout before sending
+    // `HelloChat`, so the replay always includes `session_init` on the
+    // happy path and live broadcast never carries startup frames.
+    let (first_frame_tx, first_frame_rx) = watch::channel(false);
+
+    spawn_chat_stdout_reader(
+        child_stdout,
+        buffer.clone(),
+        event_tx.clone(),
+        first_frame_tx,
+    );
     spawn_chat_stderr_reader(child_stderr);
     spawn_chat_stdin_writer(child_stdin, stdin_rx);
 
@@ -511,6 +542,7 @@ async fn run_chat(cli: Cli) -> anyhow::Result<()> {
         event_tx.clone(),
         buffer.clone(),
         stdin_tx.clone(),
+        first_frame_rx,
     ));
 
     let _ = shutdown_rx.await;
@@ -674,12 +706,20 @@ fn spawn_child_waiter(
 /// already a serialized `NeigeEvent` JSON string — the daemon does NOT
 /// parse it. We push the line into the replay buffer and broadcast it
 /// verbatim to every attached client.
+///
+/// On the very first non-empty frame we flip `first_frame_tx` to `true`
+/// AFTER the line has landed in the replay buffer. The attach handshake
+/// (`handle_chat_client`) awaits this signal before sending `HelloChat`,
+/// guaranteeing that `HelloChat.replay` always carries `session_init`
+/// (and any frames that beat the attach) on the happy path — see #243.
 fn spawn_chat_stdout_reader(
     stdout: tokio::process::ChildStdout,
     buffer: SharedEventBuffer,
     event_tx: broadcast::Sender<ChatEvt>,
+    first_frame_tx: watch::Sender<bool>,
 ) {
     tokio::spawn(async move {
+        let mut signalled_first_frame = false;
         let mut lines = BufReader::new(stdout).lines();
         loop {
             match lines.next_line().await {
@@ -703,6 +743,13 @@ fn spawn_chat_stdout_reader(
                             continue;
                         }
                     };
+                    if !signalled_first_frame {
+                        // Order matters: the buffer.append() above must
+                        // run first so any handshake that wakes on this
+                        // signal sees a non-empty replay (#243).
+                        let _ = first_frame_tx.send(true);
+                        signalled_first_frame = true;
+                    }
                     let _ = event_tx.send(ChatEvt::Event { seq, json: line });
                 }
                 Ok(None) => break, // EOF
@@ -712,6 +759,11 @@ fn spawn_chat_stdout_reader(
                 }
             }
         }
+        // Drop the sender on EOF/error so any handshake still waiting on
+        // `changed()` wakes up immediately and falls through to the
+        // empty-replay branch via the bounded timeout (or, if it's
+        // already past the timeout, this is a no-op).
+        drop(first_frame_tx);
     });
 }
 
@@ -812,6 +864,7 @@ async fn accept_chat_loop(
     event_tx: broadcast::Sender<ChatEvt>,
     buffer: SharedEventBuffer,
     stdin_tx: mpsc::UnboundedSender<ChatControl>,
+    first_frame_rx: watch::Receiver<bool>,
 ) {
     loop {
         match listener.accept().await {
@@ -819,8 +872,11 @@ async fn accept_chat_loop(
                 let event_rx = event_tx.subscribe();
                 let buffer = buffer.clone();
                 let stdin_tx = stdin_tx.clone();
+                let first_frame_rx = first_frame_rx.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_chat_client(sock, event_rx, buffer, stdin_tx).await {
+                    if let Err(e) =
+                        handle_chat_client(sock, event_rx, buffer, stdin_tx, first_frame_rx).await
+                    {
                         tracing::debug!(error = %e, "chat client ended");
                     }
                 });
@@ -1265,6 +1321,7 @@ async fn handle_chat_client(
     mut event_rx: broadcast::Receiver<ChatEvt>,
     buffer: SharedEventBuffer,
     stdin_tx: mpsc::UnboundedSender<ChatControl>,
+    mut first_frame_rx: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     let (mut rd, mut wr) = sock.into_split();
 
@@ -1274,6 +1331,45 @@ async fn handle_chat_client(
     match first {
         ClientMsg::ClientHello { .. } => {}
         other => anyhow::bail!("expected ClientHello as first message, got {other:?}"),
+    }
+
+    // Defer the HelloChat send until the runner has emitted at least one
+    // frame (#243). If we attach before the runner's first frame is in
+    // the replay buffer, the client would have to wait on live broadcast
+    // for `session_init`, which is racy under CPU contention. Once the
+    // watch flips to `true` (or the channel is closed by the reader
+    // dropping the sender on EOF), we proceed.
+    //
+    // If `*borrow() == true` already (later attachers, common case once
+    // any frame has landed), this is a non-suspending wait_for that
+    // returns immediately.
+    //
+    // The bounded `CHAT_FIRST_FRAME_TIMEOUT` is a safety net for a
+    // broken runner (missing binary, crash before any stdout) — we
+    // still send `HelloChat` with an empty replay so the client can
+    // observe the subsequent `ChildExited` cleanly instead of hanging.
+    if !*first_frame_rx.borrow_and_update() {
+        match timeout(
+            CHAT_FIRST_FRAME_TIMEOUT,
+            first_frame_rx.wait_for(|ready| *ready),
+        )
+        .await
+        {
+            Ok(Ok(_)) => {}
+            Ok(Err(_)) => {
+                // Watch channel sender dropped (stdout reader returned)
+                // without ever signalling — runner died before emitting.
+                tracing::warn!(
+                    "chat runner closed stdout without emitting any frame; sending empty HelloChat replay"
+                );
+            }
+            Err(_) => {
+                tracing::warn!(
+                    timeout_ms = CHAT_FIRST_FRAME_TIMEOUT.as_millis() as u64,
+                    "chat runner did not emit first frame within timeout; sending empty HelloChat replay"
+                );
+            }
+        }
     }
 
     // Snapshot the replay buffer together with its dedup watermark.
