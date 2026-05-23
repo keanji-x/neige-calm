@@ -175,6 +175,7 @@ pub(crate) async fn upsert_overlay(
         None,
         &s.events,
         &s.card_role_cache,
+        &s.wave_cove_cache,
         move |tx| {
             Box::pin(async move {
                 let overlay = overlay_upsert_tx(tx, p).await?;
@@ -217,6 +218,7 @@ pub(crate) async fn delete_overlay(
         None,
         &s.events,
         &s.card_role_cache,
+        &s.wave_cove_cache,
         move |tx| {
             Box::pin(async move {
                 overlay_delete_tx(tx, &b.plugin_id, &b.entity_kind, &b.entity_id, &b.kind).await?;

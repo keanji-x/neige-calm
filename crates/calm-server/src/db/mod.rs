@@ -91,6 +91,7 @@ use crate::error::Result;
 use crate::event::{Event, EventScope};
 use crate::ids::ActorId;
 use crate::model::*;
+use crate::wave_cove_cache::WaveCoveCache;
 use async_trait::async_trait;
 use futures::future::BoxFuture;
 use sqlx::{Sqlite, Transaction};
@@ -230,6 +231,10 @@ pub trait RepoRead: Send + Sync + 'static {
     /// this trait method lets `AppState` seed through the dyn-trait alone).
     async fn seed_card_role_cache(&self, cache: &CardRoleCache) -> Result<()>;
 
+    /// #234 — populate the supplied `WaveCoveCache` from the persisted
+    /// `waves.cove_id` column. Mirror of [`seed_card_role_cache`].
+    async fn seed_wave_cove_cache(&self, cache: &WaveCoveCache) -> Result<()>;
+
     /// PR7a (#136) — look up the card id bound to a presented MCP
     /// token's `SHA-256` hash. Returns `None` if no row matches. The
     /// MCP server uses this during the `initialize` handshake to
@@ -258,6 +263,7 @@ pub trait RepoRead: Send + Sync + 'static {
 /// because every write closure typically needs to read a parent row first
 /// (and any read is also legal from inside the closure).
 #[async_trait]
+#[allow(clippy::too_many_arguments)]
 pub trait RepoEventWrite: RepoRead {
     /// Atomic write + event-log invariant: run the closure inside one
     /// sqlx transaction, then `INSERT INTO events ... RETURNING id` in
@@ -300,6 +306,13 @@ pub trait RepoEventWrite: RepoRead {
     /// *inside* the transaction, after the closure produces an event
     /// and before the event row is appended. Violations roll the txn
     /// back — entity write, event row, and broadcast all disappear.
+    ///
+    /// `wave_cove_cache` is the parallel [`WaveCoveCache`] the gate
+    /// uses to cross-check `scope.cove` against the Worker card's
+    /// home cove (#234). Same write-through invariant as the role
+    /// cache; lives on a separate field because wave-count is much
+    /// smaller than card-count and the two caches answer different
+    /// questions.
     async fn write_with_event(
         &self,
         actor: ActorId,
@@ -307,6 +320,7 @@ pub trait RepoEventWrite: RepoRead {
         correlation: Option<&str>,
         bus: &crate::event::EventBus,
         card_role_cache: &CardRoleCache,
+        wave_cove_cache: &WaveCoveCache,
         f: WriteWithEventFn<'_>,
     ) -> Result<i64>;
 
@@ -348,6 +362,7 @@ pub trait RepoEventWrite: RepoRead {
         correlation: Option<&str>,
         bus: &crate::event::EventBus,
         card_role_cache: &CardRoleCache,
+        wave_cove_cache: &WaveCoveCache,
         f: WriteWithEventsFn<'_>,
     ) -> Result<Vec<i64>>;
 
@@ -372,6 +387,7 @@ pub trait RepoEventWrite: RepoRead {
         correlation: Option<&str>,
         bus: &crate::event::EventBus,
         card_role_cache: &CardRoleCache,
+        wave_cove_cache: &WaveCoveCache,
         event: Event,
     ) -> Result<i64>;
 
@@ -596,6 +612,7 @@ impl<T> Repo for T where T: RouteRepo + RepoSyncDomainRaw + ?Sized {}
 ///
 /// This is *purely sugar* — the underlying invariants (single transaction,
 /// commit-then-emit) come from the trait method.
+#[allow(clippy::too_many_arguments)]
 pub async fn write_with_event_typed<R, F>(
     repo: &dyn RepoEventWrite,
     actor: ActorId,
@@ -603,6 +620,7 @@ pub async fn write_with_event_typed<R, F>(
     correlation: Option<&str>,
     bus: &crate::event::EventBus,
     card_role_cache: &CardRoleCache,
+    wave_cove_cache: &WaveCoveCache,
     f: F,
 ) -> Result<(R, i64)>
 where
@@ -627,7 +645,15 @@ where
     });
 
     let event_id = repo
-        .write_with_event(actor, scope, correlation, bus, card_role_cache, boxed)
+        .write_with_event(
+            actor,
+            scope,
+            correlation,
+            bus,
+            card_role_cache,
+            wave_cove_cache,
+            boxed,
+        )
         .await?;
     let row = Arc::try_unwrap(captured)
         .map_err(|_| {
@@ -666,6 +692,7 @@ pub async fn write_with_events_typed<R, F>(
     correlation: Option<&str>,
     bus: &crate::event::EventBus,
     card_role_cache: &CardRoleCache,
+    wave_cove_cache: &WaveCoveCache,
     f: F,
 ) -> Result<(R, Vec<i64>)>
 where
@@ -692,7 +719,14 @@ where
     });
 
     let event_ids = repo
-        .write_with_events(actor, correlation, bus, card_role_cache, boxed)
+        .write_with_events(
+            actor,
+            correlation,
+            bus,
+            card_role_cache,
+            wave_cove_cache,
+            boxed,
+        )
         .await?;
     let row = Arc::try_unwrap(captured)
         .map_err(|_| {

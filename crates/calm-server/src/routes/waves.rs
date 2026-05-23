@@ -190,6 +190,7 @@ pub(crate) async fn create_wave(
     //    runs, we know wave_id, so each event gets its tightest scope.
     let actor_id = actor.to_actor_id();
     let cache_for_tx = s.card_role_cache.clone();
+    let wcc_for_tx = s.wave_cove_cache.clone();
     let env_for_tx = env.clone();
     let cwd_for_tx = cwd.clone();
     let spec_card_id_for_tx = spec_card_id.clone();
@@ -199,10 +200,11 @@ pub(crate) async fn create_wave(
         None,
         &s.events,
         &s.card_role_cache,
+        &s.wave_cove_cache,
         move |tx| {
             Box::pin(async move {
                 // 3a. Wave row.
-                let wave = wave_create_tx(tx, p).await?;
+                let wave = wave_create_tx(tx, p, &wcc_for_tx).await?;
                 let wave_id = wave.id.clone();
                 let cove_id = wave.cove_id.clone();
 
@@ -418,6 +420,7 @@ pub(crate) async fn update_wave(
         None,
         &s.events,
         &s.card_role_cache,
+        &s.wave_cove_cache,
         move |tx| {
             let scope = scope.clone();
             Box::pin(async move {
@@ -508,6 +511,7 @@ pub(crate) async fn delete_wave(
         wave: wave_id.clone(),
         cove: cove_id.clone(),
     };
+    let wcc_for_tx = s.wave_cove_cache.clone();
     let (_unit, _id) = write_with_event_typed(
         s.repo.as_ref(),
         actor.to_actor_id(),
@@ -515,6 +519,7 @@ pub(crate) async fn delete_wave(
         None,
         &s.events,
         &s.card_role_cache,
+        &s.wave_cove_cache,
         move |tx| {
             Box::pin(async move {
                 // Drop terminal rows first so the RESTRICT FK lets the
@@ -528,7 +533,7 @@ pub(crate) async fn delete_wave(
                         Err(e) => return Err(e),
                     }
                 }
-                wave_delete_tx(tx, wave_id.as_ref()).await?;
+                wave_delete_tx(tx, wave_id.as_ref(), &wcc_for_tx).await?;
                 Ok((
                     (),
                     Event::WaveDeleted {

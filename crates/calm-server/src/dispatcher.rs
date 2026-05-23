@@ -83,6 +83,7 @@ use crate::routes::settings::load_settings;
 use crate::routes::terminal::spawn_daemon_with_parts;
 use crate::spec_card::{SeededCardRole, build_codex_env_map, seed_codex_home_with_parts};
 use crate::state::{CodexClient, DaemonClient};
+use crate::wave_cove_cache::WaveCoveCache;
 
 /// Default number of permits when `NEIGE_DISPATCHER_PERMITS` is unset /
 /// invalid / `0`. Mirrors the v2 spec for issue #136.
@@ -163,10 +164,12 @@ impl Dispatcher {
     /// in `routes::waves::create_wave`. PR7a.1 (#136 followup) wired this
     /// in; PR7a registered the MCP server but left the dispatcher's
     /// worker-side plumbing as a deferred TODO.
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         repo: Arc<dyn Repo>,
         events: EventBus,
         card_role_cache: CardRoleCache,
+        wave_cove_cache: WaveCoveCache,
         codex: Arc<CodexClient>,
         daemon: Arc<DaemonClient>,
         mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
@@ -182,6 +185,7 @@ impl Dispatcher {
             repo,
             events: events.clone(),
             card_role_cache,
+            wave_cove_cache,
             codex,
             daemon,
             mcp_server,
@@ -255,6 +259,9 @@ struct Inner {
     repo: Arc<dyn Repo>,
     events: EventBus,
     card_role_cache: CardRoleCache,
+    /// #234 — parallel wave→cove cache the role gate consults alongside
+    /// `card_role_cache`.
+    wave_cove_cache: WaveCoveCache,
     codex: Arc<CodexClient>,
     daemon: Arc<DaemonClient>,
     /// PR7a.1 (#136 followup) — kernel-as-MCP-server handle. When `Some`,
@@ -434,6 +441,7 @@ impl Inner {
                     None,
                     &self.events,
                     &self.card_role_cache,
+                    &self.wave_cove_cache,
                     fail_event,
                 )
                 .await
@@ -609,6 +617,7 @@ impl Inner {
             None,
             &self.events,
             &self.card_role_cache,
+            &self.wave_cove_cache,
             move |tx| {
                 Box::pin(async move {
                     // SELECT-inside-tx idempotency check. SQLite's
@@ -902,6 +911,7 @@ impl Inner {
             None,
             &self.events,
             &self.card_role_cache,
+            &self.wave_cove_cache,
             move |tx| {
                 Box::pin(async move {
                     if let Some(existing) =

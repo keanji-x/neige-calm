@@ -11,6 +11,7 @@ use crate::event::EventBus;
 use crate::event_cursor::EventCursorCache;
 use crate::mcp_server::McpServer;
 use crate::plugin_host::{PluginHost, PluginRegistry};
+use crate::wave_cove_cache::WaveCoveCache;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -55,6 +56,13 @@ pub struct AppState {
     /// into every `_tx`-suffixed card helper so the insert/delete path
     /// stays write-through inside the surrounding transaction.
     pub card_role_cache: CardRoleCache,
+    /// #234 — `WaveId -> CoveId` cache the role gate consults alongside
+    /// `card_role_cache` to cross-check `scope.cove` against a Worker
+    /// card's home cove. Mirrors the shape + clone semantics of
+    /// `card_role_cache`. Production builds seed this from the waves
+    /// table in [`AppState::new`]; tests use the empty default via
+    /// [`AppState::from_parts`] or pre-populate it manually.
+    pub wave_cove_cache: WaveCoveCache,
     /// PR8 (#136) — per-card event cursor cache used by
     /// `calm.wait_for_events` MCP tool and `/internal/codex/pending_events`
     /// HTTP fallback. Boot-fresh (empty) on every `AppState` construction;
@@ -124,6 +132,12 @@ impl AppState {
     /// this; the replay path uses an empty cache because replay events
     /// are seeded via `log_pure_event` from `ActorId::User` (which the
     /// gate lets through without a cache lookup).
+    ///
+    /// #234: `wave_cove_cache` follows the same shape — `None` yields
+    /// an empty cache. Tests that exercise the Worker cove-cross-check
+    /// pre-populate the cache via `WaveCoveCache::insert` before
+    /// calling this. Most existing tests don't touch the Worker path,
+    /// so an empty cache is fine.
     pub fn from_parts(
         repo: Arc<dyn Repo>,
         events: EventBus,
@@ -131,9 +145,11 @@ impl AppState {
         plugin: Arc<PluginHost>,
         codex: Arc<CodexClient>,
         card_role_cache: Option<CardRoleCache>,
+        wave_cove_cache: Option<WaveCoveCache>,
     ) -> Self {
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
         let card_role_cache = card_role_cache.unwrap_or_default();
+        let wave_cove_cache = wave_cove_cache.unwrap_or_default();
         // PR5 (#136): every `AppState` carries a live dispatcher. Test
         // call sites that need to assert on dispatcher behavior reach
         // through `state.dispatcher`; the rest see a passive worker
@@ -145,6 +161,7 @@ impl AppState {
             repo.clone(),
             events.clone(),
             card_role_cache.clone(),
+            wave_cove_cache.clone(),
             codex.clone(),
             daemon.clone(),
             // `from_parts` is the test / replay hatch — no live MCP
@@ -164,6 +181,7 @@ impl AppState {
             // are conceptually two server "boots".
             db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
             card_role_cache,
+            wave_cove_cache,
             // PR8 (#136) — empty cursor cache. Integration tests that
             // want to assert "second call's `since` defaults to first
             // call's max id" exercise the cache through the wait/pending
@@ -228,12 +246,24 @@ impl AppState {
         // map.
         let card_role_cache = CardRoleCache::new();
         repo.seed_card_role_cache(&card_role_cache).await?;
+        // #234 — boot-time wave→cove cache. Same seed-then-spawn order
+        // as the role cache: every background task that runs the role
+        // gate downstream (FSM, sweeper, dispatcher, plugin host, MCP
+        // server) needs both caches populated before it can authorize
+        // a write.
+        let wave_cove_cache = WaveCoveCache::new();
+        repo.seed_wave_cove_cache(&wave_cove_cache).await?;
 
         // Per-card FSM (phase 1: codex cards only). Subscribes to the bus
         // and projects `codex.hook` events onto a 6-state FSM, writing
         // `Overlay { kind: "status" }` rows for cards and wave-union rows
         // for waves. See `card_fsm` module docs for the scope rationale.
-        crate::card_fsm::spawn(repo.clone(), events.clone(), card_role_cache.clone());
+        crate::card_fsm::spawn(
+            repo.clone(),
+            events.clone(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+        );
 
         // Share one `DaemonClient` + `CodexClient` between the
         // dispatcher and the `AppState` fields — both are
@@ -273,6 +303,7 @@ impl AppState {
             repo.clone(),
             events.clone(),
             card_role_cache.clone(),
+            wave_cove_cache.clone(),
             event_cursor_cache.clone(),
             mcp_socket_path,
             mcp_shim_bin,
@@ -292,6 +323,7 @@ impl AppState {
             repo.clone(),
             events.clone(),
             card_role_cache.clone(),
+            wave_cove_cache.clone(),
             codex.clone(),
             daemon.clone(),
             // PR7a.1 — hand the MCP server handle to the dispatcher so
@@ -309,6 +341,7 @@ impl AppState {
             cfg.plugins_disabled.clone(),
             events.clone(),
             card_role_cache.clone(),
+            wave_cove_cache.clone(),
         ));
 
         // Auto-spawn every enabled plugin row. Per-plugin errors are logged
@@ -332,6 +365,7 @@ impl AppState {
             // server hands out via `/api/version`.
             db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
             card_role_cache,
+            wave_cove_cache,
             event_cursor_cache,
             dispatcher,
             mcp_server: Some(mcp_server),

@@ -191,6 +191,7 @@ pub(crate) async fn create_card(
         None,
         &s.events,
         &s.card_role_cache,
+        &s.wave_cove_cache,
         move |tx| {
             Box::pin(async move {
                 // Issue #229 PR A — plain user-driven creates are
@@ -329,6 +330,7 @@ async fn create_via_tool_call(
         Some(&correlation),
         &s.events,
         &s.card_role_cache,
+        &s.wave_cove_cache,
         move |tx| {
             Box::pin(async move {
                 // Issue #229 PR A — plain user-driven creates are
@@ -406,6 +408,7 @@ pub(crate) async fn update_card(
         None,
         &s.events,
         &s.card_role_cache,
+        &s.wave_cove_cache,
         move |tx| {
             Box::pin(async move {
                 let card = card_update_tx(tx, &id, p).await?;
@@ -483,6 +486,7 @@ pub(crate) async fn delete_card(
         None,
         &s.events,
         &s.card_role_cache,
+        &s.wave_cove_cache,
         move |tx| {
             Box::pin(async move {
                 // Drop the terminal row first so the RESTRICT FK lets the

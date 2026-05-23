@@ -139,6 +139,7 @@ pub(crate) async fn ingest_hook(
             None,
             &s.events,
             &s.card_role_cache,
+            &s.wave_cove_cache,
             Event::CodexHook {
                 card_id: card_id_typed,
                 kind,
