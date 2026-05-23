@@ -13,7 +13,6 @@
 // Prereq: `make dev` serving http://localhost:4040 with the default seed.
 
 import { test, expect } from '@playwright/test';
-import { createWaveInCove } from './helpers/reset';
 
 test('newly created terminal card appears without a reload', async ({ page }) => {
   // Step 1 — mint a fresh user cove via the sidebar (issue #175).
@@ -31,13 +30,25 @@ test('newly created terminal card appears without a reload', async ({ page }) =>
   await coveBtn.click();
   await expect(page).toHaveURL(/\/calm\/cove\/[^/]+$/);
 
-  // Step 2 — create a new wave inside this cove. We use the API helper
-  // because the cove-page "+ New wave" CTA is disabled in #250 PR 2
-  // pending PR 3's NewTaskForm — this spec is about terminal-card
-  // mounting, not the wave-create UX, so the setup path is incidental.
+  // Step 2 — create a new wave inside this cove. The cove-page "+ New
+  // wave" CTA is disabled in #250 PR 2 pending PR 3's NewTaskForm, so
+  // we mint the wave via the kernel REST API directly. `page.request`
+  // resolves the relative URL against this project's baseURL (set in
+  // playwright.config.ts → 'chromium': http://localhost:4040/calm/).
+  // The helpers/reset.ts variant is replay-port-pinned and only safe
+  // for the a11y project.
   const coveId = new URL(page.url()).pathname.split('/').pop()!;
   const waveTitle = `E2E new-terminal ${Date.now()}`;
-  const wave = await createWaveInCove(page.request, coveId, waveTitle);
+  const cwd = `/tmp/playwright-cove-${coveId}`;
+  const waveRes = await page.request.post('/api/waves', {
+    data: { cove_id: coveId, title: waveTitle, cwd, attach_folder: true },
+    headers: { 'content-type': 'application/json' },
+  });
+  if (!waveRes.ok()) {
+    const body = await waveRes.text().catch(() => '<unreadable>');
+    throw new Error(`POST /api/waves → ${waveRes.status()} ${waveRes.statusText()}: ${body}`);
+  }
+  const wave = (await waveRes.json()) as { id: string };
   await page.goto(`/calm/wave/${wave.id}`);
   await expect(page).toHaveURL(/\/calm\/wave\/[^/]+$/);
   await expect(page.getByText(waveTitle, { exact: false }).first()).toBeVisible();
