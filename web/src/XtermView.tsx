@@ -128,6 +128,24 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
   if (!instanceIdRef.current) {
     instanceIdRef.current = Math.random().toString(36).slice(2, 8);
   }
+
+  // #177 — Playwright instrumentation. Gated on `?testMounts=1` so production
+  // users never carry the side effect (the counter is on `window`). A real
+  // mount bumps `__xtermMounts__` by 1; unmount decrements. The e2e regression
+  // in `web/e2e/177-theme-toggle-no-remount.spec.ts` reads this between
+  // theme-toggle steps to detect the bug the user reproduced manually
+  // (instance id flipping `bscohp` → `zjqsq4` on theme change).
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('testMounts') !== '1') return;
+    const w = window as unknown as { __xtermMounts__?: number };
+    w.__xtermMounts__ = (w.__xtermMounts__ ?? 0) + 1;
+    return () => {
+      if (w.__xtermMounts__ !== undefined) w.__xtermMounts__ -= 1;
+    };
+  }, []);
+
   // eslint-disable-next-line no-console
   console.warn('[#177 XtermView instance]', {
     theme,
