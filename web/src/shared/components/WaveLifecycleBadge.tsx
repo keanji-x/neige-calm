@@ -28,6 +28,7 @@
 //     `canceled`          producing anything right now).
 
 import type { WaveLifecycle } from '../../types';
+import { isRunning, isWaitingForUser } from '../lifecycle';
 
 /**
  * Visible label for each lifecycle state. Uppercase + short — the
@@ -66,20 +67,9 @@ export function lifecycleLabel(s: WaveLifecycle): string {
  * token can split `failed` out without changing this API.
  */
 function pillModifier(s: WaveLifecycle): '' | 'running' | 'waiting' {
-  switch (s) {
-    case 'planning':
-    case 'dispatching':
-    case 'working':
-      return 'running';
-    case 'blocked':
-    case 'reviewing':
-    case 'failed':
-      return 'waiting';
-    case 'draft':
-    case 'done':
-    case 'canceled':
-      return '';
-  }
+  if (isWaitingForUser(s)) return 'waiting';
+  if (isRunning(s)) return 'running';
+  return '';
 }
 
 export function WaveLifecycleBadge({

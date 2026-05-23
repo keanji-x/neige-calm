@@ -3,6 +3,7 @@ import { useState } from '../shared/state';
 import { coveOf } from '../shared/components/helpers';
 import { useTheme } from '../app/theme';
 import { CardHead } from '../cards/CardHead';
+import { isRunning, isWaitingForUser } from '../shared/lifecycle';
 import type { Cove, Route, Wave } from '../types';
 
 // xterm.js is heavy and only mounts when the Today home panel resolves a
@@ -220,8 +221,8 @@ function TodayClock({ waves }: { waves: Wave[] }) {
   const h12 = (hh + 11) % 12 + 1;
   const weekday = now.toLocaleDateString('en-US', { weekday: 'long' });
 
-  const runningCount = waves.filter((w) => w.status === 'running').length;
-  const waitingCount = waves.filter((w) => w.status === 'waiting').length;
+  const runningCount = waves.filter((w) => isRunning(w.lifecycle)).length;
+  const waitingCount = waves.filter((w) => isWaitingForUser(w.lifecycle)).length;
 
   return (
     <header className="today-clock">
@@ -323,15 +324,15 @@ function CalendarCard({
         {agenda.length === 0 && <div className="cal-empty">Nothing scheduled.</div>}
         {agenda.map((e, i) => {
           const c = coveOf(e.wave.coveId, coves);
-          const isWaiting = e.wave.status === 'waiting';
-          const isRunning = e.wave.status === 'running';
+          const isWaiting = isWaitingForUser(e.wave.lifecycle);
+          const eventRunning = isRunning(e.wave.lifecycle);
           return (
             <button
               key={i}
               className={
                 'cal-event' +
                 (isWaiting ? ' waiting' : '') +
-                (isRunning ? ' running' : '')
+                (eventRunning ? ' running' : '')
               }
               onClick={() => onGo({ name: 'wave', id: e.wave.id })}
             >
@@ -347,7 +348,7 @@ function CalendarCard({
                       <span className="warn-text">waiting on you</span>
                     </>
                   )}
-                  {isRunning && (
+                  {eventRunning && (
                     <>
                       {' · '}
                       <span className="cal-event-run">running</span>

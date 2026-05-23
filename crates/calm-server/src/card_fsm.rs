@@ -1,15 +1,19 @@
-//! Per-card FSM + wave-union state machine.
+//! Per-card FSM projector.
 //!
 //! A long-running background task subscribes to `EventBus` and projects
 //! incoming events onto a per-card 6-state FSM:
 //!
 //!   `Starting / Idle / Working / AwaitingInput / Errored / Done`
 //!
-//! Whenever a card's state changes, the task:
-//!   1. Writes a kernel-owned `Overlay { plugin_id="kernel", entity_kind="card",
-//!      entity_id=<card_id>, kind="status", payload={ state } }`.
-//!   2. Recomputes the owning wave's union state (most-severe of its cards'
-//!      states) and writes a wave-level overlay `{ state, counts }`.
+//! Whenever a card's state changes, the task writes a kernel-owned
+//! `Overlay { plugin_id="kernel", entity_kind="card", entity_id=<card_id>,
+//! kind="status", payload={ state } }`. The codex card head consumes this
+//! overlay directly.
+//!
+//! Wave-level state is owned by the [`WaveLifecycle`](crate::model::WaveLifecycle)
+//! enum stamped on the `waves` row (driven by the Spec Agent) — this projector
+//! deliberately does NOT write wave-level overlays anymore, so there's a single
+//! source of truth for "what's the wave doing right now".
 //!
 //! ## Scope (phase 1)
 //!
@@ -22,9 +26,8 @@
 //!     zero or many cards. Driving plugin-card FSM correctly needs either
 //!     callback-level signal or a registry walk; also phase 2.
 //!
-//! Cards that don't have an entry in the FSM map don't contribute to wave
-//! union (they're treated as "not tracked", i.e. they don't drag the wave
-//! out of Idle).
+//! Cards that don't have an entry in the FSM map are silently skipped —
+//! the projector only owns the per-card overlay row.
 //!
 //! ## Throttle / debounce
 //!
@@ -53,7 +56,7 @@ use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::overlay_upsert_tx;
 use crate::db::{RepoEventWrite, write_with_event_typed};
 use crate::event::{Event, EventBus, EventScope};
-use crate::ids::{ActorId, CardId, WaveId};
+use crate::ids::{ActorId, CardId};
 use crate::model::NewOverlay;
 use crate::validation::OVERLAY_STATUS_SCHEMA_VERSION;
 use crate::wave_cove_cache::WaveCoveCache;
@@ -314,12 +317,14 @@ impl Inner {
         });
     }
 
-    /// Commit a card state change: write the card-level overlay AND
-    /// recompute and write the wave-level union overlay. Emits
-    /// `Event::OverlaySet` for both so the WS bridge invalidates the right
-    /// queries.
+    /// Commit a card state change: write the card-level overlay. Emits
+    /// `Event::OverlaySet` so the WS bridge invalidates the right queries.
+    /// Wave-level state lives on the kernel `WaveLifecycle` enum and is
+    /// driven by the Spec Agent — this projector does not write wave-level
+    /// overlays.
     async fn commit(&self, card_id: &CardId, state: State) {
-        // Look up the owning wave; we need it for the union step.
+        // Look up the owning wave so the audit row carries the full
+        // ancestor chain.
         let card = match self.repo.card_get(card_id.as_ref()).await {
             Ok(Some(c)) => c,
             Ok(None) => {
@@ -381,97 +386,11 @@ impl Inner {
         .await
         {
             tracing::warn!(card_id = %card_id, error = %e, "card_fsm: card overlay_upsert failed");
-            return;
         }
-
-        // 2. Wave union.
-        self.recompute_wave(&card.wave_id).await;
-    }
-
-    /// Recompute the wave's union state by walking every card in the wave's
-    /// FSM map entry (we only know about tracked cards). Writes a wave-level
-    /// overlay `{ state, counts }`.
-    async fn recompute_wave(&self, wave_id: &WaveId) {
-        // Find every card in this wave so we can intersect with the FSM map.
-        let cards = match self.repo.cards_by_wave(wave_id.as_ref()).await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(wave_id = %wave_id, error = %e, "card_fsm: cards_by_wave failed");
-                return;
-            }
-        };
-
-        let map = self.map.lock().await;
-        let mut union: Option<State> = None;
-        let mut working = 0u32;
-        let mut awaiting = 0u32;
-        let mut errored = 0u32;
-        for card in &cards {
-            let Some(entry) = map.get(&card.id) else {
-                continue;
-            };
-            let s = entry.committed;
-            match s {
-                State::Working => working += 1,
-                State::AwaitingInput => awaiting += 1,
-                State::Errored => errored += 1,
-                _ => {}
-            }
-            union = Some(match union {
-                None => s,
-                Some(cur) if s.severity() > cur.severity() => s,
-                Some(cur) => cur,
-            });
-        }
-        drop(map);
-
-        let final_state = union.unwrap_or(State::Idle);
-        let payload = json!({
-            "schemaVersion": OVERLAY_STATUS_SCHEMA_VERSION,
-            "state": final_state.wire_name(),
-            "counts": {
-                "working": working,
-                "awaiting": awaiting,
-                "errored": errored,
-            }
-        });
-
-        let new_overlay = NewOverlay {
-            plugin_id: KERNEL_PLUGIN_ID.to_string(),
-            entity_kind: "wave".to_string(),
-            entity_id: wave_id.to_string(),
-            kind: "status".to_string(),
-            payload,
-        };
-        // Resolve cove for the wave-scoped overlay event. On lookup
-        // failure fall back to `EventScope::System` for the same reason
-        // the card-overlay commit does — the projection is best-effort.
-        let scope = match self.repo.wave_get(wave_id.as_str()).await {
-            Ok(Some(w)) => EventScope::Wave {
-                wave: w.id,
-                cove: w.cove_id,
-            },
-            _ => EventScope::System,
-        };
-        if let Err(e) = write_with_event_typed(
-            self.repo.as_ref(),
-            fsm_actor(),
-            scope,
-            None,
-            &self.bus,
-            &self.card_role_cache,
-            &self.wave_cove_cache,
-            move |tx| {
-                Box::pin(async move {
-                    let o = overlay_upsert_tx(tx, new_overlay).await?;
-                    Ok(((), Event::OverlaySet(o)))
-                })
-            },
-        )
-        .await
-        {
-            tracing::warn!(wave_id = %wave_id, error = %e, "card_fsm: wave overlay_upsert failed");
-        }
+        // Wave-level state is owned by `WaveLifecycle` (kernel column on
+        // `waves`, driven by the Spec Agent). The projector deliberately
+        // does NOT write a wave-level overlay so there's a single source
+        // of truth.
     }
 }
 
@@ -536,6 +455,7 @@ mod tests {
     // relies on stable trait-object coercion at the function-argument site.
     use crate::db::Repo;
     use crate::db::sqlite::SqlxRepo;
+    use crate::ids::WaveId;
     use crate::model::{NewCard, NewCove, NewWave};
     use serde_json::Value;
     use std::time::Duration as StdDuration;
@@ -602,10 +522,16 @@ mod tests {
             .expect("status overlay written");
         assert_eq!(s.payload["state"], "Working");
 
+        // Regression: the projector must NOT write a wave-level overlay
+        // anymore — wave state lives on `WaveLifecycle` and is driven by
+        // the Spec Agent. A leftover write here would silently reintroduce
+        // the dual-source-of-truth bug we just removed.
         let wave_overlays = repo.overlays_for("wave", wave_id.as_str()).await.unwrap();
-        let ws = wave_overlays.iter().find(|o| o.kind == "status").unwrap();
-        assert_eq!(ws.payload["state"], "Working");
-        assert_eq!(ws.payload["counts"]["working"], 1);
+        assert!(
+            wave_overlays.iter().all(|o| o.kind != "status"),
+            "card_fsm must not write wave-level status overlays; found: {:?}",
+            wave_overlays.iter().map(|o| &o.kind).collect::<Vec<_>>()
+        );
     }
 
     #[tokio::test]

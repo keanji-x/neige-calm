@@ -19,7 +19,6 @@ function makeWave(overrides: Partial<Wave> = {}): Wave {
     id: 'w1',
     coveId: 'c1',
     title: 'Migrate auth',
-    status: 'idle',
     lifecycle: 'draft',
     progress: 0,
     eta: '',
@@ -341,7 +340,7 @@ describe('CovePage delete-wave ConfirmDialog (Pattern B)', () => {
         cove={makeCove()}
         waves={[
           makeWave({ id: 'w-a', title: 'Ship checkout' }),
-          makeWave({ id: 'w-b', title: 'Migrate auth', status: 'running' }),
+          makeWave({ id: 'w-b', title: 'Migrate auth', lifecycle: 'working' }),
         ]}
         onGo={() => {}}
         onDeleteWave={onDeleteWave}

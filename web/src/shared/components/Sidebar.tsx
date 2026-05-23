@@ -2,6 +2,7 @@ import { useRef } from 'react';
 import { useState } from '../state';
 import { Menu, type MenuItem } from '../../ui/Menu/Menu';
 import type { Cove, Route, Wave } from '../../types';
+import { isRunning, isWaitingForUser } from '../lifecycle';
 
 // ---------------- Sidebar ----------------
 
@@ -30,7 +31,7 @@ export function Sidebar({
    *  the sidebar without a router don't have to wire it up. */
   onSignOut?: () => void;
 }) {
-  const waitingWaves = waves.filter((w) => w.status === 'waiting');
+  const waitingWaves = waves.filter((w) => isWaitingForUser(w.lifecycle));
   // Sub-landmarks inside the outer <aside aria-label="Navigation">:
   //   <nav aria-label="Sidebar navigation">  → Today button
   //   <section aria-label="Waiting on you">  → side-wave rows (when any)
@@ -82,8 +83,8 @@ export function Sidebar({
         <div className="nav-label">Coves</div>
         {coves.map((cove) => {
           const cw = waves.filter((w) => w.coveId === cove.id);
-          const running = cw.filter((w) => w.status === 'running').length;
-          const waiting = cw.filter((w) => w.status === 'waiting').length;
+          const running = cw.filter((w) => isRunning(w.lifecycle)).length;
+          const waiting = cw.filter((w) => isWaitingForUser(w.lifecycle)).length;
           const active = route.name === 'cove' && route.coveId === cove.id;
           return (
             <button
