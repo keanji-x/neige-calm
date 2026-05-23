@@ -168,15 +168,17 @@ async function ensureTodayWave(coveId: string) {
   // Issue #250 PR 2 — `createWave` now requires `cwd`. The Today
   // wave is a kernel-internal singleton inside the system cove (a
   // cove the user never sees); its spec daemon doesn't need a
-  // meaningful project cwd. We pass `/` and `attach_folder: true`
-  // so the system cove auto-claims root for this one row. A
-  // subsequent call into this helper finds the existing wave and
-  // never re-mints (the `existing` short-circuit above).
+  // meaningful project cwd. We pass `/` as a placeholder. The
+  // server detects `cove.kind == System` and exempts this row from
+  // the cove_folders claim namespace, so `attach_folder` is a no-op
+  // here (the cwd is just stored on the wave row for the daemon's
+  // chdir). A subsequent call into this helper finds the existing
+  // wave and never re-mints (the `existing` short-circuit above).
   const wave = await api.createWave({
     cove_id: coveId,
     title: TODAY_WAVE_TITLE,
     cwd: '/',
-    attach_folder: true,
+    attach_folder: false,
   });
   return { wave, created: true };
 }

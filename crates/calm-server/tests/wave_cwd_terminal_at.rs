@@ -369,6 +369,75 @@ async fn post_api_waves_rejects_cwd_owned_by_another_cove() {
     );
 }
 
+/// System cove (kernel-internal scaffolding) is exempt from the
+/// cove_folders claim namespace: a wave POST against it must not
+/// mint a cove_folders row even when `attach_folder = true`, and
+/// must not poison the global descendant check for subsequent user
+/// coves. Regression for the `cwd: '/'` self-collision noticed in CI.
+#[tokio::test]
+async fn post_api_waves_for_system_cove_skips_folder_claim() {
+    let boot = boot().await;
+
+    // Mint the system cove via its idempotent route.
+    let (status, body) = post(boot.app.clone(), "/api/coves/system", json!({})).await;
+    assert!(
+        status == StatusCode::CREATED || status == StatusCode::OK,
+        "mint system cove: status={status}, body={body}",
+    );
+    let system_cove_id = body["id"].as_str().expect("system cove id").to_string();
+
+    // POST a wave with the system cove + a `/` cwd + attach_folder=true.
+    // Pre-fix this would claim `/` for the system cove and poison every
+    // subsequent user wave (descendant-of-`/` 409).
+    let (status, _body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        json!({
+            "cove_id": system_cove_id,
+            "title": "Today",
+            "cwd": "/",
+            "attach_folder": true,
+        }),
+    )
+    .await;
+    assert!(
+        status == StatusCode::CREATED || status == StatusCode::INTERNAL_SERVER_ERROR,
+        "system-cove wave create: status={status}"
+    );
+
+    // No cove_folders row landed for the system cove.
+    let sys_folders = boot
+        .repo
+        .cove_folders_by_cove(&system_cove_id)
+        .await
+        .unwrap();
+    assert!(
+        sys_folders.is_empty(),
+        "system cove must not appear in cove_folders, got: {sys_folders:?}"
+    );
+
+    // And a subsequent user-cove wave with a normal cwd works — the
+    // system cove's `/` cwd is *not* a descendant-blocker.
+    let (status, _body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        json!({
+            "cove_id": boot.cove_id,
+            "title": "user wave",
+            "cwd": "/srv/projects/beta",
+            "attach_folder": true,
+        }),
+    )
+    .await;
+    assert!(
+        status == StatusCode::CREATED || status == StatusCode::INTERNAL_SERVER_ERROR,
+        "user-cove wave create after system: status={status}"
+    );
+    let user_folders = boot.repo.cove_folders_by_cove(&boot.cove_id).await.unwrap();
+    assert_eq!(user_folders.len(), 1);
+    assert_eq!(user_folders[0].path, "/srv/projects/beta");
+}
+
 /// Non-absolute cwd → 400 before any DB write.
 #[tokio::test]
 async fn post_api_waves_rejects_non_absolute_cwd() {

@@ -64,8 +64,8 @@ use crate::db::{write_with_event_typed, write_with_events_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
 use crate::model::{
-    CardRole, FolderConflict, FolderConflictKind, NewCard, NewOverlay, NewWave, Wave, WaveDetail,
-    WavePatch, new_id,
+    CardRole, CoveKind, FolderConflict, FolderConflictKind, NewCard, NewOverlay, NewWave, Wave,
+    WaveDetail, WavePatch, new_id,
 };
 use crate::routes::cove_folders::{is_descendant_of, normalize_path};
 use crate::routes::settings::load_settings;
@@ -264,70 +264,92 @@ pub(crate) async fn create_wave(
     // future "resolve by exact cwd" lookups simple.
     p.cwd = normalized_cwd.clone();
 
-    // Pre-tx claim scan. The route runs every cwd-vs-folder check
-    // outside the tx so the structured 409 (`FolderConflict`) can be
-    // returned without a custom in-tx error variant. The UNIQUE
-    // constraint on `cove_folders.path` provides a concurrent-insert
-    // backstop inside the tx; concurrent `attach_folder = true`
-    // requests for the same cwd surface as a generic 409 from the
-    // sqlite layer.
-    let existing_folders = s.repo.cove_folders_list_all().await?;
+    // Issue #250 PR 2 fix — system cove (kernel-internal scaffolding,
+    // hosts the default Today terminal's wave) is exempt from the
+    // cove_folders claim namespace. The user can't reach it through
+    // any user-facing surface, and claiming a path under it (e.g. the
+    // initial `/` placeholder useTodayTerminal used) would poison
+    // every real cove's descendant check. Look up the kind once here;
+    // if System, skip both the pre-tx folder validation and the
+    // in-tx attach. The cwd is still recorded on the wave row (the
+    // spec daemon chdirs into it) but no `cove_folders` row is minted.
+    let cove = s
+        .repo
+        .cove_get(p.cove_id.as_str())
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("cove `{}`", p.cove_id)))?;
+    let is_system_cove = cove.kind == CoveKind::System;
+    if is_system_cove {
+        p.attach_folder = false;
+    }
+
     let attach_folder = p.attach_folder;
     let body_cove_id = p.cove_id.as_str().to_string();
 
-    // Step 1 — find a covering folder (cwd is descendant of or equal
-    // to some claim). At most one row qualifies as the *longest*
-    // prefix; ancestor/equal claims under different coves are a
-    // hard conflict, under the same cove are a silent no-op.
-    let owner = existing_folders
-        .iter()
-        .filter(|f| is_descendant_of(&f.path, &normalized_cwd))
-        .max_by_key(|f| f.path.len());
-    if let Some(f) = owner {
-        if f.cove_id.as_str() != body_cove_id {
-            let body = FolderConflict {
-                folder_id: f.id,
-                cove_id: f.cove_id.clone(),
-                conflict_path: f.path.clone(),
-                // `Descendant` is the right label from the cwd's
-                // point of view: the cwd is a descendant of an
-                // existing folder owned by another cove.
-                conflict_kind: FolderConflictKind::Descendant,
-            };
-            return Ok((StatusCode::CONFLICT, Json(body)).into_response());
-        }
-        // Same cove already covers it — silently ignore
-        // `attach_folder`. Fall through to wave-only create.
-    } else if attach_folder {
-        // Step 2 — no claim covers the cwd, but the caller wants to
-        // mint one. Re-check for the *reverse* overlap: any existing
-        // folder that is a descendant of the proposed cwd. This is
-        // the `/a/b exists, claim /a` case that the cove_folders
-        // route refuses with `FolderConflictKind::Ancestor`. We
-        // refuse here for the same reason — silently widening an
-        // existing narrower claim would make resolution ambiguous.
-        if let Some(f) = existing_folders
+    if !is_system_cove {
+        // Pre-tx claim scan. The route runs every cwd-vs-folder check
+        // outside the tx so the structured 409 (`FolderConflict`) can be
+        // returned without a custom in-tx error variant. The UNIQUE
+        // constraint on `cove_folders.path` provides a concurrent-insert
+        // backstop inside the tx; concurrent `attach_folder = true`
+        // requests for the same cwd surface as a generic 409 from the
+        // sqlite layer.
+        let existing_folders = s.repo.cove_folders_list_all().await?;
+
+        // Step 1 — find a covering folder (cwd is descendant of or equal
+        // to some claim). At most one row qualifies as the *longest*
+        // prefix; ancestor/equal claims under different coves are a
+        // hard conflict, under the same cove are a silent no-op.
+        let owner = existing_folders
             .iter()
-            .find(|f| is_descendant_of(&normalized_cwd, &f.path))
-        {
-            let body = FolderConflict {
-                folder_id: f.id,
-                cove_id: f.cove_id.clone(),
-                conflict_path: f.path.clone(),
-                conflict_kind: FolderConflictKind::Ancestor,
-            };
-            return Ok((StatusCode::CONFLICT, Json(body)).into_response());
+            .filter(|f| is_descendant_of(&f.path, &normalized_cwd))
+            .max_by_key(|f| f.path.len());
+        if let Some(f) = owner {
+            if f.cove_id.as_str() != body_cove_id {
+                let body = FolderConflict {
+                    folder_id: f.id,
+                    cove_id: f.cove_id.clone(),
+                    conflict_path: f.path.clone(),
+                    // `Descendant` is the right label from the cwd's
+                    // point of view: the cwd is a descendant of an
+                    // existing folder owned by another cove.
+                    conflict_kind: FolderConflictKind::Descendant,
+                };
+                return Ok((StatusCode::CONFLICT, Json(body)).into_response());
+            }
+            // Same cove already covers it — silently ignore
+            // `attach_folder`. Fall through to wave-only create.
+        } else if attach_folder {
+            // Step 2 — no claim covers the cwd, but the caller wants to
+            // mint one. Re-check for the *reverse* overlap: any existing
+            // folder that is a descendant of the proposed cwd. This is
+            // the `/a/b exists, claim /a` case that the cove_folders
+            // route refuses with `FolderConflictKind::Ancestor`. We
+            // refuse here for the same reason — silently widening an
+            // existing narrower claim would make resolution ambiguous.
+            if let Some(f) = existing_folders
+                .iter()
+                .find(|f| is_descendant_of(&normalized_cwd, &f.path))
+            {
+                let body = FolderConflict {
+                    folder_id: f.id,
+                    cove_id: f.cove_id.clone(),
+                    conflict_path: f.path.clone(),
+                    conflict_kind: FolderConflictKind::Ancestor,
+                };
+                return Ok((StatusCode::CONFLICT, Json(body)).into_response());
+            }
+            // Cwd is fully unclaimed (no ancestor, no descendant) — the
+            // in-tx `cove_folder_create_tx` will insert the row.
+        } else {
+            // No claim covers the cwd and the caller didn't opt in to
+            // attach. Refuse so accidentally typing a stray path doesn't
+            // create a "homeless" wave.
+            return Err(CalmError::Conflict(format!(
+                "wave create: cwd `{normalized_cwd}` is not claimed by any cove. \
+                 Set `attach_folder: true` to claim it for cove `{body_cove_id}`."
+            )));
         }
-        // Cwd is fully unclaimed (no ancestor, no descendant) — the
-        // in-tx `cove_folder_create_tx` will insert the row.
-    } else {
-        // No claim covers the cwd and the caller didn't opt in to
-        // attach. Refuse so accidentally typing a stray path doesn't
-        // create a "homeless" wave.
-        return Err(CalmError::Conflict(format!(
-            "wave create: cwd `{normalized_cwd}` is not claimed by any cove. \
-             Set `attach_folder: true` to claim it for cove `{body_cove_id}`."
-        )));
     }
 
     // 1. Pre-mint the spec card id BEFORE the tx opens — we need it to
