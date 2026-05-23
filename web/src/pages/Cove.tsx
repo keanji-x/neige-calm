@@ -1,36 +1,26 @@
-import { useEffect, useId, useRef } from 'react';
+import { useEffect, useId, useMemo, useRef } from 'react';
 import { useState } from '../shared/state';
-import { Crumbs } from '../shared/components/Crumbs';
 import { WaveRow } from '../shared/components/WaveRow';
 import type { Cove, Route, Wave } from '../types';
 import { ConfirmDialog } from '../ui/ConfirmDialog/ConfirmDialog';
 import { DeleteButton } from './_shared';
 
 // ============================================================
-// CovePage — waves of one Cove, grouped by status.
+// CovePage — a single sorted list of the cove's waves.
+//
+// Each row encodes its own status (glyph/dot + activity + progress) so we
+// don't need Waiting / Running / Idle section headings to convey it.
+// Rows are ordered `waiting → running → idle` with input order preserved
+// within each bucket; that puts whatever needs attention at the top
+// without forcing the user to read three section labels to know it.
+//
+// The cove name renders exactly once — as the page <h1> — so there's no
+// duplicate naming chain with the sidebar's cove-nav row (which already
+// shows the cove name + swatch + wave count) or with the page header.
+// No eyebrow row above the title: the sidebar already carries the cove's
+// color swatch + wave count, so reprinting either here is redundant
+// noise. "Less is more" — the page opens directly on the title.
 // ============================================================
-
-function Section({
-  label,
-  labelWarn,
-  children,
-}: {
-  label: string;
-  labelWarn?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <div style={{ marginBottom: 36 }}>
-      <div
-        className={'h-eyebrow' + (labelWarn ? ' warn' : '')}
-        style={{ marginBottom: 0, paddingBottom: 8, borderBottom: '1px solid var(--hairline)' }}
-      >
-        {label}
-      </div>
-      <div className="waves">{children}</div>
-    </div>
-  );
-}
 
 export function CovePage({
   cove,
@@ -76,40 +66,30 @@ export function CovePage({
     if (!w || !onDeleteWave) return;
     void onDeleteWave(w.id);
   };
-  const running = waves.filter((w) => w.status === 'running');
-  const waiting = waves.filter((w) => w.status === 'waiting');
-  const idle    = waves.filter((w) => w.status === 'idle');
-  // Derived eyebrow — the kernel has no `subtitle` field, so we compose
-  // one from wave counts. Empty when the cove is empty, in which case
-  // the eyebrow drops to just the color chip.
-  const eyebrow = (() => {
-    if (waves.length === 0) return '';
-    const noun = waves.length === 1 ? 'wave' : 'waves';
-    if (running.length === 0) return `${waves.length} ${noun}`;
-    return `${waves.length} ${noun} · ${running.length} running`;
-  })();
+
+  // Single sorted list: waiting first (needs the user), then running
+  // (in-flight work), then idle (the default). Within each bucket we
+  // keep the caller's order — the parent already orders waves the way
+  // the user expects (by recency / sort field). A stable bucket sort
+  // expresses status without forking the layout into separate sections.
+  const sortedWaves = useMemo(() => {
+    const rank: Record<Wave['status'], number> = {
+      waiting: 0,
+      running: 1,
+      idle: 2,
+    };
+    return [...waves].sort((a, b) => rank[a.status] - rank[b.status]);
+  }, [waves]);
 
   return (
     <div className="col wide">
-      <Crumbs
-        items={[
-          { label: 'Today', onClick: () => onGo({ name: 'today' }) },
-          { label: cove.name },
-        ]}
-      />
-      <div
-        className="h-eyebrow"
-        style={{ display: 'flex', alignItems: 'center', gap: 8 }}
-      >
-        <span
-          style={{
-            width: 10, height: 10, borderRadius: 3,
-            background: cove.color, display: 'inline-block',
-          }}
-        />
-        {eyebrow}
-      </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      {/* `.cove-head` is a flex row so the × centers naturally against
+          the h1's line-box; the × is pushed to the right edge via
+          `margin-left: auto`. The page title's leading edge stays at
+          x=0 (matching every wave-row's glyph column below). The × is
+          hover/focus-within revealed, mirroring the per-row × on each
+          WaveRow so the page has one consistent delete affordance. */}
+      <header className="cove-head">
         {onRenameCove ? (
           <EditableTitle
             value={cove.name}
@@ -117,18 +97,20 @@ export function CovePage({
             onSave={(name) => onRenameCove(cove.id, name)}
           />
         ) : (
-          <h1 className="h-display" style={{ flex: 1, margin: 0 }}>{cove.name}.</h1>
+          <h1 className="h-display">{cove.name}.</h1>
         )}
         {onDeleteCove && (
-          <DeleteButton
-            label={`Delete cove "${cove.name}"`}
-            confirmTitle="Delete cove?"
-            confirmLabel="Delete cove"
-            confirmMessage={`Delete cove "${cove.name}"? Its waves and cards go too. This cannot be undone.`}
-            onDelete={() => onDeleteCove(cove.id)}
-          />
+          <span className="cove-head-delete">
+            <DeleteButton
+              label={`Delete cove "${cove.name}"`}
+              confirmTitle="Delete cove?"
+              confirmLabel="Delete cove"
+              confirmMessage={`Delete cove "${cove.name}"? Its waves and cards go too. This cannot be undone.`}
+              onDelete={() => onDeleteCove(cove.id)}
+            />
+          </span>
         )}
-      </div>
+      </header>
 
       {waves.length === 0 && (
         <div
@@ -141,57 +123,25 @@ export function CovePage({
         </div>
       )}
 
-      {/* All wave sections live inside a single `aria-label`-ed region so
+      {/* The wave list lives inside a single `aria-label`-ed region so
           role-scoped locators (axe scans + Playwright `getByRole('region',
           { name: 'Waves' })`) can disambiguate WaveRow buttons from the
-          sidebar's "Today" nav button and the cove crumb-link. Three name-
-          colliding buttons would otherwise share the document; the
-          landmark gives tests a clean scope. See §2.2 of
-          `docs/a11y-contract.md`. */}
-      {(waiting.length > 0 || running.length > 0 || idle.length > 0) && (
+          sidebar's "Today" nav button. The landmark gives tests a clean
+          scope. See §2.2 of `docs/a11y-contract.md`. */}
+      {sortedWaves.length > 0 && (
         <section aria-label="Waves">
-          {waiting.length > 0 && (
-            <Section label="Waiting on you" labelWarn>
-              {waiting.map((w) => (
-                <WaveRow
-                  key={w.id}
-                  wave={w}
-                  cove={cove}
-                  showCove={false}
-                  onClick={() => onGo({ name: 'wave', id: w.id })}
-                  onDelete={onDeleteWave ? () => openDeleteWaveDialog(w) : undefined}
-                />
-              ))}
-            </Section>
-          )}
-          {running.length > 0 && (
-            <Section label="Running">
-              {running.map((w) => (
-                <WaveRow
-                  key={w.id}
-                  wave={w}
-                  cove={cove}
-                  showCove={false}
-                  onClick={() => onGo({ name: 'wave', id: w.id })}
-                  onDelete={onDeleteWave ? () => openDeleteWaveDialog(w) : undefined}
-                />
-              ))}
-            </Section>
-          )}
-          {idle.length > 0 && (
-            <Section label="Idle">
-              {idle.map((w) => (
-                <WaveRow
-                  key={w.id}
-                  wave={w}
-                  cove={cove}
-                  showCove={false}
-                  onClick={() => onGo({ name: 'wave', id: w.id })}
-                  onDelete={onDeleteWave ? () => openDeleteWaveDialog(w) : undefined}
-                />
-              ))}
-            </Section>
-          )}
+          <div className="waves">
+            {sortedWaves.map((w) => (
+              <WaveRow
+                key={w.id}
+                wave={w}
+                cove={cove}
+                showCove={false}
+                onClick={() => onGo({ name: 'wave', id: w.id })}
+                onDelete={onDeleteWave ? () => openDeleteWaveDialog(w) : undefined}
+              />
+            ))}
+          </div>
         </section>
       )}
 
@@ -289,6 +239,13 @@ function EditableTitle({
   };
 
   if (editing) {
+    // The input rides `.h-display`'s typography and `.cove-title-input`'s
+    // block-level width + focus-ring CSS (calm.css). The default
+    // `.h-display { margin: 0 0 var(--space-10) }` carries the same
+    // bottom-rhythm as the display-mode <h1>, so swapping between modes
+    // doesn't shift the row below. No inline styles — keep the rename
+    // input's chrome owned by CSS so it stays in lockstep with the page
+    // title's typography.
     return (
       <input
         ref={inputRef}
@@ -301,15 +258,6 @@ function EditableTitle({
         onBlur={() => void save()}
         aria-label={ariaLabel}
         className="h-display cove-title-input"
-        style={{
-          flex: 1,
-          minWidth: 0,
-          background: 'transparent',
-          border: 'none',
-          outline: 'none',
-          padding: 0,
-          margin: 0,
-        }}
       />
     );
   }
@@ -334,7 +282,7 @@ function EditableTitle({
   // when the button is focused.
   return (
     <>
-      <h1 className="h-display" style={{ flex: 1, margin: 0 }}>
+      <h1 className="h-display">
         <button
           ref={displayRef}
           type="button"
@@ -393,31 +341,27 @@ function NewWaveCTA({
     close();
   };
 
+  // Row-style affordance — same grid (26px glyph cell + 1fr body) as a
+  // WaveRow so the "+" lands in the same column as every status dot above
+  // it and the "New wave" label aligns with the wave titles. The collapsed
+  // <button> is the "new row" shell; clicking it swaps in the inline
+  // <input> within the same grid so the visible structure doesn't reflow.
   if (!open) {
     return (
       <button
-        className="add-panel"
+        type="button"
+        className="new-wave-cta"
         onClick={openForm}
         title="New wave"
-        style={{ marginTop: 16 }}
       >
-        + New wave
+        <span className="new-wave-glyph" aria-hidden>+</span>
+        <span className="new-wave-label">New wave</span>
       </button>
     );
   }
   return (
-    <div
-      style={{
-        marginTop: 16,
-        padding: '10px 14px',
-        border: '1px dashed var(--text-3, oklch(60% 0.005 245))',
-        borderRadius: 8,
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
-      }}
-    >
-      <span style={{ color: 'var(--text-3)', flexShrink: 0 }}>›</span>
+    <div className="new-wave-cta-open">
+      <span className="new-wave-glyph" aria-hidden>›</span>
       <input
         ref={inputRef}
         value={title}
@@ -430,17 +374,8 @@ function NewWaveCTA({
         placeholder="Wave title…"
         aria-label="New wave title"
         className="new-wave-input"
-        style={{
-          flex: 1,
-          minWidth: 0,
-          font: 'inherit',
-          background: 'transparent',
-          border: 'none',
-          outline: 'none',
-          color: 'var(--text)',
-        }}
       />
-      <span style={{ color: 'var(--text-3)', fontSize: 12 }}>↵</span>
+      <span aria-hidden style={{ color: 'var(--text-3)', fontSize: 12 }}>↵</span>
     </div>
   );
 }

@@ -43,8 +43,8 @@ interface FocusInfo {
   description: string | null;
   /** `className` of the focused element, lowercased. Used to disambiguate
    *  same-named role buttons when role + name alone aren't unique — e.g.
-   *  three buttons named "Today" share the page (sidebar nav, crumb link,
-   *  WaveRow) and only the WaveRow carries `wave-row` in its class list. */
+   *  two buttons named "Today" share the page (sidebar nav, WaveRow)
+   *  and only the WaveRow carries `wave-row` in its class list. */
   className: string;
 }
 
@@ -59,9 +59,8 @@ interface FocusInfo {
 // textContent, and className — the predicate gets the union so callers
 // can match on whichever is most stable. The `className` field
 // disambiguates same-role/same-name buttons when role + name alone
-// aren't unique (e.g. three "Today" buttons share the page — sidebar
-// nav, Crumbs link, WaveRow; only the WaveRow has `wave-row` in its
-// classes).
+// aren't unique (e.g. two "Today" buttons share the page — sidebar
+// nav, WaveRow; only the WaveRow has `wave-row` in its classes).
 async function tabUntil(
   page: Page,
   predicate: (info: FocusInfo) => boolean,
@@ -250,10 +249,10 @@ test.describe('a11y · keyboard-only navigation', () => {
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
     // From the cove page, the "Today" wave row is a real <button> with
-    // the wave title as its accessible name (see WaveRow.tsx). Three
-    // buttons share the name "Today" — sidebar nav, CovePage Crumbs
-    // link, and the WaveRow — so we filter on `wave-row` in className to
-    // land on the row button specifically.
+    // the wave title as its accessible name (see WaveRow.tsx). Two
+    // buttons share the name "Today" — sidebar nav and the WaveRow — so
+    // we filter on `wave-row` in className to land on the row button
+    // specifically.
     await tabUntil(
       page,
       (info) =>
@@ -295,8 +294,8 @@ test.describe('a11y · keyboard-only navigation', () => {
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
     // WaveRow is a real <button>; filter on `wave-row` className to
-    // disambiguate from the sidebar Today nav button and the Crumbs
-    // Today link (both real <button>s with the same accessible name).
+    // disambiguate from the sidebar Today nav button (both real
+    // <button>s with the same accessible name).
     await tabUntil(
       page,
       (info) =>
@@ -397,8 +396,8 @@ test.describe('a11y · keyboard-only navigation', () => {
     await tabUntil(page, (info) => info.name?.toLowerCase().includes('atlas') === true);
     await page.keyboard.press('Enter');
     // WaveRow is a real <button>; filter on `wave-row` className to
-    // disambiguate from the sidebar Today nav button and the Crumbs
-    // Today link (both real <button>s with the same accessible name).
+    // disambiguate from the sidebar Today nav button (both real
+    // <button>s with the same accessible name).
     await tabUntil(
       page,
       (info) =>
@@ -490,8 +489,8 @@ test.describe('a11y · keyboard-only navigation', () => {
     await tabUntil(page, (info) => info.name?.toLowerCase().includes('atlas') === true);
     await page.keyboard.press('Enter');
     // WaveRow is a real <button>; filter on `wave-row` className to
-    // disambiguate from the sidebar Today nav button and the Crumbs
-    // Today link (both real <button>s with the same accessible name).
+    // disambiguate from the sidebar Today nav button (both real
+    // <button>s with the same accessible name).
     await tabUntil(
       page,
       (info) =>
@@ -560,11 +559,10 @@ test.describe('a11y · keyboard-only navigation', () => {
     await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
     // Click into the auto-bootstrapped "Today" wave row. WaveRow is a
     // real <button> with the wave title as its accessible name (see
-    // WaveRow.tsx). The CovePage wraps its wave lists in a
+    // WaveRow.tsx). The CovePage wraps its single sorted wave list in a
     // `<section aria-label="Waves">` landmark so role-scoped queries
-    // can disambiguate the row from the sidebar "Today" nav button and
-    // the Crumbs "Today" link (all three are real <button>s with the
-    // same accessible name).
+    // can disambiguate the row from the sidebar "Today" nav button
+    // (both real <button>s with the same accessible name).
     // Click (not keyboard): same rationale as the cove-nav click above —
     // skip tabUntil to avoid tab-count brittleness across accumulating waves.
     await page
