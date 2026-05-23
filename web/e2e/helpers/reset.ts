@@ -91,8 +91,18 @@ export async function createWaveInCove(
   title: string,
 ): Promise<{ id: string; title: string }> {
   const url = `http://127.0.0.1:${REPLAY_PORT}/api/waves`;
+  // #250 PR 2: cwd is required, and we ask the server to attach this
+  // path as a folder of `coveId` in the same tx so the helper stays a
+  // one-shot setup call. The cwd is derived from coveId so each test
+  // run's fresh cove gets its own folder claim and we don't trip
+  // cove_folders.UNIQUE(path) across reset boundaries.
   const response = await request.post(url, {
-    data: { cove_id: coveId, title },
+    data: {
+      cove_id: coveId,
+      title,
+      cwd: `/tmp/playwright-cove-${coveId}`,
+      attach_folder: true,
+    },
     headers: { 'content-type': 'application/json' },
   });
   if (!response.ok()) {
