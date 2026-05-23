@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react';
+import { lazy } from 'react';
 import { z } from 'zod';
 import type { TerminalCardData } from '../../types';
 import type { CardEntry } from '../registry';
@@ -70,9 +70,7 @@ function TerminalCard({ card }: { card: TerminalCardData }) {
       />
       <div className="term-body">
         {live ? (
-          <Suspense fallback={<div className="term-line k-cursor">Loading terminal…</div>}>
-            <XtermView terminalId={terminalId!} theme={theme} />
-          </Suspense>
+          <XtermView terminalId={terminalId!} theme={theme} />
         ) : (
           <>
             {lines.map((l, i) => (

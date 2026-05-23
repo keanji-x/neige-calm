@@ -16,7 +16,7 @@
 //     local FSM here, so wave-union (the kernel computes it server-side)
 //     and per-card dot agree by construction.
 
-import { lazy, Suspense, useEffect } from 'react';
+import { lazy, useEffect } from 'react';
 import { useState } from '../../shared/state';
 import { z } from 'zod';
 import type { CodexCardData, FsmState } from '../../types';
@@ -137,9 +137,7 @@ function CodexCardImpl({ card }: { card: CodexCardData }) {
       />
       <div className="codex-card-pty">
         {card.terminalId ? (
-          <Suspense fallback={<div className="codex-card-empty">Loading terminal…</div>}>
-            <XtermView terminalId={card.terminalId} theme={theme} />
-          </Suspense>
+          <XtermView terminalId={card.terminalId} theme={theme} />
         ) : (
           <div className="codex-card-empty">
             Codex is starting… waiting for PTY.
