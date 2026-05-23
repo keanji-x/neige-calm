@@ -9,12 +9,14 @@
 // something arrived from the server that the UI didn't know how to draw.
 //
 // The placeholder is intentionally minimal: no per-kind branching, no
-// CSS additions. It reuses the `.card-drag-handle` class so RGL drag-
-// handle scoping still works, and otherwise leans on inline styles to
-// stay self-contained.
+// CSS additions. The head now goes through the typed `<CardHead>` slot
+// component (issue #207) — the `card-drag-handle` class rides on the
+// head root so RGL drag-handle scoping still works, and the title
+// inherits the unified `.card-head-title` typography.
 
 import type { CardSize } from './registry';
 import { MONO_STACK } from '../font-stack';
+import { CardHead } from './CardHead';
 
 /** Same mid-range default the registry uses for unknown built-ins. */
 export const UNKNOWN_CARD_SIZE: CardSize = { w: 4, h: 6, minW: 3, minH: 3 };
@@ -25,33 +27,35 @@ export function UnknownCard({ kernelKind }: { kernelKind: string }) {
       className="card-unknown"
       style={{
         border: '1px dashed var(--hairline-strong)',
-        padding: 8,
         height: '100%',
         boxSizing: 'border-box',
         fontSize: 13,
         opacity: 0.75,
         display: 'flex',
         flexDirection: 'column',
-        gap: 6,
       }}
     >
-      <header
-        className="card-drag-handle"
-        style={{ fontWeight: 600, cursor: 'move' }}
-      >
-        Unknown card
-      </header>
-      <code
+      <CardHead className="card-drag-handle" title="Unknown card" />
+      <div
         style={{
-          fontFamily: MONO_STACK,
-          fontSize: 12,
+          padding: 8,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 6,
         }}
       >
-        {kernelKind}
-      </code>
-      <small style={{ opacity: 0.7 }}>
-        UI couldn't parse this card's payload.
-      </small>
+        <code
+          style={{
+            fontFamily: MONO_STACK,
+            fontSize: 12,
+          }}
+        >
+          {kernelKind}
+        </code>
+        <small style={{ opacity: 0.7 }}>
+          UI couldn't parse this card's payload.
+        </small>
+      </div>
     </div>
   );
 }

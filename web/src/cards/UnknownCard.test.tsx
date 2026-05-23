@@ -12,8 +12,9 @@
 //   - The adapter null contract: a kind that isn't registered yields null,
 //     so the upstream switch picks the `unknown` slot.
 //   - The component renders, surfaces the kernel's `kind` string, and is
-//     marked draggable (header carries `card-drag-handle` so react-grid-
-//     layout's drag handle scoping doesn't break for unknown panels).
+//     marked draggable: the `<CardHead>` root (issue #207) carries
+//     `card-drag-handle` so react-grid-layout's drag handle scoping doesn't
+//     break for unknown panels.
 
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
@@ -34,8 +35,9 @@ describe('UnknownCard component', () => {
     const { container } = render(<UnknownCard kernelKind="x" />);
     const handle = container.querySelector('.card-drag-handle');
     expect(handle).not.toBeNull();
-    // The header is the drag handle; its text identifies the slot to the
-    // user. The drag-handle class is what couples it to react-grid-layout.
+    // The `<CardHead>` root is the drag handle; the title text identifies
+    // the slot to the user. The drag-handle class is what couples it to
+    // react-grid-layout.
     expect(handle?.textContent).toMatch(/Unknown card/i);
   });
 
