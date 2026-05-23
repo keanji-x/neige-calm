@@ -482,42 +482,50 @@ async fn reset_from_fixture_wipes_and_reseeds() {
 }
 
 // ---------------------------------------------------------------------------
-// Issue #199 — schemaVersion forward-compat replay + read-side guard.
+// Issue #199 — schemaVersion forward-compat: both read paths drop future.
 // ---------------------------------------------------------------------------
 //
-// Two complementary contracts have to hold simultaneously for the
-// upgrade-stability story (issue #198 PR-A) to be safe:
+// The contract this test pins is the kernel's *acceptance criterion*
+// from issue #199: an unsupported future-`schemaVersion` overlay
+// payload must NOT be silently consumed by the frontend. The two
+// client-facing read paths for overlay state are:
 //
-//   1. **Replay is wire-faithful.** The WS replay path streams the raw
-//      JSON envelope it persisted; it does NOT silently rewrite
-//      payloads to strip `schemaVersion` fields it doesn't recognize.
-//      A future-`schemaVersion` row must surface on the wire so a
-//      later-compatible frontend (or a downgraded one with the Tier A
-//      "drop unknown version" branch) can decide for itself.
+//   1. **WS `/api/events` replay** — historically streamed the raw
+//      persisted envelope verbatim. PR #214 added a read-side guard on
+//      `GET /api/overlays` + `GET /api/waves/{id}`; PR #220 closed the
+//      leak on the third surface by extending the same per-row
+//      predicate (`crate::validation::should_skip_event_for_overlay_version`)
+//      to both the live-broadcast and the cursor-replay legs of
+//      `ws::events`. So replay now drops `Event::OverlaySet` rows whose
+//      payload `schemaVersion` exceeds what this binary supports for
+//      the kind — advancing `last_id` past dropped rows so a client
+//      never re-polls them on reconnect.
 //
-//   2. **Read-side guard drops kernel-owned future versions on
-//      list_overlays.** The route guard
-//      (`routes::overlays::filter_unsupported_overlay_versions`) — and
-//      the equivalent on `GET /api/waves/{id}` — silently drops rows
-//      whose payload's `schemaVersion` exceeds what this binary
-//      supports for the kind. So the same DB row that surfaces
-//      transparently through replay is filtered out of the REST list,
-//      which gives the kernel a per-route choice on how strict to be
-//      about future shapes (audit vs UI consumption).
+//   2. **REST `/api/overlays`** — same guard, applied row-by-row by
+//      `routes::overlays::filter_unsupported_overlay_versions` (now a
+//      thin wrapper around the shared `should_skip_overlay`).
+//
+// Why this *strengthens* the #199 acceptance: previously the contract
+// was asymmetric (replay transparent, REST strict), which left the
+// frontend's resilience-on-replay path on the hook for handling
+// unknown-version envelopes. Post-#220 both read paths agree — the
+// frontend literally cannot observe a v999 overlay over either surface
+// — so "unsupported future payload is not silently consumed" is
+// enforced by the kernel on every client-facing read, not just the
+// REST audit list.
 //
 // The fixture (`schema_forward_compat.events.json`) carries both
-// shapes back-to-back. Replay sees both; `list_overlays` sees only
-// the v1 one.
+// shapes back-to-back. Neither WS replay nor `GET /api/overlays`
+// surfaces the v999 row; both surface the v1 one.
 //
-// Why one combined test instead of two: the contract is "replay is
-// transparent AND the read-side guard is strict" — splitting them
-// would let either side regress while the other still passes (e.g. a
-// regression that has replay also filter out v999 would still tick
-// "read-side filter works" green). Composing them in one flow makes
-// the asymmetry the test pins.
+// Why one combined test instead of two: the contract is "future
+// versions are dropped on every kernel→client read path" — splitting
+// the surfaces would let a regression on one path still tick the
+// other green. Composing them in one flow pins the invariant across
+// both paths the frontend can observe.
 
 #[tokio::test]
-async fn schema_version_replay_transparent_but_read_guard_drops_future() {
+async fn schema_version_future_dropped_on_both_replay_and_rest_read() {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use calm_server::model::NewOverlay;
@@ -551,21 +559,28 @@ async fn schema_version_replay_transparent_but_read_guard_drops_future() {
         "the kernel's status overlay support ceiling drives what the read guard accepts"
     );
 
-    // ---- Replay arm: seed both events, drain over WS, assert BOTH
-    //                  overlay.set frames surface verbatim. The wire
-    //                  copy of the v999 envelope keeps its
-    //                  `schemaVersion: 999` field — silent stripping
-    //                  would be the regression this asserts against.
+    // ---- Replay arm: seed both events, drain over WS, assert ONLY
+    //                  the v1 overlay.set frame surfaces. Post-#220 the
+    //                  WS replay path runs each row through
+    //                  `should_skip_event_for_overlay_version` and
+    //                  drops `Event::OverlaySet` envelopes whose
+    //                  payload `schemaVersion` exceeds the kernel's
+    //                  ceiling for the kind. Pre-#220 the regression
+    //                  was the opposite shape: the wire kept the v999
+    //                  envelope verbatim. We now lock in the stricter
+    //                  invariant on this surface too.
     let (addr, repo, bus) = boot().await;
     let ids = raw_insert_fixture_events(&repo, &bus, &fixture).await;
     assert_eq!(ids.len(), fixture.events.len(), "seed inserted all events");
 
     // Pre-check the events table directly to pin the failure layer if
-    // the WS assertion below misfires. The WS replay path is just
-    // `events_since(0) → render_envelope → tx.send` in sequence; if the
-    // DB-side already has both overlay.set rows, any frame-count
-    // mismatch on the wire is unambiguously a WS-layer regression
-    // (#199 CI flake — saved future debugging from re-deriving this).
+    // the WS assertion below misfires. The WS replay path is
+    // `events_since(0) → filter via should_skip_event_for_overlay_version →
+    // render_envelope → tx.send`; if the DB-side has both overlay.set
+    // rows but the WS frame count diverges from the expected
+    // post-filter count, the regression is unambiguously in
+    // `ws::events::run_replay` (either the filter is missing or it's
+    // over-filtering).
     let db_rows = repo
         .events_since(0, None)
         .await
@@ -581,8 +596,8 @@ async fn schema_version_replay_transparent_but_read_guard_drops_future() {
         .count();
     assert_eq!(
         db_overlay_count, 2,
-        "both overlay.set rows are persisted; if this passes but the WS \
-         assertion below fails, the bug is in `ws::events::run_replay`"
+        "both overlay.set rows are persisted in the events log; the v999 row \
+         is expected to be dropped on the WS replay path (#220), not on the seed."
     );
 
     let url = format!("ws://{}/api/events", addr);
@@ -595,11 +610,12 @@ async fn schema_version_replay_transparent_but_read_guard_drops_future() {
 
     // Drain every frame in the replay window into `all_frames` so on
     // failure we can print exactly what the server sent. The contract
-    // under test is "the replay window contains both overlay.set
-    // envelopes verbatim, terminated by `_replay_complete`"; the
-    // `recv_json` helper already bounds each per-frame wait at 2s, so
-    // a missing trailing frame surfaces as a timeout panic with the
-    // frames-so-far visible in `all_frames` via the assertion message.
+    // under test (post-#220) is "the replay window contains exactly
+    // the v1 overlay.set envelope — the v999 row is filtered server-
+    // side — terminated by `_replay_complete`". The `recv_json` helper
+    // bounds each per-frame wait at 2s, so a missing trailing frame
+    // surfaces as a timeout panic with the frames-so-far visible in
+    // `all_frames` via the assertion message.
     let mut all_frames: Vec<serde_json::Value> = Vec::new();
     let mut overlay_frames: Vec<serde_json::Value> = Vec::new();
     loop {
@@ -614,8 +630,10 @@ async fn schema_version_replay_transparent_but_read_guard_drops_future() {
     }
     assert_eq!(
         overlay_frames.len(),
-        2,
-        "both overlay.set frames must replay (replay is wire-faithful, not version-filtered); got {} overlay.set frames in the replay window. All frames: {:#?}",
+        1,
+        "post-#220: WS replay drops the v999 overlay.set; only the v1 frame \
+         (ov-v1) should reach the client. Got {} overlay.set frames in the \
+         replay window. All frames: {:#?}",
         overlay_frames.len(),
         all_frames,
     );
@@ -623,29 +641,25 @@ async fn schema_version_replay_transparent_but_read_guard_drops_future() {
         .iter()
         .find(|f| f["data"]["id"] == "ov-v1")
         .expect("v1 overlay frame present in replay");
-    let v999_frame = overlay_frames
-        .iter()
-        .find(|f| f["data"]["id"] == "ov-v999")
-        .expect("v999 overlay frame present in replay — replay must NOT silently consume future versions");
-    // Confirm the v999 schemaVersion field rides through verbatim.
-    assert_eq!(
-        v999_frame["data"]["payload"]["schemaVersion"], 999,
-        "replay carries schemaVersion=999 transparently"
-    );
-    // And the v1 row genuinely has no schemaVersion key — the test
-    // would be uninformative if both rows secretly carried it.
     assert!(
-        v999_frame["data"]["payload"].get("schemaVersion").is_some(),
-        "v999 frame retains its schemaVersion field"
+        overlay_frames.iter().all(|f| f["data"]["id"] != "ov-v999"),
+        "v999 overlay frame must NOT appear in replay — post-#220 the WS \
+         path filters unsupported future-version `Event::OverlaySet` rows. \
+         All frames: {:#?}",
+        all_frames,
     );
+    // And the v1 row genuinely has no schemaVersion key — guards
+    // against a regression that secretly coerces missing → 1 on the
+    // wire.
     assert!(
         v1_frame["data"]["payload"].get("schemaVersion").is_none(),
         "v1 frame retains its missing-field shape (not coerced to {{schemaVersion: 1}})"
     );
 
-    // ---- Read-side arm: the WS bridge above demonstrated that the
-    // event log carries the future row. To exercise the REST read
-    // guard, we need the same shapes to also live in the OVERLAYS
+    // ---- Read-side arm: the WS arm above pinned that the replay path
+    // drops the v999 envelope before it reaches the client. To
+    // exercise the REST read guard on the *other* client-facing read
+    // surface, we need the same shapes to also live in the OVERLAYS
     // table. The fixture's `overlay.set` events only write to the
     // events log, not the overlays table (the route handler does the
     // upsert separately). So we mirror them via the repo's
