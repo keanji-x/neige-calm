@@ -108,6 +108,16 @@ export const cardSchema = z.object({
   sort: z.number(),
   // serde_json::Value on the wire: arbitrary JSON. Kernel never inspects.
   payload: z.unknown(),
+  // Issue #229 PR A — system-card guard bit. Kernel default = true
+  // (matches the migration's `INTEGER NOT NULL DEFAULT 1`); the `#[serde(default
+  // = "default_deletable")]` on the Rust struct means wire payloads
+  // from pre-#229 servers / event-log replays may omit the field, and
+  // zod surfaces that as `undefined`. The OpenAPI emitter renders the
+  // field as optional too — matching `Card.deletable?: boolean` on the
+  // generated TS. We `.default(true)` here so all downstream consumers
+  // see a populated bool after parse, while still tolerating wire
+  // omissions on the input side.
+  deletable: z.boolean().default(true),
   created_at: z.number(),
   updated_at: z.number(),
 });

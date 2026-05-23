@@ -89,6 +89,10 @@ async fn boot_with_role(role: CardRole) -> CardBoot {
         json!({}),
         None,
         role,
+        // #229 PR A — test fixtures use `true` (user-deletable). The
+        // dedicated guard tests in `tests/cards_deletable.rs` exercise
+        // the `false` path.
+        true,
         &card_role_cache,
     )
     .await
@@ -104,6 +108,7 @@ async fn boot_with_role(role: CardRole) -> CardBoot {
         json!({}),
         None,
         CardRole::Worker,
+        true,
         &card_role_cache,
     )
     .await

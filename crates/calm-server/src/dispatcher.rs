@@ -643,6 +643,9 @@ impl Inner {
                     // so the post-commit code can hand it to the
                     // codex daemon's env. PR7a discarded this on
                     // the floor as `_mcp_token`.
+                    // Issue #229 PR A — dispatcher-spawned worker codex
+                    // cards are user-facing; the user closes them to
+                    // abort an in-flight job. `deletable: true`.
                     let (mut card, _term, mcp_token) = card_with_codex_create_tx(
                         tx,
                         new_card_id_for_tx,
@@ -652,6 +655,7 @@ impl Inner {
                         env_for_tx,
                         None,
                         CardRole::Worker,
+                        true,
                         &cache_for_tx,
                     )
                     .await?;
@@ -675,6 +679,10 @@ impl Inner {
                                 kind: None,
                                 sort: None,
                                 payload: Some(serde_json::Value::Object(merged)),
+                                // #229 PR A — kernel-internal callers
+                                // never patch the `deletable` field; the
+                                // route handler rejects clients that try.
+                                deletable: None,
                             },
                         )
                         .await?;
@@ -904,6 +912,10 @@ impl Inner {
                             existing.id
                         )));
                     }
+                    // Issue #229 PR A — dispatcher worker terminals
+                    // are user-facing (the user opened the wave that
+                    // dispatched them; if a worker is hung, the user
+                    // closes its card to abort). `deletable: true`.
                     let (mut card, _term) = crate::db::sqlite::card_with_terminal_create_tx(
                         tx,
                         new_card_id_for_tx,
@@ -913,6 +925,7 @@ impl Inner {
                         cwd_for_tx,
                         env_for_tx,
                         CardRole::Worker,
+                        true,
                         &cache_for_tx,
                     )
                     .await?;
@@ -933,6 +946,10 @@ impl Inner {
                                 kind: None,
                                 sort: None,
                                 payload: Some(serde_json::Value::Object(merged)),
+                                // #229 PR A — kernel-internal callers
+                                // never patch the `deletable` field; the
+                                // route handler rejects clients that try.
+                                deletable: None,
                             },
                         )
                         .await?;
@@ -1014,7 +1031,7 @@ async fn find_card_by_idempotency_key_tx(
     idempotency_key: &str,
 ) -> crate::error::Result<Option<crate::model::Card>> {
     let row = sqlx::query_as::<_, crate::model::Card>(
-        r#"SELECT id, wave_id, kind, sort, payload, created_at, updated_at
+        r#"SELECT id, wave_id, kind, sort, payload, deletable, created_at, updated_at
            FROM cards
            WHERE json_extract(payload, '$.idempotency_key') = ?1
            LIMIT 1"#,

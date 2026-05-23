@@ -296,9 +296,28 @@ function WaveComponent() {
   const cove = adaptCove(kernelCove);
   const uiWave = adaptWave(detail.wave, detail.overlays);
   uiWave.cards = detail.cards.map((k): WaveCardSlot => {
+    // Issue #229 PR A — propagate the kernel's `deletable` bit so
+    // `WaveGrid` can suppress the close X on kernel-owned cards.
+    // OpenAPI emits `deletable: boolean`, so the field is always set
+    // on fresh wire payloads; legacy event-log replays may omit it,
+    // and the slot's `deletable?` default + WaveGrid's
+    // `card.deletable !== false` check both treat undefined as
+    // "user-deletable" (matches the DB DEFAULT of 1).
     const adapted = adaptCard(k);
-    if (adapted) return { kind: 'card', card: adapted, sort: k.sort };
-    return { kind: 'unknown', id: k.id, kernelKind: k.kind, sort: k.sort };
+    if (adapted)
+      return {
+        kind: 'card',
+        card: adapted,
+        sort: k.sort,
+        deletable: k.deletable,
+      };
+    return {
+      kind: 'unknown',
+      id: k.id,
+      kernelKind: k.kind,
+      sort: k.sort,
+      deletable: k.deletable,
+    };
   });
 
   return (

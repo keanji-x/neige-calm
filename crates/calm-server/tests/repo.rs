@@ -207,6 +207,7 @@ async fn card_crud_round_trip() {
                 kind: Some("plugin:x:view".into()),
                 sort: None,
                 payload: Some(json!({"replaced": true})),
+                deletable: None,
             },
         )
         .await
@@ -689,6 +690,7 @@ async fn card_with_terminal_create_tx_atomic_writes_card_terminal_and_payload_li
         "/tmp".into(),
         json!({"FOO": "bar"}),
         calm_server::model::CardRole::Plain,
+        true,
         &calm_server::card_role_cache::CardRoleCache::new(),
     )
     .await
@@ -736,6 +738,7 @@ async fn card_with_terminal_create_tx_rolls_back_on_invalid_wave() {
         "/tmp".into(),
         json!({}),
         calm_server::model::CardRole::Plain,
+        true,
         &calm_server::card_role_cache::CardRoleCache::new(),
     )
     .await
@@ -776,6 +779,7 @@ async fn card_with_terminal_create_tx_uses_caller_supplied_sort() {
         "/tmp".into(),
         json!({}),
         calm_server::model::CardRole::Plain,
+        true,
         &calm_server::card_role_cache::CardRoleCache::new(),
     )
     .await
@@ -808,6 +812,7 @@ async fn card_with_terminal_create_tx_defaults_sort_when_none() {
         "/tmp".into(),
         json!({}),
         calm_server::model::CardRole::Plain,
+        true,
         &calm_server::card_role_cache::CardRoleCache::new(),
     )
     .await
@@ -892,6 +897,7 @@ async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_payload_link(
         json!({"CODEX_HOME": "/tmp/cx"}),
         None,
         calm_server::model::CardRole::Plain,
+        true,
         &calm_server::card_role_cache::CardRoleCache::new(),
     )
     .await
@@ -945,6 +951,7 @@ async fn card_with_codex_create_tx_rolls_back_on_invalid_wave() {
         json!({}),
         None,
         calm_server::model::CardRole::Plain,
+        true,
         &calm_server::card_role_cache::CardRoleCache::new(),
     )
     .await
@@ -984,6 +991,7 @@ async fn card_with_codex_create_tx_uses_caller_supplied_sort() {
         json!({}),
         None,
         calm_server::model::CardRole::Plain,
+        true,
         &calm_server::card_role_cache::CardRoleCache::new(),
     )
     .await

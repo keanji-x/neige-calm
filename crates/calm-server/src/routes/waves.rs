@@ -227,6 +227,13 @@ pub(crate) async fn create_wave(
                     // path — the system prompt lives in
                     // $CODEX_HOME/config.toml instead
                     CardRole::Spec, // <— the PR6 binding
+                    // Issue #229 PR A — the spec card is kernel-owned.
+                    // Migration 0013 already backfilled `deletable = 0`
+                    // for legacy spec rows; new spec cards minted here
+                    // get the same treatment so `DELETE /api/cards/:id`
+                    // and `neige.card.delete` refuse to drop them.
+                    // Wave delete still cascades via the FK chain.
+                    false,
                     &cache_for_tx,
                 )
                 .await?;

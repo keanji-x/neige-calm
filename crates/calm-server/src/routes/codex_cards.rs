@@ -260,6 +260,10 @@ pub(crate) async fn create_codex_card(
                     // discard it explicitly to make the contract
                     // obvious at the call site.
                     crate::model::CardRole::Plain,
+                    // Issue #229 PR A — user-facing codex cards are
+                    // user-deletable. Spec cards take the `false`
+                    // route via routes/waves.rs.
+                    true,
                     &cache_for_tx,
                 )
                 .await?;
