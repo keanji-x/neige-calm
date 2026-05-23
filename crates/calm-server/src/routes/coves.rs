@@ -19,13 +19,16 @@
 //! user-deletable.
 
 use crate::actor::Actor;
-use crate::db::sqlite::{cove_create_system_tx, cove_create_tx, cove_delete_tx, cove_update_tx};
+use crate::db::sqlite::{
+    cove_create_system_tx, cove_create_tx, cove_delete_tx, cove_update_tx, terminal_delete_tx,
+};
 use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::ActorId;
 use crate::model::{Cove, CoveKind, CovePatch, NewCove};
 use crate::state::AppState;
+use crate::terminal_sweeper::reap_terminal_artifacts;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -304,6 +307,27 @@ pub(crate) async fn delete_cove(
             "cove {id} is system-owned and cannot be deleted via the public API"
         )));
     }
+
+    // Issue #197 — eager teardown for every terminal under the cove.
+    // `terminals.card_id` is `ON DELETE RESTRICT` (migration 0011), so
+    // a cove delete that would orphan a terminal row aborts the
+    // surrounding txn unless we drain the table first. Walk
+    // waves → cards → terminal_get_by_card; reap the daemon + socket
+    // for each; collect the terminal ids for the in-txn row delete.
+    // Same shape as `routes::waves::delete_wave` but extended one
+    // level deeper.
+    let waves = s.repo.waves_by_cove(&id).await?;
+    let mut terminal_ids: Vec<String> = Vec::new();
+    for wave in &waves {
+        let cards = s.repo.cards_by_wave(wave.id.as_str()).await?;
+        for card in &cards {
+            if let Some(t) = s.repo.terminal_get_by_card(card.id.as_str()).await? {
+                reap_terminal_artifacts(&t).await;
+                terminal_ids.push(t.id);
+            }
+        }
+    }
+
     let scope = EventScope::Cove {
         cove: id.clone().into(),
     };
@@ -316,6 +340,15 @@ pub(crate) async fn delete_cove(
         &s.card_role_cache,
         move |tx| {
             Box::pin(async move {
+                // Drop terminal rows first; tolerate NotFound on each
+                // (a racing sweeper tick may have beaten us to one).
+                for tid in &terminal_ids {
+                    match terminal_delete_tx(tx, tid).await {
+                        Ok(()) => {}
+                        Err(CalmError::NotFound(_)) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
                 cove_delete_tx(tx, &id).await?;
                 Ok(((), Event::CoveDeleted { id: id.into() }))
             })

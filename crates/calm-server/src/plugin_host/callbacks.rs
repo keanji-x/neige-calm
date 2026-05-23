@@ -21,11 +21,13 @@ use tokio::task::JoinHandle;
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
     card_create_with_id_tx, card_delete_tx, card_update_tx, overlay_delete_tx, overlay_upsert_tx,
+    terminal_delete_tx,
 };
 use crate::db::{RepoRead, RouteRepo, write_with_event_typed};
 use crate::event::{Event, EventBus, EventScope};
 use crate::ids::{ActorId, CardId};
 use crate::model::{CardPatch, CardRole, NewCard, NewOverlay, new_id};
+use crate::terminal_sweeper::reap_terminal_artifacts;
 use crate::validation::{validate_card_payload, validate_overlay_payload};
 
 use super::events::SubscriptionFilter;
@@ -563,6 +565,25 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
     let correlation = ctx.correlation();
     let scope = card_scope_for_callback(ctx.repo.as_ref(), card.id.clone(), wave_id.as_str()).await;
     let cache_for_tx = ctx.card_role_cache.clone();
+
+    // Issue #197 — eager teardown. Mirrors `routes::cards::delete_card`:
+    // the `terminals.card_id` FK is `ON DELETE RESTRICT` (migration
+    // 0011) so we reap the terminal (if any) and drop the row inside
+    // the same txn that drops the card. In practice plugin-deletable
+    // cards never carry a terminal (`can_card_delete` gates the path
+    // on plugin-owned kinds, and `terminal`/`codex` kinds are kernel-
+    // owned), but we run cleanup unconditionally to keep the FK
+    // invariant inviolable from every write site.
+    let term = ctx
+        .repo
+        .terminal_get_by_card(card_id.as_str())
+        .await
+        .map_err(internal_repo_err)?;
+    if let Some(t) = term.as_ref() {
+        reap_terminal_artifacts(t).await;
+    }
+    let terminal_id = term.map(|t| t.id);
+
     let _ = write_with_event_typed(
         ctx.repo.as_ref(),
         actor,
@@ -572,6 +593,13 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         &ctx.card_role_cache,
         move |tx| {
             Box::pin(async move {
+                if let Some(tid) = terminal_id.as_deref() {
+                    match terminal_delete_tx(tx, tid).await {
+                        Ok(()) => {}
+                        Err(crate::error::CalmError::NotFound(_)) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
                 card_delete_tx(tx, &card_id, &cache_for_tx).await?;
                 Ok((
                     (),

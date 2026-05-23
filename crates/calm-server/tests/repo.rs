@@ -215,15 +215,21 @@ async fn wave_delete_cascades_to_cards() {
     );
 }
 
-// --- Cascade-to-terminals regression tests (issue #4 / D3) -----------------
+// --- Terminal FK contract regression tests (issues #4, #197) ---------------
 //
-// These three tests document the FK CASCADE contract: deleting a card, wave,
-// or cove must remove every terminal beneath it. They pass for SqlxRepo
-// (cascade is enforced by the schema) and would have failed for the old
-// MockRepo, whose `card_delete` / `wave_delete` / `cove_delete` only walked
-// the cove → wave → card layer and never reached the terminals map. Keep
-// these around so a future "let's bring back the in-memory mock" attempt
-// fails loudly at test time instead of silently leaving dangling terminals.
+// Originally these three tests documented the `ON DELETE CASCADE` FK on
+// `terminals.card_id`: deleting a card / wave / cove silently nuked the
+// terminal row beneath it. Issue #197 inverted that contract: the FK is now
+// `ON DELETE RESTRICT` (migration 0011) so the schema **refuses** to nuke
+// the terminal row implicitly — eager teardown in the route handlers
+// (`routes/cards.rs::delete_card`, `routes/waves.rs::delete_wave`,
+// `routes/coves.rs::delete_cove`) owns the kill-daemon-unlink-socket
+// sequence and explicitly drops the terminal row before the parent.
+//
+// The tests below now verify the RESTRICT semantics at the bare
+// `Repo::card_delete` / `wave_delete` / `cove_delete` surface: a card/
+// wave/cove that has a live terminal underneath cannot be deleted; once
+// the terminal row is removed, the parent delete proceeds.
 
 async fn make_terminal(repo: &SqlxRepo, card_id: &str) -> Terminal {
     repo.terminal_create(NewTerminal {
@@ -237,43 +243,65 @@ async fn make_terminal(repo: &SqlxRepo, card_id: &str) -> Terminal {
 }
 
 #[tokio::test]
-async fn cascade_card_delete_removes_terminal() {
+async fn fk_restrict_card_delete_blocked_by_terminal() {
     let repo = fresh_repo().await;
     let c = make_cove(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "W").await;
     let card = make_card(&repo, w.id.as_str(), "terminal").await;
     let term = make_terminal(&repo, card.id.as_str()).await;
 
-    repo.card_delete(card.id.as_str()).await.unwrap();
-
+    // RESTRICT bites: the terminal row's `card_id` still points at the
+    // card, so the schema refuses the parent delete.
+    let err = repo.card_delete(card.id.as_str()).await.unwrap_err();
     assert!(
-        repo.terminal_get(term.id.as_str()).await.unwrap().is_none(),
-        "terminal must cascade away when its parent card is deleted"
+        matches!(err, CalmError::Db(_)),
+        "expected an FK constraint error from sqlx, got: {err:?}"
     );
+    // Terminal + card both intact.
+    assert!(repo.terminal_get(term.id.as_str()).await.unwrap().is_some());
+    assert!(repo.card_get(card.id.as_str()).await.unwrap().is_some());
+
+    // Eager-teardown shape: drop the terminal first, then the card.
+    repo.terminal_delete(term.id.as_str()).await.unwrap();
+    repo.card_delete(card.id.as_str()).await.unwrap();
+    assert!(repo.card_get(card.id.as_str()).await.unwrap().is_none());
+    assert!(repo.terminal_get(term.id.as_str()).await.unwrap().is_none());
 }
 
 #[tokio::test]
-async fn cascade_wave_delete_removes_terminals() {
+async fn fk_restrict_wave_delete_blocked_by_terminal_under_card() {
     let repo = fresh_repo().await;
     let c = make_cove(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "W").await;
     let card = make_card(&repo, w.id.as_str(), "terminal").await;
     let term = make_terminal(&repo, card.id.as_str()).await;
 
-    // Unrelated wave/card/terminal that must NOT be touched.
+    // Unrelated wave/card/terminal that must NOT be touched on either
+    // attempt (the second attempt succeeds, but only on `w`'s subtree).
     let other_wave = make_wave(&repo, c.id.as_str(), "other").await;
     let other_card = make_card(&repo, other_wave.id.as_str(), "terminal").await;
     let other_term = make_terminal(&repo, other_card.id.as_str()).await;
 
-    repo.wave_delete(w.id.as_str()).await.unwrap();
+    // RESTRICT bites: the wave-delete cascade through `cards.wave_id`
+    // would try to delete `card`, which still has `term` pointing at
+    // it — schema refuses.
+    let err = repo.wave_delete(w.id.as_str()).await.unwrap_err();
+    assert!(
+        matches!(err, CalmError::Db(_)),
+        "expected an FK constraint error from sqlx, got: {err:?}"
+    );
+    assert!(repo.wave_get(w.id.as_str()).await.unwrap().is_some());
+    assert!(repo.card_get(card.id.as_str()).await.unwrap().is_some());
+    assert!(repo.terminal_get(term.id.as_str()).await.unwrap().is_some());
 
+    // Drain the terminal first (the eager-teardown shape), then the
+    // wave delete clears the rest via CASCADE on `cards.wave_id`.
+    repo.terminal_delete(term.id.as_str()).await.unwrap();
+    repo.wave_delete(w.id.as_str()).await.unwrap();
     assert!(repo.wave_get(w.id.as_str()).await.unwrap().is_none());
     assert!(repo.card_get(card.id.as_str()).await.unwrap().is_none());
-    assert!(
-        repo.terminal_get(term.id.as_str()).await.unwrap().is_none(),
-        "terminal must cascade away when its grand-parent wave is deleted"
-    );
-    // Sibling subtree intact.
+
+    // Sibling subtree intact across both attempts.
     assert!(
         repo.wave_get(other_wave.id.as_str())
             .await
@@ -295,21 +323,28 @@ async fn cascade_wave_delete_removes_terminals() {
 }
 
 #[tokio::test]
-async fn cascade_cove_delete_removes_terminals() {
+async fn fk_restrict_cove_delete_blocked_by_terminal_under_subtree() {
     let repo = fresh_repo().await;
     let c = make_cove(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "W").await;
     let card = make_card(&repo, w.id.as_str(), "terminal").await;
     let term = make_terminal(&repo, card.id.as_str()).await;
 
-    repo.cove_delete(c.id.as_str()).await.unwrap();
+    let err = repo.cove_delete(c.id.as_str()).await.unwrap_err();
+    assert!(
+        matches!(err, CalmError::Db(_)),
+        "expected an FK constraint error from sqlx, got: {err:?}"
+    );
+    assert!(repo.cove_get(c.id.as_str()).await.unwrap().is_some());
+    assert!(repo.wave_get(w.id.as_str()).await.unwrap().is_some());
+    assert!(repo.card_get(card.id.as_str()).await.unwrap().is_some());
+    assert!(repo.terminal_get(term.id.as_str()).await.unwrap().is_some());
 
+    repo.terminal_delete(term.id.as_str()).await.unwrap();
+    repo.cove_delete(c.id.as_str()).await.unwrap();
+    assert!(repo.cove_get(c.id.as_str()).await.unwrap().is_none());
     assert!(repo.wave_get(w.id.as_str()).await.unwrap().is_none());
     assert!(repo.card_get(card.id.as_str()).await.unwrap().is_none());
-    assert!(
-        repo.terminal_get(term.id.as_str()).await.unwrap().is_none(),
-        "terminal must cascade away when its great-grand-parent cove is deleted"
-    );
 }
 
 // ----------------------------------------------------- Sort defaulting ----
@@ -563,7 +598,15 @@ async fn terminal_create_rejects_duplicate_card_id() {
     let err = repo.terminal_set_handle("no-such", None).await.unwrap_err();
     assert!(matches!(err, CalmError::NotFound(_)));
 
-    // Terminal cascades when its card is deleted.
+    // Issue #197 — `terminals.card_id` is `ON DELETE RESTRICT` so the
+    // schema refuses a card delete that would orphan the terminal row.
+    // Eager-teardown shape: drop the terminal first.
+    let err = repo.card_delete(card.id.as_str()).await.unwrap_err();
+    assert!(
+        matches!(err, CalmError::Db(_)),
+        "card delete with live terminal must fail with an FK error, got: {err:?}"
+    );
+    repo.terminal_delete(t.id.as_str()).await.unwrap();
     repo.card_delete(card.id.as_str()).await.unwrap();
     assert!(repo.terminal_get(&t.id).await.unwrap().is_none());
 }

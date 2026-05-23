@@ -300,21 +300,31 @@ pub async fn reset_from_fixture(
     bus: &EventBus,
     fixture: &Fixture,
 ) -> anyhow::Result<Vec<i64>> {
-    // Delete order respects FK chains: cards → waves → coves, overlays
-    // before their referenced entities, terminals are independent. The
-    // SqlxRepo opens with `PRAGMA foreign_keys = ON`, so an out-of-order
-    // delete would surface as a constraint error — explicit order avoids
-    // depending on `ON DELETE CASCADE` declarations we'd otherwise have
-    // to audit migration-by-migration.
+    // Delete order respects FK chains, children before parents:
+    // `terminals.card_id → cards` is now `ON DELETE RESTRICT`
+    // (migration 0011), so terminals MUST be wiped before cards or
+    // the FK trips with `(code: 1811) FOREIGN KEY constraint failed`.
+    // After that, `cards.wave_id → waves` and `waves.cove_id → coves`
+    // still cascade, but we delete them explicitly in child-first order
+    // so the whole table-wipe sequence is uniform and order-correct
+    // regardless of which FKs are RESTRICT vs CASCADE. The SqlxRepo
+    // opens with `PRAGMA foreign_keys = ON`, so an out-of-order delete
+    // would surface as a constraint error — this explicit ordering is
+    // what enforces correctness; we no longer rely on `ON DELETE CASCADE`
+    // declarations to bail us out.
+    //
+    // `overlays` and `events` have no FKs into the domain tables, so
+    // they can go anywhere; we drain them first to keep the audit log
+    // out of the way of the structural wipe.
     let pool = repo.pool();
     let mut tx = pool.begin().await?;
     for stmt in [
         "DELETE FROM events",
         "DELETE FROM overlays",
+        "DELETE FROM terminals",
         "DELETE FROM cards",
         "DELETE FROM waves",
         "DELETE FROM coves",
-        "DELETE FROM terminals",
         "DELETE FROM plugin_kv",
         "DELETE FROM plugin_tokens",
         "DELETE FROM plugins",
