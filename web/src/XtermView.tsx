@@ -122,6 +122,8 @@ interface ExitInfo {
  * tab so we leave it out of the capability set.
  */
 export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
+  // eslint-disable-next-line no-console
+  console.warn('[#177 XtermView render]', { theme, terminalId });
   const containerRef = useRef<HTMLDivElement | null>(null);
   // Live ref to the active xterm.js Terminal instance so a sibling effect
   // can re-apply the theme without tearing down the WebSocket + replay
