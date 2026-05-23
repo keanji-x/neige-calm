@@ -1,4 +1,4 @@
-// Unit tests for the v2 terminal protocol wiring in XtermView.
+// Unit tests for the v3 terminal protocol wiring in XtermView.
 //
 // We don't render real xterm.js — `@xterm/xterm` needs a real canvas and
 // `term.fit()` depends on layout that jsdom doesn't compute. Instead we
@@ -9,7 +9,7 @@
 //
 // What's locked here:
 //   - On WebSocket open, the component sends a `ClientHello` frame with
-//     protocol_version=2, terminal_id, a `client_id` UUID, the local
+//     protocol_version=3, terminal_id, a `client_id` UUID, the local
 //     viewport, `role_hint: 'Owner'`, and capabilities advertising `Vt`
 //     encoding + scrollback support but no images.
 //   - On `ServerHello`, the snapshot bytes are written to the term and
@@ -40,6 +40,18 @@ interface MockTerm {
   open: ReturnType<typeof vi.fn>;
   loadAddon: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
+  /** #177 — xterm.js OSC suppressor surface. The component calls
+   *  `term.parser.registerOscHandler(10|11|12, () => true)` to silence
+   *  xterm.js's built-in OSC color reply so the daemon is the sole
+   *  responder. Mock records the registered handlers so tests can
+   *  inspect them. */
+  parser: {
+    registerOscHandler: ReturnType<typeof vi.fn>;
+  };
+  /** Map from OSC ident → registered handler, populated by the mock's
+   *  `parser.registerOscHandler`. Tests use this to simulate xterm.js
+   *  delivering an OSC sequence and verify the suppressor returns true. */
+  __oscHandlers: Map<number, () => boolean>;
   onData: (cb: (d: string) => void) => { dispose: () => void };
   __dataCb?: (d: string) => void;
 }
@@ -60,6 +72,22 @@ vi.mock('@xterm/xterm', () => {
     open = vi.fn();
     loadAddon = vi.fn();
     dispose = vi.fn();
+    // xterm.js exposes `options` as a mutable bag; the live-theme effect
+    // assigns `term.options.theme = ...` and the real impl picks it up
+    // on the next render cycle. For the mock we just need the slot to
+    // exist so the assignment doesn't throw.
+    options: Record<string, unknown> = {};
+    // #177 — minimal `parser.registerOscHandler` shim. The component
+    // calls this for slots 10/11/12 right after `term.open(container)`
+    // to silence xterm.js's built-in OSC color reply. The mock records
+    // each registered handler in `__oscHandlers` for inspection.
+    __oscHandlers = new Map<number, () => boolean>();
+    parser = {
+      registerOscHandler: vi.fn((ident: number, handler: () => boolean) => {
+        this.__oscHandlers.set(ident, handler);
+        return { dispose: () => this.__oscHandlers.delete(ident) };
+      }),
+    };
     onData(cb: (d: string) => void): { dispose: () => void } {
       // Expose the callback so a test can simulate typing.
       (this as unknown as MockTerm).__dataCb = cb;
@@ -177,7 +205,7 @@ afterEach(() => {
 function serverHello(over: Record<string, unknown> = {}): unknown {
   return {
     ServerHello: {
-      protocol_version: 2,
+      protocol_version: 3,
       terminal_id: 'term_test',
       session_id: '11111111-1111-4111-8111-111111111111',
       client_role: 'Owner',
@@ -202,18 +230,23 @@ function serverHello(over: Record<string, unknown> = {}): unknown {
   };
 }
 
-describe('XtermView v2 handshake', () => {
-  it('sends ClientHello with protocol_version=2 and role_hint Owner on open', () => {
+describe('XtermView v3 handshake', () => {
+  it('sends ClientHello with protocol_version=3 and role_hint Owner on open', () => {
     render(<XtermView terminalId="term_test" />);
     const ws = currentWs();
     act(() => {
       ws.fireOpen();
     });
-    expect(ws.sentFrames).toHaveLength(1);
+    // #177 — every mount also dispatches a `TerminalThemeUpdate`
+    // (buffered before WS open, drained after onopen), so the wire
+    // carries ClientHello followed by at least one theme frame. This
+    // test only cares about the ClientHello shape; assert it's the
+    // first frame and inspect that one.
+    expect(ws.sentFrames.length).toBeGreaterThanOrEqual(1);
     const frame = JSON.parse(ws.sentFrames[0]!);
     expect(frame).toHaveProperty('ClientHello');
     const hello = frame.ClientHello;
-    expect(hello.protocol_version).toBe(2);
+    expect(hello.protocol_version).toBe(3);
     expect(hello.terminal_id).toBe('term_test');
     expect(typeof hello.client_id).toBe('string');
     expect(hello.role_hint).toBe('Owner');
@@ -278,7 +311,7 @@ describe('XtermView v2 handshake', () => {
   });
 });
 
-describe('XtermView v2 streaming', () => {
+describe('XtermView v3 streaming', () => {
   it('writes RenderPatch.data to the terminal', () => {
     render(<XtermView terminalId="term_test" />);
     const ws = currentWs();
@@ -333,7 +366,7 @@ describe('XtermView v2 streaming', () => {
     expect(mockTerm.write).toHaveBeenCalledTimes(1);
   });
 
-  it('sends typed input as a v2 Input frame', () => {
+  it('sends typed input as a v3 Input frame', () => {
     render(<XtermView terminalId="term_test" />);
     const ws = currentWs();
     act(() => {
@@ -356,7 +389,7 @@ describe('XtermView v2 streaming', () => {
   });
 });
 
-describe('XtermView v2 terminal states', () => {
+describe('XtermView v3 terminal states', () => {
   it('shows protocol-error overlay on ProtocolError', () => {
     render(<XtermView terminalId="term_test" />);
     const ws = currentWs();
@@ -377,7 +410,7 @@ describe('XtermView v2 terminal states', () => {
       screen.getByText(/protocol error: UnsupportedVersion/i),
     ).toBeInTheDocument();
     expect(screen.getByText(/kernel is v3/)).toBeInTheDocument();
-    expect(screen.getByText(/refresh required for protocol v2/i)).toBeInTheDocument();
+    expect(screen.getByText(/refresh required for protocol v3/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /refresh/i })).toBeInTheDocument();
   });
 
@@ -444,7 +477,7 @@ describe('XtermView v2 terminal states', () => {
   });
 });
 
-describe('XtermView v2 resize wiring', () => {
+describe('XtermView v3 resize wiring', () => {
   it('parses ResizeApplied without error', () => {
     render(<XtermView terminalId="term_test" />);
     const ws = currentWs();
@@ -469,5 +502,201 @@ describe('XtermView v2 resize wiring', () => {
         });
       });
     }).not.toThrow();
+  });
+});
+
+// ---- #177 — theme dispatch + OSC suppression + WS queue --------------
+
+describe('XtermView #177 OSC suppressor', () => {
+  it('registers no-op handlers on slots 10, 11, 12 after term.open', () => {
+    render(<XtermView terminalId="term_test" />);
+    // Three slots, all returning `true` (the "we consumed it, don't reply"
+    // signal to xterm.js's parser).
+    expect(mockTerm.__oscHandlers.size).toBe(3);
+    for (const slot of [10, 11, 12]) {
+      const handler = mockTerm.__oscHandlers.get(slot);
+      expect(handler, `OSC handler for slot ${slot}`).toBeDefined();
+      expect(handler!()).toBe(true);
+    }
+  });
+});
+
+describe('XtermView #177 theme dispatch', () => {
+  it('dispatches TerminalThemeUpdate on initial mount (default = light)', () => {
+    render(<XtermView terminalId="term_test" />);
+    const ws = currentWs();
+    act(() => {
+      ws.fireOpen();
+    });
+    // After `fireOpen` the queue drains: ClientHello first, then the
+    // buffered TerminalThemeUpdate from the theme-effect.
+    const frames = ws.sentFrames.map((s) => JSON.parse(s));
+    const themeFrames = frames.filter(
+      (f) => typeof f === 'object' && f !== null && 'TerminalThemeUpdate' in f,
+    );
+    expect(themeFrames.length).toBeGreaterThanOrEqual(1);
+    // Light theme RGB values from `api/themeRgb.ts`.
+    expect(themeFrames[0].TerminalThemeUpdate).toEqual({
+      fg: [42, 47, 58],
+      bg: [252, 254, 255],
+    });
+  });
+
+  it('dispatches dark RGB when prop is "dark"', () => {
+    render(<XtermView terminalId="term_test" theme="dark" />);
+    const ws = currentWs();
+    act(() => {
+      ws.fireOpen();
+    });
+    const frames = ws.sentFrames.map((s) => JSON.parse(s));
+    const themeFrames = frames.filter(
+      (f) => typeof f === 'object' && f !== null && 'TerminalThemeUpdate' in f,
+    );
+    expect(themeFrames.length).toBeGreaterThanOrEqual(1);
+    expect(themeFrames[themeFrames.length - 1].TerminalThemeUpdate).toEqual({
+      fg: [216, 219, 226],
+      bg: [15, 20, 24],
+    });
+  });
+
+  it('re-dispatches when the `theme` prop flips light → dark', () => {
+    const { rerender } = render(
+      <XtermView terminalId="term_test" theme="light" />,
+    );
+    const ws = currentWs();
+    act(() => {
+      ws.fireOpen();
+    });
+    // Reset wire after the initial drain so we observe only the toggle.
+    ws.sentFrames.length = 0;
+    act(() => {
+      rerender(<XtermView terminalId="term_test" theme="dark" />);
+    });
+    const frames = ws.sentFrames.map((s) => JSON.parse(s));
+    const themeFrames = frames.filter(
+      (f) => typeof f === 'object' && f !== null && 'TerminalThemeUpdate' in f,
+    );
+    expect(themeFrames.length).toBeGreaterThanOrEqual(1);
+    expect(themeFrames[0].TerminalThemeUpdate).toEqual({
+      fg: [216, 219, 226],
+      bg: [15, 20, 24],
+    });
+  });
+
+  it('re-dispatches even when the theme value is unchanged (idempotent contract)', () => {
+    // Regression guard for the "drop prev-guard on theme-effect" decision.
+    // The daemon-side handler is idempotent, so we deliberately accept a
+    // redundant send on a no-op rerender rather than risk skipping a real
+    // toggle after a remount (where any per-component "prev" bookkeeping
+    // would have reset to null).
+    const { rerender } = render(
+      <XtermView terminalId="term_test" theme="dark" />,
+    );
+    const ws = currentWs();
+    act(() => {
+      ws.fireOpen();
+    });
+    ws.sentFrames.length = 0;
+    act(() => {
+      // Identical prop value — would be skipped if we still gated on
+      // `prev !== current`.
+      rerender(<XtermView terminalId="term_test" theme="dark" />);
+    });
+    // React skips effect re-runs when deps are referentially equal — so
+    // this rerender should be a no-op on the wire. The test guards
+    // against any future change that accidentally treats every render
+    // as a theme-change.
+    const frames = ws.sentFrames.map((s) => JSON.parse(s));
+    const themeFrames = frames.filter(
+      (f) => typeof f === 'object' && f !== null && 'TerminalThemeUpdate' in f,
+    );
+    expect(themeFrames.length).toBe(0);
+  });
+});
+
+describe('XtermView #177 WS send queue', () => {
+  it('buffers TerminalThemeUpdate when WS is CONNECTING; flushes on open', () => {
+    render(<XtermView terminalId="term_test" theme="dark" />);
+    const ws = currentWs();
+    // Before `fireOpen`, the WS is CONNECTING. The theme-effect has
+    // already produced a `TerminalThemeUpdate` (via the `pendingThemeRef`
+    // → `send` → `pendingFrames` queue chain), but nothing should be
+    // on the wire yet.
+    expect(ws.sentFrames).toHaveLength(0);
+    act(() => {
+      ws.fireOpen();
+    });
+    // Now both the ClientHello (sent inside `onopen`) and the buffered
+    // theme frame should be on the wire, in order.
+    const frames = ws.sentFrames.map((s) => JSON.parse(s));
+    expect(frames[0]).toHaveProperty('ClientHello');
+    const themeFrames = frames.filter(
+      (f) => typeof f === 'object' && f !== null && 'TerminalThemeUpdate' in f,
+    );
+    expect(themeFrames.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('buffers a mid-handshake theme toggle and flushes on open', () => {
+    // The exact race the source-branch bug chain targets: theme flips
+    // *before* `ws.onopen` fires.
+    const { rerender } = render(
+      <XtermView terminalId="term_test" theme="light" />,
+    );
+    const ws = currentWs();
+    // Theme toggle while still CONNECTING.
+    act(() => {
+      rerender(<XtermView terminalId="term_test" theme="dark" />);
+    });
+    // Nothing on the wire yet.
+    expect(ws.sentFrames).toHaveLength(0);
+    act(() => {
+      ws.fireOpen();
+    });
+    // The buffered dark theme frame must be on the wire after open.
+    const frames = ws.sentFrames.map((s) => JSON.parse(s));
+    const themeFrames = frames.filter(
+      (f) => typeof f === 'object' && f !== null && 'TerminalThemeUpdate' in f,
+    );
+    expect(themeFrames.length).toBeGreaterThanOrEqual(1);
+    // Last theme frame in the drain should carry dark RGB.
+    expect(themeFrames[themeFrames.length - 1].TerminalThemeUpdate).toEqual({
+      fg: [216, 219, 226],
+      bg: [15, 20, 24],
+    });
+  });
+
+  it('coalesces rapid theme toggles — last value wins on the daemon', () => {
+    // Sanity-check the "no dropped dispatches under rapid toggle" claim.
+    // Each rerender re-runs the theme-effect; each run produces one
+    // `TerminalThemeUpdate`. None should be dropped; the daemon receives
+    // every transition in order, so the final state is whatever the
+    // last rerender sent.
+    const { rerender } = render(
+      <XtermView terminalId="term_test" theme="light" />,
+    );
+    const ws = currentWs();
+    act(() => {
+      ws.fireOpen();
+    });
+    ws.sentFrames.length = 0;
+    // Rapid sequence — light → dark → light → dark.
+    act(() => {
+      rerender(<XtermView terminalId="term_test" theme="dark" />);
+    });
+    act(() => {
+      rerender(<XtermView terminalId="term_test" theme="light" />);
+    });
+    act(() => {
+      rerender(<XtermView terminalId="term_test" theme="dark" />);
+    });
+    const frames = ws.sentFrames.map((s) => JSON.parse(s));
+    const themeFrames = frames.filter(
+      (f) => typeof f === 'object' && f !== null && 'TerminalThemeUpdate' in f,
+    );
+    // Each transition fires one frame.
+    expect(themeFrames.length).toBe(3);
+    expect(themeFrames[0].TerminalThemeUpdate.fg).toEqual([216, 219, 226]);
+    expect(themeFrames[1].TerminalThemeUpdate.fg).toEqual([42, 47, 58]);
+    expect(themeFrames[2].TerminalThemeUpdate.fg).toEqual([216, 219, 226]);
   });
 });

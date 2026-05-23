@@ -177,6 +177,23 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     [mode, resolved, setMode],
   );
 
+  // #177 — Playwright instrumentation. Gated on `?testMounts=1` so
+  // production users never see the global. Exposes a driver the e2e
+  // regression spec (`web/e2e/a11y-177-theme-toggle-no-remount.spec.ts`)
+  // uses to flip the theme WITHOUT navigating to the Settings page —
+  // navigation would unmount any wave-page XtermView under test and
+  // defeat the whole observation.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('testMounts') !== '1') return;
+    const w = window as unknown as { __calmSetTheme?: (m: ThemeMode) => void };
+    w.__calmSetTheme = setMode;
+    return () => {
+      if (w.__calmSetTheme === setMode) delete w.__calmSetTheme;
+    };
+  }, [setMode]);
+
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 }
 
