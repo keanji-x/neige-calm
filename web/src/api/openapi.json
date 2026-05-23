@@ -1930,6 +1930,10 @@
             "type": "integer",
             "format": "int64"
           },
+          "deletable": {
+            "type": "boolean",
+            "description": "Issue #229 PR A — system-card guard. `true` for user-facing cards\n(the default; all pre-#229 rows backfill via the column DEFAULT in\nmigration 0013). `false` for kernel-owned cards that the user\ncannot remove via REST / plugin callbacks — currently spec cards\n(retroactively undeletable via the same migration's UPDATE) and\nPR B's wave-report cards.\n\n`#[serde(default = \"default_deletable\")]` so wire payloads emitted\nbefore #229 landed (event-log replay fixtures, old test seeds)\nparse as `true` without forcing a fixture rewrite — matches the\nDB DEFAULT (1) in migration 0013. The default-fn lives below\nbecause `bool::default()` would give `false` (the *un*safe\nfallback for a deny-by-omission auth bit)."
+          },
           "id": {
             "type": "string"
           },
@@ -1957,6 +1961,13 @@
       "CardPatch": {
         "type": "object",
         "properties": {
+          "deletable": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Issue #229 PR A — `deletable` is **not** patchable via API. We\nsurface it here only so a client sending `{\"deletable\": ...}`\ngets a clear 400 (via the route handler's explicit check) rather\nthan a silent no-op. `card_update_tx` itself ignores this field\n(it never writes the column); the route enforces the rejection\nbefore reaching the txn."
+          },
           "kind": {
             "type": [
               "string",

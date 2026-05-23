@@ -193,8 +193,13 @@ pub(crate) async fn create_card(
         &s.card_role_cache,
         move |tx| {
             Box::pin(async move {
-                let card = card_create_with_id_tx(tx, card_id_for_tx, new, CardRole::Plain, &cache)
-                    .await?;
+                // Issue #229 PR A — plain user-driven creates are
+                // user-deletable. The `false` path is reserved for
+                // kernel-owned cards minted by internal code (spec card
+                // here in PR A; report card in PR B).
+                let card =
+                    card_create_with_id_tx(tx, card_id_for_tx, new, CardRole::Plain, true, &cache)
+                        .await?;
                 Ok((card.clone(), Event::CardAdded(card)))
             })
         },
@@ -326,8 +331,13 @@ async fn create_via_tool_call(
         &s.card_role_cache,
         move |tx| {
             Box::pin(async move {
-                let card = card_create_with_id_tx(tx, card_id_for_tx, new, CardRole::Plain, &cache)
-                    .await?;
+                // Issue #229 PR A — plain user-driven creates are
+                // user-deletable. The `false` path is reserved for
+                // kernel-owned cards minted by internal code (spec card
+                // here in PR A; report card in PR B).
+                let card =
+                    card_create_with_id_tx(tx, card_id_for_tx, new, CardRole::Plain, true, &cache)
+                        .await?;
                 Ok((card.clone(), Event::CardAdded(card)))
             })
         },
@@ -363,6 +373,17 @@ pub(crate) async fn update_card(
     Path(id): Path<String>,
     Json(p): Json<CardPatch>,
 ) -> Result<Json<Card>> {
+    // Issue #229 PR A — `deletable` is a kernel-owned bit, not patchable
+    // from the API. Reject the request loudly with 400 so a misconfigured
+    // client (or a curious script) doesn't think the field silently
+    // updated. `card_update_tx` also ignores the field as a belt-and-
+    // suspenders defense; this handler-level rejection is the primary
+    // contract.
+    if p.deletable.is_some() {
+        return Err(CalmError::BadRequest(
+            "`deletable` is a kernel-managed field and cannot be patched via API".into(),
+        ));
+    }
     // We need the existing card's wave_id for the EventScope chain
     // regardless of whether validation needs the kind. Fetch once.
     let existing = s
@@ -418,6 +439,16 @@ pub(crate) async fn delete_card(
         .card_get(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
+    // Issue #229 PR A — kernel-owned card guard. Spec cards (and PR B's
+    // report cards) carry `deletable = false`; refuse direct REST delete.
+    // Wave delete via `DELETE /api/waves/:id` still cascades through the
+    // FK chain — the guard fires only on this `/api/cards/:id` path.
+    if !card.deletable {
+        return Err(CalmError::Forbidden(format!(
+            "card {id} is kernel-owned and cannot be deleted via this endpoint; \
+             delete the parent wave to remove it",
+        )));
+    }
     let card_id = card.id.clone();
     let wave_id = card.wave_id.clone();
     let scope = card_scope(s.repo.as_ref(), card_id.clone(), wave_id.clone()).await?;

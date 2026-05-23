@@ -59,12 +59,20 @@ import { WaveGrid } from './WaveGrid';
 import type { WaveCardSlot, WaveCardData } from './types';
 import type { KernelOverlay } from './api/wire';
 
-function card(id: string, kind: 'terminal' | 'codex' = 'terminal'): WaveCardSlot {
+function card(
+  id: string,
+  kind: 'terminal' | 'codex' = 'terminal',
+  opts: { deletable?: boolean } = {},
+): WaveCardSlot {
   const data: WaveCardData =
     kind === 'codex'
       ? { type: 'codex', id }
       : { type: 'terminal', id, title: id, lines: [], terminalId: `t-${id}` };
-  return { kind: 'card', card: data };
+  // Issue #229 PR A — let tests override the deletable bit so the
+  // `deletable=false → no close X` invariant can be exercised. Default
+  // (`undefined`) means "user-deletable" per WaveGrid's
+  // `card.deletable !== false` check.
+  return { kind: 'card', card: data, deletable: opts.deletable };
 }
 
 function layoutOverlay(
@@ -139,6 +147,94 @@ describe('WaveGrid — overlay-backed layout', () => {
       expect(b.x).toBe(4);
       expect(b.w).toBe(4);
     });
+  });
+
+  // Issue #229 PR A — kernel-owned card slots (`deletable: false` on
+  // the slot, propagated from the kernel `Card.deletable` bit) render
+  // without the close X. The card head's close button has a stable
+  // `aria-label="Remove panel"` in WaveGrid contexts (set on every
+  // built-in card's `<CardHead onClose=… closeAriaLabel="Remove panel"
+  // />` callsite). Querying by that label is the cleanest contract —
+  // `closable: false` means zero matches; `closable: true` (the
+  // default) means one per card.
+  it('hides close X when slot deletable === false', async () => {
+    // Use a `kind: 'unknown'` slot to keep the DOM minimal — UnknownCard
+    // renders a single `<CardHead>` with no theme / overlay
+    // dependencies. The same WaveGrid wiring decides
+    // `closable = slot.deletable !== false` for both `'card'` and
+    // `'unknown'` slot shapes, so testing the X-suppression contract
+    // on the simpler slot exercises the same branch.
+    (api.listOverlays as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    const client = makeClient();
+    const undeletable: WaveCardSlot = {
+      kind: 'unknown',
+      id: 'spec-card',
+      kernelKind: 'codex',
+      deletable: false,
+    };
+    const { container } = render(
+      <Wrapper client={client}>
+        <WaveGrid
+          waveId="w1"
+          cards={[undeletable]}
+          onRemoveCard={() => {}}
+        />
+      </Wrapper>,
+    );
+    // The close affordance lives on `<CardHead>`'s `.card-grid-close`
+    // button. With the slot marked undeletable, WaveGrid passes
+    // `onClose: undefined` and CardHead skips rendering the button.
+    const closeButtons = container.querySelectorAll('button.card-grid-close');
+    expect(closeButtons.length).toBe(0);
+  });
+
+  it('renders close X when slot deletable === true', async () => {
+    (api.listOverlays as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    const client = makeClient();
+    const deletable: WaveCardSlot = {
+      kind: 'unknown',
+      id: 'plain-card',
+      kernelKind: 'codex',
+      deletable: true,
+    };
+    const { container } = render(
+      <Wrapper client={client}>
+        <WaveGrid
+          waveId="w1"
+          cards={[deletable]}
+          onRemoveCard={() => {}}
+        />
+      </Wrapper>,
+    );
+    // UnknownCard renders one `<CardHead>` → one close button.
+    const closeButtons = container.querySelectorAll('button.card-grid-close');
+    expect(closeButtons.length).toBe(1);
+  });
+
+  it('treats omitted slot.deletable as user-deletable (legacy wire payloads)', async () => {
+    // Belt-and-suspenders for event-log replays + older `KernelCard`
+    // shapes that don't carry the field. The slot constructor in
+    // `app/router.tsx` propagates `k.deletable` straight through; when
+    // that's `undefined`, WaveGrid must keep the close button visible.
+    (api.listOverlays as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    const client = makeClient();
+    // Constructed without `deletable` field → slot.deletable is undefined.
+    const legacy: WaveCardSlot = {
+      kind: 'unknown',
+      id: 'legacy',
+      kernelKind: 'codex',
+    };
+    const { container } = render(
+      <Wrapper client={client}>
+        <WaveGrid
+          waveId="w1"
+          cards={[legacy]}
+          onRemoveCard={() => {}}
+        />
+      </Wrapper>,
+    );
+    const closeButtons = container.querySelectorAll('button.card-grid-close');
+    expect(closeButtons.length).toBe(1);
   });
 
   it('drag end fires a single POST with the new positions', async () => {

@@ -245,21 +245,33 @@ export function WaveGrid({
             persistLayout(next);
           }}
         >
-          {cards.map((slot, i) => (
-            <div key={slotKey(slot, i)} className="wave-card">
-              {slot.kind === 'card' ? (
-                <WaveCard
-                  card={slot.card}
-                  onClose={() => onRemoveCard(i)}
-                />
-              ) : (
-                <UnknownCard
-                  kernelKind={slot.kernelKind}
-                  onClose={() => onRemoveCard(i)}
-                />
-              )}
-            </div>
-          ))}
+          {cards.map((slot, i) => {
+            // Issue #229 PR A — kernel-owned cards (spec today;
+            // wave-report in PR B) come through with `deletable: false`
+            // on the kernel `Card` row, propagated onto the slot in
+            // `app/router.tsx`. Omit the `onClose` handler in that
+            // case so the card head doesn't render the X — every
+            // built-in card component already treats
+            // `onClose: undefined` as "don't show the close
+            // affordance", per the contract in
+            // `cards/registry.ts::CardComponentProps`. We treat
+            // *anything other than literal `false`* as deletable so
+            // legacy event-log replays / older wire shapes that omit
+            // the field still get the close button (the kernel
+            // default and the OpenAPI emission both bias toward
+            // `true`).
+            const closable = slot.deletable !== false;
+            const onClose = closable ? () => onRemoveCard(i) : undefined;
+            return (
+              <div key={slotKey(slot, i)} className="wave-card">
+                {slot.kind === 'card' ? (
+                  <WaveCard card={slot.card} onClose={onClose} />
+                ) : (
+                  <UnknownCard kernelKind={slot.kernelKind} onClose={onClose} />
+                )}
+              </div>
+            );
+          })}
         </GridLayout>
       )}
     </div>

@@ -97,6 +97,11 @@ async fn boot() -> Boot {
         json!({}),
         None,
         CardRole::Spec,
+        // #229 PR A — spec cards are kernel-owned in production. The
+        // mcp-handshake test focuses on the MCP surface, not on the
+        // delete guard; minting `false` here also mirrors the prod
+        // wave-create path (`routes/waves.rs`).
+        false,
         &card_role_cache,
     )
     .await

@@ -43,7 +43,23 @@ kind: string, sort: number,
  * `serde-json-impl` feature, but we pin it explicitly so a future
  * feature-flag change can't silently widen / narrow the surface.
  */
-payload: unknown, created_at: number, updated_at: number, };
+payload: unknown, 
+/**
+ * Issue #229 PR A — system-card guard. `true` for user-facing cards
+ * (the default; all pre-#229 rows backfill via the column DEFAULT in
+ * migration 0013). `false` for kernel-owned cards that the user
+ * cannot remove via REST / plugin callbacks — currently spec cards
+ * (retroactively undeletable via the same migration's UPDATE) and
+ * PR B's wave-report cards.
+ *
+ * `#[serde(default = "default_deletable")]` so wire payloads emitted
+ * before #229 landed (event-log replay fixtures, old test seeds)
+ * parse as `true` without forcing a fixture rewrite — matches the
+ * DB DEFAULT (1) in migration 0013. The default-fn lives below
+ * because `bool::default()` would give `false` (the *un*safe
+ * fallback for a deny-by-omission auth bit).
+ */
+deletable: boolean, created_at: number, updated_at: number, };
 
 /**
  * Card identifier. See [`CoveId`] for the opacity contract.
@@ -67,14 +83,21 @@ export type CardId = string;
  *     keeps AI workers from rewriting wave-level metadata.
  *   * [`CardRole::Worker`] (PR5) is a dispatcher-spawned worker card.
  *     Its events are scoped to the card itself and never broaden.
+ *   * [`CardRole::ReportCard`] (#229 PR A) is the wave's auto-generated
+ *     report card. Same kernel-ownership profile as `Spec` — minted by
+ *     the wave-create path (PR B), one per wave (partial unique index
+ *     in migration 0013), undeletable from REST / plugin-callback paths.
+ *     Role-gate-wise it behaves like `Plain`: it only emits `CardUpdated`
+ *     for its own scope; it does **not** emit `WaveUpdated` (only `Spec`
+ *     does — preserving the #136 contract).
  *
  * Persisted as a lowercase string in `cards.role` (migration 0008). The
  * serde + sqlx `rename_all = "lowercase"` keeps the wire / storage shape
  * stable; ts-rs exports the matching TS union (`"plain" | "spec" |
- * "worker"`) into `web/src/api/generated-events.ts` so the frontend can
- * adopt the enum once any UI lands.
+ * "worker" | "reportcard"`) into `web/src/api/generated-events.ts` so the
+ * frontend can adopt the enum once any UI lands.
  */
-export type CardRole = "plain" | "spec" | "worker";
+export type CardRole = "plain" | "spec" | "worker" | "reportcard";
 
 export type Cove = { id: CoveId, name: string, color: string, sort: number, 
 /**

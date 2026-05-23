@@ -238,6 +238,8 @@ describe('EventBridge', () => {
         kind: 'terminal',
         sort: 0,
         payload: { terminal_id: 't_x', schemaVersion: 1 },
+        // #229 PR A — user-deletable terminal card.
+        deletable: true,
         created_at: 1,
         updated_at: 2,
       },

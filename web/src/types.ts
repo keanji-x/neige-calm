@@ -159,8 +159,23 @@ export type WaveCardData =
  * paths constructing a slot in tests don't have to fabricate one.
  */
 export type WaveCardSlot =
-  | { kind: 'card'; card: WaveCardData; sort?: number }
-  | { kind: 'unknown'; id: string; kernelKind: string; sort?: number };
+  | {
+      kind: 'card';
+      card: WaveCardData;
+      sort?: number;
+      /**
+       * Issue #229 PR A — kernel-owned cards (spec today; wave-report in
+       * PR B) carry `deletable: false` on the kernel `Card` row. The
+       * server's `DELETE /api/cards/:id` rejects with 403 in that case;
+       * the UI mirrors the same policy by suppressing the X close
+       * affordance on the card head. Optional so existing tests /
+       * legacy code paths constructing a slot without a kernel reference
+       * default to "user-deletable" (matches the migration's DB
+       * DEFAULT of 1).
+       */
+      deletable?: boolean;
+    }
+  | { kind: 'unknown'; id: string; kernelKind: string; sort?: number; deletable?: boolean };
 
 export interface Wave {
   id: string;

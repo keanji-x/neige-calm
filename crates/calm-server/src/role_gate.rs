@@ -175,6 +175,16 @@ pub fn enforce_role(
             // Plain: no extra restrictions from this arm. Wave-update
             // was already handled in step (2) above.
             Some(CardRole::Plain) => {}
+            // Issue #229 PR A — ReportCard behaves like Plain for the
+            // gate's purposes: it has no scope-broadening authority
+            // beyond its own card. The wave-update branch above
+            // already refuses any AiCodex actor (which is what a
+            // report-card-bound MCP connection would surface as) from
+            // emitting `WaveUpdated`, so we don't need a separate
+            // check here. PR B introduces the actual card kind and
+            // payload; until then this arm only exists to satisfy
+            // exhaustiveness.
+            Some(CardRole::ReportCard) => {}
         }
     }
 
