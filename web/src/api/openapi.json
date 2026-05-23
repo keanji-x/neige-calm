@@ -2672,7 +2672,8 @@
         ],
         "properties": {
           "apiVersion": {
-            "type": "string"
+            "type": "string",
+            "description": "REST contract version. Diagnostic-only on the wire — the frontend\ngates compatibility on `min_web_compat_version` (whole bundle) and\n`sync_event_version` (per-event-frame). See `API_VERSION` for the\nrationale. (Issue #198, concern 3.)"
           },
           "buildSha": {
             "type": [

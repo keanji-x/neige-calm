@@ -888,6 +888,12 @@ export interface components {
          *     up with the rest of the TypeScript-facing surface.
          */
         VersionInfo: {
+            /**
+             * @description REST contract version. Diagnostic-only on the wire — the frontend
+             *     gates compatibility on `min_web_compat_version` (whole bundle) and
+             *     `sync_event_version` (per-event-frame). See `API_VERSION` for the
+             *     rationale. (Issue #198, concern 3.)
+             */
             apiVersion: string;
             buildSha?: string | null;
             /** @description UUID v4 minted once per process boot. See module doc. */
