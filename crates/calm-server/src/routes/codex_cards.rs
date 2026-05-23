@@ -249,6 +249,7 @@ pub(crate) async fn create_codex_card(
     let cwd_for_tx = cwd.clone();
     let env_for_tx = env.clone();
     let prompt_for_tx = prompt.clone();
+    let theme_for_tx = p.theme;
     // Pre-built `EventScope::Card` — `card_id` is pre-minted on this
     // endpoint (see module-level doc), so the scope is fully determined
     // before the txn opens.
@@ -287,6 +288,7 @@ pub(crate) async fn create_codex_card(
                     // obvious at the call site.
                     crate::model::CardRole::Plain,
                     &cache_for_tx,
+                    theme_for_tx,
                 )
                 .await?;
                 Ok((card.clone(), Event::CardAdded(card)))

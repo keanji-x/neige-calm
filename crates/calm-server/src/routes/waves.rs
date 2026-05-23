@@ -242,6 +242,10 @@ pub(crate) async fn create_wave(
                     // $CODEX_HOME/config.toml instead
                     CardRole::Spec, // <— the PR6 binding
                     &cache_for_tx,
+                    // #177 root-cause refactor — theme stamped on the
+                    // terminal row at create time. Read back from the
+                    // row at every spawn (`spawn_daemon_for`).
+                    theme,
                 )
                 .await?;
 

@@ -107,6 +107,7 @@ async fn seed_linked_pair(state: &AppState) -> (String, String) {
             program: "/bin/true".into(),
             cwd: "/tmp".into(),
             env: json!({}),
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();

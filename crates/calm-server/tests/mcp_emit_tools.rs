@@ -91,6 +91,7 @@ async fn boot_with_role(role: CardRole) -> CardBoot {
         None,
         role,
         &card_role_cache,
+        calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
     .expect("mint card");
@@ -106,6 +107,7 @@ async fn boot_with_role(role: CardRole) -> CardBoot {
         None,
         CardRole::Worker,
         &card_role_cache,
+        calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
     .expect("mint sidekick card");

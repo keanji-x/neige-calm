@@ -653,6 +653,14 @@ impl Inner {
                         None,
                         CardRole::Worker,
                         &cache_for_tx,
+                        // #177 — dispatcher-spawned workers have no
+                        // host browser to source theme from; we pick
+                        // dark-by-default per `default_dark()` so the
+                        // worker codex composer's OSC 10/11 probe gets
+                        // a sensible reply. See
+                        // `dispatcher_codex_worker_spawns_with_dark_theme_default`
+                        // for the regression guard.
+                        crate::routes::theme::RequestTheme::default_dark(),
                     )
                     .await?;
 
@@ -937,6 +945,10 @@ impl Inner {
                         env_for_tx,
                         CardRole::Worker,
                         &cache_for_tx,
+                        // #177 — terminal workers don't probe OSC
+                        // themselves; row stays NOT NULL with dark
+                        // defaults for shape consistency.
+                        crate::routes::theme::RequestTheme::default_dark(),
                     )
                     .await?;
 

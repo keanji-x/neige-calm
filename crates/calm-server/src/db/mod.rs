@@ -472,21 +472,13 @@ pub trait RepoOutOfDomain: RepoRead {
     /// (and the WS-side revive path). The orphan-terminal sweeper uses this
     /// as a SIGTERM fallback target when graceful `ClientMsg::Kill` fails.
     async fn terminal_set_pid(&self, id: &str, pid: Option<u32>) -> Result<()>;
-    /// #177 PR2 — persist the host browser's theme RGB so every later
-    /// spawn path (`spawn_daemon_with_parts` initial + the WS auto-revive)
-    /// reads the same source of truth. `fg` / `bg` are pre-rendered
-    /// `"r,g,b"` strings matching the daemon CLI's `--terminal-fg` /
-    /// `--terminal-bg` shape. Pass `None` to clear (e.g. on a theme-update
-    /// frame that arrives without an RGB tuple — currently unreachable
-    /// but kept symmetrical with `terminal_set_pid`).
-    ///
-    /// Called from two places: `spawn_daemon_with_parts` right after a
-    /// successful spawn that carried `SpawnDaemonOpts.terminal_fg/bg`
-    /// (so the row remembers what was used), and the WS handler when it
-    /// observes `ClientMsg::TerminalThemeUpdate` mid-session (so a later
-    /// respawn picks up the LATEST theme, not the original card-create
-    /// snapshot).
-    async fn terminal_set_theme(&self, id: &str, fg: Option<&str>, bg: Option<&str>) -> Result<()>;
+    // `terminal_set_theme` was removed in the #177 root-cause refactor —
+    // theme is now a NOT NULL row-creation invariant written by
+    // `terminal_create_tx`. The previous post-spawn UPDATE pattern was
+    // the seam the racing spawn paths exploited. Mid-session theme
+    // toggles still ship to the daemon via the WS frame (see
+    // `ws::terminal::pump`'s relay branch) and the live daemon
+    // synthesizes the OSC reply; they no longer write back to the row.
     /// Remove a terminal row by id. Surfaced on the trait so the sweeper
     /// can call it from inside its `write_with_event` closure via the
     /// `_tx`-suffixed helper.

@@ -239,6 +239,9 @@ async fn make_terminal(repo: &SqlxRepo, card_id: &str) -> Terminal {
         program: "bash".into(),
         cwd: "/tmp".into(),
         env: json!({}),
+        // #177 — theme is a row-creation invariant; tests that don't
+        // care which RGB lands use the dark default.
+        theme: calm_server::routes::theme::RequestTheme::default_dark(),
     })
     .await
     .expect("create terminal")
@@ -569,6 +572,7 @@ async fn terminal_create_rejects_duplicate_card_id() {
             program: "bash".into(),
             cwd: "/tmp".into(),
             env: json!({"FOO": "bar"}),
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
@@ -580,6 +584,7 @@ async fn terminal_create_rejects_duplicate_card_id() {
             program: "zsh".into(),
             cwd: "/tmp".into(),
             env: json!({}),
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap_err();
@@ -613,15 +618,12 @@ async fn terminal_create_rejects_duplicate_card_id() {
     assert!(repo.terminal_get(&t.id).await.unwrap().is_none());
 }
 
-/// #177 PR2 — migration 0010 added `theme_fg` / `theme_bg` to the
-/// `terminals` table as nullable TEXT. Sanity: a fresh terminal row
-/// reads back with both NULL (no theme stamped), `terminal_set_theme`
-/// upserts them, and `terminal_get` round-trips the strings unchanged.
-///
-/// This is the load-bearing column-presence + roundtrip guard. If the
-/// migration ever gets renumbered or the columns dropped from the
-/// SELECT lists in `sqlite.rs`, the assertion below trips before any
-/// of the higher-level spawn / WS-respawn tests would.
+/// #177 root-cause refactor — theme is a NOT NULL row-creation
+/// invariant since migration 0013. Sanity check that the columns are
+/// written from `NewTerminal.theme` at create time and round-trip
+/// through `terminal_get`. There is no `terminal_set_theme` UPDATE
+/// path anymore — the previous nullable column shape and the
+/// post-spawn UPDATE were the seam the racing spawn paths exploited.
 #[tokio::test]
 async fn terminal_theme_columns_roundtrip() {
     let repo = fresh_repo().await;
@@ -629,54 +631,30 @@ async fn terminal_theme_columns_roundtrip() {
     let w = make_wave(&repo, c.id.as_str(), "W").await;
     let card = make_card(&repo, w.id.as_str(), "terminal").await;
 
+    // Custom RGB (not the dark default) so a future regression that
+    // ignored `NewTerminal.theme` would show up as a value mismatch
+    // rather than just "looks default".
+    let custom = calm_server::routes::theme::RequestTheme {
+        fg: (12, 34, 56),
+        bg: (78, 90, 123),
+    };
     let t = repo
         .terminal_create(NewTerminal {
             card_id: card.id.clone(),
             program: "bash".into(),
             cwd: "/tmp".into(),
             env: json!({}),
+            theme: custom,
         })
         .await
         .unwrap();
 
-    // Fresh row: theme columns must default to NULL — the migration
-    // intentionally doesn't backfill ("we don't know what theme this
-    // pre-#177 row was meant for; stay silent on OSC").
-    assert!(
-        t.theme_fg.is_none() && t.theme_bg.is_none(),
-        "fresh row must have NULL theme cols; got fg={:?}, bg={:?}",
-        t.theme_fg,
-        t.theme_bg
-    );
-
-    // Upsert both colors.
-    repo.terminal_set_theme(&t.id, Some("216,219,226"), Some("15,20,24"))
-        .await
-        .unwrap();
+    // Theme is stamped on the returned struct AND on the row.
+    assert_eq!(t.theme_fg, "12,34,56");
+    assert_eq!(t.theme_bg, "78,90,123");
     let got = repo.terminal_get(&t.id).await.unwrap().unwrap();
-    assert_eq!(got.theme_fg.as_deref(), Some("216,219,226"));
-    assert_eq!(got.theme_bg.as_deref(), Some("15,20,24"));
-
-    // Update to a different (light-mode) theme — second `UPDATE` path.
-    repo.terminal_set_theme(&t.id, Some("0,0,0"), Some("255,255,255"))
-        .await
-        .unwrap();
-    let got = repo.terminal_get(&t.id).await.unwrap().unwrap();
-    assert_eq!(got.theme_fg.as_deref(), Some("0,0,0"));
-    assert_eq!(got.theme_bg.as_deref(), Some("255,255,255"));
-
-    // Clear both — pass `None` to drop back to NULL.
-    repo.terminal_set_theme(&t.id, None, None).await.unwrap();
-    let got = repo.terminal_get(&t.id).await.unwrap().unwrap();
-    assert!(got.theme_fg.is_none() && got.theme_bg.is_none());
-
-    // Unknown id → NotFound (mirrors `terminal_set_handle` /
-    // `terminal_set_pid` semantics).
-    let err = repo
-        .terminal_set_theme("no-such-terminal", Some("1,2,3"), Some("4,5,6"))
-        .await
-        .unwrap_err();
-    assert!(matches!(err, CalmError::NotFound(_)));
+    assert_eq!(got.theme_fg, "12,34,56");
+    assert_eq!(got.theme_bg, "78,90,123");
 }
 
 // ------------------------------------------- atomic terminal-card helpers ----
@@ -703,6 +681,7 @@ async fn card_with_terminal_create_tx_atomic_writes_card_terminal_and_payload_li
         json!({"FOO": "bar"}),
         calm_server::model::CardRole::Plain,
         &calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
     .expect("atomic create");
@@ -750,6 +729,7 @@ async fn card_with_terminal_create_tx_rolls_back_on_invalid_wave() {
         json!({}),
         calm_server::model::CardRole::Plain,
         &calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
     .expect_err("unknown wave must error");
@@ -790,6 +770,7 @@ async fn card_with_terminal_create_tx_uses_caller_supplied_sort() {
         json!({}),
         calm_server::model::CardRole::Plain,
         &calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
     .unwrap();
@@ -822,6 +803,7 @@ async fn card_with_terminal_create_tx_defaults_sort_when_none() {
         json!({}),
         calm_server::model::CardRole::Plain,
         &calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
     .unwrap();
@@ -846,6 +828,7 @@ async fn terminal_create_tx_enforces_unique_card_id() {
             program: "zsh".into(),
             cwd: "/tmp".into(),
             env: json!({}),
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         },
     )
     .await
@@ -867,6 +850,7 @@ async fn terminal_create_tx_rejects_unknown_card_id() {
             program: "bash".into(),
             cwd: "/tmp".into(),
             env: json!({}),
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         },
     )
     .await
@@ -906,6 +890,7 @@ async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_payload_link(
         None,
         calm_server::model::CardRole::Plain,
         &calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
     .expect("atomic codex create");
@@ -959,6 +944,7 @@ async fn card_with_codex_create_tx_rolls_back_on_invalid_wave() {
         None,
         calm_server::model::CardRole::Plain,
         &calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
     .expect_err("unknown wave must error");
@@ -998,6 +984,7 @@ async fn card_with_codex_create_tx_uses_caller_supplied_sort() {
         None,
         calm_server::model::CardRole::Plain,
         &calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
     .unwrap();

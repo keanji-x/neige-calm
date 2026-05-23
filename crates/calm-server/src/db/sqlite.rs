@@ -732,23 +732,30 @@ pub async fn terminal_create_tx(
     let now = now_ms();
     let id = new_id();
     let env_text = serde_json::to_string(&p.env)?;
-    // theme_fg / theme_bg start NULL on insert (#177 PR2): they get
-    // populated post-spawn from `SpawnDaemonOpts` via
-    // `terminal_set_theme`. Carrying them on the insert would force
-    // every test fixture and `NewTerminal` caller to know about the
-    // host theme; keeping them write-after-spawn matches how `pid`
-    // and `daemon_handle` are wired.
+    // #177 root-cause refactor — theme is a row-creation invariant
+    // (NOT NULL since migration 0013). We render `RequestTheme` to its
+    // daemon-CLI form here, write both columns inside the same tx as
+    // the row, and read them back into the returned struct so the
+    // post-create spawn helper (`spawn_daemon_for`) sees a fully
+    // populated theme on the row by construction. No
+    // `terminal_set_theme` write-after-spawn — the previous
+    // "post-spawn UPDATE catches up" pattern was the seam the racing
+    // spawn paths exploited.
+    let theme_fg = p.theme.fg_arg();
+    let theme_bg = p.theme.bg_arg();
     sqlx::query(
         r#"INSERT INTO terminals
                (id, card_id, program, cwd, env, daemon_handle, pid,
                 theme_fg, theme_bg, created_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, NULL, NULL, ?6)"#,
+           VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6, ?7, ?8)"#,
     )
     .bind(&id)
     .bind(&p.card_id)
     .bind(&p.program)
     .bind(&p.cwd)
     .bind(&env_text)
+    .bind(&theme_fg)
+    .bind(&theme_bg)
     .bind(now)
     .execute(&mut **tx)
     .await?;
@@ -760,8 +767,8 @@ pub async fn terminal_create_tx(
         env: p.env,
         daemon_handle: None,
         pid: None,
-        theme_fg: None,
-        theme_bg: None,
+        theme_fg,
+        theme_bg,
         created_at: now,
     })
 }
@@ -788,6 +795,16 @@ pub async fn card_with_terminal_create_tx(
     env: serde_json::Value,
     role: CardRole,
     card_role_cache: &CardRoleCache,
+    // #177 — theme is a row-creation invariant; the helper threads it
+    // straight into `terminal_create_tx`. Terminal cards don't paint
+    // against an OSC 10/11 probe themselves (bash/zsh ignore the
+    // `--terminal-fg/-bg` daemon flags), but we still require a value
+    // here so the row's NOT NULL columns are satisfied and any future
+    // command that *does* probe (e.g. a codex bin promoted into a
+    // terminal card) sees consistent colors. User-facing callers pass
+    // `RequestTheme::default_dark()` since there is no host-theme
+    // signal on the terminal-card POST body.
+    theme: crate::routes::theme::RequestTheme,
 ) -> Result<(Card, Terminal)> {
     // 1. Card row with placeholder payload — the terminal_id and schemaVersion
     //    are stamped in step 5 once we have the terminal row.
@@ -824,6 +841,7 @@ pub async fn card_with_terminal_create_tx(
             program,
             cwd,
             env,
+            theme,
         },
     )
     .await?;
@@ -895,6 +913,13 @@ pub async fn card_with_codex_create_tx(
     prompt: Option<String>,
     role: CardRole,
     card_role_cache: &CardRoleCache,
+    // #177 — required theme threaded into the row at create time.
+    // User-facing wave-create + codex-card-create routes pass the
+    // value from `NewWave.theme` / `NewCodexCardBody.theme` (which
+    // 422 a missing field); the dispatcher passes
+    // `RequestTheme::default_dark()` because dispatcher-spawned
+    // workers have no host browser to forward.
+    theme: crate::routes::theme::RequestTheme,
 ) -> Result<(Card, Terminal, Option<String>)> {
     // 1. Card row with placeholder payload — the terminal_id, cwd, and
     //    schemaVersion fields are stamped in step 5 once we have the
@@ -931,6 +956,7 @@ pub async fn card_with_codex_create_tx(
             program: "codex".into(),
             cwd: cwd.clone(),
             env,
+            theme,
         },
     )
     .await?;
@@ -1550,19 +1576,26 @@ impl RepoOutOfDomain for SqlxRepo {
         let now = now_ms();
         let id = new_id();
         let env_text = serde_json::to_string(&p.env)?;
-        // theme_fg/bg follow the same write-after-spawn shape as the tx
-        // helper above; see `terminal_create_tx` for the rationale.
+        // #177 root-cause refactor: theme is mandatory at create time.
+        // Same write-once semantics as `terminal_create_tx`; the route
+        // helpers prefer the tx variant, but this pool-direct surface
+        // stays for tests / scripted callers that don't compose with
+        // an event write.
+        let theme_fg = p.theme.fg_arg();
+        let theme_bg = p.theme.bg_arg();
         sqlx::query(
             r#"INSERT INTO terminals
                    (id, card_id, program, cwd, env, daemon_handle, pid,
                     theme_fg, theme_bg, created_at)
-               VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, NULL, NULL, ?6)"#,
+               VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6, ?7, ?8)"#,
         )
         .bind(&id)
         .bind(&p.card_id)
         .bind(&p.program)
         .bind(&p.cwd)
         .bind(&env_text)
+        .bind(&theme_fg)
+        .bind(&theme_bg)
         .bind(now)
         .execute(&self.pool)
         .await?;
@@ -1574,8 +1607,8 @@ impl RepoOutOfDomain for SqlxRepo {
             env: p.env,
             daemon_handle: None,
             pid: None,
-            theme_fg: None,
-            theme_bg: None,
+            theme_fg,
+            theme_bg,
             created_at: now,
         })
     }
@@ -1597,22 +1630,6 @@ impl RepoOutOfDomain for SqlxRepo {
         let pid_i64: Option<i64> = pid.map(|p| p as i64);
         let res = sqlx::query("UPDATE terminals SET pid = ?1 WHERE id = ?2")
             .bind(pid_i64)
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-        if res.rows_affected() == 0 {
-            return Err(CalmError::NotFound(format!("terminal {id}")));
-        }
-        Ok(())
-    }
-
-    async fn terminal_set_theme(&self, id: &str, fg: Option<&str>, bg: Option<&str>) -> Result<()> {
-        // #177 PR2 — fg / bg are independent because future paths
-        // might want to clear just one (e.g. partial theme bring-up
-        // / down). Today every caller writes both at once.
-        let res = sqlx::query("UPDATE terminals SET theme_fg = ?1, theme_bg = ?2 WHERE id = ?3")
-            .bind(fg)
-            .bind(bg)
             .bind(id)
             .execute(&self.pool)
             .await?;

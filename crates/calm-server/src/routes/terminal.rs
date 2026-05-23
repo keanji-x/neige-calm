@@ -139,64 +139,27 @@ pub(crate) async fn spawn_daemon_with_parts(
     }
     let sock_str = sock.to_string_lossy().to_string();
 
-    // #177 PR2 — priority for daemon argv theme args:
-    //   1. `opts.terminal_fg/bg` (caller-supplied; the codex-card POST,
-    //      wave-create spec-card spawn, and dispatcher worker all pass
-    //      `Some(...)` here when the host browser sent a theme).
-    //   2. `term.theme_fg/bg` (persisted on the row from a prior spawn
-    //      or a mid-session `TerminalThemeUpdate`).
-    //   3. None — daemon stays silent on OSC 10/11, codex falls back to
-    //      its built-in default (matches pre-#177 behaviour).
-    //
-    // The fallback is what closes the WS auto-revive race: that path
-    // passes `SpawnDaemonOpts::default()` so without (2) it would
-    // re-spawn without theme args. With (2), the revive spawn reads
-    // the same theme the initial spawn wrote — both candidate processes
-    // in a socket race carry identical argv, so it no longer matters
-    // which one wins.
-    let chosen_fg = opts
-        .terminal_fg
-        .as_deref()
-        .or(term.theme_fg.as_deref())
-        .map(str::to_owned);
-    let chosen_bg = opts
-        .terminal_bg
-        .as_deref()
-        .or(term.theme_bg.as_deref())
-        .map(str::to_owned);
-
-    // #177 diagnostic — log the three theme inputs + chosen output
-    // right before they become daemon argv. Layered with the upstream
-    // logs in `wave_create` / `create_codex_card` / `seed_and_spawn_spec_daemon`,
-    // this row pinpoints the exact layer that dropped the theme:
-    //   - `opts.terminal_fg = None` + `term.theme_fg = None` ⇒ caller
-    //     never passed it (browser, route, or spawn helper layer).
-    //   - `opts.terminal_fg = Some(..)` but `chosen = None` ⇒ a future
-    //     refactor broke the priority logic in this function.
-    //   - `chosen = Some(..)` but the daemon never echoes correct OSC
-    //     11 ⇒ the bug is downstream in `calm-session-daemon` /
-    //     `RenderPlane::with_colors`.
-    tracing::info!(
-        terminal_id = %term.id,
-        opts_terminal_fg = ?opts.terminal_fg,
-        opts_terminal_bg = ?opts.terminal_bg,
-        term_theme_fg = ?term.theme_fg,
-        term_theme_bg = ?term.theme_bg,
-        chosen_fg = ?chosen_fg,
-        chosen_bg = ?chosen_bg,
-        "spawn_daemon_with_parts: theme arg derivation",
-    );
+    // #177 root-cause refactor — theme is now a row-creation invariant
+    // (NOT NULL since migration 0013). The previous "opts override row,
+    // else row, else None" priority chain is collapsed to "always row":
+    // every spawn path (initial codex-card, wave-create spec card,
+    // dispatcher worker, WS auto-revive) reads the same source of truth
+    // and renders identical argv by construction. `opts` is still
+    // accepted for the SpawnDaemonOpts shape but its `terminal_fg/bg`
+    // fields are ignored — commit 2 of the refactor nukes the struct
+    // entirely.
+    let chosen_fg = term.theme_fg.clone();
+    let chosen_bg = term.theme_bg.clone();
+    // `opts` is retained as an unused argument until commit 2 of the
+    // refactor drops the parameter. Silence the linter for now.
+    let _ = &opts;
 
     let mut cmd = tokio::process::Command::new(&daemon.session_daemon_bin);
     cmd.args(["--id", &term.id])
         .args(["--sock", &sock_str])
-        .args(["--cwd", cwd]);
-    if let Some(fg) = chosen_fg.as_deref() {
-        cmd.args(["--terminal-fg", fg]);
-    }
-    if let Some(bg) = chosen_bg.as_deref() {
-        cmd.args(["--terminal-bg", bg]);
-    }
+        .args(["--cwd", cwd])
+        .args(["--terminal-fg", &chosen_fg])
+        .args(["--terminal-bg", &chosen_bg]);
     cmd.arg("--").args(["/bin/sh", "-c", program]);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
@@ -251,33 +214,13 @@ pub(crate) async fn spawn_daemon_with_parts(
     }
     repo.terminal_set_handle(&term.id, Some(&sock_str)).await?;
 
-    // #177 PR2 — remember the theme we actually launched with, so a
-    // later spawn for this same terminal (the WS auto-revive when the
-    // daemon dies, or a code path that passes
-    // `SpawnDaemonOpts::default()`) reads `term.theme_fg/bg` and
-    // re-derives identical argv via the priority logic above. Only
-    // write when we have at least one non-NULL component AND it
-    // differs from what's already on the row — avoids spurious
-    // UPDATEs when the revive path re-stamps the same values
-    // it just read.
-    if (chosen_fg.is_some() || chosen_bg.is_some())
-        && (chosen_fg.as_deref() != term.theme_fg.as_deref()
-            || chosen_bg.as_deref() != term.theme_bg.as_deref())
-    {
-        if let Err(e) = repo
-            .terminal_set_theme(&term.id, chosen_fg.as_deref(), chosen_bg.as_deref())
-            .await
-        {
-            // Best-effort: the daemon is already up and themed. A failed
-            // persist just means the NEXT auto-revive may launch without
-            // theme — which is the pre-#177-PR2 status quo, not a regression.
-            tracing::warn!(
-                terminal_id = %term.id,
-                error = %e,
-                "failed to persist terminal theme; next respawn may launch without theme"
-            );
-        }
-    }
+    // #177 root-cause refactor — theme is a row-creation invariant
+    // (NOT NULL since migration 0013), written once by
+    // `terminal_create_tx`. The previous post-spawn
+    // `terminal_set_theme` UPDATE was the write-after-spawn seam the
+    // racing spawn paths exploited (caller forgets opts ⇒ silently
+    // un-themed daemon). No persist step here anymore — the row was
+    // written with theme atomically with its parent card.
 
     Ok(())
 }
@@ -409,6 +352,7 @@ mod tests {
                 program: "codex".into(),
                 cwd: "/".into(),
                 env: serde_json::json!({}),
+                theme: crate::routes::theme::RequestTheme::default_dark(),
             })
             .await
             .unwrap();
@@ -421,85 +365,40 @@ mod tests {
         (repo, daemon, tmp, term.id)
     }
 
-    /// The real regression guard: an initial spawn with theme opts
-    /// persists onto the row, and a subsequent spawn with
-    /// `SpawnDaemonOpts::default()` (the WS auto-revive shape) still
-    /// produces argv with the same `--terminal-fg` / `--terminal-bg`
-    /// flags because the helper reads them from the row.
-    ///
-    /// Pre-#177 PR2 the auto-revive shim used `spawn_daemon_for`, which
-    /// dropped the theme. PR #193 had to fix both spawn paths to thread
-    /// theme through `SpawnDaemonOpts`; this test pins the persistence-
-    /// based fix that closes the WS race observed in production
-    /// (two daemons racing the socket: codex_cards-path themed, ws::
-    /// terminal-path un-themed).
+    /// #177 root-cause refactor — every spawn (initial, dispatcher,
+    /// WS revive in commit 3) reads theme from the terminal row, which
+    /// is NOT NULL by migration 0013. This test pins that single read
+    /// path: a row created with one theme produces daemon argv with
+    /// matching `--terminal-fg` / `--terminal-bg` flags. The pre-
+    /// refactor tests (`auto_revive_respawn_reads_theme_from_row`,
+    /// `auto_revive_respawn_without_persisted_theme_omits_flags`) were
+    /// deleted along with the `SpawnDaemonOpts` opts-override path
+    /// they exercised.
     #[tokio::test]
-    async fn auto_revive_respawn_reads_theme_from_row() {
+    async fn spawn_reads_theme_from_row() {
         let (repo, daemon, _tmp, term_id) = boot().await;
 
-        // First spawn: initial path — caller supplies theme via opts.
-        let term0 = repo.terminal_get(&term_id).await.unwrap().expect("row 0");
+        let term = repo.terminal_get(&term_id).await.unwrap().expect("row");
+        // The boot helper minted the row with `default_dark()` — assert
+        // the canonical RGB lands on argv.
+        assert_eq!(term.theme_fg, "216,219,226");
+        assert_eq!(term.theme_bg, "15,20,24");
+
         spawn_daemon_with_parts(
             daemon.as_ref(),
             repo.as_ref(),
-            &term0,
-            "codex",
-            "/",
-            &serde_json::json!({}),
-            SpawnDaemonOpts {
-                terminal_fg: Some("216,219,226".into()),
-                terminal_bg: Some("15,20,24".into()),
-            },
-        )
-        .await
-        .expect("initial spawn must succeed");
-
-        // Recorder writes the sock path that was used; argv file lives
-        // at `<sock>.argv`. The DaemonClient.sock_path renders
-        // `<data_dir>/<term_id>.sock`.
-        let sock_path = daemon.sock_path(&term_id);
-        let argv_first = read_argv_lines(&sock_path.to_string_lossy());
-        assert!(
-            argv_first.iter().any(|a| a == "--terminal-fg"),
-            "initial spawn must carry --terminal-fg; got: {argv_first:?}"
-        );
-
-        // Row must now carry the persisted theme.
-        let term_after = repo
-            .terminal_get(&term_id)
-            .await
-            .unwrap()
-            .expect("row after first spawn");
-        assert_eq!(term_after.theme_fg.as_deref(), Some("216,219,226"));
-        assert_eq!(term_after.theme_bg.as_deref(), Some("15,20,24"));
-
-        // Simulate the "daemon died" precondition the WS auto-revive
-        // path runs into: the socket file is stale / gone. Cleaning
-        // it up is what `spawn_daemon_with_parts` already does at
-        // entry (it `remove_file`s a stale sock), but we also nuke the
-        // argv sidecar so the second spawn's file is a fresh write.
-        let _ = std::fs::remove_file(&sock_path);
-        let _ = std::fs::remove_file(format!("{}.argv", sock_path.to_string_lossy()));
-
-        // Second spawn: auto-revive shape — caller passes default
-        // opts. The fix-under-test is that the helper falls back to
-        // `term.theme_fg/bg` (now non-NULL after the first spawn) and
-        // still stamps the flags.
-        let term1 = repo.terminal_get(&term_id).await.unwrap().expect("row 1");
-        spawn_daemon_with_parts(
-            daemon.as_ref(),
-            repo.as_ref(),
-            &term1,
+            &term,
             "codex",
             "/",
             &serde_json::json!({}),
             SpawnDaemonOpts::default(),
         )
         .await
-        .expect("auto-revive spawn must succeed");
+        .expect("spawn must succeed");
 
-        let argv_second = read_argv_lines(&sock_path.to_string_lossy());
-        let pairs: Vec<(String, String)> = argv_second
+        let sock_path = daemon.sock_path(&term_id);
+        let argv = read_argv_lines(&sock_path.to_string_lossy());
+        let pairs: Vec<(String, String)> = argv
             .windows(2)
             .map(|w| (w[0].clone(), w[1].clone()))
             .collect();
@@ -507,59 +406,13 @@ mod tests {
             pairs
                 .iter()
                 .any(|(k, v)| k == "--terminal-fg" && v == "216,219,226"),
-            "auto-revive spawn must still carry --terminal-fg 216,219,226 \
-             (read from row); got: {argv_second:?}"
+            "spawn must carry --terminal-fg from row; got: {argv:?}"
         );
         assert!(
             pairs
                 .iter()
                 .any(|(k, v)| k == "--terminal-bg" && v == "15,20,24"),
-            "auto-revive spawn must still carry --terminal-bg 15,20,24 \
-             (read from row); got: {argv_second:?}"
+            "spawn must carry --terminal-bg from row; got: {argv:?}"
         );
-    }
-
-    /// Companion to `auto_revive_respawn_reads_theme_from_row`: when
-    /// the row has NULL `theme_fg/bg` (terminal-card path, pre-#177
-    /// row, scripted caller) AND the opts are default, the spawn
-    /// MUST NOT stamp any theme flag. Regression guard so a future
-    /// refactor doesn't hard-code a fallback default and accidentally
-    /// theme every terminal.
-    #[tokio::test]
-    async fn auto_revive_respawn_without_persisted_theme_omits_flags() {
-        let (repo, daemon, _tmp, term_id) = boot().await;
-        let term0 = repo.terminal_get(&term_id).await.unwrap().expect("row 0");
-        assert!(
-            term0.theme_fg.is_none() && term0.theme_bg.is_none(),
-            "precondition: fresh row carries no theme"
-        );
-        spawn_daemon_with_parts(
-            daemon.as_ref(),
-            repo.as_ref(),
-            &term0,
-            "codex",
-            "/",
-            &serde_json::json!({}),
-            SpawnDaemonOpts::default(),
-        )
-        .await
-        .expect("spawn must succeed without theme");
-
-        let sock_path = daemon.sock_path(&term_id);
-        let argv = read_argv_lines(&sock_path.to_string_lossy());
-        assert!(
-            !argv.iter().any(|a| a == "--terminal-fg"),
-            "no --terminal-fg must appear when both opts + row are NULL; got: {argv:?}"
-        );
-        assert!(
-            !argv.iter().any(|a| a == "--terminal-bg"),
-            "no --terminal-bg must appear when both opts + row are NULL; got: {argv:?}"
-        );
-
-        // Row must still be NULL after the no-theme spawn — the
-        // persistence step only fires when there's something to
-        // persist.
-        let term_after = repo.terminal_get(&term_id).await.unwrap().unwrap();
-        assert!(term_after.theme_fg.is_none() && term_after.theme_bg.is_none());
     }
 }

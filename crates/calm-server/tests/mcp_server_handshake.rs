@@ -99,6 +99,7 @@ async fn boot() -> Boot {
         None,
         CardRole::Spec,
         &card_role_cache,
+        calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
     .expect("mint spec card");

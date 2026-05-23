@@ -202,11 +202,12 @@ async fn wave_create_with_theme_stamps_terminal_fg_bg_args() {
         "daemon argv must contain `--terminal-bg 15,20,24`; got: {argv:?}"
     );
 
-    // #177 PR2 — the spawn should have ALSO persisted the theme onto
-    // the terminal row so the WS auto-revive path picks it up. Locate
-    // the spec card's terminal via the cove → wave → card chain. The
-    // `--sock <path>` arg the recorder logged maps 1:1 to a terminal
-    // id (`<data_dir>/<id>.sock`), so we extract the id from there.
+    // #177 root-cause refactor — theme is written onto the terminal
+    // row inside the create transaction (NOT NULL via migration 0013),
+    // *before* the daemon spawn fires. By the time the recorder's argv
+    // sidecar exists, the row is guaranteed to carry the theme cols.
+    // We extract the terminal id from the `--sock <path>` arg the
+    // recorder logged (`<data_dir>/<id>.sock`).
     let mut sock_arg: Option<String> = None;
     let mut it = argv.iter().peekable();
     while let Some(a) = it.next() {
@@ -223,38 +224,18 @@ async fn wave_create_with_theme_stamps_terminal_fg_bg_args() {
         .and_then(|s| s.to_str())
         .map(String::from)
         .expect("derive terminal id from sock path");
-    // #177 PR2 persistence happens AFTER the daemon socket binds —
-    // since the recorder writes the argv sidecar BEFORE binding, the
-    // file appearing doesn't mean the kernel's `terminal_set_theme`
-    // call has landed yet. Poll briefly for the row's theme cols to
-    // flip non-NULL.
-    let start = Instant::now();
-    let term = loop {
-        let row = boot
-            .repo
-            .terminal_get(&terminal_id)
-            .await
-            .expect("read terminal row")
-            .expect("terminal row must exist");
-        if row.theme_fg.is_some() && row.theme_bg.is_some() {
-            break row;
-        }
-        if start.elapsed() > Duration::from_secs(5) {
-            panic!(
-                "spec-card terminal theme cols stayed NULL; fg={:?}, bg={:?}",
-                row.theme_fg, row.theme_bg
-            );
-        }
-        tokio::time::sleep(Duration::from_millis(40)).await;
-    };
+    let term = boot
+        .repo
+        .terminal_get(&terminal_id)
+        .await
+        .expect("read terminal row")
+        .expect("terminal row must exist");
     assert_eq!(
-        term.theme_fg.as_deref(),
-        Some("216,219,226"),
+        term.theme_fg, "216,219,226",
         "spec-card terminal row must remember its host theme fg"
     );
     assert_eq!(
-        term.theme_bg.as_deref(),
-        Some("15,20,24"),
+        term.theme_bg, "15,20,24",
         "spec-card terminal row must remember its host theme bg"
     );
 }

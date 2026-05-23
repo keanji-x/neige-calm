@@ -195,6 +195,7 @@ async fn card_delete_reaps_daemon_and_unlinks_socket() {
             program: "/bin/true".into(),
             cwd: "/tmp".into(),
             env: json!({}),
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
@@ -312,6 +313,7 @@ async fn wave_delete_reaps_every_terminal_under_wave() {
             program: "/bin/true".into(),
             cwd: "/tmp".into(),
             env: json!({}),
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
@@ -322,6 +324,7 @@ async fn wave_delete_reaps_every_terminal_under_wave() {
             program: "/bin/true".into(),
             cwd: "/tmp".into(),
             env: json!({}),
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();
@@ -453,6 +456,7 @@ async fn cove_delete_reaps_every_terminal_under_cove() {
             program: "/bin/true".into(),
             cwd: "/tmp".into(),
             env: json!({}),
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .unwrap();

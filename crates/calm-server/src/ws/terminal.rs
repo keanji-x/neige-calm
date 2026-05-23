@@ -341,51 +341,31 @@ pub async fn pump<T: DaemonTransport>(
                     // PTY as an Observer. See
                     // `crates/calm-session/src/lib.rs` `ClientCapabilities`
                     // doc for the full trust model.
-                    // #177 PR2 — persist mid-session theme toggles so the
-                    // next auto-revive picks up the LATEST theme rather
-                    // than the original card-create snapshot. The daemon
-                    // still receives the frame and synthesizes the OSC
-                    // reply / focus-in cycle as before (`TerminalSession`
-                    // owns that effect); this side-effect is purely about
-                    // keeping the persisted row in sync.
-                    //
-                    // Best-effort: a failed persist is downgraded to warn-
-                    // log and the daemon still gets the frame. Worst case
-                    // a future respawn launches with the previous theme —
-                    // the same status quo as before this PR.
+                    // #177 root-cause refactor — mid-session theme
+                    // toggles still ship through to the live daemon via
+                    // `write_frame` below; the daemon's
+                    // `TerminalSession` owns the OSC reply / focus-in
+                    // cycle and answers the next OSC probe with the
+                    // updated RGB. We no longer persist the toggle to
+                    // the `terminals` row: the row's `theme_fg/bg` are
+                    // a row-creation invariant (NOT NULL via migration
+                    // 0013) and reflect what the daemon was originally
+                    // spawned with. A future respawn that reads from
+                    // the row uses the create-time theme. If the user
+                    // toggled mid-session and the daemon dies, the
+                    // next respawn launches with the OLD theme and the
+                    // user re-toggles — acceptable cost for removing
+                    // the racing-write path. `repo_for_theme_up` stays
+                    // wired for backward compat with the existing pump
+                    // signature; commit 3 of the refactor drops it.
                     if let ClientMsg::TerminalThemeUpdate { fg, bg } = &parsed {
                         tracing::info!(
                             terminal_id = %terminal_id_up,
                             fg = ?fg, bg = ?bg,
-                            has_repo = repo_for_theme_up.is_some(),
-                            "WS frame TerminalThemeUpdate — persisting + relaying to daemon"
+                            "WS frame TerminalThemeUpdate — relaying to daemon"
                         );
                     }
-                    if let ClientMsg::TerminalThemeUpdate { fg, bg } = parsed
-                        && let Some(repo) = repo_for_theme_up.as_ref()
-                    {
-                        let fg_arg = format!("{},{},{}", fg.0, fg.1, fg.2);
-                        let bg_arg = format!("{},{},{}", bg.0, bg.1, bg.2);
-                        let repo = repo.clone();
-                        let tid = terminal_id_up.clone();
-                        // Fire-and-forget: we don't want the WS up-arm
-                        // stalling on a DB write. The frame still ships
-                        // immediately to the daemon via the `write_frame`
-                        // below.
-                        tokio::spawn(async move {
-                            if let Err(e) = repo
-                                .terminal_set_theme(&tid, Some(&fg_arg), Some(&bg_arg))
-                                .await
-                            {
-                                tracing::warn!(
-                                    terminal_id = %tid,
-                                    error = %e,
-                                    "failed to persist mid-session terminal theme; \
-                                     next respawn may use stale theme"
-                                );
-                            }
-                        });
-                    }
+                    let _ = &repo_for_theme_up; // retained until commit 3
                     if let ClientMsg::ClientHello {
                         ref mut capabilities,
                         ref mut terminal_id,
@@ -1316,22 +1296,19 @@ mod pump_tests {
         );
     }
 
-    /// #177 PR2 — the up arm must intercept `ClientMsg::TerminalThemeUpdate`
-    /// and persist the new RGB onto the `terminals` row, so a subsequent
-    /// auto-revive picks up the LATEST theme rather than the original
-    /// card-create snapshot. The daemon STILL receives the frame
-    /// (verified by reading off `daemon_side`), and the side-effect
-    /// runs in a `tokio::spawn` so we poll the repo briefly to give the
-    /// async write a chance to land.
+    /// #177 root-cause refactor — the up arm still relays
+    /// `ClientMsg::TerminalThemeUpdate` to the live daemon, but no
+    /// longer persists it to the row. The row's theme is a creation
+    /// invariant (NOT NULL); mid-session toggles are ephemeral to
+    /// the current daemon, and a future respawn re-reads the create-
+    /// time theme. This test pins the relay-only contract: the
+    /// daemon side observes the frame, the row stays unchanged.
     #[tokio::test]
-    async fn terminal_theme_update_persists_to_row() {
+    async fn terminal_theme_update_relays_to_daemon_without_persisting() {
         use crate::db::prelude::*;
         use crate::db::sqlite::SqlxRepo;
         use crate::model::{NewCard, NewCove, NewTerminal, NewWave};
 
-        // Seed a real repo with a terminal row whose theme starts at
-        // "theme A" — we'll send a TerminalThemeUpdate for "theme B"
-        // and assert the row flips.
         let repo: Arc<SqlxRepo> = Arc::new(
             SqlxRepo::open("sqlite::memory:")
                 .await
@@ -1369,17 +1346,15 @@ mod pump_tests {
                 program: "codex".into(),
                 cwd: "/".into(),
                 env: serde_json::json!({}),
+                theme: crate::routes::theme::RequestTheme::default_dark(),
             })
             .await
             .unwrap();
-        // Theme A — the "original card-create snapshot" the spec
-        // demands the respawn NOT use after a mid-session toggle.
-        repo.terminal_set_theme(&term.id, Some("216,219,226"), Some("15,20,24"))
-            .await
-            .unwrap();
+        // Snapshot the create-time theme — it MUST not move when
+        // a mid-session toggle ships.
+        let original_fg = term.theme_fg.clone();
+        let original_bg = term.theme_bg.clone();
 
-        // Bring up pump WITH a repo handle so the up arm's interception
-        // path runs.
         let (mut daemon_side, server_side) = tokio::io::duplex(8192);
         let (ping, pong) = long_window();
         let term_id_for_pump = term.id.clone();
@@ -1390,7 +1365,6 @@ mod pump_tests {
         let url = format!("ws://{}/pump", addr);
         let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-        // Send TerminalThemeUpdate for theme B ("light mode").
         let toggle = ClientMsg::TerminalThemeUpdate {
             fg: (10, 20, 30),
             bg: (240, 241, 242),
@@ -1399,8 +1373,7 @@ mod pump_tests {
             .await
             .unwrap();
 
-        // The daemon must still see the frame — the persistence side-
-        // effect must NOT swallow the message.
+        // Daemon side observes the frame.
         let got: ClientMsg = tokio::time::timeout(
             Duration::from_secs(2),
             read_frame::<ClientMsg, _>(&mut daemon_side),
@@ -1416,26 +1389,12 @@ mod pump_tests {
             other => panic!("daemon expected TerminalThemeUpdate, got {other:?}"),
         }
 
-        // The persistence side-effect runs in a `tokio::spawn`, so poll
-        // briefly for the row to flip from theme A to theme B. Cap at
-        // 2s — production write latency is sub-ms; anything slower
-        // here means the side-effect is broken.
-        let start = Instant::now();
-        loop {
-            let row = repo.terminal_get(&term.id).await.unwrap().unwrap();
-            if row.theme_fg.as_deref() == Some("10,20,30")
-                && row.theme_bg.as_deref() == Some("240,241,242")
-            {
-                break;
-            }
-            if start.elapsed() > Duration::from_secs(2) {
-                panic!(
-                    "row never flipped to new theme; current fg={:?}, bg={:?}",
-                    row.theme_fg, row.theme_bg
-                );
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        // Row stays at its create-time theme — no async persist
+        // tokio::spawn to race; give the runtime a yield then read.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let row = repo.terminal_get(&term.id).await.unwrap().unwrap();
+        assert_eq!(row.theme_fg, original_fg);
+        assert_eq!(row.theme_bg, original_bg);
     }
 }
 
@@ -1496,6 +1455,7 @@ mod cleanup_tests {
                 program: "/bin/true".into(),
                 cwd: "/tmp".into(),
                 env: json!({}),
+                theme: crate::routes::theme::RequestTheme::default_dark(),
             })
             .await
             .unwrap();

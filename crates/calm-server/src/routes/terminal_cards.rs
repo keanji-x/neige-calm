@@ -159,6 +159,13 @@ pub(crate) async fn create_terminal_card(
                     // `CardRole::Worker` directly.
                     crate::model::CardRole::Plain,
                     &cache_for_tx,
+                    // #177 — terminal cards (bash/zsh) don't probe OSC
+                    // 10/11 themselves, but the row's `theme_fg/bg`
+                    // are NOT NULL so we stamp the safe default. If a
+                    // future terminal card hosts a codex-like child
+                    // that does probe, the row already has a sensible
+                    // value to forward through the daemon flags.
+                    crate::routes::theme::RequestTheme::default_dark(),
                 )
                 .await?;
                 Ok((card.clone(), Event::CardAdded(card)))
