@@ -57,6 +57,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/coves/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["resolve_path"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/coves/system": {
         parameters: {
             query?: never;
@@ -87,6 +103,38 @@ export interface paths {
          */
         post: operations["get_or_create_system_cove"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/coves/{cove_id}/folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_folders"];
+        put?: never;
+        post: operations["create_folder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/coves/{cove_id}/folders/{folder_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_folder"];
         options?: never;
         head?: never;
         patch?: never;
@@ -561,6 +609,30 @@ export interface components {
             updated_at: number;
         };
         /**
+         * @description Issue #250 PR 1 — a filesystem path claimed by a cove.
+         *
+         *     One row per claimed directory; `path` is absolute and globally
+         *     unique across the table. A folder transparently covers every
+         *     descendant path — the kernel resolves a `cwd` to its owning cove
+         *     via longest-prefix matching against this table (see
+         *     `GET /api/coves/resolve`).
+         *
+         *     `id` is an autoincrement integer rather than the kernel's usual
+         *     uuid-shaped TEXT id because cove_folders is a small, kernel-internal
+         *     mapping that never appears in the sync engine's event log — there's
+         *     no replay scenario where two replicas mint divergent ids that must
+         *     later reconcile. The compact integer also keeps `/folders/:id` URLs
+         *     readable.
+         */
+        CoveFolder: {
+            cove_id: string;
+            /** Format: int64 */
+            created_at: number;
+            /** Format: int64 */
+            id: number;
+            path: string;
+        };
+        /**
          * @description Issue #175 — visibility / ownership gate persisted on each cove.
          *
          *     The kind decides whether the row participates in the user-visible
@@ -595,6 +667,17 @@ export interface components {
             name?: string | null;
             /** Format: double */
             sort?: number | null;
+        };
+        /**
+         * @description Issue #250 PR 1 — 200 body for `GET /api/coves/resolve`. The
+         *     resolve endpoint returns `null` (not 404) on miss; this struct is
+         *     the `Some(_)` payload.
+         */
+        CoveResolve: {
+            cove_id: string;
+            /** Format: int64 */
+            folder_id: number;
+            folder_path: string;
         };
         /**
          * @description Body payload accepted by `POST /api/waves/:wave_id/cards`.
@@ -645,6 +728,26 @@ export interface components {
             /** @description Human-readable error message. */
             error: string;
         };
+        /**
+         * @description Issue #250 PR 1 — 409 body for the folder-create conflict case.
+         *     Hand-written DTO so the frontend gets a structured shape rather
+         *     than the generic `{error, code}` envelope.
+         */
+        FolderConflict: {
+            conflict_kind: components["schemas"]["FolderConflictKind"];
+            conflict_path: string;
+            cove_id: string;
+            /** Format: int64 */
+            folder_id: number;
+        };
+        /**
+         * @description Issue #250 PR 1 — kind of overlap detected by the
+         *     `POST /api/coves/:cove_id/folders` conflict check. Surfaces in the
+         *     409 response body so the frontend can render a precise message
+         *     without re-parsing strings.
+         * @enum {string}
+         */
+        FolderConflictKind: "equal" | "ancestor" | "descendant";
         InstallBody: {
             source: components["schemas"]["InstallSource"];
         };
@@ -735,6 +838,14 @@ export interface components {
              * @description If absent, server appends to end.
              */
             sort?: number | null;
+        };
+        NewCoveFolder: {
+            /**
+             * @description Absolute filesystem path. Must start with `/`. The server trims
+             *     a trailing slash before insert (root `/` excepted) so equality
+             *     and prefix matching stay canonical.
+             */
+            path: string;
         };
         NewOverlay: {
             entity_id: string;
@@ -850,6 +961,14 @@ export interface components {
              */
             state: string;
             version: string;
+        };
+        ResolveQuery: {
+            /**
+             * @description Absolute filesystem path to resolve against every cove's folder
+             *     claims. Returns the most-specific claim that covers it (longest
+             *     prefix), or `null` if no claim covers the path.
+             */
+            path: string;
         };
         /**
          * @description Wire-shape: a flat string map of key -> value. We use `BTreeMap` for
@@ -1283,6 +1402,51 @@ export interface operations {
             };
         };
     };
+    resolve_path: {
+        parameters: {
+            query: {
+                /**
+                 * @description Absolute filesystem path to resolve against every cove's folder
+                 *     claims. Returns the most-specific claim that covers it (longest
+                 *     prefix), or `null` if no claim covers the path.
+                 */
+                path: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Owning cove + folder, or null when no claim covers the path */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": null | components["schemas"]["CoveResolve"];
+                };
+            };
+            /** @description Path is not absolute */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     get_or_create_system_cove: {
         parameters: {
             query?: never;
@@ -1308,6 +1472,133 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Cove"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_folders: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Cove id */
+                cove_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Folders claimed by this cove, sorted by path */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoveFolder"][];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_folder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Cove id */
+                cove_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewCoveFolder"];
+            };
+        };
+        responses: {
+            /** @description Folder claimed */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoveFolder"];
+                };
+            };
+            /** @description Path is not absolute */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Path overlaps with an existing claim */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FolderConflict"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_folder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Cove id */
+                cove_id: string;
+                /** @description Folder id */
+                folder_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Folder removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Folder not found under this cove */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             /** @description Internal error */
