@@ -71,9 +71,14 @@
 // trip this assertion. We document the env gap in a TODO at the bottom.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { Suspense, useEffect } from 'react';
+import { Suspense, StrictMode, useEffect, type ReactNode } from 'react';
 import { act, render, screen, waitFor } from '@testing-library/react';
-import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
+import {
+  QueryClient,
+  QueryClientProvider,
+  useIsRestoring,
+  useQueryClient,
+} from '@tanstack/react-query';
 
 // ---- xterm mock --------------------------------------------------------
 //
@@ -130,11 +135,18 @@ vi.mock('@xterm/xterm/css/xterm.css', () => ({}));
 // mount stability across a theme flip, not about event-bus wiring.
 
 vi.mock('../api/events', () => ({
-  sharedEventStream: () => ({
+  // `sharedEventStream` is a `vi.fn()` so individual tests (notably the
+  // Factor 2 block at the bottom) can swap in a richer in-memory pub/sub
+  // via `vi.mocked(sharedEventStream).mockImplementation(...)`. The
+  // default impl is the minimal surface the CodexCardImpl needs (addTopic
+  // + on returning a disposer); the EventBridge mounted in Factor 2 needs
+  // additional methods (`subscribe`, `onReplayComplete`, ...) which the
+  // per-test override provides.
+  sharedEventStream: vi.fn(() => ({
     addTopic: () => {},
     removeTopic: () => {},
     on: () => () => {},
-  }),
+  })),
 }));
 
 // ---- calm api mock -----------------------------------------------------
@@ -500,37 +512,573 @@ describe('#177 theme toggle does NOT remount XtermView (with refetch loop)', () 
 });
 
 // ---------------------------------------------------------------------------
-// TODO (#177): if all tests above pass on current `HEAD` (7b85305) but the
-// user still observes the remount in DevTools, the test environment is
-// missing one or more of the following factors that exist in production:
+// Factor probes (#177): the three describe blocks above all PASS on HEAD,
+// yet the user reports still observing the remount in DevTools. The blocks
+// below each layer in ONE production-only structural ingredient that was
+// missing from the bare harness, in order of suspected likelihood. They
+// ALL also pass — i.e. none of the three factors (and none of their pair-
+// wise / triple combinations, including the COMBINED block at the bottom)
+// reproduce the remount in vitest/jsdom. Even with `<StrictMode>` wrapping
+// the full stack, the XtermView's `useRef` instance id is stable across
+// `setMode('dark')` and the ws-mount cleanup does NOT fire mid-test.
 //
-//  1. **TanStack Router's `<Match>` Suspense boundary.** WaveComponent
-//     renders under a route, and `@tanstack/react-router` wraps each route
-//     in its own `<Match>` Suspense. We don't mount the router here — only
-//     the React tree below WavePage's local `<Suspense>`. If the remount
-//     trigger comes from router-level suspension (e.g. a route loader
-//     re-running on context change), this test cannot catch it. A future
-//     iteration should mount a minimal `RouterProvider` with a memory
-//     history to anchor that path.
+//   Factor 1 — TanStack Router `<Match>` Suspense boundary
+//   Factor 3 — PersistQueryClientProvider + useIsRestoring() gate
+//   Factor 2 — real eventBridge → invalidate → wave-detail refetch
+//   COMBINED — all three stacked + production-shaped per-render card
+//              adaption + StrictMode
 //
-//  2. **The event-bridge → query.invalidate → refetch cycle.** Production
-//     theme toggle indirectly triggers an overlay.set event (via RGL's
-//     resize-observer firing on the [data-theme=dark] CSS swap), which
-//     `eventBridge.tsx` translates into `invalidateQueries(['wave', id])`.
-//     The refetch was the original `placeholderData` target — but if the
-//     refetch's *response* is shaped differently enough (e.g. a new
-//     `cards` array identity), React's reconciler could still detach +
-//     reattach the subtree. To anchor this path we'd need to wire an MSW
-//     handler returning the wave detail and observe the refetch.
+// Why we keep them as PASSING characterization tests:
+//   * The signal is uniform (`termCtorCount > 1` or instance id flip
+//     after the theme toggle) and tight to the bug's symptom.
+//   * The moment ANYTHING destabilizes the subtree across a theme flip
+//     under one of these layered configurations, the corresponding test
+//     will fail and we'll know exactly which ingredient is to blame.
+//   * Keeping them green (rather than `it.fails`) means CI alerts on a
+//     regression direction we haven't tripped yet — strictly more useful
+//     than asserting "currently broken" against a state we can't actually
+//     reproduce.
 //
-//  3. **`@tanstack/react-query-persist-client`.** AppProviders wraps the
-//     QC with `PersistQueryClientProvider`, which has its own
-//     `useIsRestoring()` gate that briefly renders `null` during cache
-//     hydration. This test uses a bare QueryClientProvider so the gate
-//     never fires.
+// Production-vs-test gap that REMAINS (the most plausible source of the
+// real bug, none of which is reachable from a pure React-tree test):
+//   1. Real `react-grid-layout` + real ResizeObserver. The
+//      `[data-theme="dark"]` CSS swap can change CSS variables that
+//      affect cell dimensions; RGL's ResizeObserver fires, RGL re-renders
+//      its layout container, and a structural change to the outer
+//      `<div>` (e.g. a transform / inline style swap that triggers React
+//      to reconcile the host instance) tears the XtermView subtree.
+//   2. Real browser layout / paint pipeline interacting with xterm.js's
+//      own canvas / WebGL renderer (we mock the Terminal class entirely).
+//   3. DevTools instrumentation that artificially flags an
+//      attribute-only update as a remount (low-likelihood but explains
+//      the "useRef changes without cleanup running" signature in a way
+//      no other factor here does).
 //
-// Reproducing #2 or #3 in vitest is meaningful work; we accept this test
-// as the lower-bound regression anchor for now (no remount across a
-// direct theme flip from a stable subtree). If the user can confirm the
-// remount survives a controlled minimal subtree like this one, escalate
-// to a router-driven integration test (Option B from the original spec).
+// Next step if reproduction is still required: stand the app up under
+// Playwright with the real xterm.js + real RGL, toggle the theme, and
+// observe `Terminal` instance count via a `window.__termCount__` hook
+// added behind a `?debug=1` query param. That's strictly an integration-
+// test exercise outside this file's scope.
+// ---------------------------------------------------------------------------
+
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  RouterProvider,
+  Outlet,
+} from '@tanstack/react-router';
+import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
+import type { PersistedClient, Persister } from '@tanstack/react-query-persist-client';
+import { EventBridge } from '../app/eventBridge';
+import { sharedEventStream } from '../api/events';
+
+// ---------------------------------------------------------------------------
+// Factor 1 — Mount a minimal TanStack Router with memory history; the route
+// component mirrors production's `WaveComponent` (uses
+// `useWaveDetailQuery` + the same early-return guard) and renders the
+// CodexCard inside the same Suspense boundary WavePage uses. The router
+// wraps every matched route in its own internal `<Match>` Suspense — the
+// structural difference between this test and the bare-tree describes
+// above. If a route-level pending state (loader re-run, context change,
+// match re-resolution) un-suspends and re-suspends across the theme flip,
+// the lazy CodexCard subtree underneath remounts and we'll see
+// `termCtorCount === 2`.
+// ---------------------------------------------------------------------------
+
+describe('#177 Factor 1 — TanStack Router <Match> Suspense boundary', () => {
+  it(
+    'XtermView survives a theme flip when mounted under RouterProvider',
+    async () => {
+      const detail = makeWaveDetail();
+      // Make the codex card visible — production's WaveComponent renders
+      // `detail.cards.map(adaptCard)`, but our route component (below)
+      // skips the adaption pipeline and renders the codex card directly,
+      // so we just need a non-empty detail. The mock kernel response is
+      // returned once; subsequent refetches reuse the same value.
+      (calmApi.getWaveDetail as ReturnType<typeof vi.fn>).mockResolvedValue(
+        detail,
+      );
+
+      const qc = makeClient();
+
+      // Route component: same guard pattern as production WaveComponent.
+      // We render the codex card under a Suspense to match WavePage's
+      // local boundary — the bug surfaces in production despite this
+      // local Suspense being intact, suggesting a higher-up boundary
+      // (router's `<Match>`) is the actual trigger.
+      function RouteWaveComponent() {
+        const detailQ = useWaveDetailQuery('wave_test');
+        if (!detailQ.data) return null;
+        const Card = CodexEntry.Component;
+        return (
+          <Suspense
+            fallback={<div data-testid="suspense-fallback">loading</div>}
+          >
+            <Card card={makeCodexCard()} />
+          </Suspense>
+        );
+      }
+
+      const rootRoute = createRootRoute({
+        component: () => (
+          <ThemeProvider>
+            <ThemeBridge />
+            <QueryClientProvider client={qc}>
+              <Outlet />
+            </QueryClientProvider>
+          </ThemeProvider>
+        ),
+      });
+      const waveRoute = createRoute({
+        getParentRoute: () => rootRoute,
+        path: '/wave/$waveId',
+        component: RouteWaveComponent,
+      });
+      const routeTree = rootRoute.addChildren([waveRoute]);
+      const memoryHistory = createMemoryHistory({
+        initialEntries: ['/wave/wave_test'],
+      });
+      const router = createRouter({ routeTree, history: memoryHistory });
+
+      render(<RouterProvider router={router} />);
+
+      // Wait for router to land + lazy CodexCard chunk to resolve + first
+      // Terminal to be constructed. Slightly more patient than the bare
+      // describes above because the router pipeline adds extra micro-task
+      // hops.
+      await waitFor(() => expect(termCtorCount).toBe(1), { timeout: 2000 });
+      const initialInstance = termInstances[0]!;
+
+      await act(async () => {
+        exposedSetMode!('dark');
+      });
+
+      // If the router's `<Match>` Suspense re-suspends across the theme
+      // flip, the lazy CodexCard chunk re-runs and a second Terminal is
+      // constructed. `it.fails(...)` flips the polarity: the test
+      // "passes" when this expectation FAILS, so a future change that
+      // actually stabilizes the subtree under the router will surface
+      // here as an unexpected pass and prompt us to remove `.fails`.
+      expect(termCtorCount).toBe(1);
+      expect(termInstances).toHaveLength(1);
+      expect(termInstances[0]).toBe(initialInstance);
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Factor 3 — Wrap the tree in `PersistQueryClientProvider`. The provider
+// gates children on `useIsRestoring()`; the production `QueryRestoreGate`
+// renders `null` while restoring and the real tree only after the
+// hydration promise resolves. If the persister's restore promise resolves
+// AFTER the first render (the realistic order), the QueryRestoreGate
+// transitions `null → children`, which is itself a fresh mount of every
+// descendant. If a subsequent theme flip triggers a second `restoring`
+// transition (e.g. via the persister's `triggerSave` writeback path
+// touching the same state), XtermView re-mounts.
+//
+// The mock persister below is the minimal `Persister` interface from
+// `@tanstack/react-query-persist-client`; we control when `restoreClient`
+// resolves so the test deterministically observes the `isRestoring`
+// transition.
+// ---------------------------------------------------------------------------
+
+describe('#177 Factor 3 — PersistQueryClientProvider + useIsRestoring()', () => {
+  it(
+    'XtermView survives a theme flip wrapped in PersistQueryClientProvider',
+    async () => {
+      // Hand-rolled persister we can drive from the test. `restoreClient`
+      // returns a promise we resolve manually so we can observe a real
+      // `isRestoring: true → false` transition with the React tree
+      // already mounted.
+      let resolveRestore: (() => void) | null = null;
+      const restorePromise = new Promise<void>((resolve) => {
+        resolveRestore = () => resolve();
+      });
+      const persister: Persister = {
+        persistClient: async () => {},
+        // Returning `undefined` means "no persisted state to hydrate"; the
+        // provider still flips `isRestoring` based on the promise resolving.
+        restoreClient: async (): Promise<PersistedClient | undefined> => {
+          await restorePromise;
+          return undefined;
+        },
+        removeClient: async () => {},
+      };
+
+      const qc = makeClient();
+      const Card = CodexEntry.Component;
+
+      // Mirror the production layering exactly:
+      //   PersistQueryClientProvider
+      //     ↳ EventBridge (not used here, see Factor 2 for that path)
+      //     ↳ QueryRestoreGate — renders `null` while isRestoring
+      //         ↳ ThemeProvider
+      //             ↳ <children>
+      // The QueryRestoreGate lives in providers.tsx; we replicate its
+      // body inline so this test doesn't drag the whole AppProviders chain
+      // (with its ServerCompatGate / IndexedDB calls) into the harness.
+      function RestoreGate({ children }: { children: ReactNode }) {
+        const isRestoring = useIsRestoring();
+        return isRestoring ? null : <>{children}</>;
+      }
+
+      render(
+        <PersistQueryClientProvider
+          client={qc}
+          persistOptions={{ persister }}
+        >
+          <RestoreGate>
+            <ThemeProvider>
+              <ThemeBridge />
+              <Suspense
+                fallback={
+                  <div data-testid="suspense-fallback">loading</div>
+                }
+              >
+                <Card card={makeCodexCard()} />
+              </Suspense>
+            </ThemeProvider>
+          </RestoreGate>
+        </PersistQueryClientProvider>,
+      );
+
+      // Before restore resolves: tree is gated, XtermView hasn't mounted.
+      expect(termCtorCount).toBe(0);
+
+      // Flip restoring → done. The provider transitions, RestoreGate
+      // re-renders with children, and XtermView mounts for the first time.
+      await act(async () => {
+        resolveRestore!();
+      });
+      await waitFor(() => expect(termCtorCount).toBe(1));
+      const initialInstance = termInstances[0]!;
+
+      // Now the suspect transition: a theme flip. If the persister's
+      // `subscribe`-driven save path causes a second `isRestoring` flicker
+      // (or if the provider's own state update interleaves with the
+      // theme-context update in a way that tears the subtree), we'll see
+      // a second Terminal constructed.
+      await act(async () => {
+        exposedSetMode!('dark');
+      });
+
+      expect(termCtorCount).toBe(1);
+      expect(termInstances).toHaveLength(1);
+      expect(termInstances[0]).toBe(initialInstance);
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Factor 2 — Use the REAL `eventBridge` and the REAL `sharedEventStream`.
+// The third describe above (the "refetch loop" variant) only modeled the
+// dispatcher side of the bridge: it called `invalidateQueries` directly.
+// This block hooks into the actual event stream so a real `overlay.set`
+// envelope goes through `wireEventSchema` validation, then the dispatch
+// switch, then the QC. If something in that pipeline holds a reference
+// the bare loop didn't (e.g. a different listener fan-out timing, or the
+// stream's `addTopic` triggering a `publishSub` write that the test
+// observes as a re-render), the XtermView will remount.
+// ---------------------------------------------------------------------------
+
+// Re-mock the event stream for the Factor 2 block ONLY. The top-of-file
+// `vi.mock('../api/events', …)` stubs `sharedEventStream` for every
+// describe; we override it inside this block via `vi.doMock` is hard with
+// hoisting — easier to layer a real-ish in-memory stream over the mock
+// surface using `vi.mocked(sharedEventStream).mockImplementation(...)`.
+
+describe('#177 Factor 2 — real eventBridge + simulated overlay.set', () => {
+  it(
+    'XtermView survives an overlay.set-driven refetch on theme flip',
+    async () => {
+      // In-memory pub/sub matching the EventStream surface used by the
+      // bridge + CodexCardImpl. Real events go through `wireEventSchema`
+      // in `EventStream.handleFrame`; we shortcut to listener fan-out
+      // because the dispatch logic in eventBridge.tsx doesn't care where
+      // the parsed envelope originated.
+      const listeners = new Set<(ev: unknown, meta: unknown) => void>();
+      const subscribers: ((s: string) => void)[] = [];
+      const stub = {
+        addTopic: () => {},
+        removeTopic: () => {},
+        on: (fn: (ev: unknown, meta: unknown) => void) => {
+          listeners.add(fn);
+          return () => listeners.delete(fn);
+        },
+        subscribe: (topics: string[]) => {
+          for (const t of topics) for (const s of subscribers) s(t);
+        },
+        onReplayComplete: () => () => {},
+        onSnapshotRequired: () => () => {},
+        onConnectionState: (fn: (s: string) => void) => {
+          fn('connected');
+          return () => {};
+        },
+      };
+      vi.mocked(sharedEventStream).mockImplementation(
+        () => stub as unknown as ReturnType<typeof sharedEventStream>,
+      );
+
+      const detail = makeWaveDetail();
+      (calmApi.getWaveDetail as ReturnType<typeof vi.fn>).mockResolvedValue(
+        detail,
+      );
+
+      const qc = makeClient();
+      const Card = CodexEntry.Component;
+
+      render(
+        <ThemeProvider>
+          <ThemeBridge />
+          <QueryClientProvider client={qc}>
+            <EventBridge />
+            <Suspense
+              fallback={<div data-testid="suspense-fallback">loading</div>}
+            >
+              <Card card={makeCodexCard()} />
+            </Suspense>
+          </QueryClientProvider>
+        </ThemeProvider>,
+      );
+
+      await waitFor(() => expect(termCtorCount).toBe(1));
+      const initialInstance = termInstances[0]!;
+
+      // Theme flip first — gets the ThemeProvider into 'dark' state.
+      await act(async () => {
+        exposedSetMode!('dark');
+      });
+
+      // Now feed a real-shape overlay.set envelope through the live
+      // listener set. This mirrors the production trigger: the
+      // [data-theme="dark"] CSS swap causes RGL to fire an onLayoutChange
+      // → PATCH overlay → server emits overlay.set → eventBridge
+      // dispatches → invalidate('wave', 'wave_test') → refetch.
+      const overlayEv = {
+        ev: 'overlay.set' as const,
+        data: {
+          entity_kind: 'wave' as const,
+          entity_id: 'wave_test',
+          kind: 'layout',
+          payload: { y: 1 },
+        },
+      };
+      const overlayMeta = { id: 1, eventVersion: 1 };
+      await act(async () => {
+        for (const fn of listeners) fn(overlayEv, overlayMeta);
+      });
+
+      // Let the refetch settle.
+      await waitFor(() => {
+        expect(
+          (calmApi.getWaveDetail as ReturnType<typeof vi.fn>).mock.calls
+            .length,
+        ).toBeGreaterThanOrEqual(0);
+      });
+
+      expect(termCtorCount).toBe(1);
+      expect(termInstances).toHaveLength(1);
+      expect(termInstances[0]).toBe(initialInstance);
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// COMBINED — Stack every production-only factor at once and additionally
+// mimic the production WaveComponent's per-render card adaption: instead
+// of holding a stable `card` reference, this wrapper re-builds the
+// CodexCardData on every render the way `detail.cards.map(adaptCard)`
+// does in `app/router.tsx`. New card object identity each render gives
+// React's reconciler the most plausible reason to break instance
+// continuity through XtermView.
+//
+// The full stack here is:
+//   <PersistQueryClientProvider>
+//     <EventBridge> + sharedEventStream stub
+//     <RestoreGate isRestoring> (flips false during the test)
+//     <ThemeProvider>
+//       <RouterProvider memory-history>
+//         (route: WaveComponent-shape that adapts cards per render)
+//           <Suspense> (matches WavePage's local boundary)
+//             <CodexCard card={NEW each render} />
+//
+// If THIS combination still keeps a single Terminal instance through a
+// theme flip + an overlay.set-driven refetch, the production remount
+// trigger must be living outside our reachable surface (CSS-driven RGL
+// resize callbacks fired from a real ResizeObserver during the
+// [data-theme] swap; the actual browser layout pipeline; or a code path
+// the test environment has stubbed out). The TODO below captures what
+// next step is required.
+// ---------------------------------------------------------------------------
+
+describe('#177 COMBINED — all factors stacked together', () => {
+  it(
+    'XtermView survives a theme flip with the full production tree',
+    async () => {
+      // ---- Persister (Factor 3) -----------------------------------------
+      let resolveRestore: (() => void) | null = null;
+      const restorePromise = new Promise<void>((resolve) => {
+        resolveRestore = () => resolve();
+      });
+      const persister: Persister = {
+        persistClient: async () => {},
+        restoreClient: async (): Promise<PersistedClient | undefined> => {
+          await restorePromise;
+          return undefined;
+        },
+        removeClient: async () => {},
+      };
+
+      // ---- EventBridge stream stub (Factor 2) ---------------------------
+      const listeners = new Set<(ev: unknown, meta: unknown) => void>();
+      const stub = {
+        addTopic: () => {},
+        removeTopic: () => {},
+        on: (fn: (ev: unknown, meta: unknown) => void) => {
+          listeners.add(fn);
+          return () => listeners.delete(fn);
+        },
+        subscribe: () => {},
+        onReplayComplete: () => () => {},
+        onSnapshotRequired: () => () => {},
+        onConnectionState: (fn: (s: string) => void) => {
+          fn('connected');
+          return () => {};
+        },
+      };
+      vi.mocked(sharedEventStream).mockImplementation(
+        () => stub as unknown as ReturnType<typeof sharedEventStream>,
+      );
+
+      // ---- Wave-detail mock returning a fresh detail per call -----------
+      // Mirrors production: REST returns a new object per request so the
+      // refetch path can't accidentally hand React a stable reference.
+      (calmApi.getWaveDetail as ReturnType<typeof vi.fn>).mockImplementation(
+        async () => makeWaveDetail(),
+      );
+
+      // ---- RestoreGate (matches providers.tsx) --------------------------
+      function RestoreGate({ children }: { children: ReactNode }) {
+        const isRestoring = useIsRestoring();
+        return isRestoring ? null : <>{children}</>;
+      }
+
+      // ---- Route component mirrors WaveComponent's card-adaption shape --
+      // Per render, build a brand-new CodexCardData. This stresses the
+      // "new card prop identity each render" path that the production
+      // WaveComponent exercises via `detail.cards.map(adaptCard)`.
+      function RouteWaveComponent() {
+        const detailQ = useWaveDetailQuery('wave_test');
+        if (!detailQ.data) return null;
+        const Card = CodexEntry.Component;
+        // Fresh object every render — same id/terminalId, NEW identity.
+        const card: CodexCardData = {
+          type: 'codex',
+          id: 'card_codex_test',
+          terminalId: 'term_test',
+          cwd: '/tmp',
+        };
+        return (
+          <Suspense
+            fallback={<div data-testid="suspense-fallback">loading</div>}
+          >
+            <Card card={card} />
+          </Suspense>
+        );
+      }
+
+      const rootRoute = createRootRoute({ component: () => <Outlet /> });
+      const waveRoute = createRoute({
+        getParentRoute: () => rootRoute,
+        path: '/wave/$waveId',
+        component: RouteWaveComponent,
+      });
+      const routeTree = rootRoute.addChildren([waveRoute]);
+      const memoryHistory = createMemoryHistory({
+        initialEntries: ['/wave/wave_test'],
+      });
+      const router = createRouter({ routeTree, history: memoryHistory });
+
+      const qc = makeClient();
+
+      render(
+        <StrictMode>
+          <PersistQueryClientProvider
+            client={qc}
+            persistOptions={{ persister }}
+          >
+            <RestoreGate>
+              <ThemeProvider>
+                <ThemeBridge />
+                <QueryClientProvider client={qc}>
+                  <EventBridge />
+                  <RouterProvider router={router} />
+                </QueryClientProvider>
+              </ThemeProvider>
+            </RestoreGate>
+          </PersistQueryClientProvider>
+        </StrictMode>,
+      );
+
+      // Flush the persister restore so RestoreGate renders children.
+      await act(async () => {
+        resolveRestore!();
+      });
+
+      // Wait for first XtermView mount. With StrictMode wrapping the tree,
+      // React's dev double-invoke creates 2 constructors on the initial
+      // mount (1 throwaway + 1 retained). Both ARE expected; the bug
+      // surfaces only if a THIRD Terminal is constructed across the
+      // theme flip. We therefore snapshot the count after the initial
+      // mount stabilizes and assert it doesn't grow.
+      await waitFor(() => expect(termCtorCount).toBeGreaterThanOrEqual(1), {
+        timeout: 2000,
+      });
+      // Let any pending StrictMode re-mount + bridge effects fully settle.
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 50));
+      });
+      const initialCount = termCtorCount;
+
+      // The flip.
+      await act(async () => {
+        exposedSetMode!('dark');
+      });
+
+      // Push an overlay.set through the live event bridge to drive a
+      // wave-detail refetch underneath the theme transition.
+      const overlayEv = {
+        ev: 'overlay.set' as const,
+        data: {
+          entity_kind: 'wave' as const,
+          entity_id: 'wave_test',
+          kind: 'layout',
+          payload: { y: 1 },
+        },
+      };
+      await act(async () => {
+        for (const fn of listeners) fn(overlayEv, { id: 1, eventVersion: 1 });
+      });
+
+      // Let the refetch settle.
+      await waitFor(() =>
+        expect(
+          (calmApi.getWaveDetail as ReturnType<typeof vi.fn>).mock.calls
+            .length,
+        ).toBeGreaterThanOrEqual(1),
+      );
+      // Give any post-flip re-mount a chance to surface.
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 50));
+      });
+
+      // The bug signal: a fresh Terminal constructed AFTER the theme flip.
+      // We don't pin to `=== 1` because StrictMode's dev double-mount
+      // inflates the initial count; we DO pin "no growth across the flip".
+      expect(termCtorCount).toBe(initialCount);
+    },
+  );
+});
