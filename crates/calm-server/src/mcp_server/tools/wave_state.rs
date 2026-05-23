@@ -165,13 +165,18 @@ fn update_wave_state_descriptor() -> ToolDescriptor {
         description: "Spec-only: patch the wave row (`title` / `sort` / \
              `archived_at` / `lifecycle`) and emit `wave.updated` (plus \
              `wave.lifecycle_changed` when `lifecycle` is set and the \
-             requested transition is allowed). Omitted fields are left \
-             unchanged. `archived_at = null` unarchives; a positive ms \
-             timestamp archives. `lifecycle` accepts the typed state \
-             names — see issue #145 / `wave_lifecycle.rs` for the \
-             allowed `from → to` table. An illegal transition is \
-             rejected with `-32403`; the wave row and event log are \
-             both untouched. Returns the post-patch wave."
+             requested transition actually changes state). Omitted \
+             fields are left unchanged. `archived_at = null` \
+             unarchives; a positive ms timestamp archives. `lifecycle` \
+             accepts the typed state names — see issue #145 / \
+             `wave_lifecycle.rs` for the allowed `from → to` table. \
+             A same-state lifecycle request (e.g. setting `lifecycle` \
+             to the wave's current state) is an idempotent silent \
+             success: no `wave.lifecycle_changed` event is emitted, \
+             and if `lifecycle` was the only field supplied the row is \
+             not rewritten. An illegal transition is rejected with \
+             `-32403`; the wave row and event log are both untouched. \
+             Returns the post-patch wave."
             .into(),
         input_schema: json!({
             "type": "object",
@@ -217,13 +222,42 @@ async fn update_wave_state(
     // surface `-32403` on rejection so the spec agent sees a clear
     // shape, otherwise emit `WaveLifecycleChanged` alongside the
     // usual `WaveUpdated` in one transaction.
+    //
+    // Idempotent same-state: when `patch.lifecycle == Some(current)`
+    // (e.g. the spec retried `update_wave_state(lifecycle="planning")`
+    // while already planning), the validator returns `Ok(())` and we
+    // strip `lifecycle` from the patch so neither
+    // `WaveLifecycleChanged` nor a pointless column rewrite happens.
+    // If `lifecycle` was the *only* supplied field, the resulting
+    // patch is fully empty and we return the wave row without
+    // touching the DB — distinct from an explicit `{}` ping (which
+    // still bumps `updated_at` and re-broadcasts as before).
+    let lifecycle_was_only_field = patch.lifecycle.is_some()
+        && patch.title.is_none()
+        && patch.sort.is_none()
+        && patch.archived_at.is_none();
+    let mut patch = patch;
     let lifecycle_change = if let Some(to) = patch.lifecycle {
         validate_transition(current.lifecycle, to, &actor)
             .map_err(|e| RpcError::custom(-32403, format!("update_wave_state: lifecycle: {e}")))?;
-        Some((current.lifecycle, to))
+        if current.lifecycle == to {
+            patch.lifecycle = None;
+            None
+        } else {
+            Some((current.lifecycle, to))
+        }
     } else {
         None
     };
+
+    // Idempotent shortcut: lifecycle was the sole patch field and it
+    // turned out to be a no-op, so there's nothing to write and
+    // nothing to emit. Return the unchanged wave row. The `{}`
+    // ping path is unaffected (`lifecycle_was_only_field` is false
+    // when `patch.lifecycle` is None).
+    if lifecycle_was_only_field && lifecycle_change.is_none() {
+        return Ok(json!({ "ok": true, "wave": current }));
+    }
 
     let wave_id_for_event = wave_id.clone();
     let cove_id_for_event = cove_id.clone();

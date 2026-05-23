@@ -30,7 +30,16 @@
 //! | `reviewing → failed`                       | no   | yes       | no     |
 //! | any non-terminal → `canceled`              | yes  | no        | no     |
 //! | `done`/`canceled`/`failed` → `planning`    | yes  | no        | no     |
-//! | (no-op) `state → same state`               | no   | no        | no     |
+//! | (no-op) `state → same state`               | yes\*| yes\*     | no     |
+//!
+//! \* Same-state transitions are an **idempotent silent success** for
+//! actors that have any lifecycle authority at all (User, SpecAgent /
+//! Kernel). The validator returns `Ok(())` early after the actor-
+//! authority check; the caller is expected to skip emitting
+//! `WaveLifecycleChanged` (nothing changed) and to leave the row's
+//! `lifecycle` column / `updated_at` alone if no other patch field
+//! also changed. Worker cards and plugins still hit `NotAuthorized` —
+//! idempotency only applies once the actor itself is permitted.
 //!
 //! Anything not on this table is rejected. Worker cards (the
 //! `ActorId::AiCodex` whose `CardRole` is `Worker`) **never** drive a
@@ -93,14 +102,16 @@ pub fn actor_kind(actor: &ActorId) -> ActorKind {
 /// the call sites to `CalmError::Forbidden` (HTTP / MCP) so test
 /// assertions can pattern-match on the structured variant rather than
 /// parsing a free-form string.
+///
+/// Note: same-state transitions (`from == to`) by a lifecycle-
+/// authorized actor are **not** an error variant — they return
+/// `Ok(())` so retries and idempotent client behavior succeed
+/// silently. The caller is responsible for not emitting a
+/// `WaveLifecycleChanged` event when nothing changed; see
+/// `routes::waves::update_wave` and
+/// `mcp_server::tools::wave_state::update_wave_state`.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum TransitionError {
-    /// A no-op transition (`from == to`) was attempted. The kernel
-    /// rejects these so callers don't accidentally emit a
-    /// `WaveLifecycleChanged` envelope with no semantic change.
-    #[error("wave lifecycle: no-op transition (already in {state:?})")]
-    NoOp { state: WaveLifecycle },
-
     /// The (from → to) edge is structurally impossible regardless of
     /// who tried it (e.g. `done → working` by anyone, `draft → done`
     /// by anyone).
@@ -113,7 +124,9 @@ pub enum TransitionError {
     /// The (from → to) edge exists, but this actor isn't authorized
     /// to drive it. E.g. a Spec Agent trying to cancel (cancel is
     /// user-only), or a User trying to perform `planning →
-    /// dispatching` (spec-only).
+    /// dispatching` (spec-only). Worker cards and plugins fall into
+    /// this bucket for *any* transition — including same-state — since
+    /// they have zero lifecycle authority.
     #[error(
         "wave lifecycle: actor {actor_kind:?} may not drive {from:?} → {to:?} \
          (this edge is restricted)"
@@ -127,23 +140,31 @@ pub enum TransitionError {
 
 /// Validate a wave lifecycle transition against the rule table.
 ///
-/// `Ok(())` permits the call site to proceed with the wave row update
-/// and `Event::WaveLifecycleChanged` emit. `Err(_)` must roll the
-/// transaction back without persisting either side.
+/// `Ok(())` permits the call site to proceed. When `from != to` the
+/// caller writes the row update and emits `Event::WaveLifecycleChanged`.
+/// When `from == to` (and the actor is permitted to touch lifecycle
+/// at all) the call is a silent idempotent no-op — the caller must
+/// **not** emit `WaveLifecycleChanged`, must not bump `updated_at`
+/// solely on account of the lifecycle field, and must return success
+/// to the client. This idempotent shortcut keeps client retries clean
+/// (an LLM re-sending the same `update_wave_state` doesn't pollute
+/// the event log) without softening the actor-authority check below:
+/// a Worker card sending `lifecycle: planning` while the wave is
+/// already planning still hits `NotAuthorized`.
+///
+/// `Err(_)` must roll the transaction back without persisting either
+/// the row update or any event.
 pub fn validate_transition(
     from: WaveLifecycle,
     to: WaveLifecycle,
     actor: &ActorId,
 ) -> Result<(), TransitionError> {
-    if from == to {
-        return Err(TransitionError::NoOp { state: from });
-    }
-
     let kind = actor_kind(actor);
 
     // Worker cards never drive lifecycle. Reject up front so the
     // edge-permission table below stays focused on the User/SpecAgent
-    // split.
+    // split — and so even a same-state `lifecycle: X` from a worker
+    // hits `NotAuthorized` rather than the idempotency shortcut.
     if kind == ActorKind::Worker {
         return Err(TransitionError::NotAuthorized {
             from,
@@ -159,6 +180,15 @@ pub fn validate_transition(
             to,
             actor_kind: kind,
         });
+    }
+
+    // Idempotent same-state shortcut. Only authorized actors get here
+    // (Worker/Other were rejected above), so this is "you have
+    // lifecycle authority and you asked for the state we're already
+    // in — that's fine, do nothing." The caller is responsible for
+    // skipping `WaveLifecycleChanged` emission; see the doc comment.
+    if from == to {
+        return Ok(());
     }
 
     // Cancel is user-only and goes from any non-terminal state. The
@@ -280,7 +310,7 @@ mod tests {
     /// `validate_transition` is checked against it.
     fn legal_edges() -> Vec<(WaveLifecycle, WaveLifecycle, ActorKind)> {
         use WaveLifecycle as L;
-        vec![
+        let mut edges = vec![
             // kickoff (both)
             (L::Draft, L::Planning, ActorKind::User),
             (L::Draft, L::Planning, ActorKind::SpecAgent),
@@ -306,7 +336,16 @@ mod tests {
             (L::Done, L::Planning, ActorKind::User),
             (L::Canceled, L::Planning, ActorKind::User),
             (L::Failed, L::Planning, ActorKind::User),
-        ]
+        ];
+        // Idempotent same-state shortcut: any authorized actor
+        // (User, SpecAgent) gets `Ok(())` for `state → same state`.
+        // Workers and plugins still hit `NotAuthorized`; that's
+        // covered by the per-actor prohibition tests below.
+        for state in ALL_STATES {
+            edges.push((state, state, ActorKind::User));
+            edges.push((state, state, ActorKind::SpecAgent));
+        }
+        edges
     }
 
     fn actor_for_kind(kind: ActorKind) -> ActorId {
@@ -357,9 +396,10 @@ mod tests {
 
     #[test]
     fn worker_cards_can_never_change_lifecycle() {
-        // No (from, to) pair is permitted when the actor is a worker.
-        // Even the no-op case (which is rejected on its own merits)
-        // must come back as an error.
+        // No (from, to) pair is permitted when the actor is a worker —
+        // including same-state requests. The idempotent shortcut for
+        // `from == to` only applies once the actor has lifecycle
+        // authority, which Worker never does.
         for from in ALL_STATES {
             for to in ALL_STATES {
                 let res = validate_transition(from, to, &worker());
@@ -420,7 +460,7 @@ mod tests {
                     continue; // covered by the reopen rule
                 }
                 if from == to {
-                    continue; // no-op rejection
+                    continue; // same-state idempotency — covered separately
                 }
                 for actor in [user(), spec(), worker(), plugin()] {
                     let res = validate_transition(from, to, &actor);
@@ -433,16 +473,39 @@ mod tests {
         }
     }
 
-    // ----- No-op rejection -------------------------------------------------
+    // ----- Same-state idempotency -----------------------------------------
 
     #[test]
-    fn noop_transition_rejected_for_every_actor() {
+    fn same_state_is_idempotent_for_authorized_actors() {
+        // An authorized actor (User, SpecAgent / Kernel) asking for
+        // the state the wave is already in is a silent success. The
+        // caller is then expected to skip the `WaveLifecycleChanged`
+        // emit; this contract is verified at the call-site
+        // integration tests in `mcp_wave_state.rs`.
         for state in ALL_STATES {
-            for actor in [user(), spec(), worker(), plugin()] {
+            for actor in [user(), spec(), ActorId::Kernel, ActorId::KernelDispatcher] {
                 let res = validate_transition(state, state, &actor);
                 assert!(
-                    matches!(res, Err(TransitionError::NoOp { .. })),
-                    "expected NoOp error for {state:?} -> {state:?} as {actor:?}, got {res:?}"
+                    res.is_ok(),
+                    "expected idempotent Ok for {state:?} -> {state:?} as {actor:?}, got {res:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn same_state_still_rejects_unauthorized_actors() {
+        // Idempotency does NOT widen actor authority. A Worker / Plugin
+        // sending `lifecycle: <current>` must still hit `NotAuthorized`
+        // — these actors have zero lifecycle authority by construction,
+        // and silently accepting their no-op write would let bugs
+        // (worker mis-emits) hide instead of surfacing.
+        for state in ALL_STATES {
+            for actor in [worker(), plugin()] {
+                let res = validate_transition(state, state, &actor);
+                assert!(
+                    matches!(res, Err(TransitionError::NotAuthorized { .. })),
+                    "expected NotAuthorized for {state:?} -> {state:?} as {actor:?}, got {res:?}"
                 );
             }
         }

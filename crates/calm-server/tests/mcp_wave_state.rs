@@ -630,18 +630,131 @@ async fn update_wave_state_lifecycle_worker_actor_refused() {
 }
 
 #[tokio::test]
-async fn update_wave_state_noop_lifecycle_refused() {
-    // Even a same-state lifecycle patch is rejected — `NoOp` arm of
-    // the validator. Clients that want to bump `updated_at` only
-    // should leave `lifecycle` absent.
+async fn update_wave_state_same_state_lifecycle_is_idempotent_no_event() {
+    // Issue #145 followup — a spec resending `lifecycle: <current>`
+    // (e.g. on retry after a transient network blip) must succeed
+    // silently: no `WaveLifecycleChanged` envelope, no `WaveUpdated`
+    // envelope (lifecycle was the only field), and the row's
+    // `updated_at` stays put. This pins the idempotent semantics
+    // chosen in PR #145 followup.
     let boot = boot().await;
-    let err = call_tool(
+    let mut rx = boot.ctx.events.subscribe();
+
+    let pre = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        pre.lifecycle,
+        calm_server::model::WaveLifecycle::Draft,
+        "boot fixture lands in Draft",
+    );
+
+    let out = call_tool(
         &boot,
         TOOL_UPDATE_WAVE_STATE,
         spec_identity(&boot),
         json!({"lifecycle": "draft"}),
     )
     .await
-    .expect_err("noop lifecycle rejected");
-    assert_eq!(err.code, -32403);
+    .expect("same-state lifecycle is a silent success");
+    assert_eq!(out.get("ok").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        out.get("wave")
+            .and_then(|w| w.get("lifecycle"))
+            .and_then(Value::as_str),
+        Some("draft"),
+        "response carries the (unchanged) lifecycle",
+    );
+
+    // No bus envelope at all — the row wasn't written and no
+    // lifecycle change happened.
+    let bus = tokio::time::timeout(std::time::Duration::from_millis(150), rx.recv()).await;
+    assert!(
+        bus.is_err(),
+        "no event should be emitted for an idempotent no-op (got {bus:?})",
+    );
+
+    // Row untouched: same lifecycle, same `updated_at` (the no-op
+    // path returns the existing row without calling `wave_update_tx`).
+    let post = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(post.lifecycle, calm_server::model::WaveLifecycle::Draft);
+    assert_eq!(
+        post.updated_at, pre.updated_at,
+        "updated_at must not advance on a lifecycle-only no-op",
+    );
+}
+
+#[tokio::test]
+async fn update_wave_state_same_state_lifecycle_plus_other_field_still_writes() {
+    // Companion to the no-op test above: when the spec sends a
+    // same-state `lifecycle` together with another genuine change
+    // (here: `title`), we still emit `WaveUpdated` for the title
+    // change but must NOT emit a `WaveLifecycleChanged` envelope
+    // (nothing changed about lifecycle). Pins the boundary case so
+    // a future refactor that strips the whole patch on lifecycle
+    // no-op surfaces here.
+    let boot = boot().await;
+    let mut rx = boot.ctx.events.subscribe();
+
+    let out = call_tool(
+        &boot,
+        TOOL_UPDATE_WAVE_STATE,
+        spec_identity(&boot),
+        json!({"lifecycle": "draft", "title": "renamed"}),
+    )
+    .await
+    .expect("same-state lifecycle + title change succeeds");
+    assert_eq!(
+        out.get("wave")
+            .and_then(|w| w.get("title"))
+            .and_then(Value::as_str),
+        Some("renamed"),
+    );
+
+    // Exactly one envelope: WaveUpdated. No WaveLifecycleChanged.
+    let env = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("bus delivers")
+        .expect("bus open");
+    assert!(
+        matches!(env.event, Event::WaveUpdated(_)),
+        "first envelope is WaveUpdated, got {:?}",
+        env.event,
+    );
+
+    // No follow-up envelope.
+    let bus = tokio::time::timeout(std::time::Duration::from_millis(150), rx.recv()).await;
+    assert!(
+        bus.is_err(),
+        "no WaveLifecycleChanged should be emitted for same-state lifecycle (got {bus:?})",
+    );
+}
+
+#[tokio::test]
+async fn update_wave_state_same_state_lifecycle_still_rejects_worker() {
+    // Idempotency only applies to actors with lifecycle authority.
+    // A Worker resending `lifecycle: <current>` must still be
+    // refused — silently accepting would hide a real bug (workers
+    // emitting wave-level mutations).
+    let boot = boot().await;
+    let err = call_tool(
+        &boot,
+        TOOL_UPDATE_WAVE_STATE,
+        worker_identity(&boot),
+        json!({"lifecycle": "draft"}),
+    )
+    .await
+    .expect_err("worker still denied even on same-state");
+    // Soft role gate at the MCP entry fires first (`-32602`) —
+    // the worker can't call `update_wave_state` at all, regardless
+    // of payload. The lifecycle validator never runs.
+    assert_eq!(err.code, -32602);
 }

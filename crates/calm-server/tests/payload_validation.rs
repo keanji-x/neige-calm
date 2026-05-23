@@ -637,3 +637,111 @@ async fn wave_detail_keeps_kernel_owned_supported_schema_version() {
     );
     assert_eq!(overlays[0]["kind"], "status");
 }
+
+// --------------------------------------------------------------------------
+// Wave lifecycle PATCH — issue #145 followup, idempotent same-state semantics
+//
+// `PATCH /api/waves/{id}` with `{"lifecycle": "<current>"}` from an
+// authorized actor (default = user via missing header) must succeed
+// silently: HTTP 200, no `WaveLifecycleChanged` event, no `WaveUpdated`
+// event (lifecycle was the only field), and the row's `updated_at`
+// stays put. This pins the idempotent contract on the REST surface so
+// a client retry doesn't pollute the event log.
+// --------------------------------------------------------------------------
+
+async fn patch_wave(app: axum::Router, wave_id: &str, body: Value) -> axum::http::Response<Body> {
+    app.oneshot(
+        Request::builder()
+            .method("PATCH")
+            .uri(format!("/api/waves/{wave_id}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn wave_patch_same_state_lifecycle_is_idempotent_no_event() {
+    let (state, wave_id) = boot().await;
+
+    // Subscribe BEFORE the patch so we don't race the bus.
+    let mut rx = state.events.subscribe();
+
+    let pre = state
+        .repo
+        .wave_get(&wave_id)
+        .await
+        .unwrap()
+        .expect("seeded wave exists");
+    assert_eq!(
+        pre.lifecycle,
+        calm_server::model::WaveLifecycle::Draft,
+        "boot fixture lands in Draft",
+    );
+
+    // Default actor (no `X-Calm-Actor` header → "user"). User is
+    // an authorized actor for lifecycle, so a same-state request
+    // takes the idempotent path.
+    let resp = patch_wave(app(state.clone()), &wave_id, json!({"lifecycle": "draft"})).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_to_json(resp).await;
+    assert_eq!(body["lifecycle"], "draft");
+
+    // No bus envelope at all.
+    let bus = tokio::time::timeout(std::time::Duration::from_millis(150), rx.recv()).await;
+    assert!(
+        bus.is_err(),
+        "no event should fire for same-state lifecycle PATCH (got {bus:?})",
+    );
+
+    // Row untouched.
+    let post = state.repo.wave_get(&wave_id).await.unwrap().unwrap();
+    assert_eq!(post.lifecycle, calm_server::model::WaveLifecycle::Draft);
+    assert_eq!(
+        post.updated_at, pre.updated_at,
+        "updated_at must not advance on a lifecycle-only no-op",
+    );
+}
+
+#[tokio::test]
+async fn wave_patch_same_state_lifecycle_with_title_still_writes_title() {
+    // Companion: lifecycle is a no-op but `title` legitimately changes
+    // — we still bump the row, emit `WaveUpdated`, but NOT
+    // `WaveLifecycleChanged`. Verifies the strip-and-continue path in
+    // `routes::waves::update_wave`.
+    use calm_server::event::Event;
+    let (state, wave_id) = boot().await;
+    let mut rx = state.events.subscribe();
+
+    let resp = patch_wave(
+        app(state.clone()),
+        &wave_id,
+        json!({"lifecycle": "draft", "title": "renamed-via-rest"}),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_to_json(resp).await;
+    assert_eq!(body["title"], "renamed-via-rest");
+    assert_eq!(body["lifecycle"], "draft");
+
+    // Exactly one envelope: WaveUpdated. The lifecycle envelope is
+    // suppressed because from == to.
+    let env = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("bus delivers")
+        .expect("bus open");
+    assert!(
+        matches!(env.event, Event::WaveUpdated(_)),
+        "first envelope is WaveUpdated, got {:?}",
+        env.event,
+    );
+
+    // No follow-up envelope.
+    let bus = tokio::time::timeout(std::time::Duration::from_millis(150), rx.recv()).await;
+    assert!(
+        bus.is_err(),
+        "no WaveLifecycleChanged should be emitted for same-state lifecycle (got {bus:?})",
+    );
+}
