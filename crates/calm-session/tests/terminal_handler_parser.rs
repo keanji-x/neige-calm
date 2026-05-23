@@ -36,6 +36,7 @@ enum Call {
     SetCursorVisible(bool),
     EnterAltScreen,
     ExitAltScreen,
+    OscColorQuery(u8),
 }
 
 #[derive(Default)]
@@ -106,6 +107,9 @@ impl TerminalHandler for MockHandler {
     }
     fn exit_alt_screen(&mut self) {
         self.calls.push(Call::ExitAltScreen);
+    }
+    fn osc_color_query(&mut self, slot: u8) {
+        self.calls.push(Call::OscColorQuery(slot));
     }
 }
 
@@ -249,6 +253,35 @@ fn unknown_csi_is_silent_noop() {
     assert_eq!(drive(b"\x1b[?9999h"), vec![]);
     // Vanilla unknown final byte.
     assert_eq!(drive(b"\x1b[1;2Z"), vec![]);
+}
+
+#[test]
+fn osc_11_query_routes_to_osc_color_query_slot_11() {
+    // ESC ] 11 ; ? ST (`ST` = ESC \). codex (#177) probes default bg
+    // this way at startup; the parser must surface it as
+    // `osc_color_query(11)` so the handler can reply.
+    assert_eq!(drive(b"\x1b]11;?\x1b\\"), vec![Call::OscColorQuery(11)]);
+}
+
+#[test]
+fn osc_10_query_routes_to_osc_color_query_slot_10() {
+    // ESC ] 10 ; ? ST — default fg query. Symmetric to OSC 11.
+    assert_eq!(drive(b"\x1b]10;?\x1b\\"), vec![Call::OscColorQuery(10)]);
+}
+
+#[test]
+fn osc_11_with_rgb_payload_is_not_a_query() {
+    // A reply-shaped OSC 11 (someone telling US a color, not asking)
+    // must NOT surface as `osc_color_query`. Only the literal `?`
+    // payload is a query.
+    assert_eq!(drive(b"\x1b]11;rgb:0/0/0\x1b\\"), vec![]);
+}
+
+#[test]
+fn osc_unrelated_slot_with_query_payload_is_silent() {
+    // OSC 12 (cursor color) and other non-10/11 slots are not in scope
+    // for the #177 fix — must NOT surface a handler call.
+    assert_eq!(drive(b"\x1b]12;?\x1b\\"), vec![]);
 }
 
 #[test]
