@@ -90,8 +90,8 @@ async fn boot() -> Boot {
 
     let events = EventBus::new();
     let role_cache = CardRoleCache::new();
-    role_cache.insert(spec_card.id.clone(), CardRole::Spec);
-    role_cache.insert(worker_card.id.clone(), CardRole::Worker);
+    role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
+    role_cache.insert(worker_card.id.clone(), CardRole::Worker, wave.id.clone());
 
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let ctx = Arc::new(AppContext {

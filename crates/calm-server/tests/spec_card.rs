@@ -31,7 +31,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{BroadcastEnvelope, Event, EventBus, EventScope};
-use calm_server::ids::{ActorId, CardId};
+use calm_server::ids::{ActorId, CardId, WaveId};
 use calm_server::model::{CardRole, NewCove};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::role_gate::enforce_role;
@@ -271,7 +271,7 @@ async fn spec_card_can_emit_wave_updated_via_enforce_role() {
     // via the cache + call the gate to lock in the contract.
     let cache = CardRoleCache::new();
     let spec_id = CardId::from("spec-card-pr6");
-    cache.insert(spec_id.clone(), CardRole::Spec);
+    cache.insert(spec_id.clone(), CardRole::Spec, WaveId::from("w"));
 
     // A WaveUpdated event from AiSpec(spec_id) under Wave scope.
     let evt = Event::WaveUpdated(calm_server::model::Wave {
@@ -453,7 +453,11 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
     // the WaveUpdated that will trip the gate. Everything must
     // roll back.
     let worker_id = CardId::from("worker-card-id");
-    cache.insert(worker_id.clone(), CardRole::Worker);
+    cache.insert(
+        worker_id.clone(),
+        CardRole::Worker,
+        WaveId::from("worker-wave"),
+    );
 
     assert!(repo.coves_list().await.unwrap().is_empty());
 

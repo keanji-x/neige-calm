@@ -602,7 +602,7 @@ pub async fn card_create_with_id_tx(
     // matters (unknown card) and the next boot's `seed_from_db` will
     // overwrite stale entries from the persisted truth.
     let card_id: CardId = id.into();
-    card_role_cache.insert(card_id.clone(), role);
+    card_role_cache.insert(card_id.clone(), role, p.wave_id.clone());
     Ok(Card {
         id: card_id,
         wave_id: p.wave_id,

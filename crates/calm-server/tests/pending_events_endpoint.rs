@@ -72,7 +72,7 @@ async fn boot() -> Boot {
 
     let cache = CardRoleCache::new();
     repo.seed_card_role_cache(&cache).await.unwrap();
-    cache.insert(card.id.clone(), CardRole::Spec);
+    cache.insert(card.id.clone(), CardRole::Spec, wave.id.clone());
 
     let events = EventBus::new();
     let state = AppState::from_parts(
