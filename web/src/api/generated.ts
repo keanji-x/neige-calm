@@ -913,20 +913,20 @@ export interface components {
             program: string;
             /**
              * @description Companion to `theme_fg` — host browser's background RGB. Same
-             *     shape / lifecycle / fallback semantics.
+             *     shape / lifecycle / NOT NULL invariant.
              */
-            theme_bg?: string | null;
+            theme_bg: string;
             /**
-             * @description #177 PR2 — host browser's foreground RGB stamped at spawn time,
-             *     stored as comma-decimal `r,g,b` matching the daemon CLI's
-             *     `--terminal-fg` arg shape. `None` for terminal cards (no theme),
-             *     pre-#177 rows, and any spawn path that didn't carry theme. Read
-             *     by `spawn_daemon_with_parts` as the fallback when
-             *     `SpawnDaemonOpts.terminal_fg` is `None`, closing the WS
-             *     auto-revive race where the un-themed shim used to win the
-             *     socket against the themed initial spawn.
+             * @description #177 — host browser's foreground RGB, stamped at row creation
+             *     (NOT NULL in migration 0013). Stored as comma-decimal `r,g,b`
+             *     matching the daemon CLI's `--terminal-fg` arg shape. Read by
+             *     `spawn_daemon_for` as the *only* source of truth — no caller-
+             *     supplied theme threading, no "stay silent if absent" fallback.
+             *     Theme is a row-creation invariant: forgetting to supply it at
+             *     the `NewTerminal` boundary fails at compile time, and the
+             *     migration guarantees no NULL ever reaches the spawn helper.
              */
-            theme_fg?: string | null;
+            theme_fg: string;
         };
         /**
          * @description M5: AppBridge → kernel tool-call wire body. Mirrors the JSON-RPC

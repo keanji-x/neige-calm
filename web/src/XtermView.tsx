@@ -236,9 +236,19 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
     }/api/terminals/${encodeURIComponent(terminalId)}`;
     const ws = new WebSocket(wsUrl);
 
+    // #177 — queue frames sent before the WS finishes its handshake.
+    // The theme-effect can fire between `new WebSocket(…)` and
+    // `ws.onopen`; pre-refactor `send()` silently dropped the frame
+    // and the daemon never received the toggle. We buffer here and
+    // flush in `ws.onopen` (after the ClientHello). On WS close /
+    // teardown the queue is GC'd along with the closure, so there's
+    // no zombie message risk.
+    const pendingFrames: ClientMsg[] = [];
     const send = (msg: ClientMsg) => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(msg));
+      } else {
+        pendingFrames.push(msg);
       }
     };
     // Surface `send` to the theme-effect (which lives outside this
@@ -312,6 +322,17 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
           },
         },
       });
+      // #177 — flush frames queued before the WS finished its handshake.
+      // The typical culprit is a fast theme toggle right after card mount:
+      // the theme-effect runs after the bridge-mount effect creates the
+      // WebSocket, sometimes before `onopen` fires. Without this drain,
+      // the toggle would be silently dropped at `send()`'s readyState
+      // check and the daemon would never re-emit OSC matching the new
+      // host theme.
+      while (pendingFrames.length > 0) {
+        const queued = pendingFrames.shift()!;
+        ws.send(JSON.stringify(queued));
+      }
     };
 
     ws.onmessage = (e) => {

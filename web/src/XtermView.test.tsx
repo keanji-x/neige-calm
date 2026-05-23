@@ -508,6 +508,43 @@ describe('XtermView theme toggle (#177)', () => {
     expect(themeFrame.TerminalThemeUpdate.fg).toEqual([42, 47, 58]);
     expect(themeFrame.TerminalThemeUpdate.bg).toEqual([252, 254, 255]);
   });
+
+  it('queues TerminalThemeUpdate frames sent before WS opens and flushes them on onopen', async () => {
+    // #177 root-cause refactor (commit 4): the theme-effect can fire
+    // between `new WebSocket(…)` and `ws.onopen` — pre-fix `send()`
+    // silently dropped the frame at the `readyState !== OPEN` check.
+    // Now we queue and flush in `ws.onopen` (after the ClientHello).
+    //
+    // Setup: render with light theme so the WS opens, then re-render
+    // dark BEFORE firing onopen. The theme-effect runs synchronously
+    // on prop change while readyState is still CONNECTING, so the
+    // frame must land in the queue.
+    const { rerender } = render(
+      <XtermView terminalId="term_test" theme="light" />,
+    );
+    const ws = currentWs();
+    expect(ws.readyState).toBe(FakeWebSocketCtor.CONNECTING);
+    // Re-render BEFORE the WS opens — this is the race we're guarding.
+    await act(async () => {
+      rerender(<XtermView terminalId="term_test" theme="dark" />);
+    });
+    // The toggle attempt happened while CONNECTING; no frame escaped
+    // to `ws.send()` yet.
+    expect(ws.sentFrames).toHaveLength(0);
+    // Now fire onopen — both the ClientHello AND the queued theme
+    // frame should land on the wire.
+    await act(async () => {
+      ws.fireOpen();
+    });
+    const sent = ws.sentFrames.map((f) => JSON.parse(f));
+    // First: the ClientHello.
+    expect(sent[0]).toHaveProperty('ClientHello');
+    // Then: the queued TerminalThemeUpdate with dark RGB.
+    const themeFrame = sent.find((f) => 'TerminalThemeUpdate' in f);
+    expect(themeFrame).toBeTruthy();
+    expect(themeFrame.TerminalThemeUpdate.fg).toEqual([216, 219, 226]);
+    expect(themeFrame.TerminalThemeUpdate.bg).toEqual([15, 20, 24]);
+  });
 });
 
 describe('XtermView v2 resize wiring', () => {
