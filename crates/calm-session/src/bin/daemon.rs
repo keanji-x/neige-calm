@@ -347,7 +347,12 @@ async fn run_terminal(cli: Cli) -> anyhow::Result<()> {
 
     // ---- PTY reader → buffer + broadcast ----
     let reader = master.lock().unwrap().try_clone_reader()?;
-    spawn_pty_reader(reader, render_plane.clone(), event_tx.clone());
+    spawn_pty_reader(
+        reader,
+        render_plane.clone(),
+        event_tx.clone(),
+        stdin_tx.clone(),
+    );
 
     // ---- PTY writer ← client stdin ----
     let writer = master.lock().unwrap().take_writer()?;
@@ -589,6 +594,7 @@ fn spawn_pty_reader(
     mut reader: Box<dyn std::io::Read + Send>,
     render_plane: SharedRenderPlane,
     event_tx: broadcast::Sender<DaemonMsg>,
+    stdin_tx: mpsc::UnboundedSender<PtyWrite>,
 ) {
     std::thread::spawn(move || {
         let mut buf = [0u8; 8192];
@@ -601,7 +607,7 @@ fn spawn_pty_reader(
                         Ok(mut rp) => rp.on_pty_chunk(bytes),
                         Err(_) => Vec::new(),
                     };
-                    apply_broadcaster_effects(&event_tx, effects);
+                    apply_broadcaster_effects(&event_tx, &stdin_tx, effects);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(e) => {
@@ -615,28 +621,45 @@ fn spawn_pty_reader(
 
 /// Translate a list of effects produced by [`RenderPlane`] (or, in older
 /// chat-mode paths, [`PtyBroadcaster`]) into broadcast channel sends.
-/// The render plane only emits `Effect::Broadcast` today; the other arms
-/// are unreachable from this caller — we match exhaustively so a future
-/// `Effect` addition is a compile error here rather than a silent drop.
-fn apply_broadcaster_effects(tx: &broadcast::Sender<DaemonMsg>, effects: Vec<Effect>) {
+/// `RenderPlane::on_pty_chunk` emits `Broadcast(RenderPatch)` and — when
+/// the child probed OSC 10/11 — a `WriteToPty` carrying the synthetic
+/// reply (#177). All other effects are unreachable from this caller; we
+/// match exhaustively so a future `Effect` addition is a compile error
+/// here rather than a silent drop.
+fn apply_broadcaster_effects(
+    tx: &broadcast::Sender<DaemonMsg>,
+    stdin_tx: &mpsc::UnboundedSender<PtyWrite>,
+    effects: Vec<Effect>,
+) {
     for eff in effects {
         match eff {
             Effect::Broadcast(msg) => {
                 let _ = tx.send(msg);
             }
-            // RenderPlane only emits Broadcast today; the other variants
-            // belong to the client-frame state machine.
+            Effect::WriteToPty { data, input_seq } => {
+                // OSC 10/11 reply synthesized by `TerminalModel` while
+                // feeding the current chunk. Daemon-originated write,
+                // not client-originated — no ack needed regardless of
+                // `input_seq`.
+                let _ = stdin_tx.send(PtyWrite {
+                    data,
+                    input_seq,
+                    ack: None,
+                });
+            }
+            // RenderPlane never emits these; the other variants belong
+            // to the client-frame state machine.
             Effect::SendToClient(_)
             | Effect::ResizePty { .. }
-            | Effect::WriteToPty { .. }
             | Effect::KillChild
             | Effect::SendProtocolError { .. }
             | Effect::CloseConnection
             | Effect::AssignOwner(_)
             | Effect::BroadcastOwnerChanged(_)
-            | Effect::ProtocolViolation(_) => {
+            | Effect::ProtocolViolation(_)
+            | Effect::TerminalThemeUpdate { .. } => {
                 tracing::warn!(
-                    "RenderPlane emitted non-Broadcast effect; dropping (this is a bug)"
+                    "RenderPlane emitted non-Broadcast non-WriteToPty effect; dropping (this is a bug)"
                 );
             }
         }
@@ -693,11 +716,17 @@ fn spawn_child_waiter(
         let status = child.wait().ok();
         let code = status.map(|s| s.exit_code() as i32);
         tracing::info!(?code, "child wait returned");
+        // `on_child_exit` only emits `Broadcast(TerminalExited)`; inline
+        // the dispatch so we don't need to thread `stdin_tx` here.
         let effects = match render_plane.lock() {
             Ok(mut rp) => rp.on_child_exit(code),
             Err(_) => Vec::new(),
         };
-        apply_broadcaster_effects(&event_tx, effects);
+        for eff in effects {
+            if let Effect::Broadcast(msg) = eff {
+                let _ = event_tx.send(msg);
+            }
+        }
         let _ = shutdown_tx.send(());
     });
 }
@@ -1013,7 +1042,8 @@ async fn handle_client(
             | Effect::WriteToPty { .. }
             | Effect::KillChild
             | Effect::AssignOwner(_)
-            | Effect::BroadcastOwnerChanged(_) => {
+            | Effect::BroadcastOwnerChanged(_)
+            | Effect::TerminalThemeUpdate { .. } => {
                 tracing::warn!("unexpected effect on first frame; ignoring");
             }
         }
@@ -1211,6 +1241,48 @@ async fn handle_client(
                     down_task.abort();
                     let _ = down_task.await;
                     anyhow::bail!("{reason}");
+                }
+                Effect::TerminalThemeUpdate { fg, bg } => {
+                    // Mid-session theme toggle (#177). (a) Update the
+                    // model's default fg/bg so future OSC queries get
+                    // the new color. (b) Write a synthetic OSC 10/11
+                    // reply pair to the PTY master so the child sees
+                    // it on stdin via crossterm's event queue. (c)
+                    // Append a focus-in CSI (`ESC [ I`) — codex /
+                    // claude-tui re-query default colors on focus-in
+                    // events, which is the trigger we need to make the
+                    // TUI re-paint its composer at the new theme.
+                    if let Ok(mut rp) = render_plane.lock() {
+                        rp.set_default_colors(Some(fg), Some(bg));
+                    }
+                    let to16 = |c: u8| (c as u16) * 257;
+                    let mut data: Vec<u8> = Vec::with_capacity(80);
+                    let osc10 = format!(
+                        "\x1b]10;rgb:{:04x}/{:04x}/{:04x}\x1b\\",
+                        to16(fg.0),
+                        to16(fg.1),
+                        to16(fg.2),
+                    );
+                    let osc11 = format!(
+                        "\x1b]11;rgb:{:04x}/{:04x}/{:04x}\x1b\\",
+                        to16(bg.0),
+                        to16(bg.1),
+                        to16(bg.2),
+                    );
+                    data.extend_from_slice(osc10.as_bytes());
+                    data.extend_from_slice(osc11.as_bytes());
+                    data.extend_from_slice(b"\x1b[I");
+                    if stdin_tx
+                        .send(PtyWrite {
+                            data,
+                            input_seq: 0,
+                            ack: None,
+                        })
+                        .is_err()
+                    {
+                        closed = true;
+                        break;
+                    }
                 }
             }
         }
@@ -1463,7 +1535,8 @@ async fn handle_chat_client(
             | ClientMsg::ResizeCommit { .. }
             | ClientMsg::OwnerClaim
             | ClientMsg::OwnerRelease
-            | ClientMsg::RenderAck { .. } => {
+            | ClientMsg::RenderAck { .. }
+            | ClientMsg::TerminalThemeUpdate { .. } => {
                 tracing::debug!("ignoring terminal-mode frame in chat mode");
             }
         }

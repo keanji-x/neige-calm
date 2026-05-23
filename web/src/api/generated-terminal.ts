@@ -58,7 +58,7 @@ export type ClientCapabilities = { render_encodings: Array<RenderEncoding>, supp
  */
 kernel_originated_input: boolean, };
 
-export type ClientMsg = { "ClientHello": { protocol_version: number, terminal_id: string, client_id: string, desired_size: PtySize, cell_size: CellSize | null, initial_scrollback: InitialScrollback, resume_from: ResumeFrom | null, role_hint: Role | null, capabilities: ClientCapabilities, } } | { "Input": { data: Array<number>, input_seq: number, } } | { "ResizeCommit": { epoch: number, cols: number, rows: number, } } | "OwnerClaim" | "OwnerRelease" | { "RenderAck": { render_rev: number, pty_seq: number | null, } } | "Kill" | { "ChatUserMessage": { content: string, } } | "ChatStop" | { "AnswerQuestion": { question_id: string, answers: { [key in string]: string }, } };
+export type ClientMsg = { "ClientHello": { protocol_version: number, terminal_id: string, client_id: string, desired_size: PtySize, cell_size: CellSize | null, initial_scrollback: InitialScrollback, resume_from: ResumeFrom | null, role_hint: Role | null, capabilities: ClientCapabilities, } } | { "Input": { data: Array<number>, input_seq: number, } } | { "ResizeCommit": { epoch: number, cols: number, rows: number, } } | "OwnerClaim" | "OwnerRelease" | { "RenderAck": { render_rev: number, pty_seq: number | null, } } | "Kill" | { "ChatUserMessage": { content: string, } } | "ChatStop" | { "AnswerQuestion": { question_id: string, answers: { [key in string]: string }, } } | { "TerminalThemeUpdate": { fg: [number, number, number], bg: [number, number, number], } };
 
 export type DaemonMsg = { "ServerHello": { protocol_version: number, terminal_id: string, session_id: string, client_role: Role, owner_client_id: string | null, pty_size: PtySize, pty_seq_head: number, pty_seq_tail: number, render_rev: number, snapshot: RenderSnapshot, history_gap: HistoryGap | null, is_child_ready: boolean, } } | { "RenderSnapshot": RenderSnapshot } | { "RenderPatch": RenderPatch } | { "ResizeApplied": { epoch: number, pty_seq: number, render_rev: number, cols: number, rows: number, } } | { "OwnerChanged": { owner_client_id: string | null, } } | { "Backpressure": { policy: BackpressurePolicy, } } | { "SnapshotRequired": { reason: string, } } | { "TerminalExited": { code: number | null, pty_seq: number, render_rev: number, } } | { "ProtocolError": { code: ProtocolErrorCode, message: string, expected_version: number | null, } } | { "ChildReady": { pty_seq: number, render_rev: number, } } | { "InputAck": { input_seq: number, } } | { "HelloChat": { replay: Array<string>, } } | { "ChatEvent": { json: string, } } | { "ChildExited": { code: number | null, } };
 
@@ -132,3 +132,20 @@ export type ResumeFrom = { render_rev: number | null, pty_seq: number | null, };
  * the daemon never negotiates).
  */
 export type Role = "Owner" | "Observer";
+
+/**
+ * Default foreground / background RGB the daemon advertises to the PTY
+ * child in reply to OSC 10/11 color queries (#177). Plumbed two ways:
+ *
+ * 1. As CLI args (`--terminal-fg`/`--terminal-bg`) on daemon spawn so
+ *    the model can answer codex's startup probe before the first PTY
+ *    chunk lands.
+ * 2. As [`ClientMsg::TerminalThemeUpdate`] when the browser toggles
+ *    theme mid-session — the daemon updates the model and emits a
+ *    synthetic OSC 10 + OSC 11 reply to the PTY so the child can
+ *    re-paint at the new colors.
+ *
+ * Each channel is a plain u8 (8-bit per channel); the daemon expands
+ * to xterm's 16-bit `rgb:RRRR/GGGG/BBBB` reply form (`c * 257`).
+ */
+export type TerminalTheme = { fg: [number, number, number], bg: [number, number, number], };

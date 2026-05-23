@@ -81,6 +81,68 @@ fn render_plane_on_resize_emits_render_snapshot() {
 }
 
 #[test]
+fn render_plane_osc_11_query_emits_write_to_pty_with_reply() {
+    // #177: when the model has a default_bg configured and the child
+    // probes via OSC 11, `on_pty_chunk` must surface a `WriteToPty`
+    // effect carrying the reply alongside the usual `RenderPatch`
+    // broadcast.
+    let mut rp = RenderPlane::with_colors(80, 24, 4096, 100, None, Some((17, 20, 24)));
+    let effects = rp.on_pty_chunk(b"\x1b]11;?\x1b\\".to_vec());
+
+    let has_patch = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::Broadcast(DaemonMsg::RenderPatch(p)) if p.encoding == RenderEncoding::Vt,
+        )
+    });
+    assert!(has_patch, "expected RenderPatch broadcast, got {effects:?}");
+
+    let write_data = effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::WriteToPty { data, .. } => Some(data.clone()),
+            _ => None,
+        })
+        .expect("expected WriteToPty with OSC 11 reply");
+    assert!(
+        write_data.starts_with(b"\x1b]11;rgb:"),
+        "expected OSC 11 reply prefix, got {write_data:?}",
+    );
+}
+
+#[test]
+fn render_plane_without_default_colors_stays_silent_on_osc_query() {
+    // No `with_colors` → no reply, just the usual RenderPatch broadcast.
+    // Locks the back-compat path: a daemon spawned without
+    // `--terminal-fg`/`--terminal-bg` continues to behave like pre-#177.
+    let mut rp = RenderPlane::new(80, 24, 4096, 100);
+    let effects = rp.on_pty_chunk(b"\x1b]11;?\x1b\\".to_vec());
+    assert!(
+        !effects.iter().any(|e| matches!(e, Effect::WriteToPty { .. })),
+        "without default colors there must be no WriteToPty, got {effects:?}"
+    );
+}
+
+#[test]
+fn render_plane_set_default_colors_takes_effect_for_next_query() {
+    // Mid-session theme toggle path (#177): the kernel-input-authorized
+    // ClientMsg::TerminalThemeUpdate eventually calls into
+    // `set_default_colors`. Verify a subsequent OSC query reflects the
+    // new value.
+    let mut rp = RenderPlane::new(80, 24, 4096, 100);
+    rp.set_default_colors(Some((216, 219, 226)), Some((15, 20, 24)));
+    let effects = rp.on_pty_chunk(b"\x1b]10;?\x1b\\".to_vec());
+    let write = effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::WriteToPty { data, .. } => Some(data.clone()),
+            _ => None,
+        })
+        .expect("expected WriteToPty");
+    assert!(write.starts_with(b"\x1b]10;rgb:"));
+}
+
+#[test]
 fn render_plane_build_snapshot_with_scrollback_lines() {
     // Force scrollback to accumulate by feeding more lines than fit.
     let mut rp = RenderPlane::new(10, 2, 4096, 100);

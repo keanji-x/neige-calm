@@ -55,13 +55,20 @@ pub const FRAME_MAGIC: [u8; 4] = *b"NEIG";
 ///
 /// v2: `ClientMsg` / `DaemonMsg` terminal variants completely replaced (no
 /// v1 compatibility); chat variants unchanged. See issue #44.
-pub const FRAME_VERSION: u16 = 2;
+///
+/// v3 (#177): adds `ClientMsg::TerminalThemeUpdate`. Variant additions
+/// move the bincode discriminant space — anything that decodes an older
+/// `Input { data, input_seq }` frame against a v3 schema (or vice versa)
+/// will silently misread. `FRAME_VERSION` and `PROTOCOL_VERSION` move in
+/// lockstep on every breaking enum change so the magic+version preamble
+/// rejects skewed peers before bincode parses garbage.
+pub const FRAME_VERSION: u16 = 3;
 
 /// Application-layer protocol version carried in [`ClientMsg::ClientHello`]
 /// and [`DaemonMsg::ServerHello`]. Distinct from [`FRAME_VERSION`] because
 /// the wire envelope and the payload schema can move independently; today
-/// they happen to be in lockstep at 2/2.
-pub const PROTOCOL_VERSION: u16 = 2;
+/// they happen to be in lockstep at 3/3 (#177 bump).
+pub const PROTOCOL_VERSION: u16 = 3;
 
 /// Typed errors from the framing layer. The kernel↔daemon WS bridge in
 /// `calm-server` matches on [`FrameError::BadMagic`] /
@@ -130,6 +137,26 @@ pub struct PtySize {
     pub rows: u16,
     pub pixel_width: Option<u16>,
     pub pixel_height: Option<u16>,
+}
+
+/// Default foreground / background RGB the daemon advertises to the PTY
+/// child in reply to OSC 10/11 color queries (#177). Plumbed two ways:
+///
+/// 1. As CLI args (`--terminal-fg`/`--terminal-bg`) on daemon spawn so
+///    the model can answer codex's startup probe before the first PTY
+///    chunk lands.
+/// 2. As [`ClientMsg::TerminalThemeUpdate`] when the browser toggles
+///    theme mid-session — the daemon updates the model and emits a
+///    synthetic OSC 10 + OSC 11 reply to the PTY so the child can
+///    re-paint at the new colors.
+///
+/// Each channel is a plain u8 (8-bit per channel); the daemon expands
+/// to xterm's 16-bit `rgb:RRRR/GGGG/BBBB` reply form (`c * 257`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
+pub struct TerminalTheme {
+    pub fg: (u8, u8, u8),
+    pub bg: (u8, u8, u8),
 }
 
 /// Single cell's pixel footprint as the client measured it. Sent only when
@@ -368,6 +395,22 @@ pub enum ClientMsg {
         #[ts(type = "string")]
         question_id: Uuid,
         answers: HashMap<String, String>,
+    },
+    /// Browser-driven mid-session theme toggle (#177). Carries the new
+    /// host theme's foreground + background RGB. The daemon updates its
+    /// `TerminalModel::set_default_colors` AND emits a synthetic OSC 10
+    /// + OSC 11 reply (followed by a focus-in CSI `ESC [ I`) to the PTY
+    /// master so the child (codex / claude-tui / ...) re-queries default
+    /// colors and re-paints its composer at the new theme.
+    ///
+    /// Owner-only — same gating as [`ClientMsg::Input`] including the
+    /// `kernel_originated_input` exception, since the bytes ultimately
+    /// hit the PTY master and the daemon must not let an observer (or a
+    /// malicious tab acting through a forged ClientHello) hijack the
+    /// child's terminal colors.
+    TerminalThemeUpdate {
+        fg: (u8, u8, u8),
+        bg: (u8, u8, u8),
     },
 }
 
@@ -676,7 +719,7 @@ mod framing_tests {
         write_frame(&mut wire, &original).await.expect("write");
 
         // Sanity-check: header is exactly magic+version+len, version is the
-        // current FRAME_VERSION (i.e. 2 post-#44).
+        // current FRAME_VERSION.
         assert_eq!(&wire[0..4], &FRAME_MAGIC);
         assert_eq!(
             u16::from_be_bytes([wire[4], wire[5]]),
@@ -690,31 +733,33 @@ mod framing_tests {
     }
 
     #[tokio::test]
-    async fn framing_version_2_round_trip() {
-        // Locks the FRAME_VERSION=2 wire shape (issue #44). Hand-build the
+    async fn framing_current_version_round_trip() {
+        // Locks the current FRAME_VERSION wire shape. Hand-build the
         // header so the version byte is asserted independently from
         // FRAME_VERSION's value.
         let payload = encode_payload(&ClientMsg::Kill);
-        let wire = build_frame(FRAME_MAGIC, 2, &payload);
+        let wire = build_frame(FRAME_MAGIC, FRAME_VERSION, &payload);
         let mut cursor = Cursor::new(wire);
-        let decoded: ClientMsg = read_frame(&mut cursor).await.expect("read v2");
+        let decoded: ClientMsg = read_frame(&mut cursor).await.expect("read");
         assert_eq!(decoded, ClientMsg::Kill);
     }
 
     #[tokio::test]
-    async fn framing_version_1_payload_yields_unsupported_frame_version() {
-        // Bytes pretending to be v1: same magic, version=1, valid bincode.
-        // Post-#44 daemons MUST reject this — a v1 binary will never talk
-        // to a v2 binary without an explicit upgrade.
+    async fn framing_older_version_yields_unsupported_frame_version() {
+        // Bytes pretending to be an older protocol version: same magic,
+        // version=FRAME_VERSION-1, valid bincode. Post-#44 (and now #177)
+        // daemons MUST reject this — peers move in lockstep.
+        assert!(FRAME_VERSION >= 1, "FRAME_VERSION sanity");
         let payload = encode_payload(&ClientMsg::Kill);
-        let wire = build_frame(FRAME_MAGIC, 1, &payload);
+        let older = FRAME_VERSION - 1;
+        let wire = build_frame(FRAME_MAGIC, older, &payload);
         let mut cursor = Cursor::new(wire);
         let err = read_frame::<ClientMsg, _>(&mut cursor)
             .await
-            .expect_err("must reject v1 framing");
+            .expect_err("must reject older framing");
         match err {
             FrameError::UnsupportedFrameVersion { got, supported } => {
-                assert_eq!(got, 1);
+                assert_eq!(got, older);
                 assert_eq!(supported, FRAME_VERSION);
             }
             other => panic!("expected UnsupportedFrameVersion, got {other:?}"),
