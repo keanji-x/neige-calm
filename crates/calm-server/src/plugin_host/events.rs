@@ -113,6 +113,7 @@ fn event_plugin_id(ev: &Event) -> Option<String> {
         | Event::CoveDeleted { .. }
         | Event::WaveUpdated(_)
         | Event::WaveDeleted { .. }
+        | Event::WaveLifecycleChanged { .. }
         | Event::CardAdded(_)
         | Event::CardUpdated(_)
         | Event::CardDeleted { .. }
@@ -138,7 +139,9 @@ fn event_plugin_id(ev: &Event) -> Option<String> {
 /// explicit-arm in [`event_entity_id`].
 fn event_entity_kind(ev: &Event) -> Option<String> {
     match ev {
-        Event::WaveUpdated(_) | Event::WaveDeleted { .. } => Some("wave".into()),
+        Event::WaveUpdated(_) | Event::WaveDeleted { .. } | Event::WaveLifecycleChanged { .. } => {
+            Some("wave".into())
+        }
         Event::CardAdded(_) | Event::CardUpdated(_) | Event::CardDeleted { .. } => {
             Some("card".into())
         }
@@ -168,6 +171,7 @@ fn event_entity_id(ev: &Event) -> Option<String> {
         Event::CoveDeleted { id } => Some(id.to_string()),
         Event::WaveUpdated(w) => Some(w.id.to_string()),
         Event::WaveDeleted { id, .. } => Some(id.to_string()),
+        Event::WaveLifecycleChanged { id, .. } => Some(id.to_string()),
         Event::CardAdded(c) | Event::CardUpdated(c) => Some(c.id.to_string()),
         Event::CardDeleted { id, .. } => Some(id.to_string()),
         Event::OverlaySet(o) => Some(o.entity_id.clone()),
@@ -220,6 +224,7 @@ mod tests {
             title: "t".into(),
             sort: 1.0,
             archived_at: None,
+            lifecycle: crate::model::WaveLifecycle::Draft,
             created_at: 0,
             updated_at: 0,
         }

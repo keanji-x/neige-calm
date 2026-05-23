@@ -469,15 +469,23 @@ pub async fn wave_create_tx(tx: &mut Transaction<'_, Sqlite>, p: NewWave) -> Res
     };
     let now = now_ms();
     let id = new_id();
+    // Issue #145 — new waves seed at `lifecycle = 'draft'`. The DB
+    // DEFAULT in migration 0012 also pins this, but stamping it
+    // explicitly here matches the "required field, no Option" model:
+    // every wave-create path declares the seed lifecycle in code so a
+    // future change to the seed value can't be reached by skipping
+    // the column from the INSERT list.
+    let lifecycle = crate::model::WaveLifecycle::Draft;
     sqlx::query(
         r#"INSERT INTO waves
-           (id, cove_id, title, sort, archived_at, created_at, updated_at)
-           VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6)"#,
+           (id, cove_id, title, sort, archived_at, lifecycle, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7)"#,
     )
     .bind(&id)
     .bind(&p.cove_id)
     .bind(&p.title)
     .bind(sort)
+    .bind(lifecycle)
     .bind(now)
     .bind(now)
     .execute(&mut **tx)
@@ -488,6 +496,7 @@ pub async fn wave_create_tx(tx: &mut Transaction<'_, Sqlite>, p: NewWave) -> Res
         title: p.title,
         sort,
         archived_at: None,
+        lifecycle,
         created_at: now,
         updated_at: now,
     })
@@ -499,7 +508,7 @@ pub async fn wave_update_tx(
     p: WavePatch,
 ) -> Result<Wave> {
     let mut w = sqlx::query_as::<_, Wave>(
-        r#"SELECT id, cove_id, title, sort, archived_at, created_at, updated_at
+        r#"SELECT id, cove_id, title, sort, archived_at, lifecycle, created_at, updated_at
            FROM waves WHERE id = ?1"#,
     )
     .bind(id)
@@ -516,15 +525,27 @@ pub async fn wave_update_tx(
     if let Some(v) = p.archived_at {
         w.archived_at = v;
     }
+    // Issue #145 — `WavePatch.lifecycle` is applied here, but the
+    // transition is validated by `validate_transition` at the call
+    // site (REST handler / MCP tool), *outside* the DB layer. Routing
+    // the validator through the route boundary (rather than this
+    // function) keeps `wave_update_tx` a pure mechanical row write
+    // and avoids threading `ActorId` through every call site that
+    // patches the row. Production code paths that mutate
+    // `lifecycle` must call `validate_transition` first.
+    if let Some(v) = p.lifecycle {
+        w.lifecycle = v;
+    }
     w.updated_at = now_ms();
 
     sqlx::query(
-        r#"UPDATE waves SET title = ?1, sort = ?2, archived_at = ?3, updated_at = ?4
-           WHERE id = ?5"#,
+        r#"UPDATE waves SET title = ?1, sort = ?2, archived_at = ?3, lifecycle = ?4, updated_at = ?5
+           WHERE id = ?6"#,
     )
     .bind(&w.title)
     .bind(w.sort)
     .bind(w.archived_at)
+    .bind(w.lifecycle)
     .bind(w.updated_at)
     .bind(&w.id)
     .execute(&mut **tx)
@@ -1135,7 +1156,7 @@ impl RepoRead for SqlxRepo {
     // ---------------------------------------------------------------- waves
     async fn waves_by_cove(&self, cove_id: &str) -> Result<Vec<Wave>> {
         let rows = sqlx::query_as::<_, Wave>(
-            r#"SELECT id, cove_id, title, sort, archived_at, created_at, updated_at
+            r#"SELECT id, cove_id, title, sort, archived_at, lifecycle, created_at, updated_at
                FROM waves WHERE cove_id = ?1 ORDER BY sort ASC"#,
         )
         .bind(cove_id)
@@ -1146,7 +1167,7 @@ impl RepoRead for SqlxRepo {
 
     async fn wave_get(&self, id: &str) -> Result<Option<Wave>> {
         let row = sqlx::query_as::<_, Wave>(
-            r#"SELECT id, cove_id, title, sort, archived_at, created_at, updated_at
+            r#"SELECT id, cove_id, title, sort, archived_at, lifecycle, created_at, updated_at
                FROM waves WHERE id = ?1"#,
         )
         .bind(id)
@@ -1158,7 +1179,7 @@ impl RepoRead for SqlxRepo {
     async fn wave_detail(&self, id: &str) -> Result<Option<WaveDetail>> {
         let mut tx = self.pool.begin().await?;
         let wave = sqlx::query_as::<_, Wave>(
-            r#"SELECT id, cove_id, title, sort, archived_at, created_at, updated_at
+            r#"SELECT id, cove_id, title, sort, archived_at, lifecycle, created_at, updated_at
                FROM waves WHERE id = ?1"#,
         )
         .bind(id)

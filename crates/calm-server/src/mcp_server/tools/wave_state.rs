@@ -64,7 +64,7 @@
 //! since the verdict is wave-level metadata about a worker the spec
 //! supervises, not the spec's own card state.
 
-use crate::db::write_with_event_typed;
+use crate::db::{write_with_event_typed, write_with_events_typed};
 use crate::error::CalmError;
 use crate::event::{Event, EventScope};
 use crate::ids::WaveId;
@@ -73,7 +73,8 @@ use crate::mcp_server::registry::{
     AppContext, CardIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     require_role,
 };
-use crate::model::{CardRole, Wave, WavePatch};
+use crate::model::{CardRole, Wave, WaveLifecycle, WavePatch};
+use crate::wave_lifecycle::validate_transition;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -162,16 +163,36 @@ fn update_wave_state_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_UPDATE_WAVE_STATE.into(),
         description: "Spec-only: patch the wave row (`title` / `sort` / \
-             `archived_at`) and emit `wave.updated`. Omitted fields are \
-             left unchanged. `archived_at = null` unarchives; a positive \
-             ms timestamp archives. Returns the post-patch wave."
+             `archived_at` / `lifecycle`) and emit `wave.updated` (plus \
+             `wave.lifecycle_changed` when `lifecycle` is set and the \
+             requested transition actually changes state). Omitted \
+             fields are left unchanged. `archived_at = null` \
+             unarchives; a positive ms timestamp archives. `lifecycle` \
+             accepts the typed state names — see issue #145 / \
+             `wave_lifecycle.rs` for the allowed `from → to` table. \
+             A same-state lifecycle request (e.g. setting `lifecycle` \
+             to the wave's current state) is an idempotent silent \
+             success: no `wave.lifecycle_changed` event is emitted, \
+             and if `lifecycle` was the only field supplied the row is \
+             not rewritten. An illegal transition is rejected with \
+             `-32403`; the wave row and event log are both untouched. \
+             Returns the post-patch wave."
             .into(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "title": { "type": "string" },
                 "sort": { "type": "number" },
-                "archived_at": { "type": ["integer", "null"] }
+                "archived_at": { "type": ["integer", "null"] },
+                "lifecycle": {
+                    "type": "string",
+                    "enum": [
+                        "draft", "planning", "dispatching", "working",
+                        "blocked", "reviewing", "done", "canceled", "failed"
+                    ],
+                    "description": "Request a Wave lifecycle transition. The kernel \
+                         validates (from, to, actor=spec) via wave_lifecycle::validate_transition."
+                }
             }
         }),
     }
@@ -191,28 +212,91 @@ async fn update_wave_state(
     let cove_id = current.cove_id.clone();
     let scope = EventScope::Wave {
         wave: wave_id.clone(),
-        cove: cove_id,
+        cove: cove_id.clone(),
     };
     let actor = identity.to_actor_id();
 
-    let (updated_wave, _id) = write_with_event_typed::<Wave, _>(
-        ctx.repo.as_ref(),
-        actor,
-        scope,
-        None,
-        &ctx.events,
-        &ctx.card_role_cache,
-        move |tx| {
-            let wave_id = wave_id.clone();
-            let patch = patch.clone();
-            Box::pin(async move {
-                let updated = apply_wave_patch_tx(tx, &wave_id, patch).await?;
-                Ok((updated.clone(), Event::WaveUpdated(updated)))
-            })
-        },
-    )
-    .await
-    .map_err(map_emit_error)?;
+    // Issue #145 — lifecycle transitions go through the state machine
+    // *before* the row update. The MCP entry mirrors the REST handler
+    // in `routes::waves::update_wave`: validate (from → to, actor),
+    // surface `-32403` on rejection so the spec agent sees a clear
+    // shape, otherwise emit `WaveLifecycleChanged` alongside the
+    // usual `WaveUpdated` in one transaction.
+    //
+    // Idempotent same-state: when `patch.lifecycle == Some(current)`
+    // (e.g. the spec retried `update_wave_state(lifecycle="planning")`
+    // while already planning), the validator returns `Ok(())` and we
+    // strip `lifecycle` from the patch so neither
+    // `WaveLifecycleChanged` nor a pointless column rewrite happens.
+    // If `lifecycle` was the *only* supplied field, the resulting
+    // patch is fully empty and we return the wave row without
+    // touching the DB — distinct from an explicit `{}` ping (which
+    // still bumps `updated_at` and re-broadcasts as before).
+    let lifecycle_was_only_field = patch.lifecycle.is_some()
+        && patch.title.is_none()
+        && patch.sort.is_none()
+        && patch.archived_at.is_none();
+    let mut patch = patch;
+    let lifecycle_change = if let Some(to) = patch.lifecycle {
+        validate_transition(current.lifecycle, to, &actor)
+            .map_err(|e| RpcError::custom(-32403, format!("update_wave_state: lifecycle: {e}")))?;
+        if current.lifecycle == to {
+            patch.lifecycle = None;
+            None
+        } else {
+            Some((current.lifecycle, to))
+        }
+    } else {
+        None
+    };
+
+    // Idempotent shortcut: lifecycle was the sole patch field and it
+    // turned out to be a no-op, so there's nothing to write and
+    // nothing to emit. Return the unchanged wave row. The `{}`
+    // ping path is unaffected (`lifecycle_was_only_field` is false
+    // when `patch.lifecycle` is None).
+    if lifecycle_was_only_field && lifecycle_change.is_none() {
+        return Ok(json!({ "ok": true, "wave": current }));
+    }
+
+    let wave_id_for_event = wave_id.clone();
+    let cove_id_for_event = cove_id.clone();
+    let scope_for_tx = scope.clone();
+    let patch_for_tx = patch.clone();
+    let ((updated_wave, _emitted_lifecycle), _ids) =
+        write_with_events_typed::<(Wave, Option<(WaveLifecycle, WaveLifecycle)>), _>(
+            ctx.repo.as_ref(),
+            actor,
+            None,
+            &ctx.events,
+            &ctx.card_role_cache,
+            move |tx| {
+                let scope_inner = scope_for_tx.clone();
+                let wave_id_inner = wave_id.clone();
+                let patch_inner = patch_for_tx.clone();
+                let wave_id_event = wave_id_for_event.clone();
+                let cove_id_event = cove_id_for_event.clone();
+                Box::pin(async move {
+                    let updated = apply_wave_patch_tx(tx, &wave_id_inner, patch_inner).await?;
+                    let mut events: Vec<(EventScope, Event)> = Vec::new();
+                    if let Some((from, to)) = lifecycle_change {
+                        events.push((
+                            scope_inner.clone(),
+                            Event::WaveLifecycleChanged {
+                                id: wave_id_event,
+                                cove_id: cove_id_event,
+                                from,
+                                to,
+                            },
+                        ));
+                    }
+                    events.push((scope_inner, Event::WaveUpdated(updated.clone())));
+                    Ok(((updated, lifecycle_change), events))
+                })
+            },
+        )
+        .await
+        .map_err(map_emit_error)?;
 
     Ok(json!({ "ok": true, "wave": updated_wave }))
 }
@@ -283,6 +367,23 @@ fn parse_wave_patch(args: &Value) -> Result<WavePatch, RpcError> {
         }
     };
 
+    // Issue #145 — optional lifecycle transition. Accepts only the
+    // typed state names; anything else is rejected at parse time so
+    // an LLM typo never reaches `validate_transition`. The actual
+    // (from, to, actor) check runs inside `update_wave_state` once
+    // we know the current state of the wave.
+    let lifecycle = match obj.get("lifecycle") {
+        None => None,
+        Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(parse_lifecycle_name(s)?),
+        Some(other) => {
+            return Err(RpcError::invalid_params(format!(
+                "update_wave_state: `lifecycle` must be a string, got {}",
+                shape_of(other)
+            )));
+        }
+    };
+
     // An empty patch is a valid no-op call — the spec might "ping"
     // the wave by passing `{}` to refresh `updated_at` + re-broadcast
     // the row. `wave_update_tx` stamps `updated_at = now_ms()`
@@ -292,7 +393,32 @@ fn parse_wave_patch(args: &Value) -> Result<WavePatch, RpcError> {
         title,
         sort,
         archived_at,
+        lifecycle,
     })
+}
+
+/// Parse the wire-side lowercase lifecycle string into the typed enum.
+/// Keeps the accepted vocabulary in one place so it stays in sync with
+/// `WaveLifecycle`'s serde rename. A future variant addition surfaces
+/// as a compile-time `match` exhaustiveness diff if you write the new
+/// arm here too.
+fn parse_lifecycle_name(s: &str) -> Result<WaveLifecycle, RpcError> {
+    match s {
+        "draft" => Ok(WaveLifecycle::Draft),
+        "planning" => Ok(WaveLifecycle::Planning),
+        "dispatching" => Ok(WaveLifecycle::Dispatching),
+        "working" => Ok(WaveLifecycle::Working),
+        "blocked" => Ok(WaveLifecycle::Blocked),
+        "reviewing" => Ok(WaveLifecycle::Reviewing),
+        "done" => Ok(WaveLifecycle::Done),
+        "canceled" => Ok(WaveLifecycle::Canceled),
+        "failed" => Ok(WaveLifecycle::Failed),
+        other => Err(RpcError::invalid_params(format!(
+            "update_wave_state: unknown lifecycle `{other}`. \
+             Allowed: draft, planning, dispatching, working, blocked, \
+             reviewing, done, canceled, failed."
+        ))),
+    }
 }
 
 // ---------------------------------------------------------------------------

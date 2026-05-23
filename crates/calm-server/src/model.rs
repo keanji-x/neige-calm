@@ -153,6 +153,83 @@ pub struct CovePatch {
     pub sort: Option<f64>,
 }
 
+// ---------------- WaveLifecycle ----------------
+
+/// Issue #145 — Wave lifecycle state machine.
+///
+/// One explicit state per wave, advanced through a typed state machine
+/// (see `crate::wave_lifecycle`). The Spec Agent drives the happy path
+/// (`draft → planning → dispatching → working → reviewing → done`);
+/// the user can cancel any non-terminal state and reopen terminals;
+/// worker cards have no authority to touch this field at all.
+///
+/// **`archived` is intentionally NOT a lifecycle state.** Archive is
+/// visibility / history management, orthogonal to execution semantics —
+/// a `done`/`failed`/`canceled` wave can also be archived without
+/// destroying the lifecycle truth. Archival continues to live on the
+/// existing `archived_at: Option<i64>` field.
+///
+/// Persisted as a lowercase string in `waves.lifecycle` (migration
+/// 0012). The serde + sqlx `rename_all = "lowercase"` keeps the wire
+/// and storage shape stable; ts-rs exports the matching TS union into
+/// `web/src/api/generated-events.ts` so the frontend can render the
+/// badge against the same vocabulary.
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    sqlx::Type,
+    ToSchema,
+    TS,
+)]
+#[sqlx(rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
+pub enum WaveLifecycle {
+    /// New wave; user is editing goal/context and hasn't handed off to
+    /// the Spec Agent yet. **Default for every newly minted wave.**
+    #[default]
+    Draft,
+    /// Spec Agent is reading the goal + code context and producing a plan.
+    Planning,
+    /// Spec Agent has emitted one or more dispatch requests and the
+    /// Dispatcher is spawning worker cards.
+    Dispatching,
+    /// At least one worker card is executing; the wave has not reached
+    /// review.
+    Working,
+    /// Wave needs human input, or a worker failed in a way the Spec
+    /// Agent cannot recover from autonomously.
+    Blocked,
+    /// Workers have produced results; Spec Agent or the user is
+    /// validating them.
+    Reviewing,
+    /// Wave goal achieved; results accepted. **Terminal.**
+    Done,
+    /// User chose to abandon the wave. **Terminal.**
+    Canceled,
+    /// System-level failure that cannot recover. **Terminal.**
+    Failed,
+}
+
+impl WaveLifecycle {
+    /// Convenience: is this a terminal state? Terminal states (`done`,
+    /// `canceled`, `failed`) cannot transition to anything except via
+    /// a user-driven reopen (per `crate::wave_lifecycle`).
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            WaveLifecycle::Done | WaveLifecycle::Canceled | WaveLifecycle::Failed
+        )
+    }
+}
+
 // ---------------- Wave ----------------
 
 #[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema, TS)]
@@ -165,6 +242,18 @@ pub struct Wave {
     pub title: String,
     pub sort: f64,
     pub archived_at: Option<i64>,
+    /// Issue #145 — the wave's lifecycle state. **Required** (no
+    /// `Option`): every wave-creating code path must seed
+    /// [`WaveLifecycle::Draft`] explicitly. Per the project's
+    /// "required over Option" preference, Option here would silently
+    /// hide missing-data bugs — the field is core kernel contract.
+    ///
+    /// `#[serde(default)]` lets wire payloads emitted before #145
+    /// landed (event-log replay fixtures) parse as `Draft` without
+    /// forcing a fixture rewrite — matches the DB DEFAULT in
+    /// migration 0012.
+    #[serde(default)]
+    pub lifecycle: WaveLifecycle,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -186,6 +275,12 @@ pub struct WavePatch {
     #[serde(default, deserialize_with = "deserialize_double_option")]
     #[schema(value_type = Option<i64>, nullable = true)]
     pub archived_at: Option<Option<i64>>,
+    /// Issue #145 — request a lifecycle transition. The actual
+    /// transition validation runs through `crate::wave_lifecycle`,
+    /// inside the write transaction. Omitting (`None`) means "leave
+    /// alone"; `Some(<state>)` triggers the validator against the
+    /// (actor, from → to) triple before any DB write or event emit.
+    pub lifecycle: Option<WaveLifecycle>,
 }
 
 // ---------------- Card ----------------

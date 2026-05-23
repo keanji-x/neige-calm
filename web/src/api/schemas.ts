@@ -54,6 +54,34 @@ export const coveSchema = z.object({
   updated_at: z.number(),
 });
 
+/**
+ * Issue #145 — `model::WaveLifecycle`. Single source of truth for the
+ * lifecycle state machine the Spec Agent drives. Wire values are
+ * lowercase (`#[serde(rename_all = "lowercase")]` on the Rust enum).
+ * `archived` is intentionally NOT a lifecycle state — archive is
+ * orthogonal visibility on `wave.archived_at`.
+ *
+ * Defaults to `'draft'` for any pre-#145 wire payload (replay
+ * fixtures, legacy event logs) — matches the DB DEFAULT in
+ * migration 0012 and the `#[serde(default)]` on the Rust struct
+ * field. Forces wave payloads emitted *before* the lifecycle column
+ * existed to parse without a fixture rewrite.
+ */
+export const waveLifecycleSchema = z
+  .enum([
+    'draft',
+    'planning',
+    'dispatching',
+    'working',
+    'blocked',
+    'reviewing',
+    'done',
+    'canceled',
+    'failed',
+  ])
+  .default('draft');
+export type WaveLifecycle = z.infer<typeof waveLifecycleSchema>;
+
 /** `model::Wave` — wave metadata row. `archived_at` is `Option<i64>` server-side. */
 export const waveSchema = z.object({
   id: z.string(),
@@ -61,6 +89,13 @@ export const waveSchema = z.object({
   title: z.string(),
   sort: z.number(),
   archived_at: z.number().nullable(),
+  /**
+   * Issue #145 — the wave's lifecycle state. Defaulted at the schema
+   * layer to `'draft'` so a missing field on pre-#145 wire payloads
+   * (event-log replay fixtures) parses cleanly. The kernel always
+   * stamps a value on fresh writes.
+   */
+  lifecycle: waveLifecycleSchema,
   created_at: z.number(),
   updated_at: z.number(),
 });
@@ -109,6 +144,23 @@ export const waveUpdatedSchema = z.object({
 export const waveDeletedSchema = z.object({
   ev: z.literal('wave.deleted'),
   data: z.object({ id: z.string(), cove_id: z.string() }),
+});
+
+/**
+ * Issue #145 — `Event::WaveLifecycleChanged`. Emitted exactly once per
+ * validated `from → to` transition. Reducers downstream can subscribe to
+ * `kind = wave.lifecycle_changed` directly without inspecting every
+ * `wave.updated` for a possibly-unchanged `lifecycle` field. Wave-scoped
+ * (routes to `wave:<id>` and `cove:<cove>` topics).
+ */
+export const waveLifecycleChangedSchema = z.object({
+  ev: z.literal('wave.lifecycle_changed'),
+  data: z.object({
+    id: z.string(),
+    cove_id: z.string(),
+    from: waveLifecycleSchema,
+    to: waveLifecycleSchema,
+  }),
 });
 
 export const cardAddedSchema = z.object({
@@ -310,6 +362,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   coveDeletedSchema,
   waveUpdatedSchema,
   waveDeletedSchema,
+  waveLifecycleChangedSchema,
   cardAddedSchema,
   cardUpdatedSchema,
   cardDeletedSchema,
@@ -338,6 +391,7 @@ export type CoveUpdatedEvent = z.infer<typeof coveUpdatedSchema>;
 export type CoveDeletedEvent = z.infer<typeof coveDeletedSchema>;
 export type WaveUpdatedEvent = z.infer<typeof waveUpdatedSchema>;
 export type WaveDeletedEvent = z.infer<typeof waveDeletedSchema>;
+export type WaveLifecycleChangedEvent = z.infer<typeof waveLifecycleChangedSchema>;
 export type CardAddedEvent = z.infer<typeof cardAddedSchema>;
 export type CardUpdatedEvent = z.infer<typeof cardUpdatedSchema>;
 export type CardDeletedEvent = z.infer<typeof cardDeletedSchema>;

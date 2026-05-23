@@ -230,7 +230,7 @@ pub fn enforce_role(
 mod tests {
     use super::*;
     use crate::ids::{CoveId, WaveId};
-    use crate::model::{Cove, CoveKind, Wave};
+    use crate::model::{Cove, CoveKind, Wave, WaveLifecycle};
 
     fn wave(id: &str, cove: &str) -> Wave {
         Wave {
@@ -239,6 +239,7 @@ mod tests {
             title: "t".into(),
             sort: 1.0,
             archived_at: None,
+            lifecycle: WaveLifecycle::Draft,
             created_at: 0,
             updated_at: 0,
         }

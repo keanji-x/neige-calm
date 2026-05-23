@@ -98,6 +98,12 @@ async fn wave_crud_round_trip() {
     let c = make_cove(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "first").await;
     assert!(w.archived_at.is_none());
+    // Issue #145 — every newly minted wave seeds at Draft.
+    assert_eq!(
+        w.lifecycle,
+        WaveLifecycle::Draft,
+        "new wave defaults to Draft"
+    );
 
     let updated = repo
         .wave_update(
@@ -106,6 +112,7 @@ async fn wave_crud_round_trip() {
                 title: Some("renamed".into()),
                 sort: None,
                 archived_at: Some(Some(42)),
+                lifecycle: None,
             },
         )
         .await
@@ -120,6 +127,7 @@ async fn wave_crud_round_trip() {
                 title: None,
                 sort: None,
                 archived_at: Some(None),
+                lifecycle: None,
             },
         )
         .await
@@ -135,6 +143,53 @@ async fn wave_crud_round_trip() {
         .await
         .unwrap_err();
     assert!(matches!(err, CalmError::NotFound(_)));
+}
+
+#[tokio::test]
+async fn wave_lifecycle_round_trips_through_patch() {
+    // Issue #145 — `WavePatch.lifecycle` writes the column and the
+    // next read reflects the new value. The validator (whose job is
+    // to refuse illegal transitions) lives one layer up in the
+    // routes / MCP tool; the DB layer accepts any value and is the
+    // mechanical actuator. This test pins the read/write round-trip
+    // so a future refactor that drops the column from the UPDATE
+    // statement surfaces here.
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "C").await;
+    let w = make_wave(&repo, c.id.as_str(), "lifecycle-test").await;
+    assert_eq!(w.lifecycle, WaveLifecycle::Draft);
+
+    let patched = repo
+        .wave_update(
+            w.id.as_str(),
+            WavePatch {
+                title: None,
+                sort: None,
+                archived_at: None,
+                lifecycle: Some(WaveLifecycle::Planning),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(patched.lifecycle, WaveLifecycle::Planning);
+
+    let re_read = repo.wave_get(w.id.as_str()).await.unwrap().unwrap();
+    assert_eq!(re_read.lifecycle, WaveLifecycle::Planning);
+
+    // Patch with `lifecycle: None` leaves the column alone.
+    let no_change = repo
+        .wave_update(
+            w.id.as_str(),
+            WavePatch {
+                title: Some("renamed-only".into()),
+                sort: None,
+                archived_at: None,
+                lifecycle: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(no_change.lifecycle, WaveLifecycle::Planning);
 }
 
 #[tokio::test]

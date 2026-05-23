@@ -280,6 +280,7 @@ async fn spec_card_can_emit_wave_updated_via_enforce_role() {
         title: "t".into(),
         sort: 1.0,
         archived_at: None,
+        lifecycle: calm_server::model::WaveLifecycle::Draft,
         created_at: 0,
         updated_at: 0,
     });

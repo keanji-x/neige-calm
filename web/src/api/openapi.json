@@ -2822,6 +2822,10 @@
           "id": {
             "type": "string"
           },
+          "lifecycle": {
+            "$ref": "#/components/schemas/WaveLifecycle",
+            "description": "Issue #145 — the wave's lifecycle state. **Required** (no\n`Option`): every wave-creating code path must seed\n[`WaveLifecycle::Draft`] explicitly. Per the project's\n\"required over Option\" preference, Option here would silently\nhide missing-data bugs — the field is core kernel contract.\n\n`#[serde(default)]` lets wire payloads emitted before #145\nlanded (event-log replay fixtures) parse as `Draft` without\nforcing a fixture rewrite — matches the DB DEFAULT in\nmigration 0012."
+          },
           "sort": {
             "type": "number",
             "format": "double"
@@ -2861,6 +2865,21 @@
           }
         }
       },
+      "WaveLifecycle": {
+        "type": "string",
+        "description": "Issue #145 — Wave lifecycle state machine.\n\nOne explicit state per wave, advanced through a typed state machine\n(see `crate::wave_lifecycle`). The Spec Agent drives the happy path\n(`draft → planning → dispatching → working → reviewing → done`);\nthe user can cancel any non-terminal state and reopen terminals;\nworker cards have no authority to touch this field at all.\n\n**`archived` is intentionally NOT a lifecycle state.** Archive is\nvisibility / history management, orthogonal to execution semantics —\na `done`/`failed`/`canceled` wave can also be archived without\ndestroying the lifecycle truth. Archival continues to live on the\nexisting `archived_at: Option<i64>` field.\n\nPersisted as a lowercase string in `waves.lifecycle` (migration\n0012). The serde + sqlx `rename_all = \"lowercase\"` keeps the wire\nand storage shape stable; ts-rs exports the matching TS union into\n`web/src/api/generated-events.ts` so the frontend can render the\nbadge against the same vocabulary.",
+        "enum": [
+          "draft",
+          "planning",
+          "dispatching",
+          "working",
+          "blocked",
+          "reviewing",
+          "done",
+          "canceled",
+          "failed"
+        ]
+      },
       "WavePatch": {
         "type": "object",
         "properties": {
@@ -2871,6 +2890,17 @@
             ],
             "format": "int64",
             "description": "Pass `Some(Some(ts))` to archive, `Some(None)` to unarchive,\nor omit (`None`) to leave alone."
+          },
+          "lifecycle": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WaveLifecycle",
+                "description": "Issue #145 — request a lifecycle transition. The actual\ntransition validation runs through `crate::wave_lifecycle`,\ninside the write transaction. Omitting (`None`) means \"leave\nalone\"; `Some(<state>)` triggers the validator against the\n(actor, from → to) triple before any DB write or event emit."
+              }
+            ]
           },
           "sort": {
             "type": [

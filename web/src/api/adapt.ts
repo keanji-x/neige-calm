@@ -11,6 +11,7 @@ import type {
   FsmState,
   Wave,
   WaveCardData,
+  WaveLifecycle,
   WaveStatus,
 } from '../types';
 import type {
@@ -121,6 +122,11 @@ export function adaptWave(k: KernelWave, overlays: KernelOverlay[] = []): Wave {
     coveId: k.cove_id,
     title: k.title,
     status,
+    // Issue #145 — the kernel always stamps a lifecycle on wave rows
+    // (defaults to 'draft' on create, advanced explicitly by the Spec
+    // Agent). Wire payloads from pre-#145 servers may omit the field;
+    // mirror the zod schema's default and fall back to 'draft'.
+    lifecycle: (k.lifecycle as WaveLifecycle | undefined) ?? 'draft',
     fsmState,
     counts,
     progress,

@@ -50,6 +50,7 @@ use crate::routes::settings::load_settings;
 use crate::spec_card::{build_codex_env_map, seed_and_spawn_spec_daemon};
 use crate::state::AppState;
 use crate::terminal_sweeper::reap_terminal_artifacts;
+use crate::wave_lifecycle::validate_transition;
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -353,17 +354,81 @@ pub(crate) async fn update_wave(
         wave: existing.id.clone(),
         cove: existing.cove_id.clone(),
     };
-    let (wave, _id) = write_with_event_typed(
+    let actor_id = actor.to_actor_id();
+
+    // Issue #145 — lifecycle transitions go through a typed state
+    // machine. The validator runs *before* the write so an illegal
+    // transition surfaces as `Forbidden` without persisting either
+    // the row update or the event.
+    //
+    // Same-state requests (`p.lifecycle == Some(current)`) are an
+    // idempotent silent success for authorized actors: the validator
+    // returns `Ok(())`, we strip `lifecycle` from the patch (so
+    // `wave_update_tx` doesn't pointlessly rewrite the column /
+    // bump `updated_at`), and we skip the `WaveLifecycleChanged`
+    // emit. If after stripping the patch has no other fields set,
+    // we return the existing row without touching the DB at all.
+    // Worker / plugin actors still hit `Forbidden` here regardless
+    // of from == to — idempotency only applies once the actor has
+    // any lifecycle authority.
+    let mut p = p;
+    let lifecycle_change = if let Some(to) = p.lifecycle {
+        validate_transition(existing.lifecycle, to, &actor_id)
+            .map_err(|e| CalmError::Forbidden(format!("wave lifecycle: {e}")))?;
+        if existing.lifecycle == to {
+            // Idempotent no-op for lifecycle; drop it from the patch
+            // so the row write below is a true no-op when no other
+            // field is set.
+            p.lifecycle = None;
+            None
+        } else {
+            Some((existing.lifecycle, to))
+        }
+    } else {
+        None
+    };
+
+    // If the patch is now entirely empty (lifecycle was a no-op and
+    // no other field was supplied) there's nothing to write and
+    // nothing to emit — return the wave as-is. This is the
+    // idempotent retry path for "spec re-sends the current state."
+    let patch_has_other_changes = p.title.is_some() || p.sort.is_some() || p.archived_at.is_some();
+    if lifecycle_change.is_none() && !patch_has_other_changes {
+        return Ok(Json(existing));
+    }
+
+    // When a lifecycle change is part of the patch we emit *two*
+    // events from the same txn: a `WaveLifecycleChanged` so dedicated
+    // subscribers don't have to inspect every `WaveUpdated`, plus the
+    // usual `WaveUpdated` so cache invalidation still sees the new
+    // row shape. Both share scope + actor; both land or neither does.
+    let cove_id_for_event = existing.cove_id.clone();
+    let wave_id_for_event = existing.id.clone();
+    let p_for_tx = p.clone();
+    let (wave, _ids) = write_with_events_typed(
         s.repo.as_ref(),
-        actor.to_actor_id(),
-        scope,
+        actor_id,
         None,
         &s.events,
         &s.card_role_cache,
         move |tx| {
+            let scope = scope.clone();
             Box::pin(async move {
-                let wave = wave_update_tx(tx, &id, p).await?;
-                Ok((wave.clone(), Event::WaveUpdated(wave)))
+                let wave = wave_update_tx(tx, &id, p_for_tx).await?;
+                let mut events: Vec<(EventScope, Event)> = Vec::new();
+                if let Some((from, to)) = lifecycle_change {
+                    events.push((
+                        scope.clone(),
+                        Event::WaveLifecycleChanged {
+                            id: wave_id_for_event.clone(),
+                            cove_id: cove_id_for_event.clone(),
+                            from,
+                            to,
+                        },
+                    ));
+                }
+                events.push((scope, Event::WaveUpdated(wave.clone())));
+                Ok((wave, events))
             })
         },
     )

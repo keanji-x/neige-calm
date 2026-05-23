@@ -8,6 +8,7 @@ import { Dialog } from '../ui/Dialog/Dialog';
 import { SchemaForm } from '../shared/components/SchemaForm';
 import { DirectoryBrowser } from '../shared/components/DirectoryPicker';
 import { CardStatusDot } from '../shared/components/CardStatusDot';
+import { WaveLifecycleBadge } from '../shared/components/WaveLifecycleBadge';
 import { DeleteButton } from './_shared';
 import { useOverlayState } from '../hooks/useOverlayState';
 import { OVERLAY_VIEW_MODE_SCHEMA_VERSION } from '../cards/builtins/schemaVersions';
@@ -299,6 +300,13 @@ export function WavePage({
             {viewMode === 'list' ? 'List' : 'Grid'}
           </button>
           <AddPanel onSelect={beginAdd} />
+          {/* Issue #145 — Wave lifecycle badge. The kernel always stamps a
+              lifecycle on every wave (defaults to 'draft' on create); this
+              renders the current state as a small uppercase pill. The
+              card-FSM dot/verb below is orthogonal — that's the
+              card-aggregate execution view, this is the wave-level
+              contract state the Spec Agent drives explicitly. */}
+          <WaveLifecycleBadge lifecycle={wave.lifecycle} />
           {/* 6-state FSM dot + verb. Rendered whenever the kernel `card_fsm`
               has assigned a state to this wave (only happens when at least
               one tracked card — today: codex — exists in the wave). Falls
