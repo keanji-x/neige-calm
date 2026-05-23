@@ -21,6 +21,7 @@
 // later without changing the public hook surface.
 
 import {
+  keepPreviousData,
   useMutation,
   useQuery,
   useQueryClient,
@@ -112,7 +113,33 @@ export function useWavesByCoveQuery(
   });
 }
 
-/** Wave detail (cards + overlays). Disabled when `waveId` falsy. */
+/** Wave detail (cards + overlays). Disabled when `waveId` falsy.
+ *
+ * #177 — `placeholderData: keepPreviousData` keeps the last successful
+ * data visible while a background refetch is in flight. Without it,
+ * `useWaveDetailQuery` would briefly surface `data: undefined` across
+ * an `invalidateQueries`-driven refetch (the wave-detail key is
+ * invalidated by overlay.set / wave.updated / card.* events on the
+ * WS bus — see `app/eventBridge.tsx`). `WaveComponent` early-returns
+ * `null` on `!detailQ.data`, which would unmount the entire wave
+ * subtree — including the lazy-loaded `XtermView` and its
+ * `pendingThemeRef` / `sendRef`. On remount, those refs reset and
+ * the very next `TerminalThemeUpdate` dispatch races the new WS
+ * handshake (recoverable via the WS-queue + pendingThemeRef now, but
+ * an unnecessary churn that masks the real "did the toggle reach the
+ * daemon?" signal).
+ *
+ * Keeping previous data stops the unmount chain at the source:
+ * refetches become transparent to children, XtermView stays mounted
+ * across the overlay-update feedback loop on theme toggle, and the
+ * dispatch hits a stable, OPEN WebSocket.
+ *
+ * Follow-up (separate issue): the CSS `[data-theme="dark"]` swap on
+ * theme toggle triggers a layout change that RGL detects (a
+ * dimension-affecting variable) → onLayoutChange → PATCH overlay →
+ * overlay.set event → invalidate. That feedback loop is wasteful
+ * and worth investigating once #177 is closed.
+ */
 export function useWaveDetailQuery(
   waveId: string | undefined | null,
   opts?: Partial<UseQueryOptions<KernelWaveDetail, Error>>,
@@ -120,6 +147,7 @@ export function useWaveDetailQuery(
   return useQuery<KernelWaveDetail, Error>({
     ...waveDetailQueryOptions(waveId ?? ''),
     enabled: !!waveId,
+    placeholderData: keepPreviousData,
     ...opts,
   });
 }
