@@ -522,8 +522,7 @@ async fn schema_version_replay_transparent_but_read_guard_drops_future() {
     use axum::http::{Request, StatusCode};
     use calm_server::model::NewOverlay;
     use calm_server::validation::{
-        OVERLAY_STATUS_SCHEMA_VERSION, max_supported_overlay_schema_version,
-        payload_schema_version,
+        OVERLAY_STATUS_SCHEMA_VERSION, max_supported_overlay_schema_version, payload_schema_version,
     };
     use http_body_util::BodyExt;
     use tower::ServiceExt;
@@ -600,15 +599,11 @@ async fn schema_version_replay_transparent_but_read_guard_drops_future() {
     // And the v1 row genuinely has no schemaVersion key — the test
     // would be uninformative if both rows secretly carried it.
     assert!(
-        v999_frame["data"]["payload"]
-            .get("schemaVersion")
-            .is_some(),
+        v999_frame["data"]["payload"].get("schemaVersion").is_some(),
         "v999 frame retains its schemaVersion field"
     );
     assert!(
-        v1_frame["data"]["payload"]
-            .get("schemaVersion")
-            .is_none(),
+        v1_frame["data"]["payload"].get("schemaVersion").is_none(),
         "v1 frame retains its missing-field shape (not coerced to {{schemaVersion: 1}})"
     );
 
@@ -704,9 +699,7 @@ async fn schema_version_replay_transparent_but_read_guard_drops_future() {
         "the surviving row is the v1-shaped status overlay (no schemaVersion field)"
     );
     assert!(
-        listed[0]["payload"]
-            .get("schemaVersion")
-            .is_none(),
+        listed[0]["payload"].get("schemaVersion").is_none(),
         "the v1 row reaches the client without an added schemaVersion field"
     );
 }

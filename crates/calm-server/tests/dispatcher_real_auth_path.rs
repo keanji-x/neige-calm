@@ -293,9 +293,7 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
     assert_eq!(row.1, "codex.hook");
     let payload: Value = serde_json::from_str(&row.6).expect("payload column is JSON");
     assert_eq!(
-        payload
-            .get("kind")
-            .and_then(|v| v.as_str()),
+        payload.get("kind").and_then(|v| v.as_str()),
         Some("hook.codex.pre_tool_use"),
         "route's snake-cased hook_event_name lives inside the CodexHook payload's `kind` field",
     );
@@ -337,13 +335,8 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
         "kind": "status",
         "payload": {"state": "ok"},
     });
-    let (status, _) = post_with_actor(
-        boot.app.clone(),
-        upsert_uri,
-        None,
-        upsert_body.clone(),
-    )
-    .await;
+    let (status, _) =
+        post_with_actor(boot.app.clone(), upsert_uri, None, upsert_body.clone()).await;
     assert_eq!(
         status,
         StatusCode::OK,

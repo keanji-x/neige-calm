@@ -162,7 +162,14 @@ async fn attach(
             is_child_ready,
             pty_size,
             ..
-        } => (rd, wr, client_role, is_child_ready, pty_size.cols, pty_size.rows),
+        } => (
+            rd,
+            wr,
+            client_role,
+            is_child_ready,
+            pty_size.cols,
+            pty_size.rows,
+        ),
         other => panic!("expected ServerHello, got {other:?}"),
     }
 }
@@ -198,10 +205,7 @@ where
 /// Read with a deadline; `Some(frame)` if anything arrived in the
 /// window, `None` on timeout. Used for negative assertions (the
 /// "owner must NOT see X" style).
-async fn try_read(
-    rd: &mut tokio::net::unix::OwnedReadHalf,
-    budget: Duration,
-) -> Option<DaemonMsg> {
+async fn try_read(rd: &mut tokio::net::unix::OwnedReadHalf, budget: Duration) -> Option<DaemonMsg> {
     match timeout(budget, read_frame::<DaemonMsg, _>(rd)).await {
         Ok(Ok(m)) => Some(m),
         Ok(Err(_)) | Err(_) => None,
@@ -275,10 +279,7 @@ async fn multi_client_cross_layer_round_trip() {
 
     let owner_applied = wait_until(&mut owner_rd, Duration::from_secs(2), |m| match m {
         DaemonMsg::ResizeApplied {
-            epoch,
-            cols,
-            rows,
-            ..
+            epoch, cols, rows, ..
         } => Some((*epoch, *cols, *rows)),
         _ => None,
     })
@@ -291,10 +292,7 @@ async fn multi_client_cross_layer_round_trip() {
 
     let obs_applied = wait_until(&mut obs_rd, Duration::from_secs(2), |m| match m {
         DaemonMsg::ResizeApplied {
-            epoch,
-            cols,
-            rows,
-            ..
+            epoch, cols, rows, ..
         } => Some((*epoch, *cols, *rows)),
         _ => None,
     })
@@ -336,7 +334,9 @@ async fn multi_client_cross_layer_round_trip() {
     );
 
     // ---- 5. Observer explicitly claims ownership.
-    write_frame(&mut obs_wr, &ClientMsg::OwnerClaim).await.unwrap();
+    write_frame(&mut obs_wr, &ClientMsg::OwnerClaim)
+        .await
+        .unwrap();
     let new_owner = wait_until(&mut obs_rd, Duration::from_secs(2), |m| match m {
         DaemonMsg::OwnerChanged { owner_client_id } => Some(*owner_client_id),
         _ => None,
@@ -382,7 +382,9 @@ async fn multi_client_cross_layer_round_trip() {
         let post = try_read(&mut re_rd, Duration::from_millis(200)).await;
         match post {
             Some(DaemonMsg::ChildReady { .. }) => {
-                panic!("late-joiner saw `ChildReady` after `is_child_ready: true` — broadcast must be one-shot");
+                panic!(
+                    "late-joiner saw `ChildReady` after `is_child_ready: true` — broadcast must be one-shot"
+                );
             }
             _ => { /* fine */ }
         }
