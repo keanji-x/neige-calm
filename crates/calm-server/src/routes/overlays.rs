@@ -16,9 +16,7 @@ use crate::error::{ErrorBody, Result};
 use crate::event::{Event, EventScope};
 use crate::model::{NewOverlay, Overlay};
 use crate::state::AppState;
-use crate::validation::{
-    max_supported_overlay_schema_version, payload_schema_version, validate_overlay_payload,
-};
+use crate::validation::{should_skip_overlay, validate_overlay_payload};
 use axum::{
     Json, Router,
     extract::{Query, State},
@@ -138,36 +136,16 @@ pub(crate) async fn list_overlays(
 /// is the primary read path the frontend uses to render status/progress/eta/
 /// now overlays on a wave's detail view, and a future-`schemaVersion` row
 /// would sail through that route while being correctly filtered out of
-/// `GET /api/overlays`. We keep the filter co-located here (rather than
-/// pushing it into the `Repo` trait) so both call-sites share one
-/// implementation without expanding the trait surface; any future read route
-/// returning overlays should also call this.
+/// `GET /api/overlays`. We keep the route-level filter co-located here so
+/// both HTTP call-sites share one implementation without expanding the
+/// `Repo` trait surface; the per-row predicate itself lives in
+/// `crate::validation::should_skip_overlay` so the WS broadcast/replay
+/// path in `ws::events` can apply the same gate to `Event::OverlaySet`
+/// frames without a routes → ws dependency.
 pub(super) fn filter_unsupported_overlay_versions(overlays: Vec<Overlay>) -> Vec<Overlay> {
     overlays
         .into_iter()
-        .filter(|o| {
-            let Some(max) = max_supported_overlay_schema_version(&o.kind) else {
-                // Plugin-owned kind — opaque, no version policy.
-                return true;
-            };
-            let version = payload_schema_version(&o.payload);
-            if version > max {
-                tracing::warn!(
-                    overlay_id = %o.id,
-                    kind = %o.kind,
-                    schema_version = version,
-                    max_supported = max,
-                    entity_kind = %o.entity_kind,
-                    entity_id = %o.entity_id,
-                    "dropping overlay with unsupported schemaVersion on read \
-                     (kernel-owned kind, future version); upgrade this binary \
-                     or rewrite the row to the supported version",
-                );
-                false
-            } else {
-                true
-            }
-        })
+        .filter(|o| !should_skip_overlay(o))
         .collect()
 }
 

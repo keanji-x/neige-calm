@@ -52,6 +52,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::error::{CalmError, Result};
+use crate::event::Event;
+use crate::model::Overlay;
 
 // ---------------- Per-kind schema versions (Tier A) ----------------
 //
@@ -119,6 +121,69 @@ pub fn payload_schema_version(payload: &Value) -> u32 {
         .and_then(|v| v.as_u64())
         .map(|n| n as u32)
         .unwrap_or(1)
+}
+
+/// Per-row predicate behind the overlay read-side guard: return `true` if the
+/// given overlay row carries a `schemaVersion` higher than this binary's
+/// max for its kind, and so must be dropped before being handed to a client
+/// (HTTP route response or `/api/events` WS frame).
+///
+/// Returns `false` (keep the row) for:
+///   * plugin-owned kinds (no kernel version policy);
+///   * kernel-owned kinds at or below the supported version.
+///
+/// When the row is filtered out, a structured `tracing::warn!` records the
+/// reason — matches the behavior of [`filter_unsupported_overlay_versions`]
+/// in `routes::overlays`, which is now a thin wrapper around this helper.
+///
+/// Lives here in `validation.rs` (rather than in `routes::overlays`) so the
+/// WS broadcast/replay path in `ws::events` can call it without a routes →
+/// ws dependency. Followup to PR #214 (issue #198 concern 4) — see that PR
+/// for the wider rationale on why kernel-owned overlay payloads need a
+/// read-side guard at every surface that ships them to a client.
+pub fn should_skip_overlay(overlay: &Overlay) -> bool {
+    let Some(max) = max_supported_overlay_schema_version(&overlay.kind) else {
+        // Plugin-owned kind — opaque, no version policy.
+        return false;
+    };
+    let version = payload_schema_version(&overlay.payload);
+    if version > max {
+        tracing::warn!(
+            overlay_id = %overlay.id,
+            kind = %overlay.kind,
+            schema_version = version,
+            max_supported = max,
+            entity_kind = %overlay.entity_kind,
+            entity_id = %overlay.entity_id,
+            "dropping overlay with unsupported schemaVersion on read \
+             (kernel-owned kind, future version); upgrade this binary \
+             or rewrite the row to the supported version",
+        );
+        true
+    } else {
+        false
+    }
+}
+
+/// Extension of [`should_skip_overlay`] to the broadcast/replay surface:
+/// given an `Event` about to be shipped over `/api/events`, return `true`
+/// if the event embeds an overlay row with an unsupported `schemaVersion`
+/// (the `Event::OverlaySet` variant) and so must not reach the client.
+///
+/// Only `Event::OverlaySet(Overlay)` ships a full `Overlay` payload across
+/// the WS wire today — `Event::OverlayDeleted` carries only id metadata, so
+/// there is no payload to gate. Every other variant returns `false`
+/// (forward as usual).
+///
+/// This helper is the single point of policy for the WS write barrier, so
+/// future overlay-bearing event variants only need to extend the match arm
+/// here to inherit the guard at both the live-broadcast and replay
+/// sites in `ws::events`.
+pub fn should_skip_event_for_overlay_version(event: &Event) -> bool {
+    match event {
+        Event::OverlaySet(overlay) => should_skip_overlay(overlay),
+        _ => false,
+    }
 }
 
 /// Enforce the `schemaVersion` rule for a kernel-owned kind:
