@@ -293,10 +293,16 @@ function WaveComponent() {
   const updateWave = useUpdateWaveMutation();
   const deleteWave = useDeleteWaveMutation();
   const deleteCard = useDeleteCardMutation();
-  // #177: snapshot the host browser's current theme so the codex-card
-  // create POST below can stamp `theme: { fg, bg }` onto the body. The
-  // daemon then advertises matching colors on OSC 10/11.
-  const { resolved: theme } = useTheme();
+  // #177 root-cause fix: we deliberately do NOT call `useTheme()` here.
+  // Subscribing to ThemeContext in this route component re-renders the
+  // whole wave subtree on theme toggle, which trips TanStack Router's
+  // `<Match>` Suspense boundary and remounts XtermView — wiping the
+  // theme-effect's `prevThemeRef` so the OSC `TerminalThemeUpdate` over
+  // the live WS never fires. Instead we read the resolved theme from
+  // `document.documentElement.dataset.theme` at click-time inside
+  // `onCreateCardWithBody` below. ThemeProvider writes that attribute
+  // synchronously on every theme change (see `app/theme.tsx`), so the
+  // POST body always carries the latest theme without subscribing.
   dlog('WaveComponent', 'render', {
     waveId,
     detailLoaded: !!detailQ.data,
@@ -333,6 +339,12 @@ function WaveComponent() {
         await addCardOfKind(qc, wId, type);
       }}
       onCreateCardWithBody={async (wId, type, values) => {
+        // #177: read the resolved theme at click-time (not via
+        // `useTheme()` at render-time — see comment above). The
+        // ThemeProvider mirrors `resolved` into `<html data-theme>`
+        // synchronously, so this read is always current.
+        const theme: 'light' | 'dark' =
+          document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
         await addCardWithValues(qc, wId, type, values, theme);
       }}
       onRemoveCard={async (_wId, idx) => {
