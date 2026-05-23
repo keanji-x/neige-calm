@@ -194,22 +194,20 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
         TerminalThemeUpdate: { fg: rgb.fg, bg: rgb.bg },
       });
     }
-    if (typeof localStorage !== 'undefined' && localStorage.getItem('calm.debug') === '1') {
+    // eslint-disable-next-line no-console
+    console.log('[#177 theme-effect]', {
+      prev,
+      next: theme,
+      willSend: prev !== null && prev !== theme,
+      sendRefPresent: !!sendRef.current,
+      termPresent: !!termRef.current,
+    });
+    if (prev !== null && prev !== theme) {
       // eslint-disable-next-line no-console
-      console.log('[#177 theme-effect]', {
-        prev,
-        next: theme,
-        willSend: prev !== null && prev !== theme,
-        sendRefPresent: !!sendRef.current,
-        termPresent: !!termRef.current,
+      console.log('[#177 theme-effect] DISPATCHED TerminalThemeUpdate', {
+        fg: theme === 'dark' ? DARK_THEME_RGB.fg : LIGHT_THEME_RGB.fg,
+        bg: theme === 'dark' ? DARK_THEME_RGB.bg : LIGHT_THEME_RGB.bg,
       });
-      if (prev !== null && prev !== theme) {
-        // eslint-disable-next-line no-console
-        console.log('[#177 theme-effect] DISPATCHED TerminalThemeUpdate', {
-          fg: theme === 'dark' ? DARK_THEME_RGB.fg : LIGHT_THEME_RGB.fg,
-          bg: theme === 'dark' ? DARK_THEME_RGB.bg : LIGHT_THEME_RGB.bg,
-        });
-      }
     }
   }, [theme]);
 
@@ -262,14 +260,12 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
     // no zombie message risk.
     const pendingFrames: ClientMsg[] = [];
     const send = (msg: ClientMsg) => {
-      if (typeof localStorage !== 'undefined' && localStorage.getItem('calm.debug') === '1') {
-        // eslint-disable-next-line no-console
-        console.log('[#177 send]', {
-          msg: Object.keys(msg)[0],
-          wsReadyState: ws.readyState,
-          action: ws.readyState === WebSocket.OPEN ? 'sent' : 'queued',
-        });
-      }
+      // eslint-disable-next-line no-console
+      console.log('[#177 send]', {
+        msg: Object.keys(msg)[0],
+        wsReadyState: ws.readyState,
+        action: ws.readyState === WebSocket.OPEN ? 'sent' : 'queued',
+      });
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(msg));
       } else {
@@ -279,10 +275,8 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
     // Surface `send` to the theme-effect (which lives outside this
     // closure). Cleared in the WS-effect's teardown below.
     sendRef.current = send;
-    if (typeof localStorage !== 'undefined' && localStorage.getItem('calm.debug') === '1') {
-      // eslint-disable-next-line no-console
-      console.log('[#177 ws-mount] sendRef populated');
-    }
+    // eslint-disable-next-line no-console
+    console.log('[#177 ws-mount] sendRef populated');
 
     // Per-connection client id. The daemon's `OwnerRegistry` keys on this
     // so the same browser tab survives WS reconnects without losing
@@ -579,10 +573,8 @@ export function XtermView({ terminalId, theme = 'light' }: XtermViewProps) {
       // mount's installed sender.
       if (sendRef.current === send) {
         sendRef.current = null;
-        if (typeof localStorage !== 'undefined' && localStorage.getItem('calm.debug') === '1') {
-          // eslint-disable-next-line no-console
-          console.log('[#177 ws-mount] sendRef nulled (cleanup)');
-        }
+        // eslint-disable-next-line no-console
+        console.log('[#177 ws-mount] sendRef nulled (cleanup)');
       }
     };
     // `theme` deliberately omitted: a theme flip should NOT rebuild the
