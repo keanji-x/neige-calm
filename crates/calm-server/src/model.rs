@@ -197,8 +197,12 @@ pub struct Card {
     pub id: CardId,
     #[schema(value_type = String)]
     pub wave_id: WaveId,
-    /// `"terminal"` for built-in PTY cards, `"plugin:<plugin-id>:<view-id>"`
-    /// for plugin-provided cards. Kernel never interprets beyond that prefix.
+    /// `"terminal"` for built-in PTY cards, `"ui://<plugin>/<view>"` for
+    /// plugin-provided cards (the canonical MCP Apps resource URI). The
+    /// kernel never interprets beyond that prefix. `[legacy]`
+    /// `"plugin:<plugin-id>:<view-id>"` may also appear on rows persisted
+    /// before the M4 cut-over and in server-side perms/manifest enforcement
+    /// — see `docs/architecture/terminology-glossary.md` (plugin card kind).
     pub kind: String,
     pub sort: f64,
     #[sqlx(json)]
