@@ -167,10 +167,7 @@ async fn worker_emitting_wave_scope_is_rejected() {
     );
 
     // Bus subscription saw nothing — broadcast-after-commit invariant.
-    assert!(
-        sub.try_recv().is_err(),
-        "rejected write must not broadcast",
-    );
+    assert!(sub.try_recv().is_err(), "rejected write must not broadcast",);
 }
 
 // ---------------------------------------------------------------------------
@@ -291,7 +288,12 @@ async fn missing_actor_header_defaults_to_user() {
 
     let resp = app
         .clone()
-        .oneshot(Request::builder().uri("/probe").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/probe")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);

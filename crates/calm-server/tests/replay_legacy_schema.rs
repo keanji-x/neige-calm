@@ -196,11 +196,9 @@ async fn replay_mixes_legacy_pass_through_with_future_drop() {
 
     let url = format!("ws://{}/api/events", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
-    ws.send(TMessage::Text(
-        r#"{"sub":["*"], "since": 0}"#.to_string(),
-    ))
-    .await
-    .unwrap();
+    ws.send(TMessage::Text(r#"{"sub":["*"], "since": 0}"#.to_string()))
+        .await
+        .unwrap();
 
     // First frame: legacy row delivered.
     let v = recv_json(&mut ws).await;
