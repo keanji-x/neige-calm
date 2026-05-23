@@ -50,11 +50,13 @@ vi.mock('./eventBridge', () => ({
   EventBridge: () => <div data-testid="event-bridge-mock" />,
 }));
 
-import { DB_INSTANCE_ID_STORAGE_KEY, ServerCompatGate } from './providers';
+import {
+  DB_INSTANCE_ID_STORAGE_KEY,
+  ServerCompatGate,
+  WS_CURSOR_STORAGE_KEY,
+} from './providers';
 import { IDB_DB_NAME, createIDBPersister } from '../api/persistConfig';
 import { WEB_COMPAT_VERSION, type ServerVersionInfo } from '../api/version';
-
-const WS_CURSOR_STORAGE_KEY = 'calm:sync:cursor';
 
 const ID_PREVIOUS = '11111111-1111-4111-8111-111111111111';
 const ID_NEW = '22222222-2222-4222-8222-222222222222';
