@@ -100,11 +100,21 @@ pub(crate) async fn get_wave_detail(
     State(s): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<WaveDetail>> {
-    let detail = s
+    let mut detail = s
         .repo
         .wave_detail(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("wave {id}")))?;
+    // Tier A read-side guard (issue #198 concern 4) — mirror `list_overlays`
+    // so kernel-owned overlay rows with a `schemaVersion` past what this
+    // binary supports never reach the frontend through the wave detail
+    // route. This is the primary path the frontend uses to render
+    // status/progress/eta/now overlays for a wave (`adaptWave(detail.wave,
+    // detail.overlays)` in `web/src/app/router.tsx`); without this filter a
+    // future-version row written by a newer kernel binary would defeat the
+    // PR #214 guard for the wave-rendering path while still being correctly
+    // filtered from `GET /api/overlays`. PR #214 review follow-up.
+    detail.overlays = crate::routes::overlays::filter_unsupported_overlay_versions(detail.overlays);
     Ok(Json(detail))
 }
 

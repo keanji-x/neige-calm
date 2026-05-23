@@ -19,7 +19,7 @@ use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{NewCard, NewCove, NewWave};
+use calm_server::model::{NewCard, NewCove, NewOverlay, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, DaemonClient};
@@ -74,9 +74,16 @@ fn app(state: AppState) -> axum::Router {
     // Scope G: the cards / overlays handlers extract `Actor` from request
     // extensions, which means the middleware that populates it must be
     // present. Mirror main.rs by layering it on the REST router.
+    //
+    // `waves::router` is also merged here so the PR #214 follow-up tests
+    // can exercise `GET /api/waves/{id}` for the wave-detail read-side
+    // schemaVersion guard. Adding the router is a no-op for the existing
+    // card/overlay tests; we only ever hit the wave route from the tests
+    // that explicitly construct that URI.
     axum::Router::new()
         .merge(routes::cards::router())
         .merge(routes::overlays::router())
+        .merge(routes::waves::router())
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
         ))
@@ -121,6 +128,26 @@ async fn post_overlay(app: axum::Router, body: Value) -> axum::http::Response<Bo
             .uri("/api/overlays")
             .header("content-type", "application/json")
             .body(Body::from(body.to_string()))
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+}
+
+async fn get_overlays(
+    app: axum::Router,
+    entity_kind: &str,
+    entity_id: Option<&str>,
+) -> axum::http::Response<Body> {
+    let uri = match entity_id {
+        Some(eid) => format!("/api/overlays?entity_kind={entity_kind}&entity_id={eid}"),
+        None => format!("/api/overlays?entity_kind={entity_kind}"),
+    };
+    app.oneshot(
+        Request::builder()
+            .method("GET")
+            .uri(uri)
+            .body(Body::empty())
             .unwrap(),
     )
     .await
@@ -321,4 +348,292 @@ async fn post_unknown_overlay_kind_with_arbitrary_payload_returns_200() {
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+// --------------------------------------------------------------------------
+// Overlay schemaVersion read-side guard (issue #198 concern 4)
+//
+// These tests bypass the write-side validator by seeding via `raw_repo()`,
+// then call the read route and assert future-version kernel-owned overlays
+// are filtered out while plugin-defined kinds (and supported kernel rows)
+// pass through.
+// --------------------------------------------------------------------------
+
+/// Seed an overlay row directly via `raw_repo`, bypassing
+/// `validate_overlay_payload` so we can simulate a future-version row that
+/// a newer kernel binary left in the DB.
+async fn seed_overlay(
+    state: &AppState,
+    plugin_id: &str,
+    entity_kind: &str,
+    entity_id: &str,
+    kind: &str,
+    payload: Value,
+) {
+    state
+        .raw_repo()
+        .overlay_upsert(NewOverlay {
+            plugin_id: plugin_id.into(),
+            entity_kind: entity_kind.into(),
+            entity_id: entity_id.into(),
+            kind: kind.into(),
+            payload,
+        })
+        .await
+        .expect("seed overlay");
+}
+
+#[tokio::test]
+async fn list_overlays_filters_kernel_owned_future_schema_version() {
+    // A kernel-owned overlay with `schemaVersion = MAX + 1` (simulating a
+    // row written by a newer binary) must not appear in the read response.
+    let (state, wave_id) = boot().await;
+    seed_overlay(
+        &state,
+        "kernel",
+        "wave",
+        &wave_id,
+        "status",
+        json!({ "schemaVersion": 999, "state": "running" }),
+    )
+    .await;
+
+    let resp = get_overlays(app(state), "wave", Some(&wave_id)).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_to_json(resp).await;
+    let arr = body.as_array().expect("array body");
+    assert!(
+        arr.is_empty(),
+        "future-version kernel-owned overlay must be filtered, got {arr:?}"
+    );
+}
+
+#[tokio::test]
+async fn list_overlays_keeps_kernel_owned_supported_schema_version() {
+    // Sanity check: a row at the supported version still comes through.
+    let (state, wave_id) = boot().await;
+    seed_overlay(
+        &state,
+        "kernel",
+        "wave",
+        &wave_id,
+        "status",
+        json!({ "schemaVersion": 1, "state": "running" }),
+    )
+    .await;
+
+    let resp = get_overlays(app(state), "wave", Some(&wave_id)).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_to_json(resp).await;
+    let arr = body.as_array().expect("array body");
+    assert_eq!(arr.len(), 1, "supported-version overlay must pass through");
+    assert_eq!(arr[0]["kind"], "status");
+}
+
+#[tokio::test]
+async fn list_overlays_keeps_kernel_owned_missing_schema_version() {
+    // Historical rows written before `schemaVersion` was stamped should
+    // still surface — `payload_schema_version` defaults absent to `1`,
+    // which is `<= MAX` for every kernel-owned kind today.
+    let (state, wave_id) = boot().await;
+    seed_overlay(
+        &state,
+        "kernel",
+        "wave",
+        &wave_id,
+        "status",
+        json!({ "state": "idle" }),
+    )
+    .await;
+
+    let resp = get_overlays(app(state), "wave", Some(&wave_id)).await;
+    let body = body_to_json(resp).await;
+    let arr = body.as_array().unwrap();
+    assert_eq!(arr.len(), 1, "row without schemaVersion must pass through");
+}
+
+#[tokio::test]
+async fn list_overlays_passes_through_plugin_kind_with_future_schema_version() {
+    // Plugin-defined overlay kinds are opaque — the kernel has no version
+    // policy for them, so a "future" value on the schemaVersion field must
+    // not cause the read guard to drop the row.
+    let (state, wave_id) = boot().await;
+    seed_overlay(
+        &state,
+        "p1",
+        "wave",
+        &wave_id,
+        "my-plugin-badge",
+        json!({ "schemaVersion": 9999, "anything": true }),
+    )
+    .await;
+
+    let resp = get_overlays(app(state), "wave", Some(&wave_id)).await;
+    let body = body_to_json(resp).await;
+    let arr = body.as_array().unwrap();
+    assert_eq!(
+        arr.len(),
+        1,
+        "plugin-defined overlay must not be touched by the kernel read guard"
+    );
+    assert_eq!(arr[0]["kind"], "my-plugin-badge");
+}
+
+#[tokio::test]
+async fn list_overlays_filters_mixed_kernel_and_plugin_rows() {
+    // Mixed scenario: one kernel-owned overlay with a future schemaVersion,
+    // one kernel-owned overlay at the supported version, one plugin-owned
+    // overlay with an arbitrary schemaVersion. Only the future kernel row
+    // is filtered.
+    let (state, wave_id) = boot().await;
+    seed_overlay(
+        &state,
+        "kernel",
+        "wave",
+        &wave_id,
+        "progress",
+        json!({ "schemaVersion": 42, "value": 0.5 }),
+    )
+    .await;
+    seed_overlay(
+        &state,
+        "kernel",
+        "wave",
+        &wave_id,
+        "eta",
+        json!({ "schemaVersion": 1, "text": "5m" }),
+    )
+    .await;
+    seed_overlay(
+        &state,
+        "p1",
+        "wave",
+        &wave_id,
+        "plugin-thing",
+        json!({ "schemaVersion": 7, "any": "thing" }),
+    )
+    .await;
+
+    let resp = get_overlays(app(state), "wave", Some(&wave_id)).await;
+    let body = body_to_json(resp).await;
+    let arr = body.as_array().unwrap();
+    let kinds: Vec<&str> = arr.iter().map(|o| o["kind"].as_str().unwrap()).collect();
+    assert!(
+        kinds.contains(&"eta"),
+        "supported kernel kind should pass: {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&"plugin-thing"),
+        "plugin kind should pass: {kinds:?}"
+    );
+    assert!(
+        !kinds.contains(&"progress"),
+        "future-version kernel kind should be filtered: {kinds:?}"
+    );
+    assert_eq!(arr.len(), 2);
+}
+
+#[tokio::test]
+async fn list_overlays_by_kind_also_filters_future_versions() {
+    // The `entity_id`-omitted branch (`overlays_by_kind`) shares the same
+    // guard — sidebar fetches go through this code path.
+    let (state, wave_id) = boot().await;
+    seed_overlay(
+        &state,
+        "kernel",
+        "wave",
+        &wave_id,
+        "status",
+        json!({ "schemaVersion": 100, "state": "running" }),
+    )
+    .await;
+
+    let resp = get_overlays(app(state), "wave", None).await;
+    let body = body_to_json(resp).await;
+    let arr = body.as_array().unwrap();
+    let has_status = arr.iter().any(|o| o["kind"] == "status");
+    assert!(
+        !has_status,
+        "future-version row must be filtered on the no-entity_id read path too, got {arr:?}"
+    );
+}
+
+// --------------------------------------------------------------------------
+// Wave detail read-side guard (PR #214 review follow-up, issue #198 concern 4)
+//
+// `GET /api/waves/{id}` returns `WaveDetail { wave, cards, overlays }` and is
+// the primary read path the frontend uses to render status/progress/eta/now
+// overlays on a wave's detail view. The PR #214 reviewer flagged that the
+// initial fix only guarded `GET /api/overlays` — a future-`schemaVersion`
+// row would still sail through the wave-detail route. These tests assert
+// the same filter applies there.
+// --------------------------------------------------------------------------
+
+async fn get_wave_detail(app: axum::Router, wave_id: &str) -> axum::http::Response<Body> {
+    app.oneshot(
+        Request::builder()
+            .method("GET")
+            .uri(format!("/api/waves/{wave_id}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn wave_detail_filters_kernel_owned_future_schema_version() {
+    // Seed a kernel-owned status overlay with `schemaVersion = MAX + 1`
+    // (simulating a row a newer kernel binary left in the DB), then hit
+    // `GET /api/waves/{id}` and assert the future-version row is filtered
+    // out of `WaveDetail.overlays`. The frontend's `adaptWave` consumes
+    // exactly this field — without this guard a future row would defeat
+    // the PR #214 read-side check for the primary wave-rendering path.
+    let (state, wave_id) = boot().await;
+    seed_overlay(
+        &state,
+        "kernel",
+        "wave",
+        &wave_id,
+        "status",
+        json!({ "schemaVersion": 999, "state": "running" }),
+    )
+    .await;
+
+    let resp = get_wave_detail(app(state), &wave_id).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_to_json(resp).await;
+    let overlays = body["overlays"].as_array().expect("overlays array");
+    assert!(
+        overlays.is_empty(),
+        "future-version kernel-owned overlay must be filtered from wave detail, got {overlays:?}"
+    );
+}
+
+#[tokio::test]
+async fn wave_detail_keeps_kernel_owned_supported_schema_version() {
+    // Paired sanity check: a kernel-owned overlay at the supported version
+    // still surfaces through `GET /api/waves/{id}`, so the guard is not
+    // accidentally dropping everything.
+    let (state, wave_id) = boot().await;
+    seed_overlay(
+        &state,
+        "kernel",
+        "wave",
+        &wave_id,
+        "status",
+        json!({ "schemaVersion": 1, "state": "running" }),
+    )
+    .await;
+
+    let resp = get_wave_detail(app(state), &wave_id).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_to_json(resp).await;
+    let overlays = body["overlays"].as_array().expect("overlays array");
+    assert_eq!(
+        overlays.len(),
+        1,
+        "supported-version overlay must pass through wave detail"
+    );
+    assert_eq!(overlays[0]["kind"], "status");
 }

@@ -16,7 +16,9 @@ use crate::error::{ErrorBody, Result};
 use crate::event::{Event, EventScope};
 use crate::model::{NewOverlay, Overlay};
 use crate::state::AppState;
-use crate::validation::validate_overlay_payload;
+use crate::validation::{
+    max_supported_overlay_schema_version, payload_schema_version, validate_overlay_payload,
+};
 use axum::{
     Json, Router,
     extract::{Query, State},
@@ -111,7 +113,62 @@ pub(crate) async fn list_overlays(
         Some(eid) => s.repo.overlays_for(&q.entity_kind, eid).await?,
         None => s.repo.overlays_by_kind(&q.entity_kind).await?,
     };
-    Ok(Json(overlays))
+    Ok(Json(filter_unsupported_overlay_versions(overlays)))
+}
+
+/// Tier A read-side guard (issue #198 concern 4): drop kernel-owned overlay
+/// rows whose persisted `schemaVersion` exceeds what this binary supports.
+///
+/// The write path already refuses future versions on ingest, but a row can
+/// still appear here if a newer kernel binary wrote to the same DB and then
+/// the operator downgraded (or in a split-deploy where two binaries point at
+/// one DB). Without this filter, those rows would deserialize successfully —
+/// because the `Overlay.payload` column is opaque JSON — and either fall
+/// through to the frontend (where the Tier A `schemaVersion` check would
+/// then log + skip them) or break invariants in any server consumer that
+/// inspects the payload shape.
+///
+/// Plugin-defined overlay kinds (`max_supported_overlay_schema_version`
+/// returns `None`) are passed through untouched: the kernel has no schema
+/// for them and explicitly opts out of any version policy on their payloads.
+///
+/// Visibility note: `pub(super)` so `routes::waves::get_wave_detail` can apply
+/// the same guard to overlays returned alongside the wave row. The reviewer of
+/// PR #214 (issue #198 concern 4 follow-up) flagged that `GET /api/waves/{id}`
+/// is the primary read path the frontend uses to render status/progress/eta/
+/// now overlays on a wave's detail view, and a future-`schemaVersion` row
+/// would sail through that route while being correctly filtered out of
+/// `GET /api/overlays`. We keep the filter co-located here (rather than
+/// pushing it into the `Repo` trait) so both call-sites share one
+/// implementation without expanding the trait surface; any future read route
+/// returning overlays should also call this.
+pub(super) fn filter_unsupported_overlay_versions(overlays: Vec<Overlay>) -> Vec<Overlay> {
+    overlays
+        .into_iter()
+        .filter(|o| {
+            let Some(max) = max_supported_overlay_schema_version(&o.kind) else {
+                // Plugin-owned kind — opaque, no version policy.
+                return true;
+            };
+            let version = payload_schema_version(&o.payload);
+            if version > max {
+                tracing::warn!(
+                    overlay_id = %o.id,
+                    kind = %o.kind,
+                    schema_version = version,
+                    max_supported = max,
+                    entity_kind = %o.entity_kind,
+                    entity_id = %o.entity_id,
+                    "dropping overlay with unsupported schemaVersion on read \
+                     (kernel-owned kind, future version); upgrade this binary \
+                     or rewrite the row to the supported version",
+                );
+                false
+            } else {
+                true
+            }
+        })
+        .collect()
 }
 
 #[utoipa::path(
