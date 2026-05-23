@@ -2,9 +2,10 @@
 //! payload to the internal endpoint produces a `codex.hook` event on the
 //! bus, with the snake_case `hook.codex.<event>` discriminator.
 //!
-//! Doesn't spawn an actual `codex` CLI — that's separately covered by
-//! the unit tests in `routes/codex.rs::tests` (hooks.json shape +
-//! snake_case derivation).
+//! Doesn't spawn an actual `codex` CLI — the hook source itself lives in
+//! `docker/codex-requirements.toml` (policy-managed, bind-mounted into
+//! the container), and the snake_case derivation is covered by the unit
+//! tests in `routes/codex.rs::tests`.
 
 use std::sync::Arc;
 

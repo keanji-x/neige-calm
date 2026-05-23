@@ -100,7 +100,8 @@ fn handle_stop_hook(base: &str, card_id: &str) {
     // 30s long-poll matches the server-side cap (see
     // `mcp_server::tools::wait::MAX_TIMEOUT_MS`). Total wait time on
     // the codex side is ~30s + small request overhead, well inside
-    // the 60s `Stop` hook timeout pinned in `build_hooks_json`.
+    // the 60s `Stop` hook timeout pinned in
+    // `docker/codex-requirements.toml` (`[[hooks.Stop.hooks]]`).
     let url = format!(
         "{}/internal/codex/pending_events?card_id={}&timeout_ms=30000",
         base.trim_end_matches('/'),
