@@ -53,7 +53,10 @@
 //!   leak their alt-screen content into the main grid. Tracked as a
 //!   follow-up; the snapshot will look weird until then.
 //! - **Mouse / bracketed paste / focus events** — all ignored.
-//! - **OSC** (title, hyperlink, color queries) — ignored.
+//! - **OSC** — OSC 10/11 color queries (`ESC ] N ; ? ESC \`) are answered
+//!   when default fg/bg are configured (used to follow the host page theme
+//!   — issue #177). Other OSC sequences (title, hyperlink, OSC 12 cursor
+//!   color, etc.) remain ignored.
 //! - **Sixel / kitty graphics** — ignored.
 //! - **Wide characters (CJK, emoji)** — treated as single-width. Lines
 //!   with wide chars may render at the wrong width on snapshot.
@@ -611,6 +614,10 @@ impl<H: TerminalHandler + ?Sized> Perform for VteProcessor<'_, H> {
         let slot = match *first {
             b"10" => 10u8,
             b"11" => 11u8,
+            // OSC 12 (cursor color) is deliberately silent — codex's
+            // startup probe doesn't query it (verified via strace in
+            // #177 P2). Adding a reply would be harmless but unneeded;
+            // staying silent matches every other non-10/11 OSC slot.
             _ => return,
         };
         self.handler.osc_color_query(slot);

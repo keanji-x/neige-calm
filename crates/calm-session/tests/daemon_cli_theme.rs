@@ -18,6 +18,7 @@
 //! Chat mode is not exercised here — the args are intentionally ignored
 //! when `--mode chat` (no `TerminalModel` to apply colors to).
 
+use std::io::Read;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -63,8 +64,11 @@ fn fresh_sock(label: &str) -> std::path::PathBuf {
 #[test]
 fn missing_both_flags_fails_fast() {
     // Default mode is `terminal`. Neither flag set → daemon must exit
-    // non-zero before binding. PR1's NOT NULL row invariant makes this
-    // an upstream-bug signal — never legitimate in steady state.
+    // non-zero before binding AND the stderr bail message must point
+    // operators at the missing `--terminal-fg`. PR1's NOT NULL row
+    // invariant makes this an upstream-bug signal — never legitimate in
+    // steady state. Pinning the stderr substring guards against a
+    // regression to a generic "missing argument" message.
     let sock = fresh_sock("nobars");
     let id = Uuid::new_v4().to_string();
     let mut child = std::process::Command::new(daemon_bin())
@@ -72,23 +76,33 @@ fn missing_both_flags_fails_fast() {
         .args(["--sock", &sock.to_string_lossy()])
         .args(["--", "/bin/true"])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("spawn");
     let outcome = wait_bind_or_exit(&mut child, &sock);
+    let mut stderr = String::new();
+    if let Some(mut s) = child.stderr.take() {
+        let _ = s.read_to_string(&mut stderr);
+    }
     match outcome {
         Outcome::Exited(code) => assert_ne!(
             code,
             Some(0),
-            "missing flags must yield non-zero exit, got code={code:?}",
+            "missing flags must yield non-zero exit, got code={code:?}, stderr={stderr:?}",
         ),
         other => panic!("expected non-zero exit on missing flags, got {other:?}"),
     }
+    assert!(
+        stderr.contains("--terminal-fg is required"),
+        "expected stderr to mention `--terminal-fg is required`, got {stderr:?}",
+    );
 }
 
 #[test]
 fn missing_only_bg_fails_fast() {
-    // Asymmetric case: only fg supplied. Both must be present together.
+    // Asymmetric case: only fg supplied. Both must be present together,
+    // and the stderr bail must name the specific missing flag so an
+    // operator doesn't have to grep source to fix the regression.
     let sock = fresh_sock("no-bg");
     let id = Uuid::new_v4().to_string();
     let mut child = std::process::Command::new(daemon_bin())
@@ -97,13 +111,21 @@ fn missing_only_bg_fails_fast() {
         .args(["--terminal-fg", "216,219,226"])
         .args(["--", "/bin/true"])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("spawn");
     let outcome = wait_bind_or_exit(&mut child, &sock);
+    let mut stderr = String::new();
+    if let Some(mut s) = child.stderr.take() {
+        let _ = s.read_to_string(&mut stderr);
+    }
     assert!(
         matches!(outcome, Outcome::Exited(code) if code != Some(0)),
-        "expected non-zero exit when only --terminal-fg given, got {outcome:?}",
+        "expected non-zero exit when only --terminal-fg given, got {outcome:?}, stderr={stderr:?}",
+    );
+    assert!(
+        stderr.contains("--terminal-bg is required"),
+        "expected stderr to mention `--terminal-bg is required`, got {stderr:?}",
     );
 }
 
