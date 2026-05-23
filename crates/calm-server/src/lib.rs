@@ -35,6 +35,7 @@ pub mod db;
 pub mod dispatcher;
 pub mod error;
 pub mod event;
+pub mod event_cursor;
 pub mod ids;
 pub mod mcp_server;
 pub mod model;

@@ -117,6 +117,7 @@ async fn boot_with_role(role: CardRole) -> CardBoot {
         repo.clone(),
         events.clone(),
         card_role_cache,
+        calm_server::event_cursor::EventCursorCache::new(),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         registry,

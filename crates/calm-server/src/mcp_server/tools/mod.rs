@@ -10,6 +10,7 @@
 use crate::mcp_server::registry::ToolRegistry;
 
 pub mod emit;
+pub mod wait;
 pub mod wave_state;
 
 /// Register every default tool onto a fresh registry. Callers build
@@ -20,8 +21,11 @@ pub mod wave_state;
 /// * PR7b adds the three wave-state tools
 ///   (`calm.get_wave_state`, `calm.update_wave_state`,
 ///   `calm.update_task_meta`).
-/// * PR8 will add `calm.wait_for_events` here.
+/// * PR8 adds `calm.wait_for_events` — spec-only long-poll over the
+///   wave's event stream + matching `/internal/codex/pending_events`
+///   HTTP fallback for the bridge's Stop-hook handler.
 pub fn register_default_tools(registry: &mut ToolRegistry) {
     emit::register_into(registry);
     wave_state::register_into(registry);
+    wait::register_into(registry);
 }

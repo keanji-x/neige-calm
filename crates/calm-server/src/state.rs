@@ -8,6 +8,7 @@ use crate::config::Config;
 use crate::db::{Repo, RouteRepo};
 use crate::dispatcher::Dispatcher;
 use crate::event::EventBus;
+use crate::event_cursor::EventCursorCache;
 use crate::mcp_server::McpServer;
 use crate::plugin_host::{PluginHost, PluginRegistry};
 use std::path::{Path, PathBuf};
@@ -54,6 +55,11 @@ pub struct AppState {
     /// into every `_tx`-suffixed card helper so the insert/delete path
     /// stays write-through inside the surrounding transaction.
     pub card_role_cache: CardRoleCache,
+    /// PR8 (#136) — per-card event cursor cache used by
+    /// `calm.wait_for_events` MCP tool and `/internal/codex/pending_events`
+    /// HTTP fallback. Boot-fresh (empty) on every `AppState` construction;
+    /// not persisted — see `crate::event_cursor` module doc for rationale.
+    pub event_cursor_cache: EventCursorCache,
     /// PR5 (#136) — dispatcher worker handle. Subscribes via
     /// [`EventBus::subscribe_filtered`] to `*.job_requested` envelopes
     /// and mints worker-roled cards (+ optionally spawns the codex /
@@ -158,6 +164,12 @@ impl AppState {
             // are conceptually two server "boots".
             db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
             card_role_cache,
+            // PR8 (#136) — empty cursor cache. Integration tests that
+            // want to assert "second call's `since` defaults to first
+            // call's max id" exercise the cache through the wait/pending
+            // handlers; `from_parts` callers that need to pre-seed for
+            // a fixture can reach the cache through `state.event_cursor_cache`.
+            event_cursor_cache: EventCursorCache::new(),
             dispatcher,
             // `from_parts` is the test / replay-lib hatch — no live MCP
             // server. Production goes through `new` below.
@@ -247,6 +259,13 @@ impl AppState {
         // so the dispatcher can take an `Arc<McpServer>` at construction
         // time and use it for worker codex daemon spawn (mirrors the
         // spec card path in `routes::waves::create_wave`).
+        // PR8 (#136) — event cursor cache. Empty at boot; the wait /
+        // pending handlers grow it on demand. Cloned into `AppContext`
+        // (via `McpServer::spawn`) and stashed on `AppState` so the
+        // HTTP fallback (`/internal/codex/pending_events`) sees the
+        // same map.
+        let event_cursor_cache = EventCursorCache::new();
+
         let mcp_socket_path = cfg.data_dir_resolved().join("mcp").join("kernel.sock");
         let mcp_shim_bin = resolve_mcp_stdio_shim_bin();
         let mcp_registry = crate::mcp_server::build_default_registry();
@@ -254,6 +273,7 @@ impl AppState {
             repo.clone(),
             events.clone(),
             card_role_cache.clone(),
+            event_cursor_cache.clone(),
             mcp_socket_path,
             mcp_shim_bin,
             mcp_registry,
@@ -312,6 +332,7 @@ impl AppState {
             // server hands out via `/api/version`.
             db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
             card_role_cache,
+            event_cursor_cache,
             dispatcher,
             mcp_server: Some(mcp_server),
             raw: repo,

@@ -33,6 +33,7 @@
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::RouteRepo;
+use crate::event_cursor::EventCursorCache;
 use crate::mcp_server::framing::{
     Frame, RequestId, RpcError, build_error_response_frame, build_ok_response_frame, parse_frame,
 };
@@ -95,6 +96,7 @@ impl McpServer {
         repo: Arc<dyn RouteRepo>,
         events: crate::event::EventBus,
         card_role_cache: CardRoleCache,
+        event_cursor_cache: EventCursorCache,
         socket_path: PathBuf,
         shim_bin: PathBuf,
         registry: Arc<ToolRegistry>,
@@ -129,6 +131,7 @@ impl McpServer {
             repo,
             events,
             card_role_cache,
+            event_cursor_cache,
         });
 
         let socket_for_handle = socket_path.clone();
