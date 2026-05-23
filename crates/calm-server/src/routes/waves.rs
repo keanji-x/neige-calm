@@ -222,6 +222,12 @@ pub(crate) async fn create_wave(
     let cwd_for_tx = cwd.clone();
     let spec_card_id_for_tx = spec_card_id.clone();
     let report_card_id_for_tx = report_card_id.clone();
+    // #177 — capture the host browser's theme RGB BEFORE `p` is moved
+    // into `wave_create_tx`. The value lands on the spec card's
+    // terminal row inside the tx; the synchronous spec-card spawn
+    // below reads it back from that row via `spawn_daemon_for`, so
+    // the daemon argv and the row stay agreement-by-construction.
+    let theme_for_tx = p.theme;
     let ((wave, mcp_token), _event_ids) = write_with_events_typed(
         s.repo.as_ref(),
         actor_id,
@@ -285,6 +291,14 @@ pub(crate) async fn create_wave(
                     // Wave delete still cascades via the FK chain.
                     false,
                     &cache_for_tx,
+                    // #177 — host browser's theme RGB taken from the
+                    // wave-create request body (required on `NewWave`).
+                    // Persisted onto the spec card's terminal row so
+                    // the codex daemon's argv carries `--terminal-fg/
+                    // -bg` even on the first boot (closing the bug
+                    // where a cold-mounted spec card painted in the
+                    // daemon's default colors).
+                    theme_for_tx,
                 )
                 .await?;
 
