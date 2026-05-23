@@ -40,17 +40,19 @@
 
 use crate::actor::Actor;
 use crate::db::sqlite::{
-    card_with_codex_create_tx, terminal_delete_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
+    card_create_with_id_tx, card_with_codex_create_tx, overlay_upsert_tx, terminal_delete_tx,
+    wave_create_tx, wave_delete_tx, wave_update_tx,
 };
 use crate::db::{write_with_event_typed, write_with_events_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
-use crate::model::{CardRole, NewWave, Wave, WaveDetail, WavePatch, new_id};
+use crate::model::{CardRole, NewCard, NewOverlay, NewWave, Wave, WaveDetail, WavePatch, new_id};
 use crate::routes::settings::load_settings;
 use crate::spec_card::{build_codex_env_map, seed_and_spawn_spec_daemon};
 use crate::state::AppState;
 use crate::terminal_sweeper::reap_terminal_artifacts;
 use crate::wave_lifecycle::validate_transition;
+use crate::wave_report::WaveReportPayload;
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -147,6 +149,14 @@ pub(crate) async fn create_wave(
     //    minted inside `wave_create_tx` (PR2 stopgap precedent in
     //    `routes/coves.rs`); we read it back from the closure result.
     let spec_card_id = new_id();
+    // Issue #229 PR B — wave-report card id, pre-minted alongside the
+    // spec id so the layout overlay seeded later in the tx can
+    // reference it without needing the closure's return value. Same
+    // generator (`uuid-v4 simple`) the rest of the kernel uses; the
+    // partial unique index `idx_cards_one_report_per_wave` from
+    // migration 0013 backstops the "one report card per wave"
+    // invariant if a future code path races itself.
+    let report_card_id = new_id();
 
     // 2. Resolve cwd + assemble env up front — these go into the
     //    terminal row written inside the tx. Mirror of
@@ -194,6 +204,7 @@ pub(crate) async fn create_wave(
     let env_for_tx = env.clone();
     let cwd_for_tx = cwd.clone();
     let spec_card_id_for_tx = spec_card_id.clone();
+    let report_card_id_for_tx = report_card_id.clone();
     let ((wave, mcp_token), _event_ids) = write_with_events_typed(
         s.repo.as_ref(),
         actor_id,
@@ -219,7 +230,7 @@ pub(crate) async fn create_wave(
                 // daemon.
                 let (spec_card, _term, mcp_token) = card_with_codex_create_tx(
                     tx,
-                    spec_card_id_for_tx,
+                    spec_card_id_for_tx.clone(),
                     wave_id.clone(),
                     None,       // sort: append to end
                     cwd_for_tx, // codex's cwd
@@ -240,19 +251,103 @@ pub(crate) async fn create_wave(
                 )
                 .await?;
 
-                // 3c. Per-event scopes — we now have the real ids.
+                // 3c. Issue #229 PR B — mint the wave-report card in
+                // the same tx. Kernel-owned (`deletable = false`), role
+                // = `ReportCard`, payload = the v1 initial shape from
+                // `WaveReportPayload::initial()`. The placeholder body
+                // (`"# Goal\n\n_The spec agent will fill this in._\n"`)
+                // mirrors the literal string in migration 0014's
+                // backfill INSERT — both paths land an identical row so
+                // a wave never observes a "no report card" state, and
+                // freshly-minted waves render the same placeholder as
+                // legacy ones until the spec agent rewrites the body.
+                // `sort: -1.0` puts the report card ahead of every
+                // user/dispatcher card in list-mode order (existing
+                // sorts are non-negative; `next_sort_scoped_in_tx`
+                // never mints negative values).
+                let report_payload =
+                    serde_json::to_value(WaveReportPayload::initial()).map_err(|e| {
+                        CalmError::Internal(format!(
+                            "wave_create: serialize wave-report payload: {e}"
+                        ))
+                    })?;
+                let report_new = NewCard {
+                    wave_id: wave_id.clone(),
+                    kind: "wave-report".to_string(),
+                    sort: Some(-1.0),
+                    payload: report_payload,
+                };
+                let report_card = card_create_with_id_tx(
+                    tx,
+                    report_card_id_for_tx.clone(),
+                    report_new,
+                    CardRole::ReportCard,
+                    // Kernel-owned: refuses REST / plugin-callback
+                    // delete (the parent wave's delete still cascades
+                    // via FK).
+                    false,
+                    &cache_for_tx,
+                )
+                .await?;
+
+                // 3d. Seed the layout overlay so the WaveGrid renders
+                // a side-by-side layout: spec agent on the left half
+                // (x=0, w=6) and wave report on the right half (x=6,
+                // w=6), both full height (h=12). Stamping both
+                // positions explicitly here means a user who never
+                // opens the wave still gets the canonical two-column
+                // layout from their first view.
+                //
+                // `plugin_id = "kernel"`, `entity_kind = "view"`,
+                // `entity_id = wave_id`, `kind = "layout"` — same
+                // tuple `useOverlayState({entity_kind: 'view',
+                // kind: 'layout'})` reads/writes from the frontend.
+                let layout_payload = serde_json::json!({
+                    "schemaVersion": 1,
+                    "positions": {
+                        spec_card_id_for_tx.as_str(): {
+                            "x": 0, "y": 0, "w": 6, "h": 12
+                        },
+                        report_card_id_for_tx.as_str(): {
+                            "x": 6, "y": 0, "w": 6, "h": 12
+                        }
+                    }
+                });
+                let layout_overlay = overlay_upsert_tx(
+                    tx,
+                    NewOverlay {
+                        plugin_id: "kernel".to_string(),
+                        entity_kind: "view".to_string(),
+                        entity_id: wave_id.as_str().to_string(),
+                        kind: "layout".to_string(),
+                        payload: layout_payload,
+                    },
+                )
+                .await?;
+
+                // 3e. Per-event scopes — we now have the real ids.
                 let wave_scope = EventScope::Wave {
                     wave: wave_id.clone(),
                     cove: cove_id.clone(),
                 };
-                let card_scope = EventScope::Card {
+                let spec_card_scope = EventScope::Card {
                     card: spec_card.id.clone(),
-                    wave: wave_id,
-                    cove: cove_id,
+                    wave: wave_id.clone(),
+                    cove: cove_id.clone(),
+                };
+                let report_card_scope = EventScope::Card {
+                    card: report_card.id.clone(),
+                    wave: wave_id.clone(),
+                    cove: cove_id.clone(),
                 };
                 let events = vec![
-                    (wave_scope, Event::WaveUpdated(wave.clone())),
-                    (card_scope, Event::CardAdded(spec_card)),
+                    (wave_scope.clone(), Event::WaveUpdated(wave.clone())),
+                    (spec_card_scope, Event::CardAdded(spec_card)),
+                    (report_card_scope, Event::CardAdded(report_card)),
+                    // Layout overlay broadcasts so any open WaveGrid
+                    // subscriber on this wave picks up the seeded
+                    // positions without an extra GET round-trip.
+                    (wave_scope, Event::OverlaySet(layout_overlay)),
                 ];
                 Ok(((wave, mcp_token), events))
             })

@@ -12,9 +12,10 @@
 import { registerCard } from '../registry';
 import { TerminalEntry } from './terminal';
 import { CodexEntry } from './codex';
+import { WaveReportEntry } from './wave-report';
 import { PluginIframeEntry } from '../plugin-iframe';
 
-export { TerminalEntry, CodexEntry, PluginIframeEntry };
+export { TerminalEntry, CodexEntry, WaveReportEntry, PluginIframeEntry };
 
 let registered = false;
 
@@ -26,6 +27,10 @@ export function registerBuiltins(): void {
   registered = true;
   registerCard(TerminalEntry);
   registerCard(CodexEntry);
+  // Issue #229 PR B — wave-report card. Kernel-minted (one per wave),
+  // kind = "wave-report". No `addPanel` entry — users cannot add
+  // another one manually.
+  registerCard(WaveReportEntry);
   // The plugin iframe entry is a built-in for now: it owns the `ui://`
   // kind namespace (the legacy `plugin:` form was deleted in M4). A
   // "plugin entry registers itself at runtime per-mount" model is part

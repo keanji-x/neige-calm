@@ -281,11 +281,33 @@ async fn spec_card_minted_by_wave_create_is_undeletable() {
         .to_string();
 
     let cards = boot.repo.cards_by_wave(&wave_id).await.unwrap();
-    assert_eq!(cards.len(), 1, "exactly one spec card");
+    // Issue #229 PR B — wave create now mints two cards in the same tx:
+    // the spec card (PR6) and the wave-report card (PR B). Both are
+    // kernel-owned (`deletable = false`); the report card sorts ahead
+    // (`sort = -1.0`) so the WaveGrid renders it at the top.
+    assert_eq!(
+        cards.len(),
+        2,
+        "wave create mints spec + wave-report; got {} cards",
+        cards.len(),
+    );
     assert!(
-        !cards[0].deletable,
-        "spec card must be undeletable; got: deletable={}",
-        cards[0].deletable,
+        cards.iter().all(|c| !c.deletable),
+        "both spec and wave-report cards must be undeletable; got: {:?}",
+        cards
+            .iter()
+            .map(|c| (c.kind.clone(), c.deletable))
+            .collect::<Vec<_>>(),
+    );
+    // Sanity: each role is represented exactly once.
+    let kinds: Vec<&str> = cards.iter().map(|c| c.kind.as_str()).collect();
+    assert!(
+        kinds.contains(&"codex"),
+        "spec card kind is codex; got {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&"wave-report"),
+        "wave-report card present; got {kinds:?}"
     );
 }
 
@@ -306,8 +328,13 @@ async fn delete_card_returns_403_for_undeletable_spec_card() {
     assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
     let wave_id = body["id"].as_str().unwrap().to_string();
     let cards = boot.repo.cards_by_wave(&wave_id).await.unwrap();
-    let spec_card_id = cards[0].id.as_str().to_string();
-    assert!(!cards[0].deletable);
+    // Find the spec card by kind (PR B adds a wave-report card alongside).
+    let spec_card = cards
+        .iter()
+        .find(|c| c.kind == "codex")
+        .expect("spec card present");
+    let spec_card_id = spec_card.id.as_str().to_string();
+    assert!(!spec_card.deletable);
 
     // DELETE /api/cards/:id on the spec card → 403.
     let status = delete(boot.app.clone(), &format!("/api/cards/{spec_card_id}")).await;
@@ -379,8 +406,12 @@ async fn wave_delete_cascades_to_undeletable_spec_card() {
     assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
     let wave_id = body["id"].as_str().unwrap().to_string();
     let cards = boot.repo.cards_by_wave(&wave_id).await.unwrap();
-    let spec_card_id = cards[0].id.as_str().to_string();
-    assert!(!cards[0].deletable);
+    let spec_card = cards
+        .iter()
+        .find(|c| c.kind == "codex")
+        .expect("spec card present");
+    let spec_card_id = spec_card.id.as_str().to_string();
+    assert!(!spec_card.deletable);
 
     // The wave-delete route surfaces the cascade through the FK chain.
     // Spec cards carry a terminal, and `terminals.card_id` is ON DELETE

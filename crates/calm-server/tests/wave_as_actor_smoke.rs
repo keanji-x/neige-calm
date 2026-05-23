@@ -188,8 +188,15 @@ async fn wave_as_actor_smoke_spec_dispatches_worker_via_kernel() {
         .cards_by_wave(wave.id.as_str())
         .await
         .expect("cards_by_wave");
-    assert_eq!(cards.len(), 1, "wave create mints exactly one spec card");
-    let spec_card_id = cards[0].id.clone();
+    // Issue #229 PR B — wave create mints two kernel-owned cards: the
+    // spec card (PR6) and the wave-report card (PR B).
+    assert_eq!(cards.len(), 2, "wave create mints spec + wave-report cards");
+    let spec_card_id = cards
+        .iter()
+        .find(|c| c.kind == "codex")
+        .expect("spec card present")
+        .id
+        .clone();
     assert_eq!(
         boot.card_role_cache.get(&spec_card_id),
         Some(CardRole::Spec),

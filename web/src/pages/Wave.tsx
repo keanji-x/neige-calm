@@ -9,6 +9,7 @@ import { SchemaForm } from '../shared/components/SchemaForm';
 import { DirectoryBrowser } from '../shared/components/DirectoryPicker';
 import { CardStatusDot } from '../shared/components/CardStatusDot';
 import { WaveLifecycleBadge } from '../shared/components/WaveLifecycleBadge';
+import { WaveContext } from '../shared/components/WaveContext';
 import { DeleteButton } from './_shared';
 import { useOverlayState } from '../hooks/useOverlayState';
 import { OVERLAY_VIEW_MODE_SCHEMA_VERSION } from '../cards/builtins/schemaVersions';
@@ -198,6 +199,13 @@ export function WavePage({
   };
 
   return (
+    // Issue #229 PR B — wrap with WaveContext so the WaveReport card
+    // (rendered deep inside WaveGrid/WaveList) can read the wave's
+    // lifecycle for its header badge without prop-drilling. Other
+    // cards ignore the context.
+    <WaveContext.Provider
+      value={{ id: wave.id, lifecycle: wave.lifecycle, title: wave.title }}
+    >
     <div className="workbench">
       <header className="wave-header">
         <button
@@ -418,5 +426,6 @@ export function WavePage({
         );
       })()}
     </div>
+    </WaveContext.Provider>
   );
 }

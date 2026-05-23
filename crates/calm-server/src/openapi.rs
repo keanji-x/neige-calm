@@ -98,6 +98,10 @@ use utoipa::OpenApi;
         Card,
         NewCard,
         CardPatch,
+        // Issue #229 PR B — wave-report card payload shape (kernel-owned;
+        // surfaced in the OpenAPI doc so frontend codegen + external
+        // consumers see the v1 contract).
+        crate::wave_report::WaveReportPayload,
         Overlay,
         NewOverlay,
         Terminal,
