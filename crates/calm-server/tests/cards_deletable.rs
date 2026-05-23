@@ -44,7 +44,33 @@ use tower::ServiceExt;
 
 // ---------------------------------------------------------------------------
 // Boot — same shape as `tests/spec_card.rs`, kept minimal here.
+//
+// Post-#236 (synchronous spec-daemon spawn): these tests need
+// `POST /api/waves` to actually return 201, so we point `DaemonClient`
+// at the real `calm-session-daemon` binary built into the workspace
+// `target/` dir. The daemon binds its socket before exec'ing the
+// inner program, so `spawn_daemon_for`'s wait-for-socket loop
+// completes even when the inner `/bin/sh -c codex` (no codex in CI)
+// fails immediately. Same locator pattern as
+// `tests/wave_create_sync_daemon.rs` and `tests/codex_card_endpoint.rs`.
 // ---------------------------------------------------------------------------
+
+/// Same daemon-locator as `wave_create_sync_daemon.rs` /
+/// `codex_card_endpoint.rs` — workspace bins live one dir up from the
+/// per-test `deps/` directory.
+fn locate_daemon_bin() -> PathBuf {
+    let mut p = std::env::current_exe().expect("current_exe");
+    p.pop();
+    p.pop();
+    p.push("calm-session-daemon");
+    assert!(
+        p.exists(),
+        "calm-session-daemon not found at {p:?}; run \
+         `cargo build -p calm-session --bin calm-session-daemon` first, or \
+         use `cargo test --workspace` which builds workspace bins",
+    );
+    p
+}
 
 struct Boot {
     app: axum::Router,
@@ -71,7 +97,7 @@ async fn boot() -> Boot {
 
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin: PathBuf::from("/nonexistent-daemon-bin-deletable-test"),
+        session_daemon_bin: locate_daemon_bin(),
     });
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();

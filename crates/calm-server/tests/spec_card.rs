@@ -1,19 +1,19 @@
 //! PR6 (#136) — atomic spec card binding on wave create.
 //!
 //! Coverage:
-//!   * `POST /api/waves` returns 201 with the wave and atomically
-//!     mints a single `CardRole::Spec` codex card under it.
+//!   * `POST /api/waves` atomically mints a single `CardRole::Spec`
+//!     codex card under the wave.
 //!   * Two events emit in order: `Event::WaveUpdated` (wave-scoped),
 //!     then `Event::CardAdded` (card-scoped). No spurious
 //!     `card.updated`.
 //!   * The card_role_cache carries `Spec` for the auto-minted card.
 //!   * `enforce_role` permits the spec card to emit `WaveUpdated`
 //!     (via direct CardRoleCache lookup + `enforce_role` call).
-//!   * The daemon-spawn path is attempted post-commit; on a stubbed-
-//!     bin failure the route still returns 201 with the persisted
-//!     wave + spec card + terminal rows and both events still emit
-//!     (orphan-sweeper recovery contract is exercised — the daemon
-//!     spawn is fire-and-forget once the rows have committed).
+//!   * Issue #236: the daemon spawn is now **synchronous** with the
+//!     201 response. With a stubbed-bin daemon the spawn fails and
+//!     the route returns 500 (wave + card + terminal rows persist;
+//!     both events still broadcast since they emit at commit-time,
+//!     before the spawn attempt).
 //!
 //! Strategy mirrors `tests/codex_card_endpoint.rs`: build a real Axum
 //! router with `AppState::from_parts`, hit it with `tower::ServiceExt`,
@@ -52,9 +52,11 @@ struct Boot {
 }
 
 /// Boot a router pointing at a non-existent daemon bin. The daemon
-/// spawn will fail post-commit, but the route still returns 201 and
-/// the spec card row + terminal row plus both events still land —
-/// which is the PR6 contract (orphan-sweeper handles cleanup).
+/// spawn will fail synchronously on `POST /api/waves` (issue #236),
+/// so the route returns 500 — but the spec card row + terminal row
+/// plus both events still land, since the events emit at tx commit
+/// before the spawn attempt and the row writes are not rolled back
+/// (we'd lose the user's typed title for a recoverable spawn issue).
 async fn boot() -> Boot {
     let tmp = TempDir::new().expect("tempdir for daemon sockets");
     let repo: Arc<dyn Repo> = Arc::new(
@@ -189,23 +191,16 @@ async fn post_api_waves_mints_spec_card_atomically() {
         json!({"cove_id": boot.cove_id, "title": "first wave"}),
     )
     .await;
-    // PR6's recovery contract (post-blocker-fix): the daemon spawn
-    // fails (stub bin doesn't exist) but the route still returns
-    // 201 with the persisted wave. The two events still emit and
-    // the orphan terminal will be reaped by the sweeper. Returning
-    // 500 here would mislead the client about persisted state and
-    // breaks test stacks (web a11y) that proxy without a real
-    // codex binary.
+    // Issue #236: spawn is synchronous on the response hot path. With
+    // a stub daemon bin the spawn fails and the route returns 500.
+    // The persisted rows (wave + spec card + terminal) and the two
+    // events that emitted at commit-time still survive (no rollback
+    // — losing the user's typed title for a recoverable spawn issue
+    // is worse UX than a retriable error).
     assert_eq!(
         status,
-        StatusCode::CREATED,
-        "stub daemon bin → 201; persisted rows + events still survive; body={body}",
-    );
-    // Response body is the persisted wave row.
-    assert_eq!(
-        body.get("title").and_then(Value::as_str),
-        Some("first wave"),
-        "201 response body carries the persisted wave; got: {body}",
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "stub daemon bin → 500 (synchronous spawn fails); persisted rows + events still survive; body={body}",
     );
 
     // Drain the envelope subscription with a generous deadline.

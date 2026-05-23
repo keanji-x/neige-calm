@@ -112,6 +112,16 @@ services:
       # to its own binary (see state.rs::resolve_codex_bridge_bin) so it
       # lands at the same /usr/local/bin path.
       - ${CALM_CODEX_BRIDGE_BIN:-./target/release/neige-codex-bridge}:/usr/local/bin/neige-codex-bridge:ro
+      # Issue #236 followup — the kernel-as-MCP-server bridge. Codex inside
+      # the container spawns this binary per the `[mcp_servers.calm].command`
+      # baked into each per-card config.toml. `resolve_mcp_stdio_shim_bin`
+      # (see state.rs) looks for it as a sibling of calm-server's exe and
+      # falls back to a bare-name PATH lookup; mounting at /usr/local/bin
+      # makes both paths resolve. Without this mount the codex MCP client
+      # exits with "os error 2" on every spec/worker card spawn — the
+      # narrow #236 sync-spawn fix doesn't surface that because it only
+      # awaits the daemon socket, not the codex MCP handshake.
+      - ${CALM_MCP_SHIM_BIN:-./target/release/neige-mcp-stdio-shim}:/usr/local/bin/neige-mcp-stdio-shim:ro
       # Codex CLI. The host npm install drops a musl static binary at
       # ${CALM_CODEX_HOST_BIN}; we mount it inside as a bare `codex` so
       # `Command::new("codex")` resolves via PATH. Set CALM_CODEX_HOST_BIN

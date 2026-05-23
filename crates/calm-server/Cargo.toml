@@ -19,6 +19,13 @@ default = []
 # tests under `tests/*.rs` auto-enable this via the `[dev-dependencies]`
 # self-loop below.
 fixtures = []
+# Issue #236: opt-in end-to-end test that boots a real `codex` binary
+# (the agent's MCP-client side) and verifies the spec card's daemon
+# has `NEIGE_MCP_SOCKET` + `NEIGE_MCP_TOKEN` in its process env.
+# Off by default because `codex` is not in CI; the feature-gated test
+# self-skips when the binary is missing. Run locally with:
+#   cargo test --features codex-e2e --test codex_e2e_spec_card -- --nocapture
+codex-e2e = []
 
 [[bin]]
 name = "calm-server"

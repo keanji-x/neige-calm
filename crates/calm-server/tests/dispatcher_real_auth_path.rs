@@ -190,8 +190,8 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
     .await;
     assert_eq!(
         status,
-        StatusCode::CREATED,
-        "wave create returns 201 (daemon spawn failure is swallowed)"
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "wave create returns 500 when daemon spawn fails synchronously (issue #236); spec card + role-cache write-through still happen pre-spawn so the assertions below still hold",
     );
 
     let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();

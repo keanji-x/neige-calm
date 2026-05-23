@@ -65,10 +65,16 @@ ifeq ($(wildcard $(WORKTREE)/Cargo.toml),)
 $(error WORKTREE=$(WORKTREE) is not a valid neige-calm checkout (no Cargo.toml))
 endif
 
-BIN    := $(WORKTREE)/target/release/calm-server
-DAEMON := $(WORKTREE)/target/release/calm-session-daemon
-BRIDGE := $(WORKTREE)/target/release/neige-codex-bridge
-DIST   := $(WORKTREE)/web/dist
+BIN      := $(WORKTREE)/target/release/calm-server
+DAEMON   := $(WORKTREE)/target/release/calm-session-daemon
+BRIDGE   := $(WORKTREE)/target/release/neige-codex-bridge
+# Issue #236 followup — kernel-as-MCP-server stdio bridge. Codex inside
+# the docker container spawns this per spec/worker card (config.toml's
+# `[mcp_servers.calm].command`); without it the handshake exits with
+# `os error 2`. docker-compose.yml bind-mounts the built binary into
+# /usr/local/bin/.
+MCP_SHIM := $(WORKTREE)/target/release/neige-mcp-stdio-shim
+DIST     := $(WORKTREE)/web/dist
 
 # Plumb the same paths into docker-compose so the container bind-mounts
 # the right binaries + web bundle. The `${VAR:-default}` form in
@@ -76,6 +82,7 @@ DIST   := $(WORKTREE)/web/dist
 export CALM_BIN := $(BIN)
 export CALM_DAEMON_BIN := $(DAEMON)
 export CALM_CODEX_BRIDGE_BIN := $(BRIDGE)
+export CALM_MCP_SHIM_BIN := $(MCP_SHIM)
 export CALM_WEB_DIST := $(DIST)
 
 # Wipe the local sqlite DB (with a timestamped backup) before `up -d` so
@@ -108,13 +115,15 @@ help: ## Show this help.
 # ---- build (on host, not in docker) -------------------------------------
 
 .PHONY: build
-build: $(BIN) $(DAEMON) $(BRIDGE) $(DIST) ## Build server, daemon, codex bridge, web bundle.
+build: $(BIN) $(DAEMON) $(BRIDGE) $(MCP_SHIM) $(DIST) ## Build server, daemon, codex bridge, mcp-stdio shim, web bundle.
 
-# Single cargo invocation builds all three binaries — cheaper than three
+# Single cargo invocation builds all four binaries — cheaper than four
 # separate calls because deps overlap. Touch every output so the rule
-# re-fires only when sources change.
-$(BIN) $(DAEMON) $(BRIDGE) &: $(shell find $(WORKTREE)/crates -name '*.rs' -o -name 'Cargo.toml' 2>/dev/null) $(WORKTREE)/Cargo.toml $(WORKTREE)/Cargo.lock
-	cargo build --manifest-path $(WORKTREE)/Cargo.toml --release -p calm-server -p calm-session -p calm-codex-bridge --bin calm-server --bin calm-session-daemon --bin neige-codex-bridge
+# re-fires only when sources change. Issue #236 followup added the
+# `neige-mcp-stdio-shim` binary to the list; the docker-compose stack
+# bind-mounts it into /usr/local/bin so codex can spawn it per-card.
+$(BIN) $(DAEMON) $(BRIDGE) $(MCP_SHIM) &: $(shell find $(WORKTREE)/crates -name '*.rs' -o -name 'Cargo.toml' 2>/dev/null) $(WORKTREE)/Cargo.toml $(WORKTREE)/Cargo.lock
+	cargo build --manifest-path $(WORKTREE)/Cargo.toml --release -p calm-server -p calm-session -p calm-codex-bridge -p neige-mcp-stdio-shim --bin calm-server --bin calm-session-daemon --bin neige-codex-bridge --bin neige-mcp-stdio-shim
 
 $(DIST): $(shell find $(WORKTREE)/web/src -type f 2>/dev/null) $(WORKTREE)/web/package.json $(WORKTREE)/web/vite.config.ts $(WORKTREE)/web/index.html
 	@if [ ! -d $(WORKTREE)/web/node_modules ]; then (cd $(WORKTREE)/web && npm install); fi

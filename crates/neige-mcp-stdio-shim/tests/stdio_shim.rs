@@ -35,9 +35,13 @@ async fn stdin_to_socket_forwards_bytes() {
     let socket_path: PathBuf = tmp.path().join("kernel.sock");
     let listener = listen(&socket_path);
 
-    // Spawn the shim with the env var pointing at our stub socket.
+    // Spawn the shim with the env vars pointing at our stub socket
+    // and a dummy token. Issue #236 followup made `NEIGE_MCP_TOKEN`
+    // mandatory at boot — see the `missing_token_env_exits_nonzero`
+    // test below for the failure shape when it's absent.
     let mut child = Command::new(SHIM_BIN)
         .env("NEIGE_MCP_SOCKET", &socket_path)
+        .env("NEIGE_MCP_TOKEN", "test-byte-pump-token")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -52,8 +56,13 @@ async fn stdin_to_socket_forwards_bytes() {
     let (server_rd, server_wr) = server_stream.into_split();
     let mut server_reader = BufReader::new(server_rd);
 
-    // Write a line to the shim's stdin. The shim should forward it
-    // verbatim to the socket.
+    // Write a non-JSON line to the shim's stdin. The first-frame
+    // injector tries to parse it as JSON, falls through on the parse
+    // error, and forwards the line unchanged. We assert exactly that:
+    // a non-initialize / non-JSON first frame is byte-pumped verbatim
+    // (the inject path is exercised by the unit tests in
+    // `src/main.rs` and the `initialize_first_frame_gets_token_injected`
+    // test below).
     let mut child_stdin = child.stdin.take().expect("stdin piped");
     child_stdin
         .write_all(b"hello-from-stdin\n")
@@ -86,6 +95,7 @@ async fn socket_to_stdout_forwards_bytes() {
 
     let mut child = Command::new(SHIM_BIN)
         .env("NEIGE_MCP_SOCKET", &socket_path)
+        .env("NEIGE_MCP_TOKEN", "test-byte-pump-token")
         // `Stdio::null()` for stdin is the natural "no inbound bytes
         // from codex" shape for this direction-isolated test. With
         // the PR #221 fix, the shim's `join!` waits for the socket
@@ -156,6 +166,7 @@ async fn shim_stays_alive_after_stdin_eof_until_socket_closes() {
 
     let mut child = Command::new(SHIM_BIN)
         .env("NEIGE_MCP_SOCKET", &socket_path)
+        .env("NEIGE_MCP_TOKEN", "test-byte-pump-token")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -214,6 +225,7 @@ async fn missing_socket_env_exits_nonzero() {
     // error path so a future refactor doesn't silently swallow it.
     let child = Command::new(SHIM_BIN)
         .env_remove("NEIGE_MCP_SOCKET")
+        .env_remove("NEIGE_MCP_TOKEN")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -233,4 +245,102 @@ async fn missing_socket_env_exits_nonzero() {
         stderr.contains("NEIGE_MCP_SOCKET"),
         "shim stderr should mention the missing env var; got: {stderr}"
     );
+}
+
+#[tokio::test]
+async fn missing_token_env_exits_nonzero() {
+    // Issue #236 followup — the shim now also requires
+    // `NEIGE_MCP_TOKEN` so it can stamp `_meta["dev.neige/auth"]
+    // .token` into the codex `initialize` frame. Without it the
+    // handshake would fail at the kernel anyway; failing fast at
+    // shim boot gives a clear stderr line instead of an opaque
+    // JSON-RPC error on stdout.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let socket_path: PathBuf = tmp.path().join("kernel.sock");
+    // Bind a stub UDS so the shim wouldn't fail on the `connect`
+    // step — the missing-token check runs BEFORE connect, so this
+    // is mostly defensive against a future refactor that swaps
+    // the env-check order.
+    let _listener = listen(&socket_path);
+
+    let child = Command::new(SHIM_BIN)
+        .env("NEIGE_MCP_SOCKET", &socket_path)
+        .env_remove("NEIGE_MCP_TOKEN")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn shim");
+    let out = timeout(TEST_BUDGET, child.wait_with_output())
+        .await
+        .expect("shim exited within budget")
+        .expect("wait ok");
+    assert!(
+        !out.status.success(),
+        "shim must fail without NEIGE_MCP_TOKEN; got status {:?}",
+        out.status
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("NEIGE_MCP_TOKEN"),
+        "shim stderr should mention the missing env var; got: {stderr}"
+    );
+}
+
+#[tokio::test]
+async fn initialize_first_frame_gets_token_injected() {
+    // Issue #236 followup — end-to-end check that the shim's
+    // first-frame interceptor stamps `params._meta["dev.neige/auth"]
+    // .token` from the `NEIGE_MCP_TOKEN` env. Boots a stub UDS,
+    // feeds an `initialize` request on stdin with no `_meta`, and
+    // asserts the bytes that land on the socket carry the auth slot.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let socket_path: PathBuf = tmp.path().join("kernel.sock");
+    let listener = listen(&socket_path);
+
+    let mut child = Command::new(SHIM_BIN)
+        .env("NEIGE_MCP_SOCKET", &socket_path)
+        .env("NEIGE_MCP_TOKEN", "e2e-shim-token-xyz")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn shim");
+
+    let (server_stream, _addr) = timeout(TEST_BUDGET, listener.accept())
+        .await
+        .expect("shim connected within budget")
+        .expect("accept ok");
+    let (server_rd, server_wr) = server_stream.into_split();
+    let mut server_reader = BufReader::new(server_rd);
+
+    // Feed an `initialize` frame on the shim's stdin.
+    let mut child_stdin = child.stdin.take().expect("stdin piped");
+    let init_frame = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\"}}\n";
+    child_stdin
+        .write_all(init_frame)
+        .await
+        .expect("write stdin");
+    child_stdin.flush().await.expect("flush stdin");
+
+    // The kernel side (our stub) should see a frame whose body parses
+    // as JSON and carries the auth-slot token.
+    let mut received = String::new();
+    timeout(TEST_BUDGET, server_reader.read_line(&mut received))
+        .await
+        .expect("server read within budget")
+        .expect("read line ok");
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(received.trim_end()).expect("kernel received valid JSON");
+    assert_eq!(parsed["method"], "initialize");
+    let token = parsed["params"]["_meta"]["dev.neige/auth"]["token"]
+        .as_str()
+        .expect("shim stamped token slot");
+    assert_eq!(token, "e2e-shim-token-xyz");
+
+    // Cleanup: drop both ends so the shim winds down.
+    drop(child_stdin);
+    drop(server_wr);
+    let _ = timeout(TEST_BUDGET, child.wait()).await;
 }

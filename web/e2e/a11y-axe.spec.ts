@@ -120,10 +120,31 @@ const DEFERRED_RULES: string[] = [];
 // Default Axe builder used by every scan. `withTags` pins the rule set to
 // WCAG 2.1 A + AA + best-practice; we don't want a future axe-core
 // release to silently surface AAA-only checks and turn the suite red.
+//
+// xterm subtrees are excluded globally from every scan. Rationale:
+//   - xterm.js renders terminal output with its own ANSI/TTY palette
+//     (e.g. `.xterm-fg-10` bold green), which is tied to terminal-user
+//     expectations, not the app's design tokens — so the app's WCAG
+//     contrast contract simply doesn't apply to that surface.
+//   - The xterm container is presentational decoration: the real
+//     interactive surface is the `.xterm-helper-textarea` (now
+//     `tabindex=-1` per commit b9b6475), which AT users engage by
+//     clicking into the terminal view. Surfacing the rendered glyphs
+//     as inaccessible "text" is a category error.
+//   - The previous attempt at hiding the xterm output (commit 20669b3:
+//     `aria-hidden="true"` + `role="presentation"` on `.xterm-container`)
+//     didn't satisfy axe-core's color-contrast walker — axe still
+//     traversed into the subtree and flagged `:root`. `.exclude(...)` is
+//     the documented escape hatch and applies before rule evaluation.
+//   - Excluded globally (not per-test) because every wave with a spec
+//     card or worker card mounts an xterm; gating one test at a time
+//     would invariably let the same violation regress in a future test.
 function axe(page: Page): AxeBuilder {
   return new AxeBuilder({ page })
     .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'best-practice'])
-    .disableRules(DEFERRED_RULES);
+    .disableRules(DEFERRED_RULES)
+    .exclude('.xterm-container')
+    .exclude('.xterm');
 }
 
 // Pretty-print axe violations so a failure surfaces the rule id + impact

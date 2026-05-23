@@ -158,11 +158,13 @@ where
 async fn wave_as_actor_smoke_spec_dispatches_worker_via_kernel() {
     let boot = boot().await;
 
-    // 1. POST /api/waves — atomically mints wave + spec card. Daemon
-    //    spawn fails (stub bin) but post-blocker-fix the route still
-    //    returns 201 with the persisted wave; the WaveUpdated +
-    //    CardAdded events still land. The test digs into the
-    //    persisted state to find the spec card id.
+    // 1. POST /api/waves — atomically mints wave + spec card. Issue
+    //    #236: the daemon spawn is now synchronous on the response
+    //    hot path, so a stub-bin spawn failure now surfaces as 500;
+    //    the wave + spec card + terminal rows still persist and the
+    //    WaveUpdated + CardAdded events still emit (events broadcast
+    //    at tx commit, before the spawn attempt). The test digs into
+    //    the persisted state to find the spec card id.
     let (status, _body) = post(
         boot.app.clone(),
         "/api/waves",
@@ -171,8 +173,8 @@ async fn wave_as_actor_smoke_spec_dispatches_worker_via_kernel() {
     .await;
     assert_eq!(
         status,
-        StatusCode::CREATED,
-        "wave create always returns 201 — daemon spawn failure is logged + swallowed (got: {status:?})",
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "wave create returns 500 when daemon spawn fails (issue #236 sync spawn); rows + events still persisted (got: {status:?})",
     );
 
     // 2. Find the spec card the route minted under the cove.

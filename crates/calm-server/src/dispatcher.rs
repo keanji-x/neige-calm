@@ -741,13 +741,24 @@ impl Inner {
         // fixtures (which pass `None`) still exercise the rest of the
         // path without needing a live MCP server.
         let mcp_shim = self.mcp_server.as_ref().map(|m| m.shim_config.clone());
+        // #236 followup — pair shim + token so the worker's config.toml
+        // gets a `[mcp_servers.calm].env` block too. Same rationale as
+        // the spec card: codex CLI 0.132 doesn't inherit the daemon
+        // env into MCP server subprocesses, so the env must be baked
+        // into config.toml. Missing either side leaves the worker
+        // without an MCP wire (a token-less worker can't authenticate
+        // anyway).
+        let mcp_block = match (mcp_shim.as_ref(), mcp_token.as_deref()) {
+            (Some(s), Some(t)) => Some((s, t)),
+            _ => None,
+        };
         if let Err(e) = seed_codex_home_with_parts(
             self.codex.as_ref(),
             card_id.as_str(),
             &cwd,
             wave_id.as_str(),
             SeededCardRole::Worker,
-            mcp_shim.as_ref(),
+            mcp_block,
         ) {
             tracing::error!(
                 card_id = %card_id,
