@@ -37,7 +37,7 @@ use crate::event::Event;
 use crate::model::{Card, new_id};
 use crate::routes::cards::card_scope;
 use crate::routes::settings::load_settings;
-use crate::routes::terminal::{SpawnDaemonOpts, spawn_daemon_for_with_opts};
+use crate::routes::terminal::spawn_daemon_for;
 use crate::routes::theme::RequestTheme;
 use crate::state::AppState;
 use axum::{
@@ -370,16 +370,11 @@ pub(crate) async fn create_codex_card(
     //    a 500 tells the client the spawn failed, but the card/terminal
     //    pair is still in the DB until the sweeper runs.
     //
-    //    #177: stamp the host browser's current theme RGB onto the
-    //    daemon argv. `theme` is required at the request boundary, so
-    //    we render the args unconditionally — no `Option`, no implicit
-    //    "stay silent" fallback. Forgetting to send theme is impossible
-    //    by construction (deserialize rejects with 422).
-    let opts = SpawnDaemonOpts {
-        terminal_fg: Some(p.theme.fg_arg()),
-        terminal_bg: Some(p.theme.bg_arg()),
-    };
-    spawn_daemon_for_with_opts(&s, &term, &command_line, &cwd, &env, opts).await?;
+    //    #177 root-cause refactor: the daemon's `--terminal-fg/-bg`
+    //    argv is read by `spawn_daemon_for` directly from
+    //    `term.theme_fg/bg` (written into the row by step 5's tx). No
+    //    explicit theme thread-through here.
+    spawn_daemon_for(&s, &term, &command_line, &cwd, &env).await?;
 
     tracing::info!(
         card_id = %card.id,

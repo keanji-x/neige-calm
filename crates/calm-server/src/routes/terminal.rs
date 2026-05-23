@@ -54,25 +54,18 @@ pub(crate) async fn get_terminal_for_card(
     Ok(Json(term))
 }
 
-/// Daemon-spawn options the caller may stamp on top of the defaults.
-/// All fields are `Option` so existing call sites can `..Default::default()`
-/// without churn.
+/// Spawn a `calm-session-daemon` for the given terminal row, wait for
+/// its unix socket to accept connections, and persist the socket path
+/// as the row's `daemon_handle`.
 ///
-/// `terminal_fg` / `terminal_bg` (#177): when set, the daemon advertises
-/// these RGB values on OSC 10/11 queries so codex's startup probe gets
-/// an answer matching the host browser's theme. The codex card route
-/// passes them through from `NewCodexCardBody.theme`.
-#[derive(Debug, Default, Clone)]
-pub(crate) struct SpawnDaemonOpts {
-    pub terminal_fg: Option<String>,
-    pub terminal_bg: Option<String>,
-}
-
-/// Spawn a `calm-session-daemon` for the given terminal row, wait for its
-/// unix socket to accept connections, and persist the socket path as the
-/// row's `daemon_handle`. Used by `routes::terminal_cards::create_terminal_card`
-/// (the atomic-create endpoint), the codex route's PTY spawn, and (when a
-/// previously-spawned daemon has died) by the WS handler's auto-revive path.
+/// Used by `routes::terminal_cards::create_terminal_card` (atomic-create),
+/// `routes::codex_cards::create_codex_card`, `spec_card::seed_and_spawn_spec_daemon`
+/// (wave-create), `dispatcher::spawn_codex_worker`, and
+/// `lib::revive_orphans_on_boot` (kernel-restart-only auto-revive in
+/// commit 3). The previous `SpawnDaemonOpts` knob + `spawn_daemon_for_with_opts`
+/// shim were removed in the #177 root-cause refactor — theme is read
+/// directly from `term.theme_fg/bg` (NOT NULL via migration 0013), so
+/// every caller produces identical daemon argv by construction.
 pub(crate) async fn spawn_daemon_for(
     s: &AppState,
     term: &Terminal,
@@ -80,44 +73,15 @@ pub(crate) async fn spawn_daemon_for(
     cwd: &str,
     env: &serde_json::Value,
 ) -> Result<()> {
-    spawn_daemon_for_with_opts(s, term, program, cwd, env, SpawnDaemonOpts::default()).await
+    spawn_daemon_with_parts(s.daemon.as_ref(), s.repo.as_ref(), term, program, cwd, env).await
 }
 
-/// Same as [`spawn_daemon_for`] but accepts extra knobs (theme color
-/// args, ...). Existing terminal-card callers go through the simpler
-/// wrapper; codex cards (#177) use this to stamp `--terminal-fg` /
-/// `--terminal-bg` onto the daemon argv.
-pub(crate) async fn spawn_daemon_for_with_opts(
-    s: &AppState,
-    term: &Terminal,
-    program: &str,
-    cwd: &str,
-    env: &serde_json::Value,
-    opts: SpawnDaemonOpts,
-) -> Result<()> {
-    spawn_daemon_with_parts(
-        s.daemon.as_ref(),
-        s.repo.as_ref(),
-        term,
-        program,
-        cwd,
-        env,
-        opts,
-    )
-    .await
-}
-
-/// PR6 (#136) — lower-level seam over `spawn_daemon_for` that takes the
-/// constituent `DaemonClient` + `&dyn RouteRepo` instead of the full
-/// `AppState`. Used by the dispatcher (which doesn't own an `AppState` —
-/// it's a kernel-internal worker that ships before AppState exists in
-/// the boot order). Identical semantics to `spawn_daemon_for`; the
-/// latter is now a one-line forwarder.
-///
-/// The trailing `opts` (#177) lets callers stamp extra daemon argv
-/// (e.g. `--terminal-fg` / `--terminal-bg`) without forcing every
-/// caller to construct one — `spawn_daemon_for` passes
-/// `SpawnDaemonOpts::default()` and the dispatcher does the same.
+/// Lower-level seam over [`spawn_daemon_for`] that takes the constituent
+/// `DaemonClient` + `&dyn RouteRepo` instead of the full `AppState`.
+/// Used by the dispatcher (which doesn't own an `AppState` — it's a
+/// kernel-internal worker that ships before `AppState` exists in the
+/// boot order). Identical semantics to `spawn_daemon_for`; the latter
+/// is now a one-line forwarder.
 pub(crate) async fn spawn_daemon_with_parts(
     daemon: &DaemonClient,
     repo: &dyn RouteRepo,
@@ -125,7 +89,6 @@ pub(crate) async fn spawn_daemon_with_parts(
     program: &str,
     cwd: &str,
     env: &serde_json::Value,
-    opts: SpawnDaemonOpts,
 ) -> Result<()> {
     let sock = daemon.sock_path(&term.id);
     if let Some(parent) = sock.parent() {
@@ -139,27 +102,19 @@ pub(crate) async fn spawn_daemon_with_parts(
     }
     let sock_str = sock.to_string_lossy().to_string();
 
-    // #177 root-cause refactor — theme is now a row-creation invariant
-    // (NOT NULL since migration 0013). The previous "opts override row,
-    // else row, else None" priority chain is collapsed to "always row":
+    // #177 root-cause refactor — theme is a row-creation invariant
+    // (NOT NULL since migration 0013). Read directly from the row;
     // every spawn path (initial codex-card, wave-create spec card,
-    // dispatcher worker, WS auto-revive) reads the same source of truth
-    // and renders identical argv by construction. `opts` is still
-    // accepted for the SpawnDaemonOpts shape but its `terminal_fg/bg`
-    // fields are ignored — commit 2 of the refactor nukes the struct
-    // entirely.
-    let chosen_fg = term.theme_fg.clone();
-    let chosen_bg = term.theme_bg.clone();
-    // `opts` is retained as an unused argument until commit 2 of the
-    // refactor drops the parameter. Silence the linter for now.
-    let _ = &opts;
-
+    // dispatcher worker, boot-time orphan revive) renders identical
+    // argv by construction. No opts override, no priority chain, no
+    // "stay silent if absent" branch — those were the seams that
+    // allowed un-themed daemons to win socket races.
     let mut cmd = tokio::process::Command::new(&daemon.session_daemon_bin);
     cmd.args(["--id", &term.id])
         .args(["--sock", &sock_str])
         .args(["--cwd", cwd])
-        .args(["--terminal-fg", &chosen_fg])
-        .args(["--terminal-bg", &chosen_bg]);
+        .args(["--terminal-fg", &term.theme_fg])
+        .args(["--terminal-bg", &term.theme_bg]);
     cmd.arg("--").args(["/bin/sh", "-c", program]);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
@@ -213,14 +168,6 @@ pub(crate) async fn spawn_daemon_with_parts(
         )));
     }
     repo.terminal_set_handle(&term.id, Some(&sock_str)).await?;
-
-    // #177 root-cause refactor — theme is a row-creation invariant
-    // (NOT NULL since migration 0013), written once by
-    // `terminal_create_tx`. The previous post-spawn
-    // `terminal_set_theme` UPDATE was the write-after-spawn seam the
-    // racing spawn paths exploited (caller forgets opts ⇒ silently
-    // un-themed daemon). No persist step here anymore — the row was
-    // written with theme atomically with its parent card.
 
     Ok(())
 }
@@ -391,7 +338,6 @@ mod tests {
             "codex",
             "/",
             &serde_json::json!({}),
-            SpawnDaemonOpts::default(),
         )
         .await
         .expect("spawn must succeed");

@@ -17,7 +17,7 @@
 
 use crate::db::{RepoOutOfDomain, RouteRepo};
 use crate::error::Result;
-use crate::routes::terminal::{SpawnDaemonOpts, spawn_daemon_for_with_opts};
+use crate::routes::terminal::spawn_daemon_for;
 use crate::state::AppState;
 use axum::{
     Router,
@@ -108,31 +108,16 @@ async fn resolve_live_sock(s: &AppState, id: &str) -> Result<PathBuf> {
         tracing::info!(terminal_id = %term.id, "terminal has no daemon_handle — spawning");
     }
 
-    // Cold path: respawn. The daemon argv is derived inside
-    // `spawn_daemon_with_parts` by the #177-PR2 priority logic:
-    //   opts.terminal_fg/bg (empty here)
-    //     || term.theme_fg/bg (read from the row written by the
-    //                          initial spawn or the most recent
-    //                          mid-session `TerminalThemeUpdate`)
-    //     || None
-    // — which is precisely what closes the hole observed in PR #193:
-    // the previously un-themed shim used to win a socket race against
-    // the themed initial spawn, leaving codex's OSC 10/11 probe
-    // unanswered. Passing `SpawnDaemonOpts::default()` here is the
-    // entire fix: the row carries enough state for the revive to
-    // reconstruct the original argv. `spawn_daemon_with_parts` also
-    // updates `daemon_handle` on success, so we re-read to get the
-    // canonical path.
+    // Cold path: respawn. The daemon argv is reconstructed from the
+    // terminal row inside `spawn_daemon_for` — `term.theme_fg/bg`
+    // (NOT NULL via migration 0013) lands on argv unconditionally.
+    //
+    // Note: commit 3 of the #177 refactor removes this cold-path
+    // spawn entirely (this function becomes probe-only) once
+    // `revive_orphans_on_boot` is wired up. The lingering call here
+    // keeps current behaviour intact for commit 2.
     let env = term.env.clone();
-    spawn_daemon_for_with_opts(
-        s,
-        &term,
-        &term.program,
-        &term.cwd,
-        &env,
-        SpawnDaemonOpts::default(),
-    )
-    .await?;
+    spawn_daemon_for(s, &term, &term.program, &term.cwd, &env).await?;
     let refreshed = s.repo.terminal_get(id).await?.ok_or_else(|| {
         crate::error::CalmError::Internal("terminal vanished after respawn".into())
     })?;

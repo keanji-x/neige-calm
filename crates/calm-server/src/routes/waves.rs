@@ -147,20 +147,12 @@ pub(crate) async fn create_wave(
     //    `routes/coves.rs`); we read it back from the closure result.
     let spec_card_id = new_id();
 
-    // #177: snapshot the host-theme RGB off the body before the tx
-    // closure moves `p` — we need it post-commit to stamp
-    // `--terminal-fg` / `--terminal-bg` onto the spec-card daemon
-    // argv. `theme` is required at the request boundary now: a body
-    // missing the field failed deserialize with 422 before we got
-    // here, so the snapshot is always a concrete `RequestTheme`.
+    // #177 root-cause refactor — snapshot the request body's theme so
+    // we can thread it into the row-creation tx below
+    // (`card_with_codex_create_tx` writes it onto the terminals row as
+    // a NOT NULL invariant). The spawn helper later reads it back from
+    // the row; no out-of-row carry between tx commit and daemon spawn.
     let theme = p.theme;
-    // #177 diagnostic — log the incoming theme at the wave-create entry
-    // so operators grepping docker logs can see what the browser sent.
-    tracing::info!(
-        card_id = %spec_card_id,
-        theme = ?theme,
-        "wave_create: theme received",
-    );
 
     // 2. Resolve cwd + assemble env up front — these go into the
     //    terminal row written inside the tx. Mirror of
@@ -329,7 +321,6 @@ pub(crate) async fn create_wave(
                 wave_id_for_task,
                 cwd,
                 env_for_spawn,
-                theme,
             )
             .await;
         });

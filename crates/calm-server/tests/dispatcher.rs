@@ -826,10 +826,12 @@ async fn dispatcher_codex_worker_spawns_with_dark_theme_default() {
         .collect();
     // Exact dark RGB defaults — these mirror `DARK_THEME_RGB` in
     // `web/src/shared/themeRgb.ts` and the kernel-side
-    // `dispatcher::default_worker_theme_opts` helper. Pinning the
-    // values here means a drift on either side (e.g. someone tweaks
-    // the dark theme bg in CSS) trips this test loudly instead of
-    // silently desyncing the daemon's OSC reply from the host paint.
+    // `RequestTheme::default_dark()` helper (the dispatcher passes it
+    // into `card_with_codex_create_tx` → `terminal_create_tx`, which
+    // stamps the row's `theme_fg/bg`). Pinning the values here means
+    // a drift on either side (e.g. someone tweaks the dark theme bg
+    // in CSS) trips this test loudly instead of silently desyncing
+    // the daemon's OSC reply from the host paint.
     assert!(
         pairs
             .iter()

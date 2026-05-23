@@ -4,12 +4,14 @@
 //! Originally lived in `routes::codex_cards` since the codex-card create
 //! endpoint was the first call site. Lifted here so the wave-create
 //! endpoint (`routes::waves`) can reuse the same wire shape — both routes
-//! ultimately drive the same [`crate::routes::terminal::SpawnDaemonOpts`]
-//! and need to render `(r, g, b)` tuples as `"r,g,b"` for the daemon CLI.
+//! render `(r, g, b)` tuples as `"r,g,b"` for the daemon CLI.
 //!
-//! Re-exported from `routes::codex_cards` for back-compat with the
-//! original location (PR #193 shipped it there); new call sites should
-//! import from here directly.
+//! After the #177 root-cause refactor the value lands on the
+//! `terminals.theme_fg / .theme_bg` columns (NOT NULL via migration
+//! 0013) inside the row-creation transaction. The spawn helper
+//! (`routes::terminal::spawn_daemon_for`) reads the row at every
+//! spawn — there is no separate `SpawnDaemonOpts` carry between
+//! transaction commit and daemon spawn anymore.
 
 use serde::Deserialize;
 use utoipa::ToSchema;

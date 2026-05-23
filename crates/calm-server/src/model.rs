@@ -303,12 +303,11 @@ pub struct Terminal {
     /// #177 — host browser's foreground RGB, stamped at row creation
     /// (NOT NULL in migration 0013). Stored as comma-decimal `r,g,b`
     /// matching the daemon CLI's `--terminal-fg` arg shape. Read by
-    /// `spawn_daemon_for` as the *only* source of truth — there is no
-    /// `SpawnDaemonOpts` opts override path anymore, no caller-supplied
-    /// theme threading, no "stay silent if absent" fallback. Theme is
-    /// a row-creation invariant: forgetting to supply it at the
-    /// `NewTerminal` boundary fails at compile time, and the migration
-    /// guarantees no NULL ever reaches the spawn helper.
+    /// `spawn_daemon_for` as the *only* source of truth — no caller-
+    /// supplied theme threading, no "stay silent if absent" fallback.
+    /// Theme is a row-creation invariant: forgetting to supply it at
+    /// the `NewTerminal` boundary fails at compile time, and the
+    /// migration guarantees no NULL ever reaches the spawn helper.
     pub theme_fg: String,
     /// Companion to `theme_fg` — host browser's background RGB. Same
     /// shape / lifecycle / NOT NULL invariant.

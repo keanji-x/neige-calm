@@ -31,8 +31,7 @@ use std::path::PathBuf;
 
 use crate::error::{CalmError, Result};
 use crate::routes::codex_cards::{build_hooks_json, copy_dir_recursive, host_codex_dir};
-use crate::routes::terminal::{SpawnDaemonOpts, spawn_daemon_for_with_opts};
-use crate::routes::theme::RequestTheme;
+use crate::routes::terminal::spawn_daemon_for;
 use crate::state::{AppState, CodexClient};
 
 /// Minimal spec-agent system prompt template. PR6 ships a placeholder
@@ -423,22 +422,14 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
     wave_id: String,
     cwd: String,
     env: serde_json::Value,
-    theme: RequestTheme,
 ) {
-    // #177 diagnostic — log theme arrival at the background-task entry
-    // point. Paired with the `wave_create: theme received` log in
-    // `routes::waves`, this pinpoints whether the theme survives the
-    // `tokio::spawn` hand-off (clone of the snapshot, no further
-    // mutation). `theme` is required at the API boundary now, so this
-    // log only documents the value — a missing field already failed
-    // deserialize with 422 before we got here.
-    tracing::info!(
-        card_id = %spec_card_id,
-        wave_id = %wave_id,
-        theme = ?theme,
-        "seed_and_spawn_spec_daemon: entry",
-    );
-
+    // #177 root-cause refactor — `theme` is no longer threaded into
+    // this helper. The terminal row for the spec card was written
+    // with theme inside `wave_create`'s atomic tx (NOT NULL via
+    // migration 0013), so the spawn helper below reads it directly
+    // from the row. The prior `RequestTheme` arg was the last
+    // out-of-row carrier of the value.
+    //
     // 1. Seed `$CODEX_HOME` for the spec card. Filesystem-only — fast,
     //    bounded by a handful of mkdir + small write_alls. Failure
     //    here means hooks.json / config.toml didn't land; the daemon
@@ -483,22 +474,11 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
     //    agent's system prompt is in $CODEX_HOME/config.toml's
     //    `instructions` field, not as a composer prefill.
     //
-    //    `spawn_daemon_for_with_opts` includes a busy-poll wait-until-
-    //    socket-ready loop (up to ~3s); doing it off the response hot
-    //    path is the whole point of this helper.
-    //
-    //    #177: stamp the host browser's current theme RGB onto the
-    //    daemon argv unconditionally. `theme` is required at the API
-    //    boundary now (`NewWave.theme: RequestTheme`, no Option), so
-    //    every wave-create that reaches this background task has a
-    //    concrete RGB to forward. The old "stay silent when None"
-    //    fallback was where the bug lived — a caller that forgot to
-    //    include theme silently produced a mis-tinted composer.
-    let opts = SpawnDaemonOpts {
-        terminal_fg: Some(theme.fg_arg()),
-        terminal_bg: Some(theme.bg_arg()),
-    };
-    if let Err(e) = spawn_daemon_for_with_opts(&state, &term, "codex", &cwd, &env, opts).await {
+    //    `spawn_daemon_for` reads `term.theme_fg/bg` (NOT NULL via
+    //    migration 0013) to stamp `--terminal-fg/--terminal-bg` onto
+    //    the daemon argv — single source of truth, no opts thread-
+    //    through, no priority chain.
+    if let Err(e) = spawn_daemon_for(&state, &term, "codex", &cwd, &env).await {
         tracing::warn!(
             card_id = %spec_card_id,
             wave_id = %wave_id,
