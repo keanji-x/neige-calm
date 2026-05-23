@@ -96,7 +96,11 @@ async fn seed_worker_in_wave(
         .execute(repo.pool())
         .await
         .unwrap();
-    cache.insert(card.id.clone(), CardRole::Worker);
+    cache.insert(
+        card.id.clone(),
+        CardRole::Worker,
+        WaveId::from(wave.id.as_str()),
+    );
     (
         CoveId::from(cove.id.as_str()),
         WaveId::from(wave.id.as_str()),
@@ -234,7 +238,7 @@ async fn worker_emitting_other_card_scope_is_rejected() {
         .execute(repo.pool())
         .await
         .unwrap();
-    cache.insert(card_b.id.clone(), CardRole::Worker);
+    cache.insert(card_b.id.clone(), CardRole::Worker, wave.clone());
 
     let scope = EventScope::Card {
         card: CardId::from(card_b.id.as_str()),
@@ -325,27 +329,25 @@ async fn missing_actor_header_defaults_to_user() {
 // Test 5 — cross-wave: Worker in Wave A emitting into Wave B
 // ---------------------------------------------------------------------------
 //
-// Surprise observed while writing this suite: the role gate is
-// per-card-id, not per-wave. A Worker in Wave A using its OWN card id in
-// the scope is accepted even if the wave/cove fields point at Wave B.
-// The Worker can't actually "talk into Wave B" — the kernel writes the
-// event row with `scope.wave = B`, which fans out to Wave B's subscribers
-// rather than the worker's own wave. There's no SQL-level constraint
-// that `cards.wave_id` matches `events.scope_wave`. This test pins the
-// current behavior so a future "wave consistency" hardening (e.g. the
-// gate checks `cache.wave_of(card) == scope.wave`) names itself in the
-// diff that adds it.
+// Issue #232 (PR #232 closed): the role gate now cross-checks
+// `scope.wave == cache.wave_of(card)` for Worker actors, mirroring the
+// existing per-card-id check. A Worker in Wave A that forges
+// `scope.wave = B` (even with the correct `scope.card`) is refused
+// before the event row lands.
 
 #[tokio::test]
-async fn worker_with_mismatched_wave_in_card_scope_currently_accepted() {
+async fn worker_with_mismatched_wave_in_card_scope_is_rejected() {
     let (repo, bus, cache) = boot_repo().await;
     let (cove_a, _wave_a, worker_a) = seed_worker_in_wave(&repo, &cache, "cove-a", "wave-a").await;
     let (_cove_b, wave_b, _worker_b) = seed_worker_in_wave(&repo, &cache, "cove-b", "wave-b").await;
 
+    let baseline_total = count_events(&repo, "task.completed").await;
+    let mut sub = bus.subscribe();
+
     // Forge an `EventScope::Card` whose `card` is Worker A's id but
-    // whose `wave` is Wave B (and cove is mixed — using cove_a since
-    // worker_a's wave is in cove_a). The gate's section-3 check just
-    // compares `scope.card == actor.card`, so this passes.
+    // whose `wave` is Wave B. Pre-#232 this was accepted because the
+    // gate only compared `scope.card == actor.card`; #232 closes the
+    // foot-gun by also checking `scope.wave == cache.wave_of(card)`.
     let scope = EventScope::Card {
         card: worker_a.clone(),
         wave: wave_b.clone(),
@@ -362,32 +364,37 @@ async fn worker_with_mismatched_wave_in_card_scope_currently_accepted() {
         )
         .await;
     assert!(
-        res.is_ok(),
-        "TODO: the gate has no wave-consistency check today — Worker A can \
-         currently emit a Card-scoped event whose wave field doesn't match \
-         the worker's own wave. If a future PR adds a cross-check (e.g. \
-         cache.wave_of(card) must equal scope.wave), invert this assertion. \
-         Got: {res:?}",
+        matches!(
+            res,
+            Err(calm_server::error::CalmError::Forbidden(ref msg))
+                if msg.contains("out of scope") && msg.contains("scope.wave mismatch")
+        ),
+        "Worker A forging scope.wave = Wave B must be refused (#232): {res:?}",
     );
 
-    // The event row's scope_wave reflects what was supplied — confirming
-    // the foot-gun the TODO above flags. Scoped to this test's
-    // idempotency_key (not ORDER BY id DESC LIMIT 1) so a future test
-    // reordering or shared-fixture refactor can't grab a sibling row.
-    let row: (Option<String>,) = sqlx::query_as(
+    // Event row count is unchanged — the transaction rolled back, and
+    // no row for the forged idempotency key landed.
+    let after = count_events(&repo, "task.completed").await;
+    assert_eq!(
+        after, baseline_total,
+        "rejected worker write must not append an event row",
+    );
+    let forged_row: Option<(Option<String>,)> = sqlx::query_as(
         "SELECT scope_wave FROM events \
          WHERE kind = 'task.completed' \
            AND json_extract(payload, '$.idempotency_key') = 'worker-a-into-wave-b'",
     )
-    .fetch_one(repo.pool())
+    .fetch_optional(repo.pool())
     .await
     .unwrap();
-    assert_eq!(
-        row.0.as_deref(),
-        Some(wave_b.as_str()),
-        "events.scope_wave records the supplied wave, not the worker's own — \
-         this is the row a Wave B subscriber would see",
+    assert!(
+        forged_row.is_none(),
+        "no event row should exist for the forged scope.wave: {forged_row:?}",
     );
+
+    // Bus subscription saw nothing — broadcast-after-commit invariant
+    // mirrors the other rejection tests above.
+    assert!(sub.try_recv().is_err(), "rejected write must not broadcast");
 }
 
 // ---------------------------------------------------------------------------
@@ -433,7 +440,11 @@ async fn spec_emitting_wave_scope_is_accepted() {
         .execute(repo.pool())
         .await
         .unwrap();
-    cache.insert(spec.id.clone(), CardRole::Spec);
+    cache.insert(
+        spec.id.clone(),
+        CardRole::Spec,
+        WaveId::from(wave.id.as_str()),
+    );
 
     let scope = EventScope::Wave {
         wave: WaveId::from(wave.id.as_str()),
