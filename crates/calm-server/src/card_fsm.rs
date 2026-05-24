@@ -426,6 +426,7 @@ impl Inner {
     ///     start populating the FSM map they'll be scoped to *their* wave
     ///     automatically — the aggregator can't accidentally pick up a
     ///     card from a sibling wave that happens to share the map.
+    ///
     /// Concurrent `commit()` callers can race the read-then-write
     /// idempotency check below; the final write resolves via
     /// `overlay_upsert_tx`'s `ON CONFLICT DO UPDATE` (last writer wins,
@@ -467,11 +468,7 @@ impl Inner {
         //    when the boolean is unchanged. Without this the projector
         //    would churn an overlay event on every per-card transition,
         //    even when the wave-level answer didn't move.
-        let existing = match self
-            .repo
-            .overlays_for("wave", wave_id.as_str())
-            .await
-        {
+        let existing = match self.repo.overlays_for("wave", wave_id.as_str()).await {
             Ok(rows) => rows
                 .into_iter()
                 .find(|o| o.kind == "any_card_needs_input" && o.plugin_id == KERNEL_PLUGIN_ID),
@@ -927,8 +924,7 @@ mod tests {
         // Two codex cards under the same wave. Driving ONE to
         // AwaitingInput should light up the wave overlay even while the
         // other stays Working; flipping both to Working should clear it.
-        let repo: Arc<dyn Repo> =
-            Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+        let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let bus = EventBus::new();
         let cove = repo
             .cove_create(NewCove {
@@ -943,6 +939,9 @@ mod tests {
                 cove_id: cove.id.clone(),
                 title: "w".into(),
                 sort: None,
+                cwd: String::new(),
+                attach_folder: false,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
             })
             .await
             .unwrap();
