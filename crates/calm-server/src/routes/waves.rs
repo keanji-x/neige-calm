@@ -56,13 +56,15 @@
 //! than a silent daemon-process leak.
 
 use crate::actor::Actor;
+use crate::auth::Principal;
 use crate::db::sqlite::{
     card_create_with_id_tx, card_with_codex_create_tx, cove_folder_create_tx, overlay_upsert_tx,
     terminal_delete_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
 };
 use crate::db::{write_with_event_typed, write_with_events_typed};
 use crate::error::{CalmError, ErrorBody, Result};
-use crate::event::{Event, EventScope};
+use crate::event::{EditAuthor, Event, EventScope};
+use crate::ids::ActorId;
 use crate::model::{
     CardRole, CoveKind, FolderConflict, FolderConflictKind, NewCard, NewOverlay, NewWave, Wave,
     WaveDetail, WavePatch, new_id,
@@ -73,13 +75,13 @@ use crate::spec_card::{build_codex_env_map, seed_and_spawn_spec_daemon};
 use crate::state::AppState;
 use crate::terminal_sweeper::reap_terminal_artifacts;
 use crate::wave_lifecycle::validate_transition;
-use crate::wave_report::WaveReportPayload;
+use crate::wave_report::{WaveReportPayload, persist_report, resolve_report_for_wave};
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
@@ -91,6 +93,13 @@ pub fn router() -> Router<AppState> {
             "/api/waves/{id}",
             get(get_wave_detail).patch(update_wave).delete(delete_wave),
         )
+        // Issue #247 PR3 — user-facing wave-report edit endpoint. Session-
+        // authenticated; only `ActorId::User` is accepted (worker / spec /
+        // plugin actors are rejected 403 even when carrying a valid
+        // session cookie). The MCP `calm.report.{write,edit}` path is
+        // unchanged; both paths funnel through `wave_report::persist_report`
+        // so the dual-event invariant + CRDT write stays one boundary.
+        .route("/api/waves/{id}/report", post(update_wave_report))
         .route("/api/coves/{cove_id}/waves", get(list_waves_by_cove))
 }
 
@@ -935,4 +944,173 @@ pub(crate) async fn delete_wave(
     )
     .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ---------------------------------------------------------------------------
+// Issue #247 PR3 — user-facing wave-report edit endpoint
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /api/waves/:id/report`.
+///
+/// Both fields are required `String`s (per `WaveReportPayload`'s
+/// [[required-over-option]] rule). An empty `summary` is a valid
+/// value; the caller must commit to *some* string.
+///
+/// **No `author` field.** Author is derived server-side from the
+/// authenticated session and pinned to [`EditAuthor::User`] for this
+/// endpoint — accepting one on the wire would let a User forge
+/// `EditAuthor::Spec` and make a hand-typed edit look like the AI
+/// did it. Even if a client serializes an `author` key the handler
+/// ignores it (serde `deny_unknown_fields` would 400 it; this is the
+/// stricter contract that closes the spoofing risk by construction).
+///
+/// `schemaVersion` is also intentionally absent — it's a server-managed
+/// invariant pinned to [`WaveReportPayload::SCHEMA_VERSION`] and the
+/// projected payload returned in the response reasserts the current
+/// version. Letting clients write the version field would invite
+/// silent shape drift the first time someone forgot to update both
+/// sides.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateWaveReportBody {
+    /// One-line summary the wave-list sidebars surface. Empty string
+    /// is a valid value; the caller must commit.
+    pub summary: String,
+    /// Markdown source. Sections are derived at render time by
+    /// splitting at H1 (`^# `) headings; the kernel does not interpret
+    /// the structure.
+    pub body: String,
+}
+
+/// `POST /api/waves/:id/report` — user-driven wave-report edit. The
+/// REST-side counterpart of the spec-MCP `calm.report.write` tool;
+/// both paths funnel through [`crate::wave_report::persist_report`]
+/// so the dual-event invariant (`CardUpdated` + `WaveReportEdited`)
+/// and the CRDT write happen identically regardless of who's editing.
+///
+/// **Auth contract** (issue #247 PR3 acceptance):
+///
+///   * No session cookie → 401 (`auth::require_session` middleware
+///     short-circuits before this handler runs).
+///   * Authenticated session BUT non-user actor declared via
+///     `X-Calm-Actor` (worker / `ai:*` / etc.) → 403. Only
+///     [`ActorId::User`] is allowed. This closes the "spec card's
+///     own session cookie forwards a User edit" hole — a future
+///     surface that lets the spec card hold a session must not be
+///     able to bypass the User-only contract by claiming `ai:codex`.
+///   * Wave doesn't exist → 404.
+///   * Wave exists but the wave-report card is missing → 500
+///     (invariant violation; PR1 backfill guarantees the row).
+///
+/// The response is the *projected* [`WaveReportPayload`] read back
+/// from the CRDT post-merge — not the request body verbatim — so the
+/// frontend sees what every other reader will see (the JSON cache
+/// mirrors the CRDT projection, which under single-writer is the
+/// same bytes as the input, but reading from the doc keeps the
+/// "CRDT is source of truth" contract true by construction).
+#[utoipa::path(
+    post,
+    path = "/api/waves/{id}/report",
+    tag = "waves",
+    params(("id" = String, Path, description = "Wave id")),
+    request_body = UpdateWaveReportBody,
+    responses(
+        (status = 200, description = "Updated wave-report payload", body = WaveReportPayload),
+        (status = 401, description = "Missing or invalid session", body = ErrorBody),
+        (status = 403, description = "Non-user actor (worker / plugin / spec) rejected", body = ErrorBody),
+        (status = 404, description = "Wave not found", body = ErrorBody),
+        (status = 500, description = "Internal error (incl. missing report-card invariant)", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn update_wave_report(
+    State(s): State<AppState>,
+    // `Principal` extraction implicitly asserts the session middleware
+    // has run — a missing/invalid cookie surfaces as 401 from
+    // `auth::require_session` long before this handler is invoked.
+    // We don't read any field off `_principal` today (single-user
+    // owner model: there's exactly one User to attribute to). Held
+    // here so the future multi-user split can attribute edits via
+    // `principal.user_id` without changing the handler signature.
+    _principal: Principal,
+    actor: Actor,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateWaveReportBody>,
+) -> Result<Response> {
+    // Server-side actor pinning. The route is gated to `ActorId::User`
+    // only — anything else (worker / spec / plugin / kernel) is 403.
+    //
+    // **Direct string check, NOT `to_actor_id()`.** The typed mapping
+    // has a defensive fallback that classifies anything outside its
+    // explicit `"user"` / `"ai:codex"` arms as `ActorId::User` (so a
+    // future relaxation can't synthesize a Kernel/Plugin identity from
+    // an attacker-controlled header — see the rationale in
+    // `actor::Actor::to_actor_id`). That fallback is the right call
+    // for *event-log attribution* — better to mis-tag as User than to
+    // forge a Kernel write — but it's the wrong shape for *gating*:
+    // an `X-Calm-Actor: ai:claude` header would pass a
+    // `matches!(actor.to_actor_id(), ActorId::User)` check and reach
+    // the persist call. Today the handler hardcodes
+    // `EditAuthor::User` in the `persist_report` invocation below
+    // regardless, so no audit-log corruption is possible — but the
+    // OpenAPI / handler doc both claim "any non-user actor → 403" and
+    // we want that to be true by construction, not "true because the
+    // hardcoded author downstream covers for the gate." The raw
+    // string check makes the gate honest: the *only* declared actor
+    // that reaches `persist_report` here is exactly `"user"`. Every
+    // other validated header value (`ai:codex`, `ai:claude`,
+    // `ai:gpt5`, future `ai:*`) is 403.
+    if actor.as_str() != "user" {
+        return Err(CalmError::Forbidden(format!(
+            "wave-report edit: only `X-Calm-Actor: user` is allowed via REST; \
+             got `{}`. MCP write paths use `calm.report.*` tools.",
+            actor.as_str()
+        )));
+    }
+
+    // Resolve the wave + report card + current payload. 404 on missing
+    // wave; 500 (Internal) on missing report card (invariant; PR1
+    // backfill plus the partial unique index on `cards.kind =
+    // 'wave-report'` guarantee one report row per wave).
+    let (wave, report_card, current_payload) =
+        resolve_report_for_wave(s.repo.as_ref(), &id).await?;
+
+    // Build the next payload from the request body. `schemaVersion` is
+    // always the current constant — the field is not on the wire shape
+    // (see `UpdateWaveReportBody` doc) so we stamp it here.
+    let next = WaveReportPayload {
+        schema_version: WaveReportPayload::SCHEMA_VERSION,
+        summary: body.summary,
+        body: body.body,
+    };
+
+    // Persist + emit. `EditAuthor::User` is the load-bearing
+    // attribution — the wire shape doesn't accept `author` (see the
+    // request-body doc), so this is the only place User can be
+    // recorded. PR5's spec system prompt will wake on
+    // `WaveReportEdited { author: User }` specifically.
+    let updated = persist_report(
+        s.repo.as_ref(),
+        &s.events,
+        &s.card_role_cache,
+        &s.wave_cove_cache,
+        ActorId::User,
+        EditAuthor::User,
+        wave,
+        report_card,
+        current_payload,
+        next,
+    )
+    .await?;
+
+    // Project the persisted payload out of the updated card row. This
+    // is the CRDT-projected shape (`wave_report::persist_report`
+    // re-derives summary/body from the doc post-update before writing
+    // the JSON cache), so the response matches what the next reader
+    // (frontend / other REST clients / WS subscribers) will see.
+    let payload: WaveReportPayload = serde_json::from_value(updated.payload).map_err(|e| {
+        CalmError::Internal(format!(
+            "wave-report edit: re-deserialize projected payload: {e}",
+        ))
+    })?;
+    Ok((StatusCode::OK, Json(payload)).into_response())
 }

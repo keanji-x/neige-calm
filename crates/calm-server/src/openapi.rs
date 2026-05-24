@@ -29,7 +29,7 @@ use crate::routes::plugins::{
 use crate::routes::settings::{SettingsBag, SettingsPutBody};
 use crate::routes::terminal_cards::NewTerminalCardBody;
 use crate::routes::version::VersionInfo;
-use crate::routes::waves::WavesWindowQuery;
+use crate::routes::waves::{UpdateWaveReportBody, WavesWindowQuery};
 use utoipa::OpenApi;
 
 #[derive(OpenApi)]
@@ -58,6 +58,8 @@ use utoipa::OpenApi;
         crate::routes::waves::create_wave,
         crate::routes::waves::update_wave,
         crate::routes::waves::delete_wave,
+        // Issue #247 PR3 — user-facing wave-report edit endpoint
+        crate::routes::waves::update_wave_report,
         // ---- cards ----
         crate::routes::cards::list_cards_by_wave,
         crate::routes::cards::create_card,
@@ -110,6 +112,8 @@ use utoipa::OpenApi;
         NewWave,
         WavePatch,
         WavesWindowQuery,
+        // Issue #247 PR3 — request body for `POST /api/waves/:id/report`
+        UpdateWaveReportBody,
         WaveDetail,
         Card,
         NewCard,

@@ -302,7 +302,14 @@ async fn write_replaces_body_and_emits_card_updated() {
         } => {
             assert_eq!(w, &wave_id, "wave_id matches the report card's wave");
             assert_eq!(c, &report_id, "card_id matches the report card");
-            assert_eq!(*author, EditAuthor::Spec, "PR2 hard-codes Spec");
+            // Issue #247 PR3 — the MCP `report.write` / `report.edit`
+            // wrapper now passes `EditAuthor::Spec` explicitly (was
+            // hard-coded in PR2). REST callers go through the same
+            // shared `wave_report::persist_report` but pass
+            // `EditAuthor::User` — see `tests/rest_wave_report.rs` for
+            // the User-author regression. Spec attribution stays the
+            // contract for every spec-MCP write.
+            assert_eq!(*author, EditAuthor::Spec, "MCP path tags Spec");
             // edit_id must be a non-empty UUID-shaped string. Don't pin
             // the exact value — it's a fresh UUID per call.
             assert!(!edit_id.is_empty(), "edit_id must be a non-empty UUID");
