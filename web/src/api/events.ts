@@ -50,6 +50,17 @@
 //     `lastEventId` from this frame's `_id` (it's stamped with the
 //     server's tip cursor), so a subsequent reconnect resumes from the
 //     right place even if zero replay rows matched.
+//
+//     Issue #290 — the frame's `_id` is the server's actual
+//     `events.id` tip (`MAX(id)`), NOT the highest id replayed in this
+//     window. If `_id < lastEventId` the server's log has REGRESSED:
+//     the cursor we persisted refers to events that no longer exist
+//     (the dev `/dev/reset` path wipes `sqlite_sequence`, so re-seeded
+//     events restart at id=1). We treat this the same as
+//     `_snapshot_required`: clear the cursor + fire the snapshot
+//     listeners so the bridge `qc.clear()`s, and bounce the socket so
+//     the next reconnect comes up cold under `since=0` and picks up
+//     the fresh log from the start.
 //   * `_snapshot_required` — the cursor is older than what the server
 //     can still serve (retention pruner kicked in). Clear `lastEventId`,
 //     fire `snapshotRequiredListeners` so the bridge can `qc.clear()`,
@@ -338,6 +349,39 @@ export class EventStream {
 
     // ---- control frames first -----------------------------------------
     if (envelope.ev === REPLAY_COMPLETE_EV) {
+      // Issue #290 — server-reset detection. The frame's `_id` is the
+      // server's actual `events.id` tip (`MAX(id)`); if it's lower than
+      // the cursor we persisted, the server's log has regressed (the
+      // dev `/dev/reset` path wipes `sqlite_sequence`, so re-seeded
+      // events restart at id=1). Treat it like `_snapshot_required`:
+      // clear the cursor + fire the snapshot listeners so the bridge
+      // `qc.clear()`s the stale cache, then bounce the socket so the
+      // next reconnect comes up cold under `since=0` and picks up the
+      // fresh log from the start.
+      //
+      // Tolerate non-numeric / missing `_id` (synthetic test bus
+      // emissions and legacy frames) by falling back to the no-op
+      // path below — the regression check needs a real number to be
+      // load-bearing.
+      const tipId = envelope._id;
+      if (
+        this.lastEventId !== null &&
+        typeof tipId === 'number' &&
+        Number.isFinite(tipId) &&
+        tipId < this.lastEventId
+      ) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `event bus: server tip ${tipId} < cursor ${this.lastEventId} → reset detected, re-bootstrapping`,
+        );
+        this.clearCursor();
+        for (const fn of this.snapshotRequiredListeners) fn();
+        // Bounce the socket so the next reconnect comes up cold with
+        // `since=0`. The close handler will surface `connecting` and
+        // schedule the reconnect via the normal backoff path.
+        this.ws?.close();
+        return;
+      }
       this.advanceCursor(envelope._id);
       // Authoritative "we're live" signal — replay window is done and
       // we're now streaming current events. See the ConnectionState

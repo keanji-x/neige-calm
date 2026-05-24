@@ -474,6 +474,17 @@ pub trait RepoEventWrite: RepoRead {
     /// control frame so the client throws away its cached state and
     /// refetches via REST (design §2.3).
     async fn events_earliest_id(&self) -> Result<Option<i64>>;
+
+    /// Highest live `events.id`, or `None` if the table is empty.
+    ///
+    /// Used by the WS handler so `_replay_complete` can stamp the
+    /// server's actual log tip — not just the highest id returned by
+    /// the replay window — into the frame's `_id`. That lets a client
+    /// whose persisted cursor is *ahead* of the server's tip (e.g. the
+    /// dev `/dev/reset` path that wipes `sqlite_sequence`, so re-seeded
+    /// events restart at id=1) detect "the server is no longer the
+    /// kernel I was talking to" and re-bootstrap its cache. Issue #290.
+    async fn events_latest_id(&self) -> Result<Option<i64>>;
 }
 
 /// Raw sync-domain entity writes. Gated: the trait object `RouteRepo` that

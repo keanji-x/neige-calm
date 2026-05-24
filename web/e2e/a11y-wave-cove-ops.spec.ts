@@ -408,20 +408,21 @@ test.describe('a11y · wave + cove ops', () => {
     // the React-Query invalidation on `cove.updated`). This test
     // exercises the linked-surface case: rename the cove from its own
     // header, navigate into a wave, assert the crumb shows the new name.
+    //
+    // #290 — pre-#290 the test had to land on Today first then click
+    // the sidebar to avoid a race between `/dev/reset` (which resets
+    // `sqlite_sequence`, so re-seeded events restart at id=1) and the
+    // WS client's persisted cursor from prior tests. The client now
+    // detects that mismatch via `_replay_complete._id < lastEventId`
+    // (see `web/src/api/events.ts`) and re-bootstraps the cache, so
+    // we can deep-link directly to the cove URL again. See
+    // `a11y-deep-link-after-reset.spec.ts` for the dedicated test of
+    // the deep-link-after-reset contract.
     const cove = await createUserCove(request, 'CrumbCoveOld');
     const wave = await createWaveInCove(request, cove.id, 'WorkWave');
 
-    // Land on Today first so the WS handshake completes against a route
-    // whose initial-data queries don't race the post-reset event-id
-    // reset (see `replay::reset_from_fixture` — `/dev/reset` resets
-    // `sqlite_sequence`, leaving any WS client with a stale cursor).
-    // Deep-linking directly to `/calm/cove/<id>` after reset can land
-    // before the WS resync, with the page either showing
-    // "Connecting…" indefinitely or rendering with a stale React-Query
-    // cove cache.
-    await page.goto('/calm/?trace=1');
+    await page.goto(`/calm/cove/${cove.id}?trace=1`);
     await waitForCoveInSidebar(page, 'CrumbCoveOld');
-    await gotoCove(page, 'CrumbCoveOld');
     await clearEventTrace(page);
 
     // Rename via the same flow as the existing cove-rename test.
@@ -519,13 +520,13 @@ test.describe('a11y · wave + cove ops', () => {
     const cove = await createUserCove(request, 'WaveRenameCove');
     const wave = await createWaveInCove(request, cove.id, 'WaveOriginalTitle');
 
-    // Land on Today first then navigate via UI — same rationale as
-    // the cove-breadcrumb test above (avoid the WS-resync race after
-    // `/dev/reset` resets event-id sequence).
-    await page.goto('/calm/?trace=1');
+    // #290 — pre-#290 the test had to land on Today first then click
+    // the sidebar; deep-link is safe again now that the client detects
+    // server resets via `_replay_complete._id < lastEventId` and
+    // re-bootstraps. See `web/src/api/events.ts` + the dedicated
+    // `a11y-deep-link-after-reset.spec.ts`.
+    await page.goto(`/calm/wave/${wave.id}?trace=1`);
     await waitForCoveInSidebar(page, 'WaveRenameCove');
-    await gotoCove(page, 'WaveRenameCove');
-    await gotoWaveFromCove(page, wave.title);
     await clearEventTrace(page);
 
     // Drive the rename through the wave-header inline edit, mirroring

@@ -42,7 +42,7 @@
 //! client must handle out-of-band before running the regular zod parse:
 //!
 //! ```json
-//! { "_id": <last_replayed_id>, "ev": "_replay_complete" }
+//! { "_id": <server_tip_id>, "ev": "_replay_complete" }
 //! { "_id": <earliest_id>, "ev": "_snapshot_required", "data": { "earliest_id": <id> } }
 //! ```
 //!
@@ -50,7 +50,13 @@
 //!   has been streamed and any dupes from the concurrent live broadcast
 //!   have been drained. Lets the client drop any "reconnecting" UI banner
 //!   and run a defensive `qc.invalidateQueries()` to catch optimistic
-//!   state that may have drifted during the window.
+//!   state that may have drifted during the window. The `_id` is the
+//!   server's actual `events.id` tip (`MAX(id)` of the live log) — NOT
+//!   the highest id replayed in this window. That gives a client whose
+//!   persisted cursor is *ahead* of the server tip (the dev
+//!   `/dev/reset` path resets `sqlite_sequence`, so re-seeded events
+//!   restart at id=1) a per-connection signal it can use to detect the
+//!   reset and re-bootstrap its cache. Issue #290.
 //! * `_snapshot_required` is sent when the client's `since` cursor
 //!   predates the retention horizon (the smallest live `events.id`).
 //!   After sending it, the server closes the connection. The client must
@@ -238,9 +244,11 @@ enum ReplayOutcome {
 }
 
 /// Stream the replay window for `since` to the client, then send the
-/// `_replay_complete` synthetic envelope. Returns the highest replayed id
-/// (the new dedup cursor), or signals `_snapshot_required` if `since`
-/// predates the retention horizon.
+/// `_replay_complete` synthetic envelope. Returns the server's actual
+/// `events.id` tip (the new dedup cursor — `MAX(id)` of the live log,
+/// queried after the in-window scan completes; falls back to the
+/// in-window high-water mark if that query errors), or signals
+/// `_snapshot_required` if `since` predates the retention horizon.
 ///
 /// Implements the subscribe-first ordering: the broadcast subscription is
 /// established *before* this function is called (in `handle`), so any
@@ -348,13 +356,31 @@ where
     }
 
     // Terminator: tells the client the historical window is fully
-    // delivered. Stamped with the current cursor tip so the client
-    // doesn't regress its `lastEventId` if the replay returned zero rows.
-    let frame = replay_complete_frame(last_id);
+    // delivered. Stamped with the SERVER'S actual log tip — not the
+    // highest id returned by the in-window scan — so a client whose
+    // persisted cursor is *ahead* of the server's tip (e.g. the dev
+    // `/dev/reset` path wipes `sqlite_sequence`, so re-seeded events
+    // restart at id=1) sees `_replay_complete._id < lastEventId` and
+    // can re-bootstrap. Issue #290.
+    //
+    // Falling back to `last_id` (which equals `since` when zero rows
+    // matched) on a query error preserves the pre-#290 invariant
+    // "terminator always carries a sensible id, even when the table is
+    // transiently unreadable" — the client's no-regress guard treats it
+    // as a no-op rather than a false reset signal.
+    let server_tip = match repo.events_latest_id().await {
+        Ok(Some(tip)) => tip,
+        Ok(None) => 0,
+        Err(e) => {
+            tracing::error!(error = %e, "ws /api/events: events_latest_id failed");
+            last_id
+        }
+    };
+    let frame = replay_complete_frame(server_tip);
     if tx.send(Message::Text(frame.into())).await.is_err() {
         return ReplayOutcome::ClientClosed;
     }
-    ReplayOutcome::Streamed(last_id)
+    ReplayOutcome::Streamed(server_tip)
 }
 
 /// `{ "_id": <id>, "eventVersion": <n>, "ev": "_replay_complete" }`.
@@ -362,15 +388,21 @@ where
 /// (which ts-rs exports — adding underscore-prefixed variants would muddy
 /// the client's discriminated union for no win).
 ///
+/// `server_tip_id` is the server's actual `events.id` tip (`MAX(id)`),
+/// not the highest id streamed in this replay window. See the module
+/// docstring + `run_replay` comments for why — issue #290's reset
+/// detection relies on the frame carrying the *server's* view of "how
+/// far the log goes" so a stale-cursor client can compare.
+///
 /// Control frames are kernel-emitted and carry `SYNC_EVENT_VERSION` for
 /// shape consistency with persisted-event frames — clients can treat
 /// `eventVersion` as load-bearing on every frame they receive, not "only
 /// on the replayed ones". They don't sit in the `events` table, so they
 /// don't have a row-level version to round-trip; the constant is the
 /// right source.
-fn replay_complete_frame(last_id: i64) -> String {
+fn replay_complete_frame(server_tip_id: i64) -> String {
     serde_json::json!({
-        "_id": last_id,
+        "_id": server_tip_id,
         "eventVersion": SYNC_EVENT_VERSION,
         "ev": "_replay_complete",
     })
