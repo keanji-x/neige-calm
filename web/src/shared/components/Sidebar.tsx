@@ -4,6 +4,8 @@ import { Menu, type MenuItem } from '../../ui/Menu/Menu';
 import { useSession } from '../../app/SessionProvider';
 import type { Cove, Route, Wave } from '../../types';
 import { isRunning, waveNeedsUserAttention } from '../lifecycle';
+import { ConfirmDialog } from '../../ui/ConfirmDialog/ConfirmDialog';
+import { CloseIcon } from './CloseIcon';
 import { PlusIcon } from './PlusIcon';
 
 // ---------------- Sidebar ----------------
@@ -14,6 +16,7 @@ export function Sidebar({
   route,
   onGo,
   onCreateCove,
+  onDeleteCove,
   onOpenSettings,
   onSignOut,
 }: {
@@ -27,6 +30,11 @@ export function Sidebar({
    *  cove has no other home. Wave creation, by contrast, lives inside
    *  CovePage where the cove context is already established. */
   onCreateCove?: (name: string, color: string) => void | Promise<void>;
+  /** Per-row delete on each cove. When provided, every cove row reveals a
+   *  hover `×` that opens a single shared ConfirmDialog. Mirrors the
+   *  WaveRow delete pattern. Optional so tests can render the sidebar
+   *  without wiring deletion. */
+  onDeleteCove?: (coveId: string) => void | Promise<void>;
   /** Open the app-global settings page. Optional so tests / sub-trees that
    *  render the sidebar without a router don't have to wire it up. */
   onOpenSettings?: () => void;
@@ -34,6 +42,17 @@ export function Sidebar({
    *  the sidebar without a router don't have to wire it up. */
   onSignOut?: () => void;
 }) {
+  // Single shared ConfirmDialog at the sidebar root; `pendingDelete`
+  // carries the cove being confirmed so the dialog text reflects the
+  // actual cove name. Mirrors Cove.tsx's `pendingDeleteWave` pattern.
+  const [pendingDelete, setPendingDelete] = useState<Cove | null>(null);
+  const cancelDelete = () => setPendingDelete(null);
+  const confirmDelete = async () => {
+    const c = pendingDelete;
+    setPendingDelete(null);
+    if (!c || !onDeleteCove) return;
+    await onDeleteCove(c.id);
+  };
   // Issue #254 — OR'd predicate: lifecycle ∪ kernel-card-FSM. Catches
   // both "Spec Agent said blocked/reviewing/failed" AND "a worker card
   // hit an AwaitingInput/Errored hook before Spec Agent could drive
@@ -93,38 +112,73 @@ export function Sidebar({
           const cw = waves.filter((w) => w.coveId === cove.id);
           const running = cw.filter((w) => isRunning(w.lifecycle)).length;
           // Match the top-of-sidebar "Waiting on you" predicate so the
-          // per-cove pip count and the top-section row count agree.
+          // per-cove waiting count and the top-section row count agree.
           const waiting = cw.filter((w) => waveNeedsUserAttention(w)).length;
           const active = route.name === 'cove' && route.coveId === cove.id;
+          // Single right-edge badge slot: warn-red waiting count beats
+          // muted total count; empty when there are no waves at all.
+          const badge =
+            waiting > 0
+              ? { kind: 'warn' as const, n: waiting }
+              : cw.length > 0
+                ? { kind: 'muted' as const, n: cw.length }
+                : null;
           return (
-            <button
-              key={cove.id}
-              className={'cove-nav' + (active ? ' active' : '')}
-              onClick={() => onGo({ name: 'cove', coveId: cove.id })}
-            >
-              <span className="swatch-wrap">
-                <span
-                  className={'swatch' + (running > 0 ? ' pulse' : '')}
-                  style={{ background: cove.color }}
-                />
-                {waiting > 0 && (
-                  <span className="pip" aria-hidden="true">
-                    {waiting}
+            <div key={cove.id} className="cove-row" role="group">
+              <button
+                className={'cove-nav' + (active ? ' active' : '')}
+                onClick={() => onGo({ name: 'cove', coveId: cove.id })}
+              >
+                <span className="swatch-wrap">
+                  <span
+                    className={'swatch' + (running > 0 ? ' pulse' : '')}
+                    style={{ background: cove.color }}
+                  />
+                </span>
+                <span className="lbl">{cove.name}</span>
+                {badge && (
+                  <span
+                    className={'cove-nav-badge ' + badge.kind}
+                    aria-hidden="true"
+                  >
+                    {badge.n}
                   </span>
                 )}
-              </span>
-              <span className="lbl">{cove.name}</span>
-              {cw.length > 0 && (
-                <span className="count" aria-hidden="true">
-                  {cw.length}
-                </span>
+              </button>
+              {onDeleteCove && (
+                <button
+                  type="button"
+                  className="cove-row-delete"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setPendingDelete(cove);
+                  }}
+                  title={`Delete cove "${cove.name}"`}
+                  aria-label={`Delete cove "${cove.name}"`}
+                >
+                  <CloseIcon />
+                </button>
               )}
-            </button>
+            </div>
           );
         })}
       </nav>
 
       <UserMenu onOpenSettings={onOpenSettings} onSignOut={onSignOut} />
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title="Delete cove?"
+        description={
+          pendingDelete
+            ? `Delete cove "${pendingDelete.name}"? Its waves and cards go too. This cannot be undone.`
+            : null
+        }
+        confirmLabel="Delete cove"
+        cancelLabel="Cancel"
+        onConfirm={confirmDelete}
+        onCancel={cancelDelete}
+      />
     </aside>
   );
 }

@@ -100,8 +100,8 @@ export function CovePage({
 
   return (
     <div className="col wide">
-      {/* `.cove-head` is a flex row so the × centers naturally against
-          the h1's line-box; the × is pushed to the right edge via
+      {/* `.cove-head` is a flex row; `+` and `×` live in a sibling
+          `.cove-head-actions` group pushed to the right edge via
           `margin-left: auto`. The page title's leading edge stays at
           x=0 (matching every wave-row's glyph column below). The × is
           hover/focus-within revealed, mirroring the per-row × on each
@@ -116,28 +116,30 @@ export function CovePage({
         ) : (
           <h1 className="h-display">{cove.name}.</h1>
         )}
-        {onWaveCreated && (
-          <button
-            type="button"
-            className="cove-head-add"
-            onClick={() => setNewWaveOpen(true)}
-            title="New wave"
-            aria-label="New wave"
-          >
-            <PlusIcon />
-          </button>
-        )}
-        {onDeleteCove && (
-          <span className="cove-head-delete">
-            <DeleteButton
-              label={`Delete cove "${cove.name}"`}
-              confirmTitle="Delete cove?"
-              confirmLabel="Delete cove"
-              confirmMessage={`Delete cove "${cove.name}"? Its waves and cards go too. This cannot be undone.`}
-              onDelete={() => onDeleteCove(cove.id)}
-            />
-          </span>
-        )}
+        <div className="cove-head-actions">
+          {onWaveCreated && (
+            <button
+              type="button"
+              className="cove-head-add"
+              onClick={() => setNewWaveOpen(true)}
+              title="New wave"
+              aria-label="New wave"
+            >
+              <PlusIcon />
+            </button>
+          )}
+          {onDeleteCove && (
+            <span className="cove-head-delete">
+              <DeleteButton
+                label={`Delete cove "${cove.name}"`}
+                confirmTitle="Delete cove?"
+                confirmLabel="Delete cove"
+                confirmMessage={`Delete cove "${cove.name}"? Its waves and cards go too. This cannot be undone.`}
+                onDelete={() => onDeleteCove(cove.id)}
+              />
+            </span>
+          )}
+        </div>
       </header>
 
       {onWaveCreated && (

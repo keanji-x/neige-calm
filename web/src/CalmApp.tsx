@@ -34,6 +34,7 @@ import {
   queryKeys,
   useCovesQuery,
   useCreateCoveMutation,
+  useDeleteCoveMutation,
   useOverlaysByKindQuery,
 } from './api/queries';
 import { useGo } from './app/navigation';
@@ -121,6 +122,7 @@ export function CalmApp() {
   const error = covesQ.error;
 
   const createCove = useCreateCoveMutation();
+  const deleteCove = useDeleteCoveMutation();
 
   // Sign-out (issue #189). POSTs `/api/auth/logout` which drops the
   // server-side session + clears the `calm-session` cookie. We then
@@ -147,6 +149,18 @@ export function CalmApp() {
           onGo={go}
           onCreateCove={async (name, color) => {
             await createCove.mutateAsync({ name, color });
+          }}
+          onDeleteCove={async (cId) => {
+            try {
+              await deleteCove.mutateAsync(cId);
+              // Active-cove deletion: bounce to Today so we don't get
+              // stranded on a now-missing /cove/:id route.
+              if (route.name === 'cove' && route.coveId === cId) {
+                go({ name: 'today' });
+              }
+            } catch (err) {
+              console.warn('[Calm] cove delete failed:', err);
+            }
           }}
           onOpenSettings={() => go({ name: 'settings' })}
           onSignOut={handleSignOut}
