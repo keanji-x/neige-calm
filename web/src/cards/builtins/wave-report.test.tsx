@@ -1,17 +1,35 @@
-// Unit tests for the wave-report card (issue #229 PR B).
+// Unit tests for the wave-report card (issue #229 PR B + #247 PR4).
 //
-// Two surfaces under test:
+// Three surfaces under test:
 //
 //   1. `fromKernel` adapter contract — schemaVersion gating, zod
 //      validation, happy path.
 //   2. `parseSections` H1-splitting + the rendered component's
 //      collapse behaviour, attention-section styling, and lifecycle
 //      badge in the header.
+//   3. Inline edit mode (#247 PR4) — pencil button toggles to editor,
+//      Save posts to the REST endpoint and adopts the projected
+//      payload, Cancel discards, error responses keep the user in
+//      edit mode with a visible error string.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+
+// Hoisted mock for the api client. Only the wave-report endpoint is
+// exercised here; we still need to passthrough `CalmApiError` because
+// the component imports the class to type-narrow error responses.
+vi.mock('../../api/calm', async () => {
+  const actual =
+    await vi.importActual<typeof import('../../api/calm')>('../../api/calm');
+  return {
+    ...actual,
+    updateWaveReport: vi.fn(),
+  };
+});
+
 import { WaveReportEntry, parseSections } from './wave-report';
 import { WaveContext } from '../../shared/components/WaveContext';
+import * as api from '../../api/calm';
 import type { KernelCard } from '../../api/wire';
 import type { WaveReportCardData } from '../../types';
 
@@ -282,5 +300,199 @@ describe('WaveReportCard rendering', () => {
     const closeBtn = screen.getByLabelText('Remove panel');
     fireEvent.click(closeBtn);
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---- PR4 of #247: inline edit mode ----------------------------------
+
+describe('WaveReportCard edit mode (#247 PR4)', () => {
+  const updateMock = api.updateWaveReport as ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    updateMock.mockReset();
+    try {
+      window.localStorage.clear();
+    } catch {
+      // ignore
+    }
+  });
+
+  function renderEditable(card: WaveReportCardData) {
+    const Component = WaveReportEntry.Component;
+    return render(
+      <WaveContext.Provider
+        value={{ id: 'wave_edit_test', lifecycle: 'planning', title: 'Test' }}
+      >
+        <Component card={card} />
+      </WaveContext.Provider>,
+    );
+  }
+
+  it('renders read-only by default with an edit affordance', () => {
+    renderEditable({
+      type: 'wave-report',
+      id: 'r1',
+      summary: 'initial summary',
+      body: '# Goal\n\nbody\n',
+    });
+    expect(screen.getByText('Goal')).toBeTruthy();
+    // Edit affordance present, body textarea is not.
+    expect(screen.getByLabelText('Edit report')).toBeTruthy();
+    expect(screen.queryByLabelText('Wave report body')).toBeNull();
+  });
+
+  it('omits the edit button when no WaveContext is provided', () => {
+    const Component = WaveReportEntry.Component;
+    render(
+      <Component
+        card={{
+          type: 'wave-report',
+          id: 'r1',
+          summary: '',
+          body: '# Goal\n\nx\n',
+        }}
+      />,
+    );
+    expect(screen.queryByLabelText('Edit report')).toBeNull();
+  });
+
+  it('clicking the pencil enters edit mode with current values preloaded', () => {
+    renderEditable({
+      type: 'wave-report',
+      id: 'r1',
+      summary: 'initial summary',
+      body: '# Goal\n\nbody text\n',
+    });
+    fireEvent.click(screen.getByLabelText('Edit report'));
+    const bodyTextarea = screen.getByLabelText('Wave report body') as HTMLTextAreaElement;
+    const summaryInput = screen.getByLabelText('Wave report summary') as HTMLInputElement;
+    expect(summaryInput.value).toBe('initial summary');
+    expect(bodyTextarea.value).toBe('# Goal\n\nbody text\n');
+    // The pencil button is hidden while editing so the user can't
+    // accidentally re-enter edit mode mid-flight.
+    expect(screen.queryByLabelText('Edit report')).toBeNull();
+  });
+
+  it('Cancel exits edit mode and discards typed edits', () => {
+    renderEditable({
+      type: 'wave-report',
+      id: 'r1',
+      summary: 'orig',
+      body: '# Goal\n\norig\n',
+    });
+    fireEvent.click(screen.getByLabelText('Edit report'));
+    const bodyTextarea = screen.getByLabelText('Wave report body') as HTMLTextAreaElement;
+    fireEvent.change(bodyTextarea, { target: { value: '# Discarded\n\ngone\n' } });
+    fireEvent.click(screen.getByText('Cancel'));
+    // Back in read-only mode showing the original content.
+    expect(screen.queryByLabelText('Wave report body')).toBeNull();
+    expect(screen.getByText('Goal')).toBeTruthy();
+    expect(screen.queryByText('Discarded')).toBeNull();
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('Save calls the API with edited values and adopts the projected payload on success', async () => {
+    updateMock.mockResolvedValueOnce({
+      schemaVersion: 1,
+      summary: 'normalised summary',
+      body: '# Goal\n\nnormalised body\n',
+    });
+    renderEditable({
+      type: 'wave-report',
+      id: 'r1',
+      summary: 'orig summary',
+      body: '# Goal\n\norig body\n',
+    });
+    fireEvent.click(screen.getByLabelText('Edit report'));
+    const summaryInput = screen.getByLabelText('Wave report summary') as HTMLInputElement;
+    const bodyTextarea = screen.getByLabelText('Wave report body') as HTMLTextAreaElement;
+    fireEvent.change(summaryInput, { target: { value: 'edited summary' } });
+    fireEvent.change(bodyTextarea, { target: { value: '# Goal\n\nedited body\n' } });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Save'));
+    });
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    expect(updateMock).toHaveBeenCalledWith('wave_edit_test', {
+      summary: 'edited summary',
+      body: '# Goal\n\nedited body\n',
+    });
+    // Back in read-only mode, displaying the *projected* content
+    // (not the locally-typed copy — the server may have normalised).
+    await waitFor(() => {
+      expect(screen.queryByLabelText('Wave report body')).toBeNull();
+    });
+    expect(screen.getByText('normalised summary')).toBeTruthy();
+    expect(screen.getByText(/normalised body/)).toBeTruthy();
+  });
+
+  it('403 from the server keeps the user in edit mode with their typed content + a visible error', async () => {
+    const { CalmApiError } = await import('../../api/calm');
+    updateMock.mockRejectedValueOnce(
+      new CalmApiError(403, 'forbidden', 'spec-only edit'),
+    );
+    renderEditable({
+      type: 'wave-report',
+      id: 'r1',
+      summary: '',
+      body: '# Goal\n\norig\n',
+    });
+    fireEvent.click(screen.getByLabelText('Edit report'));
+    const bodyTextarea = screen.getByLabelText('Wave report body') as HTMLTextAreaElement;
+    fireEvent.change(bodyTextarea, { target: { value: '# Goal\n\ntyped edit\n' } });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Save'));
+    });
+    // Still in edit mode; typed content preserved; error visible.
+    await waitFor(() => {
+      expect(screen.getByText('无权编辑此报告')).toBeTruthy();
+    });
+    expect((screen.getByLabelText('Wave report body') as HTMLTextAreaElement).value).toBe(
+      '# Goal\n\ntyped edit\n',
+    );
+  });
+
+  it('5xx from the server shows a generic retry message', async () => {
+    const { CalmApiError } = await import('../../api/calm');
+    updateMock.mockRejectedValueOnce(
+      new CalmApiError(500, 'internal', 'boom'),
+    );
+    renderEditable({
+      type: 'wave-report',
+      id: 'r1',
+      summary: '',
+      body: '# Goal\n\nx\n',
+    });
+    fireEvent.click(screen.getByLabelText('Edit report'));
+    await act(async () => {
+      fireEvent.click(screen.getByText('Save'));
+    });
+    await waitFor(() => {
+      expect(screen.getByText('保存失败，请重试')).toBeTruthy();
+    });
+  });
+
+  it('disables Save while the request is in flight', async () => {
+    let resolve!: (v: { schemaVersion: number; summary: string; body: string }) => void;
+    updateMock.mockReturnValueOnce(
+      new Promise((r) => {
+        resolve = r;
+      }),
+    );
+    renderEditable({
+      type: 'wave-report',
+      id: 'r1',
+      summary: '',
+      body: '# Goal\n\nx\n',
+    });
+    fireEvent.click(screen.getByLabelText('Edit report'));
+    fireEvent.click(screen.getByText('Save'));
+    // Button label flips to the saving spinner copy and is disabled.
+    const saving = await screen.findByText('保存中…');
+    expect(saving).toBeTruthy();
+    expect((saving.closest('button') as HTMLButtonElement).disabled).toBe(true);
+    // Settle the promise so the act warnings don't fire after teardown.
+    await act(async () => {
+      resolve({ schemaVersion: 1, summary: '', body: '# Goal\n\nx\n' });
+    });
   });
 });

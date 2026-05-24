@@ -34,6 +34,7 @@ import { z } from 'zod';
 import { CardHead } from '../CardHead';
 import { WaveContext } from '../../shared/components/WaveContext';
 import { WaveLifecycleBadge } from '../../shared/components/WaveLifecycleBadge';
+import { updateWaveReport, CalmApiError } from '../../api/calm';
 import {
   WAVE_REPORT_PAYLOAD_SCHEMA_VERSION,
   payloadSchemaVersion,
@@ -243,16 +244,62 @@ function WaveReportCard({
   return <WaveReportCardImpl card={card} onClose={onClose} />;
 }
 
-function WaveReportCardImpl({
-  card,
-  onClose,
-}: {
-  card: WaveReportCardData;
-  onClose?: () => void;
-}) {
-  const waveCtx = useContext(WaveContext);
-  const waveId = waveCtx?.id ?? null;
-  const sections = parseSections(card.body);
+/** Inline pencil icon for the "edit report" affordance. Matches the
+ *  `CloseIcon` convention: inline SVG, currentColor stroke, 1em-sized
+ *  via CSS so the parent button's `font-size` controls the glyph. */
+function EditIcon() {
+  return (
+    <svg
+      width="1em"
+      height="1em"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      {/* Classic pencil glyph: barrel + tip + nib. */}
+      <path d="M4 20 L4.5 16 L16.5 4 L20 7.5 L8 19.5 L4 20 Z" />
+      <path d="M14 6 L18 10" />
+    </svg>
+  );
+}
+
+/** Map a failed save call to a Chinese-language error message the user
+ *  can act on. Server `code` strings are stable (see `ErrorBody`
+ *  generated.ts); falling back to the human-readable message keeps the
+ *  UX informative for any code we haven't enumerated yet. */
+function formatSaveError(err: unknown): string {
+  if (err instanceof CalmApiError) {
+    if (err.status === 401) return '请先登录';
+    if (err.status === 403) return '无权编辑此报告';
+    if (err.status === 400 || err.status === 422) {
+      return err.message?.length > 0 ? err.message : '提交格式不对';
+    }
+    if (err.status >= 500) return '保存失败，请重试';
+    return err.message?.length > 0 ? err.message : '保存失败，请重试';
+  }
+  return '保存失败，请重试';
+}
+
+interface EditState {
+  summary: string;
+  body: string;
+  submitting: boolean;
+  error: string | null;
+}
+
+interface ReadOnlyViewProps {
+  summary: string;
+  body: string;
+  waveId: string | null;
+}
+
+function ReadOnlyView({ summary, body, waveId }: ReadOnlyViewProps) {
+  const sections = parseSections(body);
   // Per-section collapse state, keyed by slug. Lazy-init so
   // localStorage reads happen once per mount.
   const [collapsedBySlug, setCollapsedBySlug] = useState<Record<string, boolean>>(
@@ -267,19 +314,9 @@ function WaveReportCardImpl({
     });
   };
 
-  const summaryLine = card.summary.trim();
-
+  const summaryLine = summary.trim();
   return (
-    <div className="wave-report-card">
-      <CardHead
-        className="card-drag-handle"
-        title="Report"
-        onClose={onClose}
-        closeAriaLabel="Remove panel"
-        status={
-          waveCtx ? <WaveLifecycleBadge lifecycle={waveCtx.lifecycle} /> : undefined
-        }
-      />
+    <>
       {summaryLine.length > 0 && (
         <div className="wave-report-summary" aria-label="Wave report summary">
           {summaryLine}
@@ -301,6 +338,203 @@ function WaveReportCardImpl({
           ))
         )}
       </div>
+    </>
+  );
+}
+
+interface EditViewProps {
+  initialSummary: string;
+  initialBody: string;
+  onSave: (
+    summary: string,
+    body: string,
+  ) => Promise<{ summary: string; body: string }>;
+  onCancel: () => void;
+  onSaved: (next: { summary: string; body: string }) => void;
+}
+
+function EditView({
+  initialSummary,
+  initialBody,
+  onSave,
+  onCancel,
+  onSaved,
+}: EditViewProps) {
+  const [state, setState] = useState<EditState>({
+    summary: initialSummary,
+    body: initialBody,
+    submitting: false,
+    error: null,
+  });
+
+  const submit = async () => {
+    setState((s) => ({ ...s, submitting: true, error: null }));
+    try {
+      const next = await onSave(state.summary, state.body);
+      // Hand the freshly-projected payload to the parent so the
+      // post-merge text replaces the local edits (the kernel may
+      // have normalised the body, and we want the user to see the
+      // committed state, not their typed copy).
+      onSaved(next);
+    } catch (err) {
+      setState((s) => ({
+        ...s,
+        submitting: false,
+        error: formatSaveError(err),
+      }));
+    }
+  };
+
+  return (
+    <div className="wave-report-edit">
+      <label className="wave-report-edit-label" htmlFor="wave-report-edit-summary">
+        Summary
+      </label>
+      <input
+        id="wave-report-edit-summary"
+        type="text"
+        className="wave-report-edit-summary"
+        value={state.summary}
+        onChange={(e) => setState((s) => ({ ...s, summary: e.target.value }))}
+        placeholder="One-line summary"
+        disabled={state.submitting}
+        aria-label="Wave report summary"
+      />
+      <label className="wave-report-edit-label" htmlFor="wave-report-edit-body">
+        Body (Markdown)
+      </label>
+      <textarea
+        id="wave-report-edit-body"
+        className="wave-report-edit-body"
+        value={state.body}
+        onChange={(e) => setState((s) => ({ ...s, body: e.target.value }))}
+        placeholder="# Goal&#10;&#10;..."
+        rows={20}
+        disabled={state.submitting}
+        aria-label="Wave report body"
+        // Don't let RGL pick this up as a drag start — the textarea
+        // sits outside the `.card-drag-handle` header but defensive
+        // stopPropagation costs nothing and protects future layouts.
+        onMouseDown={(e) => e.stopPropagation()}
+      />
+      {state.error && (
+        <p className="wave-report-edit-error" role="alert">
+          {state.error}
+        </p>
+      )}
+      <div className="wave-report-edit-actions">
+        <button
+          type="button"
+          className="wave-report-edit-cancel"
+          onClick={onCancel}
+          disabled={state.submitting}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="wave-report-edit-save"
+          onClick={() => {
+            void submit();
+          }}
+          disabled={state.submitting}
+          aria-disabled={state.submitting}
+        >
+          {state.submitting ? '保存中…' : 'Save'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function WaveReportCardImpl({
+  card,
+  onClose,
+}: {
+  card: WaveReportCardData;
+  onClose?: () => void;
+}) {
+  const waveCtx = useContext(WaveContext);
+  const waveId = waveCtx?.id ?? null;
+
+  // Optimistic display state. Seeded from props; after a successful
+  // user edit we adopt the projected payload immediately so the user
+  // doesn't have to wait for the `card.updated` event to roll back
+  // through the WS bus. The parent re-render will overwrite via the
+  // `key` discriminator below if it diverges.
+  const [editing, setEditing] = useState(false);
+  const [override, setOverride] = useState<{
+    summary: string;
+    body: string;
+  } | null>(null);
+
+  // Prefer the locally-applied save projection over the prop. If the
+  // prop later catches up (server-pushed event) we'd ideally drop
+  // `override`, but a stale optimistic-override is harmless: it
+  // matches what the user just submitted, and the next edit clears
+  // `override` to a fresher value.
+  const summary = override ? override.summary : card.summary;
+  const body = override ? override.body : card.body;
+
+  const canEdit = waveId !== null;
+
+  return (
+    <div className="wave-report-card">
+      <CardHead
+        className="card-drag-handle"
+        title="Report"
+        onClose={onClose}
+        closeAriaLabel="Remove panel"
+        status={
+          waveCtx ? <WaveLifecycleBadge lifecycle={waveCtx.lifecycle} /> : undefined
+        }
+      >
+        {/* Edit pencil — sits between the title slot and the status
+            badge so the close button (absolutely positioned by
+            CardHead) doesn't overlap it. Hidden when we have no
+            wave id (defensive — the headless-test renders without
+            WaveContext, and there's no wave to POST against). */}
+        {canEdit && !editing && (
+          <button
+            type="button"
+            className="wave-report-edit-button"
+            aria-label="Edit report"
+            title="Edit report"
+            onClick={(e) => {
+              e.stopPropagation();
+              setEditing(true);
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <EditIcon />
+          </button>
+        )}
+      </CardHead>
+      {editing ? (
+        <EditView
+          initialSummary={summary}
+          initialBody={body}
+          onSave={async (summaryIn, bodyIn) => {
+            // `canEdit` gates rendering of the trigger, but TS doesn't
+            // narrow from a render-time check — assert here.
+            if (waveId === null) {
+              throw new Error('wave id missing');
+            }
+            const next = await updateWaveReport(waveId, {
+              summary: summaryIn,
+              body: bodyIn,
+            });
+            return { summary: next.summary, body: next.body };
+          }}
+          onCancel={() => setEditing(false)}
+          onSaved={(next) => {
+            setOverride({ summary: next.summary, body: next.body });
+            setEditing(false);
+          }}
+        />
+      ) : (
+        <ReadOnlyView summary={summary} body={body} waveId={waveId} />
+      )}
     </div>
   );
 }
