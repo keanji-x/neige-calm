@@ -356,7 +356,7 @@ describe('WaveReportCard edit mode (#247 PR4)', () => {
     expect(screen.queryByLabelText('Edit report')).toBeNull();
   });
 
-  it('clicking the pencil enters edit mode with current values preloaded', () => {
+  it('clicking the pencil enters edit mode with the body preloaded; no summary input is rendered', () => {
     renderEditable({
       type: 'wave-report',
       id: 'r1',
@@ -365,9 +365,13 @@ describe('WaveReportCard edit mode (#247 PR4)', () => {
     });
     fireEvent.click(screen.getByLabelText('Edit report'));
     const bodyTextarea = screen.getByLabelText('Wave report body') as HTMLTextAreaElement;
-    const summaryInput = screen.getByLabelText('Wave report summary') as HTMLInputElement;
-    expect(summaryInput.value).toBe('initial summary');
     expect(bodyTextarea.value).toBe('# Goal\n\nbody text\n');
+    // Summary is AI-maintained — edit mode must NOT surface any
+    // control (input/textbox/label) for it. The read-mode summary
+    // div is also not rendered while editing (read/edit views are a
+    // ternary, not stacked), so the aria-label lookup is null here.
+    expect(screen.queryByLabelText('Wave report summary')).toBeNull();
+    expect(screen.queryByRole('textbox', { name: 'Wave report summary' })).toBeNull();
     // The pencil button is hidden while editing so the user can't
     // accidentally re-enter edit mode mid-flight.
     expect(screen.queryByLabelText('Edit report')).toBeNull();
@@ -391,7 +395,7 @@ describe('WaveReportCard edit mode (#247 PR4)', () => {
     expect(updateMock).not.toHaveBeenCalled();
   });
 
-  it('Save calls the API with edited values and adopts the projected payload on success', async () => {
+  it('Save posts {summary unchanged, body edited} and adopts the projected payload on success', async () => {
     updateMock.mockResolvedValueOnce({
       schemaVersion: 1,
       summary: 'normalised summary',
@@ -404,16 +408,16 @@ describe('WaveReportCard edit mode (#247 PR4)', () => {
       body: '# Goal\n\norig body\n',
     });
     fireEvent.click(screen.getByLabelText('Edit report'));
-    const summaryInput = screen.getByLabelText('Wave report summary') as HTMLInputElement;
     const bodyTextarea = screen.getByLabelText('Wave report body') as HTMLTextAreaElement;
-    fireEvent.change(summaryInput, { target: { value: 'edited summary' } });
     fireEvent.change(bodyTextarea, { target: { value: '# Goal\n\nedited body\n' } });
     await act(async () => {
       fireEvent.click(screen.getByText('Save'));
     });
     expect(updateMock).toHaveBeenCalledTimes(1);
+    // `summary` is sent through unchanged — the AI repopulates it on
+    // the next `report.write`, the user never sees an input for it.
     expect(updateMock).toHaveBeenCalledWith('wave_edit_test', {
-      summary: 'edited summary',
+      summary: 'orig summary',
       body: '# Goal\n\nedited body\n',
     });
     // Back in read-only mode, displaying the *projected* content
@@ -423,6 +427,36 @@ describe('WaveReportCard edit mode (#247 PR4)', () => {
     });
     expect(screen.getByText('normalised summary')).toBeTruthy();
     expect(screen.getByText(/normalised body/)).toBeTruthy();
+  });
+
+  it('typing in body does not mutate the submitted summary (invariant)', async () => {
+    updateMock.mockResolvedValueOnce({
+      schemaVersion: 1,
+      summary: 'preserved',
+      body: '# Goal\n\nv2\n',
+    });
+    renderEditable({
+      type: 'wave-report',
+      id: 'r1',
+      summary: 'preserved',
+      body: '# Goal\n\nv1\n',
+    });
+    fireEvent.click(screen.getByLabelText('Edit report'));
+    const bodyTextarea = screen.getByLabelText('Wave report body') as HTMLTextAreaElement;
+    // Multiple keystrokes — any one of them could conceivably leak
+    // into the submitted summary if the wire-up regresses.
+    fireEvent.change(bodyTextarea, { target: { value: '# Goal\n\nv1.5\n' } });
+    fireEvent.change(bodyTextarea, { target: { value: '# Goal\n\nv1.6 with summary: not the summary\n' } });
+    fireEvent.change(bodyTextarea, { target: { value: '# Goal\n\nv2\n' } });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Save'));
+    });
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    const [, payload] = updateMock.mock.calls[0];
+    expect(payload).toEqual({
+      summary: 'preserved',
+      body: '# Goal\n\nv2\n',
+    });
   });
 
   it('403 from the server keeps the user in edit mode with their typed content + a visible error', async () => {

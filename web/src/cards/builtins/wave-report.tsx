@@ -286,7 +286,6 @@ function formatSaveError(err: unknown): string {
 }
 
 interface EditState {
-  summary: string;
   body: string;
   submitting: boolean;
   error: string | null;
@@ -343,7 +342,15 @@ function ReadOnlyView({ summary, body, waveId }: ReadOnlyViewProps) {
 }
 
 interface EditViewProps {
-  initialSummary: string;
+  /** Current summary, passed through unchanged on save. The edit UI
+   *  intentionally does NOT surface this as a field: `summary` is an
+   *  AI-maintained derivative (the spec agent regenerates it via
+   *  `calm.report.write` once it sees the new body), so asking the
+   *  user to keep it in sync is unnecessary cognitive load. We still
+   *  send it on the wire to satisfy the server's `deny_unknown_fields`
+   *  payload shape — passing `summary` unchanged is a no-op for the
+   *  read-mode rendering. */
+  summary: string;
   initialBody: string;
   onSave: (
     summary: string,
@@ -354,14 +361,13 @@ interface EditViewProps {
 }
 
 function EditView({
-  initialSummary,
+  summary,
   initialBody,
   onSave,
   onCancel,
   onSaved,
 }: EditViewProps) {
   const [state, setState] = useState<EditState>({
-    summary: initialSummary,
     body: initialBody,
     submitting: false,
     error: null,
@@ -370,7 +376,9 @@ function EditView({
   const submit = async () => {
     setState((s) => ({ ...s, submitting: true, error: null }));
     try {
-      const next = await onSave(state.summary, state.body);
+      // Send `summary` through unchanged — the AI repopulates it on
+      // its next `report.write` based on the new body. See EditViewProps.
+      const next = await onSave(summary, state.body);
       // Hand the freshly-projected payload to the parent so the
       // post-merge text replaces the local edits (the kernel may
       // have normalised the body, and we want the user to see the
@@ -387,22 +395,6 @@ function EditView({
 
   return (
     <div className="wave-report-edit">
-      <label className="wave-report-edit-label" htmlFor="wave-report-edit-summary">
-        Summary
-      </label>
-      <input
-        id="wave-report-edit-summary"
-        type="text"
-        className="wave-report-edit-summary"
-        value={state.summary}
-        onChange={(e) => setState((s) => ({ ...s, summary: e.target.value }))}
-        placeholder="One-line summary"
-        disabled={state.submitting}
-        aria-label="Wave report summary"
-      />
-      <label className="wave-report-edit-label" htmlFor="wave-report-edit-body">
-        Body (Markdown)
-      </label>
       <textarea
         id="wave-report-edit-body"
         className="wave-report-edit-body"
@@ -512,7 +504,7 @@ function WaveReportCardImpl({
       </CardHead>
       {editing ? (
         <EditView
-          initialSummary={summary}
+          summary={summary}
           initialBody={body}
           onSave={async (summaryIn, bodyIn) => {
             // `canEdit` gates rendering of the trigger, but TS doesn't
