@@ -291,9 +291,9 @@ test.describe('a11y · wave + cove ops', () => {
   // UI surface that names the entity — not just the kernel row + the page
   // header (which the existing tests above already cover). New surfaces:
   //
-  //   * Sidebar cove entry  (Deliverable 1 — currently broken, marked
-  //                          `test.fail()` until a fix lands. See issue
-  //                          for the user-reported bug.)
+  //   * Sidebar cove entry  (the user-reported bug surface — see #288.
+  //                          Passes here; see the test's own comment for
+  //                          why no `test.fail()` annotation is used.)
   //   * Cove page wave list (rename on the wave detail page → the row in
   //                          the Cove page reflects the new name)
   //   * Wave breadcrumb back-link to cove (rename the cove → the wave
@@ -326,7 +326,7 @@ test.describe('a11y · wave + cove ops', () => {
     // would flip an `expected-failure` annotation to a CI failure on
     // an unexpected pass, which would break the gate the moment the
     // hermetic env diverges from production reproduction. The issue
-    // (#273) tracks the live-app reproduction separately.
+    // (#288) tracks the live-app reproduction separately.
     //
     // See: https://github.com/keanji-x/neige-calm/issues/288
     //
@@ -385,11 +385,11 @@ test.describe('a11y · wave + cove ops', () => {
     // renders. Both together pin the precise contract the user
     // expects.
     //
-    // Bounded timeout (8s) so a slow refetch doesn't false-fail; the
+    // Bounded timeout (1.5s) so a slow refetch doesn't false-fail; the
     // cove.updated event has already landed so this is purely about
-    // the React-Query → Sidebar render path. When the bug is fixed,
-    // both assertions pass quickly and the `test.fail()` above trips
-    // on the now-unexpected pass.
+    // the React-Query → Sidebar render path. If the production-only
+    // bug ever surfaces in this harness (see #288), this assertion
+    // is what turns red.
     await expect(
       page.locator('aside.side').getByRole('button', { name: /SidebarStaleCove/i }),
       'old cove name must disappear from sidebar after rename',
@@ -467,12 +467,10 @@ test.describe('a11y · wave + cove ops', () => {
     // route reads the same cove query, so a Today → Cove → rename →
     // Today round trip should leave the sidebar fresh.
     //
-    // Currently this also exercises the same sidebar-rendering path as
-    // the `test.fail()`-marked test above. If the bug fix lands at the
-    // React-Query layer (refetch on cove.updated) it'll likely fix this
-    // path too; if the fix is purely additive (re-render after nav) the
-    // Deliverable-1 test will remain red until the live-update path is
-    // also fixed.
+    // This overlaps with the sidebar-rename test above but adds the
+    // route-boundary dimension: a refetch-on-cove.updated regression
+    // and a re-render-on-route-change regression would each show up
+    // differently across these two tests.
     const cove = await createUserCove(request, 'NavBackCoveOld');
     await createWaveInCove(request, cove.id, 'Today');
 
