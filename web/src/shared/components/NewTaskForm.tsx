@@ -59,6 +59,7 @@
 // dense pages (Cove page below + calendar later).
 
 import { useCallback, useEffect, useId, useMemo, useRef } from 'react';
+import type { RefObject } from 'react';
 import { useState } from '../state';
 import { useQueryClient } from '@tanstack/react-query';
 import * as api from '../../api/calm';
@@ -89,6 +90,14 @@ export interface NewTaskFormProps {
   /** Fired when the user dismisses the form (Esc, Cancel). Caller
    *  collapses the inline panel back to a CTA button. */
   onCancel: () => void;
+  /** Optional ref forwarded to the title textarea. When provided, the
+   *  caller (typically a host `<Dialog>`) uses this to claim initial
+   *  focus on the title input — the form skips its own
+   *  `queueMicrotask(focus)` mount effect to avoid racing against the
+   *  Dialog's rAF "focus first focusable" pass, which otherwise lands
+   *  focus on the Dialog's Close button. When omitted, the form falls
+   *  back to focusing the title field itself on mount. */
+  initialFocusRef?: RefObject<HTMLTextAreaElement | null>;
 }
 
 /** Debounce window for the cwd → resolve API call. 300ms balances
@@ -105,7 +114,12 @@ type CoveChoice =
   | { mode: 'existing'; coveId: string }
   | { mode: 'new'; name: string; color: string };
 
-export function NewTaskForm({ defaultCoveId, onCreated, onCancel }: NewTaskFormProps) {
+export function NewTaskForm({
+  defaultCoveId,
+  onCreated,
+  onCancel,
+  initialFocusRef,
+}: NewTaskFormProps) {
   const titleId = useId();
   const cwdId = useId();
   const coveSelectId = useId();
@@ -156,21 +170,30 @@ export function NewTaskForm({ defaultCoveId, onCreated, onCancel }: NewTaskFormP
   const createWave = useCreateWaveMutation();
   const createCove = useCreateCoveMutation();
   const qc = useQueryClient();
-  // Browse… → pushes a DirectoryBrowser view into the host Dialog's
-  // body. Outside a Dialog (no modalView context) the button falls back
-  // to rendering the browser inline below the cwd row. Every in-app
-  // caller now wraps NewTaskForm in a Dialog (NewWaveCTA in Cove.tsx),
-  // so the inline-fallback path is only exercised in defensive tests.
+  // Browse… → always pushes a DirectoryBrowser view into the surrounding
+  // Dialog's body via `useModalView()`. NewTaskForm is hosted exclusively
+  // inside a Dialog today (NewWaveCTA in Cove.tsx wraps it), so the
+  // modal-view context is always present in production. The dev-time
+  // `console.warn` below catches accidental Dialog-less renderings during
+  // refactors instead of silently breaking the Browse affordance.
   const modalView = useModalView();
-  const [inlineBrowsing, setInlineBrowsing] = useState(false);
 
-  const titleRef = useRef<HTMLTextAreaElement | null>(null);
+  const localTitleRef = useRef<HTMLTextAreaElement | null>(null);
+  // When a caller forwards `initialFocusRef`, use it as the title
+  // textarea's ref — the host Dialog will own initial focus. Otherwise
+  // fall back to our own ref + the mount-time focus effect below.
+  const titleRef = initialFocusRef ?? localTitleRef;
   const cwdRef = useRef<HTMLInputElement | null>(null);
   // Focus the title field on mount — opening the form should land the
-  // caret in the first meaningful input without an extra click.
+  // caret in the first meaningful input without an extra click. Skipped
+  // when the caller forwarded `initialFocusRef`: the Dialog's own
+  // rAF-deferred focus pass would race against this microtask and
+  // sometimes win (landing on the Dialog Close button), so the contract
+  // is "Dialog focuses for us, we don't double-focus".
   useEffect(() => {
-    queueMicrotask(() => titleRef.current?.focus());
-  }, []);
+    if (initialFocusRef) return;
+    queueMicrotask(() => localTitleRef.current?.focus());
+  }, [initialFocusRef]);
 
   // Latest cwd at commit-time. The resolve effect captures `cwd` via
   // closure, but the in-flight `api.resolveCovePath` Promise may resolve
@@ -334,16 +357,22 @@ export function NewTaskForm({ defaultCoveId, onCreated, onCancel }: NewTaskFormP
     }
   };
 
-  // Browse… handler. Inside a Dialog: push the DirectoryBrowser into
-  // the dialog body via `useModalView()` so it takes over the whole
-  // modal — the same affordance the codex card uses, no nested popover.
-  // Outside a Dialog: toggle an inline browser below the cwd row. The
-  // initialPath is the current cwd if it looks absolute (we let the
-  // server fall through to $HOME otherwise via `null`).
+  // Browse… handler. Always pushes the DirectoryBrowser into the
+  // surrounding Dialog's body via `useModalView()` — same affordance the
+  // codex card uses, no nested popover. The initialPath is the current
+  // cwd if it looks absolute (we let the server fall through to $HOME
+  // otherwise via `null`). If `useModalView()` returns null we're
+  // rendered outside a Dialog, which only happens by mistake; warn once
+  // in dev and no-op so the visible Browse button doesn't appear to do
+  // anything (better than a confusing crash on click).
   const startBrowse = useCallback(() => {
     const seed = isAbsolutePath(cwd.trim()) ? cwd.trim() : null;
     if (!modalView) {
-      setInlineBrowsing(true);
+      if (import.meta.env?.DEV) {
+        console.warn(
+          '[NewTaskForm] Browse… clicked outside a <Dialog> — no modal-view context. Wrap NewTaskForm in <Dialog> to enable the directory picker.',
+        );
+      }
       return;
     }
     const commit = (path: string) => {
@@ -429,13 +458,13 @@ export function NewTaskForm({ defaultCoveId, onCreated, onCancel }: NewTaskFormP
             aria-describedby={cwdError ? `${cwdId}-err` : undefined}
             required
           />
-          {/* Browse… opens the directory walker. In-app this always
-              runs through `useModalView()` (NewTaskForm is now hosted
-              inside a Dialog); the inline fallback below is the
-              defensive path for renderings outside a Dialog. The typed
-              input above remains the source of truth — Browse is just a
-              shortcut that *sets* the cwd, it doesn't replace the field.
-              Accessible name comes from the visible text ("Browse…") so
+          {/* Browse… opens the directory walker. Always pushes into the
+              surrounding Dialog via `useModalView()` — NewTaskForm is
+              hosted inside a Dialog in every in-app caller (NewWaveCTA
+              in Cove.tsx). The typed input above remains the source of
+              truth — Browse is just a shortcut that *sets* the cwd, it
+              doesn't replace the field. Accessible name comes from the
+              visible text ("Browse…") so
               `getByLabel(/working directory/i)` on the surrounding
               field still uniquely resolves to the cwd input; `title`
               carries the contextual hint for sighted users and matches
@@ -454,18 +483,6 @@ export function NewTaskForm({ defaultCoveId, onCreated, onCancel }: NewTaskFormP
           <p id={`${cwdId}-err`} className="new-task-form-fielderr">
             {cwdError}
           </p>
-        )}
-        {inlineBrowsing && !modalView && (
-          <div className="new-task-form-cwd-inline-browser">
-            <DirectoryBrowser
-              initialPath={isAbsolutePath(cwd.trim()) ? cwd.trim() : null}
-              onCancel={() => setInlineBrowsing(false)}
-              onSelect={(path) => {
-                setCwd(path);
-                setInlineBrowsing(false);
-              }}
-            />
-          </div>
         )}
 
         {/* Cove section — three render branches keyed on resolveState +

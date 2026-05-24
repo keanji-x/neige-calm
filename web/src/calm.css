@@ -1720,12 +1720,6 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   white-space: nowrap;
 }
 .new-task-form-cwd-browse:hover { color: var(--text); border-color: var(--text-3); }
-.new-task-form-cwd-inline-browser {
-  margin-top: var(--space-3);
-  border: 1px solid var(--hairline-strong);
-  border-radius: var(--radius-md);
-  overflow: hidden;
-}
 
 /* ===== Directory picker (SchemaForm `directory` field type) =====
    Two surfaces:

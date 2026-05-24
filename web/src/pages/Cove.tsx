@@ -344,6 +344,14 @@ function NewWaveCTA({
 }) {
   const [open, setOpen] = useState(false);
   const close = () => setOpen(false);
+  // Shared ref between the host Dialog and the NewTaskForm title
+  // textarea so the Dialog's initial-focus pass lands directly on the
+  // description field. Without this, NewTaskForm's mount-time
+  // queueMicrotask(focus) would race against Dialog's rAF "focus first
+  // focusable" — and the rAF, scheduled later, would win and land focus
+  // on the Dialog's Close button. Forwarding the ref makes the Dialog
+  // do the focusing once, deterministically.
+  const titleRef = useRef<HTMLTextAreaElement | null>(null);
   return (
     <>
       <button
@@ -355,7 +363,12 @@ function NewWaveCTA({
         <span className="new-wave-glyph" aria-hidden>+</span>
         <span className="new-wave-label">New wave</span>
       </button>
-      <Dialog open={open} onClose={close} title="New wave">
+      <Dialog
+        open={open}
+        onClose={close}
+        title="New wave"
+        initialFocusRef={titleRef}
+      >
         {open && (
           <NewTaskForm
             defaultCoveId={defaultCoveId}
@@ -364,6 +377,7 @@ function NewWaveCTA({
               await onCreated(wave);
             }}
             onCancel={close}
+            initialFocusRef={titleRef}
           />
         )}
       </Dialog>
