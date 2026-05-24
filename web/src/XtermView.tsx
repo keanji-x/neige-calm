@@ -208,9 +208,22 @@ export function XtermView({
   // remount (Suspense flash, persist-query hydration, anything else
   // that re-runs the lazy chunk) resets any per-component `prev`
   // bookkeeping and would skip the dispatch — exactly the bug we're
-  // closing. The daemon's `TerminalThemeUpdate` handler is idempotent
-  // (same fg/bg → same OSC reply, codex re-probes harmlessly), so the
-  // worst case is one extra OSC round-trip per mount. Acceptable.
+  // closing. The unconditional POST is safe because suppression lives
+  // on the daemon side, not here: (a) the session state machine drops
+  // the update when fg/bg already equal the current defaults (the
+  // mount-time no-op case), and (b) the daemon skips the synthetic OSC
+  // reply unless the PTY child has opted into DECSET 1004 (focus event
+  // reporting). A focus-aware TUI like codex enables 1004 and consumes
+  // the OSC silently; an interactive shell at its prompt drives the line
+  // via a raw-mode editor (zsh's ZLE) but never enables 1004, so without
+  // the gate it would redraw the injected reply as `^[]10;rgb:…` garbage.
+  // (Gating on the PTY ECHO flag — the original attempt — was wrong:
+  // ZLE turns ECHO off, so a shell prompt looks identical to a TUI to
+  // that probe. The earlier "idempotent, harmless extra round-trip"
+  // assumption only held for focus-aware TUIs; on a shell that redundant
+  // mount POST surfaced exactly that garbage on every New terminal. See
+  // crates/calm-session `on_client_frame` TerminalThemeUpdate + daemon
+  // `Effect::TerminalThemeUpdate`, gated on `RenderPlane::focus_event_tracking`.)
   useEffect(() => {
     const term = termRef.current;
     if (term) {
@@ -251,6 +264,36 @@ export function XtermView({
       cursorBlink: true,
     });
     termRef.current = term;
+    // OSC-echo regression instrumentation. Gated on `?testMounts=1` (so
+    // production never carries it) exactly like `__xtermMounts__` above.
+    // Registers a per-terminal buffer serializer keyed by `terminalId`,
+    // so the e2e spec (`web/e2e/new-terminal-osc-echo.spec.ts`) can dump
+    // the rendered grid of a SPECIFIC card (a wave can have several
+    // xterm-backed cards — e.g. the auto-minted codex spec card plus an
+    // AddPanel New-terminal card — and only the cooked-shell terminal
+    // can manifest the echo bug). The spec asserts the synthetic OSC
+    // 10/11 reply bytes never land in the grid as literal caret text
+    // (`]10;rgb:` / `]11;rgb:`). We read the buffer rather than the DOM
+    // because xterm's canvas/webgl renderer doesn't mirror glyphs into
+    // navigable DOM nodes.
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      if (url.searchParams.get('testMounts') === '1') {
+        const w = window as unknown as {
+          __xtermDumps__?: Record<string, () => string>;
+        };
+        const dumps = (w.__xtermDumps__ ??= {});
+        dumps[terminalId] = () => {
+          const buf = term.buffer.active;
+          const lines: string[] = [];
+          for (let i = 0; i < buf.length; i += 1) {
+            const line = buf.getLine(i);
+            if (line) lines.push(line.translateToString(true));
+          }
+          return lines.join('\n');
+        };
+      }
+    }
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(container);
@@ -627,6 +670,15 @@ export function XtermView({
         /* already closed */
       }
       term.dispose();
+      // Tear down this terminal's test-only buffer-dump hook (only
+      // present under `?testMounts=1`). Keyed by `terminalId` so we only
+      // remove our own entry, never a sibling card's.
+      if (typeof window !== 'undefined') {
+        const w = window as unknown as {
+          __xtermDumps__?: Record<string, () => string>;
+        };
+        if (w.__xtermDumps__) delete w.__xtermDumps__[terminalId];
+      }
       // Only clear the ref if it's still pointing at *this* term. A
       // strict-mode double-invoke teardown can run after the next mount
       // has already installed its own term; without this guard we'd null

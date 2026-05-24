@@ -36,6 +36,7 @@ enum Call {
     SetCursorVisible(bool),
     EnterAltScreen,
     ExitAltScreen,
+    SetFocusEventTracking(bool),
     OscColorQuery(u8),
 }
 
@@ -107,6 +108,9 @@ impl TerminalHandler for MockHandler {
     }
     fn exit_alt_screen(&mut self) {
         self.calls.push(Call::ExitAltScreen);
+    }
+    fn set_focus_event_tracking(&mut self, enabled: bool) {
+        self.calls.push(Call::SetFocusEventTracking(enabled));
     }
     fn osc_color_query(&mut self, slot: u8) {
         self.calls.push(Call::OscColorQuery(slot));
@@ -244,6 +248,21 @@ fn decset_1049_routes_to_enter_exit_alt_screen() {
     // future PR can wire alt-screen without re-touching `VteProcessor`.
     assert_eq!(drive(b"\x1b[?1049h"), vec![Call::EnterAltScreen]);
     assert_eq!(drive(b"\x1b[?1049l"), vec![Call::ExitAltScreen]);
+}
+
+#[test]
+fn decset_1004_routes_to_set_focus_event_tracking() {
+    // DECSET/DECRST 1004 (focus event reporting). The daemon reads the
+    // resulting flag to gate the synthetic mid-session OSC 10/11 theme
+    // write (only focus-aware TUIs like codex opt in).
+    assert_eq!(
+        drive(b"\x1b[?1004h"),
+        vec![Call::SetFocusEventTracking(true)],
+    );
+    assert_eq!(
+        drive(b"\x1b[?1004l"),
+        vec![Call::SetFocusEventTracking(false)],
+    );
 }
 
 #[test]

@@ -118,6 +118,29 @@ fn alternate_screen_is_noop() {
 }
 
 #[test]
+fn decset_1004_tracks_focus_event_reporting_without_rev_bump() {
+    // DECSET 1004 (focus event reporting) is a mode flag the daemon reads
+    // to gate the synthetic mid-session OSC 10/11 theme write. It must be
+    // tracked but, like alt-screen, MUST NOT bump the render rev (no
+    // visible content change).
+    let mut m = TerminalModel::new(20, 3, 100);
+    assert!(
+        !m.focus_event_tracking(),
+        "1004 must start disabled (a fresh terminal hasn't opted in)"
+    );
+    let r0 = m.rev();
+    m.feed(b"\x1b[?1004h");
+    assert!(m.focus_event_tracking(), "CSI ?1004h must enable tracking");
+    assert_eq!(m.rev(), r0, "enabling 1004 must not bump rev");
+    m.feed(b"\x1b[?1004l");
+    assert!(
+        !m.focus_event_tracking(),
+        "CSI ?1004l must disable tracking"
+    );
+    assert_eq!(m.rev(), r0, "disabling 1004 must not bump rev");
+}
+
+#[test]
 fn cup_then_print_lands_at_target() {
     let mut m = TerminalModel::new(20, 5, 100);
     m.feed(b"\x1b[3;5HX");

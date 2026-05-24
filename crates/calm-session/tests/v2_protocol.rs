@@ -17,6 +17,18 @@ use uuid::Uuid;
 const TID: &str = "terminal-fixture";
 
 fn ctx<'a>(broadcaster: &PtyBroadcaster, session_id: Uuid) -> SessionContext<'a> {
+    ctx_with_colors(broadcaster, session_id, None, None)
+}
+
+/// Like [`ctx`] but lets a test pin the daemon's "current" OSC 10/11
+/// colors so the `TerminalThemeUpdate` suppression path (fix A) can be
+/// exercised without a real `RenderPlane`.
+fn ctx_with_colors<'a>(
+    broadcaster: &PtyBroadcaster,
+    session_id: Uuid,
+    current_default_fg: Option<(u8, u8, u8)>,
+    current_default_bg: Option<(u8, u8, u8)>,
+) -> SessionContext<'a> {
     SessionContext {
         terminal_id: TID,
         session_id,
@@ -33,6 +45,8 @@ fn ctx<'a>(broadcaster: &PtyBroadcaster, session_id: Uuid) -> SessionContext<'a>
         // unit-test fixture defaults to `false`, matching the safe
         // wait-for-ready posture an older serializer would produce.
         is_child_ready: false,
+        current_default_fg,
+        current_default_bg,
     }
 }
 
@@ -841,6 +855,94 @@ fn owner_terminal_theme_update_yields_terminal_theme_update_effect() {
         }
         other => panic!("expected TerminalThemeUpdate effect, got {other:?}"),
     }
+}
+
+#[test]
+fn owner_terminal_theme_update_matching_current_colors_is_suppressed() {
+    // Fix A: the New-terminal mount always re-POSTs the host theme,
+    // but the daemon was already spawned with that exact theme. When
+    // the requested colors equal the daemon's current OSC 10/11
+    // colors, the state machine must emit NOTHING — otherwise the
+    // synthetic OSC blob gets echoed back by the cooked-mode shell.
+    let mut registry = OwnerRegistry::new();
+    let (mut state, broadcaster) = attached_owner(&mut registry, Uuid::new_v4());
+    let session_id = Uuid::new_v4();
+
+    let fg = (216, 219, 226);
+    let bg = (15, 20, 24);
+    let effects = state.on_client_frame(
+        ClientMsg::TerminalThemeUpdate { fg, bg },
+        broadcaster.buffer(),
+        &mut registry,
+        &ctx_with_colors(&broadcaster, session_id, Some(fg), Some(bg)),
+    );
+
+    assert!(
+        effects.is_empty(),
+        "matching-color TerminalThemeUpdate must produce no effect, got {effects:?}"
+    );
+}
+
+#[test]
+fn owner_terminal_theme_update_differing_colors_still_emits() {
+    // A genuine toggle (colors actually differ from the daemon's
+    // current defaults) must continue to flow through unchanged — the
+    // suppression in fix A is strictly limited to no-op updates.
+    let mut registry = OwnerRegistry::new();
+    let (mut state, broadcaster) = attached_owner(&mut registry, Uuid::new_v4());
+    let session_id = Uuid::new_v4();
+
+    // Daemon currently serving dark; client toggles to light.
+    let current_fg = (216, 219, 226);
+    let current_bg = (15, 20, 24);
+    let new_fg = (42, 47, 58);
+    let new_bg = (252, 254, 255);
+    let effects = state.on_client_frame(
+        ClientMsg::TerminalThemeUpdate {
+            fg: new_fg,
+            bg: new_bg,
+        },
+        broadcaster.buffer(),
+        &mut registry,
+        &ctx_with_colors(&broadcaster, session_id, Some(current_fg), Some(current_bg)),
+    );
+
+    assert_eq!(effects.len(), 1, "expected one effect, got {effects:?}");
+    match &effects[0] {
+        Effect::TerminalThemeUpdate { fg, bg } => {
+            assert_eq!(*fg, new_fg);
+            assert_eq!(*bg, new_bg);
+        }
+        other => panic!("expected TerminalThemeUpdate effect, got {other:?}"),
+    }
+}
+
+#[test]
+fn owner_terminal_theme_update_emits_when_current_colors_unknown() {
+    // When the daemon's current colors are unknown (`None` — e.g. the
+    // legacy fixture, or any pre-theming call site), suppression is
+    // opt-out: the update always flows through so we can never swallow
+    // a real toggle on a call site that doesn't report its colors.
+    let mut registry = OwnerRegistry::new();
+    let (mut state, broadcaster) = attached_owner(&mut registry, Uuid::new_v4());
+    let session_id = Uuid::new_v4();
+
+    let fg = (216, 219, 226);
+    let bg = (15, 20, 24);
+    let effects = state.on_client_frame(
+        ClientMsg::TerminalThemeUpdate { fg, bg },
+        broadcaster.buffer(),
+        &mut registry,
+        // Colors unknown — matches `ctx()`'s `None`/`None` default.
+        &ctx_with_colors(&broadcaster, session_id, None, None),
+    );
+
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::TerminalThemeUpdate { .. })),
+        "unknown-current-color TerminalThemeUpdate must still emit, got {effects:?}"
+    );
 }
 
 #[test]

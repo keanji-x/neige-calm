@@ -45,6 +45,9 @@ fn ctx<'a>(broadcaster: &'a PtyBroadcaster, session_id: Uuid) -> SessionContext<
         pty_seq_tail: broadcaster.pty_seq(),
         render_rev: broadcaster.render_rev(),
         is_child_ready: false,
+        // PtyBroadcaster pre-dates theming; unknown current colors.
+        current_default_fg: None,
+        current_default_bg: None,
     }
 }
 

@@ -281,6 +281,18 @@ pub struct SessionContext<'a> {
     /// call sites that don't track child-readiness — notably the legacy
     /// [`PtyBroadcaster`]-backed unit tests in `tests/v2_protocol.rs`.
     pub is_child_ready: bool,
+    /// Default foreground/background colors the daemon currently
+    /// advertises on OSC 10/11 (mirrors `RenderPlane::default_fg/_bg`).
+    /// Used by the `TerminalThemeUpdate` handler to suppress a redundant
+    /// theme update whose colors already match what the daemon is
+    /// serving (the New-terminal mount case — fix A for the OSC-echo
+    /// bug). `None` on call sites that pre-date theming (the legacy
+    /// `PtyBroadcaster` unit-test fixture), which makes the equality
+    /// check below fall through to "treat as a real change" — i.e. the
+    /// suppression is opt-in and never silently swallows a toggle when
+    /// the daemon's current colors are unknown.
+    pub current_default_fg: Option<(u8, u8, u8)>,
+    pub current_default_bg: Option<(u8, u8, u8)>,
 }
 
 /// Single-client protocol state machine. One instance per accepted socket.
@@ -513,6 +525,34 @@ impl TerminalSessionState {
                     return vec![not_owner_error(
                         "TerminalThemeUpdate requires owner role or kernel_originated_input capability",
                     )];
+                }
+                // Fix A — drop the redundant mount-time theme update.
+                //
+                // `web/src/XtermView.tsx`'s theme effect fires on EVERY
+                // mount (deliberately, so a real toggle while the WS was
+                // down still reaches the daemon), so a freshly-opened
+                // New-terminal card always POSTs a `TerminalThemeUpdate`
+                // carrying the host's current theme. But the daemon was
+                // spawned with that exact theme via `--terminal-fg/-bg`
+                // (see daemon.rs `with_colors`), so this first update is
+                // a no-op color-wise — yet it still drives the daemon to
+                // write a synthetic `OSC 10/11 + focus-in` blob to the
+                // PTY master. Under a cooked-mode shell (New terminal
+                // runs `$SHELL`, ECHO on at the prompt) the tty line
+                // discipline echoes those bytes back as literal caret
+                // text (`^[]10;rgb:…`), which then surfaces in xterm.
+                //
+                // So: if the requested colors already equal what the
+                // daemon is serving, emit nothing. A genuine toggle
+                // (colors actually differ) still flows through. We only
+                // suppress when `current_default_*` is known (`Some`);
+                // an unknown current color (legacy fixtures) falls
+                // through to the original always-emit behaviour, so we
+                // never swallow a real change.
+                let unchanged =
+                    ctx.current_default_fg == Some(fg) && ctx.current_default_bg == Some(bg);
+                if unchanged {
+                    return vec![];
                 }
                 vec![Effect::TerminalThemeUpdate { fg, bg }]
             }
@@ -860,6 +900,32 @@ impl RenderPlane {
     /// OSC reply to the PTY master.
     pub fn set_default_colors(&mut self, fg: Option<(u8, u8, u8)>, bg: Option<(u8, u8, u8)>) {
         self.model.set_default_colors(fg, bg);
+    }
+
+    /// Current default foreground the model advertises on an OSC 10
+    /// query. Read by the daemon when building `SessionContext` so the
+    /// session state machine can drop a redundant `TerminalThemeUpdate`
+    /// whose colors already match (the New-terminal mount case — see
+    /// `TerminalSessionState::on_client_frame`).
+    pub fn default_fg(&self) -> Option<(u8, u8, u8)> {
+        self.model.default_fg()
+    }
+
+    /// Current default background the model advertises on an OSC 11
+    /// query. See [`Self::default_fg`].
+    pub fn default_bg(&self) -> Option<(u8, u8, u8)> {
+        self.model.default_bg()
+    }
+
+    /// Whether the PTY child has enabled DECSET 1004 (focus event
+    /// reporting). The daemon reads this to gate the synthetic
+    /// mid-session OSC 10/11 theme write: only a focus-aware TUI (codex
+    /// opts in on startup) consumes the injected OSC silently; a shell's
+    /// line editor sits in raw mode but never enables 1004, so it would
+    /// display the bytes as garbage. See `daemon.rs`
+    /// `Effect::TerminalThemeUpdate`.
+    pub fn focus_event_tracking(&self) -> bool {
+        self.model.focus_event_tracking()
     }
 
     /// Constructor with an injected clock (test use). Production goes

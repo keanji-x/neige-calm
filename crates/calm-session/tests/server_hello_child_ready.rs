@@ -73,6 +73,8 @@ fn ctx_from_plane<'a>(plane: &RenderPlane, session_id: Uuid) -> SessionContext<'
         pty_seq_tail: plane.pty_seq(),
         render_rev: plane.render_rev(),
         is_child_ready: plane.child_ready_fired(),
+        current_default_fg: plane.default_fg(),
+        current_default_bg: plane.default_bg(),
     }
 }
 
