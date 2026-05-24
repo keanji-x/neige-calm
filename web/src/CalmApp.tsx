@@ -184,9 +184,6 @@ function parseAppRoute(pathname: string): AppRoute {
   if (pathname === '/settings' || pathname.startsWith('/settings/')) {
     return { name: 'settings' };
   }
-  if (pathname === '/calendar' || pathname.startsWith('/calendar/')) {
-    return { name: 'calendar' };
-  }
   return { name: 'today' };
 }
 

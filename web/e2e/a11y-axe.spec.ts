@@ -9,7 +9,6 @@
 //   /calm/ (Today)                    | "Today page"                    |
 //   /calm/cove/<id>                   | "Cove page"                     |
 //   /calm/wave/<id>                   | "Wave page"                     |
-//   /calm/calendar                    | "Calendar page"                 |
 //   /calm/settings                    | "Settings page"                 |
 //   Wave + AddPanel menu open         | "AddPanel open"                 |
 //   Wave + list view toggled on       | "Wave list view"                |
@@ -262,28 +261,6 @@ test.describe('a11y · axe', () => {
         // WaveGrid is lazy-loaded — wait for AddPanel to render before
         // scanning so the wave page's full role tree is in the DOM.
         await expect(page.getByRole('button', { name: /\+\s*add/i })).toBeVisible();
-        await applyTheme(page, theme);
-        const { violations } = await axe(page).analyze();
-        expect(violations, formatViolations(violations)).toEqual([]);
-      });
-    }
-  });
-
-  // /calendar — issue #250 PR 5. The page renders a week-view grid of
-  // wave bars; we want the ARIA hygiene (no orphaned grid roles, the
-  // bars carry their own accessible names) covered under axe. We mint a
-  // cove + wave first so the scan sees the populated state (bars +
-  // headers) rather than just the "no waves this week" empty layout.
-  test.describe('Calendar page', () => {
-    for (const theme of THEMES) {
-      test(`${theme} mode · no violations`, async ({ page }) => {
-        await ids(page);
-        await page.goto('/calm/calendar?trace=1');
-        await waitForBootstrap(page);
-        // Wait for the calendar headline to render so we don't catch a
-        // pre-render shell. The headline is the only stable text content
-        // (the week range varies per run) so we anchor on its role.
-        await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
         await applyTheme(page, theme);
         const { violations } = await axe(page).analyze();
         expect(violations, formatViolations(violations)).toEqual([]);

@@ -61,12 +61,6 @@ export function Sidebar({
         >
           <span className="lbl">Today</span>
         </button>
-        <button
-          className={'nav-item nav-calendar' + (route.name === 'calendar' ? ' active' : '')}
-          onClick={() => onGo({ name: 'calendar' })}
-        >
-          <span className="lbl">Calendar</span>
-        </button>
       </nav>
 
       {waitingWaves.length > 0 && (

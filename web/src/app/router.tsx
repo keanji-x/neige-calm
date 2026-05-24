@@ -21,8 +21,7 @@
 // factories exported from `api/queries.ts`, so cache shape stays in lock-
 // step with the hook call sites.
 
-import { lazy, useMemo } from 'react';
-import { useState } from '../shared/state';
+import { lazy } from 'react';
 import {
   createRootRoute,
   createRoute,
@@ -45,13 +44,9 @@ import {
   useUpdateWaveMutation,
   useWaveDetailQuery,
   useWavesByCoveQuery,
-  useWavesRangeQuery,
   waveDetailQueryOptions,
   wavesByCoveQueryOptions,
-  wavesRangeQueryOptions,
 } from '../api/queries';
-import { startOfWeek } from '../pages/Calendar';
-import type { CalendarWave } from '../pages/Calendar';
 import { adaptCard, adaptCove, adaptWave } from '../api/adapt';
 import * as api from '../api/calm';
 import { DARK_THEME_RGB, LIGHT_THEME_RGB } from '../api/themeRgb';
@@ -81,9 +76,6 @@ const WavePage = lazy(() =>
 );
 const SettingsPage = lazy(() =>
   import('../pages/Settings').then((m) => ({ default: m.SettingsPage })),
-);
-const CalendarPage = lazy(() =>
-  import('../pages/Calendar').then((m) => ({ default: m.CalendarPage })),
 );
 
 // ---------- Route tree ----------
@@ -129,30 +121,8 @@ const settingsRoute = createRoute({
   component: SettingsComponent,
 });
 
-/**
- * Issue #250 PR 5 — `/calendar` route. Prime BOTH the coves list (so
- * bars can colour-code immediately on first paint) AND the current
- * week's wave window. The loader runs in parallel with the lazy
- * `CalendarPage` chunk download — by the time the component mounts
- * the data is already in cache and `useWavesRangeQuery` reads it
- * synchronously.
- */
-const calendarRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/calendar',
-  loader: () => {
-    const { since, until } = calendarWindowMs(Date.now());
-    return Promise.all([
-      queryClient.ensureQueryData(covesQueryOptions()),
-      queryClient.ensureQueryData(wavesRangeQueryOptions(since, until)),
-    ]);
-  },
-  component: CalendarComponent,
-});
-
 const routeTree = rootRoute.addChildren([
   indexRoute,
-  calendarRoute,
   coveRoute,
   waveRoute,
   settingsRoute,
@@ -297,76 +267,6 @@ function CoveComponent() {
 function SettingsComponent() {
   const go = useGo();
   return <SettingsPage onGo={go} />;
-}
-
-/**
- * Issue #250 PR 5 — convert "any timestamp" into a `[since, until]` ms
- * pair bracketing the local-time week that owns it. Mon 00:00 →
- * Sun 23:59:59.999. Exported sibling of `startOfWeek` so the route
- * loader and CalendarComponent share one formula (and so the cache
- * key shape is identical between prefetch and live read).
- */
-function calendarWindowMs(anchorMs: number): { since: number; until: number } {
-  const start = startOfWeek(new Date(anchorMs));
-  const end = new Date(start);
-  end.setDate(end.getDate() + 6);
-  end.setHours(23, 59, 59, 999);
-  return { since: start.getTime(), until: end.getTime() };
-}
-
-function CalendarComponent() {
-  const go = useGo();
-  // Anchor lives here (not inside CalendarPage) so the React Query key
-  // and the page state move in lock-step. CalendarPage takes
-  // `weekAnchor` as a controlled prop and reports back via
-  // `onWeekChange` — that way the query refetch and the visible week
-  // header can never disagree.
-  const [anchor, setAnchor] = useState<number>(() => Date.now());
-  const window = useMemo(() => calendarWindowMs(anchor), [anchor]);
-  const wavesQ = useWavesRangeQuery(window.since, window.until);
-  const covesQ = useCovesQuery();
-
-  // System cove waves still surface through the API (per PR 2's
-  // "system cove exempt from cwd-claim" rule). Drop them for the
-  // user-facing calendar — they're scaffolding noise, same reason
-  // the sidebar filters them at CalmApp.
-  const userCoves = useMemo(
-    () => (covesQ.data ?? []).filter((c) => c.kind === 'user'),
-    [covesQ.data],
-  );
-  const userCoveIds = useMemo(() => new Set(userCoves.map((c) => c.id)), [userCoves]);
-
-  const adaptedCoves = useMemo(
-    () => userCoves.map((c) => ({ id: c.id, name: c.name, subtitle: '', color: c.color })),
-    [userCoves],
-  );
-
-  const calendarWaves: CalendarWave[] = useMemo(() => {
-    const out: CalendarWave[] = [];
-    for (const w of wavesQ.data ?? []) {
-      if (!userCoveIds.has(w.cove_id)) continue;
-      out.push({
-        id: w.id,
-        title: w.title,
-        coveId: w.cove_id,
-        lifecycle: w.lifecycle ?? 'draft',
-        createdAt: w.created_at,
-        terminalAt: w.terminal_at ?? null,
-        cwd: w.cwd ?? '',
-      });
-    }
-    return out;
-  }, [wavesQ.data, userCoveIds]);
-
-  return (
-    <CalendarPage
-      waves={calendarWaves}
-      coves={adaptedCoves}
-      weekAnchor={anchor}
-      onGo={go}
-      onWeekChange={setAnchor}
-    />
-  );
 }
 
 function WaveComponent() {

@@ -17,9 +17,6 @@ export function useGo() {
       case 'today':
         void navigate({ to: '/' });
         return;
-      case 'calendar':
-        void navigate({ to: '/calendar' });
-        return;
       case 'cove':
         void navigate({ to: '/cove/$coveId', params: { coveId: r.coveId } });
         return;
