@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Neige logo mark">
+  <rect width="256" height="256" rx="56" fill="#f8fbff"/>
+  <path
+    d="M72 184V76c0-10 12-15 19-8l74 82c7 8 19 3 19-8V72"
+    fill="none"
+    stroke="#243142"
+    stroke-width="18"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M96 70c22 10 43 28 64 54"
+    fill="none"
+    stroke="#8fc7e8"
+    stroke-width="10"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M142 177h48c5 0 10 4 10 10v2c0 5-5 10-10 10h-48c-5 0-10-5-10-10v-2c0-6 5-10 10-10Z"
+    fill="#d9eef9"
+  />
+</svg>
