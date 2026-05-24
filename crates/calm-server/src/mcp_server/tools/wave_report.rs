@@ -51,18 +51,15 @@
 //!   * `old_string` found exactly once → replace it. (replace_all is
 //!     redundant in this case; we accept it for codex Edit symmetry.)
 
-use crate::db::sqlite::{card_body_crdt_get_tx, card_update_with_crdt_tx};
-use crate::db::write_with_events_typed;
 use crate::error::CalmError;
-use crate::event::{EditAuthor, Event, EventScope};
+use crate::event::EditAuthor;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, CardIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     require_role,
 };
-use crate::model::{Card, CardPatch, CardRole, Wave};
-use crate::wave_report::WaveReportPayload;
-use crate::wave_report_doc::ReportDoc;
+use crate::model::{Card, CardRole, Wave};
+use crate::wave_report::{WaveReportPayload, persist_report};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -177,7 +174,7 @@ async fn report_write(
         summary: summary_override.unwrap_or_else(|| current.summary.clone()),
         body,
     };
-    persist_report(&ctx, &identity, wave, report_card, current, next_payload).await
+    call_persist_report(&ctx, &identity, wave, report_card, current, next_payload).await
 }
 
 // ---------------------------------------------------------------------------
@@ -286,7 +283,7 @@ async fn report_edit(
         summary: current.summary.clone(),
         body: new_body,
     };
-    persist_report(&ctx, &identity, wave, report_card, current, next_payload).await
+    call_persist_report(&ctx, &identity, wave, report_card, current, next_payload).await
 }
 
 // ---------------------------------------------------------------------------
@@ -371,60 +368,24 @@ async fn resolve_report_for_caller(
     Ok((wave, spec_card, report_card, payload))
 }
 
-/// Persist a new `WaveReportPayload` onto the wave-report card row and
-/// emit `Event::CardUpdated` + `Event::WaveReportEdited` from the same
-/// transaction. Returns the MCP wire shape (`{ updated_at }`).
+/// MCP-side thin wrapper around [`crate::wave_report::persist_report`].
 ///
-/// Issue #247 PR1 — this is the single write boundary that materializes
-/// the opaque CRDT blob alongside the legacy `payload` JSON. The CRDT
-/// is authoritative; the JSON column is a read-cache the existing v1
-/// REST / WS read paths and the frontend continue to consume.
+/// Resolves the actor from the connection-bound [`CardIdentity`] (always
+/// maps to `ActorId::AiSpec` here — `require_role` upstream guarantees
+/// the role is Spec by the time we reach this site), tags every write
+/// with [`EditAuthor::Spec`] (the spec-MCP tools are the only `Spec`
+/// emitter), and projects the returned `Card` into the MCP wire shape
+/// `{ updated_at }`. The error mapping reproduces the pre-PR3 contract
+/// (`CalmError::Forbidden` → `-32403`, anything else → internal).
 ///
-/// Issue #247 PR2 — every call also emits a structured
-/// `Event::WaveReportEdited` carrying `(summary_before, summary_after,
-/// body_before, body_after, author, edit_id)` so PR4's UI can render an
-/// edit timeline and PR5's spec agent can wake on user-authored edits.
-/// `author` is hard-coded to [`EditAuthor::Spec`] here — the spec-MCP
-/// tools are the only write path that exists today. PR3 plumbs an
-/// `Actor` through this function when REST entry lands.
-///
-/// In-tx sequence:
-///
-///   1. Read the current `body_crdt`. NULL = first post-PR1 write on
-///      this row (legacy seed / pre-#247 mint); seed a fresh doc from
-///      `current_payload`. Non-NULL = load via `ReportDoc::from_bytes`.
-///   2. Project the doc to capture `(summary_before, body_before)` —
-///      the authoritative pre-write state for the edit-log entry.
-///   3. Apply the new `(summary, body)` via `ReportDoc::update` —
-///      automerge does the per-field Myers diff internally.
-///   4. Project back to `(summary_after, body_after)` and re-serialize
-///      a `WaveReportPayload` from those values (not the raw `next`
-///      input). The projection is what the JSON cache must mirror so
-///      a future read sees the post-merge text rather than a partially-
-///      applied input — under single-writer it's identical to `next`,
-///      but reading from the doc keeps the JSON-cache contract
-///      ("CRDT is source of truth") true by construction.
-///   5. Write both columns and emit both events in one tx — via
-///      `write_with_events_typed` so the events are persisted in the
-///      same transaction as the row update (commit-then-emit invariant
-///      preserved).
-///
-/// **Both events fire on every call, including content-equal writes**
-/// (e.g. re-asserting the same body, or `report.edit` with
-/// `old_string == new_string`). The `WaveReportEdited` row records
-/// `summary_before == summary_after && body_before == body_after`,
-/// which PR4's UI can filter out client-side if it wants to suppress
-/// no-ops from the timeline. Keeping the invariant "every
-/// `persist_report` call → one `CardUpdated` + one `WaveReportEdited`"
-/// dead simple means downstream consumers never have to second-guess
-/// whether an event is missing — every MCP write path that reaches
-/// this function emits exactly the same two-event pair.
-///
-/// The `current_payload` argument is the payload as it was last seen
-/// by the caller (passed in from `resolve_report_for_caller`). It's
-/// used only as the seed for the first-time `from_payload` branch —
-/// once `body_crdt` is non-NULL, the doc is the source.
-async fn persist_report(
+/// Issue #247 PR3 — the heavy lifting (CRDT load / project / update /
+/// dual-event emit) lives in [`crate::wave_report::persist_report`] so
+/// the REST user-edit endpoint (`POST /api/waves/:id/report`) can call
+/// the same write boundary with `EditAuthor::User`. The two callers
+/// share one persist path; one event-pair contract; one transactional
+/// write. Anything else would be two parallel implementations of the
+/// same invariant, with the corresponding drift risk.
+async fn call_persist_report(
     ctx: &Arc<AppContext>,
     identity: &CardIdentity,
     wave: Wave,
@@ -432,104 +393,22 @@ async fn persist_report(
     current_payload: WaveReportPayload,
     next: WaveReportPayload,
 ) -> Result<Value, RpcError> {
-    let report_card_id = report_card.id.clone();
-    let wave_id = wave.id.clone();
-    let cove_id = wave.cove_id.clone();
-    let scope = EventScope::Card {
-        card: report_card_id.clone(),
-        wave: wave_id.clone(),
-        cove: cove_id.clone(),
-    };
     let actor = identity.to_actor_id();
-    let report_card_id_inner = report_card_id.clone();
-    let wave_id_for_event = wave_id.clone();
-    let res = write_with_events_typed::<Card, _>(
+    match persist_report(
         ctx.repo.as_ref(),
-        actor,
-        None,
         &ctx.events,
         &ctx.card_role_cache,
         &ctx.wave_cove_cache,
-        move |tx| {
-            let id = report_card_id_inner.as_str().to_string();
-            let report_card_id = report_card_id_inner.clone();
-            let wave_id = wave_id_for_event.clone();
-            let scope = scope.clone();
-            let current_payload = current_payload.clone();
-            let next = next.clone();
-            Box::pin(async move {
-                // 1. Load (or lazy-init) the CRDT doc for this card.
-                let existing = card_body_crdt_get_tx(tx, &id).await?;
-                let mut doc = match existing {
-                    Some(bytes) => ReportDoc::from_bytes(&bytes).map_err(|e| {
-                        CalmError::Internal(format!("wave_report: load CRDT for card {id}: {e}"))
-                    })?,
-                    // Safe: current_payload was read outside the tx,
-                    // but is only consulted here when body_crdt is
-                    // still NULL in-tx. SQLite's single-writer means
-                    // no concurrent writer can have populated the
-                    // blob between that read and this branch; once
-                    // body_crdt is non-NULL we take the Some arm and
-                    // ignore current_payload entirely.
-                    None => ReportDoc::from_payload(&current_payload),
-                };
-                // 2. Capture the pre-write projection for the edit-log
-                //    entry. Reading from the doc (not from
-                //    `current_payload`) keeps the before-state
-                //    consistent with whatever the CRDT actually holds
-                //    after the lazy-init branch above.
-                let (summary_before, body_before) = doc.project();
-                // 3. Apply the proposed update uniformly to both fields.
-                doc.update(&next.summary, &next.body);
-                // 4. Project back — these are the authoritative values
-                //    that go into the JSON cache.
-                let (summary_after, body_after) = doc.project();
-                let projected_payload = WaveReportPayload {
-                    schema_version: WaveReportPayload::SCHEMA_VERSION,
-                    summary: summary_after.clone(),
-                    body: body_after.clone(),
-                };
-                let payload_value = serde_json::to_value(&projected_payload).map_err(|e| {
-                    CalmError::Internal(format!("wave_report: serialize projected payload: {e}"))
-                })?;
-                let patch = CardPatch {
-                    kind: None,
-                    sort: None,
-                    payload: Some(payload_value),
-                    deletable: None,
-                };
-                let crdt_bytes = doc.to_bytes();
-                // 5. One transactional write rewriting both columns +
-                //    two events tagged with the same card scope. Order
-                //    matters: `CardUpdated` first so an existing
-                //    subscriber that processes both events sees the
-                //    generic "row changed" signal before the structured
-                //    edit-log entry (matches the historical broadcast
-                //    order before PR2 added the structured event).
-                let updated = card_update_with_crdt_tx(tx, &id, patch, crdt_bytes).await?;
-                let report_edited = Event::WaveReportEdited {
-                    wave_id,
-                    card_id: report_card_id,
-                    // PR2 hard-codes Spec — only the spec-MCP path
-                    // exists today. PR3 introduces REST + User.
-                    author: EditAuthor::Spec,
-                    edit_id: uuid::Uuid::new_v4().to_string(),
-                    summary_before,
-                    summary_after,
-                    body_before,
-                    body_after,
-                };
-                let events = vec![
-                    (scope.clone(), Event::CardUpdated(updated.clone())),
-                    (scope, report_edited),
-                ];
-                Ok((updated, events))
-            })
-        },
+        actor,
+        EditAuthor::Spec,
+        wave,
+        report_card,
+        current_payload,
+        next,
     )
-    .await;
-    match res {
-        Ok((updated, _ids)) => Ok(json!({ "updated_at": updated.updated_at })),
+    .await
+    {
+        Ok(updated) => Ok(json!({ "updated_at": updated.updated_at })),
         Err(CalmError::Forbidden(msg)) => Err(RpcError::custom(
             -32403,
             format!("wave_report: forbidden: {msg}"),

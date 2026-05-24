@@ -1952,6 +1952,89 @@
         }
       }
     },
+    "/api/waves/{id}/report": {
+      "post": {
+        "tags": [
+          "waves"
+        ],
+        "summary": "`POST /api/waves/:id/report` — user-driven wave-report edit. The\nREST-side counterpart of the spec-MCP `calm.report.write` tool;\nboth paths funnel through [`crate::wave_report::persist_report`]\nso the dual-event invariant (`CardUpdated` + `WaveReportEdited`)\nand the CRDT write happen identically regardless of who's editing.",
+        "description": "**Auth contract** (issue #247 PR3 acceptance):\n\n  * No session cookie → 401 (`auth::require_session` middleware\n    short-circuits before this handler runs).\n  * Authenticated session BUT non-user actor declared via\n    `X-Calm-Actor` (worker / `ai:*` / etc.) → 403. Only\n    [`ActorId::User`] is allowed. This closes the \"spec card's\n    own session cookie forwards a User edit\" hole — a future\n    surface that lets the spec card hold a session must not be\n    able to bypass the User-only contract by claiming `ai:codex`.\n  * Wave doesn't exist → 404.\n  * Wave exists but the wave-report card is missing → 500\n    (invariant violation; PR1 backfill guarantees the row).\n\nThe response is the *projected* [`WaveReportPayload`] read back\nfrom the CRDT post-merge — not the request body verbatim — so the\nfrontend sees what every other reader will see (the JSON cache\nmirrors the CRDT projection, which under single-writer is the\nsame bytes as the input, but reading from the doc keeps the\n\"CRDT is source of truth\" contract true by construction).",
+        "operationId": "update_wave_report",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Wave id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateWaveReportBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Updated wave-report payload",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaveReportPayload"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Non-user actor (worker / plugin / spec) rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Wave not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error (incl. missing report-card invariant)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/waves/{wave_id}/cards": {
       "get": {
         "tags": [
@@ -3194,6 +3277,25 @@
             "type": "string"
           }
         }
+      },
+      "UpdateWaveReportBody": {
+        "type": "object",
+        "description": "Request body for `POST /api/waves/:id/report`.\n\nBoth fields are required `String`s (per `WaveReportPayload`'s\n[[required-over-option]] rule). An empty `summary` is a valid\nvalue; the caller must commit to *some* string.\n\n**No `author` field.** Author is derived server-side from the\nauthenticated session and pinned to [`EditAuthor::User`] for this\nendpoint — accepting one on the wire would let a User forge\n`EditAuthor::Spec` and make a hand-typed edit look like the AI\ndid it. Even if a client serializes an `author` key the handler\nignores it (serde `deny_unknown_fields` would 400 it; this is the\nstricter contract that closes the spoofing risk by construction).\n\n`schemaVersion` is also intentionally absent — it's a server-managed\ninvariant pinned to [`WaveReportPayload::SCHEMA_VERSION`] and the\nprojected payload returned in the response reasserts the current\nversion. Letting clients write the version field would invite\nsilent shape drift the first time someone forgot to update both\nsides.",
+        "required": [
+          "summary",
+          "body"
+        ],
+        "properties": {
+          "body": {
+            "type": "string",
+            "description": "Markdown source. Sections are derived at render time by\nsplitting at H1 (`^# `) headings; the kernel does not interpret\nthe structure."
+          },
+          "summary": {
+            "type": "string",
+            "description": "One-line summary the wave-list sidebars surface. Empty string\nis a valid value; the caller must commit."
+          }
+        },
+        "additionalProperties": false
       },
       "VersionInfo": {
         "type": "object",

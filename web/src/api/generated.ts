@@ -484,6 +484,49 @@ export interface paths {
         patch: operations["update_wave"];
         trace?: never;
     };
+    "/api/waves/{id}/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/waves/:id/report` — user-driven wave-report edit. The
+         *     REST-side counterpart of the spec-MCP `calm.report.write` tool;
+         *     both paths funnel through [`crate::wave_report::persist_report`]
+         *     so the dual-event invariant (`CardUpdated` + `WaveReportEdited`)
+         *     and the CRDT write happen identically regardless of who's editing.
+         * @description **Auth contract** (issue #247 PR3 acceptance):
+         *
+         *       * No session cookie → 401 (`auth::require_session` middleware
+         *         short-circuits before this handler runs).
+         *       * Authenticated session BUT non-user actor declared via
+         *         `X-Calm-Actor` (worker / `ai:*` / etc.) → 403. Only
+         *         [`ActorId::User`] is allowed. This closes the "spec card's
+         *         own session cookie forwards a User edit" hole — a future
+         *         surface that lets the spec card hold a session must not be
+         *         able to bypass the User-only contract by claiming `ai:codex`.
+         *       * Wave doesn't exist → 404.
+         *       * Wave exists but the wave-report card is missing → 500
+         *         (invariant violation; PR1 backfill guarantees the row).
+         *
+         *     The response is the *projected* [`WaveReportPayload`] read back
+         *     from the CRDT post-merge — not the request body verbatim — so the
+         *     frontend sees what every other reader will see (the JSON cache
+         *     mirrors the CRDT projection, which under single-writer is the
+         *     same bytes as the input, but reading from the doc keeps the
+         *     "CRDT is source of truth" contract true by construction).
+         */
+        post: operations["update_wave_report"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/waves/{wave_id}/cards": {
         parameters: {
             query?: never;
@@ -1134,6 +1177,41 @@ export interface components {
              */
             call_id?: string | null;
             name: string;
+        };
+        /**
+         * @description Request body for `POST /api/waves/:id/report`.
+         *
+         *     Both fields are required `String`s (per `WaveReportPayload`'s
+         *     [[required-over-option]] rule). An empty `summary` is a valid
+         *     value; the caller must commit to *some* string.
+         *
+         *     **No `author` field.** Author is derived server-side from the
+         *     authenticated session and pinned to [`EditAuthor::User`] for this
+         *     endpoint — accepting one on the wire would let a User forge
+         *     `EditAuthor::Spec` and make a hand-typed edit look like the AI
+         *     did it. Even if a client serializes an `author` key the handler
+         *     ignores it (serde `deny_unknown_fields` would 400 it; this is the
+         *     stricter contract that closes the spoofing risk by construction).
+         *
+         *     `schemaVersion` is also intentionally absent — it's a server-managed
+         *     invariant pinned to [`WaveReportPayload::SCHEMA_VERSION`] and the
+         *     projected payload returned in the response reasserts the current
+         *     version. Letting clients write the version field would invite
+         *     silent shape drift the first time someone forgot to update both
+         *     sides.
+         */
+        UpdateWaveReportBody: {
+            /**
+             * @description Markdown source. Sections are derived at render time by
+             *     splitting at H1 (`^# `) headings; the kernel does not interpret
+             *     the structure.
+             */
+            body: string;
+            /**
+             * @description One-line summary the wave-list sidebars surface. Empty string
+             *     is a valid value; the caller must commit.
+             */
+            summary: string;
         };
         /**
          * @description Response shape for `GET /api/version`. camelCase on the wire so it lines
@@ -2939,6 +3017,69 @@ export interface operations {
                 };
             };
             /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_wave_report: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Wave id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateWaveReportBody"];
+            };
+        };
+        responses: {
+            /** @description Updated wave-report payload */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaveReportPayload"];
+                };
+            };
+            /** @description Missing or invalid session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Non-user actor (worker / plugin / spec) rejected */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Wave not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error (incl. missing report-card invariant) */
             500: {
                 headers: {
                     [name: string]: unknown;
