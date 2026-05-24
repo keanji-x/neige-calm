@@ -359,6 +359,13 @@ export class EventStream {
       // next reconnect comes up cold under `since=0` and picks up the
       // fresh log from the start.
       //
+      // Limitation: this only fires on a fresh socket's
+      // `_replay_complete`. A reset that happens while the WS stays
+      // open (no bounce) goes undetected until the next reconnect —
+      // there's no in-place server-side signal. Tests that call
+      // `resetReplayServer()` without page reload / WS close therefore
+      // see stale state until the socket cycles.
+      //
       // Tolerate non-numeric / missing `_id` (synthetic test bus
       // emissions and legacy frames) by falling back to the no-op
       // path below — the regression check needs a real number to be
@@ -379,6 +386,13 @@ export class EventStream {
         // Bounce the socket so the next reconnect comes up cold with
         // `since=0`. The close handler will surface `connecting` and
         // schedule the reconnect via the normal backoff path.
+        //
+        // Race: between `close()` and the `close` event firing, an
+        // already-queued post-reset live frame could advance the
+        // freshly-cleared cursor. Recovery is the `qc.clear()` the
+        // `_snapshot_required` listener (fired just above) runs in the
+        // bridge — that drops the stale cache + forces a REST refetch,
+        // so even a wrongly-advanced cursor doesn't poison the view.
         this.ws?.close();
         return;
       }

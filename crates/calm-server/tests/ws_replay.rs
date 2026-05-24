@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use calm_server::db::sqlite::{SqlxRepo, cove_create_tx, overlay_upsert_tx};
-use calm_server::db::{Repo, write_with_event_typed};
+use calm_server::db::{Repo, RepoEventWrite, write_with_event_typed};
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::ActorId;
 use calm_server::model::{NewCove, NewOverlay};
@@ -531,6 +531,235 @@ async fn replay_skips_future_schema_version_overlay_set() {
         done["_id"], future_id,
         "cursor must advance past the dropped row so the client never re-polls it"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 8. Issue #290 — after a `/dev/reset` reseed (events wiped + `sqlite_sequence`
+//    wiped → reseeded events restart at id=1), a fresh WS subscription's
+//    `_replay_complete._id` reflects the SERVER'S NEW LOG TIP, not 0 and not
+//    the pre-reset high-water mark. This is the server-side invariant the
+//    client-side reset detection in `web/src/api/events.ts` relies on:
+//    without it, a stale client cursor (e.g. id=3 from a pre-reset session)
+//    would see the post-reset terminator carry `_id = 3` (the in-window
+//    high-water from the empty `since=3` SELECT) and never trigger the
+//    "server regressed" branch.
+//
+// Pre-PR-303 behavior: `_replay_complete._id` was the in-window high-water
+// (= `since` when no rows matched). This test would have failed there with
+// `_id = since = 0` instead of the post-reset `MAX(id) = 1`.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn replay_complete_id_reflects_server_tip_after_reset() {
+    let (addr, repo, bus) = boot().await;
+
+    // Pre-reset: seed three events, then drop in two more so the tip is
+    // id=5. We need pre-reset tip strictly greater than post-reset tip so
+    // the regression check below ("post-reset tip below pre-reset tip")
+    // is meaningful — the post-reset reseed only writes two rows.
+    let seeded = seed_three(&repo, &bus, ["pre-1", "pre-2", "pre-3"]).await;
+    let extra1 = repo
+        .log_pure_event(
+            calm_server::ids::ActorId::User,
+            calm_server::event::EventScope::System,
+            None,
+            &bus,
+            &calm_server::card_role_cache::CardRoleCache::new(),
+            &calm_server::wave_cove_cache::WaveCoveCache::new(),
+            Event::CoveUpdated(calm_server::model::Cove {
+                id: "pre-4".into(),
+                name: "n".into(),
+                color: "#000".into(),
+                sort: 0.0,
+                kind: calm_server::model::CoveKind::User,
+                created_at: 0,
+                updated_at: 0,
+            }),
+        )
+        .await
+        .unwrap();
+    let extra2 = repo
+        .log_pure_event(
+            calm_server::ids::ActorId::User,
+            calm_server::event::EventScope::System,
+            None,
+            &bus,
+            &calm_server::card_role_cache::CardRoleCache::new(),
+            &calm_server::wave_cove_cache::WaveCoveCache::new(),
+            Event::CoveUpdated(calm_server::model::Cove {
+                id: "pre-5".into(),
+                name: "n".into(),
+                color: "#000".into(),
+                sort: 0.0,
+                kind: calm_server::model::CoveKind::User,
+                created_at: 0,
+                updated_at: 0,
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(extra1, seeded[2].0 + 1);
+    assert_eq!(extra2, extra1 + 1);
+    let pre_reset_tip = extra2;
+    {
+        let url = format!("ws://{}/api/events", addr);
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        ws.send(TMessage::Text(r#"{"sub":["*"], "since": 0}"#.to_string()))
+            .await
+            .unwrap();
+        // Drain replay frames until we hit the terminator.
+        loop {
+            let v = recv_json(&mut ws).await;
+            if v["ev"] == "_replay_complete" {
+                assert_eq!(
+                    v["_id"], pre_reset_tip,
+                    "pre-reset _replay_complete._id matches MAX(id) of seeded events"
+                );
+                break;
+            }
+        }
+        // Drop the socket; the next subscription is FRESH and will see
+        // the post-reset state.
+    }
+
+    // Simulate `replay::reset_from_fixture`'s structural wipe: drop every
+    // domain row + the event log + `sqlite_sequence` so AUTOINCREMENT
+    // restarts at 1. We bypass the high-level helper because this test
+    // doesn't have a fixture wired up — the invariant under test is on
+    // the `events_latest_id()` + WS terminator path, not on fixture
+    // reseed semantics (which `replay_fixtures::reset_from_fixture_wipes_and_reseeds`
+    // already covers).
+    {
+        let pool = repo.pool();
+        let mut tx = pool.begin().await.unwrap();
+        for stmt in [
+            "DELETE FROM events",
+            "DELETE FROM overlays",
+            "DELETE FROM terminals",
+            "DELETE FROM cards",
+            "DELETE FROM waves",
+            "DELETE FROM coves",
+            "DELETE FROM plugin_kv",
+            "DELETE FROM plugin_tokens",
+            "DELETE FROM plugins",
+            "DELETE FROM settings",
+            "DELETE FROM sqlite_sequence",
+        ] {
+            sqlx::query(stmt).execute(&mut *tx).await.unwrap();
+        }
+        tx.commit().await.unwrap();
+    }
+
+    // Reseed two events through the normal eventized write path. Because
+    // `sqlite_sequence` was wiped, the first row lands at id=1 — the
+    // fresh log tip a post-reset cold-boot client would see. We use only
+    // two events (not five) so the post-reset tip is well below the
+    // pre-reset tip and the regression invariant is observable.
+    let post1 = repo
+        .log_pure_event(
+            calm_server::ids::ActorId::User,
+            calm_server::event::EventScope::System,
+            None,
+            &bus,
+            &calm_server::card_role_cache::CardRoleCache::new(),
+            &calm_server::wave_cove_cache::WaveCoveCache::new(),
+            Event::CoveUpdated(calm_server::model::Cove {
+                id: "post-1".into(),
+                name: "n".into(),
+                color: "#000".into(),
+                sort: 0.0,
+                kind: calm_server::model::CoveKind::User,
+                created_at: 0,
+                updated_at: 0,
+            }),
+        )
+        .await
+        .unwrap();
+    let post2 = repo
+        .log_pure_event(
+            calm_server::ids::ActorId::User,
+            calm_server::event::EventScope::System,
+            None,
+            &bus,
+            &calm_server::card_role_cache::CardRoleCache::new(),
+            &calm_server::wave_cove_cache::WaveCoveCache::new(),
+            Event::CoveUpdated(calm_server::model::Cove {
+                id: "post-2".into(),
+                name: "n".into(),
+                color: "#000".into(),
+                sort: 0.0,
+                kind: calm_server::model::CoveKind::User,
+                created_at: 0,
+                updated_at: 0,
+            }),
+        )
+        .await
+        .unwrap();
+    let post_reset_tip = post2;
+    assert_eq!(
+        post1, 1,
+        "sqlite_sequence reset → first reseeded event lands at id=1"
+    );
+    assert_eq!(
+        post_reset_tip, 2,
+        "two reseeded events → tip id=2, well below pre-reset tip=5"
+    );
+    assert!(
+        post_reset_tip < pre_reset_tip,
+        "post-reset tip ({post_reset_tip}) must be below pre-reset tip ({pre_reset_tip}) — this is the regression the client detects"
+    );
+
+    // Crown jewel: FRESH WS subscription with `since = pre_reset_tip`. This
+    // simulates a client whose persisted cursor predates the reset — exactly
+    // the case the client-side reset detection in `web/src/api/events.ts`
+    // needs to fire on. The `events_since(pre_reset_tip, _)` query returns
+    // ZERO rows because every reseeded event has `id <= post_reset_tip <
+    // pre_reset_tip`. Pre-PR-303, the terminator stamped `last_id` (which
+    // remained at `since` when zero rows matched), so the client saw
+    // `_replay_complete._id = pre_reset_tip` and couldn't tell anything
+    // had changed. Post-PR-303, the terminator stamps `events_latest_id()`
+    // = `post_reset_tip`, which the client compares against its persisted
+    // cursor (`pre_reset_tip`) and triggers the reset re-bootstrap.
+    let url = format!("ws://{}/api/events", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    ws.send(TMessage::Text(format!(
+        r#"{{"sub":["*"], "since": {}}}"#,
+        pre_reset_tip
+    )))
+    .await
+    .unwrap();
+    let frame = recv_json(&mut ws).await;
+    assert_eq!(
+        frame["ev"], "_replay_complete",
+        "stale-cursor subscription returns zero rows → terminator is the first frame"
+    );
+    assert_eq!(
+        frame["_id"], post_reset_tip,
+        "post-reset _replay_complete._id must equal events.MAX(id) = {post_reset_tip}, \
+         NOT the pre-PR-303 in-window high-water (which equaled `since` = {pre_reset_tip})"
+    );
+    assert!(
+        frame["_id"].as_i64().unwrap() < pre_reset_tip,
+        "terminator id must be below the client's stale cursor — this is the regression signal"
+    );
+
+    // Belt-and-suspenders: also confirm a cold-boot `since=0` client sees
+    // the same tip (catches a regression where the two `events_latest_id()`
+    // call sites diverge).
+    let (mut ws2, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    ws2.send(TMessage::Text(r#"{"sub":["*"], "since": 0}"#.to_string()))
+        .await
+        .unwrap();
+    loop {
+        let v = recv_json(&mut ws2).await;
+        if v["ev"] == "_replay_complete" {
+            assert_eq!(
+                v["_id"], post_reset_tip,
+                "cold-boot terminator also carries the post-reset tip"
+            );
+            break;
+        }
+    }
 }
 
 #[tokio::test]
