@@ -199,6 +199,15 @@ export function XtermView({
   const [protocolError, setProtocolError] = useState<ProtocolError | null>(null);
   const [exitInfo, setExitInfo] = useState<ExitInfo | null>(null);
   void exitInfo;
+  // #306 — live mirror of `exitInfo` for the `ws.onclose` handler. The
+  // close-frame backstop below must NOT fire when a prior
+  // `TerminalExited` JSON frame already delivered the real exit code
+  // (typically 137 / signal-encoded). The setState `setExitInfo` above
+  // is asynchronous, so reading `exitInfo` directly from the closure
+  // would still see `null` on the very next tick. The ref keeps a
+  // synchronously-current copy so the close handler can branch on
+  // "already delivered? skip the backstop".
+  const exitInfoRef = useRef<ExitInfo | null>(null);
   // Role lives entirely in the parent now (via `onRoleChange`) so the badge
   // can sit in `<CardHead>`'s status slot instead of overlaying the terminal.
   // We capture the latest callback into a ref so the heavy bridge-mount
@@ -574,6 +583,7 @@ export function XtermView({
       }
       if ('TerminalExited' in msg) {
         const t = msg.TerminalExited;
+        exitInfoRef.current = { code: t.code };
         setExitInfo({ code: t.code });
         setStatus('exited');
         // #306 — fire `onExitChange` so the parent renders the header
@@ -601,6 +611,7 @@ export function XtermView({
         // XtermView today (it lives on a separate card builtin) but
         // forwards-compatibility against a stray frame is cheap.
         const c = msg.ChildExited;
+        exitInfoRef.current = { code: c.code };
         setExitInfo({ code: c.code });
         setStatus('exited');
         onExitChangeRef.current?.({
@@ -671,12 +682,18 @@ export function XtermView({
         if (isChildExitClose) return 'exited';
         return 'closed';
       });
-      // #306 — idempotent backstop for the parent's exit badge. If the
-      // `TerminalExited` JSON frame already fired `onExitChange`, this
-      // is a no-op state-equality on the parent side; if it didn't
-      // (slow link, daemon EOF'd before the frame landed), this fires
-      // with code=null and the parent renders an unknown-code badge.
-      if (isChildExitClose) {
+      // #306 — backstop for the parent's exit badge. Fires ONLY when no
+      // prior `TerminalExited` / `ChildExited` JSON frame already
+      // delivered an exit code on this connection. The parent's
+      // `onExitChange` callback (terminal.tsx) is a plain setState
+      // with no dedupe / no "fill-if-null" semantic, so firing
+      // unconditionally here would clobber a live `{exit_code: 137,…}`
+      // back to `{exit_code: null,…}` on the normal happy path
+      // (TerminalExited frame followed by code-1000 child-exited
+      // close). The `exitInfoRef` mirror tracks the latest JSON-frame
+      // delivery synchronously so this gate is race-free against the
+      // setState in the JSON branches above.
+      if (isChildExitClose && exitInfoRef.current === null) {
         onExitChangeRef.current?.({
           exit_code: null,
           signal_killed: false,
@@ -791,6 +808,16 @@ export function XtermView({
     // WebSocket / Terminal. The sibling effect above mutates
     // `term.options.theme` in place. `latestThemeRef` captures the current
     // value for the initial constructor.
+    //
+    // `status` intentionally omitted — adding it would trigger
+    // `term.dispose()` on close (any status transition would re-run this
+    // effect's cleanup) and erase the buffer. #306's UX contract is
+    // warp-style hold-on-close: the buffer must stay visible after exit
+    // so the user can scroll back / copy output, and the header badge
+    // (rendered by the parent off `onExitChange`) is the only signal
+    // that the child is gone. The `setStatus` calls inside the WS
+    // handlers above feed the local protocol-error overlay branch only
+    // — they intentionally don't re-arm this effect.
   }, [terminalId, reconnectKey]);
 
   return (
