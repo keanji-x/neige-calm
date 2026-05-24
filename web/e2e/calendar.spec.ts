@@ -33,6 +33,36 @@ if (CALENDAR_BASE) {
   test.use({ baseURL: CALENDAR_BASE });
 }
 
+// Coves seeded by each test get tracked here so the afterEach hook can
+// `DELETE /api/coves/<id>` them and not leak state into specs that run
+// after this one alphabetically. Without cleanup, golden-path.spec.ts
+// (which asserts the sidebar has zero user coves before it mints its
+// own) fails because the two cal-A/cal-B coves seeded below survive
+// into its run. `DELETE /api/coves/:id` cascades through
+// waves → cards → terminals (see `delete_cove` in
+// crates/calm-server/src/routes/coves.rs), so a single delete per cove
+// is enough to drop the wave + cove_folders row this spec attaches.
+const createdCoveIds: string[] = [];
+
+test.beforeEach(() => {
+  createdCoveIds.length = 0;
+});
+
+test.afterEach(async ({ request }) => {
+  for (const id of createdCoveIds) {
+    // 404 is fine (test may have failed before seeding, or a previous
+    // cleanup pass already nuked it); anything else surfaces so we
+    // catch a regression in the delete-cove contract early.
+    const res = await request.delete(`/api/coves/${id}`);
+    if (!res.ok() && res.status() !== 404) {
+      throw new Error(
+        `cleanup: DELETE /api/coves/${id} → ${res.status()} ${res.statusText()}`,
+      );
+    }
+  }
+  createdCoveIds.length = 0;
+});
+
 test('/calendar shows coloured continuation bars and navigates on click', async ({
   page,
 }) => {
@@ -46,6 +76,7 @@ test('/calendar shows coloured continuation bars and navigates on click', async 
   });
   expect(coveARes.ok()).toBeTruthy();
   const coveA = (await coveARes.json()) as { id: string };
+  createdCoveIds.push(coveA.id);
 
   const coveBRes = await page.request.post('/api/coves', {
     data: { name: `E2E cal-B ${ts}`, color: coveBBlue },
@@ -53,6 +84,7 @@ test('/calendar shows coloured continuation bars and navigates on click', async 
   });
   expect(coveBRes.ok()).toBeTruthy();
   const coveB = (await coveBRes.json()) as { id: string };
+  createdCoveIds.push(coveB.id);
 
   // Wave A — cwd under cove A. The server's wave-create requires the
   // cove to claim the cwd; we opt into `attach_folder: true` so the
