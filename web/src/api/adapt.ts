@@ -45,8 +45,12 @@ export function coveSummary(waves: Wave[]): string {
  *   - `"progress"` payload: `{ value: number }`  (0..1)
  *   - `"eta"`      payload: `{ text: string }`
  *   - `"now"`      payload: `{ text: string }`
+ *   - `"any_card_needs_input"` payload: `{ value: boolean }` (issue #254 —
+ *     written by the kernel `card_fsm` projector; OR'd with lifecycle at
+ *     `shared/lifecycle.ts::waveNeedsUserAttention` for the sidebar
+ *     "Waiting on you" grouping).
  *
- * Anything else is ignored. Wave-level state lives on the
+ * Anything else is ignored. Wave-level lifecycle lives on the
  * `WaveLifecycle` field stamped on the kernel `Wave` row — not on
  * overlays — so this adapter does NOT read `kind:"status"` for waves.
  * The per-card FSM still writes card-scoped status overlays, which the
@@ -60,6 +64,7 @@ export function adaptWave(k: KernelWave, overlays: KernelOverlay[] = []): Wave {
   let progress = 0;
   let eta = '';
   let now = '';
+  let anyCardNeedsInput = false;
 
   for (const o of overlays) {
     if (o.entity_kind !== 'wave' || o.entity_id !== k.id) continue;
@@ -71,6 +76,8 @@ export function adaptWave(k: KernelWave, overlays: KernelOverlay[] = []): Wave {
       eta = p.text;
     } else if (o.kind === 'now' && typeof p.text === 'string') {
       now = p.text;
+    } else if (o.kind === 'any_card_needs_input' && typeof p.value === 'boolean') {
+      anyCardNeedsInput = p.value;
     }
   }
 
@@ -83,6 +90,7 @@ export function adaptWave(k: KernelWave, overlays: KernelOverlay[] = []): Wave {
     // Agent). Wire payloads from pre-#145 servers may omit the field;
     // mirror the zod schema's default and fall back to 'draft'.
     lifecycle: (k.lifecycle as WaveLifecycle | undefined) ?? 'draft',
+    anyCardNeedsInput,
     progress,
     eta,
     now,

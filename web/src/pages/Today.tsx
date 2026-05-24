@@ -3,7 +3,7 @@ import { useState } from '../shared/state';
 import { coveOf } from '../shared/components/helpers';
 import { useTheme } from '../app/theme';
 import { CardHead } from '../cards/CardHead';
-import { isRunning, isWaitingForUser } from '../shared/lifecycle';
+import { isRunning, waveNeedsUserAttention } from '../shared/lifecycle';
 import type { Cove, Route, Wave } from '../types';
 
 // xterm.js is heavy and only mounts when the Today home panel resolves a
@@ -222,7 +222,9 @@ function TodayClock({ waves }: { waves: Wave[] }) {
   const weekday = now.toLocaleDateString('en-US', { weekday: 'long' });
 
   const runningCount = waves.filter((w) => isRunning(w.lifecycle)).length;
-  const waitingCount = waves.filter((w) => isWaitingForUser(w.lifecycle)).length;
+  // Issue #254 — same OR'd predicate as the Sidebar's "Waiting on you"
+  // section so the two surfaces agree on what counts.
+  const waitingCount = waves.filter((w) => waveNeedsUserAttention(w)).length;
 
   return (
     <header className="today-clock">
@@ -324,7 +326,10 @@ function CalendarCard({
         {agenda.length === 0 && <div className="cal-empty">Nothing scheduled.</div>}
         {agenda.map((e, i) => {
           const c = coveOf(e.wave.coveId, coves);
-          const isWaiting = isWaitingForUser(e.wave.lifecycle);
+          // Issue #254 — calendar event chip uses the same predicate as
+          // the sidebar / today clock so the visual "waiting on you"
+          // treatment is consistent across the page.
+          const isWaiting = waveNeedsUserAttention(e.wave);
           const eventRunning = isRunning(e.wave.lifecycle);
           return (
             <button

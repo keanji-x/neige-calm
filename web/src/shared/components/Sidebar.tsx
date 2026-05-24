@@ -2,7 +2,7 @@ import { useRef } from 'react';
 import { useState } from '../state';
 import { Menu, type MenuItem } from '../../ui/Menu/Menu';
 import type { Cove, Route, Wave } from '../../types';
-import { isRunning, isWaitingForUser } from '../lifecycle';
+import { isRunning, waveNeedsUserAttention } from '../lifecycle';
 
 // ---------------- Sidebar ----------------
 
@@ -31,7 +31,12 @@ export function Sidebar({
    *  the sidebar without a router don't have to wire it up. */
   onSignOut?: () => void;
 }) {
-  const waitingWaves = waves.filter((w) => isWaitingForUser(w.lifecycle));
+  // Issue #254 — OR'd predicate: lifecycle ∪ kernel-card-FSM. Catches
+  // both "Spec Agent said blocked/reviewing/failed" AND "a worker card
+  // hit an AwaitingInput/Errored hook before Spec Agent could drive
+  // lifecycle". The latter is the regression hole #248's deletion of
+  // the wave-level FSM union left open.
+  const waitingWaves = waves.filter((w) => waveNeedsUserAttention(w));
   // Sub-landmarks inside the outer <aside aria-label="Navigation">:
   //   <nav aria-label="Sidebar navigation">  → Today button
   //   <section aria-label="Waiting on you">  → side-wave rows (when any)
@@ -84,7 +89,9 @@ export function Sidebar({
         {coves.map((cove) => {
           const cw = waves.filter((w) => w.coveId === cove.id);
           const running = cw.filter((w) => isRunning(w.lifecycle)).length;
-          const waiting = cw.filter((w) => isWaitingForUser(w.lifecycle)).length;
+          // Match the top-of-sidebar "Waiting on you" predicate so the
+          // per-cove pip count and the top-section row count agree.
+          const waiting = cw.filter((w) => waveNeedsUserAttention(w)).length;
           const active = route.name === 'cove' && route.coveId === cove.id;
           return (
             <button

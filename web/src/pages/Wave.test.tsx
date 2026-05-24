@@ -77,6 +77,7 @@ function makeWave(overrides: Partial<Wave> = {}): Wave {
     coveId: 'c1',
     title: 'Migrate auth',
     lifecycle: 'draft',
+    anyCardNeedsInput: false,
     progress: 0,
     eta: '',
     now: '',
