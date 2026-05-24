@@ -214,6 +214,7 @@ export interface Wave {
 
 export type Route =
   | { name: 'today' }
+  | { name: 'calendar' }
   | { name: 'cove'; coveId: string }
   | { name: 'wave'; id: string }
   | { name: 'settings' };

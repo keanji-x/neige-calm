@@ -249,6 +249,25 @@ function dispatch(qc: QueryClient, ev: WireEvent): void {
       const { id, cove_id } = ev.data;
       void qc.invalidateQueries({ queryKey: queryKeys.wavesInCove(cove_id) });
       void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(id) });
+      // Issue #250 PR 5 — the calendar's window query (`waves-range`)
+      // mirrors the same rows the cove-scoped list does; any wave
+      // mutation could shift its starting day, terminal day, title,
+      // or owning cove, so every cached window needs to redraw.
+      void qc.invalidateQueries({ queryKey: ['waves-range'] });
+      return;
+    }
+    case 'wave.lifecycle_changed': {
+      // Issue #145 — kernel fires this alongside `wave.updated` whenever
+      // the lifecycle column flips. We piggyback on the wave.updated case
+      // body for the cove/detail invalidations, but the calendar (issue
+      // #250 PR 5) cares specifically about lifecycle: a `working → done`
+      // transition stamps `terminal_at`, which shortens the wave's
+      // continuation bar on the grid. Invalidate the same calendar key
+      // here so the redraw doesn't wait for the sibling wave.updated.
+      const { id, cove_id } = ev.data;
+      void qc.invalidateQueries({ queryKey: queryKeys.wavesInCove(cove_id) });
+      void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(id) });
+      void qc.invalidateQueries({ queryKey: ['waves-range'] });
       return;
     }
     case 'wave.deleted': {
@@ -258,6 +277,17 @@ function dispatch(qc: QueryClient, ev: WireEvent): void {
       // Kernel doesn't guarantee an overlay.deleted cascade per orphaned
       // overlay; refresh the global snapshot so stale entries vanish.
       void qc.invalidateQueries({ queryKey: queryKeys.overlaysByKind('wave') });
+      // Calendar window depends on the wave row; drop it from every
+      // cached week immediately.
+      void qc.invalidateQueries({ queryKey: ['waves-range'] });
+      return;
+    }
+    case 'terminal.deleted': {
+      // Emitted by the orphan-terminal sweeper. The UI's calendar /
+      // sidebar / wave-list views don't read terminal rows directly, so
+      // there's nothing to invalidate here. Arm exists for switch
+      // exhaustiveness — the previous (silent) fallthrough would let a
+      // future relevant projection slip past tsc.
       return;
     }
     case 'card.added':
