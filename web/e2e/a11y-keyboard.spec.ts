@@ -204,12 +204,23 @@ test.describe('a11y · keyboard-only navigation', () => {
     await expect(page.getByRole('heading', { name: /atlas/i })).toBeVisible();
   });
 
-  // Skipped until #250 PR 3: the cove-page "+ New wave" CTA is
-  // disabled in this PR (compose-bar would post cwd='' and get 400).
-  // PR 3 introduces NewTaskForm and PR 4 wires it back in, at which
-  // point an equivalent keyboard-creates-a-wave assertion belongs on
-  // that new flow.
-  test.skip('Cove → New wave via keyboard creates a wave', async ({ page }) => {
+  // Issue #250 PR 3 — keyboard-driven wave creation through NewTaskForm.
+  // The cove-page "+ New wave" CTA expands inline into the shared
+  // configuration card (task description + cwd + cove inference); the
+  // legacy single-line title input is gone (replaced by the full form
+  // per the issue's "all creation entrypoints must go through the
+  // same configuration card" comment).
+  //
+  // Keyboard contract exercised here:
+  //   - Tab lands on the "+ New wave" CTA.
+  //   - Enter expands it into the form; focus auto-lands on the task
+  //     description textarea (NewTaskForm's useEffect → focus).
+  //   - Tab from there reaches the cwd input.
+  //   - Enter on the cwd input submits (the form binds Enter-to-submit
+  //     specifically on cwd; the title textarea preserves Enter for
+  //     newlines, per the form's design).
+  //   - Successful submit navigates to /calm/wave/<id>.
+  test('Cove → New wave via keyboard creates a wave', async ({ page }) => {
     // First land on the cove page via keyboard (same path as above).
     await tabUntil(page, (info) => info.name?.toLowerCase().includes('atlas') === true);
     await page.keyboard.press('Enter');
@@ -218,24 +229,43 @@ test.describe('a11y · keyboard-only navigation', () => {
     // Tab to the "+ New wave" CTA. Its accessible name comes from the
     // button text (no aria-label); the title attribute is "New wave".
     await tabUntil(page, (info) => /new wave/i.test(info.name ?? ''));
-    // Enter opens the inline compose form (a single text input).
+    // Enter expands the CTA into the inline NewTaskForm.
     await page.keyboard.press('Enter');
 
-    // The compose form auto-focuses the input on open — see CovePage.tsx
-    // `openForm` → queueMicrotask(focus). Confirm rather than assume.
-    const input = page.getByLabel(/new wave title/i);
-    await expect(input).toBeFocused();
+    // The form auto-focuses its task description textarea on mount
+    // (see NewTaskForm.tsx `useEffect → queueMicrotask(focus)`).
+    const descriptionInput = page.getByLabel(/task description/i);
+    await expect(descriptionInput).toBeFocused();
 
-    // Type the title with `keyboard.type` so we stay on the keyboard-only
-    // path. `.fill()` would set the value via the DOM API and skip the
-    // input handlers we want to exercise.
+    // Type the description. Avoid Enter here — it would insert a
+    // newline (the textarea is multi-line).
     const title = `a11y wave ${Date.now()}`;
     await page.keyboard.type(title);
+
+    // Tab to the cwd input. The cove section between cwd and the
+    // actions isn't a direct keyboard-focusable target on first
+    // paint (we're still in the resolve-debounce window) so a single
+    // Tab from the textarea lands the cwd input.
+    await page.keyboard.press('Tab');
+    const cwdInput = page.getByLabel(/working directory/i);
+    await expect(cwdInput).toBeFocused();
+
+    // Unique absolute cwd so concurrent runs / re-runs don't trip
+    // the cove_folders UNIQUE(path) backstop.
+    const cwd = `/tmp/playwright-a11y-${Date.now()}`;
+    await page.keyboard.type(cwd);
+
+    // Enter on the cwd input submits the form. The form's auto-
+    // match-cove path picks the surrounding Atlas cove (CovePage
+    // passes `defaultCoveId={cove.id}`); since no folder claim
+    // covers `cwd`, the submit goes through with
+    // `attach_folder: true`.
     await page.keyboard.press('Enter');
 
-    // The CovePage's onCreateWave handler navigates straight to the new
-    // wave's detail page (router.tsx wires `go({name:'wave',id:...})`).
-    await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
+    // The CovePage's onWaveCreated handler navigates straight to the
+    // new wave's detail page (router.tsx wires
+    // `go({name:'wave',id:...})`).
+    await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/, { timeout: 10_000 });
     await expect(page.getByText(title, { exact: false }).first()).toBeVisible();
 
     // Event-trace contract: the create round-trip emits a wave.updated

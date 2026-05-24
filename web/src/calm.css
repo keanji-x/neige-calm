@@ -1579,6 +1579,125 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 .schema-form-submit { background: var(--text); color: var(--paper); border-color: var(--text); }
 .schema-form-submit:disabled { opacity: 0.5; cursor: not-allowed; }
 
+/* ===== NewTaskForm — #250 PR 3 inline configuration card =====
+   Used by CovePage's `+ New wave` (this PR) and the calendar empty-
+   cell click (PR 6). Per the issue comment "configuration card", this
+   sits inline in the page (not a modal Dialog) so the page footprint
+   stays the same as the CTA it replaces.
+
+   Shape borrows from .schema-form (label / input cadence, action
+   row), but the wrapping panel renders a 1px hairline border + tight
+   inner padding so the form reads as a distinct card slot within the
+   page rather than as flat in-flow content. Heading is small + muted
+   so the surrounding context (the cove title above, the wave list
+   below) stays the primary focal point. */
+.new-task-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-md);
+  padding: var(--space-7) var(--space-8);
+  margin-top: var(--space-6);
+  background: var(--paper);
+}
+.new-task-form > form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.new-task-form-heading {
+  margin: var(--space-0);
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--text-2);
+}
+.new-task-form-label {
+  font-size: var(--text-sm);
+  color: var(--text-2);
+  margin: var(--space-0);
+}
+.new-task-form-required { color: var(--error-text); }
+.new-task-form-input {
+  font: inherit;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-md);
+  background: var(--paper);
+  color: var(--text);
+  width: 100%;
+  box-sizing: border-box;
+}
+.new-task-form-input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+textarea.new-task-form-input { font-family: inherit; resize: vertical; }
+.new-task-form-fielderr {
+  margin: var(--space-0);
+  font-size: var(--text-sm);
+  color: var(--error-text);
+}
+.new-task-form-cove {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.new-task-form-cove-auto {
+  margin: var(--space-0);
+  font-size: var(--text-sm);
+  color: var(--text-2);
+}
+.new-task-form-cove-auto code {
+  font-size: 0.9em;
+}
+.new-task-form-cove-resolving {
+  margin: var(--space-0);
+  font-size: var(--text-sm);
+  color: var(--text-3);
+  font-style: italic;
+}
+.new-task-form-cove-modes {
+  display: flex;
+  gap: var(--space-7);
+  font-size: var(--text-sm);
+}
+.new-task-form-cove-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--text-2);
+  cursor: pointer;
+}
+.new-task-form-err {
+  margin: var(--space-0);
+  font-size: var(--text-sm);
+  color: var(--error-text);
+}
+.new-task-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-4);
+  margin-top: var(--space-2);
+}
+.new-task-form-cancel, .new-task-form-submit {
+  height: 32px;
+  padding: var(--space-0) var(--space-6);
+  border-radius: var(--radius-md);
+  font-size: var(--text-base);
+  border: 1px solid var(--hairline-strong);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.new-task-form-submit {
+  background: var(--text);
+  color: var(--paper);
+  border-color: var(--text);
+}
+.new-task-form-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+
 /* ===== Directory picker (SchemaForm `directory` field type) =====
    Two surfaces:
      - .dirpicker-field   the read-only path button shown inline in the
