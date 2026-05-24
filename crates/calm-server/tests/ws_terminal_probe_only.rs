@@ -317,12 +317,43 @@ async fn ws_upgrade_reads_exit_sidecar_and_persists_exit_code() {
     let (mut ws, _resp) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("upgrade must reach 101");
+
+    // First frame: JSON `TerminalExited { code: Some(0), .. }` so the
+    // browser's live exit-badge state picks up the real code without
+    // waiting on the REST seed (which races the WS upgrade and may
+    // read the row before `persist_exit_sidecar` writes). The frame
+    // shape matches the in-pump path so the client's
+    // `'TerminalExited' in msg` branch handles it.
     let first = tokio::time::timeout(Duration::from_secs(2), ws.next())
+        .await
+        .expect("ws recv (text) timed out")
+        .expect("ws closed before sending TerminalExited")
+        .expect("ws error");
+    match first {
+        TMessage::Text(t) => {
+            let parsed: serde_json::Value = serde_json::from_str(&t)
+                .unwrap_or_else(|e| panic!("parsing JSON failed for {t}: {e}"));
+            let exited = parsed
+                .get("TerminalExited")
+                .unwrap_or_else(|| panic!("expected `TerminalExited` envelope, got {parsed}"));
+            assert_eq!(
+                exited.get("code").and_then(|v| v.as_i64()),
+                Some(0),
+                "expected TerminalExited.code == 0, got {parsed}"
+            );
+        }
+        other => panic!("expected Text(TerminalExited), got {other:?}"),
+    }
+
+    // Second frame: the existing `Close(1000, "child-exited")`. The
+    // pump path and the upgrade-time path now share the
+    // JSON-then-Close shape.
+    let close = tokio::time::timeout(Duration::from_secs(2), ws.next())
         .await
         .expect("ws recv (close) timed out")
         .expect("ws closed without sending Close")
         .expect("ws error");
-    match first {
+    match close {
         TMessage::Close(Some(cf)) => {
             assert_eq!(u16::from(cf.code), 1000);
             assert_eq!(cf.reason.as_ref(), "child-exited");

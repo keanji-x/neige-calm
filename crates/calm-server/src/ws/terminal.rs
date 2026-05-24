@@ -85,10 +85,13 @@ async fn upgrade(
         // Row exists, daemon was spawned, but its socket is now gone:
         // overwhelmingly the "child exited cleanly between row creation
         // and the browser WS attach" race (one-shot worker terminals).
-        // Accept the upgrade and immediately emit Close(1000,
-        // "child-exited") so the JS client renders the "process exited"
-        // overlay instead of "disconnected — 1006".
-        Ok(LiveSock::ChildExited) => ws.on_upgrade(send_child_exited_close).into_response(),
+        // Accept the upgrade and immediately emit (optionally) a JSON
+        // `TerminalExited` frame followed by Close(1000, "child-exited")
+        // so the JS client renders the exit badge with the real code
+        // instead of falling back to "exit" neutral.
+        Ok(LiveSock::ChildExited { exit_code }) => ws
+            .on_upgrade(move |socket| send_child_exited_close(socket, exit_code))
+            .into_response(),
         Err(e) => e.into_response(),
     }
 }
@@ -103,7 +106,15 @@ enum LiveSock {
     /// accepts connections. This is the "one-shot worker child exited
     /// faster than the browser could connect" path — surface a
     /// `child-exited` close to the client instead of a 500.
-    ChildExited,
+    ///
+    /// `exit_code` carries the parsed value from the `<sock>.exit`
+    /// sidecar when one was present and parseable; `None` means either
+    /// no sidecar on disk (SIGKILL'd / DaemonLost) or the sidecar
+    /// carried `code: null` (signal-killed child). The upgrade-time
+    /// fast path uses this to decide whether to emit a JSON
+    /// `TerminalExited` frame before the close — see
+    /// [`send_child_exited_close`].
+    ChildExited { exit_code: Option<i32> },
 }
 
 /// Resolve the socket path for a terminal row.
@@ -141,12 +152,22 @@ struct ExitSidecar {
     signal_killed: bool,
 }
 
-/// #306 — pick up `<sock_path>.exit` and stamp the exit info on the
-/// terminal row. Best-effort: read failure / parse failure / persist
-/// failure all degrade to a single warn-log because the caller is about
-/// to surface `LiveSock::ChildExited` either way, and the worst-case
-/// degraded UX (no badge until next attach) is acceptable.
-async fn persist_exit_sidecar(s: &AppState, terminal_id: &str, sock_handle: &str) {
+/// #306 — pick up `<sock_path>.exit`, stamp the exit info on the
+/// terminal row, and return the parsed payload so the upgrade-time
+/// fast path can also forward it to the WS client.
+///
+/// Best-effort: read failure / parse failure / persist failure all
+/// degrade to a single warn-log because the caller is about to
+/// surface `LiveSock::ChildExited` either way, and the worst-case
+/// degraded UX (no badge until next attach) is acceptable. The
+/// returned `Option<ExitSidecar>` is `Some` iff the file existed and
+/// parsed cleanly — persist-failure still yields `Some` because the
+/// in-memory payload is still good enough to send to the client.
+async fn persist_exit_sidecar(
+    s: &AppState,
+    terminal_id: &str,
+    sock_handle: &str,
+) -> Option<ExitSidecar> {
     let exit_path = format!("{sock_handle}.exit");
     let raw = match std::fs::read_to_string(&exit_path) {
         Ok(s) => s,
@@ -157,7 +178,7 @@ async fn persist_exit_sidecar(s: &AppState, terminal_id: &str, sock_handle: &str
                 path = %exit_path,
                 "no .exit sidecar on disk (daemon may have been killed before writing)",
             );
-            return;
+            return None;
         }
         Err(e) => {
             tracing::warn!(
@@ -166,7 +187,7 @@ async fn persist_exit_sidecar(s: &AppState, terminal_id: &str, sock_handle: &str
                 error = %e,
                 "reading .exit sidecar failed",
             );
-            return;
+            return None;
         }
     };
     let parsed: ExitSidecar = match serde_json::from_str(&raw) {
@@ -178,7 +199,7 @@ async fn persist_exit_sidecar(s: &AppState, terminal_id: &str, sock_handle: &str
                 error = %e,
                 "parsing .exit sidecar failed",
             );
-            return;
+            return None;
         }
     };
     if let Err(e) = s
@@ -199,6 +220,7 @@ async fn persist_exit_sidecar(s: &AppState, terminal_id: &str, sock_handle: &str
             "persisted .exit sidecar to terminal row",
         );
     }
+    Some(parsed)
 }
 
 async fn resolve_live_sock(s: &AppState, id: &str) -> Result<LiveSock> {
@@ -231,9 +253,25 @@ async fn resolve_live_sock(s: &AppState, id: &str) -> Result<LiveSock> {
         // row's exit_code at NULL and surfaces as DaemonLost in v2).
         // We persist the parsed payload onto the terminal row so the
         // REST card view + the badge logic on the frontend can render
-        // immediately, even without ever attaching to a WS.
-        persist_exit_sidecar(s, &term.id, handle).await;
-        return Ok(LiveSock::ChildExited);
+        // immediately, even without ever attaching to a WS. Return the
+        // parsed sidecar to the caller so the upgrade-time fast path
+        // can also forward `exit_code` to the client via a JSON
+        // `TerminalExited` frame — without that, the REST seed and the
+        // WS upgrade race, and a REST-loses race renders "exit"
+        // neutral until the next page refresh.
+        let parsed = persist_exit_sidecar(s, &term.id, handle).await;
+        let exit_code = parsed.and_then(|p| {
+            // Forward the numeric exit code only. Signal-killed
+            // children (`code: None, signal_killed: true`) go through
+            // the close-only path because the wire shape for
+            // `DaemonMsg::TerminalExited` has no signal flag — the
+            // frontend would render `exit` neutral instead of the
+            // correct `signal` (error) palette. The REST seed reads
+            // `signal_killed` straight off the row and renders it
+            // properly; we just don't override it on the WS side.
+            if p.signal_killed { None } else { p.code }
+        });
+        return Ok(LiveSock::ChildExited { exit_code });
     }
     // No daemon_handle: with the spawn-site eager-write this should be
     // rare in practice (only if `cmd.spawn()` itself failed). Treat it
@@ -246,15 +284,61 @@ async fn resolve_live_sock(s: &AppState, id: &str) -> Result<LiveSock> {
         terminal_id = %term.id,
         "terminal has no daemon_handle — treating as clean child exit",
     );
-    Ok(LiveSock::ChildExited)
+    Ok(LiveSock::ChildExited { exit_code: None })
 }
 
-/// Accept the WS upgrade, send a single `Close(1000, "child-exited")`
-/// frame, and drop the socket. The JS client matches on this exact
-/// reason string and renders the "process exited" overlay with a
-/// Restart button — same UX as the `pump`-time path in [`pump`] when
-/// the daemon emits `TerminalExited` / `ChildExited` mid-session.
-async fn send_child_exited_close(mut socket: WebSocket) {
+/// Accept the WS upgrade, optionally send a JSON `TerminalExited`
+/// frame carrying the parsed sidecar exit code, then send a single
+/// `Close(1000, "child-exited")` frame and drop the socket.
+///
+/// The JS client (see `web/src/XtermView.tsx` — `'TerminalExited' in
+/// msg`) matches the same JSON shape the pump path uses when the
+/// daemon emits `TerminalExited` mid-session, so the client wiring is
+/// untouched. `pty_seq` and `render_rev` are pinned to `0` because no
+/// live daemon ever attached on this path — there are no cursors to
+/// confirm, and the client only reads `.code` from this frame.
+///
+/// When `exit_code` is `None` we skip the JSON frame entirely. That
+/// covers two cases: the daemon was SIGKILL'd before writing its
+/// `.exit` sidecar (the future "DaemonLost" surface, today
+/// conflated under `child-exited`), and the signal-killed-child case
+/// (sidecar has `code: null, signal_killed: true`). For both the
+/// frontend's REST seed reads the row directly and renders the
+/// correct palette — emitting a JSON frame with `code: null` would
+/// (incorrectly) clobber `signal_killed` back to false on the live
+/// channel.
+async fn send_child_exited_close(mut socket: WebSocket, exit_code: Option<i32>) {
+    if let Some(code) = exit_code {
+        // Match the on-the-wire shape produced by the pump path:
+        // serde's default external tagging on `DaemonMsg` yields
+        // `{"TerminalExited":{"code":<i32>,"pty_seq":0,"render_rev":0}}`.
+        let msg = DaemonMsg::TerminalExited {
+            code: Some(code),
+            pty_seq: 0,
+            render_rev: 0,
+        };
+        match serde_json::to_string(&msg) {
+            Ok(text) => {
+                if let Err(e) = socket.send(Message::Text(text.into())).await {
+                    tracing::debug!(
+                        error = %e,
+                        "send_child_exited_close: TerminalExited send failed (client may have hung up)",
+                    );
+                    // Fall through to the close attempt anyway — best
+                    // effort; the receive side may still be open.
+                }
+            }
+            Err(e) => {
+                // serde_json on a struct with all primitive fields
+                // can't actually fail, but the result type forces us
+                // to handle it; log and continue with just the close.
+                tracing::warn!(
+                    error = %e,
+                    "send_child_exited_close: serializing TerminalExited failed",
+                );
+            }
+        }
+    }
     let _ = socket
         .send(Message::Close(Some(CloseFrame {
             code: 1000,
@@ -1430,12 +1514,13 @@ mod pump_tests {
         );
     }
 
-    /// `send_child_exited_close` (the upgrade-time race fix) must emit a
-    /// single `Close(1000, "child-exited")` frame and then drop the socket.
+    /// `send_child_exited_close` (the upgrade-time race fix), called
+    /// with `exit_code: None`, must emit a single
+    /// `Close(1000, "child-exited")` frame and then drop the socket.
     /// The browser keys its "process exited" overlay off that exact code +
     /// reason — same wire shape as the in-pump non-framing-skew path.
     #[tokio::test]
-    async fn upgrade_time_child_exited_emits_close_1000() {
+    async fn upgrade_time_child_exited_no_code_emits_close_1000_only() {
         let (outcome_tx, outcome_rx) = tokio::sync::oneshot::channel::<()>();
         let outcome_slot = Arc::new(Mutex::new(Some(outcome_tx)));
         let app = Router::new().route(
@@ -1449,7 +1534,7 @@ mod pump_tests {
                         .take()
                         .expect("route called more than once");
                     upgrade.on_upgrade(move |socket| async move {
-                        super::send_child_exited_close(socket).await;
+                        super::send_child_exited_close(socket, None).await;
                         let _ = outcome_tx.send(());
                     })
                 }
@@ -1478,6 +1563,81 @@ mod pump_tests {
                     CLOSE_REASON_CHILD_EXITED,
                     "expected `child-exited` reason text"
                 );
+            }
+            other => panic!("expected Close(1000, child-exited), got {other:?}"),
+        }
+        let _ = tokio::time::timeout(Duration::from_secs(2), outcome_rx)
+            .await
+            .expect("send_child_exited_close did not return");
+    }
+
+    /// `send_child_exited_close` with `exit_code: Some(_)` must first
+    /// emit a JSON `TerminalExited` text frame carrying that code, then
+    /// the same `Close(1000, "child-exited")` frame. This is the
+    /// upgrade-time fast path's contract with the JS client (see
+    /// `web/src/XtermView.tsx` — `'TerminalExited' in msg` branch).
+    /// Without the JSON frame, the client falls back to the close-
+    /// frame backstop which fires `exit_code: null` and renders the
+    /// badge as "exit" neutral instead of "exit 0" success.
+    #[tokio::test]
+    async fn upgrade_time_child_exited_with_code_emits_terminal_exited_then_close() {
+        let (outcome_tx, outcome_rx) = tokio::sync::oneshot::channel::<()>();
+        let outcome_slot = Arc::new(Mutex::new(Some(outcome_tx)));
+        let app = Router::new().route(
+            "/exit",
+            get(move |upgrade: WebSocketUpgrade| {
+                let outcome_slot = outcome_slot.clone();
+                async move {
+                    let outcome_tx = outcome_slot
+                        .lock()
+                        .await
+                        .take()
+                        .expect("route called more than once");
+                    upgrade.on_upgrade(move |socket| async move {
+                        super::send_child_exited_close(socket, Some(0)).await;
+                        let _ = outcome_tx.send(());
+                    })
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let url = format!("ws://{}/exit", addr);
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        // 1) Text frame: JSON `DaemonMsg::TerminalExited { code: Some(0), .. }`.
+        let first = tokio::time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("ws recv (text) timed out")
+            .expect("ws closed before sending TerminalExited")
+            .expect("ws error");
+        match first {
+            TMessage::Text(t) => {
+                let parsed: DaemonMsg = serde_json::from_str(&t)
+                    .unwrap_or_else(|e| panic!("parsing JSON failed for {t}: {e}"));
+                assert!(
+                    matches!(parsed, DaemonMsg::TerminalExited { code: Some(0), .. }),
+                    "expected TerminalExited {{ code: Some(0), .. }}, got {parsed:?}"
+                );
+            }
+            other => panic!("expected Text(TerminalExited), got {other:?}"),
+        }
+
+        // 2) Close frame: same shape as the no-code path.
+        let close = tokio::time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("ws recv (close) timed out")
+            .expect("ws closed without sending Close")
+            .expect("ws error");
+        match close {
+            TMessage::Close(Some(cf)) => {
+                assert_eq!(u16::from(cf.code), 1000);
+                assert_eq!(cf.reason.as_ref(), CLOSE_REASON_CHILD_EXITED);
             }
             other => panic!("expected Close(1000, child-exited), got {other:?}"),
         }
