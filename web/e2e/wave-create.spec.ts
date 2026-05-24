@@ -18,6 +18,30 @@
 
 import { test, expect } from '@playwright/test';
 
+// Coves seeded (directly via REST or indirectly via the sidebar UI)
+// get tracked here so the afterEach hook can `DELETE /api/coves/<id>`
+// them. Without cleanup, leftover coves accumulate and break specs that
+// assume a zero-cove baseline (notably golden-path.spec.ts; #250 PR5
+// triage). `DELETE /api/coves/:id` cascades through waves → cards →
+// terminals (see `delete_cove` in crates/calm-server/src/routes/coves.rs).
+const createdCoveIds: string[] = [];
+
+test.beforeEach(() => {
+  createdCoveIds.length = 0;
+});
+
+test.afterEach(async ({ request }) => {
+  for (const id of createdCoveIds) {
+    const res = await request.delete(`/api/coves/${id}`);
+    if (!res.ok() && res.status() !== 404) {
+      throw new Error(
+        `cleanup: DELETE /api/coves/${id} → ${res.status()} ${res.statusText()}`,
+      );
+    }
+  }
+  createdCoveIds.length = 0;
+});
+
 test('creates a new wave from a fresh cove via NewTaskForm and navigates to it', async ({ page }) => {
   await page.goto('/calm/');
 
@@ -74,4 +98,15 @@ test('creates a new wave from a fresh cove via NewTaskForm and navigates to it',
   // The wave title we just submitted should appear on the page; this
   // is the cheapest "the wave really rendered" assertion.
   await expect(page.getByText(title, { exact: false }).first()).toBeVisible();
+
+  // Resolve the sidebar-minted cove id via the wave-detail endpoint and
+  // hand it off to the afterEach cleanup hook. We don't get it from
+  // sidebar markup because the sidebar `<button>` carries only the cove
+  // name, not its id; the wave we just created links back to its cove
+  // through `wave.cove_id`, so we cash that out into the cleanup list.
+  const waveId = new URL(page.url()).pathname.split('/').pop()!;
+  const waveRes = await page.request.get(`/api/waves/${waveId}`);
+  expect(waveRes.ok()).toBeTruthy();
+  const { wave } = (await waveRes.json()) as { wave: { cove_id: string } };
+  createdCoveIds.push(wave.cove_id);
 });

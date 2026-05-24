@@ -56,6 +56,10 @@ function fixture(overrides: Partial<Wave>): Wave {
     progress: 0,
     eta: '',
     now: '',
+    // Issue #250 PR 5 — required Wave fields; unused by the
+    // waveNeedsUserAttention matrix but the typechecker insists.
+    createdAt: 0,
+    terminalAt: null,
     ...overrides,
   };
 }

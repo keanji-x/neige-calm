@@ -136,6 +136,31 @@ export const resolveCovePath = (path: string) =>
 
 // ---------------- waves ----------------
 
+/**
+ * Issue #250 PR 2 — calendar window query. `GET /api/waves?since=&until=&cove_id=`
+ * returns every wave overlapping the window `[since, until]` (unix ms,
+ * inclusive at both endpoints). The kernel applies the dual predicate
+ * `created_at <= until AND (terminal_at IS NULL OR terminal_at >= since)`
+ * so still-open waves remain visible across every day they span. All
+ * three params are optional; omitting all degenerates to "every wave".
+ *
+ * Calendar (issue #250 PR 5) uses this as the one read for the weekly
+ * grid: pass `since`/`until` for the current week's window in local
+ * time, no `cove_id` so the result aggregates across coves.
+ */
+export const wavesRange = (params: {
+  since?: number;
+  until?: number;
+  cove_id?: string;
+}) => {
+  const qs = new URLSearchParams();
+  if (params.since !== undefined) qs.set('since', String(params.since));
+  if (params.until !== undefined) qs.set('until', String(params.until));
+  if (params.cove_id) qs.set('cove_id', params.cove_id);
+  const tail = qs.toString();
+  return request<KernelWave[]>('GET', `/api/waves${tail ? `?${tail}` : ''}`);
+};
+
 export const createWave = (b: NewWaveBody) =>
   request<KernelWave>('POST', '/api/waves', b);
 export const getWaveDetail = (id: string) =>

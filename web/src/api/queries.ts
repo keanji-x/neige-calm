@@ -61,6 +61,16 @@ export const queryKeys = {
    *  the Settings page; not invalidated by WS (settings only take effect
    *  on the next codex spawn, so there's no need for live propagation). */
   settings: () => ['settings'] as const,
+  /**
+   * Issue #250 PR 5 — calendar window query keyed on `[since, until]` in
+   * unix ms. Each week (or any user-chosen window) gets its own cache
+   * entry; advancing the week re-uses any cached neighbour windows
+   * directly. `cove_id` is intentionally NOT part of the key because the
+   * calendar page never filters by cove (issue Non-goals); if we add a
+   * filter later it lands here as a third tuple element.
+   */
+  wavesRange: (since: number, until: number) =>
+    ['waves-range', since, until] as const,
 };
 
 // ---------------- Query option factories ----------------
@@ -89,6 +99,21 @@ export const waveDetailQueryOptions = (waveId: string) => ({
 export const overlaysByKindQueryOptions = (entity_kind: 'wave' | 'card') => ({
   queryKey: queryKeys.overlaysByKind(entity_kind),
   queryFn: () => api.listAllOverlays(entity_kind),
+});
+
+/**
+ * Issue #250 PR 5 — calendar window options. The kernel uses inclusive
+ * endpoints; the calendar always passes a week-aligned [Mon 00:00, Sun
+ * 23:59:59.999] in local time so neighbouring weeks don't share cache
+ * entries. `gcTime` caps the per-window cache at 5 minutes so the user
+ * paging back and forth through weeks doesn't accrete an unbounded
+ * cache (each distinct week is a separate query key); WS events still
+ * invalidate the active window in real time.
+ */
+export const wavesRangeQueryOptions = (since: number, until: number) => ({
+  queryKey: queryKeys.wavesRange(since, until),
+  queryFn: () => api.wavesRange({ since, until }),
+  gcTime: 5 * 60 * 1000,
 });
 
 // ---------------- Queries ----------------
@@ -164,6 +189,26 @@ export function useOverlaysByKindQuery(
 ) {
   return useQuery<KernelOverlay[], Error>({
     ...overlaysByKindQueryOptions(entity_kind),
+    ...opts,
+  });
+}
+
+/**
+ * Calendar window — issue #250 PR 5. Returns every wave overlapping
+ * `[since, until]` (unix ms). `keepPreviousData` keeps the prior week's
+ * grid visible while the next week's fetch is in flight so the navigation
+ * arrows feel snappy. Invalidation lives in `eventBridge.tsx` —
+ * `wave.updated`, `wave.lifecycle_changed`, and `wave.deleted` all dirty
+ * every cached window so the calendar redraws without a per-page refresh.
+ */
+export function useWavesRangeQuery(
+  since: number,
+  until: number,
+  opts?: Partial<UseQueryOptions<KernelWave[], Error>>,
+) {
+  return useQuery<KernelWave[], Error>({
+    ...wavesRangeQueryOptions(since, until),
+    placeholderData: keepPreviousData,
     ...opts,
   });
 }

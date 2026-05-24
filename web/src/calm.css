@@ -2863,6 +2863,13 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   display: flex; flex-direction: column;
   /* stylelint-disable-next-line declaration-property-value-disallowed-list */
   margin: 0 -4px;
+  /* Issue #250 PR 5 — the agenda is allowed to scroll instead of pushing
+     the rail card unboundedly tall when many waves overlap the selected
+     day. `scrollbar-gutter: stable` keeps the row width steady when the
+     scrollbar appears so titles don't reflow. */
+  max-height: 360px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 .cal-empty {
   font-size: var(--text-sm);
@@ -2870,10 +2877,18 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   padding: var(--space-2) var(--space-2) var(--space-1);
   font-style: italic;
 }
+/* Issue #250 PR 5 — single-line dense row spec from design (pages.jsx
+   L246-261 + styles.css L1490-1539). Time column is a raw numeric stamp,
+   the cove-colour bar carries the cove identity, and waiting/running
+   states degrade to 6×6 dot flags on the right side of the title (no
+   meta line — the row stays single-line ~28px tall). */
 .cal-event {
   display: grid;
   grid-template-columns: 40px 3px 1fr;
-  gap: var(--space-5);
+  /* Literals from design spec — no token mapping needed; the spec values
+     happen to differ from --space-5 (10px) by 1px on the gap. */
+  /* stylelint-disable-next-line declaration-property-value-disallowed-list */
+  gap: 9px;
   padding: var(--space-3) var(--space-3);
   border-radius: var(--radius-md);
   text-align: left;
@@ -2898,10 +2913,6 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   /* stylelint-disable-next-line declaration-property-value-disallowed-list */
   background: oklch(27% 0.035 30);
 }
-.cal-event-run {
-  color: var(--accent);
-  font-weight: 500;
-}
 .cal-event-time {
   font-family: var(--font-code);
   font-size: var(--text-xs);
@@ -2914,19 +2925,78 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   border-radius: var(--radius-xs);
   align-self: stretch;
 }
-.cal-event-body { min-width: 0; }
+/* Body is a column so the wave variant can stack title + lifecycle.
+   The scheduled-event variant has only the title row inside, so column
+   layout reads identical to a single flex line. `overflow: hidden`
+   lets descendant `text-overflow: ellipsis` rules actually kick in. */
+.cal-event-body {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-px);
+  min-width: 0;
+  overflow: hidden;
+}
+/* Title row keeps the dot flag on the same baseline as the title — the
+   previous `.cal-event-body` flex rules moved here so the inline
+   title + flag layout survives the body becoming a column. */
+.cal-event-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  min-width: 0;
+  overflow: hidden;
+}
 .cal-event-title {
   font-size: var(--text-sm);
   font-weight: 500;
   color: var(--text);
   line-height: var(--leading-snug);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-width: 0;
+  flex: 1 1 auto;
 }
-.cal-event-meta {
+/* Lifecycle text below the title — wave variant only. Uses the
+   canonical `lifecycleLabel` phrase so the calendar agrees with
+   <WaveLifecycleBadge>. Clamped to single line ellipsis so a long
+   future label can't reflow the rail.
+   `.is-attention` lifts blocked / reviewing / failed into the warn
+   colour so the text matches the right-edge dot flag visually. */
+.cal-event-lifecycle {
   font-size: var(--text-xs);
   color: var(--text-3);
-  margin-top: var(--space-px);
+  line-height: var(--leading-snug);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
+.cal-event-lifecycle.is-attention {
+  color: var(--warn);
+  font-weight: 500;
+}
+/* Wave variant — drop the hour gutter (waves are day-level, not
+   hour-bucketed) so the 3px cove bar sits flush left and the row
+   stops looking head-heavy. `align-items: flex-start` keeps the
+   two-line body top-aligned against the bar. */
+.cal-event--wave {
+  grid-template-columns: 3px 1fr;
+  align-items: flex-start;
+}
+/* 6×6 dot flag — visual reinforcement of the lifecycle text for
+   colorblind-friendly fast scanning. The aria-label on the parent
+   button carries the same information for assistive tech; the dot is
+   decorative (`aria-hidden`). */
+.cal-event-flag {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  flex-shrink: 0;
+  align-self: center;
+}
+.cal-event-flag.warn { background: var(--warn); }
+.cal-event-flag.run  { background: var(--accent); }
 
 /* narrow viewports — stack rail under terminal */
 @media (max-width: 920px) {

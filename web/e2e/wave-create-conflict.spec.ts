@@ -20,6 +20,30 @@
 
 import { test, expect } from '@playwright/test';
 
+// Coves seeded via REST get tracked here so the afterEach hook can
+// `DELETE /api/coves/<id>` them. Without cleanup, leftover coves
+// accumulate and break specs that assume a zero-cove baseline (notably
+// golden-path.spec.ts; #250 PR5 triage). `DELETE /api/coves/:id`
+// cascades through waves → cards → terminals (see `delete_cove` in
+// crates/calm-server/src/routes/coves.rs).
+const createdCoveIds: string[] = [];
+
+test.beforeEach(() => {
+  createdCoveIds.length = 0;
+});
+
+test.afterEach(async ({ request }) => {
+  for (const id of createdCoveIds) {
+    const res = await request.delete(`/api/coves/${id}`);
+    if (!res.ok() && res.status() !== 404) {
+      throw new Error(
+        `cleanup: DELETE /api/coves/${id} → ${res.status()} ${res.statusText()}`,
+      );
+    }
+  }
+  createdCoveIds.length = 0;
+});
+
 test('NewTaskForm surfaces conflicting cove name in 409 error', async ({ page }) => {
   const ts = Date.now();
   const coveAName = `E2E conflict cove-A ${ts}`;
@@ -35,6 +59,7 @@ test('NewTaskForm surfaces conflicting cove name in 409 error', async ({ page })
   });
   expect(coveARes.ok()).toBeTruthy();
   const coveA = (await coveARes.json()) as { id: string };
+  createdCoveIds.push(coveA.id);
 
   const folderRes = await page.request.post(
     `/api/coves/${coveA.id}/folders`,
@@ -60,6 +85,7 @@ test('NewTaskForm surfaces conflicting cove name in 409 error', async ({ page })
   });
   expect(coveBRes.ok()).toBeTruthy();
   const coveB = (await coveBRes.json()) as { id: string };
+  createdCoveIds.push(coveB.id);
 
   await page.goto(`/calm/cove/${coveB.id}`);
   await expect(page).toHaveURL(/\/calm\/cove\/[^/]+$/);

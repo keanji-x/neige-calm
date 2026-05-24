@@ -19,6 +19,30 @@
 
 import { test, expect } from '@playwright/test';
 
+// Coves seeded (REST-direct or form-indirect) get tracked here so the
+// afterEach hook can `DELETE /api/coves/<id>` them. Without cleanup,
+// leftover coves accumulate and break specs that assume a zero-cove
+// baseline (notably golden-path.spec.ts; #250 PR5 triage).
+// `DELETE /api/coves/:id` cascades through waves → cards → terminals
+// (see `delete_cove` in crates/calm-server/src/routes/coves.rs).
+const createdCoveIds: string[] = [];
+
+test.beforeEach(() => {
+  createdCoveIds.length = 0;
+});
+
+test.afterEach(async ({ request }) => {
+  for (const id of createdCoveIds) {
+    const res = await request.delete(`/api/coves/${id}`);
+    if (!res.ok() && res.status() !== 404) {
+      throw new Error(
+        `cleanup: DELETE /api/coves/${id} → ${res.status()} ${res.statusText()}`,
+      );
+    }
+  }
+  createdCoveIds.length = 0;
+});
+
 test('NewTaskForm "Use a different cove" lets user override auto-match → new cove', async ({
   page,
 }) => {
@@ -42,6 +66,7 @@ test('NewTaskForm "Use a different cove" lets user override auto-match → new c
   });
   expect(coveARes.ok()).toBeTruthy();
   const coveA = (await coveARes.json()) as { id: string };
+  createdCoveIds.push(coveA.id);
 
   const folderRes = await page.request.post(
     `/api/coves/${coveA.id}/folders`,
@@ -117,6 +142,9 @@ test('NewTaskForm "Use a different cove" lets user override auto-match → new c
   const { wave } = (await waveRes.json()) as {
     wave: { cove_id: string; cwd: string };
   };
+  // Track the form-minted cove C (distinct from REST-seeded cove A
+  // already pushed above) for afterEach cleanup.
+  createdCoveIds.push(wave.cove_id);
   expect(wave.cwd).toBe(finalCwd);
   expect(wave.cove_id).not.toBe(coveA.id);
 

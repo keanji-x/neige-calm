@@ -22,6 +22,30 @@
 
 import { test, expect } from '@playwright/test';
 
+// Coves seeded (REST-direct or form-indirect) get tracked here so the
+// afterEach hook can `DELETE /api/coves/<id>` them. Without cleanup,
+// leftover coves accumulate and break specs that assume a zero-cove
+// baseline (notably golden-path.spec.ts; #250 PR5 triage).
+// `DELETE /api/coves/:id` cascades through waves → cards → terminals
+// (see `delete_cove` in crates/calm-server/src/routes/coves.rs).
+const createdCoveIds: string[] = [];
+
+test.beforeEach(() => {
+  createdCoveIds.length = 0;
+});
+
+test.afterEach(async ({ request }) => {
+  for (const id of createdCoveIds) {
+    const res = await request.delete(`/api/coves/${id}`);
+    if (!res.ok() && res.status() !== 404) {
+      throw new Error(
+        `cleanup: DELETE /api/coves/${id} → ${res.status()} ${res.statusText()}`,
+      );
+    }
+  }
+  createdCoveIds.length = 0;
+});
+
 test('NewTaskForm "Create new cove" branch mints cove + claims cwd', async ({ page }) => {
   const ts = Date.now();
   const starterCoveName = `E2E newcove starter ${ts}`;
@@ -41,6 +65,7 @@ test('NewTaskForm "Create new cove" branch mints cove + claims cwd', async ({ pa
   });
   expect(starterRes.ok()).toBeTruthy();
   const starterCove = (await starterRes.json()) as { id: string };
+  createdCoveIds.push(starterCove.id);
 
   await page.goto(`/calm/cove/${starterCove.id}`);
   await expect(page).toHaveURL(/\/calm\/cove\/[^/]+$/);
@@ -111,6 +136,9 @@ test('NewTaskForm "Create new cove" branch mints cove + claims cwd', async ({ pa
   const { wave } = (await waveRes.json()) as {
     wave: { cove_id: string; cwd: string };
   };
+  // Track the form-minted cove (distinct from the starter cove pushed
+  // above) for afterEach cleanup.
+  createdCoveIds.push(wave.cove_id);
   expect(wave.cwd).toBe(cwd);
 
   const foldersRes = await page.request.get(

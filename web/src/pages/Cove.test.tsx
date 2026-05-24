@@ -24,6 +24,11 @@ function makeWave(overrides: Partial<Wave> = {}): Wave {
     progress: 0,
     eta: '',
     now: '',
+    // Issue #250 PR 5 — required by the calendar-rail integration; the
+    // CovePage tests don't read these but the type-level requirement is
+    // load-bearing for spotting forgotten fields in production code.
+    createdAt: 0,
+    terminalAt: null,
     cards: [],
     ...overrides,
   };
