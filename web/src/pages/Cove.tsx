@@ -6,6 +6,7 @@ import type { NewTaskFormResult } from '../shared/components/NewTaskForm';
 import { isRunning, isWaitingForUser } from '../shared/lifecycle';
 import type { Cove, Route, Wave } from '../types';
 import { ConfirmDialog } from '../ui/ConfirmDialog/ConfirmDialog';
+import { Dialog } from '../ui/Dialog/Dialog';
 import { DeleteButton } from './_shared';
 
 // ============================================================
@@ -319,17 +320,20 @@ function EditableTitle({
 
 // ---------------- NewWaveCTA — CovePage's compose-bar ----------------
 //
-// Bottom-of-page ghost button by default; expands inline into the
-// shared `NewTaskForm` configuration card on click. Issue #250 PR 3 —
-// per the issue comment "all creation entrypoints must go through the
-// same configuration card", this CTA expands into NewTaskForm rather
-// than a bespoke one-line title input. The calendar's empty-cell
-// click (PR 6) will open the same NewTaskForm via the same component.
+// Bottom-of-page ghost button. Clicking opens a modal Dialog containing
+// the shared `NewTaskForm` configuration card. Issue #250 PR 3 — per the
+// issue comment "all creation entrypoints must go through the same
+// configuration card", this CTA opens NewTaskForm rather than a bespoke
+// one-line title input. The calendar's empty-cell click (PR 6) opens
+// the same NewTaskForm via the same component.
 //
-// We deliberately do NOT use a modal Dialog — the issue specifies an
-// inline card / floating panel form. The form sits at the bottom of
-// the cove page, replacing the CTA in place; on cancel we collapse
-// back to the button so the page footprint stays the same.
+// Why a Dialog (vs. the original inline expansion): the cwd field
+// benefits from a Browse… affordance that takes over the whole modal
+// body via `useModalView()` (the same pattern the codex card uses).
+// That hook is a no-op outside a Dialog, so wrapping the form in a
+// Dialog is the prerequisite. The button stays visible while the
+// dialog is open so Dialog's focus-restore returns the keyboard user
+// to where they started on close.
 
 function NewWaveCTA({
   defaultCoveId,
@@ -339,8 +343,9 @@ function NewWaveCTA({
   onCreated: (wave: NewTaskFormResult) => void | Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
-  if (!open) {
-    return (
+  const close = () => setOpen(false);
+  return (
+    <>
       <button
         type="button"
         className="new-wave-cta"
@@ -350,16 +355,18 @@ function NewWaveCTA({
         <span className="new-wave-glyph" aria-hidden>+</span>
         <span className="new-wave-label">New wave</span>
       </button>
-    );
-  }
-  return (
-    <NewTaskForm
-      defaultCoveId={defaultCoveId}
-      onCreated={async (wave) => {
-        setOpen(false);
-        await onCreated(wave);
-      }}
-      onCancel={() => setOpen(false)}
-    />
+      <Dialog open={open} onClose={close} title="New wave">
+        {open && (
+          <NewTaskForm
+            defaultCoveId={defaultCoveId}
+            onCreated={async (wave) => {
+              close();
+              await onCreated(wave);
+            }}
+            onCancel={close}
+          />
+        )}
+      </Dialog>
+    </>
   );
 }

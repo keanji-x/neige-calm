@@ -71,6 +71,8 @@ import {
 } from '../../api/queries';
 import { DARK_THEME_RGB, LIGHT_THEME_RGB } from '../../api/themeRgb';
 import type { CoveResolveBody, FolderConflictBody, KernelWave } from '../../api/wire';
+import { DirectoryBrowser } from './DirectoryPicker';
+import { useModalView } from '../../ui/Dialog/Dialog';
 
 /** Result handed back to the caller on successful POST `/api/waves`. */
 export type NewTaskFormResult = KernelWave;
@@ -154,6 +156,13 @@ export function NewTaskForm({ defaultCoveId, onCreated, onCancel }: NewTaskFormP
   const createWave = useCreateWaveMutation();
   const createCove = useCreateCoveMutation();
   const qc = useQueryClient();
+  // Browse… → pushes a DirectoryBrowser view into the host Dialog's
+  // body. Outside a Dialog (no modalView context) the button falls back
+  // to rendering the browser inline below the cwd row. Every in-app
+  // caller now wraps NewTaskForm in a Dialog (NewWaveCTA in Cove.tsx),
+  // so the inline-fallback path is only exercised in defensive tests.
+  const modalView = useModalView();
+  const [inlineBrowsing, setInlineBrowsing] = useState(false);
 
   const titleRef = useRef<HTMLTextAreaElement | null>(null);
   const cwdRef = useRef<HTMLInputElement | null>(null);
@@ -325,6 +334,36 @@ export function NewTaskForm({ defaultCoveId, onCreated, onCancel }: NewTaskFormP
     }
   };
 
+  // Browse… handler. Inside a Dialog: push the DirectoryBrowser into
+  // the dialog body via `useModalView()` so it takes over the whole
+  // modal — the same affordance the codex card uses, no nested popover.
+  // Outside a Dialog: toggle an inline browser below the cwd row. The
+  // initialPath is the current cwd if it looks absolute (we let the
+  // server fall through to $HOME otherwise via `null`).
+  const startBrowse = useCallback(() => {
+    const seed = isAbsolutePath(cwd.trim()) ? cwd.trim() : null;
+    if (!modalView) {
+      setInlineBrowsing(true);
+      return;
+    }
+    const commit = (path: string) => {
+      setCwd(path);
+      modalView.popView();
+    };
+    const cancel = () => modalView.popView();
+    modalView.pushView({
+      title: 'Choose a directory',
+      onEscape: cancel,
+      body: (
+        <DirectoryBrowser
+          initialPath={seed}
+          onCancel={cancel}
+          onSelect={commit}
+        />
+      ),
+    });
+  }, [cwd, modalView]);
+
   return (
     <section
       role="form"
@@ -371,28 +410,62 @@ export function NewTaskForm({ defaultCoveId, onCreated, onCancel }: NewTaskFormP
         <label htmlFor={cwdId} className="new-task-form-label">
           Working directory<span className="new-task-form-required"> *</span>
         </label>
-        <input
-          id={cwdId}
-          ref={cwdRef}
-          type="text"
-          className="new-task-form-input"
-          value={cwd}
-          onChange={(e) => setCwd(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              void handleSubmit();
-            }
-          }}
-          placeholder="/Users/you/code/project"
-          aria-invalid={cwdError !== null}
-          aria-describedby={cwdError ? `${cwdId}-err` : undefined}
-          required
-        />
+        <div className="new-task-form-cwd-row">
+          <input
+            id={cwdId}
+            ref={cwdRef}
+            type="text"
+            className="new-task-form-input new-task-form-cwd-input"
+            value={cwd}
+            onChange={(e) => setCwd(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                void handleSubmit();
+              }
+            }}
+            placeholder="/Users/you/code/project"
+            aria-invalid={cwdError !== null}
+            aria-describedby={cwdError ? `${cwdId}-err` : undefined}
+            required
+          />
+          {/* Browse… opens the directory walker. In-app this always
+              runs through `useModalView()` (NewTaskForm is now hosted
+              inside a Dialog); the inline fallback below is the
+              defensive path for renderings outside a Dialog. The typed
+              input above remains the source of truth — Browse is just a
+              shortcut that *sets* the cwd, it doesn't replace the field.
+              Accessible name comes from the visible text ("Browse…") so
+              `getByLabel(/working directory/i)` on the surrounding
+              field still uniquely resolves to the cwd input; `title`
+              carries the contextual hint for sighted users and matches
+              the SR-description for screen readers without colliding
+              with the field's label text. */}
+          <button
+            type="button"
+            className="new-task-form-cwd-browse"
+            onClick={startBrowse}
+            title="Browse for working directory"
+          >
+            Browse…
+          </button>
+        </div>
         {cwdError && (
           <p id={`${cwdId}-err`} className="new-task-form-fielderr">
             {cwdError}
           </p>
+        )}
+        {inlineBrowsing && !modalView && (
+          <div className="new-task-form-cwd-inline-browser">
+            <DirectoryBrowser
+              initialPath={isAbsolutePath(cwd.trim()) ? cwd.trim() : null}
+              onCancel={() => setInlineBrowsing(false)}
+              onSelect={(path) => {
+                setCwd(path);
+                setInlineBrowsing(false);
+              }}
+            />
+          </div>
         )}
 
         {/* Cove section — three render branches keyed on resolveState +
