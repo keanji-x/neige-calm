@@ -4,6 +4,7 @@ import { coveOf } from '../shared/components/helpers';
 import { useTheme } from '../app/theme';
 import { CardHead } from '../cards/CardHead';
 import { isRunning, waveNeedsUserAttention } from '../shared/lifecycle';
+import { lifecycleLabel } from '../shared/components/WaveLifecycleBadge';
 import type { Cove, Route, Wave } from '../types';
 
 // xterm.js is heavy and only mounts when the Today home panel resolves a
@@ -172,17 +173,26 @@ export function TodayPage({
 }
 
 /**
- * Issue #250 PR 5 — single-line agenda row shared by both the live
- * wave-activity branch and the (future) hour-scheduled `CalEvent`
- * branch. Time stamp is optional (`undefined` for live waves, formatted
- * `"3pm"` for scheduled events). Cove name is no longer rendered as
- * text — the 3px coloured bar on the left already encodes cove
- * identity, and dropping the meta text is what lets the row stay one
- * line ~28px tall per design (pages.jsx L241-263 + styles.css L1490-1539).
+ * Issue #250 PR 5 — agenda row shared by the live wave-activity branch
+ * and the (future) hour-scheduled `CalEvent` branch. Two visual variants
+ * driven off whether `hourLabel` is supplied:
  *
- * Waiting / running state degrades to a 6×6 dot flag at the right edge
- * of the title. The lifecycle text moves to `aria-label` so screen
- * readers and the axe a11y suite don't lose information.
+ *   * **scheduled event** (`hourLabel` defined) — keeps the design's
+ *     `40px / 3px / 1fr` grid with the time gutter on the left. Single-
+ *     line body: title + dot flag(s) for waiting/running.
+ *   * **wave** (`hourLabel` undefined) — drops the time gutter (waves
+ *     are day-level, not hour-bucketed; the empty 40px column made the
+ *     cove bar look stranded). Grid collapses to `3px / 1fr` and the
+ *     body becomes a two-line column: title on top, human-readable
+ *     `lifecycleLabel` underneath. Both lines clamp to a single line
+ *     with ellipsis so a long title / status string can't reflow the
+ *     rail.
+ *
+ * The right-edge 6×6 dot flag survives both variants — it's redundant
+ * with the lifecycle text but lets a colorblind / fast-scanning eye
+ * spot blocked / running rows without parsing the label. The full
+ * lifecycle phrase is still folded into `aria-label` so screen readers
+ * and axe checks don't lose it.
  */
 function CalEventRow({
   wave,
@@ -192,7 +202,9 @@ function CalEventRow({
 }: {
   wave: Wave;
   /** Pre-formatted hour string (`"3pm"`) for scheduled events; omit
-   *  for live wave activity which isn't hour-bucketed. */
+   *  for live wave activity which isn't hour-bucketed. The presence /
+   *  absence of this prop also selects the `cal-event--wave` layout
+   *  modifier (no hour gutter, lifecycle text below the title). */
   hourLabel?: string;
   coves: Cove[];
   onGo: (r: Route) => void;
@@ -200,9 +212,13 @@ function CalEventRow({
   const c = coveOf(wave.coveId, coves);
   const isWaiting = waveNeedsUserAttention(wave);
   const eventRunning = isRunning(wave.lifecycle);
-  // The dot flags are visual; the human-readable lifecycle state lives
-  // in the button's aria-label so screen readers and axe checks don't
-  // lose what the old `cal-event-meta` text used to carry.
+  const isWave = hourLabel === undefined;
+  // Reuse the canonical lifecycle phrase so the calendar agrees with
+  // <WaveLifecycleBadge> / Cove buckets — no parallel mapping table.
+  const lifecycleText = lifecycleLabel(wave.lifecycle);
+  // The dot flags are visual; the full lifecycle state goes into the
+  // button's aria-label so screen readers and axe checks see the same
+  // information whether or not the lifecycle text line is shown.
   const stateBits: string[] = [];
   if (isWaiting) stateBits.push('waiting on you');
   if (eventRunning) stateBits.push('running');
@@ -210,32 +226,48 @@ function CalEventRow({
   const label =
     `Wave ${wave.title}` +
     (stateBits.length > 0 ? `, ${stateBits.join(', ')}` : '') +
+    `, ${lifecycleText}` +
     `, in cove ${coveName}`;
   return (
     <button
       className={
         'cal-event' +
+        (isWave ? ' cal-event--wave' : '') +
         (isWaiting ? ' waiting' : '') +
         (eventRunning ? ' running' : '')
       }
       aria-label={label}
       onClick={() => onGo({ name: 'wave', id: wave.id })}
     >
-      <span className="cal-event-time num" aria-hidden="true">
-        {hourLabel ?? ''}
-      </span>
+      {!isWave && (
+        <span className="cal-event-time num" aria-hidden="true">
+          {hourLabel}
+        </span>
+      )}
       <span
         className="cal-event-bar"
         style={{ background: c?.color }}
         aria-hidden="true"
       />
       <span className="cal-event-body">
-        <span className="cal-event-title">{wave.title}</span>
-        {isWaiting && (
-          <span className="cal-event-flag warn" aria-hidden="true" />
-        )}
-        {eventRunning && (
-          <span className="cal-event-flag run" aria-hidden="true" />
+        <span className="cal-event-title-row">
+          <span className="cal-event-title">{wave.title}</span>
+          {isWaiting && (
+            <span className="cal-event-flag warn" aria-hidden="true" />
+          )}
+          {eventRunning && (
+            <span className="cal-event-flag run" aria-hidden="true" />
+          )}
+        </span>
+        {isWave && (
+          <span
+            className={
+              'cal-event-lifecycle' +
+              (isWaiting ? ' is-attention' : '')
+            }
+          >
+            {lifecycleText}
+          </span>
         )}
       </span>
     </button>

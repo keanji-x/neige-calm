@@ -214,7 +214,9 @@ describe('TodayPage CalendarCard — wave activity dots & agenda', () => {
     });
     renderTodayWith({ waves: [waiting, running], coves: [atlas] });
 
-    // Old `cal-event-meta` row is gone; lifecycle text lives in aria-label.
+    // Old `cal-event-meta` row is gone — the lifecycle now renders
+    // through `.cal-event-lifecycle` on wave rows (see test below) and
+    // is folded into aria-label for assistive tech.
     expect(document.querySelector('.cal-event-meta')).toBeNull();
 
     const waitingChip = screen.getByRole('button', { name: /Needs your input/i });
@@ -224,6 +226,74 @@ describe('TodayPage CalendarCard — wave activity dots & agenda', () => {
     const runningChip = screen.getByRole('button', { name: /Running build/i });
     expect(runningChip.getAttribute('aria-label')).toContain('running');
     expect(runningChip.querySelector('.cal-event-flag.run')).toBeTruthy();
+  });
+
+  it('wave rows surface the lifecycle phrase below the title (and apply `cal-event--wave` modifier)', () => {
+    const atlas = makeCove({ id: 'cove-atlas', name: 'Atlas', color: '#5a9' });
+    // Cover one quiet, one attention-grabbing, and one running lifecycle
+    // so we lock in both the text mapping and the `is-attention` class.
+    const reviewing = makeWave({
+      id: 'w-reviewing',
+      title: 'Tighten review loop',
+      coveId: atlas.id,
+      lifecycle: 'reviewing',
+      createdAt: PINNED_NOW - DAY_MS,
+      terminalAt: null,
+    });
+    const working = makeWave({
+      id: 'w-working',
+      title: 'Plumb new API',
+      coveId: atlas.id,
+      lifecycle: 'working',
+      createdAt: PINNED_NOW - DAY_MS,
+      terminalAt: null,
+    });
+    const draft = makeWave({
+      id: 'w-draft',
+      title: 'Sketch follow-up',
+      coveId: atlas.id,
+      lifecycle: 'draft',
+      createdAt: PINNED_NOW - DAY_MS,
+      terminalAt: null,
+    });
+    renderTodayWith({ waves: [reviewing, working, draft], coves: [atlas] });
+
+    // Every wave row carries the `--wave` modifier (no hour gutter); the
+    // hour-time gutter element is omitted for wave rows.
+    const rows = document.querySelectorAll('.cal-event');
+    expect(rows.length).toBe(3);
+    rows.forEach((r) => {
+      expect(r.className).toContain('cal-event--wave');
+      // `.cal-event-time` is the hour gutter — wave variant omits it.
+      expect(r.querySelector('.cal-event-time')).toBeNull();
+      // `.cal-event-lifecycle` lives inside the body below the title.
+      expect(r.querySelector('.cal-event-lifecycle')).toBeTruthy();
+    });
+
+    // Lifecycle phrase comes from the canonical `lifecycleLabel` helper:
+    // `reviewing` → "In review", `working` → "Working", `draft` → "Draft".
+    const reviewingRow = screen.getByRole('button', { name: /Tighten review loop/i });
+    expect(reviewingRow.querySelector('.cal-event-lifecycle')?.textContent).toBe('In review');
+    // `reviewing` is in `isWaitingForUser` bucket → attention modifier.
+    expect(
+      reviewingRow.querySelector('.cal-event-lifecycle.is-attention'),
+    ).toBeTruthy();
+
+    const workingRow = screen.getByRole('button', { name: /Plumb new API/i });
+    expect(workingRow.querySelector('.cal-event-lifecycle')?.textContent).toBe('Working');
+    // `working` is running, not waiting → no attention modifier.
+    expect(
+      workingRow.querySelector('.cal-event-lifecycle.is-attention'),
+    ).toBeNull();
+
+    const draftRow = screen.getByRole('button', { name: /Sketch follow-up/i });
+    expect(draftRow.querySelector('.cal-event-lifecycle')?.textContent).toBe('Draft');
+    expect(
+      draftRow.querySelector('.cal-event-lifecycle.is-attention'),
+    ).toBeNull();
+    // The lifecycle phrase is also folded into aria-label so assistive
+    // tech sees it regardless of whether CSS loaded.
+    expect(draftRow.getAttribute('aria-label')).toContain('Draft');
   });
 
   it('renders all overlapping waves into the agenda (CSS clamps height to a scrollable max)', () => {

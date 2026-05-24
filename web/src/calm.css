@@ -2925,10 +2925,22 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   border-radius: var(--radius-xs);
   align-self: stretch;
 }
-/* Flex layout so the lifecycle flag dots can sit on the same baseline
-   as the title without forcing a second row. `overflow: hidden` lets
-   the title's `text-overflow: ellipsis` actually kick in. */
+/* Body is a column so the wave variant can stack title + lifecycle.
+   The scheduled-event variant has only the title row inside, so column
+   layout reads identical to a single flex line. `overflow: hidden`
+   lets descendant `text-overflow: ellipsis` rules actually kick in. */
 .cal-event-body {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-px);
+  min-width: 0;
+  overflow: hidden;
+}
+/* Title row keeps the dot flag on the same baseline as the title — the
+   previous `.cal-event-body` flex rules moved here so the inline
+   title + flag layout survives the body becoming a column. */
+.cal-event-title-row {
   display: flex;
   align-items: baseline;
   gap: var(--space-3);
@@ -2944,10 +2956,37 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   min-width: 0;
   flex: 1 1 auto;
 }
-/* 6×6 dot flag — replaces the old `cal-event-meta` text line so the
-   row stays single-line. `aria-label` on the parent button carries
-   the human-readable lifecycle state for screen readers; the dot is
-   purely visual (decorative `<span>` with `aria-hidden`). */
+/* Lifecycle text below the title — wave variant only. Uses the
+   canonical `lifecycleLabel` phrase so the calendar agrees with
+   <WaveLifecycleBadge>. Clamped to single line ellipsis so a long
+   future label can't reflow the rail.
+   `.is-attention` lifts blocked / reviewing / failed into the warn
+   colour so the text matches the right-edge dot flag visually. */
+.cal-event-lifecycle {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  line-height: var(--leading-snug);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.cal-event-lifecycle.is-attention {
+  color: var(--warn);
+  font-weight: 500;
+}
+/* Wave variant — drop the hour gutter (waves are day-level, not
+   hour-bucketed) so the 3px cove bar sits flush left and the row
+   stops looking head-heavy. `align-items: flex-start` keeps the
+   two-line body top-aligned against the bar. */
+.cal-event--wave {
+  grid-template-columns: 3px 1fr;
+  align-items: flex-start;
+}
+/* 6×6 dot flag — visual reinforcement of the lifecycle text for
+   colorblind-friendly fast scanning. The aria-label on the parent
+   button carries the same information for assistive tech; the dot is
+   decorative (`aria-hidden`). */
 .cal-event-flag {
   display: inline-block;
   width: 6px;
