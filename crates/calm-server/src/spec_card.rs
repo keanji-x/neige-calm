@@ -146,6 +146,22 @@ Do NOT duplicate the lifecycle state in the body — the user already \
 sees the lifecycle badge in the card header. Keep the report terse: \
 it's a status board, not a chat log.
 
+### Reacting to user edits
+
+The user can edit the report directly from the UI. When that happens, \
+your `calm.wait_for_events` long-poll returns a batch containing a \
+`wave.report_edited` event with `author = \"user\"`. Before doing \
+anything else:
+
+1. Call `calm.report.read` to fetch the latest body.
+2. Reconcile the user's changes with what you were about to write — \
+   treat their version as ground truth for the sections they touched.
+3. Then continue your task. Do NOT blindly `report.write` your \
+   previous draft; that would overwrite the user's edits.
+
+`author = \"spec\"` events are your own writes echoing back through \
+the same stream — ignore them.
+
 Do not mint new spec cards from within this session.
 ";
 
