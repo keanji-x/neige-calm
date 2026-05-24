@@ -44,7 +44,7 @@
 //  * We create a real cove + wave via the replay binary's REST surface
 //    (same pattern as `a11y-keyboard.spec.ts`), then rely on the
 //    sync-spawn spec-card path (#136 PR6) to mint an XtermView when
-//    the wave page renders. No `+ Add → New terminal` step needed.
+//    the wave page renders. No `+ Add → terminal` step needed.
 //
 // Outcome shapes
 // --------------

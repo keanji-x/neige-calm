@@ -18,10 +18,13 @@
 // component synthesises a small letter-avatar block (first letter of the
 // title's first word, painted on a deterministic hash-of-title palette
 // background). The avatar is the canonical card-identity glyph until a
-// card opts into a real SVG via `icon`.
+// card opts into a real SVG via `icon`. The avatar itself lives in the
+// shared `<LetterAvatar>` component so the AddPanel menu can render the
+// identical glyph — this file delegates to it for the default case.
 
 import type { ReactNode } from 'react';
 import { CloseIcon } from '../shared/components/CloseIcon';
+import { LetterAvatar } from './LetterAvatar';
 
 export type CardHeadProps = {
   /** Title content. Rendered inside `<span className="card-head-title">`. */
@@ -50,40 +53,6 @@ export type CardHeadProps = {
   closeAriaLabel?: string;
 };
 
-const ICON_PALETTE_SIZE = 8;
-
-function hashTitle(s: string): number {
-  // djb2: cheap deterministic string hash. The avatar colour is purely a
-  // visual fingerprint, not a security property, so collisions are fine.
-  let h = 5381;
-  for (let i = 0; i < s.length; i++) {
-    h = ((h << 5) + h + s.charCodeAt(i)) | 0;
-  }
-  return Math.abs(h) % ICON_PALETTE_SIZE;
-}
-
-function firstLetter(s: string): string | null {
-  const trimmed = s.trim();
-  if (trimmed.length === 0) return null;
-  // Match the first Unicode-friendly character of the first word.
-  const m = trimmed.match(/\S/u);
-  return m ? m[0].toUpperCase() : null;
-}
-
-function DefaultLetterAvatar({ title }: { title: string }) {
-  const letter = firstLetter(title);
-  if (!letter) return null;
-  const idx = hashTitle(title);
-  return (
-    <span
-      className={`card-head-icon card-head-icon--letter card-head-icon--c${idx}`}
-      aria-hidden="true"
-    >
-      {letter}
-    </span>
-  );
-}
-
 /**
  * Compose the slot wrappers + optional escape-hatch children into the
  * shared `.card-head` skeleton. Slot wrappers are only emitted when the
@@ -109,7 +78,7 @@ export function CardHead({
   if (icon !== undefined) {
     iconNode = <span className="card-head-icon">{icon}</span>;
   } else if (typeof title === 'string') {
-    iconNode = <DefaultLetterAvatar title={title} />;
+    iconNode = <LetterAvatar title={title} />;
   }
   return (
     <div className={rootClass}>

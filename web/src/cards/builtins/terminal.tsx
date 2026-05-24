@@ -167,5 +167,5 @@ export const TerminalEntry: CardEntry<TerminalCardData> = {
       terminalId: parsed.data.terminal_id,
     };
   },
-  addPanel: { label: 'New terminal', icon: 'terminal' },
+  addPanel: { label: 'terminal' },
 };

@@ -216,10 +216,14 @@ export default tseslint.config(
       'neige-calm/no-raw-primitive-role': 'error',
     },
   },
-  // Exemption: `CardHead.tsx` itself owns the card-head slot classes and
-  // therefore must be allowed to write them as string literals. Issue #221.
+  // Exemption: `CardHead.tsx` and the shared `LetterAvatar.tsx` it
+  // delegates to own the card-head slot classes and therefore must be
+  // allowed to write them as string literals. The letter-avatar markup
+  // (`card-head-icon` + `card-head-icon--letter` + `card-head-icon--c{n}`)
+  // moved out of CardHead into LetterAvatar so the AddPanel menu can reuse
+  // the identical glyph; the class ownership moved with it. Issue #221.
   {
-    files: ['src/cards/CardHead.tsx'],
+    files: ['src/cards/CardHead.tsx', 'src/cards/LetterAvatar.tsx'],
     rules: {
       'no-restricted-syntax': 'off',
     },

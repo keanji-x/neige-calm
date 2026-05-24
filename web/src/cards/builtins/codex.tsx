@@ -272,8 +272,7 @@ export const CodexEntry: CardEntry<CodexCardData> = {
     };
   },
   addPanel: {
-    label: 'New codex',
-    icon: 'spark',
+    label: 'codex',
     createSchema: {
       // Interactive codex handles permission / model selection inside its
       // own slash-command UX, so the schema-form is now just cwd.
