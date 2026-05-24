@@ -43,14 +43,10 @@ test('loads the calm shell, bootstraps Today, then navigates into a new cove', a
 
   // Cleanly demonstrate the system cove is NOT in the sidebar: there
   // should be no cove-nav button before we mint our own user cove.
-  // (The "New cove" affordance carries label "New cove" — case-sensitive
-  // anchor avoids matching that button.)
+  // (The `+ New cove` trigger now lives on the Coves header as an icon
+  // button — `button.cove-nav` no longer matches it, so no filter needed.)
   const sidebarNav = page.getByRole('navigation', { name: 'Coves' });
-  // Locate cove-nav buttons that aren't "New cove" — they should be empty
-  // before the user mints anything.
-  await expect(
-    sidebarNav.locator('button.cove-nav').filter({ hasNotText: 'New cove' }),
-  ).toHaveCount(0);
+  await expect(sidebarNav.locator('button.cove-nav')).toHaveCount(0);
 
   // Step: create a user cove via the sidebar "+ New cove" affordance.
   const coveName = `E2E cove ${Date.now()}`;
@@ -61,8 +57,11 @@ test('loads the calm shell, bootstraps Today, then navigates into a new cove', a
   await nameInput.press('Enter');
 
   // The new cove's nav row should appear in the sidebar, with the cove
-  // name as its accessible name (see Sidebar.tsx).
-  const coveBtn = sidebarNav.getByRole('button', { name: new RegExp(coveName, 'i') });
+  // name as its accessible name (see Sidebar.tsx). `exact: true` excludes
+  // the per-row "Delete cove \"<name>\"" button that also includes the
+  // cove name in its accessible name (strict-mode would otherwise pick
+  // up both).
+  const coveBtn = sidebarNav.getByRole('button', { name: coveName, exact: true });
   await expect(coveBtn).toBeVisible();
   await coveBtn.click();
 

@@ -56,9 +56,12 @@ async function waitForCoveInSidebar(page: Page, name: string): Promise<void> {
  *  *flows*, not keyboard reachability. Clicks let us anchor on
  *  role+name without paying the `tabUntil` brittleness tax. */
 async function gotoCove(page: Page, coveName: string): Promise<void> {
+  // `exact: true` excludes the per-row "Delete cove \"<name>\"" button
+  // whose accessible name also contains coveName (strict mode otherwise
+  // resolves to two buttons).
   await page
     .locator('aside.side')
-    .getByRole('button', { name: new RegExp(coveName, 'i') })
+    .getByRole('button', { name: coveName, exact: true })
     .click();
   await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
 }

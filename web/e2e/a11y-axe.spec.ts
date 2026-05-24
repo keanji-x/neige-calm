@@ -188,7 +188,10 @@ async function ids(page: Page): Promise<{ coveId: string; waveId: string }> {
   await expect(nameInput).toBeVisible();
   await nameInput.fill(coveName);
   await nameInput.press('Enter');
-  const coveBtn = sidebarCoves.getByRole('button', { name: new RegExp(coveName, 'i') });
+  // `exact: true` excludes the per-row "Delete cove \"<name>\"" button
+  // whose accessible name also contains coveName — strict mode otherwise
+  // resolves to two buttons.
+  const coveBtn = sidebarCoves.getByRole('button', { name: coveName, exact: true });
   await expect(coveBtn).toBeVisible();
   await coveBtn.click();
   await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);

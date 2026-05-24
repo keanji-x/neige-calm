@@ -76,21 +76,45 @@ async fn upgrade(
     // If the daemon for an existing row has died (shell exited, OS killed
     // it, calm-server restart unhooked it, …), respawn here so the client
     // re-attach feels seamless.
-    let sock = match resolve_live_sock(&s, &id).await {
-        Ok(p) => p,
-        Err(e) => return e.into_response(),
-    };
-    let repo = s.repo.clone();
-    ws.on_upgrade(move |socket| handle(socket, sock, id, repo))
-        .into_response()
+    match resolve_live_sock(&s, &id).await {
+        Ok(LiveSock::Alive(sock)) => {
+            let repo = s.repo.clone();
+            ws.on_upgrade(move |socket| handle(socket, sock, id, repo))
+                .into_response()
+        }
+        // Row exists, daemon was spawned, but its socket is now gone:
+        // overwhelmingly the "child exited cleanly between row creation
+        // and the browser WS attach" race (one-shot worker terminals).
+        // Accept the upgrade and immediately emit Close(1000,
+        // "child-exited") so the JS client renders the "process exited"
+        // overlay instead of "disconnected — 1006".
+        Ok(LiveSock::ChildExited) => ws.on_upgrade(send_child_exited_close).into_response(),
+        Err(e) => e.into_response(),
+    }
 }
 
-/// Resolve the socket path for a terminal row, **revive a dead daemon if
-/// necessary**. The revive path:
+/// Outcome of [`resolve_live_sock`].
+enum LiveSock {
+    /// Daemon socket responded to a probe — hand back its path so the
+    /// caller can hand off to [`handle`].
+    Alive(PathBuf),
+    /// Terminal row exists and a daemon was spawned for it at some
+    /// point (`daemon_handle.is_some()`), but the socket no longer
+    /// accepts connections. This is the "one-shot worker child exited
+    /// faster than the browser could connect" path — surface a
+    /// `child-exited` close to the client instead of a 500.
+    ChildExited,
+}
+
+/// Resolve the socket path for a terminal row.
 ///   1. Read the terminal row from the repo.
 ///   2. If `daemon_handle` is set, probe the socket (`UnixStream::connect`).
-///      If it connects, the daemon is alive — return the path.
-///   3. Otherwise return 500. The browser's existing "Reconnect" UI
+///      If it connects, the daemon is alive — return `Alive(path)`.
+///   3. If `daemon_handle` is set but the probe fails, the daemon spawned
+///      and has since exited; return `ChildExited` so the caller can emit
+///      a `child-exited` close on the WS.
+///   4. If the row has no `daemon_handle` at all, the daemon was never
+///      successfully spawned — return 500. The browser's "Reconnect" UI
 ///      surfaces the failure.
 ///
 /// #177 — this used to be an "auto-respawn on cold socket" path. That
@@ -100,7 +124,7 @@ async fn upgrade(
 /// "daemon died while server was down" recovery is now handled by
 /// `revive_orphans_on_boot` walked once at server startup; the per-
 /// request WS attach path is probe-only.
-async fn resolve_live_sock(s: &AppState, id: &str) -> Result<PathBuf> {
+async fn resolve_live_sock(s: &AppState, id: &str) -> Result<LiveSock> {
     let term = s
         .repo
         .terminal_get(id)
@@ -110,22 +134,40 @@ async fn resolve_live_sock(s: &AppState, id: &str) -> Result<PathBuf> {
     if let Some(handle) = term.daemon_handle.as_ref() {
         if let Ok(_probe) = UnixStream::connect(handle).await {
             // Live daemon — fast path.
-            return Ok(PathBuf::from(handle));
+            return Ok(LiveSock::Alive(PathBuf::from(handle)));
         }
-        tracing::warn!(
+        // Handle was stamped (daemon spawned at least once) but its
+        // socket file is gone or no longer accepts — the daemon
+        // unlinked the socket on its way out, which is exactly what a
+        // clean child exit looks like.
+        tracing::info!(
             terminal_id = %term.id,
             sock = %handle,
-            "daemon socket unreachable; no auto-respawn (PR1-#177) — client surfaces 'Reconnect'",
+            "daemon socket unreachable with handle set — treating as clean child exit",
         );
-    } else {
-        tracing::warn!(
-            terminal_id = %term.id,
-            "terminal has no daemon_handle; no auto-spawn (PR1-#177) — client surfaces 'Reconnect'",
-        );
+        return Ok(LiveSock::ChildExited);
     }
+    tracing::warn!(
+        terminal_id = %term.id,
+        "terminal has no daemon_handle; no auto-spawn (PR1-#177) — client surfaces 'Reconnect'",
+    );
     Err(crate::error::CalmError::Internal(format!(
         "terminal {id}: no live daemon (probe-only resolve, see #177)"
     )))
+}
+
+/// Accept the WS upgrade, send a single `Close(1000, "child-exited")`
+/// frame, and drop the socket. The JS client matches on this exact
+/// reason string and renders the "process exited" overlay with a
+/// Restart button — same UX as the `pump`-time path in [`pump`] when
+/// the daemon emits `TerminalExited` / `ChildExited` mid-session.
+async fn send_child_exited_close(mut socket: WebSocket) {
+    let _ = socket
+        .send(Message::Close(Some(CloseFrame {
+            code: 1000,
+            reason: CLOSE_REASON_CHILD_EXITED.into(),
+        })))
+        .await;
 }
 
 async fn handle(socket: WebSocket, sock: PathBuf, terminal_id: String, repo: Arc<dyn RouteRepo>) {
@@ -1208,6 +1250,62 @@ mod pump_tests {
             "expected Clean on ChildExited, got {:?}",
             got
         );
+    }
+
+    /// `send_child_exited_close` (the upgrade-time race fix) must emit a
+    /// single `Close(1000, "child-exited")` frame and then drop the socket.
+    /// The browser keys its "process exited" overlay off that exact code +
+    /// reason — same wire shape as the in-pump `clean_child_exit` path.
+    #[tokio::test]
+    async fn upgrade_time_child_exited_emits_close_1000() {
+        let (outcome_tx, outcome_rx) = tokio::sync::oneshot::channel::<()>();
+        let outcome_slot = Arc::new(Mutex::new(Some(outcome_tx)));
+        let app = Router::new().route(
+            "/exit",
+            get(move |upgrade: WebSocketUpgrade| {
+                let outcome_slot = outcome_slot.clone();
+                async move {
+                    let outcome_tx = outcome_slot
+                        .lock()
+                        .await
+                        .take()
+                        .expect("route called more than once");
+                    upgrade.on_upgrade(move |socket| async move {
+                        super::send_child_exited_close(socket).await;
+                        let _ = outcome_tx.send(());
+                    })
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let url = format!("ws://{}/exit", addr);
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        let close = tokio::time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("ws recv (close) timed out")
+            .expect("ws closed without sending Close")
+            .expect("ws error");
+        match close {
+            TMessage::Close(Some(cf)) => {
+                assert_eq!(u16::from(cf.code), 1000, "expected 1000 normal close");
+                assert_eq!(
+                    cf.reason.as_ref(),
+                    CLOSE_REASON_CHILD_EXITED,
+                    "expected `child-exited` reason text"
+                );
+            }
+            other => panic!("expected Close(1000, child-exited), got {other:?}"),
+        }
+        let _ = tokio::time::timeout(Duration::from_secs(2), outcome_rx)
+            .await
+            .expect("send_child_exited_close did not return");
     }
 }
 

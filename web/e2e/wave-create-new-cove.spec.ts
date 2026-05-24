@@ -121,8 +121,11 @@ test('NewTaskForm "Create new cove" branch mints cove + claims cwd', async ({ pa
   // Step 4 — the new cove name is in the sidebar (the create-cove
   // mutation's onSuccess invalidate + the wave-create cache poke both
   // refresh the coves list).
+  // `exact: true` excludes the per-row "Delete cove \"<name>\"" button
+  // whose accessible name also contains newCoveName — without exact
+  // match the locator hits both and trips Playwright's strict mode.
   await expect(
-    sidebarCoves.getByRole('button', { name: new RegExp(newCoveName, 'i') }),
+    sidebarCoves.getByRole('button', { name: newCoveName, exact: true }),
   ).toBeVisible({ timeout: 5_000 });
 
   // Step 5 — REST assertion: the wave actually belongs to the new

@@ -15,6 +15,15 @@
 import { test, expect } from '@playwright/test';
 
 test('newly created terminal card appears without a reload', async ({ page }) => {
+  // Block Google Fonts. `index.html` loads a `<link rel="stylesheet"
+  // href="https://fonts.googleapis.com/...">` that, in restricted-network
+  // CI / sandboxed test environments, can hang for tens of seconds
+  // before failing — blocking `domcontentloaded` and module-script
+  // execution. The fallback `system-ui` chain is good enough for the
+  // assertions below.
+  await page.route('**://fonts.googleapis.com/**', (route) => route.abort());
+  await page.route('**://fonts.gstatic.com/**', (route) => route.abort());
+
   // Step 1 — mint a fresh user cove via the sidebar (issue #175).
   await page.goto('/calm/');
   const sidebarCoves = page.getByRole('navigation', { name: 'Coves' });
@@ -25,7 +34,10 @@ test('newly created terminal card appears without a reload', async ({ page }) =>
   await nameInput.fill(coveName);
   await nameInput.press('Enter');
 
-  const coveBtn = sidebarCoves.getByRole('button', { name: new RegExp(coveName, 'i') });
+  // `exact: true` excludes the per-row "Delete cove \"<name>\"" button
+  // whose accessible name also contains coveName — without exact match
+  // the locator hits both and trips Playwright's strict mode.
+  const coveBtn = sidebarCoves.getByRole('button', { name: coveName, exact: true });
   await expect(coveBtn).toBeVisible();
   await coveBtn.click();
   await expect(page).toHaveURL(/\/calm\/cove\/[^/]+$/);
