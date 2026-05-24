@@ -145,8 +145,11 @@ async function tabUntil(
 // this helper waits for that user cove to render (the WS feed
 // invalidates the coves query and the live render picks it up).
 async function waitForBootstrap(page: Page): Promise<void> {
+  // `exact: true` excludes the per-row "Delete cove \"Atlas\"" button
+  // whose accessible name also contains "Atlas" — strict mode otherwise
+  // resolves to two buttons.
   await expect(
-    page.locator('aside.side').getByRole('button', { name: /atlas/i }),
+    page.locator('aside.side').getByRole('button', { name: 'Atlas', exact: true }),
   ).toBeVisible({ timeout: 15_000 });
   // Also wait for the trace buffer to come into existence so subsequent
   // `clearEventTrace` / `waitForEvent` calls have a buffer to read.
@@ -162,6 +165,13 @@ test.describe('a11y · keyboard-only navigation', () => {
     // Without this hook, accumulating cove/wave/card mutations across
     // tests cause flakes — see issue #56 followup.
     await resetReplayServer(request);
+    // Block Google Fonts. `index.html` loads a `<link rel="stylesheet"
+    // href="https://fonts.googleapis.com/...">` that, in restricted-
+    // network test environments, hangs subsequent `page.goto` calls
+    // because Chrome never fires `load` while the stylesheet request
+    // is pending.
+    await page.route('**://fonts.googleapis.com/**', (route) => route.abort());
+    await page.route('**://fonts.gstatic.com/**', (route) => route.abort());
     // Issue #175 — the kernel hides the system cove that hosts the
     // default Today terminal from the sidebar. Mint a user-visible
     // `Atlas` cove + `Today` wave via the REST API so the keyboard
@@ -590,9 +600,12 @@ test.describe('a11y · keyboard-only navigation', () => {
     // test exercises the list-view toggle + Alt+Arrow reorder contract,
     // not the sidebar / cove navigation (those have their own keyboard
     // coverage elsewhere in this suite).
+    // `exact: true` excludes the per-row "Delete cove \"Atlas\"" button
+    // whose accessible name also contains "Atlas" (strict mode otherwise
+    // resolves to two buttons).
     await page
       .locator('aside.side')
-      .getByRole('button', { name: /atlas/i })
+      .getByRole('button', { name: 'Atlas', exact: true })
       .click();
     await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
     // Click into the auto-bootstrapped "Today" wave row. WaveRow is a
