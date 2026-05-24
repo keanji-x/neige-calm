@@ -2528,4 +2528,16 @@ impl RepoEventWrite for SqlxRepo {
             .await?;
         Ok(row.0)
     }
+
+    async fn events_latest_id(&self) -> Result<Option<i64>> {
+        // Mirror of `events_earliest_id`: `MAX(id)` over an empty table
+        // returns a single `NULL` row, surfaced as `None` here. Used by
+        // the WS handler to detect a client cursor that's ahead of the
+        // server's actual log tip (see the `events_latest_id` trait
+        // docstring for the reset detection contract). Issue #290.
+        let row: (Option<i64>,) = sqlx::query_as("SELECT MAX(id) FROM events")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(row.0)
+    }
 }

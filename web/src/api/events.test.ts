@@ -462,6 +462,169 @@ describe('EventStream control frames', () => {
     });
     expect(onEvent).not.toHaveBeenCalled();
   });
+
+  // -------------------------------------------------------------------------
+  // Issue #290 — server-reset detection via `_replay_complete._id < cursor`.
+  //
+  // The server's `_replay_complete` carries the server's actual `events.id`
+  // tip (`MAX(id)`) in `_id`. The dev `/dev/reset` path wipes
+  // `sqlite_sequence`, so post-reset events restart at id=1 — a client whose
+  // persisted cursor is from BEFORE the reset (e.g. id=42 from the prior
+  // test) sees the new tip arrive much lower than its own cursor.
+  //
+  // The stream must treat that the same way as `_snapshot_required`: clear
+  // the cursor, fire the snapshot listeners so the bridge `qc.clear()`s the
+  // stale cache, and bounce the socket so the next reconnect comes up cold
+  // under `since=0` and picks up the fresh log from the start. The regular
+  // replay-complete listener should NOT fire on this path — the bridge's
+  // defensive batch invalidate is the wrong response to a full reset (a
+  // `qc.clear()` is what the cache needs).
+  // -------------------------------------------------------------------------
+
+  it('_replay_complete with _id < cursor triggers reset (clear cursor, fire snapshot listener)', async () => {
+    // Drain any pending `requestIdleCallback` fallbacks from prior tests
+    // before snapshotting localStorage — otherwise a queued setTimeout
+    // from a sibling test that advanced the cursor can fire mid-await
+    // and pollute our null-assertion below. (Each test cleans up with
+    // `localStorage.clear()` in beforeEach, but the queued flush runs
+    // after that.) Same pattern as the future-protocol gate suite.
+    await new Promise((r) => setTimeout(r, 0));
+    localStorage.clear();
+    localStorage.setItem('calm:sync:cursor', '42');
+    const s = new EventStream('ws://test/api/events');
+    s.subscribe(['*']);
+    s.start();
+    const ws = currentWs();
+    ws.open();
+
+    expect(s.cursor).toBe(42);
+
+    const onSnapshot = vi.fn();
+    s.onSnapshotRequired(onSnapshot);
+    const onReplay = vi.fn();
+    s.onReplayComplete(onReplay);
+
+    // Suppress the diagnostic warn the stream emits on reset detection
+    // so the test output stays clean.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // Post-reset server tip is 7 — far below the client's stale cursor
+      // of 42. This is the canary the issue pins.
+      ws.push({ _id: 7, ev: '_replay_complete' });
+    } finally {
+      warn.mockRestore();
+    }
+
+    // The reset path mirrors `_snapshot_required`: cursor cleared,
+    // snapshot listener fired, regular replay-complete listener NOT
+    // fired (a `qc.invalidateQueries` is the wrong response to a full
+    // log reset — `qc.clear()` is).
+    expect(s.cursor).toBeNull();
+    expect(onSnapshot).toHaveBeenCalledTimes(1);
+    expect(onReplay).not.toHaveBeenCalled();
+    // Flush the queued localStorage write so the assertion is stable.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(localStorage.getItem('calm:sync:cursor')).toBeNull();
+  });
+
+  it('_replay_complete with _id == cursor does NOT trigger reset (normal zero-rows case)', () => {
+    // Empty-replay-window happy path: server has no new events past the
+    // client's cursor, so `_id` equals our `lastEventId`. Must NOT trip
+    // the reset path — that would false-positive on every reconnect to
+    // a quiet server.
+    localStorage.setItem('calm:sync:cursor', '42');
+    const s = new EventStream('ws://test/api/events');
+    s.subscribe(['*']);
+    s.start();
+    const ws = currentWs();
+    ws.open();
+
+    const onSnapshot = vi.fn();
+    s.onSnapshotRequired(onSnapshot);
+    const onReplay = vi.fn();
+    s.onReplayComplete(onReplay);
+
+    ws.push({ _id: 42, ev: '_replay_complete' });
+
+    // Cursor stays put; the regular replay-complete listener fires.
+    expect(s.cursor).toBe(42);
+    expect(onSnapshot).not.toHaveBeenCalled();
+    expect(onReplay).toHaveBeenCalledTimes(1);
+  });
+
+  it('_replay_complete with _id > cursor advances cursor and does NOT trigger reset', () => {
+    // Standard advance path. The frame brings news: server tip is past
+    // our cursor, replay window was non-empty (or the server has rows we
+    // didn't ask for in this scope). Cursor must advance, NO reset.
+    localStorage.setItem('calm:sync:cursor', '42');
+    const s = new EventStream('ws://test/api/events');
+    s.subscribe(['*']);
+    s.start();
+    const ws = currentWs();
+    ws.open();
+
+    const onSnapshot = vi.fn();
+    s.onSnapshotRequired(onSnapshot);
+
+    ws.push({ _id: 99, ev: '_replay_complete' });
+
+    expect(s.cursor).toBe(99);
+    expect(onSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('_replay_complete reset path bounces the socket so reconnect comes up cold', () => {
+    // The reset path must close the WS so the auto-reconnect loop fires
+    // a NEW connection. Without the bounce, the reset would clear the
+    // cursor and fire the snapshot listener — but the same (now-stale)
+    // socket would keep streaming live events the bridge already
+    // cleared from cache, racing the re-bootstrap. Closing the socket
+    // gives the next reconnect a `since=0` cold start that lines up
+    // with the just-`qc.clear()`ed cache.
+    localStorage.setItem('calm:sync:cursor', '42');
+    const s = new EventStream('ws://test/api/events');
+    s.subscribe(['*']);
+    s.start();
+    const ws = currentWs();
+    ws.open();
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      ws.push({ _id: 7, ev: '_replay_complete' });
+    } finally {
+      warn.mockRestore();
+    }
+
+    // The fake WS's `close()` sets `readyState = CLOSED` and fires the
+    // close listener. Asserting on the readyState pins the bounce
+    // behavior independent of how the auto-reconnect path is timed.
+    expect(ws.readyState).toBe(WebSocket.CLOSED);
+  });
+
+  it('_replay_complete on a fresh client (null cursor) does NOT trigger reset', () => {
+    // Cold-start: no persisted cursor yet. Even a `_id: 0` frame (empty
+    // server log) must not trip the reset — there's no stale state to
+    // clear. This pins the `this.lastEventId !== null` guard in the
+    // reset check.
+    const s = new EventStream('ws://test/api/events');
+    s.subscribe(['*']);
+    s.start();
+    const ws = currentWs();
+    ws.open();
+
+    const onSnapshot = vi.fn();
+    s.onSnapshotRequired(onSnapshot);
+    const onReplay = vi.fn();
+    s.onReplayComplete(onReplay);
+
+    ws.push({ _id: 0, ev: '_replay_complete' });
+
+    // `_id: 0` doesn't advance the cursor (synthetic-emit sentinel
+    // guard in `advanceCursor`), but the regular replay-complete path
+    // still fires.
+    expect(s.cursor).toBeNull();
+    expect(onSnapshot).not.toHaveBeenCalled();
+    expect(onReplay).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
