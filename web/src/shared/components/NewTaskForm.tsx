@@ -58,7 +58,7 @@
 // `getByRole('form', { name: 'New task' })` lookup is unambiguous in
 // dense pages (Cove page below + calendar later).
 
-import { useCallback, useEffect, useId, useRef } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef } from 'react';
 import { useState } from '../state';
 import { useQueryClient } from '@tanstack/react-query';
 import * as api from '../../api/calm';
@@ -123,15 +123,34 @@ export function NewTaskForm({ defaultCoveId, onCreated, onCancel }: NewTaskFormP
   // (caller already has one in mind); otherwise "new" — the user
   // typed a cwd nobody owns, "create a cove for this" is the obvious
   // next step.
+  const covesQ = useCovesQuery();
+  const coves = useMemo(() => covesQ.data ?? [], [covesQ.data]);
+
+  // Deterministic palette seed: cycle through COVE_PALETTE by the
+  // current cove count so the "Create new cove" branch picks a stable
+  // color for the same UI state (no Math.random flake in tests, no
+  // jitter between renders for the same user state).
+  const seededPaletteColor = useCallback(
+    () => pickPaletteColor(coves.length),
+    [coves.length],
+  );
+
   const [coveChoice, setCoveChoice] = useState<CoveChoice>(() =>
     defaultCoveId
       ? { mode: 'existing', coveId: defaultCoveId }
-      : { mode: 'new', name: '', color: pickPaletteColor() },
+      : { mode: 'new', name: '', color: pickPaletteColor(0) },
   );
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Tracks whether the user has explicitly overridden an auto-match. A
+  // hit lands → we set coveChoice to `{ mode: 'auto', ... }` AND clear
+  // this flag so future resolves can also auto-match. Once the user
+  // clicks "Use a different cove", we set this flag; subsequent
+  // resolves still update resolveState (so the banner can still
+  // describe what the cwd matches), but they no longer overwrite the
+  // user's manual coveChoice.
+  const userOverrodeAutoMatchRef = useRef(false);
 
-  const covesQ = useCovesQuery();
   const createWave = useCreateWaveMutation();
   const createCove = useCreateCoveMutation();
   const qc = useQueryClient();
@@ -144,6 +163,14 @@ export function NewTaskForm({ defaultCoveId, onCreated, onCancel }: NewTaskFormP
     queueMicrotask(() => titleRef.current?.focus());
   }, []);
 
+  // Latest cwd at commit-time. The resolve effect captures `cwd` via
+  // closure, but the in-flight `api.resolveCovePath` Promise may resolve
+  // after the user has typed more characters — without this guard a
+  // stale resolve would overwrite a fresher one (`Math.random`-ish
+  // ordering of `fetch` completions across two debounce windows). The
+  // ref is the single source of truth that's read at commit-time.
+  const latestResolveCwdRef = useRef<string>('');
+
   // Debounced cwd → resolve. We do NOT clear the existing auto-match
   // on every keystroke — that would flicker the "auto-matched to X"
   // banner mid-typing. Instead, the resolveState transitions only when
@@ -153,25 +180,35 @@ export function NewTaskForm({ defaultCoveId, onCreated, onCancel }: NewTaskFormP
     if (!isAbsolutePath(trimmed)) {
       // Non-absolute input keeps the resolve in `idle` (no banner) —
       // the inline cwd-error already explains the shape requirement.
+      // We also clear the latest-cwd ref so any in-flight stale resolve
+      // can't sneak in a commit against an emptied input.
+      latestResolveCwdRef.current = '';
       setResolveState({ kind: 'idle' });
       return;
     }
+    // Mark this cwd as the latest one we want a resolve for; the
+    // commit-time check below compares against this ref to drop any
+    // stale in-flight resolve.
+    latestResolveCwdRef.current = trimmed;
     setResolveState({ kind: 'resolving' });
     const timer = setTimeout(() => {
       void (async () => {
         try {
           const hit = await api.resolveCovePath(trimmed);
-          // Race guard: only commit if the cwd hasn't changed since
-          // this effect's closure was set up. React 19 ref read on
-          // every tick would be cheaper, but `cwd` is captured by
-          // closure and our staleness check is the cwd identity at
-          // commit time — the cleanup below clears the timer so a
-          // stale resolve never lands.
+          // Race guard: drop the result if the user has typed past this
+          // cwd since the request fired. Without this check, two
+          // overlapping resolves can land out-of-order and the stale
+          // one wins.
+          if (latestResolveCwdRef.current !== trimmed) return;
           if (hit) {
             setResolveState({ kind: 'hit', resolve: hit });
-            // Once a hit lands, the cove choice is forced — overwrite
-            // whatever the user had picked under `miss`.
-            setCoveChoice({ mode: 'auto', resolve: hit });
+            // Once a hit lands, the cove choice is forced — unless the
+            // user has explicitly overridden a previous auto-match, in
+            // which case the banner still updates (so the user sees
+            // what the cwd matches) but the manual coveChoice stands.
+            if (!userOverrodeAutoMatchRef.current) {
+              setCoveChoice({ mode: 'auto', resolve: hit });
+            }
           } else {
             setResolveState({ kind: 'miss' });
             // On miss, fall back to the default coveChoice that was
@@ -181,11 +218,15 @@ export function NewTaskForm({ defaultCoveId, onCreated, onCancel }: NewTaskFormP
               cur.mode === 'auto'
                 ? defaultCoveId
                   ? { mode: 'existing', coveId: defaultCoveId }
-                  : { mode: 'new', name: '', color: pickPaletteColor() }
+                  : { mode: 'new', name: '', color: seededPaletteColor() }
                 : cur,
             );
           }
         } catch (e) {
+          // Same race-guard rule for the error path: if the user typed
+          // past this cwd, drop the error too — the newer resolve will
+          // own the UI state.
+          if (latestResolveCwdRef.current !== trimmed) return;
           // Resolve failure (network etc.) — surface as miss so the
           // user can still pick / create a cove. The submit path will
           // re-validate via the server.
@@ -199,7 +240,7 @@ export function NewTaskForm({ defaultCoveId, onCreated, onCancel }: NewTaskFormP
       })();
     }, RESOLVE_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [cwd, defaultCoveId]);
+  }, [cwd, defaultCoveId, seededPaletteColor]);
 
   const cwdError = cwd.length > 0 && !isAbsolutePath(cwd.trim())
     ? 'Path must be absolute (start with `/`).'
@@ -238,6 +279,9 @@ export function NewTaskForm({ defaultCoveId, onCreated, onCancel }: NewTaskFormP
         } else {
           // Two-step: cove first, then wave. If the wave POST fails
           // the cove is left in place — see file header for rationale.
+          // TODO(#250): atomic create-cove-and-wave endpoint to collapse
+          // this two-step and remove the leftover-cove risk on partial
+          // failure (current fallback: a retry reuses the orphan cove).
           const cove = await createCove.mutateAsync({
             name: coveChoice.name.trim(),
             color: coveChoice.color,
@@ -262,13 +306,13 @@ export function NewTaskForm({ defaultCoveId, onCreated, onCancel }: NewTaskFormP
         void qc.invalidateQueries({ queryKey: queryKeys.coves() });
         await onCreated(wave);
       } catch (e) {
-        const formatted = formatSubmitError(e);
+        const formatted = formatSubmitError(e, coves);
         setErrorMsg(formatted);
       } finally {
         setSubmitting(false);
       }
     },
-    [canSubmit, coveChoice, createCove, createWave, cwd, onCreated, qc, title],
+    [canSubmit, coveChoice, coves, createCove, createWave, cwd, onCreated, qc, title],
   );
 
   // Escape from anywhere inside the form cancels. Submit-on-Enter is
@@ -360,8 +404,29 @@ export function NewTaskForm({ defaultCoveId, onCreated, onCancel }: NewTaskFormP
           resolveState={resolveState}
           coveChoice={coveChoice}
           setCoveChoice={setCoveChoice}
-          coves={covesQ.data ?? []}
+          coves={coves}
           defaultCoveId={defaultCoveId}
+          seededPaletteColor={seededPaletteColor}
+          onOverrideAutoMatch={() => {
+            // User wants to override the auto-match. Switch back to the
+            // miss-mode picker (existing cove default → defaultCoveId,
+            // else first cove, else fall through to "new"), and latch
+            // the override flag so subsequent cwd resolves don't
+            // clobber the manual pick (resolveState banner can still
+            // update, but coveChoice stays).
+            userOverrodeAutoMatchRef.current = true;
+            const fallbackExistingId =
+              defaultCoveId ?? coves[0]?.id ?? '';
+            if (fallbackExistingId) {
+              setCoveChoice({ mode: 'existing', coveId: fallbackExistingId });
+            } else {
+              setCoveChoice({
+                mode: 'new',
+                name: '',
+                color: seededPaletteColor(),
+              });
+            }
+          }}
         />
 
         {errorMsg && (
@@ -382,6 +447,11 @@ export function NewTaskForm({ defaultCoveId, onCreated, onCancel }: NewTaskFormP
             type="submit"
             className="new-task-form-submit"
             disabled={!canSubmit}
+            // Some screen readers prefer aria-disabled over the
+            // native disabled attribute (which silently swallows focus
+            // and keystrokes). Both are set; the visual / pointer
+            // behaviour comes from native, the AT exposure from aria.
+            aria-disabled={!canSubmit}
           >
             {submitting ? 'Creating…' : 'Create task'}
           </button>
@@ -403,6 +473,8 @@ function CoveSection({
   setCoveChoice,
   coves,
   defaultCoveId,
+  seededPaletteColor,
+  onOverrideAutoMatch,
 }: {
   coveSelectId: string;
   newCoveNameId: string;
@@ -415,8 +487,16 @@ function CoveSection({
   setCoveChoice: (next: CoveChoice) => void;
   coves: { id: string; name: string }[];
   defaultCoveId?: string;
+  seededPaletteColor: () => string;
+  onOverrideAutoMatch: () => void;
 }) {
-  if (resolveState.kind === 'hit') {
+  // The "auto-matched" branch only renders when the parent's
+  // coveChoice is still in auto-mode AND the resolve hit. Once the
+  // user clicks "Use a different cove", coveChoice flips to
+  // existing/new and we fall through to the radio picker below — the
+  // banner still shows what the cwd matches via `resolveState.kind`
+  // but it's no longer locked.
+  if (resolveState.kind === 'hit' && coveChoice.mode === 'auto') {
     const matched = coves.find((c) => c.id === resolveState.resolve.cove_id);
     return (
       <div className="new-task-form-cove">
@@ -424,7 +504,14 @@ function CoveSection({
         <p className="new-task-form-cove-auto" data-testid="cove-auto-match">
           Auto-matched to cove{' '}
           <strong>{matched?.name ?? resolveState.resolve.cove_id}</strong>{' '}
-          (via folder <code>{resolveState.resolve.folder_path}</code>).
+          (via folder <code>{resolveState.resolve.folder_path}</code>).{' '}
+          <button
+            type="button"
+            className="new-task-form-cove-override"
+            onClick={onOverrideAutoMatch}
+          >
+            Use a different cove
+          </button>
         </p>
       </div>
     );
@@ -490,7 +577,7 @@ function CoveSection({
                 color:
                   coveChoice.mode === 'new'
                     ? coveChoice.color
-                    : pickPaletteColor(),
+                    : seededPaletteColor(),
               })
             }
           />
@@ -527,7 +614,7 @@ function CoveSection({
               color:
                 coveChoice.mode === 'new'
                   ? coveChoice.color
-                  : pickPaletteColor(),
+                  : seededPaletteColor(),
             })
           }
           placeholder="New cove name"
@@ -546,8 +633,19 @@ function isAbsolutePath(p: string): boolean {
   return p.length > 0 && p.startsWith('/');
 }
 
-function pickPaletteColor(): string {
-  return COVE_PALETTE[Math.floor(Math.random() * COVE_PALETTE.length)];
+/**
+ * Pick a palette color deterministically by cycling through
+ * `COVE_PALETTE` indexed by the caller's seed (current cove count is
+ * the natural choice). Using `Math.random` here would (a) make tests
+ * flaky and (b) jitter the color each render for the same UI state.
+ * The seed value is opaque — any non-negative integer works. Negative
+ * or non-integer seeds clamp to 0.
+ */
+function pickPaletteColor(seed: number): string {
+  const idx = Number.isFinite(seed) && seed >= 0
+    ? Math.floor(seed) % COVE_PALETTE.length
+    : 0;
+  return COVE_PALETTE[idx];
 }
 
 function canSubmitForm({
@@ -584,8 +682,19 @@ function readHostThemeRgb() {
  * server's 409 body for folder conflicts carries enough structure to
  * say *what* collided and *where*; pre-CalmApiError-rewrite this was
  * just the raw string.
+ *
+ * `coves` is the current `useCovesQuery` snapshot — we look up the
+ * conflicting cove's display name from `body.cove_id` so the user
+ * sees "claimed by cove **Atlas**" instead of an opaque UUID. If the
+ * cove isn't in our local cache (e.g. it was created in a sibling tab
+ * and our coves-query hasn't refreshed, or it was deleted between the
+ * conflict-detect and our error render), we fall back to the generic
+ * "another cove" phrasing.
  */
-function formatSubmitError(err: unknown): string {
+function formatSubmitError(
+  err: unknown,
+  coves: { id: string; name: string }[],
+): string {
   if (!(err instanceof CalmApiError)) {
     if (err instanceof Error) return err.message;
     return 'Failed to create task.';
@@ -593,13 +702,21 @@ function formatSubmitError(err: unknown): string {
   if (err.status === 409) {
     const body = asFolderConflict(err.body);
     if (body) {
+      const conflicting = coves.find((c) => c.id === body.cove_id);
+      // React's default text escaping handles the cove name when it
+      // renders, but the message is a plain string here — the caller
+      // drops it into a <p> via `{errorMsg}`, which also escapes. No
+      // raw HTML path.
+      const coveLabel = conflicting
+        ? `cove “${conflicting.name}”`
+        : 'another cove';
       switch (body.conflict_kind) {
         case 'descendant':
-          return `That path is already claimed by another cove (folder \`${body.conflict_path}\`). Pick that cove or choose a different path.`;
+          return `That path is already claimed by ${coveLabel} (folder \`${body.conflict_path}\`). Pick that cove or choose a different path.`;
         case 'ancestor':
-          return `An existing narrower claim under \`${body.conflict_path}\` blocks claiming this directory. Remove the inner claim first or pick a different path.`;
+          return `An existing narrower claim under \`${body.conflict_path}\` (owned by ${coveLabel}) blocks claiming this directory. Remove the inner claim first or pick a different path.`;
         case 'equal':
-          return `That exact path is already claimed (folder \`${body.conflict_path}\`).`;
+          return `That exact path is already claimed by ${coveLabel} (folder \`${body.conflict_path}\`).`;
       }
     }
     return err.message || 'Path conflict.';
@@ -625,7 +742,9 @@ function asFolderConflict(body: unknown): FolderConflictBody | null {
     typeof body === 'object' &&
     'conflict_path' in body &&
     typeof (body as { conflict_path: unknown }).conflict_path === 'string' &&
-    'conflict_kind' in body
+    'conflict_kind' in body &&
+    'cove_id' in body &&
+    typeof (body as { cove_id: unknown }).cove_id === 'string'
   ) {
     const kind = (body as { conflict_kind: unknown }).conflict_kind;
     if (kind === 'descendant' || kind === 'ancestor' || kind === 'equal') {
