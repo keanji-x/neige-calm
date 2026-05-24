@@ -18,12 +18,12 @@
 //! 1. Put stdin into raw mode (no line discipline, no echo) so the OSC
 //!    reply bytes aren't held up waiting for a newline.
 //! 2. Enable DECSET 1004 (`\x1b[?1004h`) — focus event reporting. The
-//!    real codex opts in on startup, and the daemon now gates the
-//!    synthetic mid-session OSC 10/11 theme write on this flag (only a
-//!    focus-aware TUI receives it; a shell's raw-mode line editor, which
-//!    never enables 1004, would render it as garbage). Sending this here
-//!    keeps the fixture faithful to codex so the mid-session toggle in
-//!    `--probe-twice` mode still reaches us.
+//!    real codex opts in on startup, and the daemon gates the
+//!    mid-session `ESC[I` theme nudge on this flag (only a focus-aware
+//!    TUI receives it; a shell's raw-mode line editor, which never
+//!    enables 1004, would surface it as a stray byte). Sending this
+//!    here keeps the fixture faithful to codex so the mid-session
+//!    toggle in `--probe-twice` mode still reaches us.
 //! 3. Write `\x1b]11;?\x1b\\` to stdout. The daemon's `TerminalModel`
 //!    parses this via vte and synthesizes `\x1b]11;rgb:RRRR/GGGG/BBBB\x1b\\`
 //!    onto the PTY master.

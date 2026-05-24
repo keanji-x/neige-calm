@@ -417,8 +417,9 @@ async fn cooked_shell_theme_toggle_does_not_echo_osc() {
 
     // Collect every RenderPatch for a fixed window after the toggle.
     // Timing matters in two directions:
-    //   - Long enough that, IF fix B were broken, the synthetic OSC
-    //     write → cooked-tty echo → daemon vte → broadcast RenderPatch
+    //   - Long enough that, IF the 1004 gate were broken, the
+    //     `ESC[I` (or, regression-side, an unsolicited OSC RGB)
+    //     write → ZLE-raw shell → daemon vte → broadcast RenderPatch
     //     round-trip has time to land (avoids a false PASS).
     //   - The window is a hard ceiling, not a "first patch wins": we
     //     keep reading until it elapses so a late echo can't sneak past.

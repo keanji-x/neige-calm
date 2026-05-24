@@ -862,8 +862,10 @@ fn owner_terminal_theme_update_matching_current_colors_is_suppressed() {
     // Fix A: the New-terminal mount always re-POSTs the host theme,
     // but the daemon was already spawned with that exact theme. When
     // the requested colors equal the daemon's current OSC 10/11
-    // colors, the state machine must emit NOTHING — otherwise the
-    // synthetic OSC blob gets echoed back by the cooked-mode shell.
+    // colors, the state machine must emit NOTHING — pre-#305 the
+    // resulting OSC blob landed in a raw-mode shell's line editor
+    // (ZLE/readline, no DECSET 1004) and got redrawn as `^[]10;rgb:…`
+    // glyphs (#295).
     let mut registry = OwnerRegistry::new();
     let (mut state, broadcaster) = attached_owner(&mut registry, Uuid::new_v4());
     let session_id = Uuid::new_v4();

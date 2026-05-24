@@ -80,9 +80,15 @@ path = "tests/fixtures/osc-probe-child/main.rs"
 # off, ICANON off) but, unlike a TUI, never opts into DECSET 1004 (focus
 # event reporting) and never queries OSC 10/11, then blocks reading
 # stdin. Used by `tests/theme_cooked_shell_no_osc_echo.rs` to prove fix B
-# (`daemon.rs` `Effect::TerminalThemeUpdate`) skips the synthetic OSC
-# 10/11 write when the child hasn't enabled 1004, so a shell never
-# renders the injected sequence as garbage.
+# (`daemon.rs` `Effect::TerminalThemeUpdate`) skips the `\x1b[I`
+# (focus-in CSI) write when the child hasn't enabled 1004, so a shell's
+# ZLE never renders the stray sequence as input. Post-#305 (issue #295
+# followup) the daemon no longer writes synthetic OSC 10/11 RGB on theme
+# toggle at all — it writes only `\x1b[I`, gated on 1004. Code TUIs
+# (e.g. codex) treat the focus-in as `FocusGained` (crossterm parses
+# `\x1b[I` regardless of negotiation) and re-query OSC 10/11
+# themselves; the daemon's vte parser then synthesizes the solicited
+# reply from the cached `default_fg`/`default_bg`.
 [[bin]]
 name = "cooked-shell-child"
 path = "tests/fixtures/cooked-shell-child/main.rs"

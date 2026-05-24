@@ -253,8 +253,8 @@ fn decset_1049_routes_to_enter_exit_alt_screen() {
 #[test]
 fn decset_1004_routes_to_set_focus_event_tracking() {
     // DECSET/DECRST 1004 (focus event reporting). The daemon reads the
-    // resulting flag to gate the synthetic mid-session OSC 10/11 theme
-    // write (only focus-aware TUIs like codex opt in).
+    // resulting flag to gate the mid-session `ESC[I` theme nudge (#305)
+    // — only focus-aware TUIs like codex opt in.
     assert_eq!(
         drive(b"\x1b[?1004h"),
         vec![Call::SetFocusEventTracking(true)],

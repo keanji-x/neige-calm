@@ -19,8 +19,9 @@
 //! bracketed paste (`ESC[?2004h`) and never sends `ESC[?1004h`, never
 //! queries OSC 10/11.
 //!
-//! So if the daemon injects a synthetic OSC 10/11 reply, the shell's ZLE
-//! doesn't silently consume it like a TUI would — it treats the bytes as
+//! So if the daemon writes anything mid-session — pre-#305 a synthetic
+//! OSC 10/11 reply pair, post-#305 just `ESC[I` — the shell's ZLE
+//! doesn't silently consume it like a TUI would; it treats the bytes as
 //! *input* and redraws them at the prompt as (syntax-highlighted)
 //! garbage. That is the OSC-echo bug. The original fix B gated on the
 //! PTY `ECHO` flag, which is useless here precisely because ZLE turns
@@ -37,17 +38,18 @@
 //!   2. Does **NOT** enable DECSET 1004 (no `ESC[?1004h`) and does
 //!      **NOT** write any OSC query — a passive shell prompt that hasn't
 //!      opted into focus events. This is exactly what the corrected fix B
-//!      keys off: no 1004 → no synthetic OSC write.
+//!      keys off: no 1004 → no mid-session daemon write.
 //!   3. **Echoes whatever it reads on stdin straight back to stdout.**
 //!      This is the load-bearing part. In raw mode the *kernel* line
 //!      discipline no longer echoes (that was the cooked-mode behaviour
 //!      the old ECHO gate relied on); instead the *application* redraws
 //!      input — which is exactly what zsh's ZLE does when bytes arrive at
 //!      the prompt (it re-renders them, often syntax-highlighted, as
-//!      visible output). So if the daemon (wrongly) injects the synthetic
-//!      OSC 10/11 reply, the bytes hit our stdin and we write them back;
-//!      the daemon's PTY reader sees them and broadcasts a `RenderPatch`
-//!      carrying `]10;rgb:…` — the garbage the user would see. The
+//!      visible output). So if the daemon (wrongly) writes anything on
+//!      theme update — post-#305 `ESC[I`; pre-#305 also OSC 10/11 RGB —
+//!      the bytes hit our stdin and we write them back; the daemon's
+//!      PTY reader sees them and broadcasts a `RenderPatch` carrying
+//!      e.g. `[I` or `]10;rgb:…` — the garbage the user would see. The
 //!      corrected fix B (gated on DECSET 1004, which we never set) means
 //!      the daemon never writes anything for us to echo, so no such
 //!      `RenderPatch` is ever produced. A fixture that merely *discarded*
@@ -101,9 +103,10 @@ fn main() {
     // Put the tty into raw mode — this is what a shell's line editor does
     // at the prompt. Crucially we do NOT enable DECSET 1004 and never
     // emit an OSC query, so the corrected fix B (gated on 1004) skips the
-    // synthetic OSC write for us. If `/dev/tty` is unavailable (rare —
-    // the daemon always gives us a ctty), fall back to raw stdin: still
-    // no 1004, still passive, which is all the test needs.
+    // mid-session theme write for us (post-#305: `ESC[I`). If `/dev/tty`
+    // is unavailable (rare — the daemon always gives us a ctty), fall
+    // back to raw stdin: still no 1004, still passive, which is all the
+    // test needs.
     if let Ok(tty) = open_tty() {
         let _ = enter_raw(tty.as_raw_fd());
         // Keep `tty` alive past the raw-mode switch by leaking it; we
@@ -120,10 +123,11 @@ fn main() {
     // never exit on our own — the daemon SIGKILLs us at PTY teardown when
     // the test's tempdir/socket drops. Because we never enabled DECSET
     // 1004, the corrected fix B means the daemon never writes the
-    // synthetic OSC, so there's nothing for us to echo and the broadcast
-    // `RenderPatch` stays free of OSC literals — what the test asserts.
-    // (Remove the gate and the OSC bytes arrive here, get echoed, and
-    // surface in a `RenderPatch` — making the test fail, as intended.)
+    // mid-session theme bytes (post-#305: `ESC[I`), so there's nothing
+    // for us to echo and the broadcast `RenderPatch` stays free of those
+    // literals — what the test asserts. (Remove the gate and the bytes
+    // arrive here, get echoed, and surface in a `RenderPatch` — making
+    // the test fail, as intended.)
     let mut stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     let mut buf = [0u8; 256];
