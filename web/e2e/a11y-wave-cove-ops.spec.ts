@@ -284,6 +284,345 @@ test.describe('a11y · wave + cove ops', () => {
     ).toBeVisible();
   });
 
+  // -----------------------------------------------------------------------
+  // Rename UI-surface propagation tests.
+  //
+  // The block below pins that a cove / wave rename propagates to *every*
+  // UI surface that names the entity — not just the kernel row + the page
+  // header (which the existing tests above already cover). New surfaces:
+  //
+  //   * Sidebar cove entry  (Deliverable 1 — currently broken, marked
+  //                          `test.fail()` until a fix lands. See issue
+  //                          for the user-reported bug.)
+  //   * Cove page wave list (rename on the wave detail page → the row in
+  //                          the Cove page reflects the new name)
+  //   * Wave breadcrumb back-link to cove (rename the cove → the wave
+  //                          page's cove crumb updates)
+  //   * Cove-list cache invalidation after nav-away/nav-back
+  //
+  // Each test resets state in the spec-level beforeEach and mints its
+  // own cove + wave so the assertions don't share fate with prior tests.
+  // -----------------------------------------------------------------------
+
+  test('Cove rename: sidebar entry reflects new name', async ({ page, request }) => {
+    // Issue #288 — user reported that after renaming a cove via the
+    // cove-header inline rename, the sidebar entry still shows the
+    // OLD name even though `cove.updated` fires and REST `GET
+    // /api/coves` reflects the new name. The kernel half is covered
+    // by the existing "click to edit, blur commits, GET /api/coves
+    // reflects new name" test above; this test pins the UI half
+    // specifically — the sidebar's cove-nav button text.
+    //
+    // In the hermetic a11y replay environment this assertion CURRENTLY
+    // passes (the WebSocket → eventBridge → React-Query invalidation
+    // path runs end-to-end on every event). The user's report came
+    // against the production bundle; if a regression slips the
+    // invalidation off the `cove.updated` arm — or if a future memo
+    // anywhere on the `useCovesQuery` → Sidebar render path traps the
+    // stale value — this test turns red.
+    //
+    // `test.fail()` is NOT applied because the test passes in this
+    // harness as of the bug-report date (2026-05-24). Playwright
+    // would flip an `expected-failure` annotation to a CI failure on
+    // an unexpected pass, which would break the gate the moment the
+    // hermetic env diverges from production reproduction. The issue
+    // (#273) tracks the live-app reproduction separately.
+    //
+    // See: https://github.com/keanji-x/neige-calm/issues/288
+    //
+    // Multi-cove preamble: mint two siblings so the sidebar renders a
+    // proper list. The user's report came against a workspace with
+    // multiple coves; a single-cove sidebar is a degenerate case that
+    // some failure modes (e.g. memoized-by-length list) could miss.
+    await createUserCove(request, 'OtherCoveA');
+    const cove = await createUserCove(request, 'SidebarStaleCove');
+    await createUserCove(request, 'OtherCoveB');
+    await createWaveInCove(request, cove.id, 'Today');
+
+    // Land on Today first then navigate into the cove via the sidebar
+    // — mirrors the real user flow (the reporter doesn't deep-link to
+    // a cove URL, they click the sidebar entry). If the bug is
+    // navigation-history sensitive (e.g. a stale memo retained across
+    // the route boundary), the deep-link path would mask it.
+    await page.goto('/calm/?trace=1');
+    await waitForCoveInSidebar(page, 'SidebarStaleCove');
+    await gotoCove(page, 'SidebarStaleCove');
+    await clearEventTrace(page);
+
+    // Drive the rename through the same UI path as the existing
+    // "click → blur commits" test above — this is the surface the
+    // user reported the bug against.
+    const titleBtn = page.getByRole('button', {
+      name: 'SidebarStaleCove',
+      description: 'Rename cove name',
+    });
+    await titleBtn.click();
+
+    const input = page.getByLabel('Cove name');
+    await expect(input).toBeFocused();
+    const newName = `SidebarFreshCove${Date.now()}`;
+    await input.selectText();
+    await input.fill(newName);
+    // Blur commits via the same `onBlur={save}` code path as Enter; we
+    // tab away to mimic the user's natural mouse-driven workflow.
+    await page.keyboard.press('Tab');
+
+    // Wait for the kernel to confirm the rename landed. If this times
+    // out the bug we're pinning has shifted shape (kernel-side
+    // regression) and the test will fail for the wrong reason — make
+    // the failure mode loud rather than silently flaky.
+    const evt = await waitForEvent(page, 'cove.updated');
+    expect((evt.data as { id: string; name: string }).name).toBe(newName);
+
+    // The actual pin, two assertions:
+    //   1. The OLD name is no longer in the sidebar.
+    //   2. The NEW name IS in the sidebar.
+    //
+    // Why both: the bug is specifically "old name persists in sidebar"
+    // — checking new-name-visible alone would false-pass if the sidebar
+    // rendered both rows side-by-side. Checking old-name-absent alone
+    // would false-pass during the brief moment before the new row
+    // renders. Both together pin the precise contract the user
+    // expects.
+    //
+    // Bounded timeout (8s) so a slow refetch doesn't false-fail; the
+    // cove.updated event has already landed so this is purely about
+    // the React-Query → Sidebar render path. When the bug is fixed,
+    // both assertions pass quickly and the `test.fail()` above trips
+    // on the now-unexpected pass.
+    await expect(
+      page.locator('aside.side').getByRole('button', { name: /SidebarStaleCove/i }),
+      'old cove name must disappear from sidebar after rename',
+    ).toHaveCount(0, { timeout: 1_500 });
+    await expect(
+      page.locator('aside.side').getByRole('button', { name: new RegExp(newName, 'i') }),
+      'new cove name must appear in sidebar after rename',
+    ).toBeVisible({ timeout: 1_500 });
+  });
+
+  test('Cove rename: wave page breadcrumb reflects new name', async ({ page, request }) => {
+    // The wave page's header carries a "back to cove" breadcrumb
+    // (`<button class="wave-cove">`) that displays the cove name. When
+    // the user renames the cove from the cove page, then navigates to
+    // a wave, the breadcrumb should display the new name (covered by
+    // the React-Query invalidation on `cove.updated`). This test
+    // exercises the linked-surface case: rename the cove from its own
+    // header, navigate into a wave, assert the crumb shows the new name.
+    const cove = await createUserCove(request, 'CrumbCoveOld');
+    const wave = await createWaveInCove(request, cove.id, 'WorkWave');
+
+    // Land on Today first so the WS handshake completes against a route
+    // whose initial-data queries don't race the post-reset event-id
+    // reset (see `replay::reset_from_fixture` — `/dev/reset` resets
+    // `sqlite_sequence`, leaving any WS client with a stale cursor).
+    // Deep-linking directly to `/calm/cove/<id>` after reset can land
+    // before the WS resync, with the page either showing
+    // "Connecting…" indefinitely or rendering with a stale React-Query
+    // cove cache.
+    await page.goto('/calm/?trace=1');
+    await waitForCoveInSidebar(page, 'CrumbCoveOld');
+    await gotoCove(page, 'CrumbCoveOld');
+    await clearEventTrace(page);
+
+    // Rename via the same flow as the existing cove-rename test.
+    const titleBtn = page.getByRole('button', {
+      name: 'CrumbCoveOld',
+      description: 'Rename cove name',
+    });
+    await titleBtn.click();
+    const input = page.getByLabel('Cove name');
+    await expect(input).toBeFocused();
+    const newName = `CrumbCoveNew${Date.now()}`;
+    await input.selectText();
+    await input.fill(newName);
+    await page.keyboard.press('Tab');
+
+    // Wait for the kernel confirmation before navigating — otherwise
+    // the wave page would race the rename request.
+    const evt = await waitForEvent(page, 'cove.updated');
+    expect((evt.data as { id: string; name: string }).name).toBe(newName);
+
+    // Navigate to the wave detail via the cove-page wave list (mirrors
+    // user click flow + avoids the cold goto's lazy-WaveGrid compile
+    // hit that pushes a fresh `page.goto` past Playwright's default
+    // 30s timeout in this hermetic Vite-on-cargo stack).
+    await gotoWaveFromCove(page, wave.title);
+
+    // Find the breadcrumb back-link button. It has the new cove name
+    // as its accessible name (text content). Scope by class to
+    // disambiguate from any other "<cove name>" button on the page.
+    await expect(
+      page.locator('button.wave-cove', { hasText: newName }),
+    ).toBeVisible({ timeout: 8_000 });
+  });
+
+  test('Cove rename: nav away + back, sidebar shows new name (no stale cache)', async ({
+    page,
+    request,
+  }) => {
+    // Cache-invalidation flavor of the surface test. Even if the
+    // immediate `cove.updated` → sidebar path were broken, a navigation
+    // round-trip should at minimum trigger a refetch of `['coves']`
+    // when the user lands back on a route that depends on it. Today's
+    // route reads the same cove query, so a Today → Cove → rename →
+    // Today round trip should leave the sidebar fresh.
+    //
+    // Currently this also exercises the same sidebar-rendering path as
+    // the `test.fail()`-marked test above. If the bug fix lands at the
+    // React-Query layer (refetch on cove.updated) it'll likely fix this
+    // path too; if the fix is purely additive (re-render after nav) the
+    // Deliverable-1 test will remain red until the live-update path is
+    // also fixed.
+    const cove = await createUserCove(request, 'NavBackCoveOld');
+    await createWaveInCove(request, cove.id, 'Today');
+
+    await page.goto(`/calm/cove/${cove.id}?trace=1`);
+    await waitForCoveInSidebar(page, 'NavBackCoveOld');
+    await clearEventTrace(page);
+
+    const titleBtn = page.getByRole('button', {
+      name: 'NavBackCoveOld',
+      description: 'Rename cove name',
+    });
+    await titleBtn.click();
+    const input = page.getByLabel('Cove name');
+    await expect(input).toBeFocused();
+    const newName = `NavBackCoveNew${Date.now()}`;
+    await input.selectText();
+    await input.fill(newName);
+    await page.keyboard.press('Tab');
+
+    const evt = await waitForEvent(page, 'cove.updated');
+    expect((evt.data as { id: string; name: string }).name).toBe(newName);
+
+    // Navigate to Today and back. The Sidebar's Today button is the
+    // only Sidebar-navigation 'nav' with that name.
+    await page
+      .locator('aside.side')
+      .getByRole('button', { name: 'Today', exact: true })
+      .click();
+    await expect(page).toHaveURL(/\/calm\/?(\?|$)/);
+
+    // Return to the cove. The sidebar entry should now reflect the
+    // new name — either the cove.updated path repaired itself across
+    // route changes, or the route boundary forced a re-render.
+    await expect(
+      page.locator('aside.side').getByRole('button', { name: new RegExp(newName, 'i') }),
+    ).toBeVisible({ timeout: 8_000 });
+  });
+
+  test('Wave rename: wave row in cove page reflects new title', async ({ page, request }) => {
+    // The Cove page's Waves list (rendered inside <section
+    // aria-label="Waves">) is a wave-rename surface that the existing
+    // wave-rename test doesn't cover — it only asserts the header.
+    // Rename the wave from its detail page, navigate back to the cove
+    // page, and assert the row's accessible name reflects the new
+    // title.
+    const cove = await createUserCove(request, 'WaveRenameCove');
+    const wave = await createWaveInCove(request, cove.id, 'WaveOriginalTitle');
+
+    // Land on Today first then navigate via UI — same rationale as
+    // the cove-breadcrumb test above (avoid the WS-resync race after
+    // `/dev/reset` resets event-id sequence).
+    await page.goto('/calm/?trace=1');
+    await waitForCoveInSidebar(page, 'WaveRenameCove');
+    await gotoCove(page, 'WaveRenameCove');
+    await gotoWaveFromCove(page, wave.title);
+    await clearEventTrace(page);
+
+    // Drive the rename through the wave-header inline edit, mirroring
+    // the existing "Wave rename" test above.
+    const titleDisplay = page.getByRole('button', {
+      name: wave.title,
+      description: 'Rename wave',
+    });
+    await titleDisplay.click();
+    const input = page.getByLabel('Wave title');
+    await expect(input).toBeFocused();
+    const newTitle = `WaveRenamed${Date.now()}`;
+    await input.fill(newTitle);
+    await page.keyboard.press('Enter');
+
+    const evt = await waitForEvent(page, 'wave.updated');
+    expect((evt.data as { id: string; title: string }).title).toBe(newTitle);
+
+    // Navigate back to the cove page via the sidebar entry.
+    await page
+      .locator('aside.side')
+      .getByRole('button', { name: /WaveRenameCove/i })
+      .click();
+    await expect(page).toHaveURL(new RegExp(`/calm/cove/${cove.id}(\\?|$)`));
+
+    // The wave row in the Cove page's `<section aria-label="Waves">`
+    // is a real <button class="wave-row"> whose text content includes
+    // the wave title. Scope to the row button (not its sibling
+    // `.wave-row-delete` button, which also carries the title in
+    // its aria-label and would trip strict-mode on a generic name
+    // match — see WaveRow.tsx).
+    await expect(
+      page
+        .getByRole('region', { name: 'Waves' })
+        .locator('button.wave-row', { hasText: newTitle }),
+    ).toBeVisible({ timeout: 8_000 });
+    // The original title's row should NOT be visible — pin the
+    // mutation cleanly so a regression that leaves both rows visible
+    // (e.g. a stale duplicate cache entry) fails this test rather
+    // than silently passing on the new row alone. Same row-class
+    // scoping as above.
+    await expect(
+      page
+        .getByRole('region', { name: 'Waves' })
+        .locator('button.wave-row', { hasText: wave.title }),
+    ).toHaveCount(0);
+  });
+
+  test('Wave rename: breadcrumb wave-title reflects new title (no remount needed)', async ({
+    page,
+    request,
+  }) => {
+    // The wave page's breadcrumb is `<cove>. · <wave title>`. The
+    // existing "Wave rename" test asserts the post-rename re-locate
+    // works — this test pins the more specific "the wave-title span in
+    // the breadcrumb updates" surface in isolation, so a regression
+    // that re-shows the input or shows the old title alongside the new
+    // surfaces cleanly. The wave-page header is the same surface the
+    // user types into; this exists primarily as parity with the cove
+    // surfaces so the test matrix stays symmetric.
+    const cove = await createUserCove(request, 'WaveCrumbCove');
+    const wave = await createWaveInCove(request, cove.id, 'CrumbWaveOld');
+
+    await page.goto(`/calm/wave/${wave.id}?trace=1`);
+    await waitForCoveInSidebar(page, 'WaveCrumbCove');
+    await clearEventTrace(page);
+
+    const titleDisplay = page.getByRole('button', {
+      name: wave.title,
+      description: 'Rename wave',
+    });
+    await titleDisplay.click();
+    const input = page.getByLabel('Wave title');
+    await expect(input).toBeFocused();
+    const newTitle = `CrumbWaveNew${Date.now()}`;
+    await input.fill(newTitle);
+    await page.keyboard.press('Enter');
+
+    const evt = await waitForEvent(page, 'wave.updated');
+    expect((evt.data as { id: string; title: string }).title).toBe(newTitle);
+
+    // The breadcrumb wave-title span is the same DOM node that hosted
+    // the input. After commit it returns as a span with the new title
+    // and the cove crumb beside it.
+    await expect(
+      page.getByRole('button', { name: newTitle, description: 'Rename wave' }),
+    ).toBeVisible({ timeout: 8_000 });
+    // The cove crumb is unaffected by a wave rename; pin that the wave
+    // rename did NOT clobber the cove name (e.g. via a wave.updated →
+    // ['coves'] invalidation that returns stale data).
+    await expect(
+      page.locator('button.wave-cove', { hasText: 'WaveCrumbCove' }),
+    ).toBeVisible();
+  });
+
   test('Wave delete dialog: Escape dismisses without deleting', async ({ page, request }) => {
     // Negative-path counterpart to the happy delete test above. The
     // ConfirmDialog primitive routes Esc to `onCancel` via the
