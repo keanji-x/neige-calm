@@ -181,12 +181,103 @@ describe('TodayPage CalendarCard — wave activity dots & agenda', () => {
 
     // Today's cell defaults selected → agenda already lists the wave.
     expect(screen.getByText('Migrate auth')).toBeTruthy();
-    expect(screen.getAllByText('Atlas').length).toBeGreaterThan(0);
+    // The compact single-line row no longer prints the cove name as
+    // text (the left coloured bar carries the cove identity); instead
+    // the cove name is folded into the button's aria-label so axe /
+    // screen readers still see it.
+    const chip = screen.getByRole('button', { name: /Migrate auth/i });
+    expect(chip.getAttribute('aria-label')).toContain('in cove Atlas');
 
     // Clicking the chip should dispatch a navigation event for the
     // wave id.
-    await user.click(screen.getByRole('button', { name: /Migrate auth/i }));
+    await user.click(chip);
     expect(onGo).toHaveBeenCalledWith({ name: 'wave', id: 'w-target' });
+  });
+
+  it('renders waiting / running state as a dot flag and folds it into aria-label', () => {
+    const atlas = makeCove({ id: 'cove-atlas', name: 'Atlas', color: '#5a9' });
+    const waiting = makeWave({
+      id: 'w-waiting',
+      title: 'Needs your input',
+      coveId: atlas.id,
+      anyCardNeedsInput: true,
+      createdAt: PINNED_NOW - DAY_MS,
+      terminalAt: null,
+    });
+    const running = makeWave({
+      id: 'w-running',
+      title: 'Running build',
+      coveId: atlas.id,
+      lifecycle: 'working',
+      createdAt: PINNED_NOW - DAY_MS,
+      terminalAt: null,
+    });
+    renderTodayWith({ waves: [waiting, running], coves: [atlas] });
+
+    // Old `cal-event-meta` row is gone; lifecycle text lives in aria-label.
+    expect(document.querySelector('.cal-event-meta')).toBeNull();
+
+    const waitingChip = screen.getByRole('button', { name: /Needs your input/i });
+    expect(waitingChip.getAttribute('aria-label')).toContain('waiting on you');
+    expect(waitingChip.querySelector('.cal-event-flag.warn')).toBeTruthy();
+
+    const runningChip = screen.getByRole('button', { name: /Running build/i });
+    expect(runningChip.getAttribute('aria-label')).toContain('running');
+    expect(runningChip.querySelector('.cal-event-flag.run')).toBeTruthy();
+  });
+
+  it('renders all overlapping waves into the agenda (CSS clamps height to a scrollable max)', () => {
+    const atlas = makeCove({ id: 'cove-atlas', name: 'Atlas', color: '#5a9' });
+    // 20 distinct waves, all active today — far more than would fit
+    // inside the 360px max-height the rail enforces in CSS.
+    const waves: Wave[] = Array.from({ length: 20 }, (_, i) =>
+      makeWave({
+        id: `w-${i}`,
+        title: `Wave number ${i}`,
+        coveId: atlas.id,
+        createdAt: PINNED_NOW - DAY_MS,
+        terminalAt: null,
+      }),
+    );
+    renderTodayWith({ waves, coves: [atlas] });
+
+    // All 20 chips should render into the agenda (no virtualisation):
+    // overflow is delegated to CSS (`max-height` + `overflow-y: auto`
+    // on `.cal-agenda`). jsdom doesn't load `calm.css`, so we assert
+    // the structural invariant — every chip exists in DOM under the
+    // agenda container — and leave the visual scroll behaviour to the
+    // CSS rule (visible in the production build).
+    const agenda = document.querySelector('.cal-agenda') as HTMLElement;
+    expect(agenda).toBeTruthy();
+    const chips = agenda.querySelectorAll('.cal-event');
+    expect(chips.length).toBe(20);
+  });
+
+  it('renders long wave titles without forcing a multi-line layout (ellipsis class)', () => {
+    const atlas = makeCove({ id: 'cove-atlas', name: 'Atlas', color: '#5a9' });
+    const longTitle = 'A'.repeat(200);
+    const w = makeWave({
+      id: 'w-long',
+      title: longTitle,
+      coveId: atlas.id,
+      createdAt: PINNED_NOW - DAY_MS,
+      terminalAt: null,
+    });
+    renderTodayWith({ waves: [w], coves: [atlas] });
+
+    // The `.cal-event-title` element carries the long text exactly
+    // once; the CSS rule (`white-space: nowrap; text-overflow: ellipsis;`
+    // in calm.css §cal-event) is what makes it visually truncate. We
+    // assert the structural contract — single title element, class
+    // applied, text intact — without poking computed styles (calm.css
+    // isn't loaded into jsdom; the visual contract is owned by the
+    // built bundle and verified in the e2e suite).
+    const titleEl = document.querySelector('.cal-event-title') as HTMLElement;
+    expect(titleEl).toBeTruthy();
+    expect(titleEl.textContent).toBe(longTitle);
+    expect(titleEl.className).toContain('cal-event-title');
+    // No `.cal-event-meta` survives the redesign — the row is single line.
+    expect(document.querySelector('.cal-event-meta')).toBeNull();
   });
 
   it('shows the empty state on a day with no active waves and no events', async () => {

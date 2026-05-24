@@ -172,25 +172,45 @@ export function TodayPage({
 }
 
 /**
- * Issue #250 PR 5 — `Wave + Cove` chip used in the calendar agenda when
- * the selected day's active wave list isn't empty. Mirrors the
- * vocabulary of the `CalEvent` chip below (same `cal-event` class,
- * same waiting/running treatment) so the two list types — scheduled
- * events (future) and live wave activity (now) — share the same look
- * without forking the agenda CSS.
+ * Issue #250 PR 5 — single-line agenda row shared by both the live
+ * wave-activity branch and the (future) hour-scheduled `CalEvent`
+ * branch. Time stamp is optional (`undefined` for live waves, formatted
+ * `"3pm"` for scheduled events). Cove name is no longer rendered as
+ * text — the 3px coloured bar on the left already encodes cove
+ * identity, and dropping the meta text is what lets the row stay one
+ * line ~28px tall per design (pages.jsx L241-263 + styles.css L1490-1539).
+ *
+ * Waiting / running state degrades to a 6×6 dot flag at the right edge
+ * of the title. The lifecycle text moves to `aria-label` so screen
+ * readers and the axe a11y suite don't lose information.
  */
-function CalAgendaWaveChip({
+function CalEventRow({
   wave,
+  hourLabel,
   coves,
   onGo,
 }: {
   wave: Wave;
+  /** Pre-formatted hour string (`"3pm"`) for scheduled events; omit
+   *  for live wave activity which isn't hour-bucketed. */
+  hourLabel?: string;
   coves: Cove[];
   onGo: (r: Route) => void;
 }) {
   const c = coveOf(wave.coveId, coves);
   const isWaiting = waveNeedsUserAttention(wave);
   const eventRunning = isRunning(wave.lifecycle);
+  // The dot flags are visual; the human-readable lifecycle state lives
+  // in the button's aria-label so screen readers and axe checks don't
+  // lose what the old `cal-event-meta` text used to carry.
+  const stateBits: string[] = [];
+  if (isWaiting) stateBits.push('waiting on you');
+  if (eventRunning) stateBits.push('running');
+  const coveName = c?.name ?? 'Unknown cove';
+  const label =
+    `Wave ${wave.title}` +
+    (stateBits.length > 0 ? `, ${stateBits.join(', ')}` : '') +
+    `, in cove ${coveName}`;
   return (
     <button
       className={
@@ -198,29 +218,25 @@ function CalAgendaWaveChip({
         (isWaiting ? ' waiting' : '') +
         (eventRunning ? ' running' : '')
       }
+      aria-label={label}
       onClick={() => onGo({ name: 'wave', id: wave.id })}
     >
-      {/* No "time" slot — the wave isn't hour-scheduled. The bar +
-          title carry the visual weight; the empty slot keeps the row
-          layout consistent with hour-scheduled CalEvent chips. */}
-      <span className="cal-event-bar" style={{ background: c?.color }} />
+      <span className="cal-event-time num" aria-hidden="true">
+        {hourLabel ?? ''}
+      </span>
+      <span
+        className="cal-event-bar"
+        style={{ background: c?.color }}
+        aria-hidden="true"
+      />
       <span className="cal-event-body">
-        <div className="cal-event-title">{wave.title}</div>
-        <div className="cal-event-meta">
-          <span style={{ color: c?.color }}>{c?.name ?? 'Unknown cove'}</span>
-          {isWaiting && (
-            <>
-              {' · '}
-              <span className="warn-text">waiting on you</span>
-            </>
-          )}
-          {eventRunning && (
-            <>
-              {' · '}
-              <span className="cal-event-run">running</span>
-            </>
-          )}
-        </div>
+        <span className="cal-event-title">{wave.title}</span>
+        {isWaiting && (
+          <span className="cal-event-flag warn" aria-hidden="true" />
+        )}
+        {eventRunning && (
+          <span className="cal-event-flag run" aria-hidden="true" />
+        )}
       </span>
     </button>
   );
@@ -456,48 +472,17 @@ function CalendarCard({
         {eventAgenda.length === 0 && waveAgenda.length === 0 && (
           <div className="cal-empty">Nothing scheduled.</div>
         )}
-        {eventAgenda.map((e, i) => {
-          const c = coveOf(e.wave.coveId, coves);
-          // Issue #254 — calendar event chip uses the same predicate as
-          // the sidebar / today clock so the visual "waiting on you"
-          // treatment is consistent across the page.
-          const isWaiting = waveNeedsUserAttention(e.wave);
-          const eventRunning = isRunning(e.wave.lifecycle);
-          return (
-            <button
-              key={`evt-${i}`}
-              className={
-                'cal-event' +
-                (isWaiting ? ' waiting' : '') +
-                (eventRunning ? ' running' : '')
-              }
-              onClick={() => onGo({ name: 'wave', id: e.wave.id })}
-            >
-              <span className="cal-event-time num">{fmtHour(e.h)}</span>
-              <span className="cal-event-bar" style={{ background: c?.color }} />
-              <span className="cal-event-body">
-                <div className="cal-event-title">{e.wave.title}</div>
-                <div className="cal-event-meta">
-                  <span style={{ color: c?.color }}>{c?.name}</span>
-                  {isWaiting && (
-                    <>
-                      {' · '}
-                      <span className="warn-text">waiting on you</span>
-                    </>
-                  )}
-                  {eventRunning && (
-                    <>
-                      {' · '}
-                      <span className="cal-event-run">running</span>
-                    </>
-                  )}
-                </div>
-              </span>
-            </button>
-          );
-        })}
+        {eventAgenda.map((e, i) => (
+          <CalEventRow
+            key={`evt-${i}`}
+            wave={e.wave}
+            hourLabel={fmtHour(e.h)}
+            coves={coves}
+            onGo={onGo}
+          />
+        ))}
         {waveAgenda.map((w) => (
-          <CalAgendaWaveChip key={`wave-${w.id}`} wave={w} coves={coves} onGo={onGo} />
+          <CalEventRow key={`wave-${w.id}`} wave={w} coves={coves} onGo={onGo} />
         ))}
       </div>
     </section>
