@@ -803,6 +803,15 @@ export function XtermView({
       // onclose) so a strict-mode unmount or a `terminalId` change clears
       // the parent state even if no close frame fires.
       onRoleChangeRef.current?.(null);
+      // #306 followup — defensive: reset the live exit mirror on teardown.
+      // Effect deps are `[terminalId, reconnectKey]`; on a future swap or
+      // bump the next mount would otherwise inherit this ref still
+      // pointing at the previous terminal's exit, and the close-frame
+      // backstop in `ws.onclose` (which gates on `exitInfoRef.current
+      // === null`) could be suppressed for the new terminal if its
+      // `TerminalExited` JSON frame is lost on a slow link. Narrow edge
+      // today, one line to prevent.
+      exitInfoRef.current = null;
     };
     // `theme` deliberately omitted: a theme flip should NOT rebuild the
     // WebSocket / Terminal. The sibling effect above mutates

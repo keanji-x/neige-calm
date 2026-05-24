@@ -2048,12 +2048,24 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   border-radius: var(--radius-pill);
   font-variant-numeric: tabular-nums;
 }
+/* #306 followup — `--text-2` not `--text-3` on the soft palette pairs.
+   The original `--text-3 on --warn-soft` / `--text-3 on --accent-soft`
+   landings missed WCAG 2 AA 4.5:1 in dark mode (axe reported neutral
+   at 4.41 against the wave card's --warn-soft; success against dark
+   --accent-soft computes to 4.33, also short). Bumping to --text-2
+   lifts both pairs comfortably above the threshold in both themes
+   (neutral dark 6.00, light 6.46; success dark 5.87, light 6.44) at
+   the cost of a slightly stronger badge label — acceptable for an
+   uppercase 11px caption whose entire job is to be readable. Error
+   is unchanged: the --warn-fg/--text-1 fallback chain currently
+   inherits the card's --text (large margin) and isn't in the failure
+   set. */
 .card-head-exit-badge-success {
-  color: var(--text-3);
+  color: var(--text-2);
   background: var(--accent-soft, var(--warn-soft));
 }
 .card-head-exit-badge-neutral {
-  color: var(--text-3);
+  color: var(--text-2);
   background: var(--warn-soft);
 }
 .card-head-exit-badge-error {
