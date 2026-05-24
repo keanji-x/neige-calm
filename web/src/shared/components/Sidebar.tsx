@@ -1,8 +1,10 @@
 import { useRef } from 'react';
 import { useState } from '../state';
 import { Menu, type MenuItem } from '../../ui/Menu/Menu';
+import { useSession } from '../../app/SessionProvider';
 import type { Cove, Route, Wave } from '../../types';
 import { isRunning, waveNeedsUserAttention } from '../lifecycle';
+import { PlusIcon } from './PlusIcon';
 
 // ---------------- Sidebar ----------------
 
@@ -19,8 +21,9 @@ export function Sidebar({
   waves: Wave[];
   route: Route;
   onGo: (r: Route) => void;
-  /** Bootstrap affordance: renders a small `+ New Cove` row below the
-   *  Coves list. Lives here (not in CovePage) because creating the *first*
+  /** Bootstrap affordance: renders a small `+` icon button on the Coves
+   *  section header that expands an inline name input at the top of the
+   *  cove list. Lives here (not in CovePage) because creating the *first*
    *  cove has no other home. Wave creation, by contrast, lives inside
    *  CovePage where the cove context is already established. */
   onCreateCove?: (name: string, color: string) => void | Promise<void>;
@@ -84,8 +87,8 @@ export function Sidebar({
         </section>
       )}
 
-      <nav className="side-nav" aria-label="Coves">
-        <div className="nav-label">Coves</div>
+      <nav className="side-nav side-coves" aria-label="Coves">
+        <CovesHeader onCreate={onCreateCove} />
         {coves.map((cove) => {
           const cw = waves.filter((w) => w.coveId === cove.id);
           const running = cw.filter((w) => isRunning(w.lifecycle)).length;
@@ -119,10 +122,8 @@ export function Sidebar({
             </button>
           );
         })}
-        {onCreateCove && <NewCoveButton onCreate={onCreateCove} />}
       </nav>
 
-      <span className="sp" />
       <UserMenu onOpenSettings={onOpenSettings} onSignOut={onSignOut} />
     </aside>
   );
@@ -135,10 +136,6 @@ export function Sidebar({
 // Settings + Sign out items. Both callbacks are optional so the Sidebar
 // can be rendered without a router (e.g. in component tests); items
 // referencing a missing handler are simply no-ops.
-//
-// The trigger must be a single focusable <button>, so the `.sub` line
-// inside `.who` is a <span> with `display: block` (set in calm.css) —
-// no block elements inside a button per HTML.
 function UserMenu({
   onOpenSettings,
   onSignOut,
@@ -146,6 +143,8 @@ function UserMenu({
   onOpenSettings?: () => void;
   onSignOut?: () => void;
 }) {
+  const { displayName } = useSession();
+  const initials = computeInitials(displayName);
   const items: MenuItem[] = [
     { label: 'Settings', onSelect: () => onOpenSettings?.() },
     { label: 'Sign out', onSelect: () => onSignOut?.() },
@@ -171,37 +170,52 @@ function UserMenu({
           aria-expanded={ariaExpanded}
           aria-label="Open user menu"
         >
-          <span className="me">YK</span>
-          <span className="who">
-            Yuki K.
-            <span className="sub">Pro · 5 agents online</span>
-          </span>
+          <span className="me">{initials}</span>
+          <span className="who">{displayName}</span>
         </button>
       )}
     />
   );
 }
 
-// ---------------- NewCoveButton ----------------
+// First letter of each whitespace-separated word, upper-cased, capped at
+// two chars. Falls back to the first two chars of the raw name when the
+// display name has no whitespace (e.g. a single handle like "yuki").
+function computeInitials(displayName: string): string {
+  const trimmed = displayName.trim();
+  if (!trimmed) return '';
+  const words = trimmed.split(/\s+/);
+  if (words.length === 1) {
+    return trimmed.slice(0, 2).toUpperCase();
+  }
+  return words
+    .slice(0, 2)
+    .map((w) => w.charAt(0).toUpperCase())
+    .join('');
+}
+
+// ---------------- CovesHeader ----------------
 //
-// Lives in the sidebar because creating the *first* cove has no other home;
-// every subsequent affordance (new wave, new card) lives inside the page
-// it belongs to. Bootstraps a random color from a fixed palette — a real
-// color picker can land in a settings/command-palette pass later.
+// Renders the "Coves" section label with a tiny `+` icon button anchored
+// on the right edge of the same row. Clicking `+` expands an inline name
+// input directly below the header (still at the top of the cove list),
+// so the trigger stays in view even when the cove list overflows.
 
 const PALETTE = ['#5a9', '#c97', '#79c', '#b86', '#6a8', '#a6c'];
 
-function NewCoveButton({
+function CovesHeader({
   onCreate,
 }: {
-  onCreate: (name: string, color: string) => void | Promise<void>;
+  onCreate?: (name: string, color: string) => void | Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState('');
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  // When the inline form opens, focus the input on the next tick so the
-  // ref is bound. Cheaper than a separate effect for one-shot focus.
+  if (!onCreate) {
+    return <div className="nav-label">Coves</div>;
+  }
+
   const openForm = () => {
     setOpen(true);
     queueMicrotask(() => inputRef.current?.focus());
@@ -221,32 +235,38 @@ function NewCoveButton({
     close();
   };
 
-  if (!open) {
-    return (
-      <button className="cove-nav new" onClick={openForm} title="New cove">
-        <span className="swatch-wrap">
-          <span className="swatch-plus">+</span>
-        </span>
-        <span className="lbl">New cove</span>
-      </button>
-    );
-  }
   return (
-    <div className="cove-nav-edit">
-      <span className="swatch-wrap">
-        <span className="swatch-plus">+</span>
-      </span>
-      <input
-        ref={inputRef}
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') void submit();
-          else if (e.key === 'Escape') close();
-        }}
-        onBlur={() => void submit()}
-        placeholder="Name…"
-      />
-    </div>
+    <>
+      <div className="nav-label nav-label-row">
+        <span>Coves</span>
+        <button
+          type="button"
+          className="nav-label-add"
+          onClick={openForm}
+          title="New cove"
+          aria-label="New cove"
+        >
+          <PlusIcon />
+        </button>
+      </div>
+      {open && (
+        <div className="cove-nav-edit">
+          <span className="swatch-wrap">
+            <span className="swatch-plus">+</span>
+          </span>
+          <input
+            ref={inputRef}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void submit();
+              else if (e.key === 'Escape') close();
+            }}
+            onBlur={() => void submit()}
+            placeholder="Name…"
+          />
+        </div>
+      )}
+    </>
   );
 }

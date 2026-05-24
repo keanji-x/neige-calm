@@ -64,6 +64,17 @@ import { useCovesQuery, useUpdateCoveMutation } from '../api/queries';
 import { adaptCove } from '../api/adapt';
 import type { KernelCove } from '../api/wire';
 import type { Cove, Route } from '../types';
+import { SessionContext } from '../app/SessionProvider';
+
+// Sidebar's UserMenu calls `useSession()`. Tests don't stand up the real
+// SessionProvider (which would probe `/api/auth/whoami`); instead they
+// wrap renders in a stub provider that carries a minimal whoami payload.
+const STUB_SESSION = {
+  userId: 'u-test',
+  displayName: 'Test User',
+  role: 'owner',
+  sessionId: 's-test',
+};
 
 function makeClient(): QueryClient {
   return new QueryClient({
@@ -76,7 +87,13 @@ function makeClient(): QueryClient {
 
 function wrap(client: QueryClient) {
   return function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    return (
+      <QueryClientProvider client={client}>
+        <SessionContext.Provider value={STUB_SESSION}>
+          {children}
+        </SessionContext.Provider>
+      </QueryClientProvider>
+    );
   };
 }
 

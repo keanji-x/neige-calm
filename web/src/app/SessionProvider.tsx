@@ -27,13 +27,37 @@
  * inside `AppProviders`.
  */
 
-import { useEffect } from 'react';
+import { createContext, useContext, useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useState } from '../shared/state';
 import { whoami, type WhoamiResponse } from '../api/auth';
 import { onUnauthorized } from '../api/onUnauthorized';
 import { LoginPage } from '../LoginPage';
 import { IDB_DB_NAME } from '../api/persistConfig';
+
+// Context carries the whoami payload to descendants of the authed branch.
+// Null only outside an authed render — the `useSession` hook below throws
+// in that case so consumers can rely on the non-null value.
+//
+// Exported so vitest integration tests that mount session-aware leaves
+// (e.g. `<Sidebar>`'s `UserMenu`) can wrap their render tree in a stub
+// provider without standing up the full whoami probe. Production code
+// should keep using `<SessionProvider>` / `useSession()` — direct
+// `SessionContext.Provider` usage is a test-only seam.
+export const SessionContext = createContext<WhoamiResponse | null>(null);
+
+/**
+ * Read the current authed session. Must be called inside an authed
+ * SessionProvider render (which is the only branch that mounts `children`),
+ * otherwise it throws — null sessions don't reach UI that uses this hook.
+ */
+export function useSession(): WhoamiResponse {
+  const ctx = useContext(SessionContext);
+  if (!ctx) {
+    throw new Error('useSession must be used inside an authed SessionProvider');
+  }
+  return ctx;
+}
 
 /** Same localStorage key the WS event stream uses for its `since` cursor.
  *  Duplicated here (not imported) to keep this module's import graph free
@@ -150,5 +174,9 @@ export function SessionProvider({ children }: SessionProviderProps) {
   if (session.kind === 'unauthed') {
     return <LoginPage />;
   }
-  return <>{children}</>;
+  return (
+    <SessionContext.Provider value={session.whoami}>
+      {children}
+    </SessionContext.Provider>
+  );
 }

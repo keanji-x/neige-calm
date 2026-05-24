@@ -3,6 +3,7 @@ import { useState } from '../shared/state';
 import { WaveRow } from '../shared/components/WaveRow';
 import { NewTaskForm } from '../shared/components/NewTaskForm';
 import type { NewTaskFormResult } from '../shared/components/NewTaskForm';
+import { PlusIcon } from '../shared/components/PlusIcon';
 import { isRunning, isWaitingForUser } from '../shared/lifecycle';
 import type { Cove, Route, Wave } from '../types';
 import { ConfirmDialog } from '../ui/ConfirmDialog/ConfirmDialog';
@@ -76,6 +77,10 @@ export function CovePage({
     void onDeleteWave(w.id);
   };
 
+  // Inline NewTaskForm: the page-header `+` toggles this open; NewTaskForm
+  // autofocuses its title field on mount so no extra wiring needed here.
+  const [newWaveOpen, setNewWaveOpen] = useState(false);
+
   // Single sorted list: waiting first (needs the user), then running
   // (in-flight work), then other (draft/done/canceled — the quiet
   // default). Within each bucket we keep the caller's order — the
@@ -111,6 +116,17 @@ export function CovePage({
         ) : (
           <h1 className="h-display">{cove.name}.</h1>
         )}
+        {onWaveCreated && (
+          <button
+            type="button"
+            className="cove-head-add"
+            onClick={() => setNewWaveOpen(true)}
+            title="New wave"
+            aria-label="New wave"
+          >
+            <PlusIcon />
+          </button>
+        )}
         {onDeleteCove && (
           <span className="cove-head-delete">
             <DeleteButton
@@ -123,6 +139,18 @@ export function CovePage({
           </span>
         )}
       </header>
+
+      {onWaveCreated && (
+        <NewWaveDialog
+          open={newWaveOpen}
+          defaultCoveId={cove.id}
+          onClose={() => setNewWaveOpen(false)}
+          onCreated={async (wave) => {
+            setNewWaveOpen(false);
+            await onWaveCreated(wave);
+          }}
+        />
+      )}
 
       {waves.length === 0 && (
         <div
@@ -155,10 +183,6 @@ export function CovePage({
             ))}
           </div>
         </section>
-      )}
-
-      {onWaveCreated && (
-        <NewWaveCTA defaultCoveId={cove.id} onCreated={onWaveCreated} />
       )}
 
       {/* Page-level wave-delete confirmation. One dialog instance per
@@ -389,32 +413,31 @@ function EditableTitle({
   );
 }
 
-// ---------------- NewWaveCTA — CovePage's compose-bar ----------------
+// ---------------- NewWaveDialog — title-row `+` opens this ----------------
 //
-// Bottom-of-page ghost button. Clicking opens a modal Dialog containing
-// the shared `NewTaskForm` configuration card. Issue #250 PR 3 — per the
-// issue comment "all creation entrypoints must go through the same
-// configuration card", this CTA opens NewTaskForm rather than a bespoke
-// one-line title input. The calendar's empty-cell click (PR 6) opens
-// the same NewTaskForm via the same component.
+// The compose trigger lives in the page title (see `cove-head-actions`),
+// so the standalone bottom-of-page CTA is gone. The Dialog wrapper stays
+// (came in via #297 / b285752) because the cwd field's Browse… affordance
+// takes over the whole modal body via `useModalView()` — that hook is a
+// no-op outside a Dialog, so wrapping the form in a Dialog is the
+// prerequisite. CovePage owns the open/close state and drives `open`
+// from there; this component just hosts the Dialog + NewTaskForm pairing.
 //
-// Why a Dialog (vs. the original inline expansion): the cwd field
-// benefits from a Browse… affordance that takes over the whole modal
-// body via `useModalView()` (the same pattern the codex card uses).
-// That hook is a no-op outside a Dialog, so wrapping the form in a
-// Dialog is the prerequisite. The button stays visible while the
-// dialog is open so Dialog's focus-restore returns the keyboard user
-// to where they started on close.
-
-function NewWaveCTA({
+// Why a controlled Dialog (vs. self-managing state like the prior
+// NewWaveCTA): the title-row `+` button is the visible trigger, and it
+// stays mounted while the Dialog is open so Dialog's focus-restore lands
+// keyboard users back on the `+` button after close.
+function NewWaveDialog({
+  open,
   defaultCoveId,
+  onClose,
   onCreated,
 }: {
+  open: boolean;
   defaultCoveId: string;
+  onClose: () => void;
   onCreated: (wave: NewTaskFormResult) => void | Promise<void>;
 }) {
-  const [open, setOpen] = useState(false);
-  const close = () => setOpen(false);
   // Shared ref between the host Dialog and the NewTaskForm title
   // textarea so the Dialog's initial-focus pass lands directly on the
   // description field. Without this, NewTaskForm's mount-time
@@ -424,34 +447,20 @@ function NewWaveCTA({
   // do the focusing once, deterministically.
   const titleRef = useRef<HTMLTextAreaElement | null>(null);
   return (
-    <>
-      <button
-        type="button"
-        className="new-wave-cta"
-        onClick={() => setOpen(true)}
-        title="New wave"
-      >
-        <span className="new-wave-glyph" aria-hidden>+</span>
-        <span className="new-wave-label">New wave</span>
-      </button>
-      <Dialog
-        open={open}
-        onClose={close}
-        title="New wave"
-        initialFocusRef={titleRef}
-      >
-        {open && (
-          <NewTaskForm
-            defaultCoveId={defaultCoveId}
-            onCreated={async (wave) => {
-              close();
-              await onCreated(wave);
-            }}
-            onCancel={close}
-            initialFocusRef={titleRef}
-          />
-        )}
-      </Dialog>
-    </>
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title="New wave"
+      initialFocusRef={titleRef}
+    >
+      {open && (
+        <NewTaskForm
+          defaultCoveId={defaultCoveId}
+          onCreated={onCreated}
+          onCancel={onClose}
+          initialFocusRef={titleRef}
+        />
+      )}
+    </Dialog>
   );
 }
