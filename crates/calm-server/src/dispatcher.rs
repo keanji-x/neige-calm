@@ -79,6 +79,7 @@ use crate::event::{
 };
 use crate::ids::{ActorId, CardId, CoveId, WaveId};
 use crate::model::CardRole;
+use crate::routes::codex_cards::shell_single_quote;
 use crate::routes::settings::load_settings;
 use crate::routes::terminal::spawn_daemon_with_parts;
 use crate::spec_card::{SeededCardRole, build_codex_env_map, seed_codex_home_with_parts};
@@ -608,6 +609,16 @@ impl Inner {
         );
         let cwd = crate::routes::codex_cards::default_cwd();
 
+        // Render the user-facing prompt from goal+context+AC. This
+        // becomes both the worker card's `payload.prompt` (so
+        // `codex_auto_submit` fires the composer `\r` on
+        // `hook.codex.session_start`) and the positional `[PROMPT]`
+        // arg on the codex daemon's argv (so the composer mounts
+        // pre-filled). Without this the worker hangs forever with an
+        // empty composer — the spec card path (`spec_card.rs`) closed
+        // the same bug via issue #251; the worker path was missed.
+        let user_prompt = render_worker_prompt(&goal, &context, acceptance_criteria.as_deref());
+
         // Worker-card payload — bookkeeping fields the FSM / UI use
         // to distinguish worker codex cards from plain ones. The
         // canonical `card_with_codex_create_tx` helper stamps
@@ -632,6 +643,10 @@ impl Inner {
                 serde_json::Value::String(ac.clone()),
             );
         }
+        bookkeeping.insert(
+            "prompt".into(),
+            serde_json::Value::String(user_prompt.clone()),
+        );
         let bookkeeping_value = serde_json::Value::Object(bookkeeping);
 
         let scope = crate::routes::cards::card_scope(
@@ -855,11 +870,18 @@ impl Inner {
             );
         }
 
+        // Mirror the spec card path: hand codex the rendered prompt as
+        // its positional `[PROMPT]` arg so the composer mounts pre-filled.
+        // `shell_single_quote` ships the whole string as one literal sh
+        // word (`spawn_daemon_with_parts` ultimately funnels through
+        // `sh -c`). `codex_auto_submit` then sees the non-empty
+        // `payload.prompt` and injects a `\r` on `hook.codex.session_start`.
+        let command_line = format!("codex {}", shell_single_quote(&user_prompt));
         if let Err(e) = spawn_daemon_with_parts(
             self.daemon.as_ref(),
             self.repo.as_ref(),
             &term,
-            "codex",
+            &command_line,
             &cwd,
             &env_for_spawn,
         )
@@ -1260,6 +1282,44 @@ impl DispatchRequest {
 #[allow(dead_code)]
 fn _route_repo_marker<R: RouteRepo>(_r: &R) {}
 
+/// Render the worker codex's first user message from the dispatcher
+/// payload. Becomes both the `payload.prompt` field (so
+/// `codex_auto_submit` fires the composer `\r`) and codex's positional
+/// `[PROMPT]` arg (so the composer mounts pre-filled). Mirrors the spec
+/// card path in `routes::waves::create_wave` which feeds the wave title
+/// through the same channel; the system prompt
+/// (`WORKER_SYSTEM_PROMPT_PLACEHOLDER` in `spec_card.rs`) tells the
+/// worker to read goal/context/acceptance-criteria, so we render them
+/// here in a predictable shape. Context is pretty-printed JSON so the
+/// worker can parse it back when it carries structured data.
+fn render_worker_prompt(
+    goal: &str,
+    context: &serde_json::Value,
+    acceptance_criteria: Option<&str>,
+) -> String {
+    let mut out = String::new();
+    out.push_str("Goal:\n");
+    out.push_str(goal);
+
+    let context_str = match context {
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::String(s) if s.trim().is_empty() => String::new(),
+        serde_json::Value::Object(m) if m.is_empty() => String::new(),
+        serde_json::Value::Array(a) if a.is_empty() => String::new(),
+        other => serde_json::to_string_pretty(other).unwrap_or_else(|_| other.to_string()),
+    };
+    if !context_str.is_empty() {
+        out.push_str("\n\nContext:\n");
+        out.push_str(&context_str);
+    }
+
+    if let Some(ac) = acceptance_criteria.map(str::trim).filter(|s| !s.is_empty()) {
+        out.push_str("\n\nAcceptance criteria:\n");
+        out.push_str(ac);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1409,5 +1469,55 @@ mod tests {
             crate::error::CalmError::Conflict("x".into()).code(),
             "conflict"
         );
+    }
+
+    // ---------------------------------------------------------------
+    // `render_worker_prompt` — turns dispatcher payload fields into the
+    // worker codex's first composer message. Each empty/non-empty
+    // combination is exercised so a future refactor that drops a
+    // section trips loudly. The non-empty output is the source of
+    // truth for both `payload.prompt` (consumed by `codex_auto_submit`)
+    // and codex's `[PROMPT]` argv (rendered via `shell_single_quote`),
+    // so a regression here breaks the worker hand-off end-to-end.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn render_worker_prompt_goal_only() {
+        let out = render_worker_prompt("fix the bug", &serde_json::Value::Null, None);
+        assert_eq!(out, "Goal:\nfix the bug");
+    }
+
+    #[test]
+    fn render_worker_prompt_goal_plus_context() {
+        let ctx = serde_json::json!({ "issue": 42, "title": "x" });
+        let out = render_worker_prompt("fix it", &ctx, None);
+        assert!(out.starts_with("Goal:\nfix it"));
+        assert!(out.contains("\n\nContext:\n"));
+        assert!(out.contains("\"issue\": 42"));
+        assert!(out.contains("\"title\": \"x\""));
+        assert!(!out.contains("Acceptance criteria"));
+    }
+
+    #[test]
+    fn render_worker_prompt_goal_plus_context_plus_ac() {
+        let ctx = serde_json::json!({ "pr": 7 });
+        let out = render_worker_prompt("ship", &ctx, Some("tests pass"));
+        assert!(out.contains("Goal:\nship"));
+        assert!(out.contains("\n\nContext:\n"));
+        assert!(out.contains("\"pr\": 7"));
+        assert!(out.ends_with("Acceptance criteria:\ntests pass"));
+    }
+
+    #[test]
+    fn render_worker_prompt_skips_empty_context_object() {
+        let out = render_worker_prompt("g", &serde_json::json!({}), Some("ac"));
+        assert!(!out.contains("Context"), "empty {{}} should be skipped: {out}");
+        assert!(out.contains("Acceptance criteria:\nac"));
+    }
+
+    #[test]
+    fn render_worker_prompt_skips_blank_ac() {
+        let out = render_worker_prompt("g", &serde_json::Value::Null, Some("   "));
+        assert_eq!(out, "Goal:\ng");
     }
 }

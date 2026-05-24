@@ -281,6 +281,22 @@ async fn dispatcher_happy_path_mints_worker_card() {
         Some("codex")
     );
 
+    // `payload.prompt` must be non-empty and quote the goal —
+    // `codex_auto_submit` reads this field to decide whether to fire the
+    // composer `\r`; an empty value silently hangs the worker. The
+    // goal text is part of the rendered prompt, so a regression in the
+    // render helper (or in dispatcher wiring it into bookkeeping) trips
+    // here.
+    let prompt = card
+        .payload
+        .get("prompt")
+        .and_then(|v| v.as_str())
+        .expect("worker card payload.prompt must be present");
+    assert!(
+        prompt.contains("do thing"),
+        "payload.prompt must carry the goal; got: {prompt:?}"
+    );
+
     // Verify the cards.role column carries 'worker' via the role cache
     // (write-through invariant in `card_create_with_id_tx`).
     assert_eq!(cache.get(&card.id), Some(CardRole::Worker));
@@ -903,5 +919,80 @@ async fn dispatcher_codex_worker_spawns_with_dark_theme_default() {
             .any(|(k, v)| k == "--terminal-bg" && v == "15,20,24"),
         "dispatcher-spawned codex worker daemon argv must contain \
          `--terminal-bg 15,20,24` (DARK_THEME_RGB.bg); got: {argv:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 9. Dispatcher's worker codex spawn must hand the rendered prompt to
+//    codex as its positional `[PROMPT]` arg — NOT a bare `codex`. Without
+//    this, the worker mounts an empty composer and `codex_auto_submit`
+//    has nothing to submit; the worker hangs forever. Mirrors the spec
+//    card path (issue #251) for the worker side.
+//
+// We funnel the daemon argv through the same `argv-recorder-daemon`
+// fixture used by the theme test above. `spawn_daemon_with_parts` ends
+// the argv with `-- /bin/sh -c "<program>"`, so the rendered prompt
+// lands as one element starting with `codex `.
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn dispatcher_codex_worker_spawn_carries_prompt_argv() {
+    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
+
+    let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
+    let daemon = Arc::new(calm_server::state::DaemonClient {
+        data_dir: tmp.path().to_path_buf(),
+        session_daemon_bin: locate_recorder_bin(),
+    });
+
+    let codex = stub_codex();
+    let _dispatcher = Dispatcher::spawn(
+        repo.clone(),
+        events.clone(),
+        cache.clone(),
+        wcc.clone(),
+        codex.clone(),
+        daemon,
+        None,
+        4,
+    );
+
+    let idem = "prompt-argv";
+    // Distinctive goal text so the substring assertion below pins us to
+    // this exact dispatch (rather than `do thing` which a sibling test
+    // also uses).
+    let req = codex_req(idem, "fix issue 251 for the worker path");
+    let scope = wave_scope(&wave_id, &cove_id);
+    repo.log_pure_event(ActorId::User, scope, None, &events, &cache, &wcc, req)
+        .await
+        .unwrap();
+
+    // The recorder's `writeln!` per argv element puts the whole program
+    // string (which contains embedded `\n` from the rendered prompt) on
+    // one logical "element" but multiple file lines. We scan the raw
+    // file contents instead of using the line-split helper so the
+    // multi-line prompt assertion is robust to embedded newlines.
+    wait_for_argv_file(tmp.path(), Duration::from_secs(5)).await;
+    let argv_text = std::fs::read_dir(tmp.path())
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .find_map(|e| {
+            let p = e.path();
+            if p.extension().and_then(|s| s.to_str()) == Some("argv") {
+                std::fs::read_to_string(&p).ok()
+            } else {
+                None
+            }
+        })
+        .expect("argv sidecar contents");
+    assert!(
+        argv_text.contains("codex '"),
+        "expected daemon argv to start the program with `codex '<prompt>'`; \
+         got bare `codex` or missing quoting: {argv_text:?}"
+    );
+    assert!(
+        argv_text.contains("fix issue 251 for the worker path"),
+        "codex argv must carry the goal as a positional prompt; got: {argv_text:?}"
     );
 }
