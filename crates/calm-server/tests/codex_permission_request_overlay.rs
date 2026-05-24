@@ -185,9 +185,7 @@ async fn await_wave_needs_input(repo: &Arc<dyn Repo>, wave_id: &str) -> Value {
     let poll = async {
         loop {
             let overlays = repo.overlays_for("wave", wave_id).await.unwrap();
-            if let Some(o) = overlays
-                .iter()
-                .find(|o| o.kind == "any_card_needs_input")
+            if let Some(o) = overlays.iter().find(|o| o.kind == "any_card_needs_input")
                 && o.payload.get("value").and_then(Value::as_bool) == Some(true)
             {
                 return o.payload.clone();
