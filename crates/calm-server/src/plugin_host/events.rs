@@ -117,6 +117,7 @@ fn event_plugin_id(ev: &Event) -> Option<String> {
         | Event::CardAdded(_)
         | Event::CardUpdated(_)
         | Event::CardDeleted { .. }
+        | Event::WaveReportEdited { .. }
         | Event::TerminalDeleted { .. }
         | Event::CodexHook { .. }
         | Event::CodexJobRequested { .. }
@@ -145,6 +146,11 @@ fn event_entity_kind(ev: &Event) -> Option<String> {
         Event::CardAdded(_) | Event::CardUpdated(_) | Event::CardDeleted { .. } => {
             Some("card".into())
         }
+        // Issue #247 PR2 — wave-report edit log is scoped to the report
+        // card; surface "card" so plugin filters with
+        // `entity_kind="card"` see structured edits alongside the
+        // generic `card.updated` companion event.
+        Event::WaveReportEdited { .. } => Some("card".into()),
         Event::OverlaySet(o) => Some(o.entity_kind.clone()),
         Event::OverlayDeleted { entity_kind, .. } => Some(entity_kind.clone()),
         Event::CodexHook { .. } => Some("card".into()),
@@ -174,6 +180,9 @@ fn event_entity_id(ev: &Event) -> Option<String> {
         Event::WaveLifecycleChanged { id, .. } => Some(id.to_string()),
         Event::CardAdded(c) | Event::CardUpdated(c) => Some(c.id.to_string()),
         Event::CardDeleted { id, .. } => Some(id.to_string()),
+        // Issue #247 PR2 — entity id is the report card's id, matching
+        // the entity_kind="card" decision above.
+        Event::WaveReportEdited { card_id, .. } => Some(card_id.to_string()),
         Event::OverlaySet(o) => Some(o.entity_id.clone()),
         Event::OverlayDeleted { entity_id, .. } => Some(entity_id.clone()),
         Event::PluginState { id, .. } => Some(id.clone()),

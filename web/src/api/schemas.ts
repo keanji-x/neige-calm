@@ -203,6 +203,39 @@ export const cardDeletedSchema = z.object({
   data: z.object({ id: z.string(), wave_id: z.string() }),
 });
 
+/**
+ * Issue #247 PR2 — `Event::WaveReportEdited`. Structured edit-log
+ * companion to `card.updated` emitted from every wave-report write.
+ * `card.updated` stays the generic "row changed, re-fetch" signal
+ * existing frontend subscribers consume; `wave.report_edited` is the
+ * *additional* timeline entry the new edit-history UI (PR4) and the
+ * spec agent's user-edit notifier (PR5) read.
+ *
+ * `author` discriminates who produced the edit. PR2 only emits
+ * `'spec'`; PR3 introduces `'user'` for REST-driven edits; `'kernel'`
+ * is reserved for future server-internal rewrites.
+ *
+ * `edit_id` is a fresh UUID v4 per call so the UI can collapse
+ * adjacent retries or correlate timeline entries with a future
+ * REST-side request id without parsing the `_id` envelope field.
+ *
+ * Card-scoped on the persisted events row (`scope_wave = wave_id`,
+ * `scope_card = card_id`).
+ */
+export const waveReportEditedSchema = z.object({
+  ev: z.literal('wave.report_edited'),
+  data: z.object({
+    wave_id: z.string(),
+    card_id: z.string(),
+    author: z.enum(['spec', 'user', 'kernel']),
+    edit_id: z.string(),
+    summary_before: z.string(),
+    summary_after: z.string(),
+    body_before: z.string(),
+    body_after: z.string(),
+  }),
+});
+
 export const overlaySetSchema = z.object({
   ev: z.literal('overlay.set'),
   data: overlaySchema,
@@ -391,6 +424,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   cardAddedSchema,
   cardUpdatedSchema,
   cardDeletedSchema,
+  waveReportEditedSchema,
   overlaySetSchema,
   overlayDeletedSchema,
   terminalDeletedSchema,
@@ -420,6 +454,7 @@ export type WaveLifecycleChangedEvent = z.infer<typeof waveLifecycleChangedSchem
 export type CardAddedEvent = z.infer<typeof cardAddedSchema>;
 export type CardUpdatedEvent = z.infer<typeof cardUpdatedSchema>;
 export type CardDeletedEvent = z.infer<typeof cardDeletedSchema>;
+export type WaveReportEditedEvent = z.infer<typeof waveReportEditedSchema>;
 export type OverlaySetEvent = z.infer<typeof overlaySetSchema>;
 export type OverlayDeletedEvent = z.infer<typeof overlayDeletedSchema>;
 export type TerminalDeletedEvent = z.infer<typeof terminalDeletedSchema>;

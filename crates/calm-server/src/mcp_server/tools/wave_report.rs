@@ -32,8 +32,14 @@
 //!
 //! ## Edit semantics (matched to codex's Edit)
 //!
-//!   * `old_string == new_string` → no-op (return current `updated_at`
-//!     without writing).
+//!   * `old_string == new_string` → falls through to `persist_report`
+//!     as a content-equal write. Emits the same two-event pair
+//!     (`CardUpdated` + `WaveReportEdited`) as every other persist
+//!     path, with `body_before == body_after`. PR4's UI consumer can
+//!     filter no-op edits from the timeline client-side; the kernel
+//!     keeps a uniform "every persist → two events" invariant so
+//!     downstream consumers never have to second-guess whether an
+//!     event is missing.
 //!   * `old_string` not found in `body` → `-32602` "old_string not
 //!     found in body".
 //!   * `old_string` found multiple times and `replace_all` not true →
@@ -46,9 +52,9 @@
 //!     redundant in this case; we accept it for codex Edit symmetry.)
 
 use crate::db::sqlite::{card_body_crdt_get_tx, card_update_with_crdt_tx};
-use crate::db::write_with_event_typed;
+use crate::db::write_with_events_typed;
 use crate::error::CalmError;
-use crate::event::{Event, EventScope};
+use crate::event::{EditAuthor, Event, EventScope};
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, CardIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
@@ -185,10 +191,12 @@ fn edit_descriptor() -> ToolDescriptor {
              report body. Behaves like the codex `Edit` file tool. \
              `old_string` must appear in the body; if it appears more \
              than once you must pass `replace_all = true`. If \
-             `old_string == new_string`, the call is a silent no-op \
-             (no write, no event). Returns `{ updated_at }`. The \
-             summary is preserved — call `calm.report.write` to \
-             update both at once."
+             `old_string == new_string`, the call is a content-equal \
+             write that still bumps `updated_at` and emits the same \
+             `CardUpdated` + `WaveReportEdited` event pair as every \
+             other persist (with `body_before == body_after`). \
+             Returns `{ updated_at }`. The summary is preserved — \
+             call `calm.report.write` to update both at once."
             .into(),
         input_schema: json!({
             "type": "object",
@@ -240,14 +248,15 @@ async fn report_edit(
 
     let (wave, _, report_card, current) = resolve_report_for_caller(&ctx, &identity).await?;
 
-    // Codex Edit semantics: equal strings short-circuits to no-op. Don't
-    // bump `updated_at`, don't emit an event, don't write. Return the
-    // current `updated_at` so the caller sees its idempotent retry was
-    // recognized.
-    if old_string == new_string {
-        return Ok(json!({ "updated_at": report_card.updated_at }));
-    }
-
+    // Issue #247 PR2 review: removed the `old_string == new_string`
+    // short-circuit so this handler always falls through to
+    // `persist_report` and emits the same `CardUpdated` +
+    // `WaveReportEdited` event pair as `report.write`. The asymmetry
+    // it created (write-with-identical-content → 2 events, edit-with-
+    // identical-strings → 0 events) made PR4's UI consumer have to
+    // special-case one persist path. We still validate `old_string`
+    // is present in the body — substring-not-found stays a hard
+    // error, *only* the equal-strings branch is gone.
     let occurrences = count_matches(&current.body, &old_string);
     if occurrences == 0 {
         return Err(RpcError::invalid_params(
@@ -363,29 +372,53 @@ async fn resolve_report_for_caller(
 }
 
 /// Persist a new `WaveReportPayload` onto the wave-report card row and
-/// emit `Event::CardUpdated` from the same transaction. Returns the
-/// MCP wire shape (`{ updated_at }`).
+/// emit `Event::CardUpdated` + `Event::WaveReportEdited` from the same
+/// transaction. Returns the MCP wire shape (`{ updated_at }`).
 ///
 /// Issue #247 PR1 — this is the single write boundary that materializes
 /// the opaque CRDT blob alongside the legacy `payload` JSON. The CRDT
 /// is authoritative; the JSON column is a read-cache the existing v1
 /// REST / WS read paths and the frontend continue to consume.
 ///
+/// Issue #247 PR2 — every call also emits a structured
+/// `Event::WaveReportEdited` carrying `(summary_before, summary_after,
+/// body_before, body_after, author, edit_id)` so PR4's UI can render an
+/// edit timeline and PR5's spec agent can wake on user-authored edits.
+/// `author` is hard-coded to [`EditAuthor::Spec`] here — the spec-MCP
+/// tools are the only write path that exists today. PR3 plumbs an
+/// `Actor` through this function when REST entry lands.
+///
 /// In-tx sequence:
 ///
 ///   1. Read the current `body_crdt`. NULL = first post-PR1 write on
 ///      this row (legacy seed / pre-#247 mint); seed a fresh doc from
 ///      `current_payload`. Non-NULL = load via `ReportDoc::from_bytes`.
-///   2. Apply the new `(summary, body)` via `ReportDoc::update` —
+///   2. Project the doc to capture `(summary_before, body_before)` —
+///      the authoritative pre-write state for the edit-log entry.
+///   3. Apply the new `(summary, body)` via `ReportDoc::update` —
 ///      automerge does the per-field Myers diff internally.
-///   3. Project back to `(summary, body)` strings and re-serialize a
-///      `WaveReportPayload` from those values (not the raw `next`
+///   4. Project back to `(summary_after, body_after)` and re-serialize
+///      a `WaveReportPayload` from those values (not the raw `next`
 ///      input). The projection is what the JSON cache must mirror so
 ///      a future read sees the post-merge text rather than a partially-
 ///      applied input — under single-writer it's identical to `next`,
 ///      but reading from the doc keeps the JSON-cache contract
 ///      ("CRDT is source of truth") true by construction.
-///   4. Write both columns + emit `Event::CardUpdated` in one tx.
+///   5. Write both columns and emit both events in one tx — via
+///      `write_with_events_typed` so the events are persisted in the
+///      same transaction as the row update (commit-then-emit invariant
+///      preserved).
+///
+/// **Both events fire on every call, including content-equal writes**
+/// (e.g. re-asserting the same body, or `report.edit` with
+/// `old_string == new_string`). The `WaveReportEdited` row records
+/// `summary_before == summary_after && body_before == body_after`,
+/// which PR4's UI can filter out client-side if it wants to suppress
+/// no-ops from the timeline. Keeping the invariant "every
+/// `persist_report` call → one `CardUpdated` + one `WaveReportEdited`"
+/// dead simple means downstream consumers never have to second-guess
+/// whether an event is missing — every MCP write path that reaches
+/// this function emits exactly the same two-event pair.
 ///
 /// The `current_payload` argument is the payload as it was last seen
 /// by the caller (passed in from `resolve_report_for_caller`). It's
@@ -400,23 +433,28 @@ async fn persist_report(
     next: WaveReportPayload,
 ) -> Result<Value, RpcError> {
     let report_card_id = report_card.id.clone();
+    let wave_id = wave.id.clone();
+    let cove_id = wave.cove_id.clone();
     let scope = EventScope::Card {
         card: report_card_id.clone(),
-        wave: wave.id.clone(),
-        cove: wave.cove_id.clone(),
+        wave: wave_id.clone(),
+        cove: cove_id.clone(),
     };
     let actor = identity.to_actor_id();
     let report_card_id_inner = report_card_id.clone();
-    let res = write_with_event_typed::<Card, _>(
+    let wave_id_for_event = wave_id.clone();
+    let res = write_with_events_typed::<Card, _>(
         ctx.repo.as_ref(),
         actor,
-        scope,
         None,
         &ctx.events,
         &ctx.card_role_cache,
         &ctx.wave_cove_cache,
         move |tx| {
             let id = report_card_id_inner.as_str().to_string();
+            let report_card_id = report_card_id_inner.clone();
+            let wave_id = wave_id_for_event.clone();
+            let scope = scope.clone();
             let current_payload = current_payload.clone();
             let next = next.clone();
             Box::pin(async move {
@@ -435,15 +473,21 @@ async fn persist_report(
                     // ignore current_payload entirely.
                     None => ReportDoc::from_payload(&current_payload),
                 };
-                // 2. Apply the proposed update uniformly to both fields.
+                // 2. Capture the pre-write projection for the edit-log
+                //    entry. Reading from the doc (not from
+                //    `current_payload`) keeps the before-state
+                //    consistent with whatever the CRDT actually holds
+                //    after the lazy-init branch above.
+                let (summary_before, body_before) = doc.project();
+                // 3. Apply the proposed update uniformly to both fields.
                 doc.update(&next.summary, &next.body);
-                // 3. Project back — these are the authoritative values
+                // 4. Project back — these are the authoritative values
                 //    that go into the JSON cache.
-                let (projected_summary, projected_body) = doc.project();
+                let (summary_after, body_after) = doc.project();
                 let projected_payload = WaveReportPayload {
                     schema_version: WaveReportPayload::SCHEMA_VERSION,
-                    summary: projected_summary,
-                    body: projected_body,
+                    summary: summary_after.clone(),
+                    body: body_after.clone(),
                 };
                 let payload_value = serde_json::to_value(&projected_payload).map_err(|e| {
                     CalmError::Internal(format!("wave_report: serialize projected payload: {e}"))
@@ -455,15 +499,37 @@ async fn persist_report(
                     deletable: None,
                 };
                 let crdt_bytes = doc.to_bytes();
-                // 4. One transactional write rewriting both columns.
+                // 5. One transactional write rewriting both columns +
+                //    two events tagged with the same card scope. Order
+                //    matters: `CardUpdated` first so an existing
+                //    subscriber that processes both events sees the
+                //    generic "row changed" signal before the structured
+                //    edit-log entry (matches the historical broadcast
+                //    order before PR2 added the structured event).
                 let updated = card_update_with_crdt_tx(tx, &id, patch, crdt_bytes).await?;
-                Ok((updated.clone(), Event::CardUpdated(updated)))
+                let report_edited = Event::WaveReportEdited {
+                    wave_id,
+                    card_id: report_card_id,
+                    // PR2 hard-codes Spec — only the spec-MCP path
+                    // exists today. PR3 introduces REST + User.
+                    author: EditAuthor::Spec,
+                    edit_id: uuid::Uuid::new_v4().to_string(),
+                    summary_before,
+                    summary_after,
+                    body_before,
+                    body_after,
+                };
+                let events = vec![
+                    (scope.clone(), Event::CardUpdated(updated.clone())),
+                    (scope, report_edited),
+                ];
+                Ok((updated, events))
             })
         },
     )
     .await;
     match res {
-        Ok((updated, _id)) => Ok(json!({ "updated_at": updated.updated_at })),
+        Ok((updated, _ids)) => Ok(json!({ "updated_at": updated.updated_at })),
         Err(CalmError::Forbidden(msg)) => Err(RpcError::custom(
             -32403,
             format!("wave_report: forbidden: {msg}"),
@@ -490,13 +556,22 @@ mod tests {
     }
 
     #[test]
-    fn edit_equal_strings_is_no_op() {
-        // Sanity-pin: the Edit semantics short-circuit when old==new
-        // without recomputing the body. Verified via direct string
-        // comparison; the actual MCP path is exercised end-to-end in
-        // the integration test in `tests/mcp_report_tools.rs`.
-        let a = "same";
-        let b = "same";
-        assert_eq!(a, b);
+    #[allow(clippy::no_effect_replace)] // The whole point of this test
+    // is to pin that `str::replace(s, s)` is the identity map — that
+    // identity is what makes the post-fix `report.edit` with equal
+    // strings produce `body_before == body_after` instead of being a
+    // bypass. The lint is exactly right that the call is a no-op;
+    // that's the assertion.
+    fn edit_equal_strings_replace_is_identity() {
+        // Sanity-pin: PR2 review removed the `old == new` short-circuit
+        // in `report_edit`, so equal strings now fall through to the
+        // normal `str::replace` path. That path is the identity map
+        // — `body.replace(s, s) == body` — which is what makes the
+        // resulting `WaveReportEdited` carry `body_before ==
+        // body_after`. End-to-end coverage lives in
+        // `tests/mcp_wave_report.rs::edit_with_identical_old_and_new_still_emits_both_events`.
+        let body = "the body XYZ";
+        assert_eq!(body.replace("XYZ", "XYZ"), body);
+        assert_eq!(body.replacen("XYZ", "XYZ", 1), body);
     }
 }
