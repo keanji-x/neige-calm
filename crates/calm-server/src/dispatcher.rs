@@ -1511,7 +1511,10 @@ mod tests {
     #[test]
     fn render_worker_prompt_skips_empty_context_object() {
         let out = render_worker_prompt("g", &serde_json::json!({}), Some("ac"));
-        assert!(!out.contains("Context"), "empty {{}} should be skipped: {out}");
+        assert!(
+            !out.contains("Context"),
+            "empty {{}} should be skipped: {out}"
+        );
         assert!(out.contains("Acceptance criteria:\nac"));
     }
 

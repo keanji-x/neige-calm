@@ -964,7 +964,9 @@ mod pump_tests {
                     "expected `child-exited` reason text"
                 );
             }
-            other => panic!("expected Close(Some(CloseFrame {{1000, child-exited}})), got {other:?}"),
+            other => {
+                panic!("expected Close(Some(CloseFrame {{1000, child-exited}})), got {other:?}")
+            }
         }
 
         // 3) Stream drains to None — pump has dropped the WS sink.
@@ -1013,9 +1015,9 @@ mod pump_tests {
                     "expected `child-exited` reason text"
                 );
             }
-            other => panic!(
-                "expected Close(Some(CloseFrame {{1000, child-exited}})), got {other:?}"
-            ),
+            other => {
+                panic!("expected Close(Some(CloseFrame {{1000, child-exited}})), got {other:?}")
+            }
         }
 
         let end = tokio::time::timeout(Duration::from_secs(2), ws.next())
