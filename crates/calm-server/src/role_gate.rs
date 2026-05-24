@@ -171,58 +171,29 @@ pub fn enforce_role(
                 });
             }
             Some(CardRole::Worker) => {
-                let card_matches =
-                    matches!(scope, EventScope::Card { card, .. } if card == card_id);
-                if !card_matches {
-                    return Err(RoleViolation::WorkerOutOfScope {
-                        card: card_id.clone(),
-                        scope: format!("scope.card mismatch: {scope:?}"),
-                    });
-                }
-                // Card matched. Now cross-check `scope.wave` against
-                // the card's immutable home wave. `wave_of` returning
-                // None at this point is impossible — we just got
-                // `Some(CardRole::Worker)` from the same entry — but
-                // the explicit `.expect` documents the invariant for
-                // a future refactor.
-                let home_wave = cache
-                    .wave_of(card_id)
-                    .expect("wave_of must be Some when get() returned Some — same cache entry");
-                let (scope_wave, scope_cove) = match scope {
-                    EventScope::Card { wave, cove, .. } => (wave, cove),
-                    // Unreachable: `card_matches` above already
-                    // pinned the variant to `EventScope::Card`.
-                    _ => unreachable!("card_matches guarantees Card variant"),
-                };
-                if scope_wave != &home_wave {
-                    return Err(RoleViolation::WorkerOutOfScope {
-                        card: card_id.clone(),
-                        scope: format!("scope.wave mismatch: home={home_wave}, scope={scope:?}"),
-                    });
-                }
-                // #234 — cross-check `scope.cove` against the home
-                // wave's persisted cove. The wave→cove cache is
-                // write-through-populated in `wave_create_tx`, so a
-                // missing entry under a known wave id is a hard
-                // invariant break worth failing loudly on (rather
-                // than the silent "deny by default" of the role
-                // cache miss, which has its own race-with-delete
-                // semantics covered by the unknown-card arm above).
-                let home_cove = wave_cove_cache.cove_of(&home_wave).expect(
-                    "wave_cove_cache must be populated for any wave with a Worker card — \
-                     wave_create_tx writes through unconditionally",
-                );
-                if scope_cove != &home_cove {
-                    return Err(RoleViolation::WorkerOutOfScope {
-                        card: card_id.clone(),
-                        scope: format!("scope.cove mismatch: home={home_cove}, scope={scope:?}"),
-                    });
-                }
+                enforce_card_self_scope(card_id, scope, cache, wave_cove_cache)?;
+            }
+            // Bug A carveout — the codex bridge runs as a subprocess of
+            // codex regardless of the card's role; it can't easily know
+            // at fire time whether the card is Spec- or Worker-roled.
+            // For `Event::CodexHook` (a pure lifecycle observation,
+            // *not* a wave-level authority claim) we accept the write
+            // from an `AiCodex(spec_card)` actor as long as the scope
+            // matches the card's own home (card_id + wave + cove cached
+            // values — same shape as the Worker arm). Anything else
+            // from `AiCodex(spec_card)` is still refused; write
+            // authority for spec-roled cards lives with `AiSpec`. Note
+            // that `Event::WaveUpdated` is already gated in section (2)
+            // above and unconditionally refuses any `AiCodex` actor,
+            // so this carveout cannot regress the wave-authority
+            // invariant.
+            Some(CardRole::Spec) if matches!(event, Event::CodexHook { .. }) => {
+                enforce_card_self_scope(card_id, scope, cache, wave_cove_cache)?;
             }
             // PR3 invariant: spec cards are bound to AiSpec, not
-            // AiCodex. If the cache claims an AiCodex actor's card is
-            // Spec-roled, something has gone wrong upstream — fail
-            // loud. This branch unreachable today.
+            // AiCodex. Anything other than the CodexHook carveout
+            // above (which is a stateless bridge ingest path) from an
+            // `AiCodex(spec_card)` actor is rejected.
             Some(CardRole::Spec) => {
                 return Err(RoleViolation::NotSpecForWave {
                     actor: format!(
@@ -251,6 +222,68 @@ pub fn enforce_role(
     // The match above already let them through. Documented here as a
     // gate decision, not as code, so the policy is greppable.
 
+    Ok(())
+}
+
+/// Cross-check that `scope` describes the card's own home — `card`
+/// matches, `wave` matches the cached home wave, `cove` matches the
+/// home wave's persisted cove. Shared between the Worker arm (which
+/// uses it for *every* event) and the Spec arm's `CodexHook` carveout
+/// (bug A — the codex bridge ingest path for a spec card).
+///
+/// Returns `Err(RoleViolation::WorkerOutOfScope)` on any mismatch. The
+/// variant name is historical (the check originated in the Worker
+/// path); the semantic — "this AiCodex actor is writing outside its
+/// own card scope" — applies equally to both call sites.
+fn enforce_card_self_scope(
+    card_id: &CardId,
+    scope: &EventScope,
+    cache: &CardRoleCache,
+    wave_cove_cache: &WaveCoveCache,
+) -> Result<(), RoleViolation> {
+    let card_matches = matches!(scope, EventScope::Card { card, .. } if card == card_id);
+    if !card_matches {
+        return Err(RoleViolation::WorkerOutOfScope {
+            card: card_id.clone(),
+            scope: format!("scope.card mismatch: {scope:?}"),
+        });
+    }
+    // Card matched. Now cross-check `scope.wave` against the card's
+    // immutable home wave. `wave_of` returning None at this point is
+    // impossible — the caller just got `Some(_)` for the same card
+    // from the same cache — but the explicit `.expect` documents the
+    // invariant for a future refactor.
+    let home_wave = cache
+        .wave_of(card_id)
+        .expect("wave_of must be Some when get() returned Some — same cache entry");
+    let (scope_wave, scope_cove) = match scope {
+        EventScope::Card { wave, cove, .. } => (wave, cove),
+        // Unreachable: `card_matches` above already pinned the variant
+        // to `EventScope::Card`.
+        _ => unreachable!("card_matches guarantees Card variant"),
+    };
+    if scope_wave != &home_wave {
+        return Err(RoleViolation::WorkerOutOfScope {
+            card: card_id.clone(),
+            scope: format!("scope.wave mismatch: home={home_wave}, scope={scope:?}"),
+        });
+    }
+    // #234 — cross-check `scope.cove` against the home wave's persisted
+    // cove. The wave→cove cache is write-through-populated in
+    // `wave_create_tx`, so a missing entry under a known wave id is a
+    // hard invariant break worth failing loudly on (rather than the
+    // silent "deny by default" of the role cache miss, which has its
+    // own race-with-delete semantics covered elsewhere).
+    let home_cove = wave_cove_cache.cove_of(&home_wave).expect(
+        "wave_cove_cache must be populated for any wave with a known card — \
+         wave_create_tx writes through unconditionally",
+    );
+    if scope_cove != &home_cove {
+        return Err(RoleViolation::WorkerOutOfScope {
+            card: card_id.clone(),
+            scope: format!("scope.cove mismatch: home={home_cove}, scope={scope:?}"),
+        });
+    }
     Ok(())
 }
 
@@ -561,6 +594,97 @@ mod tests {
             &wcc,
         );
         assert!(matches!(res, Err(RoleViolation::UnknownCard { .. })));
+    }
+
+    /// Build a `CodexHook` event payload — used by the bug-A carveout
+    /// tests below. Shape mirrors what `routes::codex::ingest_hook`
+    /// constructs (kind=`hook.codex.<event_name>`, opaque payload).
+    fn codex_hook(card: &str) -> Event {
+        Event::CodexHook {
+            card_id: CardId::from(card),
+            kind: "hook.codex.permission_request".into(),
+            payload: serde_json::json!({}),
+        }
+    }
+
+    #[test]
+    fn spec_codex_hook_in_own_scope_ok() {
+        // Bug A regression unit. The codex bridge runs as a subprocess
+        // of codex regardless of the card's role; for a spec card, the
+        // bridge still surfaces hook events through the
+        // `AiCodex(spec_card)` actor. The gate accepts `Event::CodexHook`
+        // from that actor as a pure lifecycle observation, scoped to the
+        // card's own home (card_id + wave + cove). Mirror of
+        // `worker_in_card_scope_ok` for the Spec arm.
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let id = CardId::from("spec-1");
+        cache.insert(id.clone(), CardRole::Spec, WaveId::from("w"));
+        let res = enforce_role(
+            &ActorId::AiCodex(id.clone()),
+            &codex_hook(id.as_str()),
+            &card_scope(id.as_str(), "w", "c"),
+            &cache,
+            &wcc,
+        );
+        assert!(
+            res.is_ok(),
+            "AiCodex(spec) CodexHook in own card scope should be accepted: {res:?}",
+        );
+    }
+
+    #[test]
+    fn spec_codex_non_hook_event_still_rejected() {
+        // The Spec-arm carveout is intentionally limited to
+        // `Event::CodexHook`. Anything else from `AiCodex(spec_card)`
+        // is still refused — write authority for spec-roled cards lives
+        // with `AiSpec`, not `AiCodex`. CoveUpdated chosen because it's
+        // a non-hook, non-wave-updated event variant.
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let id = CardId::from("spec-1");
+        cache.insert(id.clone(), CardRole::Spec, WaveId::from("w"));
+        let res = enforce_role(
+            &ActorId::AiCodex(id.clone()),
+            &cove_updated(),
+            &card_scope(id.as_str(), "w", "c"),
+            &cache,
+            &wcc,
+        );
+        assert!(
+            matches!(res, Err(RoleViolation::NotSpecForWave { .. })),
+            "AiCodex(spec) non-hook event must still be refused: {res:?}",
+        );
+    }
+
+    #[test]
+    fn spec_codex_hook_out_of_scope_rejected() {
+        // The carveout reuses the same scope cross-check as the Worker
+        // arm — an `AiCodex(spec_card)` CodexHook with a forged wave id
+        // is still refused. This pins that the new helper is wired into
+        // the Spec arm, not just nominally accepted.
+        let cache = CardRoleCache::new();
+        let wcc = WaveCoveCache::new();
+        wcc.insert(WaveId::from("home-wave"), CoveId::from("c"));
+        let id = CardId::from("spec-1");
+        cache.insert(id.clone(), CardRole::Spec, WaveId::from("home-wave"));
+        let res = enforce_role(
+            &ActorId::AiCodex(id.clone()),
+            &codex_hook(id.as_str()),
+            // Same card, but a different wave — must reject even on
+            // the carveout path.
+            &card_scope(id.as_str(), "other-wave", "c"),
+            &cache,
+            &wcc,
+        );
+        assert!(
+            matches!(
+                res,
+                Err(RoleViolation::WorkerOutOfScope { ref scope, .. })
+                    if scope.contains("scope.wave mismatch")
+            ),
+            "AiCodex(spec) CodexHook with forged scope.wave must be refused: {res:?}",
+        );
     }
 
     #[test]
