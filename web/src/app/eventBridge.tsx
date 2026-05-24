@@ -40,7 +40,7 @@ import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { sharedEventStream, type EventMeta } from '../api/events';
 import { queryKeys } from '../api/queries';
 import { dlog } from '../util/debug';
-import type { KernelWaveDetail, WireEvent } from '../api/wire';
+import type { KernelCove, KernelWaveDetail, WireEvent } from '../api/wire';
 
 // ---------------------------------------------------------------------------
 // Event trace exposure (issue #56 slice 5).
@@ -235,6 +235,34 @@ export function EventBridge({ syncEventVersion }: EventBridgeProps) {
 function dispatch(qc: QueryClient, ev: WireEvent): void {
   switch (ev.ev) {
     case 'cove.updated': {
+      // Issue #288 — write-through the event payload directly into the
+      // ['coves'] cache so the Sidebar's cove-nav button repaints with
+      // the new name on the very next render commit, without waiting
+      // for an invalidate → refetch round-trip.
+      //
+      // The user-reported staleness bug (sidebar entry stayed on the
+      // OLD cove name after a cove-page rename until a hard refresh)
+      // resolved here. Before this PR, `cove.updated` only invalidated
+      // the cache; in production we observed cases where the refetch
+      // round-trip's observer notification didn't repaint the Sidebar
+      // even though `GET /api/coves` returned the new name (the
+      // hermetic a11y harness never reproduced it — see #291).
+      // Write-through removes the refetch as a critical path: the cove
+      // row in cache is mutated in-place from the event payload, which
+      // is the exact `Cove` shape the REST endpoint returns. We still
+      // invalidate afterwards as a backstop so a future stale data
+      // window also refetches.
+      const updated = ev.data;
+      qc.setQueryData<KernelCove[]>(queryKeys.coves(), (prev) => {
+        if (!prev) return prev;
+        const idx = prev.findIndex((c) => c.id === updated.id);
+        if (idx === -1) return prev;
+        // Spread to a NEW array so React Query's structural-sharing
+        // detects a reference change and notifies observers.
+        const next = prev.slice();
+        next[idx] = updated;
+        return next;
+      });
       void qc.invalidateQueries({ queryKey: queryKeys.coves() });
       return;
     }
