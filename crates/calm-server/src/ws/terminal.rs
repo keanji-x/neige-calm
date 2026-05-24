@@ -409,14 +409,16 @@ pub async fn pump<T: DaemonTransport>(
     let terminal_id_down = terminal_id.clone();
     let down = async move {
         let mut outcome_tx = Some(outcome_tx);
-        // Set when the down arm exits because the daemon emitted
-        // `TerminalExited` / `ChildExited`. Used below to send a 1000
-        // close frame with the `CLOSE_REASON_CHILD_EXITED` reason so
-        // the browser can distinguish a clean child exit from a
-        // network cut even if the JSON exit frame got dropped en
-        // route. Without this the JS client sees code 1005 / 1006 and
-        // can't tell the two cases apart.
-        let mut clean_child_exit = false;
+        // Only a true protocol violation on the kernel↔daemon socket
+        // (BadMagic / UnsupportedFrameVersion) sends `Close(None)`; the
+        // socket is unusable and the daemon row will be torn down by
+        // `handle`. Every other exit from this loop — TerminalExited /
+        // ChildExited frame, daemon socket EOF, or transient IO — is
+        // attributable to a child that has gone away, so we emit
+        // `Close(1000, CLOSE_REASON_CHILD_EXITED)`. Without this, the
+        // browser sees 1005 (Close with no code) on EOF and can't
+        // distinguish a clean child exit from a network cut.
+        let mut framing_skew = false;
         loop {
             let msg: DaemonMsg = match read_frame(&mut rd).await {
                 Ok(m) => m,
@@ -432,7 +434,7 @@ pub async fn pump<T: DaemonTransport>(
                     // next attach to this terminal will then go through
                     // `resolve_live_sock`'s spawn path and start a fresh
                     // daemon binary.
-                    let framing_skew = matches!(
+                    framing_skew = matches!(
                         &e,
                         FrameError::BadMagic { .. } | FrameError::UnsupportedFrameVersion { .. }
                     );
@@ -499,17 +501,16 @@ pub async fn pump<T: DaemonTransport>(
                 break;
             }
             if exit {
-                clean_child_exit = true;
                 break;
             }
         }
-        let close_frame = if clean_child_exit {
+        let close_frame = if framing_skew {
+            None
+        } else {
             Some(CloseFrame {
                 code: 1000,
                 reason: CLOSE_REASON_CHILD_EXITED.into(),
             })
-        } else {
-            None
         };
         let _ = ws_tx_down
             .lock()
@@ -977,6 +978,56 @@ mod pump_tests {
         );
     }
 
+    /// Daemon socket EOFs *before* emitting any `TerminalExited` /
+    /// `ChildExited` frame — the common case when the daemon child wait
+    /// returns and the daemon shuts down without getting to write the JSON
+    /// exit frame (server logs show `error=io: early eof`). The pump must
+    /// still close with `Close(1000, "child-exited")`, not `Close(None)`
+    /// (which the browser surfaces as code 1005 and would conflate with a
+    /// generic abnormal close). Regression test for the 1005 close-code
+    /// bug.
+    #[tokio::test]
+    async fn eof_before_exit_frame_closes_with_child_exited() {
+        let (daemon_side, server_side) = tokio::io::duplex(8192);
+        let (ping, pong) = long_window();
+        let (addr, _outcome) = boot_pump(server_side, ping, pong).await;
+
+        let url = format!("ws://{}/pump", addr);
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        // Drop daemon side without writing anything → next read_frame on
+        // the server's down arm hits FrameError::Io (early EOF).
+        drop(daemon_side);
+
+        let close = tokio::time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("ws recv (close) timed out")
+            .expect("ws closed without sending Close")
+            .expect("ws error");
+        match close {
+            TMessage::Close(Some(cf)) => {
+                assert_eq!(u16::from(cf.code), 1000, "expected 1000 normal close");
+                assert_eq!(
+                    cf.reason.as_ref(),
+                    CLOSE_REASON_CHILD_EXITED,
+                    "expected `child-exited` reason text"
+                );
+            }
+            other => panic!(
+                "expected Close(Some(CloseFrame {{1000, child-exited}})), got {other:?}"
+            ),
+        }
+
+        let end = tokio::time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("stream did not end after Close");
+        assert!(
+            end.is_none() || matches!(end, Some(Err(_))),
+            "expected stream end after Close, got {:?}",
+            end
+        );
+    }
+
     /// Bad JSON on the WS up path is logged + dropped. The pump itself
     /// must keep running: a following valid frame should arrive on the
     /// daemon side as if the garbage was never there.
@@ -1053,15 +1104,20 @@ mod pump_tests {
         daemon_side.write_all(b"XXXX").await.unwrap();
         daemon_side.flush().await.unwrap();
 
-        // Down arm should hit BadMagic, error-log, break, then send Close.
+        // Down arm should hit BadMagic, error-log, break, then send
+        // `Close(None)` — framing skew is the *only* path that emits a
+        // bodyless close. Every other exit (TerminalExited, EOF, IO)
+        // sends `Close(1000, "child-exited")` because the socket is
+        // unusable and the daemon row is about to be torn down by
+        // `handle`'s framing-skew cleanup.
         let close = tokio::time::timeout(Duration::from_secs(2), ws.next())
             .await
             .expect("ws recv (close) timed out")
             .expect("ws closed without sending Close")
             .expect("ws error");
         assert!(
-            matches!(close, TMessage::Close(_)),
-            "expected Close frame, got {:?}",
+            matches!(close, TMessage::Close(None)),
+            "expected Close(None) on framing skew, got {:?}",
             close
         );
 
@@ -1104,15 +1160,16 @@ mod pump_tests {
         daemon_side.flush().await.unwrap();
 
         // Down arm should hit UnsupportedFrameVersion, error-log, break,
-        // then send Close.
+        // then send `Close(None)` — framing skew is the only bodyless-close
+        // path (see `bad_magic_breaks_pump_cleanly` for the contract).
         let close = tokio::time::timeout(Duration::from_secs(2), ws.next())
             .await
             .expect("ws recv (close) timed out")
             .expect("ws closed without sending Close")
             .expect("ws error");
         assert!(
-            matches!(close, TMessage::Close(_)),
-            "expected Close frame, got {:?}",
+            matches!(close, TMessage::Close(None)),
+            "expected Close(None) on framing skew, got {:?}",
             close
         );
 
@@ -1265,7 +1322,7 @@ mod pump_tests {
     /// `send_child_exited_close` (the upgrade-time race fix) must emit a
     /// single `Close(1000, "child-exited")` frame and then drop the socket.
     /// The browser keys its "process exited" overlay off that exact code +
-    /// reason — same wire shape as the in-pump `clean_child_exit` path.
+    /// reason — same wire shape as the in-pump non-framing-skew path.
     #[tokio::test]
     async fn upgrade_time_child_exited_emits_close_1000() {
         let (outcome_tx, outcome_rx) = tokio::sync::oneshot::channel::<()>();
