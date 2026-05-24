@@ -726,10 +726,18 @@ impl CodexClient {
         {
             Ok(tmp) => (tmp.path().to_path_buf(), Some(tmp)),
             Err(e) => {
-                tracing::warn!(
+                // #272 (N2) — bumped from `warn!` to `error!`. This
+                // fallback resurrects the pre-#267 shared `/tmp/neige-
+                // codex-homes-stub` leak path; if it fires in CI the
+                // test will silently revive the 134 GB/day leak fixed
+                // by PR #271. `error!` is loud enough that triage
+                // catches it on first occurrence instead of after the
+                // next disk-full incident.
+                tracing::error!(
                     error = %e,
                     "failed to create per-test codex_homes tempdir; \
-                     falling back to shared path (test will leak)"
+                     falling back to shared `/tmp/neige-codex-homes-stub` \
+                     — RESURRECTS THE #267 LEAK PATH (this test run will leak)"
                 );
                 (std::env::temp_dir().join("neige-codex-homes-stub"), None)
             }

@@ -63,7 +63,7 @@
 //!   and this module's subscribe call together.
 
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use tokio::sync::Semaphore;
@@ -164,6 +164,16 @@ impl Dispatcher {
     /// in `routes::waves::create_wave`. PR7a.1 (#136 followup) wired this
     /// in; PR7a registered the MCP server but left the dispatcher's
     /// worker-side plumbing as a deferred TODO.
+    ///
+    /// #272 (N3) — `codex` is downgraded to a `Weak<CodexClient>` inside
+    /// the dispatcher inner. The CALLER MUST hold the strong `Arc` for
+    /// the dispatcher's useful lifetime; if the strong ref drops while
+    /// the dispatcher's background task is still alive, every subsequent
+    /// `*.job_requested` envelope will short-circuit with a debug log
+    /// (`AppState gone`) instead of spawning a worker. In production
+    /// `AppState.codex` is that strong ref; in tests the fixture must
+    /// bind `let codex = stub_codex();` and pass `codex.clone()` (the
+    /// binding keeps the strong ref alive across the test body).
     #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         repo: Arc<dyn Repo>,
@@ -181,6 +191,15 @@ impl Dispatcher {
             permits
         };
         let semaphore = Arc::new(Semaphore::new(permits));
+        // #272 (N3) — store a `Weak<CodexClient>` instead of cloning
+        // the Arc. The dispatcher conceptually borrows codex from
+        // `AppState` (which owns the strong Arc); keeping a strong
+        // ref here cycled with the broadcast bus and kept the
+        // per-test `tempfile::TempDir` (inside `CodexClient`) alive
+        // until process exit, defeating PR #271's per-test cleanup.
+        // Upgrade happens per-envelope in `handle_envelope`; a failed
+        // upgrade means `AppState` was dropped — log and return.
+        let codex = Arc::downgrade(&codex);
         let inner = Arc::new(Inner {
             repo,
             events: events.clone(),
@@ -262,7 +281,15 @@ struct Inner {
     /// #234 — parallel wave→cove cache the role gate consults alongside
     /// `card_role_cache`.
     wave_cove_cache: WaveCoveCache,
-    codex: Arc<CodexClient>,
+    /// #272 (N3) — `Weak` so this dispatcher doesn't cycle with
+    /// `AppState.codex` (the strong owner). The dispatcher's background
+    /// task is held alive by the broadcast bus; if it also held a
+    /// strong `Arc<CodexClient>`, the per-test `tempfile::TempDir`
+    /// wrapped inside `CodexClient` couldn't drop on `AppState` drop,
+    /// reviving the leak PR #271 closed. Upgrade per `handle_envelope`
+    /// call; a failed upgrade means `AppState` has dropped and the
+    /// dispatcher should no-op until the bus closes.
+    codex: Weak<CodexClient>,
     daemon: Arc<DaemonClient>,
     /// PR7a.1 (#136 followup) — kernel-as-MCP-server handle. When `Some`,
     /// every codex-worker spawn folds the per-card MCP token + kernel
@@ -293,6 +320,23 @@ impl Inner {
             Ok(p) => p,
             Err(_) => {
                 tracing::warn!("dispatcher semaphore closed; aborting spawn");
+                return;
+            }
+        };
+
+        // #272 (N3) — upgrade the `Weak<CodexClient>` to a strong
+        // `Arc` for the duration of this dispatch. If the upgrade
+        // fails, `AppState` has dropped (test teardown) and there's
+        // no point spawning a worker against a vanished kernel — bail
+        // out. The broadcast `Closed` recv in the spawn loop will
+        // shut the dispatcher down shortly anyway. Cheap: atomic
+        // strong-count bump on success, no allocation.
+        let codex = match self.codex.upgrade() {
+            Some(c) => c,
+            None => {
+                tracing::debug!(
+                    "dispatcher: CodexClient dropped (AppState gone); skipping envelope"
+                );
                 return;
             }
         };
@@ -372,7 +416,7 @@ impl Inner {
         let mut backoff = Duration::from_millis(10);
         const MAX_RETRIES: usize = 5;
         for attempt in 0..=MAX_RETRIES {
-            match self.dispatch(req.clone(), scope.clone()).await {
+            match self.dispatch(&codex, req.clone(), scope.clone()).await {
                 Ok(()) => {
                     last_err = None;
                     break;
@@ -457,6 +501,7 @@ impl Inner {
 
     async fn dispatch(
         self: &Arc<Self>,
+        codex: &Arc<CodexClient>,
         req: DispatchRequest,
         scope: EventScope,
     ) -> crate::error::Result<()> {
@@ -480,6 +525,7 @@ impl Inner {
                 acceptance_criteria,
             } => {
                 self.spawn_codex_worker(
+                    codex,
                     wave_id,
                     scope.cove_id().cloned(),
                     idempotency_key,
@@ -519,8 +565,10 @@ impl Inner {
     /// errors from `card_with_codex_create_tx` (e.g. terminal-already-
     /// exists from `terminal_create_tx`) propagate instead of being
     /// silently swallowed as "duplicate request".
+    #[allow(clippy::too_many_arguments)]
     async fn spawn_codex_worker(
         self: &Arc<Self>,
+        codex: &Arc<CodexClient>,
         wave_id: WaveId,
         _cove_id: Option<CoveId>,
         idempotency_key: String,
@@ -551,7 +599,7 @@ impl Inner {
         // `spawn_daemon_with_parts` post-commit. Mirrors the spec
         // card path in `routes::waves::create_wave`.
         let env = build_codex_env_map(
-            self.codex.as_ref(),
+            codex.as_ref(),
             &new_card_id,
             settings.http_proxy.as_deref(),
             settings.https_proxy.as_deref(),
@@ -760,7 +808,7 @@ impl Inner {
             _ => None,
         };
         if let Err(e) = seed_codex_home_with_parts(
-            self.codex.as_ref(),
+            codex.as_ref(),
             card_id.as_str(),
             &cwd,
             wave_id.as_str(),
@@ -831,7 +879,7 @@ impl Inner {
             idempotency_key = %idempotency_key,
             card_id = %card_id,
             terminal_id = %term.id,
-            codex_bin = %self.codex.codex_bin,
+            codex_bin = %codex.codex_bin,
             "dispatcher: worker codex card + daemon spawned"
         );
 

@@ -419,12 +419,17 @@ async fn dispatch_request_drives_dispatcher_to_mint_worker_card() {
     b.repo.seed_card_role_cache(&cache).await.unwrap();
     let wcc = calm_server::wave_cove_cache::WaveCoveCache::new();
     b.repo.seed_wave_cove_cache(&wcc).await.unwrap();
+    // #272 (N3) — Dispatcher now stores `Weak<CodexClient>` so the
+    // caller MUST hold the strong Arc for the dispatcher's lifetime.
+    // Binding to `_codex` (underscore so dead-code lints stay happy
+    // even though the value is intentionally kept alive).
+    let _codex = Arc::new(calm_server::state::CodexClient::new_stub());
     let _dispatcher = calm_server::dispatcher::Dispatcher::spawn(
         b.repo.clone(),
         b.events.clone(),
         cache.clone(),
         wcc,
-        Arc::new(calm_server::state::CodexClient::new_stub()),
+        _codex.clone(),
         Arc::new(calm_server::state::DaemonClient {
             data_dir: PathBuf::from("/tmp/neige-mcp-e2e-noop"),
             session_daemon_bin: PathBuf::from("/nonexistent-daemon-bin"),

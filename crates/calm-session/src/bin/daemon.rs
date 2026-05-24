@@ -320,7 +320,17 @@ async fn main() -> anyhow::Result<()> {
     // top of `main` (before any other tokio work) so the kernel signal
     // (Linux) or the fallback ppid watcher (non-Linux) is armed before
     // we touch the PTY / socket / process tree.
-    install_parent_death_watcher();
+    //
+    // #272 (R3) — the tokio SIGTERM/SIGHUP handlers are registered
+    // INSIDE `install_parent_death_watcher` (and BEFORE prctl(2) /
+    // before the race-guard self-SIGTERM) so they catch the
+    // PR_SET_PDEATHSIG-delivered SIGTERM that arrives if the parent
+    // already exited between fork(2) and prctl(2). Previously the
+    // handlers were registered later inside `run_terminal` /
+    // `run_chat`, leaving a sub-ms window where the race-guard
+    // self-SIGTERM would hit default disposition (terminate) and
+    // `kill_child` would never run — orphaning the codex child.
+    let parent_death_signals = install_parent_death_watcher();
 
     let cli = Cli::parse();
     tracing::info!(
@@ -337,13 +347,38 @@ async fn main() -> anyhow::Result<()> {
             if cli.cmd.is_empty() {
                 anyhow::bail!("--mode terminal requires a `-- <program> [args...]` trailing argv");
             }
-            run_terminal(cli).await
+            run_terminal(cli, parent_death_signals).await
         }
         Mode::Chat => {
             if cli.runner_path.is_none() {
                 anyhow::bail!("--mode chat requires --runner-path <path-to-cli.js>");
             }
-            run_chat(cli).await
+            run_chat(cli, parent_death_signals).await
+        }
+    }
+}
+
+/// #272 (R3) — bundle of tokio signal receivers installed by
+/// [`install_parent_death_watcher`] BEFORE the prctl race-guard self-
+/// SIGTERM fires. The per-mode `run_terminal` / `run_chat` loops
+/// `.recv()` on these from inside their main `tokio::select!`.
+///
+/// SIGTERM is the signal `PR_SET_PDEATHSIG` delivers (Linux) and what
+/// the non-Linux ppid-watcher self-delivers. SIGHUP is the
+/// controlling-terminal-gone signal with the same "owner is gone"
+/// intent. Both are wired to the same shutdown branch in the caller.
+struct ParentDeathSignals {
+    sigterm: tokio::signal::unix::Signal,
+    sighup: tokio::signal::unix::Signal,
+}
+
+impl ParentDeathSignals {
+    /// Await whichever signal arrives first; return its static name for
+    /// the shutdown log line.
+    async fn recv(&mut self) -> &'static str {
+        tokio::select! {
+            _ = self.sigterm.recv() => "SIGTERM",
+            _ = self.sighup.recv() => "SIGHUP",
         }
     }
 }
@@ -372,7 +407,30 @@ async fn main() -> anyhow::Result<()> {
 /// per-mode `run_terminal` / `run_chat` loops poll, which then kills
 /// the codex child via the existing `kill_child` (terminal mode) or
 /// drops the runner's stdin (chat mode) so codex sees EOF and exits.
-fn install_parent_death_watcher() {
+///
+/// #272 (R3) — the tokio SIGTERM/SIGHUP handlers are installed *first*
+/// inside this function, **before** the prctl(2) call and **before** the
+/// race-guard self-SIGTERM. Previously they were installed later from
+/// inside `run_terminal` / `run_chat`, leaving a sub-millisecond window
+/// in which the race-guard SIGTERM (or an honest kernel-delivered SIGTERM
+/// arriving immediately after prctl install) hit the default
+/// disposition (terminate) — daemon dies, `kill_child` never runs, codex
+/// orphans. The handler must exist before any signal can be delivered to
+/// us, so install order is strictly: signal handlers → prctl → race-guard
+/// check → (non-Linux) ppid poller spawn.
+fn install_parent_death_watcher() -> ParentDeathSignals {
+    use tokio::signal::unix::{SignalKind, signal};
+    // Step 1: install the tokio SIGTERM / SIGHUP handlers BEFORE any
+    // signal can be delivered (prctl race-guard, ppid poller, kernel
+    // PR_SET_PDEATHSIG delivery). `expect` is appropriate: this is a
+    // one-shot setup call at daemon boot; if signal registration fails
+    // the process is misconfigured beyond what graceful shutdown can
+    // fix.
+    let sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+    let sighup = signal(SignalKind::hangup()).expect("install SIGHUP handler");
+
+    // Step 2: arm the kernel parent-death hook (Linux) or its
+    // poller fallback (other unix).
     #[cfg(target_os = "linux")]
     unsafe {
         // SAFETY: prctl(PR_SET_PDEATHSIG, ...) takes a signal number;
@@ -389,7 +447,10 @@ fn install_parent_death_watcher() {
         // and the prctl(2) above, in which case the kernel never
         // delivers the death signal (PR_SET_PDEATHSIG only fires on
         // transitions). If ppid is already 1 we self-deliver SIGTERM
-        // so the shutdown handler still runs.
+        // so the shutdown handler still runs. The tokio SIGTERM
+        // receiver installed in step 1 above is already armed, so
+        // this self-deliver lands on `sigterm.recv()` rather than
+        // the default-disposition terminate path.
         if libc::getppid() == 1 {
             tracing::warn!(
                 "parent already exited before PR_SET_PDEATHSIG installed; self-terminating"
@@ -422,9 +483,11 @@ fn install_parent_death_watcher() {
             }
         });
     }
+
+    ParentDeathSignals { sigterm, sighup }
 }
 
-async fn run_terminal(cli: Cli) -> anyhow::Result<()> {
+async fn run_terminal(cli: Cli, mut parent_death: ParentDeathSignals) -> anyhow::Result<()> {
     // Fail-fast on missing theme. `required_if_eq("mode", "terminal")`
     // only fires when `--mode` is set explicitly — when clap takes the
     // default it doesn't, so we re-check here. PR1 (#262) made theme a
@@ -591,7 +654,7 @@ async fn run_terminal(cli: Cli) -> anyhow::Result<()> {
         _ = shutdown_rx => {
             tracing::info!("child exited, shutting down");
         }
-        sig = wait_for_terminate_signal() => {
+        sig = parent_death.recv() => {
             tracing::info!(?sig, "received parent-death / terminate signal; killing PTY child");
             kill_child(&master, &killer);
         }
@@ -625,7 +688,7 @@ enum ChatControl {
     },
 }
 
-async fn run_chat(cli: Cli) -> anyhow::Result<()> {
+async fn run_chat(cli: Cli, mut parent_death: ParentDeathSignals) -> anyhow::Result<()> {
     // ---- spawn the Node runner (piped stdio, no PTY) ----
     let runner_path = cli
         .runner_path
@@ -663,9 +726,24 @@ async fn run_chat(cli: Cli) -> anyhow::Result<()> {
         // handle must not kill the running child.
         .kill_on_drop(false);
 
+    // #272 (N1) — put the runner in its own process group so the
+    // parent-death shutdown branch can `killpg(-pgid, SIGHUP)` /
+    // `SIGKILL` it without taking the daemon down with it. Without
+    // `process_group(0)` the runner shares the daemon's pgid and a
+    // negative-pid kill targeting the runner would also signal the
+    // daemon. Equivalent to portable-pty's `setsid` for terminal-mode
+    // children; lets us reuse the same SIGHUP-then-2 s-SIGKILL safety
+    // net `kill_child` uses in `run_terminal`.
+    cmd.process_group(0);
+
     let mut child = cmd
         .spawn()
         .map_err(|e| anyhow::anyhow!("failed to spawn `node {}`: {e}", runner_path.display()))?;
+    // Capture the pid before the wait-task below takes ownership of
+    // `child`. With `process_group(0)` above this pid == the runner's
+    // pgid, so a `killpg(-pid)` reaches the runner and every
+    // descendant it later forks (e.g. SDK subprocesses).
+    let runner_pid = child.id().map(|p| p as i32);
     let child_stdin = child
         .stdin
         .take()
@@ -725,20 +803,40 @@ async fn run_chat(cli: Cli) -> anyhow::Result<()> {
 
     // #267: same shutdown-on-parent-death pattern as `run_terminal`.
     // Dropping the control-frame sender below makes the chat runner
-    // see EOF on stdin and exit cleanly — the typical case. If the
-    // runner is unresponsive the OS will reap it on daemon exit
-    // because `kill_on_drop(false)` doesn't apply once the daemon
-    // process itself terminates.
+    // see EOF on stdin and exit cleanly — the typical case.
+    //
+    // #272 (N1): the EOF-via-stdin-drop is still the happy path, but
+    // a hung or stuck runner won't notice EOF in time, so we also
+    // signal-group the runner: SIGHUP to its pgid (set via
+    // `process_group(0)` at spawn) with a 2 s SIGKILL fallback.
+    // Mirrors what `kill_child` does in terminal mode. Without this
+    // safety net a Node runner that traps SIGPIPE or ignores stdin
+    // EOF would survive daemon shutdown as an orphan grandparent of
+    // every codex-SDK subprocess it had open. The OS would NOT reap
+    // it automatically: `kill_on_drop(false)` is intentional and the
+    // runner is in its own pgid, so the daemon's exit cascade
+    // doesn't reach it.
     tokio::select! {
         _ = shutdown_rx => {
             tracing::info!("chat runner exited, shutting down");
         }
-        sig = wait_for_terminate_signal() => {
-            tracing::info!(?sig, "received parent-death / terminate signal; closing runner stdin");
+        sig = parent_death.recv() => {
+            tracing::info!(?sig, "received parent-death / terminate signal; closing runner stdin + signaling runner group");
             // Dropping stdin_tx — the unique sender we hold here —
             // causes `spawn_chat_stdin_writer` to drop its
-            // `ChildStdin`, the runner sees EOF, and exits.
+            // `ChildStdin`, the runner sees EOF, and exits cleanly.
             drop(stdin_tx);
+            // Safety net for an unresponsive runner. `runner_pid` is
+            // also the runner's pgid because we spawned it with
+            // `process_group(0)`. Awaited inline (not `tokio::spawn`d)
+            // so the SIGHUP + 2 s SIGKILL fallback actually runs
+            // before this function returns and the tokio runtime
+            // tears down on daemon exit — otherwise the spawned task
+            // would be cancelled mid-sleep and an unresponsive runner
+            // would be reparented to init still alive.
+            if let Some(pid) = runner_pid {
+                kill_chat_runner_group(pid).await;
+            }
         }
     }
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -748,22 +846,44 @@ async fn run_chat(cli: Cli) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// #267 — await SIGTERM (the signal PR_SET_PDEATHSIG sends on Linux and
-/// the one our non-Linux ppid-watcher self-delivers) or SIGHUP (sent
-/// when a controlling terminal goes away — same "owner is gone" intent).
-/// Returns the static name of whichever fired so the log line is
-/// human-readable.
-async fn wait_for_terminate_signal() -> &'static str {
-    use tokio::signal::unix::{SignalKind, signal};
-    // Both handlers are registered up-front so the first arriving signal
-    // wins. `expect` is appropriate: this is a one-shot setup call at
-    // daemon boot, not a hot path; if signal registration fails the
-    // process is misconfigured beyond what graceful shutdown can fix.
-    let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
-    let mut sighup = signal(SignalKind::hangup()).expect("install SIGHUP handler");
-    tokio::select! {
-        _ = sigterm.recv() => "SIGTERM",
-        _ = sighup.recv() => "SIGHUP",
+/// #272 (N1) — chat-mode counterpart to `kill_child`. SIGHUP the
+/// runner's process group, then if it's still around after 2 s,
+/// SIGKILL the same pgid. The runner is spawned with
+/// `process_group(0)` so `pgid == pid`; signaling the negative pgid
+/// catches every SDK subprocess the runner forked too.
+///
+/// Awaited (not spawned) by `run_chat`'s shutdown branch so the
+/// fallback actually fires before the daemon process — and the tokio
+/// runtime — tears down. A `tokio::spawn`'d sleep would be cancelled
+/// at runtime shutdown and an unresponsive runner would survive
+/// orphan'd to init.
+async fn kill_chat_runner_group(pid: i32) {
+    // SAFETY: killpg-style negative pid targets the process group with
+    // the matching id. We created this pgid via `process_group(0)` at
+    // spawn time and captured the resulting pid before the wait-task
+    // took ownership of the `Child`.
+    unsafe {
+        libc::kill(-pid, libc::SIGHUP);
+    }
+    // Poll for runner exit on a short tick so we don't wait the full
+    // 2 s when SIGHUP did the job (the common case). `kill(0)` is a
+    // "does this pgid exist" probe — returns 0 if at least one
+    // member is alive, -1/ESRCH when the whole group is gone.
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        // SAFETY: kill(-pid, 0) only signals zero — no side effects.
+        let alive = unsafe { libc::kill(-pid, 0) } == 0;
+        if !alive {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    tracing::warn!(
+        pid,
+        "chat runner ignored SIGHUP for 2 s; sending SIGKILL to pgid"
+    );
+    unsafe {
+        libc::kill(-pid, libc::SIGKILL);
     }
 }
 
