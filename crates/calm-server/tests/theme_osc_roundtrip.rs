@@ -446,19 +446,25 @@ async fn osc_roundtrip_codex_card_create_theme() {
 }
 
 // ---------------------------------------------------------------------------
-// Case 2: mid-session theme toggle → unsolicited OSC reply
+// Case 2: mid-session theme toggle → daemon writes ONLY focus-in (no
+// unsolicited OSC 10/11 RGB)
 // ---------------------------------------------------------------------------
 
 /// Mid-session toggle: start with one theme (dark), then send
 /// `ClientMsg::TerminalThemeUpdate` over WS with a different theme
-/// (light). The daemon's `Effect::TerminalThemeUpdate` branch writes
-/// an unsolicited OSC 10/11 reply pair to the PTY master. The
-/// fixture's probe-twice mode listens for that second reply (no
-/// re-query needed from its side) and asserts the new RGB.
+/// (light). Since #295 followup 1 the daemon's
+/// `Effect::TerminalThemeUpdate` branch writes ONLY a focus-in
+/// (`ESC[I`) to the PTY master — the unsolicited
+/// `OSC 10/11;rgb:RRRR/GGGG/BBBB` pair that PR #296 used to emit
+/// alongside has been dropped (the focus-in alone is enough: codex
+/// re-queries on `FocusGained`, see
+/// `codex/event_stream.rs::Event::FocusGained ⇒ terminal_palette::requery_default_colors`).
 ///
-/// This is the wire path the browser's theme-toggle button drives
-/// — covers everything from the WS frame through the daemon's
-/// session-state machine to the PTY child's input stream.
+/// This case anchors the **structural** invariant: the bytes the
+/// daemon writes to the PTY after a toggle contain `\x1b[I` and do
+/// NOT contain any `\x1b]10;rgb:` / `\x1b]11;rgb:` opener. The
+/// downstream solicited reply path is covered by
+/// `osc_roundtrip_solicited_reply_after_theme_update` below.
 //
 // See sibling `#[allow(clippy::await_holding_lock)]` justification on
 // `osc_roundtrip_codex_card_create_theme`.
@@ -475,10 +481,17 @@ async fn osc_roundtrip_mid_session_theme_update() {
     set_env("NEIGE_OSC_RESULT_PATH", &result_path.to_string_lossy());
     let trace_path = tmp.path().join("probe-trace.txt");
     set_env("NEIGE_OSC_TRACE_PATH", &trace_path.to_string_lossy());
-    // Probe1 expects dark, probe2 expects light (after the toggle).
+    // Probe1 still expects dark (solicited query on startup). Probe2
+    // is a passive byte drain in this case — `expected-bg-2` is
+    // required by the fixture's arg layer but unused in default
+    // (non-reprobe) mode, so set it to anything parseable.
     set_env("NEIGE_OSC_EXPECTED_BG", "15,20,24");
     set_env("NEIGE_OSC_EXPECTED_BG_2", "247,249,252");
     set_env("NEIGE_OSC_PROBE_TWICE", "1");
+    // Default mode — drain raw bytes, dump them as
+    // `PROBE2_BYTES_HEX=...` in the result file. Reprobe mode is
+    // exercised by `osc_roundtrip_solicited_reply_after_theme_update`.
+    unset_env("NEIGE_OSC_REPROBE");
 
     let boot = boot_full().await;
     let wave_id = create_wave(boot.app.clone(), &boot.cove_id).await;
@@ -642,29 +655,71 @@ async fn osc_roundtrip_mid_session_theme_update() {
         }
     }
 
-    // Wait for probe2 to land. Use a longer budget because we have
-    // an extra WS roundtrip + daemon synthesis hop on top of the
-    // base PTY-reply path.
+    // Wait for probe2 to dump its byte stream. Use a longer budget
+    // because we have an extra WS roundtrip + daemon-side hop on top
+    // of the base PTY-write path. The fixture's drain window is 10s
+    // wall-clock; ROUNDTRIP_BUDGET (15s) gives the assertion side
+    // headroom over that.
     let deadline = Instant::now() + ROUNDTRIP_BUDGET;
     let result = loop {
         let s = std::fs::read_to_string(&result_path).unwrap_or_default();
-        if s.contains("OK2") || s.contains("FAIL: probe2") {
+        if s.contains("PROBE2_BYTES_HEX=") {
             break s;
         }
         if Instant::now() >= deadline {
             let trace =
                 std::fs::read_to_string(&trace_path).unwrap_or_else(|_| "<no trace>".into());
             panic!(
-                "probe2 outcome never landed within {ROUNDTRIP_BUDGET:?}; \
+                "probe2 byte-dump never landed within {ROUNDTRIP_BUDGET:?}; \
                  result so far: {s:?}; trace: {trace}"
             );
         }
         std::thread::sleep(Duration::from_millis(50));
     };
     let trace = std::fs::read_to_string(&trace_path).unwrap_or_else(|_| "<no trace>".into());
+
+    // Probe1 must have succeeded (asserted above already, but
+    // re-affirm so this case can fail with a unified report).
     assert!(
-        result.contains("OK\n") && result.contains("OK2"),
-        "probe1 + probe2 must both succeed; fixture result: {result:?}; trace: {trace:?}"
+        result.contains("OK\n"),
+        "probe1 must succeed; result: {result:?}; trace: {trace:?}"
+    );
+
+    // Decode the hex byte-dump from the result file.
+    let hex_line = result
+        .lines()
+        .find_map(|l| l.strip_prefix("PROBE2_BYTES_HEX="))
+        .expect("PROBE2_BYTES_HEX= line present");
+    let bytes: Vec<u8> = (0..hex_line.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex_line[i..i + 2], 16).expect("hex parse"))
+        .collect();
+
+    let contains = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
+    let preview = String::from_utf8_lossy(&bytes);
+
+    // (a) Daemon MUST write the focus-in CSI. Codex re-queries OSC
+    //     10/11 on `FocusGained`, so this is the trigger for the
+    //     solicited path.
+    assert!(
+        contains(b"\x1b[I"),
+        "daemon must write focus-in (ESC[I) after theme toggle; \
+         got {} bytes: {preview:?}; trace: {trace}",
+        bytes.len()
+    );
+
+    // (b) Daemon MUST NOT write unsolicited OSC 10/11 RGB. Anything
+    //     under those openers would be the regression #295 followup
+    //     1 set out to eliminate.
+    assert!(
+        !contains(b"\x1b]10;rgb:"),
+        "daemon emitted unsolicited OSC 10 RGB after theme toggle \
+         (#295 followup 1 regression); bytes={preview:?}; trace: {trace}"
+    );
+    assert!(
+        !contains(b"\x1b]11;rgb:"),
+        "daemon emitted unsolicited OSC 11 RGB after theme toggle \
+         (#295 followup 1 regression); bytes={preview:?}; trace: {trace}"
     );
 
     let _ = ws.close(None).await;
@@ -819,5 +874,201 @@ async fn spec_card_path_osc_roundtrip_light_theme() {
         "spec-card OSC roundtrip failed; fixture result: {result:?}; trace: {trace}"
     );
 
+    restore_path(prev_path);
+}
+
+// ---------------------------------------------------------------------------
+// Case 4 (#295 followup 1): solicited reply path after a mid-session
+// theme update
+// ---------------------------------------------------------------------------
+
+/// Solicited OSC reply path: after the daemon writes `\x1b[I` to the
+/// child following a `TerminalThemeUpdate`, a focus-aware TUI like
+/// codex calls `terminal_palette::requery_default_colors()` which
+/// emits `OSC 10;?` / `OSC 11;?`. The daemon's vte parser handles
+/// those queries against the (now-updated) default fg/bg in the model
+/// and writes a reply onto the PTY master.
+///
+/// This case proves the **end-to-end loop**: theme update →
+/// `set_default_colors` on the model → focus-in to child → child
+/// re-queries → daemon's solicited reply carries the NEW RGB. Case
+/// 2 (above) asserts the no-unsolicited-RGB structural invariant;
+/// this case asserts the functional outcome (the child eventually
+/// learns the new color).
+///
+/// Fixture mode: `NEIGE_OSC_REPROBE=1` makes the fixture's probe2
+/// wait for `\x1b[I`, send `\x1b]11;?\x1b\\`, then parse the reply.
+/// `OK2` is written iff the reply RGB matches the post-toggle
+/// expected light-theme bg.
+//
+// See sibling `#[allow(clippy::await_holding_lock)]` justification on
+// `osc_roundtrip_codex_card_create_theme`.
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn osc_roundtrip_solicited_reply_after_theme_update() {
+    let _guard = env_guard();
+    let tmp = TempDir::new().expect("tempdir for fixture staging");
+    let bin_dir = tmp.path().join("bin");
+    let result_path = tmp.path().join("probe-result.txt");
+    let trace_path = tmp.path().join("probe-trace.txt");
+
+    stage_fake_codex(&bin_dir);
+    let prev_path = prepend_path(&bin_dir);
+    set_env("NEIGE_OSC_RESULT_PATH", &result_path.to_string_lossy());
+    set_env("NEIGE_OSC_TRACE_PATH", &trace_path.to_string_lossy());
+    set_env("NEIGE_OSC_EXPECTED_BG", "15,20,24");
+    set_env("NEIGE_OSC_EXPECTED_BG_2", "247,249,252");
+    set_env("NEIGE_OSC_PROBE_TWICE", "1");
+    set_env("NEIGE_OSC_REPROBE", "1");
+
+    let boot = boot_full().await;
+    let wave_id = create_wave(boot.app.clone(), &boot.cove_id).await;
+
+    let cwd = tmp.path().to_string_lossy().to_string();
+    let (status, body) = post(
+        boot.app.clone(),
+        &format!("/api/waves/{wave_id}/codex-cards"),
+        json!({
+            "cwd": cwd,
+            "theme": { "fg": [216, 219, 226], "bg": [15, 20, 24] }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "codex card create body={body}");
+
+    // Same ordering rationale as case 2: probe1 must complete
+    // before we drive the WS toggle, else the fixture's read of
+    // probe1's solicited reply could race with the toggle's
+    // focus-in and confuse downstream parsing.
+    {
+        let deadline = Instant::now() + ROUNDTRIP_BUDGET;
+        loop {
+            let s = std::fs::read_to_string(&result_path).unwrap_or_default();
+            if s.contains("OK\n") || s.contains("FAIL: probe1") {
+                break;
+            }
+            if Instant::now() >= deadline {
+                let trace =
+                    std::fs::read_to_string(&trace_path).unwrap_or_else(|_| "<no trace>".into());
+                panic!(
+                    "probe1 outcome never landed within {ROUNDTRIP_BUDGET:?}; \
+                     last result: {s:?}; trace: {trace}"
+                );
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let s = std::fs::read_to_string(&result_path).unwrap_or_default();
+        assert!(
+            s.contains("OK\n"),
+            "probe1 must succeed before reprobe subpath; result: {s:?}"
+        );
+    }
+
+    let raw_terminal_id = body["payload"]["terminal_id"]
+        .as_str()
+        .expect("card.payload.terminal_id present")
+        .to_string();
+
+    let ws_url = format!("ws://{}/api/terminals/{raw_terminal_id}", boot.addr);
+    let (mut ws, _resp) =
+        tokio::time::timeout(STEP_TIMEOUT, tokio_tungstenite::connect_async(&ws_url))
+            .await
+            .expect("ws connect timed out")
+            .expect("ws connect failed");
+
+    let hello = ClientMsg::ClientHello {
+        protocol_version: PROTOCOL_VERSION,
+        terminal_id: raw_terminal_id.clone(),
+        client_id: Uuid::new_v4(),
+        desired_size: PtySize {
+            cols: 80,
+            rows: 24,
+            pixel_width: None,
+            pixel_height: None,
+        },
+        cell_size: None,
+        initial_scrollback: InitialScrollback::None,
+        resume_from: None,
+        role_hint: Some(Role::Owner),
+        capabilities: ClientCapabilities {
+            render_encodings: vec![RenderEncoding::Vt],
+            supports_scrollback: true,
+            supports_sixel: false,
+            supports_images: false,
+            kernel_originated_input: false,
+        },
+    };
+    ws.send(TMessage::Text(serde_json::to_string(&hello).unwrap()))
+        .await
+        .unwrap();
+
+    // Drain frames until ServerHello so we know the handshake
+    // completed and Owner role was assigned (gate on
+    // TerminalThemeUpdate).
+    let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            panic!("did not receive ServerHello within {STEP_TIMEOUT:?}");
+        }
+        let remaining = deadline - tokio::time::Instant::now();
+        let frame = tokio::time::timeout(remaining, ws.next()).await;
+        match frame {
+            Ok(Some(Ok(TMessage::Text(t)))) => {
+                let msg: DaemonMsg = match serde_json::from_str(&t) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                if matches!(msg, DaemonMsg::ServerHello { .. }) {
+                    break;
+                }
+            }
+            Ok(Some(Ok(_))) => continue,
+            _ => panic!("ws stream ended before ServerHello"),
+        }
+    }
+
+    let toggle = ClientMsg::TerminalThemeUpdate {
+        fg: (24, 33, 41),
+        bg: (247, 249, 252),
+    };
+    ws.send(TMessage::Text(serde_json::to_string(&toggle).unwrap()))
+        .await
+        .unwrap();
+
+    // Keep the WS up-arm pump alive (same reason as case 2 — read a
+    // few daemon frames so the bridge processes our toggle).
+    let drain_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while tokio::time::Instant::now() < drain_deadline {
+        match tokio::time::timeout(Duration::from_millis(200), ws.next()).await {
+            Ok(Some(Ok(_))) => continue,
+            Ok(Some(Err(_))) | Ok(None) => break,
+            Err(_) => break,
+        }
+    }
+
+    // Wait for the reprobe outcome.
+    let deadline = Instant::now() + ROUNDTRIP_BUDGET;
+    let result = loop {
+        let s = std::fs::read_to_string(&result_path).unwrap_or_default();
+        if s.contains("OK2") || s.contains("FAIL: probe2") {
+            break s;
+        }
+        if Instant::now() >= deadline {
+            let trace =
+                std::fs::read_to_string(&trace_path).unwrap_or_else(|_| "<no trace>".into());
+            panic!(
+                "reprobe outcome never landed within {ROUNDTRIP_BUDGET:?}; \
+                 result so far: {s:?}; trace: {trace}"
+            );
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let trace = std::fs::read_to_string(&trace_path).unwrap_or_else(|_| "<no trace>".into());
+    assert!(
+        result.contains("OK\n") && result.contains("OK2"),
+        "probe1 + reprobe must both succeed; result: {result:?}; trace: {trace:?}"
+    );
+
+    let _ = ws.close(None).await;
     restore_path(prev_path);
 }
