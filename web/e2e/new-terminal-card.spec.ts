@@ -1,7 +1,7 @@
-// E2E: clicking "+ Add → New terminal" must show the card immediately,
+// E2E: clicking "+ Add → terminal" must show the card immediately,
 // without a manual refresh.
 //
-// User-reported regression check: after clicking "+ Add → New terminal"
+// User-reported regression check: after clicking "+ Add → terminal"
 // on a wave, the card should render within a few seconds (POST →
 // server card.added event → eventBridge invalidates ['wave', id] →
 // useWaveDetailQuery refetches → WaveGrid mounts the new card). This
@@ -66,17 +66,19 @@ test('newly created terminal card appears without a reload', async ({ page }) =>
   // Step 3 — the wave starts empty.
   await expect(page.locator('.term')).toHaveCount(0);
 
-  // Step 4 — open the AddPanel and choose "New terminal". The AddPanel
+  // Step 4 — open the AddPanel and choose "terminal". The AddPanel
   // trigger renders as a button with visible text "+ Add" (title="Add
-  // card") — see `web/src/shared/components/AddPanel.tsx`. The "New
-  // terminal" menu entry is a `role="menuitem"` button populated from
+  // card") — see `web/src/shared/components/AddPanel.tsx`. The
+  // "terminal" menu entry is a `role="menuitem"` button populated from
   // the cards registry (`web/src/cards/builtins/terminal.tsx` →
-  // `addPanel: { label: 'New terminal' }`).
+  // `addPanel: { label: 'terminal' }`). The menuitem renders a
+  // card-head-style letter-avatar (aria-hidden) + the uppercase label;
+  // the accessible name stays the lowercase kind word "terminal".
   const addBtn = page.getByRole('button', { name: /^\s*\+?\s*add(\s|$)/i }).first();
   await expect(addBtn).toBeVisible();
   await addBtn.click();
 
-  const termOption = page.getByRole('menuitem', { name: /new terminal/i });
+  const termOption = page.getByRole('menuitem', { name: /terminal/i });
   await expect(termOption).toBeVisible({ timeout: 5_000 });
   await termOption.click();
 

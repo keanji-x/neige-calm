@@ -352,8 +352,10 @@ test.describe('a11y · keyboard-only navigation', () => {
 
     // On open the hook focuses the first menuitem. The order depends on
     // which builtins register, but the fixture today gives us at least
-    // "New terminal" + "New codex" (registered in that order in
-    // `cards/builtins/index.ts`).
+    // "terminal" + "codex" (registered in that order in
+    // `cards/builtins/index.ts`). Each menuitem renders a card-head-style
+    // letter-avatar (aria-hidden) before its uppercase label; the
+    // accessible name is the lowercase kind word.
     const items = page.getByRole('menuitem');
     const itemCount = await items.count();
     expect(itemCount).toBeGreaterThanOrEqual(2);
@@ -378,17 +380,18 @@ test.describe('a11y · keyboard-only navigation', () => {
     await expect(items.nth(itemCount - 1)).toBeFocused();
 
     // Typeahead: capture each item's first letter and exercise it.
-    // "New terminal" starts with 'N' — every entry today starts with 'N'
-    // ("New …"), so a single 'n' should cycle through them. We assert
-    // that two distinct 'n' presses focus two different items.
+    // Today's labels start with distinct letters ("terminal" → 'T',
+    // "codex" → 'C'), so pressing the last item's first letter jumps
+    // straight to it. The branch below still handles a shared-first-letter
+    // registry gracefully, so it survives future label changes.
     await page.keyboard.press('Home');
     await expect(items.nth(0)).toBeFocused();
     const firstItemText = (await items.nth(0).textContent())?.trim() ?? '';
     // Pull the first character of the LAST item — its initial letter
     // gives us a deterministic typeahead target distinct from item 0
-    // when labels differ. If all items share a first letter (the "new
-    // …" case), single-letter typeahead cycles past the current focus
-    // — that's still a valid keyboard contract test.
+    // when labels differ. If all items share a first letter, single-letter
+    // typeahead cycles past the current focus — that's still a valid
+    // keyboard contract test.
     const lastItemText = (await items.nth(itemCount - 1).textContent())?.trim() ?? '';
     if (firstItemText && lastItemText && firstItemText[0] !== lastItemText[0]) {
       // Distinct first letters: pressing the last item's first letter
@@ -412,7 +415,7 @@ test.describe('a11y · keyboard-only navigation', () => {
     await page.keyboard.press('Enter');
     await expect(menu).toBeVisible();
     await expect(items.nth(0)).toBeFocused();
-    // First item is "New terminal" (zero-config) — Enter creates a
+    // First item is "terminal" (zero-config) — Enter creates a
     // card immediately and closes the menu. Other entries open a
     // SchemaForm; either way the AddPanel itself is gone.
     await page.keyboard.press('Enter');
@@ -444,7 +447,7 @@ test.describe('a11y · keyboard-only navigation', () => {
     await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
 
     // Open the AddPanel and pick a menuitem that opens a Modal. In the
-    // current registry that's "New codex" — terminal has no createSchema
+    // current registry that's "codex" — terminal has no createSchema
     // so it creates immediately. If no codex entry is registered (e.g.
     // plugins not loaded in this fixture) we gracefully skip the modal-
     // focus assertions instead of red-flagging the suite.
@@ -460,8 +463,8 @@ test.describe('a11y · keyboard-only navigation', () => {
     test.skip(!hasCodex, 'codex card kind not registered in this fixture');
 
     // Slice 7 wires real menu-keyboard semantics. The menu's first item
-    // ("New terminal") gets initial focus on open; we navigate down to
-    // "New codex" via ArrowDown (its registry position) before pressing
+    // ("terminal") gets initial focus on open; we navigate down to
+    // "codex" via ArrowDown (its registry position) before pressing
     // Enter. We could also type 'c' (typeahead) — both paths satisfy the
     // contract; ArrowDown is the more universal choice since it doesn't
     // depend on label spelling.

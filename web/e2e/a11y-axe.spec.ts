@@ -371,7 +371,8 @@ test.describe('a11y · axe', () => {
         await page.keyboard.press('ArrowDown');
         await expect(codexItem).toBeFocused();
         await page.keyboard.press('Enter');
-        // The "New codex" entry opens a Modal panel whose body wraps a
+        // The "codex" menu entry opens a Modal panel (dialog title
+        // "New codex") whose body wraps a
         // DirectoryBrowser. Both wrap their content in role="dialog" —
         // the Modal panel is the outer one (aria-label = title) and the
         // nested browser tags itself "Choose a directory". We anchor on

@@ -1446,11 +1446,22 @@ input, textarea { font: inherit; color: inherit; }
   z-index: var(--z-raised);
   margin: var(--space-0);
 }
+/* Each AddPanel menuitem reads as a card head: a left-aligned letter-avatar
+   identity glyph (`.card-head-icon` via <LetterAvatar>) followed by the
+   uppercase kind word. Flex row + `--card-head-gap` mirror the card-head
+   layout; the uppercase + tracking on the row matches `.card-head-title`'s
+   typography vocabulary (the label text node is the menuitem's accessible
+   name — uppercase is presentational only). */
 .add-panel-menu-item {
-  display: block; width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--card-head-gap);
+  width: 100%;
   padding: var(--space-4) var(--space-7);
   text-align: left;
   font-size: var(--text-base);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wider);
   color: var(--text);
   background: transparent;
   border: none;

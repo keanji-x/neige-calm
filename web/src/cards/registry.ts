@@ -85,7 +85,6 @@ export interface CardEntry<T extends WaveCardData = WaveCardData> {
    *  Slice G iterates this. */
   addPanel?: {
     label: string;
-    icon?: string;
     /** When present, picking this entry from the AddPanel menu shows an
      *  inline config card rendered by `SchemaForm` instead of immediately
      *  creating the card. Omit for zero-config kinds (current terminal). */
@@ -146,7 +145,6 @@ export function sizeFor(card: WaveCardData): CardSize {
 export interface AddPanelMenuItem {
   type: string;
   label: string;
-  icon?: string;
   /** Optional create-form schema. The menu host shows the inline config
    *  card if this is set; otherwise the kind is created immediately. */
   createSchema?: CreateSchema;
@@ -160,7 +158,6 @@ export function addPanelEntries(): AddPanelMenuItem[] {
       out.push({
         type: String(entry.type),
         label: entry.addPanel.label,
-        icon: entry.addPanel.icon,
         createSchema: entry.addPanel.createSchema,
       });
     }

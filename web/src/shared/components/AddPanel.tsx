@@ -30,6 +30,7 @@
 
 import { addPanelEntries, type AddPanelMenuItem } from '../../cards/registry';
 import { Menu, type MenuItem } from '../../ui/Menu/Menu';
+import { LetterAvatar } from '../../cards/LetterAvatar';
 
 export type { AddPanelMenuItem } from '../../cards/registry';
 
@@ -55,8 +56,14 @@ export function AddPanel({
   // close over each entry so the wrapper's `onSelect(entry)` signature
   // is preserved — the Menu primitive sees a parameter-less callback,
   // which is the cleaner generic shape.
+  //
+  // The `icon` is a card-head-style letter-avatar derived from the entry
+  // label ("terminal" → "T", "codex" → "C"), so each menuitem reads as a
+  // card head: identity glyph + uppercase kind word. The avatar is
+  // `aria-hidden`, so the menuitem's accessible name stays `entry.label`.
   const menuItems: MenuItem[] = entries.map((entry) => ({
     label: entry.label,
+    icon: <LetterAvatar title={entry.label} />,
     onSelect: () => onSelect(entry),
   }));
 
