@@ -149,8 +149,9 @@ it's a status board, not a chat log.
 ### Reacting to user edits
 
 The user can edit the report directly from the UI. When that happens, \
-your `calm.wait_for_events` long-poll returns a `wave.report_edited` \
-event with `author = \"user\"`. Before doing anything else:
+your `calm.wait_for_events` long-poll returns a batch containing a \
+`wave.report_edited` event with `author = \"user\"`. Before doing \
+anything else:
 
 1. Call `calm.report.read` to fetch the latest body.
 2. Reconcile the user's changes with what you were about to write — \

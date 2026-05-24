@@ -554,6 +554,16 @@ async fn spec_self_write_echoes_as_author_spec_on_the_wait_stream() {
         self_echoes[0]["data"]["author"], "spec",
         "spec-authored echoes MUST surface with the lowercase \"spec\" string; got {events:?}",
     );
+    assert_eq!(
+        self_echoes[0]["data"]["wave_id"],
+        boot.wave_id.as_str(),
+        "wave_id on the envelope must match the edited wave",
+    );
+    assert_eq!(
+        self_echoes[0]["data"]["card_id"],
+        boot.report_card_id.as_str(),
+        "card_id on the envelope must match the report card",
+    );
     // No user envelope hiding among the events — distinguishing the
     // two halves is the prompt instruction's whole point.
     assert!(
