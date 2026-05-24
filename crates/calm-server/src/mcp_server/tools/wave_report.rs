@@ -32,8 +32,14 @@
 //!
 //! ## Edit semantics (matched to codex's Edit)
 //!
-//!   * `old_string == new_string` → no-op (return current `updated_at`
-//!     without writing).
+//!   * `old_string == new_string` → falls through to `persist_report`
+//!     as a content-equal write. Emits the same two-event pair
+//!     (`CardUpdated` + `WaveReportEdited`) as every other persist
+//!     path, with `body_before == body_after`. PR4's UI consumer can
+//!     filter no-op edits from the timeline client-side; the kernel
+//!     keeps a uniform "every persist → two events" invariant so
+//!     downstream consumers never have to second-guess whether an
+//!     event is missing.
 //!   * `old_string` not found in `body` → `-32602` "old_string not
 //!     found in body".
 //!   * `old_string` found multiple times and `replace_all` not true →
@@ -185,10 +191,12 @@ fn edit_descriptor() -> ToolDescriptor {
              report body. Behaves like the codex `Edit` file tool. \
              `old_string` must appear in the body; if it appears more \
              than once you must pass `replace_all = true`. If \
-             `old_string == new_string`, the call is a silent no-op \
-             (no write, no event). Returns `{ updated_at }`. The \
-             summary is preserved — call `calm.report.write` to \
-             update both at once."
+             `old_string == new_string`, the call is a content-equal \
+             write that still bumps `updated_at` and emits the same \
+             `CardUpdated` + `WaveReportEdited` event pair as every \
+             other persist (with `body_before == body_after`). \
+             Returns `{ updated_at }`. The summary is preserved — \
+             call `calm.report.write` to update both at once."
             .into(),
         input_schema: json!({
             "type": "object",
@@ -240,14 +248,15 @@ async fn report_edit(
 
     let (wave, _, report_card, current) = resolve_report_for_caller(&ctx, &identity).await?;
 
-    // Codex Edit semantics: equal strings short-circuits to no-op. Don't
-    // bump `updated_at`, don't emit an event, don't write. Return the
-    // current `updated_at` so the caller sees its idempotent retry was
-    // recognized.
-    if old_string == new_string {
-        return Ok(json!({ "updated_at": report_card.updated_at }));
-    }
-
+    // Issue #247 PR2 review: removed the `old_string == new_string`
+    // short-circuit so this handler always falls through to
+    // `persist_report` and emits the same `CardUpdated` +
+    // `WaveReportEdited` event pair as `report.write`. The asymmetry
+    // it created (write-with-identical-content → 2 events, edit-with-
+    // identical-strings → 0 events) made PR4's UI consumer have to
+    // special-case one persist path. We still validate `old_string`
+    // is present in the body — substring-not-found stays a hard
+    // error, *only* the equal-strings branch is gone.
     let occurrences = count_matches(&current.body, &old_string);
     if occurrences == 0 {
         return Err(RpcError::invalid_params(
@@ -401,16 +410,15 @@ async fn resolve_report_for_caller(
 ///      preserved).
 ///
 /// **Both events fire on every call, including content-equal writes**
-/// (e.g. re-asserting the same body). The `WaveReportEdited` row
-/// records `summary_before == summary_after && body_before ==
-/// body_after`, which PR4's UI can filter out client-side if it wants
-/// to suppress no-ops from the timeline. Keeping the invariant
-/// "every persist_report call → one CardUpdated + one WaveReportEdited"
+/// (e.g. re-asserting the same body, or `report.edit` with
+/// `old_string == new_string`). The `WaveReportEdited` row records
+/// `summary_before == summary_after && body_before == body_after`,
+/// which PR4's UI can filter out client-side if it wants to suppress
+/// no-ops from the timeline. Keeping the invariant "every
+/// `persist_report` call → one `CardUpdated` + one `WaveReportEdited`"
 /// dead simple means downstream consumers never have to second-guess
-/// whether an event is missing. (The string-replace `report.edit` tool
-/// short-circuits *before* reaching this function when `old == new`,
-/// so a true no-op via `report.edit` still emits zero events — the
-/// short-circuit happens in `report_edit` itself.)
+/// whether an event is missing — every MCP write path that reaches
+/// this function emits exactly the same two-event pair.
 ///
 /// The `current_payload` argument is the payload as it was last seen
 /// by the caller (passed in from `resolve_report_for_caller`). It's
@@ -548,13 +556,22 @@ mod tests {
     }
 
     #[test]
-    fn edit_equal_strings_is_no_op() {
-        // Sanity-pin: the Edit semantics short-circuit when old==new
-        // without recomputing the body. Verified via direct string
-        // comparison; the actual MCP path is exercised end-to-end in
-        // the integration test in `tests/mcp_report_tools.rs`.
-        let a = "same";
-        let b = "same";
-        assert_eq!(a, b);
+    #[allow(clippy::no_effect_replace)] // The whole point of this test
+    // is to pin that `str::replace(s, s)` is the identity map — that
+    // identity is what makes the post-fix `report.edit` with equal
+    // strings produce `body_before == body_after` instead of being a
+    // bypass. The lint is exactly right that the call is a no-op;
+    // that's the assertion.
+    fn edit_equal_strings_replace_is_identity() {
+        // Sanity-pin: PR2 review removed the `old == new` short-circuit
+        // in `report_edit`, so equal strings now fall through to the
+        // normal `str::replace` path. That path is the identity map
+        // — `body.replace(s, s) == body` — which is what makes the
+        // resulting `WaveReportEdited` carry `body_before ==
+        // body_after`. End-to-end coverage lives in
+        // `tests/mcp_wave_report.rs::edit_with_identical_old_and_new_still_emits_both_events`.
+        let body = "the body XYZ";
+        assert_eq!(body.replace("XYZ", "XYZ"), body);
+        assert_eq!(body.replacen("XYZ", "XYZ", 1), body);
     }
 }

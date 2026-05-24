@@ -726,15 +726,26 @@ async fn edit_replace_all_on_duplicates() {
 }
 
 #[tokio::test]
-async fn edit_noop_when_old_equals_new() {
+async fn edit_with_identical_old_and_new_still_emits_both_events() {
+    // Issue #247 PR2 review fix: `report.edit` used to short-circuit
+    // when `old_string == new_string` (return early, no write, no
+    // event). That broke symmetry with `report.write` — a
+    // content-equal `report.write` still emitted both `CardUpdated`
+    // and `WaveReportEdited` (see
+    // `write_with_unchanged_content_still_emits_wave_report_edited`),
+    // while a `report.edit` with equal strings emitted nothing.
+    // After the fix every persist path emits exactly the same
+    // two-event pair, with `body_before == body_after` and
+    // `summary_before == summary_after` for the equal-strings case.
     let boot = boot().await;
-    // Seed and capture the row's updated_at *after* the seed write so
-    // we have a stable baseline.
+    // Seed a known body. The substring "stable" must exist for the
+    // post-fix flow to find it (the old `old == new` short-circuit
+    // ran *before* the not-found check; now both checks run).
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
         spec_identity(&boot),
-        json!({ "body": "stable\n" }),
+        json!({ "body": "stable\n", "summary": "stable-summary" }),
     )
     .await
     .unwrap();
@@ -745,11 +756,13 @@ async fn edit_noop_when_old_equals_new() {
         .unwrap()
         .unwrap();
     let before_ts = before.updated_at;
+    let report_id = boot.report_card_id.clone();
+    let wave_id = boot.wave_id.clone();
 
-    // Subscribe — if a no-op accidentally emits, the collector picks
-    // it up so the test fails.
+    // Subscribe — we now expect TWO envelopes from the equal-strings
+    // edit, identical to the `report.write` path.
     let events = boot.ctx.events.clone();
-    let sub = tokio::spawn(async move { collect_n(&events, 1).await });
+    let sub = tokio::spawn(async move { collect_n(&events, 2).await });
     tokio::time::sleep(Duration::from_millis(20)).await;
 
     let out = call_tool(
@@ -759,28 +772,69 @@ async fn edit_noop_when_old_equals_new() {
         json!({ "old_string": "stable", "new_string": "stable" }),
     )
     .await
-    .expect("no-op edit succeeds");
-    assert_eq!(
-        out.get("updated_at").and_then(Value::as_i64),
-        Some(before_ts),
-        "no-op returns the unchanged updated_at",
-    );
-    // Bus should be empty (timeout returns 0 envelopes).
-    let envs = sub.await.expect("collector ok");
+    .expect("equal-strings edit succeeds (content-equal write)");
+    let new_ts = out
+        .get("updated_at")
+        .and_then(Value::as_i64)
+        .expect("updated_at i64");
     assert!(
-        envs.is_empty(),
-        "no-op must not emit; got {} envelopes",
-        envs.len()
+        new_ts >= before_ts,
+        "content-equal edit bumps (or keeps) updated_at; before={before_ts} after={new_ts}",
     );
 
-    // Row's updated_at unchanged.
+    // Bus must see exactly two envelopes: CardUpdated then
+    // WaveReportEdited, same invariant as `report.write`.
+    let envs = sub.await.expect("collector ok");
+    assert_eq!(
+        envs.len(),
+        2,
+        "equal-strings edit emits both events (symmetry with report.write); got {envs:?}",
+    );
+    assert!(
+        matches!(envs[0].event, Event::CardUpdated(_)),
+        "CardUpdated first (preserves pre-PR2 broadcast order)",
+    );
+    match &envs[1].event {
+        Event::WaveReportEdited {
+            wave_id: w,
+            card_id: c,
+            author,
+            edit_id,
+            summary_before,
+            summary_after,
+            body_before,
+            body_after,
+        } => {
+            assert_eq!(w, &wave_id, "wave_id matches");
+            assert_eq!(c, &report_id, "card_id matches");
+            assert_eq!(*author, EditAuthor::Spec);
+            assert_eq!(edit_id.len(), 36, "edit_id is a UUID v4 string");
+            // The defining assertion: equal-strings replacement is
+            // the identity map, so before == after on both fields.
+            assert_eq!(
+                body_before, body_after,
+                "equal-strings edit: body_before == body_after",
+            );
+            assert_eq!(
+                summary_before, summary_after,
+                "equal-strings edit: summary_before == summary_after",
+            );
+            assert_eq!(body_before, "stable\n");
+            assert_eq!(summary_before, "stable-summary");
+        }
+        other => panic!("expected WaveReportEdited, got {other:?}"),
+    }
+
+    // Row's payload is unchanged byte-for-byte (it's the same body).
     let after = boot
         .repo
         .card_get(boot.report_card_id.as_str())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(after.updated_at, before_ts);
+    let payload: WaveReportPayload = serde_json::from_value(after.payload).unwrap();
+    assert_eq!(payload.body, "stable\n");
+    assert_eq!(payload.summary, "stable-summary");
 }
 
 #[tokio::test]
