@@ -85,6 +85,11 @@ test('terminal worker that exits cleanly shows "process exited" overlay, not "di
     const body = await cardRes.text().catch(() => '<unreadable>');
     throw new Error(`POST terminal-cards → ${cardRes.status()} ${cardRes.statusText()}: ${body}`);
   }
+  const card = (await cardRes.json()) as { payload?: { terminal_id?: string } };
+  const terminalId = card.payload?.terminal_id;
+  if (!terminalId) {
+    throw new Error(`terminal card POST missing payload.terminal_id: ${JSON.stringify(card)}`);
+  }
 
   // Step 4 — small breather so the daemon's spawn → child exit → unlink
   // cycle finishes BEFORE we open the page. `printf` is sub-50ms but
@@ -101,24 +106,24 @@ test('terminal worker that exits cleanly shows "process exited" overlay, not "di
   await page.goto(`/calm/wave/${wave.id}`);
   await expect(page).toHaveURL(/\/calm\/wave\/[^/]+$/);
 
-  // Step 6 — the `.xterm-status-closed` overlay should say "process
-  // exited" with a Restart button — see `XtermView.tsx` line ~700.
-  // Generous timeout because the WS round-trip + onclose handler has
-  // to complete before status flips to `exited`.
-  const overlay = page.locator('.xterm-status-closed');
+  // Step 6 — scope assertions to the worker terminal card we minted.
+  // The wave's auto-created spec card also renders an XtermView, and
+  // in CI (no real OPENAI_API_KEY) its codex daemon exits immediately
+  // too — so a page-wide `.xterm-status-closed` selector hits multiple
+  // overlays. `[data-terminal-id="..."]` on the XtermView root pins
+  // the locator to our worker.
+  const ourCard = page.locator(`[data-terminal-id="${terminalId}"]`);
+  const overlay = ourCard.locator('.xterm-status-closed');
   await expect(overlay).toBeVisible({ timeout: 15_000 });
   await expect(overlay).toContainText('process exited');
   await expect(
-    page.getByRole('button', { name: /^restart$/i }),
+    ourCard.getByRole('button', { name: /^restart$/i }),
   ).toBeVisible();
 
   // Step 7 — negative assertion: the "disconnected" / Reconnect
-  // overlay (the 1006 fallback) must NOT show up. We assert the
-  // overlay text doesn't contain "disconnected" and that no
-  // Reconnect button is present. Together with the positive
-  // assertion above, this pins the contract.
+  // overlay (the 1006 fallback) must NOT show up on our card.
   await expect(overlay).not.toContainText('disconnected');
   await expect(
-    page.getByRole('button', { name: /^reconnect$/i }),
+    ourCard.getByRole('button', { name: /^reconnect$/i }),
   ).toHaveCount(0);
 });

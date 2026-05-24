@@ -714,7 +714,7 @@ export function XtermView({
   }, [terminalId, reconnectKey]);
 
   return (
-    <div className="xterm-view">
+    <div className="xterm-view" data-terminal-id={terminalId}>
       {/* The xterm container is the canvas-style render surface xterm.js
        *  paints into — `.xterm-rows` / `.xterm-fg-*` spans the library
        *  emits per-cell are presentational decoration, not navigable
