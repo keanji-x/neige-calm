@@ -113,10 +113,18 @@ test('terminal worker that exits cleanly shows the exit 0 header badge, no overl
   // the XtermView root pins the locator to our worker.
   const ourView = page.locator(`[data-terminal-id="${terminalId}"]`);
   await expect(ourView).toBeVisible({ timeout: 15_000 });
-  // The card head (one DOM up — `.term > .card-head + .term-body >
-  // .xterm-view`). Walking up via XPath keeps the locator robust to
-  // future class-name tweaks on the wrapper.
-  const ourCard = ourView.locator('xpath=ancestor::div[contains(@class, "term")][1]');
+  // The card head (two DOM up — `.term > .card-head + .term-body >
+  // .xterm-view`). We have to walk to the OUTER `.term` div (which
+  // contains both `.card-head` and `.term-body`); the badge lives in
+  // `.card-head`, which is a SIBLING of `.term-body` (the XtermView's
+  // direct parent), not a descendant. The token-aware predicate
+  // (normalize-space + space-padding) matches the exact `"term"` class
+  // token and skips `.term-body` / `.term-line` / etc. — a plain
+  // `contains(@class, "term")` would resolve to the closest `.term-body`
+  // ancestor and the badge search would walk the wrong subtree.
+  const ourCard = ourView.locator(
+    "xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' term ')][1]",
+  );
   const exitBadge = ourCard.locator('.card-head-exit-badge');
 
   // (a) The exit badge appears, reads "exit 0", and uses the success
