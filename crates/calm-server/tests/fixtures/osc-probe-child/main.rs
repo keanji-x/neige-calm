@@ -35,10 +35,22 @@
 //! 6. Compare against `--expected-bg`. Write `OK` to `--result` on
 //!    match, `FAIL: ...` otherwise.
 //!
-//! `--probe-twice` mode adds a second read after a configurable wait
-//! (no second query — the daemon's mid-session `TerminalThemeUpdate`
-//! path writes an unsolicited OSC 10/11 pair to the PTY, so we just
-//! need to listen). Used by the mid-session toggle test.
+//! `--probe-twice` mode adds a second read after a configurable wait.
+//! Behaviour depends on `NEIGE_OSC_REPROBE`:
+//!
+//! - **Default (no reprobe)** — Daemon used to write an unsolicited
+//!   OSC 10/11 pair on `TerminalThemeUpdate`. Since #295 followup 1 it
+//!   writes only a focus-in `ESC[I`. Probe2 reads raw bytes for a
+//!   fixed window, then dumps them into the result file and the trace
+//!   file. The test driver asserts on those raw bytes (e.g. contains
+//!   `\x1b[I`, does NOT contain `\x1b]10;rgb:`).
+//!
+//! - **`NEIGE_OSC_REPROBE=1`** — Probe2 waits for the focus-in
+//!   `ESC[I` the daemon writes after `TerminalThemeUpdate`, then
+//!   actively re-queries `\x1b]11;?\x1b\\` (mirroring codex's
+//!   `terminal_palette::requery_default_colors` on `FocusGained`).
+//!   The reply RGB is compared against `NEIGE_OSC_EXPECTED_BG_2`.
+//!   This exercises the post-#295 solicited-only path end-to-end.
 //!
 //! ## Why a fixture rather than the real codex CLI
 //!
@@ -153,13 +165,130 @@ fn restore_termios(fd: i32, saved: &libc::termios) {
     }
 }
 
-/// Read bytes from `fd` into `buf` until a terminator is seen or the
+/// Read bytes from `fd` into `buf` until a needle is seen or the
 /// deadline elapses. Uses `poll(2)` for a bounded wait between reads
 /// — `read(2)` on a raw-mode PTY would block forever if the daemon
 /// never emits the reply.
 ///
-/// Returns the bytes read so far (caller decides whether terminator
-/// was found).
+/// Returns `(bytes_read, found)` where `found` is true if `needle`
+/// appeared somewhere in the buffer.
+fn read_until(fd: i32, deadline: Instant, needle: &[u8]) -> (Vec<u8>, bool) {
+    let mut out: Vec<u8> = Vec::with_capacity(64);
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return (out, false);
+        }
+        let remaining = deadline - now;
+        let ms = remaining.as_millis().min(i32::MAX as u128) as i32;
+
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: pfd is a valid pollfd pointer with nfds=1.
+        let rc = unsafe { libc::poll(&mut pfd, 1, ms) };
+        if rc <= 0 {
+            return (out, false);
+        }
+        if pfd.revents & libc::POLLIN == 0 {
+            return (out, false);
+        }
+
+        let mut chunk = [0u8; 256];
+        // SAFETY: chunk is a valid writable buffer of len 256.
+        let n = unsafe { libc::read(fd, chunk.as_mut_ptr() as *mut _, chunk.len()) };
+        if n <= 0 {
+            return (out, false);
+        }
+        out.extend_from_slice(&chunk[..n as usize]);
+
+        if needle.is_empty() {
+            continue;
+        }
+        if out.windows(needle.len()).any(|w| w == needle) {
+            return (out, true);
+        }
+    }
+}
+
+/// Drain whatever bytes arrive on `fd` until the deadline elapses.
+/// Unlike `read_until`, this never returns early on a terminator —
+/// it keeps polling for the full window so the caller observes the
+/// **complete** unsolicited write stream from the daemon. Used by
+/// the "assert no OSC RGB bytes in unsolicited stream" probe2 path.
+///
+/// We do NOT bail on `poll` timeout: the daemon's write may arrive
+/// hundreds of ms after probe2 begins (it has to round-trip through
+/// the WS handler + session-state machine), so an early-return on a
+/// quiet poll would miss it. Only `read(2)` errors / EOF (`n <= 0`)
+/// terminate the loop early.
+fn drain_for(fd: i32, deadline: Instant) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::with_capacity(64);
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return out;
+        }
+        let remaining = deadline - now;
+        // Cap each poll wait at 100ms so we re-check the deadline
+        // promptly. Without this an arbitrarily-large `remaining`
+        // could mask a missed wake-up; with it the worst-case excess
+        // is one poll cycle (~100ms) past the deadline.
+        let ms = remaining.as_millis().min(100) as i32;
+
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: pfd is a valid pollfd pointer with nfds=1.
+        let rc = unsafe { libc::poll(&mut pfd, 1, ms) };
+        if rc < 0 {
+            // EINTR is recoverable (a signal interrupted poll). Any
+            // other error means we can't reliably wait — bail.
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return out;
+        }
+        if rc == 0 {
+            // Poll timeout — no data yet. Keep waiting; the daemon's
+            // toggle round-trip can be slow.
+            continue;
+        }
+        if pfd.revents & (libc::POLLIN | libc::POLLHUP) == 0 {
+            // POLLERR / POLLNVAL — terminal state, bail.
+            return out;
+        }
+        if pfd.revents & libc::POLLIN == 0 {
+            // POLLHUP only (no data) — give one final read a chance
+            // (drain any FIFO residue), then bail.
+            let mut chunk = [0u8; 256];
+            // SAFETY: chunk is a valid writable buffer of len 256.
+            let n = unsafe { libc::read(fd, chunk.as_mut_ptr() as *mut _, chunk.len()) };
+            if n > 0 {
+                out.extend_from_slice(&chunk[..n as usize]);
+            }
+            return out;
+        }
+
+        let mut chunk = [0u8; 256];
+        // SAFETY: chunk is a valid writable buffer of len 256.
+        let n = unsafe { libc::read(fd, chunk.as_mut_ptr() as *mut _, chunk.len()) };
+        if n <= 0 {
+            return out;
+        }
+        out.extend_from_slice(&chunk[..n as usize]);
+    }
+}
+
+/// Read bytes from `fd` into `buf` until an OSC terminator (`ESC\` or
+/// `BEL`) is seen or the deadline elapses. Thin wrapper kept for
+/// historical callers — probe1 uses this to receive a single complete
+/// OSC 11 reply.
 fn read_until_terminator(fd: i32, deadline: Instant) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::with_capacity(64);
     loop {
@@ -246,14 +375,17 @@ fn main() {
     )
     .expect("expected-bg parse");
     let probe_twice = flag_or_env("--probe-twice", "NEIGE_OSC_PROBE_TWICE");
+    let reprobe = flag_or_env("--reprobe", "NEIGE_OSC_REPROBE");
+    // `expected-bg-2` is required only in reprobe mode; default
+    // probe2 dumps raw bytes for the driver and ignores the value.
     let expected_bg_2 = if probe_twice {
-        Some(
-            parse_rgb(
-                &arg_or_env("--expected-bg-2", "NEIGE_OSC_EXPECTED_BG_2")
-                    .expect("--expected-bg-2 or NEIGE_OSC_EXPECTED_BG_2 required"),
-            )
-            .expect("expected-bg-2 parse"),
-        )
+        match arg_or_env("--expected-bg-2", "NEIGE_OSC_EXPECTED_BG_2") {
+            Some(s) => Some(parse_rgb(&s).expect("expected-bg-2 parse")),
+            None if reprobe => {
+                panic!("--expected-bg-2 or NEIGE_OSC_EXPECTED_BG_2 required in reprobe mode")
+            }
+            None => Some((0, 0, 0)), // unused in default mode
+        }
     } else {
         None
     };
@@ -299,9 +431,10 @@ fn main() {
         let _ = std::fs::write(
             &trace_path,
             format!(
-                "fixture-startup argv={:?} probe_twice={} expected_bg={:?} expected_bg_2={:?}\n",
+                "fixture-startup argv={:?} probe_twice={} reprobe={} expected_bg={:?} expected_bg_2={:?}\n",
                 std::env::args().collect::<Vec<_>>(),
                 probe_twice,
+                reprobe,
                 expected_bg,
                 expected_bg_2,
             ),
@@ -310,10 +443,11 @@ fn main() {
 
     // Enable DECSET 1004 (focus event reporting) up front, before any
     // query and well before the mid-session toggle. The real codex opts
-    // in on startup; the daemon gates the synthetic mid-session OSC
-    // 10/11 theme write on this flag, so a faithful prober must set it or
-    // it would never see probe 2's reply. (We don't actually consume the
-    // focus-in `ESC[I` the daemon appends — it's harmless filler in our
+    // in on startup; the daemon gates the mid-session focus-in
+    // `ESC[I` write on this flag, so a faithful prober must set it or
+    // it would never see probe 2's signal. (In default probe2 mode we
+    // observe ESC[I directly; in reprobe mode we use it as the trigger
+    // to re-query OSC 11. The focus-in is harmless filler in our
     // read buffer; `parse_osc11_bg` scans for the OSC opener regardless.)
     if let Err(e) = tty.write_all(b"\x1b[?1004h") {
         outcome.push_str(&format!("FAIL: write DECSET 1004: {e}\n"));
@@ -360,48 +494,169 @@ fn main() {
 
     // ---- Probe 2 (mid-session toggle) ----
     //
-    // Mid-session: daemon's `Effect::TerminalThemeUpdate` writes the
-    // updated OSC 10/11 reply pair to the PTY *unsolicited* (no
-    // re-query needed from our side). We just listen for up to 10s
-    // for the next OSC 11 reply with the new RGB.
+    // Two modes, selected by `NEIGE_OSC_REPROBE`:
     //
-    // The 10s ceiling is the WS toggle round-trip budget: test sends
-    // `TerminalThemeUpdate` → server handler intercepts + persists →
-    // bridge forwards to daemon → daemon synthesizes OSC reply →
+    // - Default: passively drain bytes the daemon writes after the
+    //   toggle. Since #295 followup 1 the daemon writes only the
+    //   focus-in CSI (`ESC[I`) — no unsolicited OSC 10/11 RGB. The
+    //   raw byte stream is dumped to the trace + result file so the
+    //   test driver can assert on its contents.
+    //
+    // - Reprobe (`NEIGE_OSC_REPROBE=1`): wait for `ESC[I`, then
+    //   actively re-query `OSC 11;?`, mirroring codex's
+    //   `terminal_palette::requery_default_colors` on `FocusGained`.
+    //   Parse the reply and compare against `NEIGE_OSC_EXPECTED_BG_2`.
+    //   This exercises the full solicited path end-to-end.
+    //
+    // The 10s outer ceiling is the WS toggle round-trip budget: test
+    // sends `TerminalThemeUpdate` → server handler intercepts +
+    // persists → bridge forwards to daemon → daemon writes ESC[I →
     // bytes hit our PTY input. In practice this takes ~50ms; 10s
     // exists to keep the test deterministic on a hot CI box and to
     // give us diagnostic budget when the chain is broken.
     if let Some(exp2) = expected_bg_2 {
         let deadline2 = Instant::now() + Duration::from_secs(10);
-        let buf2 = read_until_terminator(tty_fd, deadline2);
-        // Dump raw bytes seen to the trace file for diagnostics
-        if let Ok(trace_path) = std::env::var("NEIGE_OSC_TRACE_PATH") {
-            let _ = std::fs::OpenOptions::new()
-                .append(true)
-                .open(&trace_path)
-                .and_then(|mut f| {
-                    f.write_all(
-                        format!("probe2 raw bytes ({}): {:?}\n", buf2.len(), buf2).as_bytes(),
-                    )
-                });
-        }
-        match parse_osc11_bg(&buf2) {
-            Some(rgb) if rgb == exp2 => {
-                outcome.push_str("OK2\n");
+
+        if reprobe {
+            // Wait for the focus-in CSI; once it arrives, re-query
+            // OSC 11 and parse the reply.
+            let (focus_buf, saw_focus_in) = read_until(tty_fd, deadline2, b"\x1b[I");
+            if let Ok(trace_path) = std::env::var("NEIGE_OSC_TRACE_PATH") {
+                let _ = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&trace_path)
+                    .and_then(|mut f| {
+                        f.write_all(
+                            format!(
+                                "probe2 reprobe focus-in wait ({}): saw_focus_in={} bytes={:?}\n",
+                                focus_buf.len(),
+                                saw_focus_in,
+                                focus_buf
+                            )
+                            .as_bytes(),
+                        )
+                    });
             }
-            Some(rgb) => {
+            if !saw_focus_in {
                 outcome.push_str(&format!(
-                    "FAIL: probe2 got rgb {},{},{} want {},{},{}\n",
-                    rgb.0, rgb.1, rgb.2, exp2.0, exp2.1, exp2.2
+                    "FAIL: probe2 never saw focus-in ESC[I within deadline; \
+                     got {} bytes: {:?}\n",
+                    focus_buf.len(),
+                    String::from_utf8_lossy(&focus_buf),
                 ));
+                write_result(&outcome);
+                restore_termios(tty_fd, &saved);
+                std::process::exit(1);
             }
-            None => {
-                outcome.push_str(&format!(
-                    "FAIL: probe2 no OSC 11 reply within deadline; got {} bytes: {:?}\n",
-                    buf2.len(),
-                    String::from_utf8_lossy(&buf2)
-                ));
+            // Re-query OSC 11. Daemon's vte parser sees this and
+            // synthesizes a reply from the (now-updated)
+            // `default_bg`. Echo of the OSC 11 query bytes is
+            // suppressed at the daemon's vte layer — only the reply
+            // comes back.
+            if let Err(e) = tty.write_all(b"\x1b]11;?\x1b\\") {
+                outcome.push_str(&format!("FAIL: probe2 reprobe write OSC11: {e}\n"));
+                write_result(&outcome);
+                restore_termios(tty_fd, &saved);
+                std::process::exit(1);
             }
+            let _ = tty.flush();
+            let reply_deadline = Instant::now() + Duration::from_secs(5);
+            let reply_buf = read_until_terminator(tty_fd, reply_deadline);
+            if let Ok(trace_path) = std::env::var("NEIGE_OSC_TRACE_PATH") {
+                let _ = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&trace_path)
+                    .and_then(|mut f| {
+                        f.write_all(
+                            format!(
+                                "probe2 reprobe reply bytes ({}): {:?}\n",
+                                reply_buf.len(),
+                                reply_buf
+                            )
+                            .as_bytes(),
+                        )
+                    });
+            }
+            match parse_osc11_bg(&reply_buf) {
+                Some(rgb) if rgb == exp2 => {
+                    outcome.push_str("OK2\n");
+                }
+                Some(rgb) => {
+                    outcome.push_str(&format!(
+                        "FAIL: probe2 reprobe got rgb {},{},{} want {},{},{}\n",
+                        rgb.0, rgb.1, rgb.2, exp2.0, exp2.1, exp2.2
+                    ));
+                }
+                None => {
+                    outcome.push_str(&format!(
+                        "FAIL: probe2 reprobe no OSC 11 reply within deadline; \
+                         got {} bytes: {:?}\n",
+                        reply_buf.len(),
+                        String::from_utf8_lossy(&reply_buf)
+                    ));
+                }
+            }
+        } else {
+            // Default mode: passively collect raw bytes the daemon
+            // writes after the toggle. We use a two-stage approach:
+            //   1. `read_until(needle=ESC[I)` with the full deadline.
+            //      As soon as the focus-in arrives we know the toggle
+            //      reached the daemon; we then move on without
+            //      blocking for the rest of the window.
+            //   2. A short tail-drain to catch any trailing bytes
+            //      that arrive in the same syscall window (e.g. if a
+            //      regression re-introduces unsolicited OSC RGB
+            //      before/after the focus-in, we want to see them too).
+            //
+            // Why not a single `drain_for(deadline2)`: when the daemon
+            // is well-behaved its post-toggle write is a single 3-byte
+            // ESC[I, after which it falls quiet. Waiting passively for
+            // 10 wall-clock seconds for ANY signal makes the test
+            // brittle (and adds 10s to every run); driving the window
+            // closed on the expected needle is both faster and tighter.
+            let drain_start = Instant::now();
+            let (mut buf2, saw_focus_in) = read_until(tty_fd, deadline2, b"\x1b[I");
+            // Tail-drain: 200ms after seeing the needle (or end of
+            // deadline2 if we never saw it). Anything that arrives
+            // here is suspicious and we want it in the dump.
+            let tail_deadline = if saw_focus_in {
+                Instant::now() + Duration::from_millis(200)
+            } else {
+                deadline2
+            };
+            let tail = drain_for(tty_fd, tail_deadline);
+            buf2.extend_from_slice(&tail);
+            let drain_elapsed = drain_start.elapsed();
+            if let Ok(trace_path) = std::env::var("NEIGE_OSC_TRACE_PATH") {
+                let _ = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&trace_path)
+                    .and_then(|mut f| {
+                        f.write_all(
+                            format!(
+                                "probe2 raw bytes ({}) saw_focus_in={} elapsed={:?}: {:?}\n",
+                                buf2.len(),
+                                saw_focus_in,
+                                drain_elapsed,
+                                buf2
+                            )
+                            .as_bytes(),
+                        )
+                    });
+            }
+            // Encode the raw bytes in a single result line as a hex
+            // dump so the driver can decode them without needing to
+            // share the trace file path.
+            let mut hex = String::with_capacity(buf2.len() * 2);
+            for b in &buf2 {
+                use std::fmt::Write;
+                let _ = write!(hex, "{:02x}", b);
+            }
+            outcome.push_str(&format!("PROBE2_BYTES_HEX={hex}\n"));
+            // `exp2` is unused in default mode but mandatory in the
+            // CLI for parity with reprobe mode (so the same env shape
+            // works regardless).
+            let _ = exp2;
         }
         write_result(&outcome);
     }

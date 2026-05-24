@@ -1,7 +1,7 @@
-//! Hermetic regression test for **fix B, shell direction** (terminal
-//! OSC-echo bug).
+//! Hermetic regression test for the **DECSET-1004 gate, shell
+//! direction** (terminal OSC-echo bug, refined by #295 followup 1).
 //!
-//! ## What fix B is and why this test exists
+//! ## What the 1004 gate is and why this test exists
 //!
 //! "New terminal" runs an interactive shell (`zsh` / `fish`) which sits
 //! at its prompt. A modern shell prompt is **not** cooked: zsh's ZLE
@@ -10,42 +10,54 @@
 //! opt into DECSET 1004 (focus event reporting): it only enables
 //! bracketed paste (`ESC[?2004h`) and never queries OSC 10/11.
 //!
-//! The daemon's mid-session `Effect::TerminalThemeUpdate` branch writes a
-//! synthetic OSC 10/11 reply pair (+ focus-in `ESC[I`) onto the PTY. A
-//! focus-aware TUI consumes that silently; a shell's ZLE treats it as
-//! *input* and redraws the bytes at the prompt as syntax-highlighted
-//! garbage — the OSC-echo bug seen after a theme toggle.
+//! Pre-#295, the daemon's mid-session `Effect::TerminalThemeUpdate`
+//! branch wrote a synthetic OSC 10/11 reply pair plus focus-in
+//! `ESC[I` onto the PTY. PR #296's fix-B gate skipped that write when
+//! the child hadn't enabled 1004, since a shell's ZLE would otherwise
+//! render the OSC bytes at the prompt as syntax-highlighted garbage.
 //!
-//! The original fix B gated on the PTY master's termios `ECHO` flag,
-//! which is **wrong**: ZLE turns ECHO off, so a shell at its prompt
-//! looks exactly like a TUI to that probe and the gate lets the write
-//! through. The corrected fix B (`crates/calm-session/src/bin/daemon.rs`,
-//! `Effect::TerminalThemeUpdate` arm) instead gates on whether the child
-//! enabled DECSET 1004 (read via `RenderPlane::focus_event_tracking()`):
-//!   - 1004 enabled  → focus-aware TUI (codex) → write (consumed silently).
-//!   - 1004 disabled → shell at prompt         → **skip** the write.
+//! #295 followup 1 removed the unsolicited OSC 10/11 RGB write
+//! entirely (the focus-in alone is enough — codex re-queries on
+//! `FocusGained`). The **1004 gate is preserved** for the remaining
+//! `ESC[I` byte: a shell's line editor would surface a stray focus-in
+//! as input too (e.g. zsh's ZLE binds unmapped CSI sequences to
+//! `self-insert-unmeta`, which displays them at the cursor).
+//!
+//! ## What this test still pins down
+//!
+//! Post-#295 the daemon writes only `\x1b[I` on theme toggle, and
+//! only when the child enabled 1004. We assert two invariants here:
+//!   1. The legacy OSC 10/11 RGB write paths stay closed (catches a
+//!      future regression that re-introduces unsolicited RGB without
+//!      thinking about the shell case).
+//!   2. The `\x1b[I` write is also gated on 1004 — a cooked-shell
+//!      child must see NEITHER the OSC RGB nor the focus-in. This
+//!      is the load-bearing assertion post-#295 (the OSC assertions
+//!      are now belt-and-braces against accidental reintroduction).
 //!
 //! ## Complementary to `theme_osc_roundtrip.rs`
 //!
-//! `theme_osc_roundtrip.rs` anchors the *opted-in* direction with the
-//! `osc-probe-child` fixture (which now sends `ESC[?1004h` on startup,
-//! like codex): it proves fix B does **not** over-gate — a 1004-aware
-//! TUI still receives the mid-session OSC reply.
+//! `theme_osc_roundtrip.rs::osc_roundtrip_mid_session_theme_update`
+//! anchors the *opted-in* direction with the `osc-probe-child`
+//! fixture (which sends `ESC[?1004h` on startup, like codex): it
+//! proves the daemon DOES write `ESC[I` to a 1004-aware child after
+//! a toggle (and proves the daemon does NOT write unsolicited OSC
+//! RGB).
 //!
 //! This file anchors the *opposite* direction with the
 //! `cooked-shell-child` fixture: a shell in ZLE raw mode that never
-//! enabled 1004 must **not** receive (and therefore must not redraw) the
-//! synthetic OSC. We assert it by collecting every broadcast
-//! `RenderPatch` after the toggle and checking none carry
-//! `\x1b]10;rgb:` / `\x1b]11;rgb:` — nor the `]10;rgb:` / `]11;rgb:`
-//! literal the shell's line editor would surface if the bytes had
-//! reached its stdin.
+//! enabled 1004 must **not** receive the focus-in CSI (or any of the
+//! legacy OSC RGB bytes, in case they get re-added in error). We
+//! assert it by collecting every broadcast `RenderPatch` after the
+//! toggle and checking none carry `\x1b[I` or the OSC literal a
+//! shell's line editor would surface if the bytes had reached its
+//! stdin.
 //!
 //! Without this test, the shell direction had only manual Playwright
-//! coverage; removing fix B's 1004 gate would slip past CI. (Verified
-//! during development: removing the 1004 gate makes this test fail
-//! because the raw-mode shell child surfaces `]10;rgb:` into a
-//! `RenderPatch`.)
+//! coverage; removing the 1004 gate would slip past CI. (The focus-in
+//! assertion is the post-#295 load-bearing check; removing the gate
+//! today writes `ESC[I` to the cooked-shell child, which surfaces in
+//! a RenderPatch as a ZLE-rendered byte and fails this test.)
 //!
 //! ## How the cooked child is wired in
 //!
@@ -276,11 +288,12 @@ async fn create_wave(app: axum::Router, cove_id: &str) -> String {
     body["id"].as_str().expect("wave.id").to_string()
 }
 
-/// Shell direction of fix B: a mid-session `TerminalThemeUpdate` against
-/// a child that never enabled DECSET 1004 (a shell in ZLE raw mode) must
-/// NOT cause the synthetic OSC 10/11 to be written to the PTY — so the
-/// shell's line editor has nothing to surface, and no OSC literal ever
-/// reaches a `RenderPatch`.
+/// Shell direction of the 1004 gate: a mid-session
+/// `TerminalThemeUpdate` against a child that never enabled DECSET
+/// 1004 (a shell in ZLE raw mode) must NOT cause the focus-in CSI
+/// `\x1b[I` to be written to the PTY — so the shell's line editor
+/// has nothing to surface, and no focus-in (and no legacy OSC literal)
+/// ever reaches a `RenderPatch`.
 //
 // `env_guard()`'s `std::sync::Mutex` is intentionally held across
 // `.await` points (it serializes process-global `PATH` writes). Switching
@@ -429,38 +442,54 @@ async fn cooked_shell_theme_toggle_does_not_echo_osc() {
     let _ = ws.close(None).await;
     restore_path(prev_path);
 
-    // Assert no OSC sequence appears in any broadcast PTY output. We
+    // Assert nothing the daemon could write on theme toggle reaches
+    // the cooked-shell child's RenderPatch stream. Post-#295 the only
+    // byte sequence at risk is `\x1b[I` (focus-in); the OSC RGB
+    // checks are kept as defense-in-depth against an accidental
+    // re-introduction of the unsolicited path. For each sequence we
     // check both forms:
-    //   - the raw sequence `\x1b]10;rgb:` / `\x1b]11;rgb:` (would appear
-    //     if the daemon wrote it AND the child somehow forwarded it), and
-    //   - the body `]10;rgb:` / `]11;rgb:` (a shell's line editor surfaces
-    //     the leading ESC as `^[`, so the bytes that hit a RenderPatch on
-    //     a broken fix B would be `^[]10;rgb:…` — the `]10;rgb:` substring
-    //     is the reliable tell).
+    //   - the raw sequence (would appear if the daemon wrote it AND
+    //     the child somehow forwarded it), and
+    //   - the caret-prefixed body (a shell's line editor surfaces
+    //     the leading ESC as `^[`, so the bytes that hit a
+    //     RenderPatch on a broken gate would be e.g. `^[[I` — the
+    //     body substring is the reliable tell).
     let contains = |needle: &[u8]| render_bytes.windows(needle.len()).any(|w| w == needle);
     let preview = String::from_utf8_lossy(&render_bytes);
+
+    // Post-#295 load-bearing assertion: focus-in must NOT reach a
+    // non-1004 child. This is the byte the daemon still writes today.
+    assert!(
+        !contains(b"\x1b[I"),
+        "shell surfaced raw focus-in (ESC[I) after theme toggle \
+         (1004 gate regressed); render bytes ({}): {preview:?}",
+        render_bytes.len()
+    );
+
+    // Belt-and-braces against an accidental re-introduction of the
+    // legacy unsolicited OSC 10/11 RGB write.
     assert!(
         !contains(b"\x1b]10;rgb:"),
-        "shell surfaced raw OSC 10 after theme toggle (fix B regressed); \
-         render bytes ({}): {preview:?}",
+        "shell surfaced raw OSC 10 after theme toggle (legacy \
+         unsolicited write re-introduced?); render bytes ({}): {preview:?}",
         render_bytes.len()
     );
     assert!(
         !contains(b"\x1b]11;rgb:"),
-        "shell surfaced raw OSC 11 after theme toggle (fix B regressed); \
-         render bytes ({}): {preview:?}",
+        "shell surfaced raw OSC 11 after theme toggle (legacy \
+         unsolicited write re-introduced?); render bytes ({}): {preview:?}",
         render_bytes.len()
     );
     assert!(
         !contains(b"]10;rgb:"),
         "shell surfaced caret-form OSC 10 (`^[]10;rgb:…`) after theme toggle \
-         (fix B regressed); render bytes ({}): {preview:?}",
+         (legacy unsolicited write re-introduced?); render bytes ({}): {preview:?}",
         render_bytes.len()
     );
     assert!(
         !contains(b"]11;rgb:"),
         "shell surfaced caret-form OSC 11 (`^[]11;rgb:…`) after theme toggle \
-         (fix B regressed); render bytes ({}): {preview:?}",
+         (legacy unsolicited write re-introduced?); render bytes ({}): {preview:?}",
         render_bytes.len()
     );
 }

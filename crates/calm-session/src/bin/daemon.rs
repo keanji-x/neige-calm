@@ -1582,81 +1582,67 @@ async fn handle_client(
                     anyhow::bail!("{reason}");
                 }
                 Effect::TerminalThemeUpdate { fg, bg } => {
-                    // Mid-session theme toggle (#177). (a) Update the
-                    // model's default fg/bg so future OSC queries get
-                    // the new color. (b) Write a synthetic OSC 10/11
-                    // reply pair to the PTY master so the child sees
-                    // it on stdin via crossterm's event queue. (c)
-                    // Append a focus-in CSI (`ESC [ I`) — codex /
-                    // claude-tui re-query default colors on focus-in
-                    // events, which is the trigger we need to make the
-                    // TUI re-paint its composer at the new theme.
+                    // Mid-session theme toggle (#177, refined by #295
+                    // followup 1 — solicited-only model). Two side
+                    // effects:
                     //
-                    // (a) always runs: the model's advertised colors
-                    // must track the host theme so a future solicited
-                    // OSC 10/11;? query (e.g. a TUI launched later)
-                    // gets the right answer regardless of (b). We also
-                    // read the DECSET-1004 gate flag in the same lock
-                    // scope so we never re-lock `render_plane` (which
-                    // would risk a different acquisition order vs. the
-                    // session loop and is wasteful).
+                    // (a) Update the model's default fg/bg so the
+                    //     **next solicited** OSC 10;? / OSC 11;? query
+                    //     from the child gets the new color. (Always
+                    //     runs; the model's advertised colors must
+                    //     track the host theme so a future query, e.g.
+                    //     from a TUI launched later, gets the right
+                    //     answer.)
+                    //
+                    // (b) Write a focus-in CSI (`ESC [ I`) to the PTY
+                    //     so a focus-aware TUI (codex, claude-tui)
+                    //     re-queries OSC 10/11. crossterm parses
+                    //     `ESC[I` as `FocusGained`; codex handles
+                    //     `FocusGained` by calling
+                    //     `terminal_palette::requery_default_colors()`
+                    //     which emits `OSC 10;? + OSC 11;?`. The
+                    //     daemon's vte parser then synthesizes the
+                    //     reply from (a), closing the loop. So
+                    //     focus-in alone is sufficient — no unsolicited
+                    //     OSC bytes needed.
+                    //
+                    // We previously also wrote unsolicited
+                    // `OSC 10;rgb:… OSC 11;rgb:…` pairs ahead of the
+                    // focus-in (PR #296). That was double-belt —
+                    // codex's focus-in re-query was already closing
+                    // the loop — and it forced a DECSET-1004 gate to
+                    // avoid echoing color bytes to non-1004 children
+                    // (shells at a prompt). The solicited path needs
+                    // no such gate on the unsolicited bytes (there are
+                    // none), so the only remaining concern is the
+                    // focus-in itself.
+                    //
+                    // The DECSET-1004 gate is **kept** for `ESC[I`:
+                    // mirrors zellij
+                    // (zellij-server/src/panes/grid.rs `focus_event`),
+                    // which emits focus-in only to children that
+                    // opted into 1004. A shell at its prompt never
+                    // enables 1004; sending it `ESC[I` would be a
+                    // stray byte in its raw-mode line editor. (Also
+                    // note: codex enables 1004 and re-queries on
+                    // focus-in — both halves of the contract.) Do
+                    // NOT gate on alt-screen or DECSET 2031: codex
+                    // uses neither.
                     let focus_event_tracking = if let Ok(mut rp) = render_plane.lock() {
                         rp.set_default_colors(Some(fg), Some(bg));
                         rp.focus_event_tracking()
                     } else {
                         // Poisoned lock — fail toward NOT injecting. A
-                        // dropped theme nudge is invisible; an injected
-                        // OSC echoed as garbage at a shell prompt is not.
+                        // dropped theme nudge is invisible; a stray
+                        // `ESC[I` at a shell prompt is not.
                         false
                     };
-                    // Fix B — gate the synthetic write (b)+(c) on whether
-                    // the child opted into DECSET 1004 (focus event
-                    // reporting).
-                    //
-                    // Why NOT the PTY ECHO flag (the original fix B): a
-                    // shell at its prompt isn't cooked — zsh/fish drive
-                    // the line via a ZLE-style raw-mode editor (ECHO off,
-                    // ICANON off), identical termios to a real TUI. So
-                    // ECHO can't tell "shell line editor that will redraw
-                    // our injected OSC as syntax-highlighted garbage"
-                    // apart from "codex that consumes OSC silently".
-                    //
-                    // DECSET 1004 does separate them, verified on this
-                    // platform: codex sends `ESC[?1004h` on startup (and
-                    // re-queries OSC 10/11 on focus-in — exactly why we
-                    // append `ESC[I` below); a shell only sends bracketed
-                    // paste `ESC[?2004h` and never opts into 1004. This
-                    // mirrors zellij, which emits focus-in (`ESC[I`) only
-                    // to children with `focus_event_tracking` set and
-                    // never injects OSC RGB on its own
-                    // (zellij-server/src/panes/grid.rs `focus_event`).
-                    // It's also self-consistent with #177: a codex that
-                    // relies on focus-in to re-probe colors MUST have
-                    // 1004 enabled. NB: do NOT gate on alt-screen (codex
-                    // doesn't use it) or 2031 (codex doesn't use it).
                     if !focus_event_tracking {
                         continue;
                     }
-                    let to16 = |c: u8| (c as u16) * 257;
-                    let mut data: Vec<u8> = Vec::with_capacity(80);
-                    let osc10 = format!(
-                        "\x1b]10;rgb:{:04x}/{:04x}/{:04x}\x1b\\",
-                        to16(fg.0),
-                        to16(fg.1),
-                        to16(fg.2),
-                    );
-                    let osc11 = format!(
-                        "\x1b]11;rgb:{:04x}/{:04x}/{:04x}\x1b\\",
-                        to16(bg.0),
-                        to16(bg.1),
-                        to16(bg.2),
-                    );
-                    data.extend_from_slice(osc10.as_bytes());
-                    data.extend_from_slice(osc11.as_bytes());
-                    data.extend_from_slice(b"\x1b[I");
                     if stdin_tx
                         .send(PtyWrite {
-                            data,
+                            data: b"\x1b[I".to_vec(),
                             input_seq: 0,
                             ack: None,
                         })
