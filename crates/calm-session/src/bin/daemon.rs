@@ -1310,6 +1310,10 @@ async fn handle_client(
             // joiners after `detect_ready()` already fired still see a
             // truthful `true` here without re-emitting the broadcast.
             is_child_ready: guard.child_ready_fired(),
+            // Current OSC 10/11 colors — lets the state machine drop a
+            // redundant mount-time `TerminalThemeUpdate` (fix A).
+            current_default_fg: guard.default_fg(),
+            current_default_bg: guard.default_bg(),
         };
         let eff = state.on_client_frame(first, guard.transcript(), &mut reg, &ctx);
         (eff, reg.current_owner(), current_pty_size)
@@ -1478,6 +1482,13 @@ async fn handle_client(
                 // symmetry — a future state-machine path that re-emits
                 // ServerHello on resync will need an accurate read.
                 is_child_ready: guard.child_ready_fired(),
+                // Current OSC 10/11 colors — the `TerminalThemeUpdate`
+                // handler reads these to suppress a no-op theme update
+                // (fix A). Post-handshake this is the live path: a
+                // mount-time update whose colors equal the spawn theme
+                // is dropped here before it ever reaches the PTY.
+                current_default_fg: guard.default_fg(),
+                current_default_bg: guard.default_bg(),
             };
             state.on_client_frame(msg, guard.transcript(), &mut reg, &ctx)
         };
@@ -1580,8 +1591,51 @@ async fn handle_client(
                     // claude-tui re-query default colors on focus-in
                     // events, which is the trigger we need to make the
                     // TUI re-paint its composer at the new theme.
-                    if let Ok(mut rp) = render_plane.lock() {
+                    //
+                    // (a) always runs: the model's advertised colors
+                    // must track the host theme so a future solicited
+                    // OSC 10/11;? query (e.g. a TUI launched later)
+                    // gets the right answer regardless of (b). We also
+                    // read the DECSET-1004 gate flag in the same lock
+                    // scope so we never re-lock `render_plane` (which
+                    // would risk a different acquisition order vs. the
+                    // session loop and is wasteful).
+                    let focus_event_tracking = if let Ok(mut rp) = render_plane.lock() {
                         rp.set_default_colors(Some(fg), Some(bg));
+                        rp.focus_event_tracking()
+                    } else {
+                        // Poisoned lock — fail toward NOT injecting. A
+                        // dropped theme nudge is invisible; an injected
+                        // OSC echoed as garbage at a shell prompt is not.
+                        false
+                    };
+                    // Fix B — gate the synthetic write (b)+(c) on whether
+                    // the child opted into DECSET 1004 (focus event
+                    // reporting).
+                    //
+                    // Why NOT the PTY ECHO flag (the original fix B): a
+                    // shell at its prompt isn't cooked — zsh/fish drive
+                    // the line via a ZLE-style raw-mode editor (ECHO off,
+                    // ICANON off), identical termios to a real TUI. So
+                    // ECHO can't tell "shell line editor that will redraw
+                    // our injected OSC as syntax-highlighted garbage"
+                    // apart from "codex that consumes OSC silently".
+                    //
+                    // DECSET 1004 does separate them, verified on this
+                    // platform: codex sends `ESC[?1004h` on startup (and
+                    // re-queries OSC 10/11 on focus-in — exactly why we
+                    // append `ESC[I` below); a shell only sends bracketed
+                    // paste `ESC[?2004h` and never opts into 1004. This
+                    // mirrors zellij, which emits focus-in (`ESC[I`) only
+                    // to children with `focus_event_tracking` set and
+                    // never injects OSC RGB on its own
+                    // (zellij-server/src/panes/grid.rs `focus_event`).
+                    // It's also self-consistent with #177: a codex that
+                    // relies on focus-in to re-probe colors MUST have
+                    // 1004 enabled. NB: do NOT gate on alt-screen (codex
+                    // doesn't use it) or 2031 (codex doesn't use it).
+                    if !focus_event_tracking {
+                        continue;
                     }
                     let to16 = |c: u8| (c as u16) * 257;
                     let mut data: Vec<u8> = Vec::with_capacity(80);

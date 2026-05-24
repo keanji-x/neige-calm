@@ -378,6 +378,22 @@ pub trait TerminalHandler {
     /// Same no-bump-rev invariant as [`Self::enter_alt_screen`].
     fn exit_alt_screen(&mut self);
 
+    /// DECSET/DECRST 1004 — focus event reporting (`CSI ?1004 h/l`).
+    /// `enabled = true` for `h` (the child opted in to receiving
+    /// `ESC[I`/`ESC[O` focus-in/out events), `false` for `l`.
+    ///
+    /// We track this purely as a *capability signal*, not because we
+    /// generate focus events from the model: the daemon reads it (via
+    /// [`crate::terminal_session::RenderPlane::focus_event_tracking`]) to
+    /// decide whether a child is a focus-aware TUI (codex opts in on
+    /// startup) or a passive consumer (a shell's line editor sits in raw
+    /// mode at the prompt but never enables 1004). Mirrors zellij's
+    /// `focus_event_tracking` gate.
+    ///
+    /// Invariant: this is a mode flag, not visible content — like
+    /// alt-screen it MUST NOT bump the render rev.
+    fn set_focus_event_tracking(&mut self, enabled: bool);
+
     /// OSC 10 / OSC 11 color query — `ESC ] 10 ; ? ST` or
     /// `ESC ] 11 ; ? ST`. `slot` is `10` (default foreground) or `11`
     /// (default background); the handler decides whether to push a
@@ -483,8 +499,8 @@ impl<H: TerminalHandler + ?Sized> Perform for VteProcessor<'_, H> {
 
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
         // DEC private (ESC[?...) sequences arrive with intermediates =
-        // b"?". We dispatch DECTCEM (25) and DECSET 1049 (alt-screen);
-        // everything else is a noop.
+        // b"?". We dispatch DECTCEM (25), DECSET 1049 (alt-screen) and
+        // DECSET 1004 (focus event reporting); everything else is a noop.
         if intermediates == b"?" {
             match action {
                 'h' => {
@@ -492,6 +508,7 @@ impl<H: TerminalHandler + ?Sized> Perform for VteProcessor<'_, H> {
                         if let Some(&p) = s.first() {
                             match p {
                                 25 => self.handler.set_cursor_visible(true),
+                                1004 => self.handler.set_focus_event_tracking(true),
                                 1049 => self.handler.enter_alt_screen(),
                                 _ => { /* unknown DECSET: noop */ }
                             }
@@ -503,6 +520,7 @@ impl<H: TerminalHandler + ?Sized> Perform for VteProcessor<'_, H> {
                         if let Some(&p) = s.first() {
                             match p {
                                 25 => self.handler.set_cursor_visible(false),
+                                1004 => self.handler.set_focus_event_tracking(false),
                                 1049 => self.handler.exit_alt_screen(),
                                 _ => { /* unknown DECRST: noop */ }
                             }
@@ -641,6 +659,12 @@ pub struct TerminalModel {
     scrollback_max_lines: usize,
     rev: u32,
     cursor_visible: bool,
+    /// DECSET 1004 (focus event reporting) state. `true` once the child
+    /// has sent `CSI ?1004 h`. The daemon reads this as a "focus-aware
+    /// TUI" signal to gate the synthetic mid-session OSC 10/11 theme
+    /// write (see `daemon.rs` `Effect::TerminalThemeUpdate`). Not visible
+    /// content, so it never bumps the render rev.
+    focus_event_tracking: bool,
     /// Default foreground/background RGB the daemon advertises to the
     /// PTY child in reply to OSC 10/11 color queries. `None` means
     /// "stay silent" — the child falls back to its built-in default,
@@ -665,6 +689,7 @@ impl TerminalModel {
             scrollback_max_lines,
             rev: 0,
             cursor_visible: true,
+            focus_event_tracking: false,
             default_fg: None,
             default_bg: None,
             pending_osc_replies: Vec::new(),
@@ -703,6 +728,13 @@ impl TerminalModel {
 
     pub fn default_bg(&self) -> Option<(u8, u8, u8)> {
         self.default_bg
+    }
+
+    /// Whether the child has enabled DECSET 1004 (focus event reporting).
+    /// Read by the daemon to decide whether a child is a focus-aware TUI
+    /// (codex opts in) vs. a passive consumer (a shell never does).
+    pub fn focus_event_tracking(&self) -> bool {
+        self.focus_event_tracking
     }
 
     /// Drain any OSC reply bytes the model produced since the last call.
@@ -1198,6 +1230,14 @@ impl TerminalHandler for TerminalModel {
 
     fn exit_alt_screen(&mut self) {
         // See `enter_alt_screen` — symmetric noop.
+    }
+
+    fn set_focus_event_tracking(&mut self, enabled: bool) {
+        // Pure mode flag — record it, do NOT bump rev (no visible state
+        // change). The daemon reads it via
+        // `RenderPlane::focus_event_tracking()` to gate the synthetic
+        // mid-session OSC 10/11 theme write.
+        self.focus_event_tracking = enabled;
     }
 
     fn device_status_report_cursor(&mut self) {

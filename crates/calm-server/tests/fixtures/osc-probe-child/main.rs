@@ -17,15 +17,22 @@
 //!
 //! 1. Put stdin into raw mode (no line discipline, no echo) so the OSC
 //!    reply bytes aren't held up waiting for a newline.
-//! 2. Write `\x1b]11;?\x1b\\` to stdout. The daemon's `TerminalModel`
+//! 2. Enable DECSET 1004 (`\x1b[?1004h`) — focus event reporting. The
+//!    real codex opts in on startup, and the daemon now gates the
+//!    synthetic mid-session OSC 10/11 theme write on this flag (only a
+//!    focus-aware TUI receives it; a shell's raw-mode line editor, which
+//!    never enables 1004, would render it as garbage). Sending this here
+//!    keeps the fixture faithful to codex so the mid-session toggle in
+//!    `--probe-twice` mode still reaches us.
+//! 3. Write `\x1b]11;?\x1b\\` to stdout. The daemon's `TerminalModel`
 //!    parses this via vte and synthesizes `\x1b]11;rgb:RRRR/GGGG/BBBB\x1b\\`
 //!    onto the PTY master.
-//! 3. Read from stdin with `poll(2)` until we see an OSC `ST` (`\x1b\\`)
+//! 4. Read from stdin with `poll(2)` until we see an OSC `ST` (`\x1b\\`)
 //!    or `BEL` (`\x07`) terminator, or a bounded timeout fires.
-//! 4. Parse `\x1b]11;rgb:RRRR/GGGG/BBBB` — xterm convention is 16-bit
+//! 5. Parse `\x1b]11;rgb:RRRR/GGGG/BBBB` — xterm convention is 16-bit
 //!    per channel (4 hex nibbles), so divide by 257 (≈ 0xffff/0xff) to
 //!    recover the original u8.
-//! 5. Compare against `--expected-bg`. Write `OK` to `--result` on
+//! 6. Compare against `--expected-bg`. Write `OK` to `--result` on
 //!    match, `FAIL: ...` otherwise.
 //!
 //! `--probe-twice` mode adds a second read after a configurable wait
@@ -300,6 +307,21 @@ fn main() {
             ),
         );
     }
+
+    // Enable DECSET 1004 (focus event reporting) up front, before any
+    // query and well before the mid-session toggle. The real codex opts
+    // in on startup; the daemon gates the synthetic mid-session OSC
+    // 10/11 theme write on this flag, so a faithful prober must set it or
+    // it would never see probe 2's reply. (We don't actually consume the
+    // focus-in `ESC[I` the daemon appends — it's harmless filler in our
+    // read buffer; `parse_osc11_bg` scans for the OSC opener regardless.)
+    if let Err(e) = tty.write_all(b"\x1b[?1004h") {
+        outcome.push_str(&format!("FAIL: write DECSET 1004: {e}\n"));
+        restore_termios(tty_fd, &saved);
+        write_result(&outcome);
+        std::process::exit(1);
+    }
+    let _ = tty.flush();
 
     // ---- Probe 1 ----
     // Write OSC 11 query.

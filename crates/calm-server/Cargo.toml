@@ -75,6 +75,18 @@ path = "tests/fixtures/argv-recorder-daemon/main.rs"
 name = "osc-probe-child"
 path = "tests/fixtures/osc-probe-child/main.rs"
 
+# fix/terminal-osc-echo — shell counterpart to `osc-probe-child`. Models
+# an interactive shell at a prompt: enters raw mode like zsh's ZLE (ECHO
+# off, ICANON off) but, unlike a TUI, never opts into DECSET 1004 (focus
+# event reporting) and never queries OSC 10/11, then blocks reading
+# stdin. Used by `tests/theme_cooked_shell_no_osc_echo.rs` to prove fix B
+# (`daemon.rs` `Effect::TerminalThemeUpdate`) skips the synthetic OSC
+# 10/11 write when the child hasn't enabled 1004, so a shell never
+# renders the injected sequence as garbage.
+[[bin]]
+name = "cooked-shell-child"
+path = "tests/fixtures/cooked-shell-child/main.rs"
+
 [dependencies]
 # HTTP / WS
 axum = { version = "0.8", features = ["ws", "macros"] }
@@ -178,12 +190,13 @@ calm-session = { path = "../calm-session" }
 # described in design doc §2.4.
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["signal"] }
-# Required by the `osc-probe-child` test fixture bin (tests/fixtures/
-# osc-probe-child/main.rs) for raw termios + poll(2) syscalls. The
-# fixture is a `[[bin]]` of this crate so its deps must live here, not
-# under [dev-dependencies]. libc is already in the transitive graph via
-# tokio/sqlx; declaring it explicitly costs nothing and keeps the bin
-# self-contained. Production code paths in `calm-server` don't import it.
+# Required by the `osc-probe-child` and `cooked-shell-child` test fixture
+# bins (tests/fixtures/*/main.rs) for raw termios + poll(2) syscalls.
+# These fixtures are `[[bin]]`s of this crate so their deps must live
+# here, not under [dev-dependencies]. libc is already in the transitive
+# graph via tokio/sqlx; declaring it explicitly costs nothing and keeps
+# the bins self-contained. Production code paths in `calm-server` don't
+# import it.
 libc = "0.2"
 
 [dev-dependencies]
