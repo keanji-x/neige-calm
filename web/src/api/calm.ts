@@ -170,6 +170,31 @@ export const updateWave = (id: string, b: WavePatchBody) =>
 export const deleteWave = (id: string) =>
   request<void>('DELETE', `/api/waves/${encodeURIComponent(id)}`);
 
+/**
+ * Issue #247 PR3 — user-driven wave-report edit. The kernel persists the
+ * `{summary, body}` pair through the same CRDT pipeline the spec agent's
+ * `calm.report.write` MCP tool uses, then echoes back the projected
+ * `WaveReportPayload` (with `schemaVersion` reasserted). Session-gated:
+ * only `Actor::User` is accepted; worker / plugin / spec sessions are
+ * rejected with 403 by construction (`author` is derived server-side,
+ * never accepted on the wire — `serde(deny_unknown_fields)` closes the
+ * spoofing path).
+ *
+ * The card UI calls this from its inline edit mode; on success it swaps
+ * to the returned payload so the user sees the post-merge text without
+ * waiting for the `card.updated` / `wave.report_edited` events to roll
+ * back through the WS bus.
+ */
+export const updateWaveReport = (
+  id: string,
+  b: { summary: string; body: string },
+) =>
+  request<{ schemaVersion: number; summary: string; body: string }>(
+    'POST',
+    `/api/waves/${encodeURIComponent(id)}/report`,
+    b,
+  );
+
 // ---------------- cards ----------------
 
 export const cardsInWave = (waveId: string) =>
