@@ -1038,17 +1038,28 @@ pub(crate) async fn update_wave_report(
 ) -> Result<Response> {
     // Server-side actor pinning. The route is gated to `ActorId::User`
     // only — anything else (worker / spec / plugin / kernel) is 403.
-    // `Actor::to_actor_id` already maps the declared header to the
-    // typed enum, so we just match on the result.
     //
-    // Why match the typed `ActorId` instead of the raw header string:
-    // the typed enum is the canonical contract every other write
-    // boundary uses (the role gate, the event log, etc.). Matching
-    // on it here means a future relaxation of the header validation
-    // (e.g. accepting `ai:claude` as a separate actor) is forced to
-    // address this gate explicitly rather than slipping through a
-    // string-prefix check.
-    if !matches!(actor.to_actor_id(), ActorId::User) {
+    // **Direct string check, NOT `to_actor_id()`.** The typed mapping
+    // has a defensive fallback that classifies anything outside its
+    // explicit `"user"` / `"ai:codex"` arms as `ActorId::User` (so a
+    // future relaxation can't synthesize a Kernel/Plugin identity from
+    // an attacker-controlled header — see the rationale in
+    // `actor::Actor::to_actor_id`). That fallback is the right call
+    // for *event-log attribution* — better to mis-tag as User than to
+    // forge a Kernel write — but it's the wrong shape for *gating*:
+    // an `X-Calm-Actor: ai:claude` header would pass a
+    // `matches!(actor.to_actor_id(), ActorId::User)` check and reach
+    // the persist call. Today the handler hardcodes
+    // `EditAuthor::User` in the `persist_report` invocation below
+    // regardless, so no audit-log corruption is possible — but the
+    // OpenAPI / handler doc both claim "any non-user actor → 403" and
+    // we want that to be true by construction, not "true because the
+    // hardcoded author downstream covers for the gate." The raw
+    // string check makes the gate honest: the *only* declared actor
+    // that reaches `persist_report` here is exactly `"user"`. Every
+    // other validated header value (`ai:codex`, `ai:claude`,
+    // `ai:gpt5`, future `ai:*`) is 403.
+    if actor.as_str() != "user" {
         return Err(CalmError::Forbidden(format!(
             "wave-report edit: only `X-Calm-Actor: user` is allowed via REST; \
              got `{}`. MCP write paths use `calm.report.*` tools.",

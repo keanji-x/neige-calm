@@ -441,53 +441,85 @@ async fn nonexistent_wave_returns_404_and_emits_nothing() {
 }
 
 #[tokio::test]
-async fn worker_actor_via_header_is_rejected_with_403_and_emits_nothing() {
+async fn non_user_actors_via_header_are_all_rejected_with_403_and_emit_nothing() {
     // The X-Calm-Actor middleware accepts `ai:<id>` as a declared
-    // identity. The REST endpoint refuses any non-User actor with 403
-    // so a hypothetical future worker / spec-card session-bearing
+    // identity. The REST endpoint refuses *any* non-User actor with
+    // 403 so a hypothetical future worker / spec-card session-bearing
     // surface cannot bypass the User-only contract by relabeling the
-    // header. The session itself is valid here — the rejection is
-    // strictly on the actor pinning.
-    let boot = boot().await;
-    let events = boot.state.events.clone();
-    let wave_id = boot.wave_id.clone();
-    let app = app(boot.state, boot.auth_state);
-    let cookie = login(&app).await;
+    // header. The session itself is valid in every iteration here —
+    // the rejection is strictly on the actor pinning.
+    //
+    // Followup-nits coverage (security hygiene): the handler used to
+    // gate on `matches!(actor.to_actor_id(), ActorId::User)`. That
+    // type mapping has a defensive `_ => ActorId::User` fallback
+    // (intended to keep an attacker from synthesizing a Kernel /
+    // Plugin identity for the *event log*) which would also let any
+    // unknown `ai:<id>` header value pass the gate — only `ai:codex`
+    // is explicitly mapped to `ActorId::AiCodex`. The fix tightened
+    // the gate to a raw-string check (`actor.as_str() != "user"`); we
+    // pin the new behavior here by iterating every validated non-user
+    // shape the middleware will let through. The list deliberately
+    // includes `ai:codex` (the only one the *old* typed gate would
+    // also have caught) plus several `ai:<id>` values that would
+    // have slipped past it (`ai:claude`, `ai:gpt5`, `ai:claude-3-5`).
+    //
+    // `kernel` and `plugin:*` get rejected by the middleware itself
+    // (400 before the handler even runs) — those are pinned in
+    // `actor.rs` unit tests, not here.
+    let non_user_actors = [
+        "ai:codex",
+        "ai:claude",
+        "ai:gpt5",
+        "ai:claude-3-5",
+        "ai:newmodel-99",
+    ];
 
-    let body = serde_json::to_vec(&json!({
-        "summary": "worker-disguised",
-        "body": "# Goal\n\nshould 403\n",
-    }))
-    .unwrap();
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/waves/{}/report", wave_id.as_str()))
-                .header("content-type", "application/json")
-                .header(header::COOKIE, cookie)
-                // Declared non-user actor — the handler must reject.
-                .header(calm_server::actor::Actor::HEADER, "ai:codex")
-                .body(Body::from(body))
-                .unwrap(),
-        )
-        .await
+    for declared_actor in non_user_actors {
+        let boot = boot().await;
+        let events = boot.state.events.clone();
+        let wave_id = boot.wave_id.clone();
+        let app = app(boot.state, boot.auth_state);
+        let cookie = login(&app).await;
+
+        let body = serde_json::to_vec(&json!({
+            "summary": format!("disguised-as-{declared_actor}"),
+            "body": "# Goal\n\nshould 403\n",
+        }))
         .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::FORBIDDEN,
-        "non-user actor must be 403",
-    );
-    expect_no_events(&events, Duration::from_millis(150)).await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/waves/{}/report", wave_id.as_str()))
+                    .header("content-type", "application/json")
+                    .header(header::COOKIE, cookie)
+                    // Declared non-user actor — the handler must
+                    // reject, regardless of whether
+                    // `Actor::to_actor_id` would have classified
+                    // this as `AiCodex` or fallen through to the
+                    // defensive `User` default.
+                    .header(calm_server::actor::Actor::HEADER, declared_actor)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "non-user actor `{declared_actor}` must be 403",
+        );
+        expect_no_events(&events, Duration::from_millis(150)).await;
 
-    // Belt-and-suspenders: DB unchanged.
-    let cards = boot.repo.cards_by_wave(wave_id.as_str()).await.unwrap();
-    let report_card = cards.into_iter().find(|c| c.kind == "wave-report").unwrap();
-    let persisted: WaveReportPayload = serde_json::from_value(report_card.payload).unwrap();
-    assert_eq!(
-        persisted.body, "# Goal\n\n_The spec agent will fill this in._\n",
-        "worker-disguised request did not mutate the row",
-    );
+        // Belt-and-suspenders: DB unchanged for every iteration.
+        let cards = boot.repo.cards_by_wave(wave_id.as_str()).await.unwrap();
+        let report_card = cards.into_iter().find(|c| c.kind == "wave-report").unwrap();
+        let persisted: WaveReportPayload = serde_json::from_value(report_card.payload).unwrap();
+        assert_eq!(
+            persisted.body, "# Goal\n\n_The spec agent will fill this in._\n",
+            "non-user actor `{declared_actor}` did not mutate the row",
+        );
+    }
 }
 
 #[tokio::test]
