@@ -81,6 +81,11 @@ function makeWave(overrides: Partial<Wave> = {}): Wave {
     progress: 0,
     eta: '',
     now: '',
+    // Issue #250 PR 5 — calendar rail needs these on the UI shape;
+    // tests pin fixed values so timing-sensitive assertions stay
+    // deterministic.
+    createdAt: 0,
+    terminalAt: null,
     cards: [],
     ...overrides,
   };

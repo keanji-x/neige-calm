@@ -94,6 +94,13 @@ export function adaptWave(k: KernelWave, overlays: KernelOverlay[] = []): Wave {
     progress,
     eta,
     now,
+    // Issue #250 PR 5 — preserve the kernel timestamps so the Today
+    // calendar rail can derive "active on day D" without a second
+    // fetch. `terminal_at` is nullable on the wire (open waves);
+    // normalize `undefined` from optional zod fields to `null` so the
+    // UI side never has to distinguish.
+    createdAt: k.created_at,
+    terminalAt: k.terminal_at ?? null,
   };
 }
 

@@ -209,6 +209,26 @@ export interface Wave {
   progress: number;
   eta: string;
   now: string;
+  /**
+   * Issue #250 PR 5 — wave creation timestamp (unix ms), as stamped by
+   * the kernel. Surfaced on the UI shape (not just the wire shape) so
+   * Today's CalendarCard can render wave activity per day without
+   * re-pulling the raw kernel row. Required by reality — every kernel
+   * `Wave` carries a `created_at` — and required at the UI layer per
+   * [[required-over-option]] so a forgotten field is a compile error
+   * rather than a calendar that silently treats every wave as new today.
+   */
+  createdAt: number;
+  /**
+   * Issue #250 PR 5 — wave terminal timestamp (unix ms), `null` while
+   * the wave is still open. Pairs with `createdAt` for the calendar's
+   * "active on day D" predicate (`createdAt ≤ end-of-day AND
+   * (terminalAt == null OR terminalAt ≥ start-of-day)`). Required (not
+   * optional) — the adapter writes `null` explicitly when the kernel
+   * row has no terminal — so a forgotten branch surfaces as a type
+   * error rather than silently dropping open waves from the agenda.
+   */
+  terminalAt: number | null;
   cards?: WaveCardSlot[];
 }
 
