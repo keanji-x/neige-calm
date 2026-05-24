@@ -25,10 +25,15 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::post;
 use calm_server::auth::{AuthConfig, AuthState, DEFAULT_DISPLAY_NAME};
-use calm_server::db::sqlite::SqlxRepo;
-use calm_server::event::EventBus;
+use calm_server::db::sqlite::{SqlxRepo, wave_update_tx};
+use calm_server::db::write_with_events_typed;
+use calm_server::event::{Event, EventBus, EventScope};
+use calm_server::ids::ActorId;
+use calm_server::model::{WaveLifecycle, WavePatch};
 use calm_server::replay;
+use calm_server::wave_lifecycle::validate_transition;
 use clap::Parser;
+use serde::Deserialize;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -223,9 +228,11 @@ async fn run_serve(
         repo,
         bus,
         fixture: fixture.clone(),
+        app: state.clone(),
     };
     let dev_routes = axum::Router::new()
         .route("/dev/reset", post(dev_reset))
+        .route("/dev/force-wave-lifecycle", post(dev_force_wave_lifecycle))
         .with_state(dev_state);
     // Issue #189 — the production `main.rs` mounts an auth router
     // (`/api/auth/{login,whoami,logout}`) so the frontend's `SessionProvider`
@@ -313,6 +320,11 @@ struct DevResetState {
     repo: Arc<SqlxRepo>,
     bus: EventBus,
     fixture: Arc<replay::Fixture>,
+    /// Shared app state used by `/dev/force-wave-lifecycle` so the
+    /// forced transition writes through the same `write_with_events_typed`
+    /// path as `routes::waves::update_wave` — same caches, same event bus,
+    /// same role-gate enforcement.
+    app: calm_server::state::AppState,
 }
 
 async fn dev_reset(State(s): State<DevResetState>) -> (StatusCode, axum::Json<serde_json::Value>) {
@@ -340,4 +352,161 @@ async fn dev_reset(State(s): State<DevResetState>) -> (StatusCode, axum::Json<se
             )
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// `POST /dev/force-wave-lifecycle` — dev-only, `--serve` mode only.
+//
+// Issue #269 P1 — the spec daemon does NOT run in the replay binary
+// (`DaemonClient::new_stub()` + `CodexClient::new_stub()`), so the spec-
+// only lifecycle progressions (`planning → dispatching → working →
+// reviewing → done`) can never happen organically in an a11y / replay
+// run. The Playwright wave-lifecycle suite needs to drive those edges
+// to assert the kernel's terminal_at stamp + WaveLifecycleChanged
+// event behavior end-to-end.
+//
+// This handler stamps the transition as `ActorId::Kernel`, which
+// `wave_lifecycle::actor_kind` classifies as `SpecAgent`. The same
+// `validate_transition` + `write_with_events_typed` pipeline as
+// `routes::waves::update_wave` runs — illegal edges (e.g. draft →
+// done) still reject with 403, and a successful transition emits the
+// same paired `WaveLifecycleChanged` + `WaveUpdated` events on the bus
+// that the production path emits. The only thing this endpoint changes
+// is **who** drives the edge, not whether the edge is legal.
+//
+// Scope: only mounted in `--serve` mode of the replay binary (this
+// binary is itself dev-only — design doc §6.3). Production
+// `calm-server` never sees this route. The actor middleware is
+// intentionally not in front of it (mirrors `/dev/reset`); the body
+// declares the transition target only, the actor is hardcoded to
+// `Kernel`.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct ForceLifecycleBody {
+    wave_id: String,
+    to: WaveLifecycle,
+}
+
+async fn dev_force_wave_lifecycle(
+    State(s): State<DevResetState>,
+    axum::Json(body): axum::Json<ForceLifecycleBody>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, axum::Json<serde_json::Value>)> {
+    // Read the existing row outside the tx — `update_wave` does the same
+    // (cove_id is immutable so a cross-tx read is safe).
+    let existing = s
+        .app
+        .repo
+        .wave_get(&body.wave_id)
+        .await
+        .map_err(internal_err)?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                axum::Json(serde_json::json!({
+                    "ok": false,
+                    "error": format!("wave {} not found", body.wave_id),
+                })),
+            )
+        })?;
+
+    let from = existing.lifecycle;
+    let to = body.to;
+    let actor = ActorId::Kernel;
+
+    // Run the same validator as the production route — illegal kernel
+    // transitions (e.g. `draft → done`) still reject so this endpoint
+    // can't be used to put the wave into an impossible state.
+    if let Err(e) = validate_transition(from, to, &actor) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            axum::Json(serde_json::json!({
+                "ok": false,
+                "error": format!("validate_transition: {e}"),
+                "from": from,
+                "to": to,
+            })),
+        ));
+    }
+
+    // Idempotent same-state: short-circuit without emitting any events
+    // (mirrors `update_wave`'s same-state shortcut). Return the existing
+    // row so the test can still inspect `terminal_at` etc.
+    if from == to {
+        return Ok(axum::Json(serde_json::json!({
+            "ok": true,
+            "wave": existing,
+            "emitted_events": 0i32,
+        })));
+    }
+
+    let scope = EventScope::Wave {
+        wave: existing.id.clone(),
+        cove: existing.cove_id.clone(),
+    };
+    let cove_id_for_event = existing.cove_id.clone();
+    let wave_id_for_event = existing.id.clone();
+    let wave_id_for_tx = body.wave_id.clone();
+
+    let patch = WavePatch {
+        title: None,
+        sort: None,
+        archived_at: None,
+        lifecycle: Some(to),
+    };
+
+    let result = write_with_events_typed(
+        s.app.repo.as_ref(),
+        actor,
+        None,
+        &s.app.events,
+        &s.app.card_role_cache,
+        &s.app.wave_cove_cache,
+        move |tx| {
+            let scope = scope.clone();
+            let patch = patch.clone();
+            Box::pin(async move {
+                let wave = wave_update_tx(tx, &wave_id_for_tx, patch).await?;
+                let events: Vec<(EventScope, Event)> = vec![
+                    (
+                        scope.clone(),
+                        Event::WaveLifecycleChanged {
+                            id: wave_id_for_event.clone(),
+                            cove_id: cove_id_for_event.clone(),
+                            from,
+                            to,
+                        },
+                    ),
+                    (scope, Event::WaveUpdated(wave.clone())),
+                ];
+                Ok((wave, events))
+            })
+        },
+    )
+    .await;
+
+    match result {
+        Ok((wave, ids)) => Ok(axum::Json(serde_json::json!({
+            "ok": true,
+            "wave": wave,
+            "emitted_events": ids.len(),
+        }))),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({
+                "ok": false,
+                "error": e.to_string(),
+            })),
+        )),
+    }
+}
+
+fn internal_err(e: calm_server::error::CalmError) -> (StatusCode, axum::Json<serde_json::Value>) {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        axum::Json(serde_json::json!({
+            "ok": false,
+            "error": e.to_string(),
+        })),
+    )
 }
