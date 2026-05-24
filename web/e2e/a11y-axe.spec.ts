@@ -188,7 +188,10 @@ async function ids(page: Page): Promise<{ coveId: string; waveId: string }> {
   await expect(nameInput).toBeVisible();
   await nameInput.fill(coveName);
   await nameInput.press('Enter');
-  const coveBtn = sidebarCoves.getByRole('button', { name: new RegExp(coveName, 'i') });
+  // `exact: true` excludes the per-row "Delete cove \"<name>\"" button
+  // whose accessible name also contains coveName — strict mode otherwise
+  // resolves to two buttons.
+  const coveBtn = sidebarCoves.getByRole('button', { name: coveName, exact: true });
   await expect(coveBtn).toBeVisible();
   await coveBtn.click();
   await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
@@ -206,13 +209,20 @@ async function ids(page: Page): Promise<{ coveId: string; waveId: string }> {
 }
 
 test.describe('a11y · axe', () => {
-  test.beforeEach(async ({ request }) => {
+  test.beforeEach(async ({ request, page }) => {
     // Hermetic per-test state — see `helpers/reset.ts`. Axe scans don't
     // mutate state themselves, but `ids(page)` clicks through "+ Add" /
     // codex modals in some tests and we don't want their residue (extra
     // cards, opened modals' overlay payloads) leaking into the next
     // spec's DOM.
     await resetReplayServer(request);
+    // Block Google Fonts. `index.html` loads a `<link rel="stylesheet"
+    // href="https://fonts.googleapis.com/...">` that, in restricted-
+    // network test environments, hangs subsequent `page.goto` calls
+    // because Chrome never fires `load` while the stylesheet request
+    // is pending.
+    await page.route('**://fonts.googleapis.com/**', (route) => route.abort());
+    await page.route('**://fonts.gstatic.com/**', (route) => route.abort());
   });
 
   // Each describe block below scans the same route/state twice — once

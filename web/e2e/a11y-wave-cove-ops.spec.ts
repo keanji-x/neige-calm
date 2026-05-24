@@ -45,8 +45,11 @@ import { clearEventTrace, waitForEvent } from './helpers/trace';
  *  spec block can keep its bootstrap lockstep without importing
  *  across describe blocks. */
 async function waitForCoveInSidebar(page: Page, name: string): Promise<void> {
+  // `exact: true` excludes the per-row "Delete cove \"<name>\"" button
+  // whose accessible name also contains the cove name (strict mode
+  // otherwise resolves to two buttons).
   await expect(
-    page.locator('aside.side').getByRole('button', { name: new RegExp(name, 'i') }),
+    page.locator('aside.side').getByRole('button', { name, exact: true }),
   ).toBeVisible({ timeout: 15_000 });
   await page.waitForFunction(() => Array.isArray(window.__neigeEvents__));
 }
@@ -56,27 +59,38 @@ async function waitForCoveInSidebar(page: Page, name: string): Promise<void> {
  *  *flows*, not keyboard reachability. Clicks let us anchor on
  *  role+name without paying the `tabUntil` brittleness tax. */
 async function gotoCove(page: Page, coveName: string): Promise<void> {
+  // `exact: true` excludes the per-row "Delete cove \"<name>\"" button
+  // whose accessible name also contains coveName (strict mode otherwise
+  // resolves to two buttons).
   await page
     .locator('aside.side')
-    .getByRole('button', { name: new RegExp(coveName, 'i') })
+    .getByRole('button', { name: coveName, exact: true })
     .click();
   await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
 }
 
 async function gotoWaveFromCove(page: Page, waveTitle: string): Promise<void> {
+  // `exact: true` excludes the per-row "Delete \"<title>\"" button
+  // whose accessible name also contains the wave title.
   await page
     .getByRole('region', { name: 'Waves' })
-    .getByRole('button', { name: new RegExp(waveTitle, 'i') })
-    .first()
+    .getByRole('button', { name: waveTitle, exact: true })
     .click();
   await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
 }
 
 test.describe('a11y · wave + cove ops', () => {
-  test.beforeEach(async ({ request }) => {
+  test.beforeEach(async ({ request, page }) => {
     // Hermetic per-test state: clear every accumulated row from the
     // shared replay kernel. See `helpers/reset.ts` for the rationale.
     await resetReplayServer(request);
+    // Block Google Fonts. `index.html` loads a `<link rel="stylesheet"
+    // href="https://fonts.googleapis.com/...">` that, in restricted-
+    // network test environments, hangs subsequent `page.goto` calls
+    // because Chrome never fires `load` while the stylesheet request
+    // is pending.
+    await page.route('**://fonts.googleapis.com/**', (route) => route.abort());
+    await page.route('**://fonts.gstatic.com/**', (route) => route.abort());
   });
 
   test('Wave delete via confirm dialog removes row, fires wave.deleted, navigates back to cove', async ({

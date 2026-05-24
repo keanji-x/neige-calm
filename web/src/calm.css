@@ -454,6 +454,24 @@ input, textarea { font: inherit; color: inherit; }
   gap: var(--space-1);
   min-width: 0;
 }
+/* The Coves nav grows to fill the column between the Today nav (or the
+   "Waiting on you" section) and the user menu, then scrolls internally
+   when the list overflows. `min-height: 0` is the load-bearing piece —
+   without it a flex item's content min-size pins the child to its full
+   height and overflow never engages. */
+.side .side-coves {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+.side .side-coves::-webkit-scrollbar { width: 8px; }
+.side .side-coves::-webkit-scrollbar-thumb {
+  background: var(--hairline-strong);
+  border-radius: var(--radius-pill);
+}
+.side .side-coves::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
+.side .side-coves::-webkit-scrollbar-track { background: transparent; }
 .side .nav-item {
   display: flex; align-items: center; gap: var(--space-5);
   padding: var(--space-4) var(--space-5);
@@ -514,6 +532,36 @@ input, textarea { font: inherit; color: inherit; }
   padding: var(--space-6) var(--space-5) var(--space-2);
 }
 .side .nav-label.warn-text { color: var(--warn); }
+/* Row variant — Coves header carries a small `+` icon button on the
+   right so the new-cove trigger sits at the top of the list (stays in
+   view when the cove list overflows). */
+.side .nav-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.side .nav-label-add {
+  display: grid; place-items: center;
+  width: 20px; height: 20px;
+  padding: var(--space-0);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-3);
+  font-size: 16px;
+  line-height: var(--leading-none);
+  cursor: pointer;
+  transition: background var(--motion-quick), color var(--motion-quick);
+}
+.side .nav-label-add:hover {
+  background: var(--overlay-hover);
+  color: var(--text);
+}
+.side .nav-label-add:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 .side .side-wave {
   display: flex; align-items: center; gap: var(--space-5);
   padding: var(--space-3) var(--space-5);
@@ -543,7 +591,6 @@ input, textarea { font: inherit; color: inherit; }
   flex: 1; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.side .sp { flex: 1; }
 /* ===== Sidebar user menu =====
    The avatar row is a single <button> that opens a popover menu
    (Settings, Sign out). Visual layout matches the prior `.me-row`
@@ -581,12 +628,6 @@ input, textarea { font: inherit; color: inherit; }
   flex-shrink: 0;
 }
 .side .me-row .who { font-size: var(--text-sm); font-weight: 600; min-width: 0; flex: 1; }
-.side .me-row .who .sub {
-  /* Was a <div> — now a <span> inside a <button>, so we set
-     display:block to preserve the line break under the name. */
-  display: block;
-  font-size: var(--text-xs); font-weight: 500; color: var(--text-3);
-}
 
 /* Popover. Anchored above the trigger because the avatar lives at
    the sidebar's bottom; ~180px wide matches the AddPanel menu
@@ -629,7 +670,14 @@ input, textarea { font: inherit; color: inherit; }
   outline-offset: -2px;
 }
 
-/* nested cove list inside sidebar */
+/* nested cove list inside sidebar — each row is a `.cove-row` group
+   wrapping the nav <button> and a sibling delete <button>. Nesting
+   buttons would be invalid HTML and trip axe's `nested-interactive`;
+   the wrapper hosts hover/focus-within reveal of the × the same way
+   `.wave-row-wrapper` does on the cove page. */
+.side .cove-row {
+  position: relative;
+}
 .side .cove-nav {
   display: flex; align-items: center; gap: var(--space-5);
   padding: var(--space-3) var(--space-5);
@@ -640,7 +688,6 @@ input, textarea { font: inherit; color: inherit; }
   font-weight: 500;
   text-align: left;
   transition: background var(--motion-quick), color var(--motion-quick);
-  position: relative;
 }
 .side .cove-nav:hover { background: var(--overlay-hover-faint); color: var(--text); }
 [data-theme="dark"] .side .cove-nav:hover { background: var(--overlay-hover); }
@@ -658,59 +705,85 @@ input, textarea { font: inherit; color: inherit; }
 .side .cove-nav .swatch.pulse {
   animation: dot-pulse var(--motion-pulse) ease-in-out infinite;
 }
-.side .cove-nav .pip {
-  position: absolute;
-  top: -3px; right: -6px;
-  min-width: 14px; height: 14px;
-  padding: var(--space-0) var(--space-2);
-  border-radius: var(--radius-pill);
-  background: var(--warn);
-  color: white;
-  font-size: var(--text-xs); font-weight: 700;
-  display: grid; place-items: center;
-  box-shadow: 0 0 0 2px var(--bg);
-  font-variant-numeric: tabular-nums;
-}
-[data-theme="dark"] .side .cove-nav .pip { box-shadow: 0 0 0 2px oklch(15% 0.008 245); }
 .side .cove-nav .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* Right-aligned wave count next to each cove. Tabular nums so the digits
-   don't shift as counts grow; same fade-out treatment as nav-label so it
-   reads as metadata, not a primary affordance. */
-.side .cove-nav .count {
+/* Single right-edge badge slot — replaces the swatch-overlay pip + the
+   gray total count. `.warn` shows the waiting count in red; `.muted`
+   shows the total wave count in the decorative tone. Sized to occupy
+   the same 20×20 column as `.nav-label-add` (the `+` on the Coves
+   header) so both align on the right edge. */
+.side .cove-nav-badge {
   flex-shrink: 0;
-  font-size: var(--text-xs);
-  font-weight: 500;
-  color: var(--text-decorative);
-  font-variant-numeric: tabular-nums;
   margin-left: var(--space-3);
+  width: 20px; height: 20px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: var(--text-xs);
+  font-weight: 700;
+  border-radius: var(--radius-pill);
+  font-variant-numeric: tabular-nums;
+  transition: opacity var(--motion-quick);
 }
-.side .cove-nav:hover .count,
-.side .cove-nav.active .count { color: var(--text-3); }
-
-/* `+ New cove` row — visually mute by default, brightens on hover.
-   Swatch slot holds a `+` glyph instead of a colored chip so it reads as
-   "create" not "broken cove". */
-.side .cove-nav.new { color: var(--text-3); font-weight: 500; }
-.side .cove-nav.new:hover { color: var(--text); background: var(--overlay-hover-faint); }
-[data-theme="dark"] .side .cove-nav.new:hover { background: var(--overlay-hover); }
-.side .cove-nav.new .swatch-plus {
-  width: 10px; height: 10px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: var(--text-base); line-height: var(--leading-none);
+.side .cove-nav-badge.warn { color: white; background: var(--warn); }
+.side .cove-nav-badge.muted {
   color: var(--text-decorative);
+  background: transparent;
+  font-weight: 500;
 }
-.side .cove-nav.new:hover .swatch-plus { color: var(--text-2); }
+.side .cove-nav:hover .cove-nav-badge.muted,
+.side .cove-nav.active .cove-nav-badge.muted { color: var(--text-3); }
+
+/* Hover-revealed × on each cove row — sits absolutely at the same x
+   column as the right-edge badge and the Coves-header `+`, so the
+   three slots line up vertically. When the row's badge is visible
+   we crossfade: badge fades out, × fades in. The delete button is a
+   sibling of the nav button (never nested) so HTML stays valid. */
+.side .cove-row-delete {
+  position: absolute;
+  right: var(--space-5);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px; height: 20px;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-3);
+  font: inherit;
+  font-size: 14px;
+  line-height: var(--leading-none);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--motion-quick), color var(--motion-quick), background var(--motion-quick);
+}
+.side .cove-row:hover .cove-row-delete,
+.side .cove-row:focus-within .cove-row-delete { opacity: 1; }
+.side .cove-row:hover .cove-nav-badge,
+.side .cove-row:focus-within .cove-nav-badge { opacity: 0; }
+.side .cove-row-delete:hover {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.side .cove-row-delete:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 
 /* Inline-edit state — same row geometry as `.cove-nav` but with a text
    input instead of a label, so opening the form feels like an in-place
-   nudge rather than a popover. */
+   nudge rather than a popover. The `+` glyph in the swatch slot reads
+   as "create" rather than a broken colored chip. */
 .side .cove-nav-edit {
   display: flex; align-items: center; gap: var(--space-5);
   padding: var(--space-3) var(--space-5);
   width: 100%;
   border-radius: var(--radius-md);
   background: var(--overlay-hover-faint);
+}
+.side .cove-nav-edit .swatch-plus {
+  width: 10px; height: 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: var(--text-base); line-height: var(--leading-none);
+  color: var(--text-decorative);
 }
 [data-theme="dark"] .side .cove-nav-edit { background: var(--overlay-hover); }
 .side .cove-nav-edit input {
@@ -1132,106 +1205,59 @@ input, textarea { font: inherit; color: inherit; }
   border-radius: var(--radius-sm);
 }
 
-/* ===== CovePage header + new-wave row =====
-   The page is a single sorted list of waves. Three optical anchors share
-   one column edge (x = 0 of the `.col.wide` content area):
-     - the page <h1> title text
-     - each wave-row's status dot (left-anchored inside its 26px glyph cell)
-     - the "+" of the trailing "+ New wave" affordance
-   And one anchor on the right (x = col-content-right − 6px) is shared by
-   both the title's × delete and each wave-row's hover-reveal ×.
-
-   `.cove-head` is the title row, laid out as a flex row so the × is
-   centered against the h1's line-box via `align-items: center`. The
-   default `.h-display { margin: 0 0 var(--space-10) }` is moved onto
+/* ===== CovePage header =====
+   `.cove-head` is the title row, laid out as a flex row so the inline
+   icon buttons (`+ New wave`, `×` delete) center against the h1's
+   line-box via `align-items: center`. The default
+   `.h-display { margin: 0 0 var(--space-10) }` is moved onto
    `.cove-head` itself; otherwise the flex row's height would inflate to
    (line-height + 24px margin) and `align-items: center` would push the
-   × below the text midline. The 24px breath below the title stays the
-   same — it now lives on the header, matching Settings + Wave pages.
+   icons below the text midline. The 24px breath below the title stays
+   the same — it now lives on the header, matching Settings + Wave pages.
 
-   The × glyph itself is rendered by <CloseIcon /> (inline SVG centered
-   on its viewBox geometric center), so flex `align-items: center` lands
-   the visible ink exactly on the row midline with no optical correction
-   needed. Earlier versions of this rule used `transform: translateY(2px)`
-   to nudge the Unicode U+00D7 down off the font's math-axis; that hack
-   was font + size coupled and was removed when CloseIcon landed (#203).
-
-   `.new-wave-cta` is a row-style affordance, NOT a dashed-border pill.
-   It shares `.wave-row`'s grid (26px glyph + 1fr body) so its "+" lands
-   in the same glyph cell column and its "New wave" label lines up with
-   the wave titles above. Hover background mirrors the wave-row's so the
-   user reads it as "the next slot in the list". */
+   The `×` glyph is rendered by <CloseIcon /> and the `+` glyph by
+   <PlusIcon /> — inline SVGs centered on their viewBox geometric
+   center, so flex `align-items: center` lands the visible ink exactly
+   on the row midline with no optical correction needed. */
 .cove-head {
   display: flex;
   align-items: center;
   margin-bottom: var(--space-10);
 }
 .cove-head .h-display { margin: var(--space-0); }
-.cove-head-delete {
+.cove-head-actions {
   margin-left: auto;
-  margin-right: var(--space-3);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.cove-head-add {
+  display: grid; place-items: center;
+  width: 28px; height: 28px;
+  padding: var(--space-0);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-md);
+  color: var(--text-3);
+  font-size: 18px;
+  line-height: var(--leading-none);
+  cursor: pointer;
+  transition: background var(--motion-quick), color var(--motion-quick);
+}
+.cove-head-add:hover {
+  background: var(--overlay-hover);
+  color: var(--text);
+}
+.cove-head-add:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.cove-head-delete {
   opacity: 0;
   transition: opacity var(--motion-quick);
 }
 .cove-head:hover .cove-head-delete,
 .cove-head:focus-within .cove-head-delete { opacity: 1; }
-
-.new-wave-cta {
-  display: grid;
-  grid-template-columns: 26px 1fr auto;
-  gap: var(--space-7);
-  align-items: center;
-  padding: var(--space-7) var(--space-12) var(--space-7) var(--space-0);
-  border: none;
-  background: transparent;
-  color: var(--text-3);
-  font: inherit;
-  width: 100%;
-  text-align: left;
-  cursor: pointer;
-  transition: background var(--motion-quick), color var(--motion-quick);
-}
-.new-wave-cta:hover { background: var(--overlay-hover-faint); color: var(--text); }
-[data-theme="dark"] .new-wave-cta:hover { background: var(--overlay-hover-faint); }
-.new-wave-cta .new-wave-glyph {
-  width: 26px; height: 26px;
-  display: grid; place-items: center start;
-  font-size: var(--text-lg);
-  line-height: var(--leading-none);
-  color: var(--text-3);
-}
-.new-wave-cta:hover .new-wave-glyph { color: var(--text); }
-.new-wave-cta .new-wave-label {
-  font-size: var(--text-md);
-  font-weight: 500;
-}
-.new-wave-cta-open {
-  display: grid;
-  grid-template-columns: 26px 1fr auto;
-  gap: var(--space-7);
-  align-items: center;
-  padding: var(--space-7) var(--space-12) var(--space-7) var(--space-0);
-}
-.new-wave-cta-open .new-wave-glyph {
-  width: 26px; height: 26px;
-  display: grid; place-items: center start;
-  font-size: var(--text-lg);
-  line-height: var(--leading-none);
-  color: var(--text-3);
-}
-.new-wave-input {
-  display: block;
-  width: 100%;
-  box-sizing: border-box;
-  font: inherit;
-  font-size: var(--text-md);
-  font-weight: 500;
-  background: transparent;
-  border: none;
-  outline: none;
-  color: var(--text);
-  border-radius: var(--radius-sm);
-}
 .wave-meta {
   display: flex; align-items: center; gap: var(--space-7);
   flex-shrink: 0;

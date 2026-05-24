@@ -1,8 +1,12 @@
 import { useRef } from 'react';
 import { useState } from '../state';
 import { Menu, type MenuItem } from '../../ui/Menu/Menu';
+import { useSession } from '../../app/SessionProvider';
 import type { Cove, Route, Wave } from '../../types';
 import { isRunning, waveNeedsUserAttention } from '../lifecycle';
+import { ConfirmDialog } from '../../ui/ConfirmDialog/ConfirmDialog';
+import { CloseIcon } from './CloseIcon';
+import { PlusIcon } from './PlusIcon';
 
 // ---------------- Sidebar ----------------
 
@@ -12,6 +16,7 @@ export function Sidebar({
   route,
   onGo,
   onCreateCove,
+  onDeleteCove,
   onOpenSettings,
   onSignOut,
 }: {
@@ -19,11 +24,17 @@ export function Sidebar({
   waves: Wave[];
   route: Route;
   onGo: (r: Route) => void;
-  /** Bootstrap affordance: renders a small `+ New Cove` row below the
-   *  Coves list. Lives here (not in CovePage) because creating the *first*
+  /** Bootstrap affordance: renders a small `+` icon button on the Coves
+   *  section header that expands an inline name input at the top of the
+   *  cove list. Lives here (not in CovePage) because creating the *first*
    *  cove has no other home. Wave creation, by contrast, lives inside
    *  CovePage where the cove context is already established. */
   onCreateCove?: (name: string, color: string) => void | Promise<void>;
+  /** Per-row delete on each cove. When provided, every cove row reveals a
+   *  hover `×` that opens a single shared ConfirmDialog. Mirrors the
+   *  WaveRow delete pattern. Optional so tests can render the sidebar
+   *  without wiring deletion. */
+  onDeleteCove?: (coveId: string) => void | Promise<void>;
   /** Open the app-global settings page. Optional so tests / sub-trees that
    *  render the sidebar without a router don't have to wire it up. */
   onOpenSettings?: () => void;
@@ -31,6 +42,17 @@ export function Sidebar({
    *  the sidebar without a router don't have to wire it up. */
   onSignOut?: () => void;
 }) {
+  // Single shared ConfirmDialog at the sidebar root; `pendingDelete`
+  // carries the cove being confirmed so the dialog text reflects the
+  // actual cove name. Mirrors Cove.tsx's `pendingDeleteWave` pattern.
+  const [pendingDelete, setPendingDelete] = useState<Cove | null>(null);
+  const cancelDelete = () => setPendingDelete(null);
+  const confirmDelete = async () => {
+    const c = pendingDelete;
+    setPendingDelete(null);
+    if (!c || !onDeleteCove) return;
+    await onDeleteCove(c.id);
+  };
   // Issue #254 — OR'd predicate: lifecycle ∪ kernel-card-FSM. Catches
   // both "Spec Agent said blocked/reviewing/failed" AND "a worker card
   // hit an AwaitingInput/Errored hook before Spec Agent could drive
@@ -84,46 +106,79 @@ export function Sidebar({
         </section>
       )}
 
-      <nav className="side-nav" aria-label="Coves">
-        <div className="nav-label">Coves</div>
+      <nav className="side-nav side-coves" aria-label="Coves">
+        <CovesHeader onCreate={onCreateCove} />
         {coves.map((cove) => {
           const cw = waves.filter((w) => w.coveId === cove.id);
           const running = cw.filter((w) => isRunning(w.lifecycle)).length;
           // Match the top-of-sidebar "Waiting on you" predicate so the
-          // per-cove pip count and the top-section row count agree.
+          // per-cove waiting count and the top-section row count agree.
           const waiting = cw.filter((w) => waveNeedsUserAttention(w)).length;
           const active = route.name === 'cove' && route.coveId === cove.id;
+          // Single right-edge badge slot: warn-red waiting count beats
+          // muted total count; empty when there are no waves at all.
+          const badge =
+            waiting > 0
+              ? { kind: 'warn' as const, n: waiting }
+              : cw.length > 0
+                ? { kind: 'muted' as const, n: cw.length }
+                : null;
           return (
-            <button
-              key={cove.id}
-              className={'cove-nav' + (active ? ' active' : '')}
-              onClick={() => onGo({ name: 'cove', coveId: cove.id })}
-            >
-              <span className="swatch-wrap">
-                <span
-                  className={'swatch' + (running > 0 ? ' pulse' : '')}
-                  style={{ background: cove.color }}
-                />
-                {waiting > 0 && (
-                  <span className="pip" aria-hidden="true">
-                    {waiting}
+            <div key={cove.id} className="cove-row" role="group">
+              <button
+                className={'cove-nav' + (active ? ' active' : '')}
+                onClick={() => onGo({ name: 'cove', coveId: cove.id })}
+              >
+                <span className="swatch-wrap">
+                  <span
+                    className={'swatch' + (running > 0 ? ' pulse' : '')}
+                    style={{ background: cove.color }}
+                  />
+                </span>
+                <span className="lbl">{cove.name}</span>
+                {badge && (
+                  <span
+                    className={'cove-nav-badge ' + badge.kind}
+                    aria-hidden="true"
+                  >
+                    {badge.n}
                   </span>
                 )}
-              </span>
-              <span className="lbl">{cove.name}</span>
-              {cw.length > 0 && (
-                <span className="count" aria-hidden="true">
-                  {cw.length}
-                </span>
+              </button>
+              {onDeleteCove && (
+                <button
+                  type="button"
+                  className="cove-row-delete"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setPendingDelete(cove);
+                  }}
+                  title={`Delete cove "${cove.name}"`}
+                  aria-label={`Delete cove "${cove.name}"`}
+                >
+                  <CloseIcon />
+                </button>
               )}
-            </button>
+            </div>
           );
         })}
-        {onCreateCove && <NewCoveButton onCreate={onCreateCove} />}
       </nav>
 
-      <span className="sp" />
       <UserMenu onOpenSettings={onOpenSettings} onSignOut={onSignOut} />
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title="Delete cove?"
+        description={
+          pendingDelete
+            ? `Delete cove "${pendingDelete.name}"? Its waves and cards go too. This cannot be undone.`
+            : null
+        }
+        confirmLabel="Delete cove"
+        cancelLabel="Cancel"
+        onConfirm={confirmDelete}
+        onCancel={cancelDelete}
+      />
     </aside>
   );
 }
@@ -135,10 +190,6 @@ export function Sidebar({
 // Settings + Sign out items. Both callbacks are optional so the Sidebar
 // can be rendered without a router (e.g. in component tests); items
 // referencing a missing handler are simply no-ops.
-//
-// The trigger must be a single focusable <button>, so the `.sub` line
-// inside `.who` is a <span> with `display: block` (set in calm.css) —
-// no block elements inside a button per HTML.
 function UserMenu({
   onOpenSettings,
   onSignOut,
@@ -146,6 +197,8 @@ function UserMenu({
   onOpenSettings?: () => void;
   onSignOut?: () => void;
 }) {
+  const { displayName } = useSession();
+  const initials = computeInitials(displayName);
   const items: MenuItem[] = [
     { label: 'Settings', onSelect: () => onOpenSettings?.() },
     { label: 'Sign out', onSelect: () => onSignOut?.() },
@@ -171,37 +224,52 @@ function UserMenu({
           aria-expanded={ariaExpanded}
           aria-label="Open user menu"
         >
-          <span className="me">YK</span>
-          <span className="who">
-            Yuki K.
-            <span className="sub">Pro · 5 agents online</span>
-          </span>
+          <span className="me">{initials}</span>
+          <span className="who">{displayName}</span>
         </button>
       )}
     />
   );
 }
 
-// ---------------- NewCoveButton ----------------
+// First letter of each whitespace-separated word, upper-cased, capped at
+// two chars. Falls back to the first two chars of the raw name when the
+// display name has no whitespace (e.g. a single handle like "yuki").
+function computeInitials(displayName: string): string {
+  const trimmed = displayName.trim();
+  if (!trimmed) return '';
+  const words = trimmed.split(/\s+/);
+  if (words.length === 1) {
+    return trimmed.slice(0, 2).toUpperCase();
+  }
+  return words
+    .slice(0, 2)
+    .map((w) => w.charAt(0).toUpperCase())
+    .join('');
+}
+
+// ---------------- CovesHeader ----------------
 //
-// Lives in the sidebar because creating the *first* cove has no other home;
-// every subsequent affordance (new wave, new card) lives inside the page
-// it belongs to. Bootstraps a random color from a fixed palette — a real
-// color picker can land in a settings/command-palette pass later.
+// Renders the "Coves" section label with a tiny `+` icon button anchored
+// on the right edge of the same row. Clicking `+` expands an inline name
+// input directly below the header (still at the top of the cove list),
+// so the trigger stays in view even when the cove list overflows.
 
 const PALETTE = ['#5a9', '#c97', '#79c', '#b86', '#6a8', '#a6c'];
 
-function NewCoveButton({
+function CovesHeader({
   onCreate,
 }: {
-  onCreate: (name: string, color: string) => void | Promise<void>;
+  onCreate?: (name: string, color: string) => void | Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState('');
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  // When the inline form opens, focus the input on the next tick so the
-  // ref is bound. Cheaper than a separate effect for one-shot focus.
+  if (!onCreate) {
+    return <div className="nav-label">Coves</div>;
+  }
+
   const openForm = () => {
     setOpen(true);
     queueMicrotask(() => inputRef.current?.focus());
@@ -221,32 +289,38 @@ function NewCoveButton({
     close();
   };
 
-  if (!open) {
-    return (
-      <button className="cove-nav new" onClick={openForm} title="New cove">
-        <span className="swatch-wrap">
-          <span className="swatch-plus">+</span>
-        </span>
-        <span className="lbl">New cove</span>
-      </button>
-    );
-  }
   return (
-    <div className="cove-nav-edit">
-      <span className="swatch-wrap">
-        <span className="swatch-plus">+</span>
-      </span>
-      <input
-        ref={inputRef}
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') void submit();
-          else if (e.key === 'Escape') close();
-        }}
-        onBlur={() => void submit()}
-        placeholder="Name…"
-      />
-    </div>
+    <>
+      <div className="nav-label nav-label-row">
+        <span>Coves</span>
+        <button
+          type="button"
+          className="nav-label-add"
+          onClick={openForm}
+          title="New cove"
+          aria-label="New cove"
+        >
+          <PlusIcon />
+        </button>
+      </div>
+      {open && (
+        <div className="cove-nav-edit">
+          <span className="swatch-wrap">
+            <span className="swatch-plus">+</span>
+          </span>
+          <input
+            ref={inputRef}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void submit();
+              else if (e.key === 'Escape') close();
+            }}
+            onBlur={() => void submit()}
+            placeholder="Name…"
+          />
+        </div>
+      )}
+    </>
   );
 }

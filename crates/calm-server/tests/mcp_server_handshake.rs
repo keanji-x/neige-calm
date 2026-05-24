@@ -346,3 +346,87 @@ async fn two_tools_calls_on_one_connection_share_identity() {
     }
     let _ = (&b.server, &b.repo);
 }
+
+/// Regression: a co-tenant `calm-server` against the same XDG-shared
+/// data dir must NOT steal the live socket on boot.
+///
+/// Pre-fix behavior: `McpServer::spawn` unconditionally
+/// `remove_file()`d any existing socket file before `bind()`. When a
+/// second server instance booted against the same data dir (e.g. two
+/// docker stacks pointing at `$HOME/.local/share/neige-calm`), it would
+/// race against the first instance's listener: the unlink severed the
+/// path → listener mapping in the filesystem without closing the live
+/// listener fd; the rebind then created a brand-new socket file the
+/// second process bound to. The second process typically died next
+/// (HTTP port already in use), leaving behind a defunct socket file at
+/// the path. The first instance's listener was still alive but
+/// orphaned — clients reaching it via the path got `ECONNREFUSED`.
+///
+/// Fix: probe the existing path with `UnixStream::connect` before
+/// unlink. A live answer means another listener owns the socket; we
+/// refuse to boot loudly rather than break the live tenant. This test
+/// drives a stand-in listener (a `UnixListener::bind` directly, no
+/// `McpServer` needed) and verifies the second `McpServer::spawn`
+/// errors and leaves the original listener intact.
+#[tokio::test]
+async fn spawn_refuses_to_steal_live_co_tenant_socket() {
+    let tmp = TempDir::new().expect("tempdir for MCP socket");
+    let socket_path = tmp.path().join("kernel.sock");
+
+    // Stand-in "live first tenant": just a raw UnixListener bound at
+    // the same path. We don't need the full McpServer stack to exercise
+    // the steal-detection — the probe is purely about whether a peer
+    // answers `connect()`.
+    let first = tokio::net::UnixListener::bind(&socket_path).expect("first listener");
+
+    // Boot a real McpServer at the same path. Without the fix this
+    // would happily unlink the path, rebind, and return Ok. With the
+    // fix it must error.
+    let sqlx_repo = Arc::new(
+        SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite"),
+    );
+    let repo: Arc<dyn Repo> = sqlx_repo;
+    let card_role_cache = CardRoleCache::new();
+    let events = EventBus::new();
+    let registry = build_default_registry();
+    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+
+    let result = McpServer::spawn(
+        repo,
+        events,
+        card_role_cache,
+        wave_cove_cache,
+        calm_server::event_cursor::EventCursorCache::new(),
+        socket_path.clone(),
+        PathBuf::from("/nonexistent-shim-bin"),
+        registry,
+    )
+    .await;
+
+    let err = match result {
+        Ok(_) => panic!("second spawn must refuse to steal live socket"),
+        Err(e) => e,
+    };
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("already listening"),
+        "expected steal-refusal error message; got: {msg}"
+    );
+
+    // The first listener must still be functional. A fresh connect +
+    // accept round-trip proves the path was not stolen.
+    let connect_handle = tokio::spawn({
+        let p = socket_path.clone();
+        async move { UnixStream::connect(&p).await }
+    });
+    let (accepted, _addr) = timeout(TEST_BUDGET, first.accept())
+        .await
+        .expect("first listener accept within budget")
+        .expect("accept ok");
+    let _ = connect_handle.await.expect("connect task joins").expect(
+        "connect to first listener must succeed; instead the path was stolen by the second spawn",
+    );
+    drop(accepted);
+}

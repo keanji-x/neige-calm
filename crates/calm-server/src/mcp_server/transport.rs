@@ -60,6 +60,13 @@ pub const KERNEL_MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 /// uid (i.e. processes the kernel itself spawned) can `connect`.
 const SOCKET_MODE: u32 = 0o600;
 
+/// Boot-time probe budget for the "is there already a live listener at
+/// this path?" check. UDS connects are sub-ms on a healthy listener;
+/// the budget exists only to bound a pathological case where the kernel
+/// stalls a connect attempt. A timeout falls through to the stale-file
+/// reclaim path, same as `ECONNREFUSED`.
+const LIVE_LISTENER_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// Configuration the codex daemon needs to know about the kernel's MCP
 /// server. Threaded into `build_codex_config_toml_with_prompt` so each
 /// Spec/Worker `$CODEX_HOME/config.toml` gets a `[mcp_servers.calm]`
@@ -89,10 +96,18 @@ impl McpServer {
     /// the handle. The accept loop runs until the process exits or the
     /// listener errors out (logged at warn!).
     ///
-    /// On `bind` failure, the socket is reset and re-bound: a stale
-    /// socket file from a prior crashed boot would otherwise leave the
-    /// listener stuck on `EADDRINUSE`. (Matches the pattern in
-    /// `routes/terminal.rs`'s daemon socket setup.)
+    /// If `socket_path` already exists we probe it with a short
+    /// `UnixStream::connect`. A live peer means another process is
+    /// already serving on the same XDG-shared path (a second
+    /// `calm-server` against the same `$HOME`, a leftover from a prior
+    /// boot, etc.); we refuse to boot rather than unlink-and-rebind,
+    /// because the unlink would steal the path from the live listener
+    /// without breaking its socket — `connect()` against the new file
+    /// would then return `ECONNREFUSED` even though the kernel thinks
+    /// it's "running". A connect failure (`ECONNREFUSED` /
+    /// `ENOENT`) is the stale-file case the original boot code was
+    /// already handling; we unlink and rebind in that path the way
+    /// `routes/terminal.rs`'s daemon-socket setup does.
     #[allow(clippy::too_many_arguments)]
     pub async fn spawn(
         repo: Arc<dyn RouteRepo>,
@@ -110,10 +125,27 @@ impl McpServer {
             std::fs::create_dir_all(parent)
                 .map_err(|e| anyhow::anyhow!("mkdir mcp socket dir {}: {e}", parent.display()))?;
         }
-        // Unlink any stale socket from a prior boot. Ignore "no such
-        // file" — that's the fresh-install path.
         if socket_path.exists() {
-            let _ = std::fs::remove_file(&socket_path);
+            // Probe before unlink — see doc above.
+            match tokio::time::timeout(
+                LIVE_LISTENER_PROBE_TIMEOUT,
+                UnixStream::connect(&socket_path),
+            )
+            .await
+            {
+                Ok(Ok(_stream)) => {
+                    anyhow::bail!(
+                        "another process is already listening on mcp socket {} \
+                         (refusing to unlink-and-rebind; co-tenant calm-server on the same data dir?)",
+                        socket_path.display()
+                    );
+                }
+                Ok(Err(_)) | Err(_) => {
+                    // Connect refused, timed out, or other error — treat as
+                    // stale and reclaim the path.
+                    let _ = std::fs::remove_file(&socket_path);
+                }
+            }
         }
 
         let listener = UnixListener::bind(&socket_path)

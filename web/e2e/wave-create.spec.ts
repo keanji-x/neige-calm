@@ -54,7 +54,10 @@ test('creates a new wave from a fresh cove via NewTaskForm and navigates to it',
   await nameInput.fill(coveName);
   await nameInput.press('Enter');
 
-  const coveBtn = sidebarCoves.getByRole('button', { name: new RegExp(coveName, 'i') });
+  // `exact: true` excludes the per-row "Delete cove \"<name>\"" button
+  // whose accessible name also contains coveName — without exact match
+  // the locator hits both and trips Playwright's strict mode.
+  const coveBtn = sidebarCoves.getByRole('button', { name: coveName, exact: true });
   await expect(coveBtn).toBeVisible();
   await coveBtn.click();
   await expect(page).toHaveURL(/\/calm\/cove\/[^/]+$/);
