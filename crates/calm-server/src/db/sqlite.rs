@@ -882,19 +882,22 @@ pub async fn card_update_with_crdt_tx(
 }
 
 /// Issue #247 PR1 — read the opaque CRDT blob for a card inside an
-/// open transaction. Returns `None` when the column is NULL (every
-/// pre-PR1 row, plus non-wave-report cards which never get
-/// initialized). Returns `Some(bytes)` for any row whose first
-/// post-PR1 write has run through `card_update_with_crdt_tx`.
+/// open transaction. Returns `None` in either of two cases:
+///
+///   * the card row doesn't exist (fetched via `fetch_optional` —
+///     no `NotFound` is raised, the absent row collapses into the
+///     same "no blob to load" signal as a NULL column), or
+///   * the row exists but `body_crdt` IS NULL (every pre-PR1 row,
+///     plus non-wave-report cards which never get initialized).
+///
+/// Returns `Some(bytes)` for any row whose first post-PR1 write has
+/// run through `card_update_with_crdt_tx`.
 ///
 /// Read inside the same tx as the update so a concurrent writer
 /// can't slip a blob in between this read and our `to_bytes` write
 /// (the wave-report write path is the only writer of the column
 /// today, but pinning the read to the tx is cheap and matches the
 /// pattern the rest of `*_tx` uses).
-///
-/// Errors propagate as `CalmError::Db` for `NotFound` rows — the
-/// caller already validated the card exists before calling this.
 pub async fn card_body_crdt_get_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,

@@ -426,6 +426,13 @@ async fn persist_report(
                     Some(bytes) => ReportDoc::from_bytes(&bytes).map_err(|e| {
                         CalmError::Internal(format!("wave_report: load CRDT for card {id}: {e}"))
                     })?,
+                    // Safe: current_payload was read outside the tx,
+                    // but is only consulted here when body_crdt is
+                    // still NULL in-tx. SQLite's single-writer means
+                    // no concurrent writer can have populated the
+                    // blob between that read and this branch; once
+                    // body_crdt is non-NULL we take the Some arm and
+                    // ignore current_payload entirely.
                     None => ReportDoc::from_payload(&current_payload),
                 };
                 // 2. Apply the proposed update uniformly to both fields.

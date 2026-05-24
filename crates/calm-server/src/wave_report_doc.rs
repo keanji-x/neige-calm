@@ -184,18 +184,14 @@ impl ReportDoc {
     }
 
     /// Resolve a field's object id off the doc root. Returns `None`
-    /// if the field is missing or not a Text object — both cases are
-    /// invariant violations (every doc that exits this module
-    /// satisfies the shape laid down by [`Self::from_payload`]).
+    /// if the field is missing — an invariant violation, since every
+    /// doc that exits this module satisfies the shape laid down by
+    /// [`Self::from_payload`]. We discard the `Value` half of the
+    /// `get` tuple because the next call sites (`update_text` /
+    /// `text`) fail loudly if the type isn't `Text`, which is the
+    /// right behavior for an invariant break.
     fn text_id(&self, field: &str) -> Option<automerge::ObjId> {
-        let (val, obj_id) = self.0.get(&ROOT, field).ok().flatten()?;
-        // `val` is an `automerge::Value`; for a Text object it's
-        // `Value::Object(ObjType::Text)`. We don't need the discriminant
-        // beyond confirming the object exists — the next call sites
-        // (`update_text` / `text`) will fail loudly if the type is
-        // wrong, which is the right behavior for an invariant break.
-        let _ = val;
-        Some(obj_id)
+        self.0.get(&ROOT, field).ok().flatten().map(|(_, id)| id)
     }
 }
 
@@ -294,6 +290,53 @@ mod tests {
             first.len(),
             second.len()
         );
+    }
+
+    #[test]
+    fn round_trip_preserves_multibyte_emoji_and_crlf() {
+        // Regression pin for the read path: automerge `Text` is
+        // logically a sequence of Unicode scalar values, and
+        // `update_text`'s Myers diff operates on character boundaries.
+        // Verify that the bytes we hand the JSON cache after a
+        // `from_payload → to_bytes → from_bytes → project` round-trip
+        // are byte-for-byte identical to the input across the awkward
+        // cases: multi-byte UTF-8 (Chinese), multi-codepoint emoji
+        // (the flag is two regional-indicator codepoints), and CRLF
+        // line endings; plus a trailing newline that whitespace-
+        // trimming bugs love to eat.
+        let summary = "中文测试 🎉 🇨🇳";
+        let body = "line1\r\nline2 中文 🎉 🇨🇳\r\n";
+        let payload = WaveReportPayload {
+            schema_version: 1,
+            summary: summary.to_string(),
+            body: body.to_string(),
+        };
+
+        let mut doc = ReportDoc::from_payload(&payload);
+        let bytes = doc.to_bytes();
+        let reloaded = ReportDoc::from_bytes(&bytes).expect("round-trip load");
+        let (s, b) = reloaded.project();
+        // Byte-for-byte equality; `as_bytes` makes a UTF-8 corruption
+        // surface as a length mismatch rather than a `String` PartialEq
+        // pretty-print that hides surrogate-pair-style bugs.
+        assert_eq!(s.as_bytes(), summary.as_bytes());
+        assert_eq!(b.as_bytes(), body.as_bytes());
+
+        // And the update path must preserve them too — re-write with
+        // a different multi-byte payload and re-project.
+        let mut doc2 = ReportDoc::from_bytes(&bytes).expect("re-load for update");
+        let new_summary = "新摘要 🚀 🇯🇵";
+        let new_body = "第一行\r\n第二行 🎊\r\n";
+        doc2.update(new_summary, new_body);
+        let (s2, b2) = doc2.project();
+        assert_eq!(s2.as_bytes(), new_summary.as_bytes());
+        assert_eq!(b2.as_bytes(), new_body.as_bytes());
+        // Survives one more save round-trip on top of the update.
+        let bytes2 = doc2.to_bytes();
+        let reloaded2 = ReportDoc::from_bytes(&bytes2).expect("post-update round-trip");
+        let (s3, b3) = reloaded2.project();
+        assert_eq!(s3.as_bytes(), new_summary.as_bytes());
+        assert_eq!(b3.as_bytes(), new_body.as_bytes());
     }
 
     #[test]
