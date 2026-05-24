@@ -113,9 +113,14 @@ enum LiveSock {
 ///   3. If `daemon_handle` is set but the probe fails, the daemon spawned
 ///      and has since exited; return `ChildExited` so the caller can emit
 ///      a `child-exited` close on the WS.
-///   4. If the row has no `daemon_handle` at all, the daemon was never
-///      successfully spawned — return 500. The browser's "Reconnect" UI
-///      surfaces the failure.
+///   4. If the row has no `daemon_handle` at all, treat it as a clean
+///      child exit as well: the row exists (we passed `terminal_get`),
+///      so a caller tried to spawn a daemon — and either the spawn
+///      succeeded but the eager-persist racd (covered by the spawn-site
+///      eager-write), or the spawn itself failed. Either way the user
+///      sees "no live daemon for this row", and surfacing
+///      `Close(1000, "child-exited")` gives them the same Restart UX
+///      as a normal exit instead of a generic 1006.
 ///
 /// #177 — this used to be an "auto-respawn on cold socket" path. That
 /// behaviour was the source of the WS race in PR #193: the un-themed
@@ -147,13 +152,18 @@ async fn resolve_live_sock(s: &AppState, id: &str) -> Result<LiveSock> {
         );
         return Ok(LiveSock::ChildExited);
     }
-    tracing::warn!(
+    // No daemon_handle: with the spawn-site eager-write this should be
+    // rare in practice (only if `cmd.spawn()` itself failed). Treat it
+    // the same as a clean child exit — the row exists, no daemon is
+    // live, and the Restart button is the right recovery path. Surfacing
+    // a 500 here would land in the browser as a 1006 close with no
+    // reason text, which is what made the user-visible bug indistinct
+    // from a network drop.
+    tracing::info!(
         terminal_id = %term.id,
-        "terminal has no daemon_handle; no auto-spawn (PR1-#177) — client surfaces 'Reconnect'",
+        "terminal has no daemon_handle — treating as clean child exit",
     );
-    Err(crate::error::CalmError::Internal(format!(
-        "terminal {id}: no live daemon (probe-only resolve, see #177)"
-    )))
+    Ok(LiveSock::ChildExited)
 }
 
 /// Accept the WS upgrade, send a single `Close(1000, "child-exited")`

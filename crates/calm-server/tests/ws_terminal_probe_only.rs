@@ -1,9 +1,11 @@
 //! Issue #177 (PR1 of split / closes #256) — `ws::terminal::
-//! resolve_live_sock` is probe-only. When the terminal row has no
-//! live daemon (either `daemon_handle = NULL` or the socket file
-//! doesn't accept connections), the WS upgrade path must return an
-//! error and NOT silently respawn the daemon. The browser's existing
-//! "Reconnect" UI surfaces the failure.
+//! resolve_live_sock` is probe-only: it never auto-respawns a daemon
+//! on the WS hot path. When the terminal row has no live daemon
+//! (either `daemon_handle = NULL` or the socket file doesn't accept
+//! connections), the upgrade path emits a clean
+//! `Close(1000, "child-exited")` so the browser renders the
+//! "process exited" overlay (with a Restart button) instead of a
+//! 1006 disconnect.
 //!
 //! Pre-PR1 behavior: `resolve_live_sock` auto-respawned the daemon
 //! with the row's persisted env, which could:
@@ -13,10 +15,12 @@
 //!     codex CLI 0.132 doesn't forward to the MCP shim, so the shim
 //!     fails handshake).
 //!
-//! Post-PR1 behavior: `resolve_live_sock` is "probe and 500". The one
-//! legitimate auto-revive case (calm-server restart while daemons
-//! survived) is handled by `revive_orphans_on_boot` at startup; the
-//! WS hot path stays cold.
+//! Post-PR1 behavior: `resolve_live_sock` is "probe; never respawn".
+//! The one legitimate auto-revive case (calm-server restart while
+//! daemons survived) is handled by `revive_orphans_on_boot` at
+//! startup. The "row has no daemon socket at WS attach time" cases
+//! all surface as `Close(1000, "child-exited")`; the row's
+//! `daemon_handle` is NEVER rewritten by the WS attach path.
 
 #![cfg(unix)]
 
@@ -140,11 +144,17 @@ async fn boot_with_terminal_row() -> Boot {
 }
 
 /// Regression guard for the probe-only refactor: a terminal row with
-/// `daemon_handle = NULL` (never spawned) must NOT trigger a daemon
-/// spawn on WS upgrade. The handshake must fail at the upgrade step
-/// (no 101) and the row's `daemon_handle` stays NULL after.
+/// `daemon_handle = NULL` (spawn-site eager-write never landed —
+/// `cmd.spawn()` itself failed, or some other rare path) must NOT
+/// trigger a daemon spawn on WS upgrade. The upgrade succeeds (101)
+/// and the server immediately emits `Close(1000, "child-exited")`
+/// so the browser renders the "process exited" overlay; the row's
+/// `daemon_handle` stays NULL afterwards (no auto-respawn).
 #[tokio::test]
-async fn ws_upgrade_without_live_daemon_returns_error_and_does_not_spawn() {
+async fn ws_upgrade_without_live_daemon_emits_child_exited_close_and_does_not_spawn() {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::Message as TMessage;
+
     let boot = boot_with_terminal_row().await;
 
     let pre = boot
@@ -158,29 +168,33 @@ async fn ws_upgrade_without_live_daemon_returns_error_and_does_not_spawn() {
         "precondition: row has no daemon handle yet",
     );
 
-    // Try to upgrade — this is what the browser sends to attach.
-    let url = format!("ws://{}/ws/terminal/{}", boot.addr, boot.term_id);
-    let connect = tokio_tungstenite::connect_async(&url).await;
-
-    // Upgrade must fail. Pre-PR1 this would succeed because
-    // `resolve_live_sock` would respawn a daemon and the WS would
-    // attach to the freshly-spawned socket.
-    match connect {
-        Ok(_) => panic!(
-            "ws upgrade succeeded for a row with no live daemon; \
-             probe-only `resolve_live_sock` regressed — auto-respawn returned",
-        ),
-        Err(e) => {
-            // Either the server returns 500 (status-code error from
-            // tungstenite) or the TCP connection lands but the handshake
-            // doesn't reach 101 — both are acceptable signals that we
-            // didn't open a WS attached to a freshly-spawned daemon.
-            eprintln!("expected ws upgrade failure: {e}");
+    // The browser-side attach. Upgrade succeeds (101) and the very
+    // first frame on the WS must be Close(1000, "child-exited") so
+    // the JS client surfaces the clean-exit overlay — no 1006.
+    let url = format!("ws://{}/api/terminals/{}", boot.addr, boot.term_id);
+    let (mut ws, _resp) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("upgrade must reach 101 even when daemon_handle is None");
+    let first = tokio::time::timeout(Duration::from_secs(2), ws.next())
+        .await
+        .expect("ws recv (close) timed out")
+        .expect("ws closed without sending Close")
+        .expect("ws error");
+    match first {
+        TMessage::Close(Some(cf)) => {
+            assert_eq!(u16::from(cf.code), 1000, "expected 1000 normal close");
+            assert_eq!(
+                cf.reason.as_ref(),
+                "child-exited",
+                "expected `child-exited` reason text — pins the upgrade-time race fix",
+            );
         }
+        other => panic!("expected Close(1000, child-exited), got {other:?}"),
     }
 
     // Crucially: no daemon was spawned. The row's handle stays NULL,
-    // and no socket file appears in the daemon data dir.
+    // and no socket file appears in the daemon data dir. Pre-PR1
+    // this is where auto-respawn would have rewritten the handle.
     let post = boot
         .repo
         .terminal_get(&boot.term_id)
@@ -195,12 +209,18 @@ async fn ws_upgrade_without_live_daemon_returns_error_and_does_not_spawn() {
 }
 
 /// Companion to the test above: a row whose `daemon_handle` exists
-/// but points at a stale socket (sock file doesn't accept connect)
-/// also returns an error and does NOT respawn. Pre-PR1 this was the
-/// race path — un-themed respawn could win the socket against an
-/// initial themed spawn.
+/// but points at a stale socket (sock file doesn't accept connect).
+/// This is the canonical "fast-exit child" path now that the spawn
+/// site persists `daemon_handle` eagerly — the readiness poll could
+/// have failed (daemon exited and unlinked before its socket bound),
+/// or a long-lived daemon could have exited between rows ago. Either
+/// way, the upgrade must surface `Close(1000, "child-exited")` and
+/// MUST NOT respawn (the row's handle stays byte-for-byte the same).
 #[tokio::test]
-async fn ws_upgrade_with_stale_daemon_handle_returns_error_and_does_not_respawn() {
+async fn ws_upgrade_with_stale_daemon_handle_emits_child_exited_close_and_does_not_respawn() {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::Message as TMessage;
+
     let boot = boot_with_terminal_row().await;
 
     // Plant a stale handle: a path that doesn't accept connections.
@@ -211,13 +231,26 @@ async fn ws_upgrade_with_stale_daemon_handle_returns_error_and_does_not_respawn(
         .await
         .unwrap();
 
-    let url = format!("ws://{}/ws/terminal/{}", boot.addr, boot.term_id);
-    let connect = tokio_tungstenite::connect_async(&url).await;
-    assert!(
-        connect.is_err(),
-        "ws upgrade succeeded against a stale daemon handle; \
-         probe-only resolve regressed",
-    );
+    let url = format!("ws://{}/api/terminals/{}", boot.addr, boot.term_id);
+    let (mut ws, _resp) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("upgrade must reach 101 — server should emit Close, not 500");
+    let first = tokio::time::timeout(Duration::from_secs(2), ws.next())
+        .await
+        .expect("ws recv (close) timed out")
+        .expect("ws closed without sending Close")
+        .expect("ws error");
+    match first {
+        TMessage::Close(Some(cf)) => {
+            assert_eq!(u16::from(cf.code), 1000, "expected 1000 normal close");
+            assert_eq!(
+                cf.reason.as_ref(),
+                "child-exited",
+                "expected `child-exited` reason text",
+            );
+        }
+        other => panic!("expected Close(1000, child-exited), got {other:?}"),
+    }
 
     // Post-attempt: the handle is byte-for-byte the same (no respawn
     // wrote a fresh path). Confirms the probe-only contract is intact:

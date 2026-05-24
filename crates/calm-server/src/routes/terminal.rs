@@ -144,6 +144,19 @@ pub(crate) async fn spawn_daemon_with_parts(
             "failed to persist terminal pid; sweeper will fall back to socket-Kill only"
         );
     }
+    // Persist the daemon_handle eagerly — BEFORE the readiness probe.
+    // A one-shot child (e.g. `printf done`) can exit + the daemon can
+    // unlink its socket faster than the 40ms probe interval, so a
+    // probe-first persist would leave the row's handle permanently
+    // None and the next WS attach would see "no daemon_handle" and
+    // 500. With the handle written here, `resolve_live_sock` sees
+    // `Some(sock)`, probes, fails (socket gone), and falls into the
+    // existing `LiveSock::ChildExited` branch → Close(1000,
+    // "child-exited"). The handle stays set on the readiness-timeout
+    // error path too: it matches reality (a daemon WAS spawned), and
+    // a stuck-daemon hang still surfaces as ChildExited on the next
+    // attach, giving the user a Restart button.
+    repo.terminal_set_handle(&term.id, Some(&sock_str)).await?;
     tokio::spawn(async move {
         let _ = child.wait().await;
     });
@@ -163,7 +176,6 @@ pub(crate) async fn spawn_daemon_with_parts(
             term.id
         )));
     }
-    repo.terminal_set_handle(&term.id, Some(&sock_str)).await?;
     Ok(())
 }
 
@@ -342,6 +354,114 @@ mod tests {
                 .iter()
                 .any(|(k, v)| k == "--terminal-bg" && v == "15,20,24"),
             "spawn must carry --terminal-bg from row; got argv: {argv:?}"
+        );
+    }
+
+    /// Fast-exit race regression: when the spawned binary exits
+    /// immediately without binding its socket (the user-visible
+    /// `printf 'done\n'` reproducer in #267's followup), the readiness
+    /// poll inside `spawn_daemon_with_parts` returns Err — but the row's
+    /// `daemon_handle` MUST already be set so that a subsequent WS
+    /// attach can resolve to `LiveSock::ChildExited` and emit
+    /// `Close(1000, "child-exited")` instead of falling into the
+    /// "no daemon_handle" surfacing a 1006 to the browser.
+    ///
+    /// Drives the helper with `/bin/true` as `session_daemon_bin`:
+    /// `cmd.spawn()` succeeds, the binary ignores all args + exits 0
+    /// without binding the socket, so the 75×40ms readiness poll
+    /// exhausts and returns the "did not become ready" error. The
+    /// invariant under test is that **the handle is persisted before
+    /// the readiness check** — verifying it directly from the row
+    /// after the failure returns.
+    #[tokio::test]
+    async fn spawn_persists_handle_even_when_daemon_exits_before_ready() {
+        use crate::db::prelude::*;
+
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let repo: Arc<dyn Repo> = Arc::new(
+            SqlxRepo::open("sqlite::memory:")
+                .await
+                .expect("open in-memory sqlite"),
+        );
+        let cove = repo
+            .cove_create(NewCove {
+                name: "fast-exit".into(),
+                color: "#000".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let wave = repo
+            .wave_create(NewWave {
+                cove_id: cove.id.clone(),
+                title: "fast-exit".into(),
+                sort: None,
+                cwd: String::new(),
+                attach_folder: false,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        let card: Card = repo
+            .card_create(NewCard {
+                wave_id: wave.id.clone(),
+                kind: "terminal".into(),
+                sort: None,
+                payload: serde_json::json!({}),
+            })
+            .await
+            .unwrap();
+        let term = repo
+            .terminal_create(NewTerminal {
+                card_id: card.id,
+                program: "true".into(),
+                cwd: "/".into(),
+                env: serde_json::json!({}),
+                theme: crate::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        // `/bin/true` (or `/usr/bin/true`) — accepts any args, exits 0,
+        // never binds. Drives the readiness-timeout path.
+        let true_bin = if std::path::Path::new("/bin/true").exists() {
+            PathBuf::from("/bin/true")
+        } else {
+            PathBuf::from("/usr/bin/true")
+        };
+        let daemon = Arc::new(DaemonClient {
+            data_dir: tmp.path().to_path_buf(),
+            session_daemon_bin: true_bin,
+        });
+
+        // Drive the spawn — must return Err (readiness timeout).
+        let res = spawn_daemon_with_parts(
+            daemon.as_ref(),
+            repo.as_ref(),
+            &term,
+            "true",
+            "/",
+            &serde_json::json!({}),
+        )
+        .await;
+        assert!(
+            res.is_err(),
+            "expected spawn to fail readiness, but got {res:?}",
+        );
+
+        // Invariant: handle was persisted before the poll, so even
+        // after the error path the row carries it. Without this the
+        // next attach falls into the "no daemon_handle" branch and
+        // surfaces 1006 to the browser.
+        let row = repo.terminal_get(&term.id).await.unwrap().expect("row");
+        let expected_sock = daemon.sock_path(&term.id).to_string_lossy().to_string();
+        assert_eq!(
+            row.daemon_handle.as_deref(),
+            Some(expected_sock.as_str()),
+            "spawn must persist daemon_handle before the readiness poll, \
+             so a fast-exit daemon still leaves the row resolvable as \
+             ChildExited (not as 'no handle' 1006). row.daemon_handle: \
+             {:?}",
+            row.daemon_handle,
         );
     }
 
