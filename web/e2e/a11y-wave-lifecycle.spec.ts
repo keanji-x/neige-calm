@@ -189,17 +189,73 @@ test.describe('wave lifecycle', () => {
     const echo = await patchWaveLifecycle(request, waveId, 'planning');
     expect(echo.lifecycle).toBe<WaveLifecycle>('planning');
 
-    // Give any (incorrectly-emitted) event a fair chance to make it
-    // through the bus -> WS -> bridge pipeline. 200ms is enough at
-    // localhost RTT; the alternative (an unbounded sleep) would slow
-    // the suite for a negative assertion.
-    await page.waitForTimeout(200);
+    // The production `PATCH /api/waves/:id` handler returns only the
+    // wave row — no `emitted_events` counter — so we can't assert "no
+    // event emitted" deterministically via the response. Instead we
+    // give any (incorrectly-emitted) event a fair chance to make it
+    // through the bus -> WS -> bridge pipeline and then assert the
+    // trace ring buffer stayed empty. The 500ms window is wide enough
+    // to absorb WS backpressure / scheduling jitter on a loaded CI
+    // runner; the deterministic count-based assertion lives in the
+    // companion `same-state force (kernel) returns emitted_events=0`
+    // test below, which exercises the same idempotency shortcut on the
+    // dev endpoint that does expose a counter.
+    await page.waitForTimeout(500);
 
     const trace = await getEventTrace(page);
     const lifecycleEvts = trace.filter((e) => e.ev === 'wave.lifecycle_changed');
     expect(lifecycleEvts, 'idempotent PATCH must not emit wave.lifecycle_changed').toEqual([]);
     const updatedEvts = trace.filter((e) => e.ev === 'wave.updated');
     expect(updatedEvts, 'idempotent PATCH must not emit wave.updated').toEqual([]);
+  });
+
+  test('same-state force (kernel) returns emitted_events=0', async ({ page, request }) => {
+    // Companion to the user-PATCH idempotency test above. The dev
+    // `/dev/force-wave-lifecycle` endpoint returns an `emitted_events`
+    // count in its JSON response (see `crates/calm-server/src/bin/replay.rs`
+    // — the same-state branch short-circuits with `emitted_events: 0`),
+    // which lets us assert idempotency **deterministically** rather than
+    // relying on a negative timing window. This catches regressions
+    // where the kernel re-emits on a no-op even on a loaded CI runner
+    // with WS backpressure, where a 200ms negative window can false-
+    // green.
+    //
+    // First step into a spec-only state via the dev endpoint so we have
+    // a known non-default lifecycle the kernel actor is allowed to
+    // re-emit (the force endpoint runs as `ActorId::Kernel`, which
+    // can't drive `draft → draft` — only spec-reachable states).
+    await patchWaveLifecycle(request, waveId, 'planning');
+    const stepped = await forceWaveLifecycle(request, waveId, 'dispatching');
+    expect(stepped.wave.lifecycle).toBe<WaveLifecycle>('dispatching');
+    expect(stepped.emitted_events).toBe(2);
+    await waitForEvent(page, 'wave.lifecycle_changed');
+    await clearEventTrace(page);
+
+    // Same-state force — the dev endpoint's `from == to` shortcut
+    // mirrors the production `update_wave` shortcut and returns the
+    // existing row with `emitted_events: 0`. No timing window needed.
+    const idempotent = await forceWaveLifecycle(request, waveId, 'dispatching');
+    expect(idempotent.wave.lifecycle).toBe<WaveLifecycle>('dispatching');
+    expect(
+      idempotent.emitted_events,
+      'kernel same-state force must short-circuit without emitting',
+    ).toBe(0);
+
+    // Cross-check the trace ring buffer agrees — if the kernel
+    // mistakenly emitted *and* still returned 0 (a wire-format bug
+    // that would still pass the count assertion above), the trace
+    // would catch it. Wait briefly so any rogue event has a chance
+    // to land before we assert.
+    await page.waitForTimeout(100);
+    const trace = await getEventTrace(page);
+    expect(
+      trace.filter((e) => e.ev === 'wave.lifecycle_changed'),
+      'kernel same-state force must not emit wave.lifecycle_changed',
+    ).toEqual([]);
+    expect(
+      trace.filter((e) => e.ev === 'wave.updated'),
+      'kernel same-state force must not emit wave.updated',
+    ).toEqual([]);
   });
 });
 
@@ -294,6 +350,18 @@ function extractLifecyclePayload(evt: TraceEvent): {
 }
 
 function extractWavePayload(evt: TraceEvent): WaveSnapshot {
-  // `wave.updated` carries the full wave row as `data`.
-  return evt.data as WaveSnapshot;
+  // `wave.updated` carries the full wave row as `data`. Mirrors the
+  // defensive shape check in `extractLifecyclePayload` above — if the
+  // wire shape drifts (e.g. snake → camel rename), `wave.lifecycle`
+  // would silently be `undefined` and downstream `.toBe('planning')`
+  // would surface a confusing "received undefined" error rather than
+  // pointing at the wire-format regression. Throw a clear error here
+  // so the failure mode is obvious.
+  const data = (evt.data ?? {}) as Partial<WaveSnapshot>;
+  if (!data.id || !data.cove_id || !data.lifecycle) {
+    throw new Error(
+      `extractWavePayload: missing fields (id/cove_id/lifecycle) on event ${JSON.stringify(evt)}`,
+    );
+  }
+  return data as WaveSnapshot;
 }
