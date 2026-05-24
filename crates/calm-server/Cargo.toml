@@ -160,6 +160,15 @@ ts-rs = { version = "12", features = ["serde-json-impl", "no-serde-warnings"] }
 # dev-deps so the production binary can use it too.
 tempfile = "3"
 
+# Issue #247 PR1 — CRDT storage foundation for wave-report `body` and
+# `summary`. The kernel stores an opaque automerge document blob in
+# `cards.body_crdt` alongside the legacy `payload` JSON; the merge
+# layer treats both fields uniformly as `automerge::Text`. Frontends
+# never see the CRDT bytes — the wire shape stays JSON. Pinned to a
+# specific minor so a future major bump is an explicit, reviewed change
+# (the on-disk byte format is part of the persistence contract).
+automerge = "0.9"
+
 # Local crates
 calm-session = { path = "../calm-session" }
 

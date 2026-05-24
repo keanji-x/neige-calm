@@ -45,7 +45,7 @@
 //!   * `old_string` found exactly once → replace it. (replace_all is
 //!     redundant in this case; we accept it for codex Edit symmetry.)
 
-use crate::db::sqlite::card_update_tx;
+use crate::db::sqlite::{card_body_crdt_get_tx, card_update_with_crdt_tx};
 use crate::db::write_with_event_typed;
 use crate::error::CalmError;
 use crate::event::{Event, EventScope};
@@ -56,6 +56,7 @@ use crate::mcp_server::registry::{
 };
 use crate::model::{Card, CardPatch, CardRole, Wave};
 use crate::wave_report::WaveReportPayload;
+use crate::wave_report_doc::ReportDoc;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -167,10 +168,10 @@ async fn report_write(
     let (wave, _, report_card, current) = resolve_report_for_caller(&ctx, &identity).await?;
     let next_payload = WaveReportPayload {
         schema_version: WaveReportPayload::SCHEMA_VERSION,
-        summary: summary_override.unwrap_or(current.summary),
+        summary: summary_override.unwrap_or_else(|| current.summary.clone()),
         body,
     };
-    persist_report(&ctx, &identity, wave, report_card, next_payload).await
+    persist_report(&ctx, &identity, wave, report_card, current, next_payload).await
 }
 
 // ---------------------------------------------------------------------------
@@ -273,10 +274,10 @@ async fn report_edit(
 
     let next_payload = WaveReportPayload {
         schema_version: WaveReportPayload::SCHEMA_VERSION,
-        summary: current.summary,
+        summary: current.summary.clone(),
         body: new_body,
     };
-    persist_report(&ctx, &identity, wave, report_card, next_payload).await
+    persist_report(&ctx, &identity, wave, report_card, current, next_payload).await
 }
 
 // ---------------------------------------------------------------------------
@@ -364,12 +365,39 @@ async fn resolve_report_for_caller(
 /// Persist a new `WaveReportPayload` onto the wave-report card row and
 /// emit `Event::CardUpdated` from the same transaction. Returns the
 /// MCP wire shape (`{ updated_at }`).
+///
+/// Issue #247 PR1 — this is the single write boundary that materializes
+/// the opaque CRDT blob alongside the legacy `payload` JSON. The CRDT
+/// is authoritative; the JSON column is a read-cache the existing v1
+/// REST / WS read paths and the frontend continue to consume.
+///
+/// In-tx sequence:
+///
+///   1. Read the current `body_crdt`. NULL = first post-PR1 write on
+///      this row (legacy seed / pre-#247 mint); seed a fresh doc from
+///      `current_payload`. Non-NULL = load via `ReportDoc::from_bytes`.
+///   2. Apply the new `(summary, body)` via `ReportDoc::update` —
+///      automerge does the per-field Myers diff internally.
+///   3. Project back to `(summary, body)` strings and re-serialize a
+///      `WaveReportPayload` from those values (not the raw `next`
+///      input). The projection is what the JSON cache must mirror so
+///      a future read sees the post-merge text rather than a partially-
+///      applied input — under single-writer it's identical to `next`,
+///      but reading from the doc keeps the JSON-cache contract
+///      ("CRDT is source of truth") true by construction.
+///   4. Write both columns + emit `Event::CardUpdated` in one tx.
+///
+/// The `current_payload` argument is the payload as it was last seen
+/// by the caller (passed in from `resolve_report_for_caller`). It's
+/// used only as the seed for the first-time `from_payload` branch —
+/// once `body_crdt` is non-NULL, the doc is the source.
 async fn persist_report(
     ctx: &Arc<AppContext>,
     identity: &CardIdentity,
     wave: Wave,
     report_card: Card,
-    payload: WaveReportPayload,
+    current_payload: WaveReportPayload,
+    next: WaveReportPayload,
 ) -> Result<Value, RpcError> {
     let report_card_id = report_card.id.clone();
     let scope = EventScope::Card {
@@ -378,14 +406,6 @@ async fn persist_report(
         cove: wave.cove_id.clone(),
     };
     let actor = identity.to_actor_id();
-    let payload_value = serde_json::to_value(&payload)
-        .map_err(|e| RpcError::internal(format!("wave_report: serialize payload: {e}")))?;
-    let patch = CardPatch {
-        kind: None,
-        sort: None,
-        payload: Some(payload_value),
-        deletable: None,
-    };
     let report_card_id_inner = report_card_id.clone();
     let res = write_with_event_typed::<Card, _>(
         ctx.repo.as_ref(),
@@ -396,10 +416,47 @@ async fn persist_report(
         &ctx.card_role_cache,
         &ctx.wave_cove_cache,
         move |tx| {
-            let patch = patch.clone();
             let id = report_card_id_inner.as_str().to_string();
+            let current_payload = current_payload.clone();
+            let next = next.clone();
             Box::pin(async move {
-                let updated = card_update_tx(tx, &id, patch).await?;
+                // 1. Load (or lazy-init) the CRDT doc for this card.
+                let existing = card_body_crdt_get_tx(tx, &id).await?;
+                let mut doc = match existing {
+                    Some(bytes) => ReportDoc::from_bytes(&bytes).map_err(|e| {
+                        CalmError::Internal(format!("wave_report: load CRDT for card {id}: {e}"))
+                    })?,
+                    // Safe: current_payload was read outside the tx,
+                    // but is only consulted here when body_crdt is
+                    // still NULL in-tx. SQLite's single-writer means
+                    // no concurrent writer can have populated the
+                    // blob between that read and this branch; once
+                    // body_crdt is non-NULL we take the Some arm and
+                    // ignore current_payload entirely.
+                    None => ReportDoc::from_payload(&current_payload),
+                };
+                // 2. Apply the proposed update uniformly to both fields.
+                doc.update(&next.summary, &next.body);
+                // 3. Project back — these are the authoritative values
+                //    that go into the JSON cache.
+                let (projected_summary, projected_body) = doc.project();
+                let projected_payload = WaveReportPayload {
+                    schema_version: WaveReportPayload::SCHEMA_VERSION,
+                    summary: projected_summary,
+                    body: projected_body,
+                };
+                let payload_value = serde_json::to_value(&projected_payload).map_err(|e| {
+                    CalmError::Internal(format!("wave_report: serialize projected payload: {e}"))
+                })?;
+                let patch = CardPatch {
+                    kind: None,
+                    sort: None,
+                    payload: Some(payload_value),
+                    deletable: None,
+                };
+                let crdt_bytes = doc.to_bytes();
+                // 4. One transactional write rewriting both columns.
+                let updated = card_update_with_crdt_tx(tx, &id, patch, crdt_bytes).await?;
                 Ok((updated.clone(), Event::CardUpdated(updated)))
             })
         },

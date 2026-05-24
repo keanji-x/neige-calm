@@ -136,4 +136,5 @@ pub mod validation;
 pub mod wave_cove_cache;
 pub mod wave_lifecycle;
 pub mod wave_report;
+pub mod wave_report_doc;
 pub mod ws;

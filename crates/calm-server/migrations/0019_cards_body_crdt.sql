@@ -1,0 +1,39 @@
+-- Issue #247 PR1 — CRDT storage foundation for wave-report `body` + `summary`.
+--
+-- Add an opaque `body_crdt BLOB` column to `cards`, nullable so:
+--
+--   1. Pre-existing rows (incl. every non-wave-report card kind) don't
+--      need backfill. Plain / terminal / plugin cards stay forever NULL
+--      — the CRDT path is wave-report-only by intent.
+--
+--   2. Pre-#247 wave-report cards stay NULL until their first post-
+--      migration write. `persist_report` in
+--      `crates/calm-server/src/mcp_server/tools/wave_report.rs` lazily
+--      initializes the doc on first touch via `ReportDoc::from_payload`,
+--      so the next `report.write` / `report.edit` materializes both the
+--      legacy `payload` JSON (the cache / wire format) AND the CRDT
+--      blob (authoritative source for later merge work).
+--
+-- The column is **opaque** at the storage layer: it carries
+-- `automerge::AutoCommit::save()` bytes, which the kernel reads back
+-- via `automerge::AutoCommit::load()`. Nothing else reads or interprets
+-- the blob — no SQL queries against it, no JSON path extracts, no FTS.
+-- A future PR adds a `body_rev` column off the same row when we wire
+-- the user-edit endpoint; the rev is computed from the doc state, not
+-- a separate counter.
+--
+-- Why no NOT NULL + DEFAULT: there's no honest default value for an
+-- automerge document — an empty `Vec<u8>` is not a valid `load()`
+-- input, and synthesizing a full doc per row at migration time would
+-- couple the SQL migration to the in-binary `ReportDoc` API. Lazy
+-- init at first write keeps the migration trivial and the Rust side
+-- in charge of the byte format. The matching read path in
+-- `persist_report` always handles the NULL branch as "first write —
+-- bootstrap from current payload."
+--
+-- Schema-version + backfill story is in
+-- `docs/upgrade-stability.md` (Tier B — storage internals; the wire
+-- shape doesn't change so this is not a Tier A bump). No
+-- corresponding frontend change ships with PR1.
+
+ALTER TABLE cards ADD COLUMN body_crdt BLOB NULL;
