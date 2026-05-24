@@ -23,6 +23,21 @@ use std::os::unix::net::UnixListener;
 use std::time::Duration;
 
 fn main() {
+    // #267 — same parent-death pattern as the real daemon. Without
+    // this, the stub's blocking `accept()` outlives the test process
+    // forever (the 60s deadline below only fires after a connection
+    // arrives, and the kernel's spawn-helper closes its `connect()`
+    // immediately). Orphans then hold the test binary's inherited
+    // stdout pipe, which deadlocks `cargo test`'s stdout consumer
+    // (`tail`, CI log forwarder, etc.) for the entire process lifetime.
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM, 0, 0, 0);
+        if libc::getppid() == 1 {
+            libc::kill(libc::getpid(), libc::SIGTERM);
+        }
+    }
+
     let argv: Vec<String> = std::env::args().collect();
     // Find `--sock <path>` so we know where to bind and where to write
     // the sidecar argv file.
