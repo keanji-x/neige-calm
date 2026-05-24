@@ -250,6 +250,107 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
   });
 });
 
+// ---- PR2 of #247: wave.report_edited ----------------------------------
+//
+// Structured edit-log companion to `card.updated`. Card-scoped. PR4
+// (web UI) and PR5 (spec agent) both subscribe to it; the parser must
+// accept the three `author` discriminator values + reject missing
+// required fields without falling back to a permissive shape.
+describe('PR2 of #247: wave.report_edited', () => {
+  it('parses a valid wave.report_edited with author=spec', () => {
+    const parsed = wireEventSchema.parse({
+      ev: 'wave.report_edited',
+      data: {
+        wave_id: 'w-1',
+        card_id: 'card-1',
+        author: 'spec',
+        edit_id: '00000000-0000-4000-8000-000000000000',
+        summary_before: 'old summary',
+        summary_after: 'new summary',
+        body_before: 'old body',
+        body_after: 'new body',
+      },
+    });
+    expect(parsed.ev).toBe('wave.report_edited');
+    if (parsed.ev === 'wave.report_edited') {
+      expect(parsed.data.author).toBe('spec');
+      expect(parsed.data.wave_id).toBe('w-1');
+      expect(parsed.data.card_id).toBe('card-1');
+      expect(parsed.data.body_after).toBe('new body');
+    }
+  });
+
+  it('accepts every author discriminator (spec | user | kernel)', () => {
+    for (const author of ['spec', 'user', 'kernel'] as const) {
+      const parsed = wireEventSchema.parse({
+        ev: 'wave.report_edited',
+        data: {
+          wave_id: 'w',
+          card_id: 'c',
+          author,
+          edit_id: 'edit-1',
+          summary_before: '',
+          summary_after: '',
+          body_before: '',
+          body_after: '',
+        },
+      });
+      if (parsed.ev === 'wave.report_edited') {
+        expect(parsed.data.author).toBe(author);
+      }
+    }
+  });
+
+  it('rejects wave.report_edited with an unknown author', () => {
+    const result = wireEventSchema.safeParse({
+      ev: 'wave.report_edited',
+      data: {
+        wave_id: 'w',
+        card_id: 'c',
+        author: 'bot',
+        edit_id: 'edit-1',
+        summary_before: '',
+        summary_after: '',
+        body_before: '',
+        body_after: '',
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects wave.report_edited missing edit_id', () => {
+    const result = wireEventSchema.safeParse({
+      ev: 'wave.report_edited',
+      data: {
+        wave_id: 'w',
+        card_id: 'c',
+        author: 'spec',
+        summary_before: '',
+        summary_after: '',
+        body_before: '',
+        body_after: '',
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects wave.report_edited missing body_after', () => {
+    const result = wireEventSchema.safeParse({
+      ev: 'wave.report_edited',
+      data: {
+        wave_id: 'w',
+        card_id: 'c',
+        author: 'spec',
+        edit_id: 'edit-1',
+        summary_before: '',
+        summary_after: '',
+        body_before: '',
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
 describe('entity sub-schemas', () => {
   it('coveSchema round-trips a minimal cove', () => {
     const c = {

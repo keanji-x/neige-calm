@@ -107,6 +107,45 @@ impl AsRef<str> for ArtifactRef {
 }
 
 // ---------------------------------------------------------------------------
+// EditAuthor — who produced a `WaveReportEdited` write
+// ---------------------------------------------------------------------------
+
+/// Producer of a single wave-report edit. Carried on every
+/// `Event::WaveReportEdited` so PR4's UI can attribute timeline entries
+/// without re-parsing the envelope's `actor` field, and so PR5's spec
+/// system prompt can react to user-authored edits specifically.
+///
+/// PR2 only emits `EditAuthor::Spec` — the spec-MCP `calm.report.*`
+/// tools are the only write path that exists today. PR3 introduces a
+/// REST entry for human edits and starts emitting `EditAuthor::User`;
+/// `EditAuthor::Kernel` is reserved for future server-internal
+/// rewrites (FSM-driven scaffolding, migrations, etc.). Adding a
+/// variant later is a non-breaking change for the wire shape (the
+/// schema gains a new union arm, old clients see an unknown tag and
+/// can ignore) but the persisted history rows must keep round-tripping,
+/// so don't rename existing arms.
+///
+/// Wire shape matches the surrounding event-payload conventions
+/// (`#[serde(rename_all = "lowercase")]`): `"spec"`, `"user"`,
+/// `"kernel"` — the bare discriminator a JSON field gets when the enum
+/// is referenced from an inline struct variant. No `tag`/`content`
+/// dance: `EditAuthor` only ever appears as a payload field, never as
+/// its own envelope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
+pub enum EditAuthor {
+    /// Spec card calling one of the `calm.report.{write,edit}` MCP
+    /// tools. The only producer PR2 emits.
+    Spec,
+    /// Human-driven edit through a REST endpoint. Wired in PR3.
+    User,
+    /// Server-internal rewrite — FSM scaffolding, migrations, etc.
+    /// Reserved; no emitter today.
+    Kernel,
+}
+
+// ---------------------------------------------------------------------------
 // EventScope — every event's "home scope"
 // ---------------------------------------------------------------------------
 
@@ -310,6 +349,57 @@ pub enum Event {
     #[serde(rename = "card.deleted")]
     CardDeleted { id: CardId, wave_id: WaveId },
 
+    /// Issue #247 PR2 — structured wave-report edit-log entry. Emitted
+    /// alongside `Event::CardUpdated` from every
+    /// `mcp_server::tools::wave_report::persist_report` call so PR4's UI
+    /// can render an edit timeline and PR5's spec agent can wake on
+    /// user-authored edits.
+    ///
+    /// `CardUpdated` stays the generic "the row changed, re-fetch" signal
+    /// every existing frontend subscriber already consumes — `WaveReportEdited`
+    /// is the *additional* structured edit-log entry, not a replacement.
+    /// Both events land in the same transaction; the broadcast order
+    /// matches the persisted order so a subscriber that wants edit-log
+    /// semantics can ignore `CardUpdated` for wave-report cards without
+    /// missing anything.
+    ///
+    /// `summary_before` / `body_before` are the projected text values
+    /// **before** the `ReportDoc::update` call; `*_after` are the
+    /// projected values **after**. Under single-writer SQLite they
+    /// equal the caller's inputs verbatim; we read from the projection
+    /// so the log entry stays bit-for-bit consistent with whatever the
+    /// JSON cache and CRDT both end up persisting (matches the
+    /// "projection is the truth" contract in `persist_report`).
+    ///
+    /// `author` is hard-coded to [`EditAuthor::Spec`] in PR2 — the
+    /// spec-MCP tools are the only write path. PR3 plumbs an `Actor`
+    /// through `persist_report` and starts emitting
+    /// [`EditAuthor::User`] for REST-driven edits.
+    ///
+    /// `edit_id` is a fresh UUID v4 per call so PR4's UI can collapse
+    /// adjacent retries or correlate timeline entries with the
+    /// REST-side request id (PR3) without parsing the broader
+    /// `BroadcastEnvelope.id`. It's persisted on the event payload —
+    /// changing the format here would silently strand audit-log
+    /// replay.
+    ///
+    /// Card-scoped: the kernel persists this row with
+    /// `scope_wave = wave_id` and `scope_card = card_id` so
+    /// PR8's `wait_for_events` long-poll filter (and PR5's dispatcher)
+    /// can subscribe to a single wave's edit log without scanning the
+    /// firehose.
+    #[serde(rename = "wave.report_edited")]
+    WaveReportEdited {
+        wave_id: WaveId,
+        card_id: CardId,
+        author: EditAuthor,
+        edit_id: String,
+        summary_before: String,
+        summary_after: String,
+        body_before: String,
+        body_after: String,
+    },
+
     #[serde(rename = "overlay.set")]
     OverlaySet(Overlay),
     #[serde(rename = "overlay.deleted")]
@@ -453,6 +543,7 @@ impl Event {
             Event::CardAdded(_) => "card.added",
             Event::CardUpdated(_) => "card.updated",
             Event::CardDeleted { .. } => "card.deleted",
+            Event::WaveReportEdited { .. } => "wave.report_edited",
             Event::OverlaySet(_) => "overlay.set",
             Event::OverlayDeleted { .. } => "overlay.deleted",
             Event::TerminalDeleted { .. } => "terminal.deleted",
@@ -537,6 +628,18 @@ pub fn topics(ev: &Event) -> Vec<String> {
         ],
         Event::CardDeleted { id, wave_id } => vec![
             format!("card:{}", id),
+            format!("wave:{}", wave_id),
+            "*".into(),
+        ],
+
+        // Issue #247 PR2 — wave-report edit log. Card-scoped on the
+        // events row; topic mapping mirrors `Card*` so a subscriber
+        // listening on the report card (or its wave) sees the
+        // structured edit alongside the generic `card.updated`.
+        Event::WaveReportEdited {
+            wave_id, card_id, ..
+        } => vec![
+            format!("card:{}", card_id),
             format!("wave:{}", wave_id),
             "*".into(),
         ],
@@ -1150,6 +1253,149 @@ mod scope_tests {
 
         let back: Event = serde_json::from_value(json).unwrap();
         assert_eq!(back.kind_tag(), "task.failed");
+    }
+
+    // ----- PR2 of #247: EditAuthor + WaveReportEdited -------------------
+    //
+    // Pin the wire shape of the structured edit-log variant + its
+    // sub-enum. PR4 (web UI) and PR5 (spec agent) both depend on this
+    // shape; the persisted history rows depend on it forever.
+
+    #[test]
+    fn edit_author_lowercase_wire_shape() {
+        // `#[serde(rename_all = "lowercase")]` — the on-wire
+        // discriminator is the bare lowercase variant name. Pin each
+        // arm so a future serde attribute change can't silently break
+        // the persisted history row format.
+        assert_eq!(
+            serde_json::to_string(&EditAuthor::Spec).unwrap(),
+            r#""spec""#
+        );
+        assert_eq!(
+            serde_json::to_string(&EditAuthor::User).unwrap(),
+            r#""user""#
+        );
+        assert_eq!(
+            serde_json::to_string(&EditAuthor::Kernel).unwrap(),
+            r#""kernel""#
+        );
+
+        // Round-trip back through Deserialize.
+        for variant in [EditAuthor::Spec, EditAuthor::User, EditAuthor::Kernel] {
+            let s = serde_json::to_string(&variant).unwrap();
+            let back: EditAuthor = serde_json::from_str(&s).unwrap();
+            assert_eq!(back, variant, "round-trip mismatch for {variant:?}");
+        }
+    }
+
+    #[test]
+    fn wave_report_edited_kind_tag_pinned() {
+        // Persisted in `events.kind` + surfaced on the wire as the `ev`
+        // discriminator. Changing the string is a wire break.
+        let ev = wave_report_edited_sample();
+        assert_eq!(ev.kind_tag(), "wave.report_edited");
+    }
+
+    #[test]
+    fn wave_report_edited_serde_round_trip() {
+        let ev = wave_report_edited_sample();
+        let json = serde_json::to_value(&ev).unwrap();
+        // Envelope shape: `{ ev, data }` per the enum's
+        // `#[serde(tag = "ev", content = "data")]`.
+        assert_eq!(json["ev"], "wave.report_edited");
+        assert_eq!(json["data"]["wave_id"], "w-1");
+        assert_eq!(json["data"]["card_id"], "card-1");
+        assert_eq!(json["data"]["author"], "spec");
+        assert_eq!(json["data"]["edit_id"], "edit-uuid-1");
+        assert_eq!(json["data"]["summary_before"], "old summary");
+        assert_eq!(json["data"]["summary_after"], "new summary");
+        assert_eq!(json["data"]["body_before"], "old body");
+        assert_eq!(json["data"]["body_after"], "new body");
+
+        // Round-trip via the Event enum.
+        let back: Event = serde_json::from_value(json).unwrap();
+        assert_eq!(back.kind_tag(), "wave.report_edited");
+        match back {
+            Event::WaveReportEdited {
+                wave_id,
+                card_id,
+                author,
+                edit_id,
+                summary_before,
+                summary_after,
+                body_before,
+                body_after,
+            } => {
+                assert_eq!(wave_id.as_str(), "w-1");
+                assert_eq!(card_id.as_str(), "card-1");
+                assert_eq!(author, EditAuthor::Spec);
+                assert_eq!(edit_id, "edit-uuid-1");
+                assert_eq!(summary_before, "old summary");
+                assert_eq!(summary_after, "new summary");
+                assert_eq!(body_before, "old body");
+                assert_eq!(body_after, "new body");
+            }
+            other => panic!("expected WaveReportEdited after round-trip, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wave_report_edited_replay_via_from_kind_and_payload() {
+        // Replay path — pin that `from_kind_and_payload` reconstitutes
+        // the variant the same way the sync-engine replay does for
+        // every other variant. Cover every `EditAuthor` arm so a
+        // future serde tweak that breaks one of them surfaces here.
+        for author_str in ["spec", "user", "kernel"] {
+            let payload = serde_json::json!({
+                "wave_id": "w-1",
+                "card_id": "card-1",
+                "author": author_str,
+                "edit_id": "edit-uuid-1",
+                "summary_before": "s0",
+                "summary_after": "s1",
+                "body_before": "b0",
+                "body_after": "b1",
+            });
+            let ev = Event::from_kind_and_payload("wave.report_edited", payload)
+                .unwrap_or_else(|e| panic!("replay decode failed for author={author_str}: {e}"));
+            assert_eq!(ev.kind_tag(), "wave.report_edited");
+            match ev {
+                Event::WaveReportEdited { author, .. } => match (author_str, author) {
+                    ("spec", EditAuthor::Spec)
+                    | ("user", EditAuthor::User)
+                    | ("kernel", EditAuthor::Kernel) => {}
+                    (expected, actual) => {
+                        panic!("author mismatch: expected {expected}, deserialized into {actual:?}")
+                    }
+                },
+                other => panic!("expected WaveReportEdited, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn wave_report_edited_topics_card_and_wave() {
+        // Topic mapping — same shape as `Card*` so a subscriber
+        // listening on the card or its wave sees the structured edit
+        // alongside the generic `card.updated`.
+        let ev = wave_report_edited_sample();
+        let t = topics(&ev);
+        assert!(t.iter().any(|s| s == "card:card-1"), "topics={t:?}");
+        assert!(t.iter().any(|s| s == "wave:w-1"), "topics={t:?}");
+        assert!(t.iter().any(|s| s == "*"), "topics={t:?}");
+    }
+
+    fn wave_report_edited_sample() -> Event {
+        Event::WaveReportEdited {
+            wave_id: WaveId::from("w-1"),
+            card_id: CardId::from("card-1"),
+            author: EditAuthor::Spec,
+            edit_id: "edit-uuid-1".into(),
+            summary_before: "old summary".into(),
+            summary_after: "new summary".into(),
+            body_before: "old body".into(),
+            body_after: "new body".into(),
+        }
     }
 
     #[test]

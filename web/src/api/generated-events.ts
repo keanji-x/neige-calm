@@ -176,6 +176,31 @@ export type CoveKind = "user" | "system";
 export type CoveResolve = { cove_id: CoveId, folder_id: number, folder_path: string, };
 
 /**
+ * Producer of a single wave-report edit. Carried on every
+ * `Event::WaveReportEdited` so PR4's UI can attribute timeline entries
+ * without re-parsing the envelope's `actor` field, and so PR5's spec
+ * system prompt can react to user-authored edits specifically.
+ *
+ * PR2 only emits `EditAuthor::Spec` — the spec-MCP `calm.report.*`
+ * tools are the only write path that exists today. PR3 introduces a
+ * REST entry for human edits and starts emitting `EditAuthor::User`;
+ * `EditAuthor::Kernel` is reserved for future server-internal
+ * rewrites (FSM-driven scaffolding, migrations, etc.). Adding a
+ * variant later is a non-breaking change for the wire shape (the
+ * schema gains a new union arm, old clients see an unknown tag and
+ * can ignore) but the persisted history rows must keep round-tripping,
+ * so don't rename existing arms.
+ *
+ * Wire shape matches the surrounding event-payload conventions
+ * (`#[serde(rename_all = "lowercase")]`): `"spec"`, `"user"`,
+ * `"kernel"` — the bare discriminator a JSON field gets when the enum
+ * is referenced from an inline struct variant. No `tag`/`content`
+ * dance: `EditAuthor` only ever appears as a payload field, never as
+ * its own envelope.
+ */
+export type EditAuthor = "spec" | "user" | "kernel";
+
+/**
  * The full set of WS event envelopes the kernel emits on `/api/events`.
  *
  * `ts-rs` derives a matching TypeScript discriminated union, written to
@@ -188,7 +213,7 @@ export type CoveResolve = { cove_id: CoveId, folder_id: number, folder_path: str
  * are emitted directly; tuple variants over a named struct (e.g.
  * `CoveUpdated(Cove)`) pull in the struct's own export.
  */
-export type Event = { "ev": "cove.updated", "data": Cove } | { "ev": "cove.deleted", "data": { id: CoveId, } } | { "ev": "wave.updated", "data": Wave } | { "ev": "wave.deleted", "data": { id: WaveId, cove_id: CoveId, } } | { "ev": "wave.lifecycle_changed", "data": { id: WaveId, cove_id: CoveId, from: WaveLifecycle, to: WaveLifecycle, } } | { "ev": "card.added", "data": Card } | { "ev": "card.updated", "data": Card } | { "ev": "card.deleted", "data": { id: CardId, wave_id: WaveId, } } | { "ev": "overlay.set", "data": Overlay } | { "ev": "overlay.deleted", "data": { plugin_id: string, entity_kind: string, entity_id: string, kind: string, } } | { "ev": "terminal.deleted", "data": { id: string, card_id: CardId, } } | { "ev": "plugin.state", "data": { id: string, state: string, 
+export type Event = { "ev": "cove.updated", "data": Cove } | { "ev": "cove.deleted", "data": { id: CoveId, } } | { "ev": "wave.updated", "data": Wave } | { "ev": "wave.deleted", "data": { id: WaveId, cove_id: CoveId, } } | { "ev": "wave.lifecycle_changed", "data": { id: WaveId, cove_id: CoveId, from: WaveLifecycle, to: WaveLifecycle, } } | { "ev": "card.added", "data": Card } | { "ev": "card.updated", "data": Card } | { "ev": "card.deleted", "data": { id: CardId, wave_id: WaveId, } } | { "ev": "wave.report_edited", "data": { wave_id: WaveId, card_id: CardId, author: EditAuthor, edit_id: string, summary_before: string, summary_after: string, body_before: string, body_after: string, } } | { "ev": "overlay.set", "data": Overlay } | { "ev": "overlay.deleted", "data": { plugin_id: string, entity_kind: string, entity_id: string, kind: string, } } | { "ev": "terminal.deleted", "data": { id: string, card_id: CardId, } } | { "ev": "plugin.state", "data": { id: string, state: string, 
 /**
  * Crash reason / initialize-rejected message, surfaced to the WS so
  * the UI can show it without a separate `/log` fetch. `None` for

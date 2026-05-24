@@ -35,7 +35,7 @@ use std::time::Duration;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
-use calm_server::event::{Event, EventBus, EventScope};
+use calm_server::event::{EditAuthor, Event, EventBus, EventScope};
 use calm_server::ids::{CardId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::wave_report::{
@@ -239,7 +239,12 @@ async fn write_replaces_body_and_emits_card_updated() {
     let boot = boot().await;
     let events = boot.ctx.events.clone();
     let report_id = boot.report_card_id.clone();
-    let sub = tokio::spawn(async move { collect_n(&events, 1).await });
+    let wave_id = boot.wave_id.clone();
+    // PR2 of #247 — every persist_report call now emits TWO envelopes:
+    //   1. Event::CardUpdated (generic "row changed" signal — existing PR1 behavior)
+    //   2. Event::WaveReportEdited (structured edit-log entry — new in PR2)
+    // Subscribe early and collect both so the test can assert order + payload.
+    let sub = tokio::spawn(async move { collect_n(&events, 2).await });
     tokio::time::sleep(Duration::from_millis(20)).await;
 
     let out = call_tool(
@@ -258,9 +263,16 @@ async fn write_replaces_body_and_emits_card_updated() {
         .and_then(Value::as_i64)
         .expect("updated_at i64");
 
-    // Bus saw a card.updated envelope for the report card with the new body.
+    // Bus saw exactly two envelopes: CardUpdated first (preserves
+    // pre-PR2 broadcast order so the generic "re-fetch" signal lands
+    // before the structured edit-log entry), then WaveReportEdited.
     let envs = sub.await.expect("collector ok");
-    assert_eq!(envs.len(), 1, "exactly one envelope emitted; got {envs:?}");
+    assert_eq!(
+        envs.len(),
+        2,
+        "expected exactly two envelopes; got {envs:?}"
+    );
+
     match &envs[0].event {
         Event::CardUpdated(c) => {
             assert_eq!(c.id, report_id, "envelope is for the report card");
@@ -272,9 +284,61 @@ async fn write_replaces_body_and_emits_card_updated() {
             assert_eq!(payload.schema_version, 1);
             assert_eq!(c.updated_at, new_updated_at);
         }
-        other => panic!("expected CardUpdated, got {other:?}"),
+        other => panic!("expected CardUpdated first, got {other:?}"),
     }
     assert!(matches!(envs[0].scope, EventScope::Card { .. }));
+
+    // Second envelope: structured WaveReportEdited.
+    match &envs[1].event {
+        Event::WaveReportEdited {
+            wave_id: w,
+            card_id: c,
+            author,
+            edit_id,
+            summary_before,
+            summary_after,
+            body_before,
+            body_after,
+        } => {
+            assert_eq!(w, &wave_id, "wave_id matches the report card's wave");
+            assert_eq!(c, &report_id, "card_id matches the report card");
+            assert_eq!(*author, EditAuthor::Spec, "PR2 hard-codes Spec");
+            // edit_id must be a non-empty UUID-shaped string. Don't pin
+            // the exact value — it's a fresh UUID per call.
+            assert!(!edit_id.is_empty(), "edit_id must be a non-empty UUID");
+            // UUID v4 string is 36 chars (8-4-4-4-12 with hyphens).
+            assert_eq!(
+                edit_id.len(),
+                36,
+                "edit_id should be a UUID v4 string; got {edit_id:?}",
+            );
+            // Pre-write state: the seed body + empty summary that
+            // `boot()` minted via `WaveReportPayload::initial()`.
+            assert_eq!(
+                summary_before, "",
+                "pre-write summary is the empty initial value",
+            );
+            assert_eq!(
+                body_before, "# Goal\n\n_The spec agent will fill this in._\n",
+                "pre-write body is the initial seed body",
+            );
+            // Post-write state: matches what was passed to report.write.
+            assert_eq!(summary_after, "done refactoring");
+            assert_eq!(body_after, "# Goal\n\nrefactored everything\n");
+        }
+        other => panic!("expected WaveReportEdited second, got {other:?}"),
+    }
+    // Same card scope as the CardUpdated envelope, and the scope row
+    // must also populate `scope_wave` + `scope_card` so PR8's
+    // `wait_for_events` long-poll filter can subscribe to the wave's
+    // edit log without scanning the firehose.
+    match &envs[1].scope {
+        EventScope::Card { card, wave, .. } => {
+            assert_eq!(card, &report_id, "scope_card persisted on the events row");
+            assert_eq!(wave, &wave_id, "scope_wave persisted on the events row");
+        }
+        other => panic!("expected Card-scoped envelope, got {other:?}"),
+    }
 
     // DB also has the new shape.
     let card = boot
@@ -286,6 +350,207 @@ async fn write_replaces_body_and_emits_card_updated() {
     let payload: WaveReportPayload =
         serde_json::from_value(card.payload).expect("payload deserializes");
     assert_eq!(payload.body, "# Goal\n\nrefactored everything\n");
+}
+
+// ---------------------------------------------------------------------------
+// PR2 of #247 — Event::WaveReportEdited coverage.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn edit_emits_wave_report_edited_alongside_card_updated() {
+    let boot = boot().await;
+    // Seed a known body so the before/after diff is predictable.
+    call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        spec_identity(&boot),
+        json!({ "body": "before XYZ after\n", "summary": "before-summary" }),
+    )
+    .await
+    .expect("seed write");
+
+    // Now subscribe before issuing the edit — we expect TWO envelopes
+    // (CardUpdated + WaveReportEdited) from a single `report.edit`
+    // call, identical to the `report.write` path.
+    let events = boot.ctx.events.clone();
+    let report_id = boot.report_card_id.clone();
+    let wave_id = boot.wave_id.clone();
+    let sub = tokio::spawn(async move { collect_n(&events, 2).await });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    call_tool(
+        &boot,
+        TOOL_REPORT_EDIT,
+        spec_identity(&boot),
+        json!({ "old_string": "XYZ", "new_string": "ABC" }),
+    )
+    .await
+    .expect("edit succeeds");
+
+    let envs = sub.await.expect("collector ok");
+    assert_eq!(
+        envs.len(),
+        2,
+        "expected CardUpdated + WaveReportEdited; got {envs:?}",
+    );
+    assert!(
+        matches!(envs[0].event, Event::CardUpdated(_)),
+        "CardUpdated first",
+    );
+    match &envs[1].event {
+        Event::WaveReportEdited {
+            wave_id: w,
+            card_id: c,
+            author,
+            edit_id,
+            summary_before,
+            summary_after,
+            body_before,
+            body_after,
+        } => {
+            assert_eq!(w, &wave_id);
+            assert_eq!(c, &report_id);
+            assert_eq!(*author, EditAuthor::Spec);
+            assert_eq!(edit_id.len(), 36, "edit_id is a UUID v4 string");
+            // Summary unchanged by report.edit — both before and after
+            // are the seeded summary.
+            assert_eq!(summary_before, "before-summary");
+            assert_eq!(summary_after, "before-summary");
+            assert_eq!(body_before, "before XYZ after\n");
+            assert_eq!(body_after, "before ABC after\n");
+        }
+        other => panic!("expected WaveReportEdited, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn write_with_unchanged_content_still_emits_wave_report_edited() {
+    // Invariant: every persist_report call → one CardUpdated + one
+    // WaveReportEdited. Re-asserting the same body twice produces a
+    // second WaveReportEdited with `body_before == body_after`. PR4's
+    // UI can filter no-op entries from the timeline if it wants.
+    let boot = boot().await;
+    call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        spec_identity(&boot),
+        json!({ "body": "stable body\n", "summary": "stable summary" }),
+    )
+    .await
+    .expect("first write");
+
+    let events = boot.ctx.events.clone();
+    let sub = tokio::spawn(async move { collect_n(&events, 2).await });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // Second write with identical body + summary.
+    call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        spec_identity(&boot),
+        json!({ "body": "stable body\n", "summary": "stable summary" }),
+    )
+    .await
+    .expect("second write (content-equal)");
+
+    let envs = sub.await.expect("collector ok");
+    assert_eq!(
+        envs.len(),
+        2,
+        "content-equal write still produces both events; got {envs:?}",
+    );
+    assert!(matches!(envs[0].event, Event::CardUpdated(_)));
+    match &envs[1].event {
+        Event::WaveReportEdited {
+            summary_before,
+            summary_after,
+            body_before,
+            body_after,
+            ..
+        } => {
+            assert_eq!(
+                summary_before, summary_after,
+                "content-equal write: before == after on summary",
+            );
+            assert_eq!(
+                body_before, body_after,
+                "content-equal write: before == after on body",
+            );
+            assert_eq!(body_before, "stable body\n");
+            assert_eq!(summary_before, "stable summary");
+        }
+        other => panic!("expected WaveReportEdited, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn wave_report_edited_persisted_with_wave_and_card_scope_columns() {
+    // The `WaveReportEdited` row must land in the `events` table with
+    // `scope_wave = wave_id` and `scope_card = card_id` so PR8's
+    // `wait_for_events` long-poll filter (and PR5's dispatcher) can
+    // subscribe to a single wave's edit log without scanning the
+    // firehose. Query the table directly through the replay path so
+    // we're testing what's persisted, not just what's broadcast.
+    let boot = boot().await;
+    call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        spec_identity(&boot),
+        json!({ "body": "scoped body\n", "summary": "scoped summary" }),
+    )
+    .await
+    .expect("write succeeds");
+
+    // Replay every event through the same path the WS handler uses
+    // (`events_since`). The tuple shape `(id, version, scope, event)`
+    // is reconstructed from the `events.scope_*` columns — so a
+    // round-trip back through this path is the strongest assertion
+    // available that the row was persisted with the correct scope
+    // columns. Filter to the WaveReportEdited rows for the report
+    // card and assert the reconstructed scope matches.
+    let cursor_rows = boot
+        .repo
+        .events_since(0, Some(1000))
+        .await
+        .expect("events_since");
+    let edited_rows: Vec<_> = cursor_rows
+        .iter()
+        .filter(|(_id, _ver, _scope, ev)| matches!(ev, Event::WaveReportEdited { .. }))
+        .collect();
+    assert_eq!(
+        edited_rows.len(),
+        1,
+        "exactly one WaveReportEdited row persisted; got {edited_rows:?}",
+    );
+    let (_id, _ver, scope, ev) = edited_rows[0];
+    match scope {
+        EventScope::Card { card, wave, cove } => {
+            assert_eq!(card, &boot.report_card_id, "scope_card");
+            assert_eq!(wave, &boot.wave_id, "scope_wave");
+            assert!(!cove.as_str().is_empty(), "scope_cove populated");
+        }
+        other => panic!("expected Card-scoped row, got {other:?}"),
+    }
+    // Payload round-trips with the spec author + the seed body before /
+    // new body after.
+    match ev {
+        Event::WaveReportEdited {
+            author,
+            body_before,
+            body_after,
+            summary_after,
+            ..
+        } => {
+            assert_eq!(*author, EditAuthor::Spec);
+            assert_eq!(
+                body_before,
+                "# Goal\n\n_The spec agent will fill this in._\n"
+            );
+            assert_eq!(body_after, "scoped body\n");
+            assert_eq!(summary_after, "scoped summary");
+        }
+        other => panic!("expected WaveReportEdited payload, got {other:?}"),
+    }
 }
 
 #[tokio::test]
