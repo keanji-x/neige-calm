@@ -432,6 +432,32 @@ mod tests {
         );
     }
 
+    /// Belt-and-suspenders companion to the Worker test above: the
+    /// CodexHook carveout added for spec cards must not let `WaveUpdated`
+    /// through. Section 2 (`WaveUpdated` is spec-only via `AiSpec`) runs
+    /// before section 3's `Some(CardRole::Spec) if CodexHook` arm, so
+    /// the invariant is structural — this test pins it explicitly so a
+    /// future refactor that reorders the sections can't silently regress
+    /// it.
+    #[test]
+    fn spec_codex_cannot_update_wave() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let id = CardId::from("spec-1");
+        cache.insert(id.clone(), CardRole::Spec, WaveId::from("w"));
+        let res = enforce_role(
+            &ActorId::AiCodex(id),
+            &wave_updated(),
+            &wave_scope("w", "c"),
+            &cache,
+            &wcc,
+        );
+        assert!(
+            matches!(res, Err(RoleViolation::NotSpecForWave { .. })),
+            "AiCodex(spec_card) must still be refused on wave.updated even after the CodexHook carveout: {res:?}",
+        );
+    }
+
     #[test]
     fn worker_in_card_scope_ok() {
         let cache = CardRoleCache::new();
