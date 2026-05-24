@@ -618,10 +618,9 @@ async fn osc_roundtrip_mid_session_theme_update() {
     }
 
     // Toggle theme. The daemon's session-state machine intercepts
-    // this and emits `Effect::TerminalThemeUpdate`, which the
-    // daemon's effect loop turns into an OSC 10/11 + focus-in write
-    // onto the PTY master. Our fixture's second-probe read picks it
-    // up.
+    // this and emits `Effect::TerminalThemeUpdate`, which the daemon's
+    // effect loop turns into an `ESC[I` write onto the PTY master
+    // (#305). Our fixture's second-probe read picks it up.
     let toggle = ClientMsg::TerminalThemeUpdate {
         fg: (24, 33, 41),    // light-theme fg (dark on light bg)
         bg: (247, 249, 252), // light-theme bg

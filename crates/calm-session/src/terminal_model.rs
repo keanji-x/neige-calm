@@ -661,14 +661,14 @@ pub struct TerminalModel {
     cursor_visible: bool,
     /// DECSET 1004 (focus event reporting) state. `true` once the child
     /// has sent `CSI ?1004 h`, cleared on `CSI ?1004 l`. The daemon reads
-    /// this as a "focus-aware TUI" signal to gate the synthetic mid-session
-    /// OSC 10/11 + focus-in write (see `daemon.rs`
-    /// `Effect::TerminalThemeUpdate`) — a cooked-shell at the prompt (ZLE
-    /// raw, no 1004) would otherwise echo color bytes into its line buffer
-    /// (#295 / PR #296). Per-`TerminalModel`, so per-PTY/session and dies
-    /// with the model; single writer (parser) + single reader (session
-    /// loop) under the `render_plane` lock, no multi-client ambiguity.
-    /// Not visible content, so it never bumps the render rev.
+    /// this as a "focus-aware TUI" signal to gate the mid-session `ESC[I`
+    /// theme nudge (see `daemon.rs` `Effect::TerminalThemeUpdate`) — a
+    /// shell at the prompt (ZLE raw, no 1004) would otherwise see a stray
+    /// focus-in byte in its line buffer (#295 / PR #296 / #305).
+    /// Per-`TerminalModel`, so per-PTY/session and dies with the model;
+    /// single writer (parser) + single reader (session loop) under the
+    /// `render_plane` lock, no multi-client ambiguity. Not visible
+    /// content, so it never bumps the render rev.
     focus_event_tracking: bool,
     /// Default foreground/background RGB the daemon advertises to the
     /// PTY child in reply to OSC 10/11 color queries. `None` means
@@ -1240,8 +1240,8 @@ impl TerminalHandler for TerminalModel {
     fn set_focus_event_tracking(&mut self, enabled: bool) {
         // Pure mode flag — record it, do NOT bump rev (no visible state
         // change). The daemon reads it via
-        // `RenderPlane::focus_event_tracking()` to gate the synthetic
-        // mid-session OSC 10/11 theme write.
+        // `RenderPlane::focus_event_tracking()` to gate the mid-session
+        // `ESC[I` theme nudge.
         self.focus_event_tracking = enabled;
     }
 

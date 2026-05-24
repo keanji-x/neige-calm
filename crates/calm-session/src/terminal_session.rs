@@ -123,13 +123,13 @@ pub enum Effect {
     /// [`Self::SendProtocolError`] + [`Self::CloseConnection`] instead.
     ProtocolViolation(&'static str),
     /// Update the daemon-side default fg/bg used to answer OSC 10/11
-    /// color queries, and synthesize a fresh reply on the PTY master so
-    /// the child re-paints at the new theme (#177). The shell calls
-    /// `RenderPlane::set_default_colors` and writes
-    /// `\x1B]10;rgb:R/G/B\x1B\\ \x1B]11;rgb:R/G/B\x1B\\ \x1B[I` to the
-    /// PTY (the trailing focus-in CSI nudges codex/claude-tui to
-    /// re-query the default colors via crossterm's event queue, since
-    /// those TUIs don't otherwise observe an unsolicited reply).
+    /// color queries, and nudge a focus-aware TUI to re-query (#177,
+    /// refined by #305). The shell calls `RenderPlane::set_default_colors`
+    /// and, when the child has DECSET 1004 enabled, writes `ESC[I` to
+    /// the PTY; crossterm-based TUIs (codex, claude-tui) re-emit
+    /// `OSC 10;? + OSC 11;?` on `FocusGained`, and the daemon's vte
+    /// parser synthesizes the solicited reply from the just-updated
+    /// defaults.
     TerminalThemeUpdate { fg: (u8, u8, u8), bg: (u8, u8, u8) },
 }
 
@@ -512,10 +512,11 @@ impl TerminalSessionState {
             }
             ClientMsg::TerminalThemeUpdate { fg, bg } => {
                 // Same authorization shape as `Input`: owner OR
-                // kernel-input observer. Theme bytes end up on the PTY
-                // master (synthetic OSC 10/11 reply + focus-in CSI), so
-                // we MUST NOT let an observer rewrite another user's
-                // terminal colors through a forged WS frame.
+                // kernel-input observer. This flips the daemon's
+                // advertised OSC 10/11 colors and (under DECSET 1004)
+                // writes `ESC[I` to the PTY, so we MUST NOT let an
+                // observer rewrite another user's terminal colors
+                // through a forged WS frame.
                 let kernel_input = self
                     .capabilities
                     .as_ref()
@@ -535,12 +536,11 @@ impl TerminalSessionState {
                 // carrying the host's current theme. But the daemon was
                 // spawned with that exact theme via `--terminal-fg/-bg`
                 // (see daemon.rs `with_colors`), so this first update is
-                // a no-op color-wise — yet it still drives the daemon to
-                // write a synthetic `OSC 10/11 + focus-in` blob to the
-                // PTY master. Under a cooked-mode shell (New terminal
-                // runs `$SHELL`, ECHO on at the prompt) the tty line
-                // discipline echoes those bytes back as literal caret
-                // text (`^[]10;rgb:…`), which then surfaces in xterm.
+                // a no-op color-wise. Pre-#305 the daemon still wrote
+                // a synthetic `OSC 10/11 + focus-in` blob; a shell at
+                // its prompt runs ZLE/readline in raw mode (ECHO off,
+                // ICANON off) and treated the injected bytes as INPUT,
+                // redrawing them as `^[]10;rgb:…` glyphs (#295).
                 //
                 // So: if the requested colors already equal what the
                 // daemon is serving, emit nothing. A genuine toggle
@@ -918,12 +918,12 @@ impl RenderPlane {
     }
 
     /// Whether the PTY child has enabled DECSET 1004 (focus event
-    /// reporting). The daemon reads this to gate the synthetic
-    /// mid-session OSC 10/11 theme write: only a focus-aware TUI (codex
-    /// opts in on startup) consumes the injected OSC silently; a shell's
-    /// line editor sits in raw mode but never enables 1004, so it would
-    /// display the bytes as garbage. See `daemon.rs`
-    /// `Effect::TerminalThemeUpdate`.
+    /// reporting). The daemon reads this to gate the mid-session
+    /// `ESC[I` write on theme toggle: only a focus-aware TUI (codex
+    /// opts in on startup) will treat it as `FocusGained` and
+    /// re-query OSC 10/11; a shell's line editor sits in raw mode but
+    /// never enables 1004, so a stray `ESC[I` would land in its line
+    /// buffer. See `daemon.rs` `Effect::TerminalThemeUpdate`.
     pub fn focus_event_tracking(&self) -> bool {
         self.model.focus_event_tracking()
     }

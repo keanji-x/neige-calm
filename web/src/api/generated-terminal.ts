@@ -141,9 +141,10 @@ export type Role = "Owner" | "Observer";
  *    the model can answer codex's startup probe before the first PTY
  *    chunk lands.
  * 2. As [`ClientMsg::TerminalThemeUpdate`] when the browser toggles
- *    theme mid-session — the daemon updates the model and emits a
- *    synthetic OSC 10 + OSC 11 reply to the PTY so the child can
- *    re-paint at the new colors.
+ *    theme mid-session — the daemon updates the model's defaults and
+ *    (when the child has DECSET 1004) writes `ESC[I` so a focus-aware
+ *    TUI re-queries OSC 10/11; the daemon's vte parser then
+ *    synthesizes the solicited reply (#305).
  *
  * Each channel is a plain u8 (8-bit per channel); the daemon expands
  * to xterm's 16-bit `rgb:RRRR/GGGG/BBBB` reply form (`c * 257`).

@@ -120,7 +120,7 @@ fn alternate_screen_is_noop() {
 #[test]
 fn decset_1004_tracks_focus_event_reporting_without_rev_bump() {
     // DECSET 1004 (focus event reporting) is a mode flag the daemon reads
-    // to gate the synthetic mid-session OSC 10/11 theme write. It must be
+    // to gate the mid-session `ESC[I` theme nudge (#305). It must be
     // tracked but, like alt-screen, MUST NOT bump the render rev (no
     // visible content change).
     let mut m = TerminalModel::new(20, 3, 100);

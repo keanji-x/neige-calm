@@ -1,6 +1,6 @@
-// E2E regression — a New-terminal card must NOT echo the daemon's
-// synthetic OSC 10/11 color-reply bytes back into the grid as literal
-// caret text.
+// E2E regression — a New-terminal card must NOT echo any mid-session
+// theme bytes the daemon writes (pre-#305 also OSC 10/11 RGB pairs;
+// post-#305 just `ESC[I`) back into the grid as literal caret text.
 //
 // The bug
 // -------
@@ -12,8 +12,8 @@
 // Root cause: `XtermView.tsx`'s theme effect fires on EVERY mount and
 // POSTs a `TerminalThemeUpdate` carrying the host theme. The daemon was
 // already spawned with that exact theme (`--terminal-fg/-bg`), so the
-// update was a no-op color-wise — yet the daemon still wrote a synthetic
-// `OSC 10/11 + focus-in` blob to the PTY master. A New terminal runs
+// update was a no-op color-wise — yet pre-#305 the daemon still wrote
+// an `OSC 10/11 + focus-in` blob to the PTY master. A New terminal runs
 // `$SHELL`, and a modern shell prompt is NOT cooked: zsh's ZLE (bash's
 // readline) drives the line via a raw-mode editor (ECHO off, ICANON off
 // — termios identical to a TUI). The shell's line editor treated the
@@ -25,12 +25,14 @@
 //  * Fix A (suppress the no-op mount-time TerminalThemeUpdate): after a
 //    New terminal becomes ready, the rendered buffer must not contain
 //    `]10;rgb:` / `]11;rgb:`.
-//  * Fix B (gate the synthetic write on DECSET 1004): toggle the app
-//    theme light↔dark while the shell sits at its prompt; the daemon
-//    only writes the OSC blob when the PTY child has opted into DECSET
-//    1004 (focus event reporting). A shell's ZLE/readline never enables
-//    1004 (it only turns on bracketed paste, 2004), so the daemon must
-//    NOT write the OSC blob — still no echo text appears.
+//  * Fix B (gate the focus-in nudge on DECSET 1004): toggle the app
+//    theme light↔dark while the shell sits at its prompt. Post-#305
+//    the daemon's only mid-session write is `ESC[I`, gated on whether
+//    the child opted into DECSET 1004 (focus event reporting); the
+//    OSC 10/11 reply is synthesized later from the model's defaults
+//    when the child solicits it. A shell's ZLE/readline never enables
+//    1004 (it only turns on bracketed paste, 2004), so the daemon
+//    writes nothing — no echo text appears.
 //
 // How we read the grid
 // --------------------
@@ -214,8 +216,9 @@ test('new terminal does not echo OSC 10/11 color replies (raw-mode shell)', asyn
   );
 
   // Give the daemon time to spawn `$SHELL`, paint the prompt, and (in
-  // the buggy world) echo the injected OSC blob. Wait until at least one
-  // terminal grid is non-empty as the readiness signal.
+  // the buggy world) echo the daemon's theme write back into the grid.
+  // Wait until at least one terminal grid is non-empty as the readiness
+  // signal.
   await page.waitForFunction(
     () => {
       const w = window as unknown as {
@@ -234,14 +237,14 @@ test('new terminal does not echo OSC 10/11 color replies (raw-mode shell)', asyn
 
   // Step 6 — ANCHOR A: no terminal grid may contain echoed OSC text.
   // With fix A the mount-time TerminalThemeUpdate is suppressed, so the
-  // daemon never injects the OSC blob into the shell terminal.
+  // daemon never writes anything to the shell terminal.
   assertNoOscEcho(await dumpAllTerminals(page), 'after New terminal ready');
 
   // Step 7 — ANCHOR B: toggle the theme while the raw-mode shell is at
   // its prompt. Even though the colors now genuinely differ, fix B gates
-  // the synthetic OSC write on whether the child opted into DECSET 1004
+  // the `ESC[I` write on whether the child opted into DECSET 1004
   // (focus event reporting). A shell's ZLE/readline never enables 1004,
-  // so the daemon must NOT write the OSC blob — still no echo text.
+  // so the daemon must NOT write anything — still no echo text.
   await page.waitForFunction(
     () =>
       typeof (

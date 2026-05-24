@@ -146,9 +146,10 @@ pub struct PtySize {
 ///    the model can answer codex's startup probe before the first PTY
 ///    chunk lands.
 /// 2. As [`ClientMsg::TerminalThemeUpdate`] when the browser toggles
-///    theme mid-session — the daemon updates the model and emits a
-///    synthetic OSC 10 + OSC 11 reply to the PTY so the child can
-///    re-paint at the new colors.
+///    theme mid-session — the daemon updates the model's defaults and
+///    (when the child has DECSET 1004) writes `ESC[I` so a focus-aware
+///    TUI re-queries OSC 10/11; the daemon's vte parser then
+///    synthesizes the solicited reply (#305).
 ///
 /// Each channel is a plain u8 (8-bit per channel); the daemon expands
 /// to xterm's 16-bit `rgb:RRRR/GGGG/BBBB` reply form (`c * 257`).
@@ -398,11 +399,12 @@ pub enum ClientMsg {
     },
     /// Browser-driven mid-session theme toggle (#177). Carries the new
     /// host theme's foreground + background RGB. The daemon updates
-    /// its `TerminalModel::set_default_colors` AND emits a synthetic
-    /// OSC-10 + OSC-11 reply (followed by a focus-in CSI `ESC [ I`)
-    /// to the PTY master so the child (codex / claude-tui / ...)
-    /// re-queries default colors and re-paints its composer at the
-    /// new theme.
+    /// its `TerminalModel::set_default_colors` and, when the child has
+    /// DECSET 1004 enabled, writes `ESC[I` to the PTY master (#305).
+    /// A focus-aware TUI (codex / claude-tui / ...) treats this as
+    /// `FocusGained` and re-queries OSC 10/11; the daemon's vte parser
+    /// then synthesizes the solicited reply from the updated defaults
+    /// and the child re-paints at the new theme.
     ///
     /// Owner-only — same gating as [`ClientMsg::Input`] including the
     /// `kernel_originated_input` exception, since the bytes ultimately

@@ -75,7 +75,8 @@ interface CloseInfo {
  *  `crates/calm-session/src/lib.rs::PROTOCOL_VERSION`. A mismatch surfaces
  *  via `DaemonMsg::ProtocolError(UnsupportedVersion)` and the overlay below.
  *  Bumped 2 → 3 in #177 for the `ClientMsg::TerminalThemeUpdate` variant
- *  the daemon needs to re-emit OSC 10/11 on host theme toggles. */
+ *  the daemon uses to update its OSC 10/11 defaults and nudge a
+ *  focus-aware TUI to re-query on host theme toggles. */
 const PROTOCOL_VERSION = 3;
 
 /**
@@ -211,19 +212,19 @@ export function XtermView({
   // closing. The unconditional POST is safe because suppression lives
   // on the daemon side, not here: (a) the session state machine drops
   // the update when fg/bg already equal the current defaults (the
-  // mount-time no-op case), and (b) the daemon skips the synthetic OSC
-  // reply unless the PTY child has opted into DECSET 1004 (focus event
-  // reporting). A focus-aware TUI like codex enables 1004 and consumes
-  // the OSC silently; an interactive shell at its prompt drives the line
-  // via a raw-mode editor (zsh's ZLE) but never enables 1004, so without
-  // the gate it would redraw the injected reply as `^[]10;rgb:…` garbage.
-  // (Gating on the PTY ECHO flag — the original attempt — was wrong:
-  // ZLE turns ECHO off, so a shell prompt looks identical to a TUI to
-  // that probe. The earlier "idempotent, harmless extra round-trip"
-  // assumption only held for focus-aware TUIs; on a shell that redundant
-  // mount POST surfaced exactly that garbage on every New terminal. See
-  // crates/calm-session `on_client_frame` TerminalThemeUpdate + daemon
-  // `Effect::TerminalThemeUpdate`, gated on `RenderPlane::focus_event_tracking`.)
+  // mount-time no-op case), and (b) the daemon's only mid-session
+  // write is `ESC[I`, gated on whether the PTY child has opted into
+  // DECSET 1004 (focus event reporting). A focus-aware TUI like codex
+  // enables 1004 and treats `ESC[I` as `FocusGained`, re-querying OSC
+  // 10/11 — the daemon then synthesizes the reply from the updated
+  // defaults. An interactive shell at its prompt drives the line via
+  // a raw-mode editor (zsh's ZLE) but never enables 1004, so without
+  // the gate a stray `ESC[I` would land in its line buffer. (Pre-#305
+  // the daemon also wrote unsolicited `OSC 10;rgb:… OSC 11;rgb:…`
+  // pairs; that double-belt was dropped in #305 in favor of the
+  // solicited-only loop.) See crates/calm-session `on_client_frame`
+  // TerminalThemeUpdate + daemon `Effect::TerminalThemeUpdate`, gated
+  // on `RenderPlane::focus_event_tracking`.
   useEffect(() => {
     const term = termRef.current;
     if (term) {
@@ -271,9 +272,9 @@ export function XtermView({
     // the rendered grid of a SPECIFIC card (a wave can have several
     // xterm-backed cards — e.g. the auto-minted codex spec card plus an
     // AddPanel New-terminal card — and only the cooked-shell terminal
-    // can manifest the echo bug). The spec asserts the synthetic OSC
-    // 10/11 reply bytes never land in the grid as literal caret text
-    // (`]10;rgb:` / `]11;rgb:`). We read the buffer rather than the DOM
+    // can manifest the echo bug). The spec asserts no OSC 10/11 reply
+    // bytes land in the grid as literal caret text (`]10;rgb:` /
+    // `]11;rgb:`). We read the buffer rather than the DOM
     // because xterm's canvas/webgl renderer doesn't mirror glyphs into
     // navigable DOM nodes.
     if (typeof window !== 'undefined') {
@@ -450,9 +451,10 @@ export function XtermView({
       // Typical culprit: a theme toggle in the brief window between
       // `new WebSocket(…)` and `ws.onopen`. Without this drain, the
       // toggle would be silently dropped at the readyState check in
-      // `send()` and the daemon would never re-emit OSC matching the
-      // new host theme. Drains via `ws.send` directly (bypasses the
-      // queueing branch — we're definitely OPEN inside `onopen`).
+      // `send()` and the daemon's OSC 10/11 defaults would never
+      // update to match the new host theme. Drains via `ws.send`
+      // directly (bypasses the queueing branch — we're definitely
+      // OPEN inside `onopen`).
       while (pendingFrames.length > 0) {
         const queued = pendingFrames.shift()!;
         ws.send(JSON.stringify(queued));
