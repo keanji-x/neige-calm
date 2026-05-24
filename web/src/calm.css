@@ -3541,11 +3541,11 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 .calendar-bar-cove {
   font-size: var(--text-xs);
   /* Inherit the per-bar contrast-aware foreground (see
-     .calendar-bar-title). The subscript used to dilute the text 65%
-     toward the page bg, which doubled-down on the same root cause;
-     plain inherit keeps it on the WCAG-AA side. */
+     .calendar-bar-title). Hierarchy comes from the smaller font-size
+     alone; the prior `opacity: 0.85` composited the contrast colour
+     against the cove background and pushed axe back into a serious
+     color-contrast violation even after the inherit fix. */
   color: inherit;
-  opacity: 0.85;
   white-space: nowrap;
   flex-shrink: 0;
 }
