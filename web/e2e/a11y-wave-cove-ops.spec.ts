@@ -621,6 +621,98 @@ test.describe('a11y · wave + cove ops', () => {
     ).toBeVisible();
   });
 
+  test('Cove rename: Enter then Tab — no second PATCH with stale name (issue #288)', async ({
+    page,
+    request,
+  }) => {
+    // Regression for issue #288 — the "flash then revert" sidebar bug.
+    //
+    // Repro the exact keyboard sequence the user reports: focus the
+    // rename input, type a new name, press Enter to commit, immediately
+    // press Tab. Pre-fix this emitted TWO PATCHes — the first with the
+    // NEW name (good) and a second with the OLD name (bad), because the
+    // Enter `keyup` was delivered to the just-focused display button and
+    // synthesized a click that re-entered edit mode with `draft` reset
+    // to the (still pre-PATCH) `value`. The follow-up Tab then blurred
+    // the re-mounted input and fired a second save() that PATCHed the
+    // OLD name back to the kernel, which the WS-driven write-through
+    // then propagated to the sidebar. The user saw the new name flash
+    // on the sidebar (from the first PATCH's optimistic update + WS
+    // event) and revert to the old name when the second PATCH landed.
+    //
+    // The fix sets a one-shot ref in save() when invoked via the
+    // keyboard, and enter() consumes & ignores the next display-button
+    // activation. We assert by counting PATCH requests and checking the
+    // kernel ends up with the NEW name — not the OLD one.
+    const cove = await createUserCove(request, 'EnterTabCove');
+    await createWaveInCove(request, cove.id, 'EnterTabWave');
+
+    await page.goto(`/calm/cove/${cove.id}?trace=1`);
+    await waitForCoveInSidebar(page, 'EnterTabCove');
+    await clearEventTrace(page);
+
+    // Count every PATCH the page emits against this cove's REST row.
+    // Use page.on so we capture both the (good) NEW-name PATCH and
+    // any (bad) OLD-name PATCH that would slip through pre-fix.
+    const patchBodies: string[] = [];
+    page.on('request', (req) => {
+      if (
+        req.method() === 'PATCH' &&
+        req.url().includes(`/api/coves/${cove.id}`) &&
+        !req.url().includes('/waves')
+      ) {
+        patchBodies.push(req.postData() ?? '');
+      }
+    });
+
+    const titleBtn = page.getByRole('button', {
+      name: 'EnterTabCove',
+      description: 'Rename cove name',
+    });
+    await expect(titleBtn).toBeVisible();
+    await titleBtn.click();
+    const input = page.getByLabel('Cove name');
+    await expect(input).toBeFocused();
+
+    const newName = `EnterTabRenamed${Date.now()}`;
+    await input.selectText();
+    await input.fill(newName);
+
+    // The user-reported failure pattern: Enter to commit, then Tab.
+    // Pressing them back-to-back is what races the Enter-keyup-click
+    // against the input unmount.
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
+
+    // Give the WS round-trip plus any racy second PATCH a window to
+    // land before we assert single-PATCH. 1500ms is comfortably wider
+    // than a normal kernel write + WS broadcast (the existing
+    // wave-rename test uses the same window for `waitForEvent`).
+    await page.waitForTimeout(1500);
+
+    // Single-PATCH assertion runs FIRST so the negative case (pre-fix)
+    // fails fast with a clear message rather than waiting on a sidebar
+    // re-render that the second PATCH has thrown into flux.
+    expect(
+      patchBodies.length,
+      `expected exactly 1 PATCH (one save), got ${patchBodies.length}: ${JSON.stringify(patchBodies)}`,
+    ).toBe(1);
+    expect(patchBodies[0]).toContain(newName);
+
+    // Kernel must hold the NEW name — not have been rolled back.
+    const listRes = await request.get(`http://127.0.0.1:${REPLAY_PORT}/api/coves`);
+    const ours = ((await listRes.json()) as { id: string; name: string }[]).find(
+      (c) => c.id === cove.id,
+    );
+    expect(ours?.name, 'kernel must hold the new name, not revert to old').toBe(newName);
+
+    // Sidebar must show the new name (anchors the user-visible end of
+    // the chain — this is the surface that flashed and reverted).
+    await expect(
+      page.locator('aside.side').getByRole('button', { name: new RegExp(newName, 'i') }),
+    ).toBeVisible();
+  });
+
   test('Wave delete dialog: Escape dismisses without deleting', async ({ page, request }) => {
     // Negative-path counterpart to the happy delete test above. The
     // ConfirmDialog primitive routes Esc to `onCancel` via the

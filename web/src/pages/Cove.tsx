@@ -209,6 +209,39 @@ function EditableTitle({
   // drops to body and the keyboard user loses their place.
   const displayRef = useRef<HTMLButtonElement | null>(null);
   const restoreDisplayFocus = useRef(false);
+  // Re-entry guard for issue #288.
+  //
+  // When the user commits a rename via Enter, this sequence happens:
+  //   1. Enter `keydown` fires on the input → `save()` → `setEditing(false)`
+  //      → PATCH fires with the new name.
+  //   2. React commits — input unmounts, display button mounts, focus
+  //      restores to the display button via `restoreDisplayFocus`.
+  //   3. Browser delivers Enter's `keyup` to the now-focused display
+  //      button. The browser then synthesizes a `click` from that keyup
+  //      (intrinsic <button> activation semantics).
+  //   4. The synthetic click fires `enter()` → `setDraft(value)` →
+  //      `setEditing(true)`. `value` at this moment is still the OLD
+  //      name (the optimistic cache update has flushed to props but the
+  //      WS round-trip may also race in here), so `draft` is reset to
+  //      the OLD name.
+  //   5. The user's follow-up Tab / click-away triggers `onBlur` →
+  //      `save()` → trimmed = OLD, value = NEW (from optimistic) →
+  //      `trimmed !== value` so the early-return doesn't catch it →
+  //      **a second PATCH fires that writes the OLD name back to the
+  //      kernel.** The sidebar then flashes the new name (from the
+  //      optimistic update / first WS event) and reverts to the old
+  //      name when the second PATCH's WS event arrives.
+  //
+  // The fix: when `save()` is invoked from a keyboard commit, set this
+  // ref. `enter()` consumes & clears it on the next click, suppressing
+  // the synthetic Enter-keyup click. Real mouse clicks always have
+  // `detail >= 1`, but we don't gate on that — we just consume the
+  // one-shot flag, so a legitimate click that races in right after a
+  // commit will be eaten and the user has to click again. That cost is
+  // acceptable: it's a single click within a ~tick window of a commit,
+  // and the alternative (the kernel ending up with the wrong name) is
+  // worse.
+  const suppressNextDisplayActivation = useRef(false);
   // Stable id for the visually-hidden rename hint. The hint is referenced
   // via aria-describedby so the button's accessible *name* is just the
   // cove name (clean heading-nav narration) while AT still verbalizes the
@@ -229,6 +262,13 @@ function EditableTitle({
   }, [editing, value]);
 
   const enter = () => {
+    // Eat the synthetic click that follows a keyboard commit (see the
+    // `suppressNextDisplayActivation` doc above). The flag was set by
+    // `save()` when invoked from the Enter keydown handler.
+    if (suppressNextDisplayActivation.current) {
+      suppressNextDisplayActivation.current = false;
+      return;
+    }
     setDraft(value);
     setEditing(true);
     queueMicrotask(() => {
@@ -240,9 +280,17 @@ function EditableTitle({
     restoreDisplayFocus.current = true;
     setEditing(false);
   };
-  const save = async () => {
+  const save = async (opts: { viaKeyboard?: boolean } = {}) => {
     const trimmed = draft.trim();
     restoreDisplayFocus.current = true;
+    // Issue #288 — when this save is the keyboard-Enter commit, arm the
+    // one-shot click suppressor so the Enter `keyup` that the browser
+    // delivers to the newly-focused display button doesn't synthesize a
+    // click that re-enters edit mode with a stale draft. See the
+    // `suppressNextDisplayActivation` ref above for the full sequence.
+    if (opts.viaKeyboard) {
+      suppressNextDisplayActivation.current = true;
+    }
     setEditing(false);
     if (!trimmed || trimmed === value) return;
     await onSave(trimmed);
@@ -262,7 +310,7 @@ function EditableTitle({
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === 'Enter') void save();
+          if (e.key === 'Enter') void save({ viaKeyboard: true });
           else if (e.key === 'Escape') cancel();
         }}
         onBlur={() => void save()}
