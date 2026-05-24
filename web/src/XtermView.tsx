@@ -577,6 +577,11 @@ export function XtermView({
     ws.onclose = (e) => {
       // Capture close code/reason so the gray "disconnected" overlay can
       // tell us what kind of disconnect this was without devtools.
+      // 1000 + `child-exited` reason = daemon's clean child-exit close
+      //   (see ws/terminal.rs::CLOSE_REASON_CHILD_EXITED). We map this
+      //   to the `exited` overlay even if the prior `TerminalExited`
+      //   JSON frame got dropped on a slow link — distinguishes a
+      //   process finishing from a connection drop.
       // 1006 = abnormal closure (network / proxy cut, no Close frame).
       // 1011 = server-side heartbeat trip (see ws/terminal.rs PONG_TIMEOUT).
       // 1001 = endpoint going away (server restart, page navigation).
@@ -586,12 +591,17 @@ export function XtermView({
         reason: e.reason,
         wasClean: e.wasClean,
       });
+      const isChildExitClose =
+        e.code === 1000 && e.reason === 'child-exited';
       // Don't clobber a more-specific terminal state (`exited`,
-      // `protocol-error`) — those overlays carry richer information than
-      // the generic close code.
-      setStatus((prev) =>
-        prev === 'exited' || prev === 'protocol-error' ? prev : 'closed',
-      );
+      // `protocol-error`) — those overlays carry richer information
+      // than the generic close code. A `child-exited` close promotes
+      // us to `exited` even if the JSON exit frame never arrived.
+      setStatus((prev) => {
+        if (prev === 'exited' || prev === 'protocol-error') return prev;
+        if (isChildExitClose) return 'exited';
+        return 'closed';
+      });
       // Role is undefined once the WS is gone — parent clears any pill.
       onRoleChangeRef.current?.(null);
     };

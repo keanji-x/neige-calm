@@ -452,6 +452,35 @@ describe('XtermView v3 terminal states', () => {
     expect(screen.getByRole('button', { name: /reconnect/i })).toBeInTheDocument();
   });
 
+  it('shows the exited overlay on a 1000 child-exited close even with no prior TerminalExited frame', () => {
+    // Race recovery: the daemon emits TerminalExited → kernel pump
+    // forwards it as JSON then closes WS with code 1000 + reason
+    // `child-exited`. Even when the JSON frame is dropped on a slow
+    // link, the close-frame reason alone must promote us to the
+    // "exited" overlay — not "disconnected". See ws/terminal.rs
+    // `CLOSE_REASON_CHILD_EXITED`.
+    render(<XtermView terminalId="term_test" />);
+    const ws = currentWs();
+    act(() => {
+      ws.fireOpen();
+    });
+    act(() => {
+      ws.push(serverHello());
+    });
+    act(() => {
+      ws.fireClose(1000, 'child-exited');
+    });
+    expect(screen.getByText(/process exited/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /restart/i })).toBeInTheDocument();
+    // The "disconnected" overlay (and its Reconnect button) must not
+    // appear — the kernel told us this was a clean child exit, not a
+    // network drop.
+    expect(screen.queryByText(/disconnected/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /reconnect/i }),
+    ).not.toBeInTheDocument();
+  });
+
   it('does not regress to disconnected when WS closes after a ProtocolError', () => {
     render(<XtermView terminalId="term_test" />);
     const ws = currentWs();

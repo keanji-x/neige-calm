@@ -55,6 +55,13 @@ const PONG_TIMEOUT: Duration = Duration::from_secs(30);
 /// surfaced in server logs when troubleshooting.
 const PONG_TIMEOUT_REASON: &str = "no pong";
 
+/// Reason text we attach to the 1000 close frame when the daemon emitted
+/// `TerminalExited` / `ChildExited`. The browser surfaces this via
+/// `CloseEvent.reason`; the JS client matches on this exact string to
+/// distinguish a clean child exit from a network-level disconnect even
+/// if the prior JSON exit frame got dropped on a slow link.
+pub(crate) const CLOSE_REASON_CHILD_EXITED: &str = "child-exited";
+
 pub fn router() -> Router<AppState> {
     Router::new().route("/api/terminals/{id}", get(upgrade))
 }
@@ -350,6 +357,14 @@ pub async fn pump<T: DaemonTransport>(
     let terminal_id_down = terminal_id.clone();
     let down = async move {
         let mut outcome_tx = Some(outcome_tx);
+        // Set when the down arm exits because the daemon emitted
+        // `TerminalExited` / `ChildExited`. Used below to send a 1000
+        // close frame with the `CLOSE_REASON_CHILD_EXITED` reason so
+        // the browser can distinguish a clean child exit from a
+        // network cut even if the JSON exit frame got dropped en
+        // route. Without this the JS client sees code 1005 / 1006 and
+        // can't tell the two cases apart.
+        let mut clean_child_exit = false;
         loop {
             let msg: DaemonMsg = match read_frame(&mut rd).await {
                 Ok(m) => m,
@@ -432,10 +447,23 @@ pub async fn pump<T: DaemonTransport>(
                 break;
             }
             if exit {
+                clean_child_exit = true;
                 break;
             }
         }
-        let _ = ws_tx_down.lock().await.send(Message::Close(None)).await;
+        let close_frame = if clean_child_exit {
+            Some(CloseFrame {
+                code: 1000,
+                reason: CLOSE_REASON_CHILD_EXITED.into(),
+            })
+        } else {
+            None
+        };
+        let _ = ws_tx_down
+            .lock()
+            .await
+            .send(Message::Close(close_frame))
+            .await;
     };
 
     // Heartbeat: ping every `ping_interval`; if `last_seen` is older than
@@ -864,17 +892,27 @@ mod pump_tests {
             parsed
         );
 
-        // 2) Close frame.
+        // 2) Close frame — must carry code 1000 + `child-exited` reason
+        //    so the JS client distinguishes a clean child exit from a
+        //    network drop (1006) even if the JSON frame above got
+        //    dropped on a slow link. The browser surfaces the reason
+        //    via `CloseEvent.reason`.
         let close = tokio::time::timeout(Duration::from_secs(2), ws.next())
             .await
             .expect("ws recv (close) timed out")
             .expect("ws closed without sending Close")
             .expect("ws error");
-        assert!(
-            matches!(close, TMessage::Close(_)),
-            "expected Close frame, got {:?}",
-            close
-        );
+        match close {
+            TMessage::Close(Some(cf)) => {
+                assert_eq!(u16::from(cf.code), 1000, "expected 1000 normal close");
+                assert_eq!(
+                    cf.reason.as_ref(),
+                    CLOSE_REASON_CHILD_EXITED,
+                    "expected `child-exited` reason text"
+                );
+            }
+            other => panic!("expected Close(Some(CloseFrame {{1000, child-exited}})), got {other:?}"),
+        }
 
         // 3) Stream drains to None — pump has dropped the WS sink.
         let end = tokio::time::timeout(Duration::from_secs(2), ws.next())
