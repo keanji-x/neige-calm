@@ -4,7 +4,7 @@
 //
 // The bug
 // -------
-// Clicking "+ Add → New terminal" opened a card whose first visible
+// Clicking "+ Add → terminal" opened a card whose first visible
 // line was the literal text:
 //
 //   ^[]10;rgb:2a2a/2f2f/3a3a^[\^[]11;rgb:fcfc/fefe/ffff^[\^[[I
@@ -178,16 +178,21 @@ test('new terminal does not echo OSC 10/11 color replies (raw-mode shell)', asyn
   });
   const dumpsBeforeAdd = await terminalDumpCount(page);
 
-  // Step 4 — open the AddPanel and choose "New terminal". The `.term`
-  // wrapper class is specific to the terminal card (the codex spec card
-  // uses a different component), so its count tracks our new card.
+  // Step 4 — open the AddPanel and choose "terminal". The AddPanel
+  // entry's accessible name is the lowercase kind word "terminal" (see
+  // `web/src/cards/builtins/terminal.tsx` → `addPanel: { label: 'terminal' }`,
+  // mapped to MenuItem.label in `web/src/shared/components/AddPanel.tsx`);
+  // anchor the regex so it can't accidentally match a future "terminal …"
+  // sibling entry. The `.term` wrapper class is specific to the terminal
+  // card (the codex spec card uses a different component), so its count
+  // tracks our new card.
   const termCardsBefore = await page.locator('.term').count();
   const addBtn = page
     .getByRole('button', { name: /^\s*\+?\s*add(\s|$)/i })
     .first();
   await expect(addBtn).toBeVisible();
   await addBtn.click();
-  const termOption = page.getByRole('menuitem', { name: /new terminal/i });
+  const termOption = page.getByRole('menuitem', { name: /^terminal$/i });
   await expect(termOption).toBeVisible({ timeout: 5_000 });
   await termOption.click();
 
