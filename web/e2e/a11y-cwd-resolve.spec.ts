@@ -1,13 +1,19 @@
-// E2E: `GET /api/coves/resolve?path=<cwd>` resolution across multiple
-// coves with folder claims (#269 P3).
+// E2E: `GET /api/coves/resolve?path=<cwd>` cwd → cove resolution
+// across multiple coves with folder claims (#269 P3).
 //
 // Unit coverage already exists for `normalize_path` and
-// `is_descendant_of` in `crates/calm-server/src/routes/cove_folders.rs`
-// — this spec is the missing HTTP-level integration test. It pins the
-// end-to-end contracts:
+// `is_descendant_of` in `crates/calm-server/src/routes/cove_folders.rs`;
+// integration coverage for the CRUD + overlap-409 invariants lives in
+// `crates/calm-server/tests/cove_folders.rs`. This spec is the missing
+// HTTP-level cwd-resolution test exercised through the web's wire
+// path. It pins the end-to-end contracts a `make dev` user actually
+// hits when their browser asks "which cove owns this cwd?":
 //
 //   * with two distinct coves owning disjoint paths, a descendant
 //     query resolves to the right cove (not the other);
+//   * within a single cove, sibling rows that share a parent prefix
+//     (`/p/alpha` + `/p/alpha-extra`) resolve to their own claim,
+//     never to the other;
 //   * an exact-path query matches the row for that exact claim;
 //   * a query with a trailing slash normalizes to the same answer as
 //     without (server-side `normalize_path` is on the wire path);
@@ -16,11 +22,18 @@
 //   * a sibling-prefix that *looks* like a string prefix but is not a
 //     filesystem ancestor (e.g. `/work/repository` vs `/work/repo`)
 //     is NOT a match — the `is_descendant_of` guard requires a `/`
-//     boundary;
-//   * the create-folder endpoint refuses ancestor/descendant overlaps
-//     with a 409 + `FolderConflict` body. This is the system invariant
-//     that makes the longest-prefix algorithm in the resolve handler
-//     safe (at most one row covers any given query path).
+//     boundary.
+//
+// Note on scope: the resolve handler's `max_by_key(|f| f.path.len())`
+// longest-prefix tiebreak is NOT covered here. That branch is dead
+// from the HTTP surface — the create endpoint rejects
+// ancestor/descendant overlap with 409 (see
+// `cove_folders.rs:135-156`), so the filter can never return more
+// than one row from any HTTP-constructible state. The unit test
+// `resolve_picks_longest_prefix` in
+// `crates/calm-server/tests/cove_folders.rs` exercises the branch by
+// seeding overlapping rows through the raw repo, which is the right
+// level for that kind of "what if the DB is corrupted" probe.
 //
 // Runs in the hermetic `a11y` Playwright project so the REST surface
 // is exercised against the in-memory replay binary (no `make dev`
@@ -81,8 +94,9 @@ async function resolvePath(
 
 test.beforeEach(async ({ request }) => {
   // Hermetic per-test state. Resolve scans every row in `cove_folders`
-  // and returns the longest match; without a reset, claims from an
-  // earlier test would shadow the fixtures this test sets up.
+  // and returns the (unique, post-409-invariant) covering match;
+  // without a reset, claims from an earlier test would shadow the
+  // fixtures this test sets up.
   await resetReplayServer(request);
 });
 
@@ -140,14 +154,14 @@ test('similar-prefix sibling claims resolve to the correct row', async ({
   // This complements the "multi-cove disjoint" case above by pinning
   // the same contract within a *single* cove with multiple rows in
   // `cove_folders` — the resolve scan is across ALL rows so the
-  // single-cove path goes through the same filter+pick code.
+  // single-cove path goes through the same filter code.
   //
   // Note on the absent nested case: we can't seed two nested claims
-  // (`/p` + `/p/alpha`) here because the create endpoint rejects
-  // ancestor/descendant overlap as a 409 conflict — see the
-  // "create-folder refuses ancestor/descendant overlap" test for the
-  // invariant that protects the resolve algorithm from ever needing
-  // to disambiguate truly-overlapping claims.
+  // (`/p` + `/p/alpha`) via the HTTP surface because the create
+  // endpoint rejects ancestor/descendant overlap as a 409 conflict
+  // (see `crates/calm-server/tests/cove_folders.rs` cases 2-4 for
+  // the invariant + cross_cove_overlap_409_descendant for the
+  // multi-cove dimension).
   const ts = Date.now();
   const shortClaim = `/proj-${ts}/alpha`;
   const longClaim = `/proj-${ts}/alpha-extra`;
@@ -183,7 +197,7 @@ test('exact-path queries match the claim with equal path', async ({ request }) =
 
   // Exact match on cove A's claim → A. `is_descendant_of(p, p)` is
   // true for the equal case, so the resolve handler treats an
-  // exact-path query like the shortest possible descendant query.
+  // exact-path query the same as a descendant-of-itself query.
   const exactA = await resolvePath(request, pathA);
   expect(exactA).not.toBeNull();
   expect(exactA!.cove_id).toBe(coveA.id);
@@ -247,67 +261,12 @@ test('sibling-prefix path is NOT a match (guards against naive string prefix)', 
   expect(missDeeper).toBeNull();
 });
 
-test('create-folder refuses ancestor/descendant overlap (system invariant)', async ({
-  request,
-}) => {
-  // This is the invariant that keeps the resolve algorithm's
-  // longest-prefix tiebreak from ever needing to disambiguate among
-  // overlapping claims: the create endpoint rejects ancestor and
-  // descendant overlap with a 409 + `FolderConflict` body. Pinning
-  // the 409 (and the conflict_kind shape) here means a future change
-  // that relaxes the overlap rule has to update this test + the
-  // resolve longest-prefix test above together — i.e. you can't
-  // silently lose the invariant.
-  const ts = Date.now();
-  const parent = `/overlap-${ts}/parent`;
-  const child = `${parent}/child`;
-
-  const coveOne = await createUserCove(request, `cove-1-${ts}`, '#5a9');
-  const coveTwo = await createUserCove(request, `cove-2-${ts}`, '#a75');
-
-  // Seed the parent claim on cove 1.
-  await claimFolder(request, coveOne.id, parent);
-
-  // Descendant overlap: claim `parent/child` on cove 2 → 409
-  // descendant. The conflict body must name the existing claim's
-  // cove + path so the frontend can render a meaningful error
-  // without re-parsing strings.
-  const descRes = await request.post(
-    `${API}/api/coves/${coveTwo.id}/folders`,
-    {
-      data: { path: child },
-      headers: { 'content-type': 'application/json' },
-    },
-  );
-  expect(descRes.status()).toBe(409);
-  const descBody = (await descRes.json()) as {
-    cove_id: string;
-    conflict_path: string;
-    conflict_kind: string;
-  };
-  expect(descBody.cove_id).toBe(coveOne.id);
-  expect(descBody.conflict_path).toBe(parent);
-  expect(descBody.conflict_kind).toBe('descendant');
-
-  // Ancestor overlap: try the reverse direction. First seed a deep
-  // claim on a fresh path, then try to claim its ancestor.
-  const deep = `/overlap-${ts}/deep/inner`;
-  const deepAncestor = `/overlap-${ts}/deep`;
-  await claimFolder(request, coveOne.id, deep);
-  const ancRes = await request.post(
-    `${API}/api/coves/${coveTwo.id}/folders`,
-    {
-      data: { path: deepAncestor },
-      headers: { 'content-type': 'application/json' },
-    },
-  );
-  expect(ancRes.status()).toBe(409);
-  const ancBody = (await ancRes.json()) as {
-    cove_id: string;
-    conflict_path: string;
-    conflict_kind: string;
-  };
-  expect(ancBody.cove_id).toBe(coveOne.id);
-  expect(ancBody.conflict_path).toBe(deep);
-  expect(ancBody.conflict_kind).toBe('ancestor');
-});
+// Backend invariant: the create-folder endpoint rejects
+// ancestor/descendant overlap with 409 + `FolderConflict`. That
+// invariant is what keeps the resolve handler's filter set to at most
+// one row per query path. It is exercised at integration-test speed
+// in `crates/calm-server/tests/cove_folders.rs` (cases (3) ancestor,
+// (4) descendant, (2) equal, plus the cross-cove case
+// `cross_cove_overlap_409_descendant`). It does not need a Playwright
+// spec — the wire path here adds no signal beyond the Rust integration
+// test and pays the browser tax for nothing.

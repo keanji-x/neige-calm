@@ -1,7 +1,7 @@
 //! Integration tests for the cove ↔ folder mapping surface introduced
 //! in issue #250 PR 1.
 //!
-//! Coverage matrix (16 cases, matching the PR scope):
+//! Coverage matrix (17 cases):
 //!
 //!   1. `post_then_get_returns_the_folder`
 //!   2. `post_same_path_twice_409_equal`
@@ -18,7 +18,8 @@
 //!  13. `cascade_delete_cove_drops_its_folders`
 //!  14. `post_to_unknown_cove_returns_404`
 //!  15. `get_returns_only_own_cove_folders`
-//!  16. `delete_with_mismatched_cove_id_returns_404`
+//!  16. `cross_cove_overlap_409_descendant`
+//!  17. `delete_with_mismatched_cove_id_returns_404`
 //!
 //! No daemon binary is required — cove_folders is pure CRUD against
 //! the sqlite repo, no card / terminal side-effects.
@@ -454,6 +455,76 @@ async fn get_returns_only_own_cove_folders() {
 }
 
 // (16) --------------------------------------------------------------
+
+#[tokio::test]
+async fn cross_cove_overlap_409_descendant() {
+    // Cases (3) and (4) already cover ancestor/descendant overlap
+    // within a single cove; this case pins that the conflict check
+    // is correctly cove-agnostic — i.e. cove B cannot claim a path
+    // that overlaps with a claim already held by cove A. Was
+    // previously covered only by an e2e spec; folded down to a Rust
+    // integration test to keep the conflict-invariant coverage in
+    // one place (see also the dropped `create-folder refuses
+    // ancestor/descendant overlap` block in
+    // `web/e2e/a11y-cwd-resolve.spec.ts`).
+    let b = boot().await;
+    let cove_b = b
+        .repo
+        .cove_create(NewCove {
+            name: "folders-test-cross".into(),
+            color: "#333".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let cove_b_id = cove_b.id.to_string();
+
+    // Cove A claims the parent.
+    let (s1, _) = post(
+        b.app.clone(),
+        &format!("/api/coves/{}/folders", b.cove_id),
+        json!({"path": "/cross/parent"}),
+    )
+    .await;
+    assert_eq!(s1, StatusCode::CREATED);
+
+    // Cove B tries to claim a descendant of cove A's path → 409.
+    let (s2, body) = post(
+        b.app.clone(),
+        &format!("/api/coves/{cove_b_id}/folders"),
+        json!({"path": "/cross/parent/child"}),
+    )
+    .await;
+    assert_eq!(s2, StatusCode::CONFLICT);
+    assert_eq!(body["conflict_kind"].as_str().unwrap(), "descendant");
+    // The conflict body names the existing claim's cove (A), not
+    // the caller's cove (B) — the frontend needs this to render a
+    // meaningful "owned by <other cove>" message.
+    assert_eq!(body["cove_id"].as_str().unwrap(), b.cove_id);
+    assert_eq!(body["conflict_path"].as_str().unwrap(), "/cross/parent");
+
+    // Reverse direction: cove B tries to claim an ancestor of an
+    // existing cove-A deep claim → 409 ancestor.
+    let (s3, _) = post(
+        b.app.clone(),
+        &format!("/api/coves/{}/folders", b.cove_id),
+        json!({"path": "/cross/deep/inner"}),
+    )
+    .await;
+    assert_eq!(s3, StatusCode::CREATED);
+    let (s4, body) = post(
+        b.app.clone(),
+        &format!("/api/coves/{cove_b_id}/folders"),
+        json!({"path": "/cross/deep"}),
+    )
+    .await;
+    assert_eq!(s4, StatusCode::CONFLICT);
+    assert_eq!(body["conflict_kind"].as_str().unwrap(), "ancestor");
+    assert_eq!(body["cove_id"].as_str().unwrap(), b.cove_id);
+    assert_eq!(body["conflict_path"].as_str().unwrap(), "/cross/deep/inner");
+}
+
+// (17) --------------------------------------------------------------
 
 #[tokio::test]
 async fn delete_with_mismatched_cove_id_returns_404() {
