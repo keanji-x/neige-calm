@@ -193,9 +193,11 @@ async function ids(page: Page): Promise<{ coveId: string; waveId: string }> {
   await coveBtn.click();
   await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
   const coveId = new URL(page.url()).pathname.split('/').pop()!;
-  // Create a wave via the API helper — the cove-page "+ New wave" CTA
-  // is disabled in #250 PR 2 pending PR 3's NewTaskForm. axe scans
-  // operate on rendered pages, so the wave-create path is just plumbing.
+  // Create a wave via the API helper. PR 3's NewTaskForm now drives
+  // the cove-page "+ New wave" CTA, but for axe scans (rendered-page
+  // contracts) the wave-create path is just plumbing — the REST-direct
+  // helper keeps the scan setup cheap and decoupled from form UI
+  // changes.
   const waveTitle = `axe wave ${Date.now()}`;
   const wave = await createWaveInCove(page.request, coveId, waveTitle);
   await page.goto(`/calm/wave/${wave.id}`);

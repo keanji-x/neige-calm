@@ -36,7 +36,6 @@ import {
   covesQueryOptions,
   settingsQueryOptions,
   useCovesQuery,
-  useCreateWaveMutation,
   useDeleteCardMutation,
   useDeleteCoveMutation,
   useDeleteWaveMutation,
@@ -209,7 +208,6 @@ function CoveComponent() {
   const { coveId } = useParams({ from: coveRoute.id });
   const covesQ = useCovesQuery();
   const wavesQ = useWavesByCoveQuery(coveId);
-  const createWave = useCreateWaveMutation();
   const updateCove = useUpdateCoveMutation();
   const deleteCove = useDeleteCoveMutation();
   const deleteWave = useDeleteWaveMutation();
@@ -231,35 +229,14 @@ function CoveComponent() {
       cove={cove}
       waves={waves}
       onGo={go}
-      onCreateWave={async (cId, title) => {
-        // Issue #250 PR 2 — wave-create body now requires `cwd`.
-        // The existing "Create Wave" button on the cove page is a
-        // stopgap: PR 3 introduces `NewTaskForm` (cwd + cove auto-
-        // inference + prompt textarea) and PR 4 replaces this button
-        // with it entirely. Until PR 4 lands we pass an empty `cwd`,
-        // which the server rejects with 400 — the button is
-        // effectively a dead-end in PR 2. The TS compile-time
-        // contract is the only thing this branch needs to satisfy.
-        //
-        // #177 — stamp host browser's current theme onto the body so
-        // the auto-minted spec card's `calm-session-daemon` advertises
-        // matching colors on OSC 10/11. Read at click-time via the
-        // ThemeProvider's `<html data-theme>` mirror; see the codex
-        // create path below for the same rationale.
-        const theme: 'light' | 'dark' =
-          typeof document !== 'undefined' &&
-          document.documentElement.dataset.theme === 'light'
-            ? 'light'
-            : 'dark';
-        const rgb = theme === 'dark' ? DARK_THEME_RGB : LIGHT_THEME_RGB;
-        const w = await createWave.mutateAsync({
-          cove_id: cId,
-          title,
-          cwd: '',
-          attach_folder: false,
-          theme: rgb,
-        });
-        go({ name: 'wave', id: w.id });
+      onWaveCreated={(wave) => {
+        // Issue #250 PR 3 — the NewTaskForm inside CovePage owns the
+        // wave-create POST end-to-end (cwd + cove auto-inference +
+        // theme stamping + folder-conflict surfacing). All this
+        // callback needs to do is navigate. The cwd-empty stopgap
+        // from PR 2 is gone — the form refuses to submit without a
+        // valid absolute path.
+        go({ name: 'wave', id: wave.id });
       }}
       onRenameCove={async (cId, name) => {
         try {

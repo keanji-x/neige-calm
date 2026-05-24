@@ -30,13 +30,15 @@ test('newly created terminal card appears without a reload', async ({ page }) =>
   await coveBtn.click();
   await expect(page).toHaveURL(/\/calm\/cove\/[^/]+$/);
 
-  // Step 2 — create a new wave inside this cove. The cove-page "+ New
-  // wave" CTA is disabled in #250 PR 2 pending PR 3's NewTaskForm, so
-  // we mint the wave via the kernel REST API directly. `page.request`
-  // resolves the relative URL against this project's baseURL (set in
-  // playwright.config.ts → 'chromium': http://localhost:4040/calm/).
-  // The helpers/reset.ts variant is replay-port-pinned and only safe
-  // for the a11y project.
+  // Step 2 — create a new wave inside this cove via the kernel REST
+  // API directly. PR 3's NewTaskForm wires the cove-page "+ New wave"
+  // CTA to the same shared flow, but for this spec (which is purely
+  // about the AddPanel terminal-card path inside an existing wave)
+  // the REST-direct route is faster and decouples this assertion from
+  // the form's UI evolution. `page.request` resolves the relative URL
+  // against this project's baseURL (set in playwright.config.ts →
+  // 'chromium': http://localhost:4040/calm/). The helpers/reset.ts
+  // variant is replay-port-pinned and only safe for the a11y project.
   const coveId = new URL(page.url()).pathname.split('/').pop()!;
   const waveTitle = `E2E new-terminal ${Date.now()}`;
   const cwd = `/tmp/playwright-cove-${coveId}`;

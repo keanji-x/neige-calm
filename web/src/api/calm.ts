@@ -5,6 +5,7 @@ import { fireUnauthorized } from './onUnauthorized';
 import type {
   CardPatchBody,
   CovePatchBody,
+  CoveResolveBody,
   KernelCard,
   KernelCove,
   KernelOverlay,
@@ -26,10 +27,23 @@ import type {
 export class CalmApiError extends Error {
   status: number;
   code: string;
-  constructor(status: number, code: string, msg: string) {
+  /**
+   * Raw parsed JSON body, when the server returned one. Most routes
+   * surface errors as `{error, code}` and the request helper hoists
+   * those into `.message` / `.code` — `.body` is the escape hatch for
+   * routes that return a typed body directly (e.g. `POST /api/waves`
+   * 409 → `FolderConflict { conflict_path, conflict_kind, ... }` per
+   * `routes::waves` issue #250 PR 2). Callers that care about the
+   * structured shape (NewTaskForm) type-narrow this themselves; the
+   * field stays `unknown` here so the wire types don't leak into
+   * every consumer.
+   */
+  body: unknown;
+  constructor(status: number, code: string, msg: string, body?: unknown) {
     super(msg);
     this.status = status;
     this.code = code;
+    this.body = body;
   }
 }
 
@@ -49,8 +63,10 @@ async function request<T>(
   if (!res.ok) {
     let code = 'http_error';
     let msg = res.statusText;
+    let parsedBody: unknown = undefined;
     try {
       const j = await res.json();
+      parsedBody = j;
       if (typeof j?.code === 'string') code = j.code;
       if (typeof j?.error === 'string') msg = j.error;
     } catch {
@@ -66,7 +82,7 @@ async function request<T>(
     if (res.status === 401) {
       fireUnauthorized();
     }
-    throw new CalmApiError(res.status, code, msg);
+    throw new CalmApiError(res.status, code, msg, parsedBody);
   }
   // 200 / 201 with body
   return (await res.json()) as T;
@@ -99,6 +115,24 @@ export const deleteCove = (id: string) =>
   request<void>('DELETE', `/api/coves/${encodeURIComponent(id)}`);
 export const wavesInCove = (coveId: string) =>
   request<KernelWave[]>('GET', `/api/coves/${encodeURIComponent(coveId)}/waves`);
+
+/**
+ * Issue #250 PR 3 — longest-prefix lookup for "which cove (if any)
+ * already claims this absolute path?". Returns `null` when no cove
+ * covers it; the caller then either picks an existing cove + opts in
+ * to `attach_folder: true` on the wave-create, or mints a fresh cove.
+ *
+ * NewTaskForm is the only consumer today — debounced cwd-input change
+ * fires this lookup so the cove dropdown can lock to the auto-matched
+ * cove (hit) or stay user-editable (miss). 400 means non-absolute path
+ * and is treated as a "skip resolve" — the form already enforces the
+ * absolute-path shape inline before submit.
+ */
+export const resolveCovePath = (path: string) =>
+  request<CoveResolveBody | null>(
+    'GET',
+    `/api/coves/resolve?path=${encodeURIComponent(path)}`,
+  );
 
 // ---------------- waves ----------------
 

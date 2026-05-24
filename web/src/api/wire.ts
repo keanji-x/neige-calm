@@ -41,6 +41,20 @@ export type KernelCove = Schemas['Cove'];
 export type KernelWave = Schemas['Wave'];
 
 /**
+ * Issue #250 PR 3 — 200 body for `GET /api/coves/resolve`. The kernel
+ * returns the `Option<CoveResolve>` payload directly as the JSON body
+ * (`null` on no-claim), so the typed alias here matches what the
+ * `resolveCovePath` wrapper deserializes into.
+ */
+export type CoveResolveBody = Schemas['CoveResolve'];
+/** Issue #250 PR 3 — 409 body returned by `POST /api/waves` when the
+ *  body's `cwd` collides with an existing folder claim under another
+ *  cove (descendant) or already-narrower claims block widening
+ *  (ancestor). NewTaskForm surfaces the kind + path in its inline
+ *  error so the user can resolve the conflict without guesswork. */
+export type FolderConflictBody = Schemas['FolderConflict'];
+
+/**
  * Override `payload` to `unknown` — the OpenAPI emitter renders Rust's
  * `serde_json::Value` as `Record<string, never>` (empty object), which is
  * unusable for the heterogeneous blobs kernel cards actually carry.

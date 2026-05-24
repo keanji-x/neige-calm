@@ -1,6 +1,8 @@
 import { useEffect, useId, useMemo, useRef } from 'react';
 import { useState } from '../shared/state';
 import { WaveRow } from '../shared/components/WaveRow';
+import { NewTaskForm } from '../shared/components/NewTaskForm';
+import type { NewTaskFormResult } from '../shared/components/NewTaskForm';
 import { isRunning, isWaitingForUser } from '../shared/lifecycle';
 import type { Cove, Route, Wave } from '../types';
 import { ConfirmDialog } from '../ui/ConfirmDialog/ConfirmDialog';
@@ -27,7 +29,7 @@ export function CovePage({
   cove,
   waves,
   onGo,
-  onCreateWave,
+  onWaveCreated,
   onRenameCove,
   onDeleteCove,
   onDeleteWave,
@@ -35,8 +37,13 @@ export function CovePage({
   cove: Cove;
   waves: Wave[];
   onGo: (r: Route) => void;
-  /** Called when the user submits the inline `+ New wave` compose bar. */
-  onCreateWave?: (coveId: string, title: string) => void | Promise<void>;
+  /** Issue #250 PR 3 — fired after NewTaskForm successfully POSTs
+   *  `/api/waves`. Caller navigates to the new wave's detail page.
+   *  CovePage owns the inline-form open/close state; the create POST
+   *  + theme stamping + cove auto-inference all live inside
+   *  NewTaskForm. Pre-PR 3 this prop was `(coveId, title)` and the
+   *  caller did the create — that signature is gone. */
+  onWaveCreated?: (wave: NewTaskFormResult) => void | Promise<void>;
   /** Called from the inline rename input on the header. */
   onRenameCove?: (coveId: string, name: string) => void | Promise<void>;
   /** Called from the × button on the header. CovePage renders a
@@ -149,10 +156,8 @@ export function CovePage({
         </section>
       )}
 
-      {onCreateWave && (
-        <NewWaveCTA
-          onSubmit={(title) => onCreateWave(cove.id, title)}
-        />
+      {onWaveCreated && (
+        <NewWaveCTA defaultCoveId={cove.id} onCreated={onWaveCreated} />
       )}
 
       {/* Page-level wave-delete confirmation. One dialog instance per
@@ -314,26 +319,47 @@ function EditableTitle({
 
 // ---------------- NewWaveCTA — CovePage's compose-bar ----------------
 //
-// Bottom-of-page ghost button by default; expands inline to a single-line
-// text input on click. Visually rhymes with WavePage's `+ Add panel` so
-// the "compose at the bottom" idiom is consistent across pages.
+// Bottom-of-page ghost button by default; expands inline into the
+// shared `NewTaskForm` configuration card on click. Issue #250 PR 3 —
+// per the issue comment "all creation entrypoints must go through the
+// same configuration card", this CTA expands into NewTaskForm rather
+// than a bespoke one-line title input. The calendar's empty-cell
+// click (PR 6) will open the same NewTaskForm via the same component.
+//
+// We deliberately do NOT use a modal Dialog — the issue specifies an
+// inline card / floating panel form. The form sits at the bottom of
+// the cove page, replacing the CTA in place; on cancel we collapse
+// back to the button so the page footprint stays the same.
 
-// Disabled until the task/calendar flow lands in #250 PR 3 — the
-// inline-title input would call POST /api/waves which now requires
-// `cwd` + `attach_folder`, and the surrounding caller still passes
-// the empty defaults. Re-enabled (or replaced by NewTaskForm) in PR 3.
-function NewWaveCTA(_: {
-  onSubmit: (title: string) => void | Promise<void>;
+function NewWaveCTA({
+  defaultCoveId,
+  onCreated,
+}: {
+  defaultCoveId: string;
+  onCreated: (wave: NewTaskFormResult) => void | Promise<void>;
 }) {
+  const [open, setOpen] = useState(false);
+  if (!open) {
+    return (
+      <button
+        type="button"
+        className="new-wave-cta"
+        onClick={() => setOpen(true)}
+        title="New wave"
+      >
+        <span className="new-wave-glyph" aria-hidden>+</span>
+        <span className="new-wave-label">New wave</span>
+      </button>
+    );
+  }
   return (
-    <button
-      type="button"
-      className="new-wave-cta"
-      disabled
-      title="Wave creation is being rebuilt for the task/calendar flow (#250 PR 3). Disabled until then."
-    >
-      <span className="new-wave-glyph" aria-hidden>+</span>
-      <span className="new-wave-label">New wave</span>
-    </button>
+    <NewTaskForm
+      defaultCoveId={defaultCoveId}
+      onCreated={async (wave) => {
+        setOpen(false);
+        await onCreated(wave);
+      }}
+      onCancel={() => setOpen(false)}
+    />
   );
 }
