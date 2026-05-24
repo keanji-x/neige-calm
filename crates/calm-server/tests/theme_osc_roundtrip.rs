@@ -180,20 +180,14 @@ async fn boot_full() -> Boot {
         session_daemon_bin: locate_daemon_bin(),
     });
     let card_role_cache = CardRoleCache::new();
-    // CodexClient stub's default `codex_homes_dir` is global
-    // (`std::env::temp_dir().join("neige-codex-homes-stub")`) which
-    // means every test run accumulates a fresh 300MB+ copy of
-    // `$HOME/.codex` there (the codex-cards endpoint seeds it on
-    // first spawn). Across iterations the /tmp partition fills and
-    // subsequent `mkdir`s fail with ENOSPC. Override per-test with a
-    // tempdir-scoped dir so the seed copy is cleaned up when the
-    // test's `TempDir` drops.
-    let codex_client = CodexClient {
-        codex_bin: "codex".into(),
-        bridge_bin: PathBuf::from("neige-codex-bridge"),
-        ingest_url: "http://127.0.0.1:0".into(),
-        codex_homes_dir: tmp.path().join("codex-homes"),
-    };
+    // #267 — `CodexClient::new_stub()` now mints its own per-instance
+    // `tempfile::TempDir` for `codex_homes_dir`, so the per-card
+    // codex-home subdirs (and the seeded `~/.codex` copy) get cleaned
+    // up when the test's `Arc<CodexClient>` drops at teardown. The
+    // previous explicit override was working around a hardcoded shared
+    // `temp_dir().join("neige-codex-homes-stub")` default that has now
+    // been removed at the source.
+    let codex_client = CodexClient::new_stub();
     let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
     let state = AppState::from_parts(
         repo.clone(),

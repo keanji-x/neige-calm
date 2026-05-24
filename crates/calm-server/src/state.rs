@@ -674,6 +674,20 @@ pub struct CodexClient {
     /// restarts. (The old `/tmp/`-based location was wiped on every
     /// container recreate, leaving the daemon stuck in a respawn loop.)
     pub codex_homes_dir: PathBuf,
+    /// Test-only handle. When `new_stub()` constructs the client it stows
+    /// a `tempfile::TempDir` here whose path equals `codex_homes_dir`.
+    /// Holding the handle for the lifetime of the `CodexClient` (which
+    /// is itself held inside `Arc<CodexClient>` on `AppState.codex`)
+    /// guarantees the per-card `$CODEX_HOME` subdirs created under it
+    /// get cleaned up when the test drops its `AppState` — closing the
+    /// 134 GB-per-day leak described in issue #267 where the prior
+    /// hardcoded `temp_dir().join("neige-codex-homes-stub")` shared one
+    /// global dir across every test run.
+    ///
+    /// Production (`new`) leaves this `None`: `data_dir_resolved()` is a
+    /// long-lived path that must survive the server process and the
+    /// orchestration layer manages its lifecycle.
+    _codex_homes_tempdir: Option<tempfile::TempDir>,
 }
 
 impl CodexClient {
@@ -686,17 +700,46 @@ impl CodexClient {
                 .unwrap_or_else(resolve_codex_bridge_bin),
             ingest_url: cfg.codex_ingest_url_resolved(),
             codex_homes_dir: cfg.data_dir_resolved().join("codex-homes"),
+            _codex_homes_tempdir: None,
         }
     }
 
     /// Test stub — never actually spawns codex; tests that touch the
     /// codex routes don't need a real binary on PATH.
+    ///
+    /// **#267 — per-test temp dir for `codex_homes_dir`.** Earlier
+    /// versions hardcoded the path to
+    /// `std::env::temp_dir().join("neige-codex-homes-stub")`, a single
+    /// global dir every test instance wrote into and nobody cleaned up
+    /// — across enough test runs the dir grew to 100+ GB of codex
+    /// session state (per-card `logs_*.sqlite*`, `history`, the seeded
+    /// `~/.codex` copy). Now each `new_stub()` mints its own
+    /// `tempfile::TempDir`, stashed in `_codex_homes_tempdir`, so the
+    /// directory disappears when the `CodexClient` (and the `Arc` on
+    /// `AppState.codex`) drops at test teardown. Falls back to the old
+    /// shared path only if `TempDir::new()` fails — vanishingly rare in
+    /// practice and the failure case isn't worth losing test coverage.
     pub fn new_stub() -> Self {
+        let (codex_homes_dir, tmp) = match tempfile::Builder::new()
+            .prefix("neige-codex-homes-stub-")
+            .tempdir()
+        {
+            Ok(tmp) => (tmp.path().to_path_buf(), Some(tmp)),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "failed to create per-test codex_homes tempdir; \
+                     falling back to shared path (test will leak)"
+                );
+                (std::env::temp_dir().join("neige-codex-homes-stub"), None)
+            }
+        };
         Self {
             codex_bin: "codex".into(),
             bridge_bin: PathBuf::from("neige-codex-bridge"),
             ingest_url: "http://127.0.0.1:0".into(),
-            codex_homes_dir: std::env::temp_dir().join("neige-codex-homes-stub"),
+            codex_homes_dir,
+            _codex_homes_tempdir: tmp,
         }
     }
 }
