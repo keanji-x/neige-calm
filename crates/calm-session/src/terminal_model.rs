@@ -660,10 +660,15 @@ pub struct TerminalModel {
     rev: u32,
     cursor_visible: bool,
     /// DECSET 1004 (focus event reporting) state. `true` once the child
-    /// has sent `CSI ?1004 h`. The daemon reads this as a "focus-aware
-    /// TUI" signal to gate the synthetic mid-session OSC 10/11 theme
-    /// write (see `daemon.rs` `Effect::TerminalThemeUpdate`). Not visible
-    /// content, so it never bumps the render rev.
+    /// has sent `CSI ?1004 h`, cleared on `CSI ?1004 l`. The daemon reads
+    /// this as a "focus-aware TUI" signal to gate the synthetic mid-session
+    /// OSC 10/11 + focus-in write (see `daemon.rs`
+    /// `Effect::TerminalThemeUpdate`) — a cooked-shell at the prompt (ZLE
+    /// raw, no 1004) would otherwise echo color bytes into its line buffer
+    /// (#295 / PR #296). Per-`TerminalModel`, so per-PTY/session and dies
+    /// with the model; single writer (parser) + single reader (session
+    /// loop) under the `render_plane` lock, no multi-client ambiguity.
+    /// Not visible content, so it never bumps the render rev.
     focus_event_tracking: bool,
     /// Default foreground/background RGB the daemon advertises to the
     /// PTY child in reply to OSC 10/11 color queries. `None` means
