@@ -240,12 +240,13 @@ async fn subscribe_filtered_skips_lagged_without_panic() {
 async fn dispatcher_happy_path_mints_worker_card() {
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
 
+    let codex = stub_codex();
     let _dispatcher = Dispatcher::spawn(
         repo.clone(),
         events.clone(),
         cache.clone(),
         wcc.clone(),
-        stub_codex(),
+        codex.clone(),
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         4,    // permits
@@ -290,12 +291,13 @@ async fn dispatcher_role_is_worker_via_role_cache() {
     // Variant of the happy-path test that doesn't need to crack open
     // the pool — we verify role=Worker via `card_role_cache.get(...)`.
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
+    let codex = stub_codex();
     let _dispatcher = Dispatcher::spawn(
         repo.clone(),
         events.clone(),
         cache.clone(),
         wcc.clone(),
-        stub_codex(),
+        codex.clone(),
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         4,
@@ -349,12 +351,13 @@ async fn dispatcher_role_is_worker_via_role_cache() {
 #[tokio::test]
 async fn dispatcher_dedup_does_not_double_emit_task_failed() {
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
+    let codex = stub_codex();
     let _dispatcher = Dispatcher::spawn(
         repo.clone(),
         events.clone(),
         cache.clone(),
         wcc.clone(),
-        stub_codex(),
+        codex.clone(),
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         4,
@@ -418,12 +421,13 @@ async fn dispatcher_dedup_does_not_double_emit_task_failed() {
 #[tokio::test]
 async fn dispatcher_dedupes_same_idempotency_key() {
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
+    let codex = stub_codex();
     let _dispatcher = Dispatcher::spawn(
         repo.clone(),
         events.clone(),
         cache.clone(),
         wcc.clone(),
-        stub_codex(),
+        codex.clone(),
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         4,
@@ -476,12 +480,13 @@ async fn dispatcher_semaphore_caps_concurrent_spawns() {
     // semaphore's `available_permits()` should never go below 0
     // (it can't by construction) and shouldn't exceed 2 minus the
     // number currently held — i.e. `available <= 2` at any sample.
+    let codex = stub_codex();
     let dispatcher = Arc::new(Dispatcher::spawn(
         repo.clone(),
         events.clone(),
         cache.clone(),
         wcc.clone(),
-        stub_codex(),
+        codex.clone(),
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         2,
@@ -555,12 +560,13 @@ async fn dispatcher_emits_task_failed_on_bad_scope() {
     // a worker card without a parent wave, so it bails and emits a
     // task.failed event with the reason.
     let (repo, events, cache, wcc, _wave_id, _cove_id) = boot().await;
+    let codex = stub_codex();
     let _dispatcher = Dispatcher::spawn(
         repo.clone(),
         events.clone(),
         cache.clone(),
         wcc.clone(),
-        stub_codex(),
+        codex.clone(),
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         4,
@@ -631,12 +637,13 @@ async fn dispatcher_card_added_emit_passes_role_gate() {
     // the dispatcher's actual write path (which goes through
     // `write_with_event` → `enforce_role`) doesn't get rejected.
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
+    let codex = stub_codex();
     let _dispatcher = Dispatcher::spawn(
         repo.clone(),
         events.clone(),
         cache.clone(),
         wcc.clone(),
-        stub_codex(),
+        codex.clone(),
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         4,
@@ -681,12 +688,13 @@ async fn dispatcher_dedupes_under_real_concurrent_race() {
     let _ = tracing_subscriber::fmt::try_init();
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
     // Permits >= 2 so both racers can run concurrently.
+    let codex = stub_codex();
     let _dispatcher = Dispatcher::spawn(
         repo.clone(),
         events.clone(),
         cache.clone(),
         wcc.clone(),
-        stub_codex(),
+        codex.clone(),
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         4,
@@ -847,12 +855,13 @@ async fn dispatcher_codex_worker_spawns_with_dark_theme_default() {
         session_daemon_bin: locate_recorder_bin(),
     });
 
+    let codex = stub_codex();
     let _dispatcher = Dispatcher::spawn(
         repo.clone(),
         events.clone(),
         cache.clone(),
         wcc.clone(),
-        stub_codex(),
+        codex.clone(),
         daemon,
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         4,    // permits

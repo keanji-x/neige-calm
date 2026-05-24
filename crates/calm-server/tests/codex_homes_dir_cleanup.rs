@@ -93,19 +93,15 @@ async fn appstate_wave_create_subdir_is_under_per_test_tempdir() {
     // tempdir (i.e. NOT the pre-#267 hardcoded
     // `temp_dir().join("neige-codex-homes-stub")`).
     //
-    // Why not "drop `state` and assert the dir is gone": `AppState`
-    // shares its `Arc<CodexClient>` with the long-lived `Dispatcher`
-    // background task (`Dispatcher::spawn` → `Inner.codex`). That task
-    // only winds down when the broadcast bus closes, which requires
-    // the inner's `EventBus` sender to drop — and the inner is held by
-    // the task. The cycle resolves at test-process exit (when the
-    // tokio runtime tears down) but not on a synchronous `drop(state)`
-    // inside one test, so a "drop + assert" assertion would be racy.
-    // The leak we're closing isn't lifetime-too-long, it's
-    // lifetime-unbounded-across-test-processes — and a per-instance
-    // `TempDir` fixes that even if cleanup waits for process exit.
-    // The `new_stub_codex_homes_dir_exists_until_drop` test above
-    // covers the direct drop semantics in isolation.
+    // Drop-then-assert semantics are covered by
+    // `new_stub_codex_homes_dir_exists_until_drop` (CodexClient in
+    // isolation) and `appstate_drop_removes_codex_homes_dir_on_disk`
+    // (full AppState shape — post-#272 N3 the dispatcher holds a
+    // `Weak<CodexClient>` so the cycle is broken and drop is
+    // synchronous). This test focuses narrowly on the "lives under the
+    // per-test tempdir, not the pre-#267 global path" property — i.e.
+    // the leak we close even if cleanup were to wait for process
+    // exit.
     let repo: Arc<dyn Repo> = Arc::new(
         SqlxRepo::open("sqlite::memory:")
             .await
@@ -180,4 +176,90 @@ async fn appstate_wave_create_subdir_is_under_per_test_tempdir() {
     );
 
     drop(state);
+}
+
+/// #272 (N3) — verifies the property PR #271 deliberately punted on.
+/// Pre-#272 the dispatcher held a strong `Arc<CodexClient>`, cycling
+/// with the broadcast bus (the dispatcher task only ends when the bus
+/// closes, the bus only closes when its sender drops, the sender is
+/// held by the task itself). The strong ref kept the wrapped
+/// `tempfile::TempDir` alive until the *test process* exited, so the
+/// per-test cleanup #271 introduced only fired at process teardown —
+/// fine for binary lifetime, but accumulating 41 tempdirs / 8.5 MB
+/// across one workspace `cargo test` run (measured locally in the
+/// issue thread).
+///
+/// #272 N3 broke the cycle by switching `Dispatcher::Inner.codex` to
+/// `Weak<CodexClient>` — so dropping `AppState` releases the last
+/// strong ref synchronously, the `TempDir` drops, the directory is
+/// removed from disk. This test asserts that property end-to-end.
+#[tokio::test]
+async fn appstate_drop_removes_codex_homes_dir_on_disk() {
+    let repo: Arc<dyn Repo> = Arc::new(
+        SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite"),
+    );
+    let codex = Arc::new(CodexClient::new_stub());
+    let codex_homes_dir = codex.codex_homes_dir.clone();
+    assert!(
+        codex_homes_dir.exists(),
+        "precondition: per-test tempdir must exist before AppState construction"
+    );
+
+    let daemon = Arc::new(DaemonClient::new_stub());
+    let card_role_cache = CardRoleCache::new();
+    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    let plugin_data_root = tempfile::tempdir().expect("plugin data tempdir");
+    let plugin = Arc::new(PluginHost::new_full(
+        Arc::new(PluginRegistry::empty()),
+        repo.clone(),
+        PathBuf::new(),
+        plugin_data_root.path().to_path_buf(),
+        Vec::new(),
+        EventBus::new(),
+        card_role_cache.clone(),
+        wave_cove_cache.clone(),
+    ));
+
+    // Construction-shape mirrors the integration tests that triggered
+    // the #267 incident. The dispatcher inside `from_parts` previously
+    // held a strong `Arc<CodexClient>` clone; post-#272 N3 it holds a
+    // `Weak`, so the only strong refs are (a) the `codex` binding
+    // above and (b) the `state.codex` field.
+    let state = AppState::from_parts(
+        repo,
+        EventBus::new(),
+        daemon,
+        plugin,
+        codex, // moved into state.codex
+        Some(card_role_cache),
+        Some(wave_cove_cache),
+    );
+
+    // Seed a per-card subdir + file so the assertion has bytes on disk
+    // to disappear, not just an empty dir.
+    let card_id = uuid::Uuid::new_v4().to_string();
+    let card_home = state.codex.codex_homes_dir.join(&card_id);
+    std::fs::create_dir_all(&card_home).expect("seed per-card codex home");
+    std::fs::write(card_home.join("history"), vec![0u8; 4096]).expect("seed fake codex state file");
+    assert!(card_home.exists());
+
+    // Drop `state` — its `state.codex` (the last strong ref) drops, the
+    // `Arc<CodexClient>` inner drops, `_codex_homes_tempdir` drops, the
+    // wrapped `TempDir` removes the entire tree.
+    drop(state);
+
+    assert!(
+        !codex_homes_dir.exists(),
+        "post-#272 N3: dropping AppState must remove its codex_homes_dir tempdir; \
+         {} still exists after drop — dispatcher Arc cycle has been resurrected, \
+         per-test cleanup is back to process-exit only (the leak PR #271 punted on)",
+        codex_homes_dir.display(),
+    );
+    assert!(
+        !card_home.exists(),
+        "per-card subdir under codex_homes_dir survived AppState drop — \
+         tempdir reap regression"
+    );
 }

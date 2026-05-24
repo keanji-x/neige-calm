@@ -48,7 +48,11 @@ fn wait_for_exit(pid: i32, budget: Duration) -> bool {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    !pid_alive(pid)
+    // #272 (N4) — the loop already checked `!pid_alive` on every
+    // iteration up to the deadline; a final re-check here is dead
+    // weight. Timeout means we waited the full budget without seeing
+    // the pid disappear, which is the definition of "not exited".
+    false
 }
 
 fn fresh_sock(label: &str) -> PathBuf {
@@ -206,6 +210,126 @@ fn parent_death_kills_daemon_and_pty_child() {
     // call if SIGKILL fallback fires first). Belt-and-braces local
     // cleanup keeps the temp dir tidy for the next run.
     let _ = std::fs::remove_file(&d.sock);
+}
+
+/// #272 (N1) — chat-mode counterpart to the terminal-mode test above.
+/// Spawns a chat-mode daemon under sh, with an "unresponsive" Node
+/// stub runner that ignores stdin EOF + SIGHUP + SIGPIPE; SIGKILLs
+/// the parent sh; asserts that the runner's pid (which is also its
+/// pgid because the daemon spawns the runner with `process_group(0)`)
+/// disappears within the same 5 s budget the terminal-mode test
+/// uses.
+///
+/// Pre-#272 the daemon's SIGTERM branch in `run_chat` only dropped
+/// `stdin_tx` to deliver EOF to the runner — a fine happy path, but a
+/// hung runner that traps SIGPIPE / ignores EOF would survive
+/// indefinitely (only the OS reaper at daemon exit would catch it,
+/// and only on the next kernel reaping pass). The unresponsive stub
+/// reproduces that exact failure mode; the test passes only if the
+/// new `kill_chat_runner_group` SIGHUP + 2 s SIGKILL fallback fires.
+///
+/// Also exercises R3 incidentally: if the tokio SIGTERM handler isn't
+/// registered before the prctl race-guard self-SIGTERM (the case
+/// pre-#272 R3), the daemon dies on default disposition immediately
+/// at startup and the test fails with "daemon never bound socket".
+#[test]
+fn parent_death_kills_chat_runner_group() {
+    if std::process::Command::new("node")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| !s.success())
+        .unwrap_or(true)
+    {
+        eprintln!("skipping parent_death_kills_chat_runner_group: node not on PATH");
+        return;
+    }
+    let stub = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("unresponsive-stub-runner.mjs");
+    assert!(stub.exists(), "stub missing at {}", stub.display());
+
+    let sock = fresh_sock("chat-kill");
+    let id = Uuid::new_v4().to_string();
+    let cmd = format!(
+        "{daemon} --mode chat --id {id} --sock {sock} \
+            --runner-path {stub} --cwd /tmp & echo $!; wait",
+        daemon = daemon_bin(),
+        id = id,
+        sock = sock.to_string_lossy(),
+        stub = stub.to_string_lossy(),
+    );
+    let mut sh = Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .stdin(Stdio::null())
+        .spawn()
+        .expect("spawn sh");
+    use std::io::{BufRead, BufReader};
+    let stdout = sh.stdout.take().expect("sh stdout");
+    let mut rdr = BufReader::new(stdout);
+    let mut line = String::new();
+    rdr.read_line(&mut line).expect("read daemon pid");
+    let daemon_pid: i32 = line.trim().parse().expect("parse daemon pid");
+
+    // Wait for the socket to bind. If R3 regressed (handler installed
+    // after prctl race-guard), the race-guard self-SIGTERM would kill
+    // the daemon before this point and we'd never see a bound socket.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        if sock.exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        sock.exists(),
+        "chat daemon (pid {daemon_pid}) failed to bind socket {} within 3s — possibly R3 regression",
+        sock.display()
+    );
+
+    // Capture the runner (node) pid via pgrep -P <daemon>. The daemon
+    // spawns one node child; pgrep returns just that pid. We grab it
+    // BEFORE killing sh because once the daemon is orphaned, pgrep
+    // walks the reparent and the relationship to descendants would
+    // need a different traversal.
+    let descendants = all_descendants(daemon_pid);
+    assert!(
+        !descendants.is_empty(),
+        "expected chat daemon (pid {daemon_pid}) to have spawned a node runner; found no descendants",
+    );
+
+    // SIGKILL the wrapping sh — orphans the daemon, kernel delivers
+    // SIGTERM via PR_SET_PDEATHSIG, daemon's R3-armed handler catches
+    // it, drops runner stdin (happy path no-op here because the stub
+    // ignores EOF), then fires `kill_chat_runner_group` (SIGHUP + 2 s
+    // SIGKILL fallback). The runner ignores SIGHUP — only the SIGKILL
+    // can take it down.
+    let sh_pid = sh.id() as i32;
+    unsafe {
+        libc::kill(sh_pid, libc::SIGKILL);
+    }
+    let _ = sh.wait();
+
+    assert!(
+        wait_for_exit(daemon_pid, Duration::from_secs(5)),
+        "chat daemon (pid {daemon_pid}) survived parent death — R3 / shutdown handler regression",
+    );
+    // 5 s budget covers: ~ms PR_SET_PDEATHSIG delivery, ~ms SIGHUP
+    // (ignored by stub), 2 s SIGKILL fallback timer, ~ms kernel
+    // reaping. Same headroom shape as the terminal-mode test.
+    for pid in &descendants {
+        assert!(
+            wait_for_exit(*pid, Duration::from_secs(5)),
+            "chat runner descendant pid {pid} survived parent death — N1 / kill_chat_runner_group regression",
+        );
+    }
+
+    let _ = std::fs::remove_file(&sock);
 }
 
 #[test]
