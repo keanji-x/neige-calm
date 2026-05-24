@@ -408,7 +408,7 @@ function EditView({
         className="wave-report-edit-body"
         value={state.body}
         onChange={(e) => setState((s) => ({ ...s, body: e.target.value }))}
-        placeholder="# Goal&#10;&#10;..."
+        placeholder={`# Goal\n\n...`}
         rows={20}
         disabled={state.submitting}
         aria-label="Wave report body"
