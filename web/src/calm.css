@@ -2020,6 +2020,46 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-pill);
 }
+/* #306 — exit badge on the card header. Renders inside
+   `.card-head-status` next to the working dot / observing pill when
+   the daemon's reported the child's exit code (warp's convention,
+   adopted in #306 over a full-card overlay). Visual language mirrors
+   `.card-head-observing-pill` (small pill, uppercase, subdued) so the
+   header's three status indicators (pill, badge, dot) read as one
+   system. Tri-coloured by `kind`:
+   - `success` (exit 0) → soft green-ish; we don't have a dedicated
+     success token in the palette, so we lean on `--accent-soft`
+     (same family as the live working dot)
+   - `neutral` (Ctrl-C / SIGPIPE / unknown code) → the calm warn-soft
+     pair we already use for `observing`; reads as "informational,
+     not alarming"
+   - `error` (any other non-zero, or signal-killed) → `--warn-soft`
+     background and `--warn-fg` text for sharper contrast; matches
+     the existing `--warn` token vocabulary so we don't fork colours
+     on the danger axis. */
+.card-head-exit-badge {
+  flex: 0 0 auto;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  line-height: var(--leading-none);
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-pill);
+  font-variant-numeric: tabular-nums;
+}
+.card-head-exit-badge-success {
+  color: var(--text-3);
+  background: var(--accent-soft, var(--warn-soft));
+}
+.card-head-exit-badge-neutral {
+  color: var(--text-3);
+  background: var(--warn-soft);
+}
+.card-head-exit-badge-error {
+  color: var(--warn-fg, var(--text-1));
+  background: var(--warn-soft);
+}
 /* `.card-head-icon` is the card-identity glyph block at the very left of
    the header — small rounded square hosting either a caller-supplied
    ReactNode (`icon` prop on <CardHead>) or the default letter-avatar.

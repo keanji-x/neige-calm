@@ -93,6 +93,13 @@ pub(crate) async fn spawn_daemon_with_parts(
     if sock.exists() {
         let _ = std::fs::remove_file(&sock);
     }
+    // #306 — GC the previous daemon's `.exit` sidecar at the same
+    // moment we unlink its socket: a stale sidecar would otherwise
+    // make `resolve_live_sock` mistakenly re-persist the *old* exit
+    // info onto a freshly-spawned daemon's row the first time the new
+    // daemon's socket goes unreachable. Best-effort; ENOENT is the
+    // common case (no prior daemon for this row).
+    let _ = std::fs::remove_file(crate::ws::terminal::exit_sidecar_path(&sock));
     let sock_str = sock.to_string_lossy().to_string();
 
     // #177 PR2 — `term.theme_fg/_bg` are the single source of truth

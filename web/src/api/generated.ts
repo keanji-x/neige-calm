@@ -1128,6 +1128,23 @@ export interface components {
             cwd: string;
             daemon_handle?: string | null;
             env: Record<string, never>;
+            /**
+             * Format: int32
+             * @description #306 — child exit code captured by the daemon at `child.wait()`.
+             *     `Some(_)` means the child returned via `exit()` / main return;
+             *     `None` means either the child hasn't exited yet, was killed by a
+             *     signal (see `signal_killed`), or the daemon died without writing
+             *     the sidecar (DaemonLost; not surfaced in v1). Required column
+             *     (NULL-able in SQL, but always serialized) per the [Required over
+             *     Option] policy: the absence of an exit code is itself information
+             *     the frontend renders, so a missing-field response is a bug.
+             *     `required = true` flips the utoipa default ("Option ⇒ optional")
+             *     so the OpenAPI schema marks the field as required-but-nullable,
+             *     which `openapi-typescript` renders as `number | null` (no `?:`)
+             *     — matching the contract intent: every response carries the
+             *     field, even if its value is `null`.
+             */
+            exit_code: number | null;
             id: string;
             /**
              * Format: int64
@@ -1139,6 +1156,14 @@ export interface components {
              */
             pid?: number | null;
             program: string;
+            /**
+             * @description #306 — true when the child was killed by a signal (SIGTERM,
+             *     SIGKILL, SIGSEGV, …). Mutually exclusive with `exit_code.is_some()`
+             *     at the writer: the daemon picks one branch on the way out and
+             *     never both. Required (NOT NULL DEFAULT 0 in SQL) — every row
+             *     carries a value, even if `false`.
+             */
+            signal_killed: boolean;
             /**
              * @description #177 — host browser's background RGB at row-creation time.
              *     Mirrors `theme_fg` semantics; both columns are written together

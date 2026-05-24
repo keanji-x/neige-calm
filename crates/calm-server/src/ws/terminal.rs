@@ -129,6 +129,78 @@ enum LiveSock {
 /// "daemon died while server was down" recovery is now handled by
 /// `revive_orphans_on_boot` walked once at server startup; the per-
 /// request WS attach path is probe-only.
+/// #306 — payload shape the daemon writes to `<sock_path>.exit` at child-wait
+/// time. Mutually exclusive at the writer: `signal_killed = true` ⇒
+/// `code = None`; `code = Some(_)` ⇒ `signal_killed = false`. v1 doesn't
+/// enforce this on the reader — the repo writes whatever was on disk and
+/// the frontend renders whichever field is present.
+#[derive(serde::Deserialize)]
+struct ExitSidecar {
+    code: Option<i32>,
+    #[serde(default)]
+    signal_killed: bool,
+}
+
+/// #306 — pick up `<sock_path>.exit` and stamp the exit info on the
+/// terminal row. Best-effort: read failure / parse failure / persist
+/// failure all degrade to a single warn-log because the caller is about
+/// to surface `LiveSock::ChildExited` either way, and the worst-case
+/// degraded UX (no badge until next attach) is acceptable.
+async fn persist_exit_sidecar(s: &AppState, terminal_id: &str, sock_handle: &str) {
+    let exit_path = format!("{sock_handle}.exit");
+    let raw = match std::fs::read_to_string(&exit_path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Common case for SIGKILL'd daemons; not surprising.
+            tracing::debug!(
+                terminal_id,
+                path = %exit_path,
+                "no .exit sidecar on disk (daemon may have been killed before writing)",
+            );
+            return;
+        }
+        Err(e) => {
+            tracing::warn!(
+                terminal_id,
+                path = %exit_path,
+                error = %e,
+                "reading .exit sidecar failed",
+            );
+            return;
+        }
+    };
+    let parsed: ExitSidecar = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                terminal_id,
+                path = %exit_path,
+                error = %e,
+                "parsing .exit sidecar failed",
+            );
+            return;
+        }
+    };
+    if let Err(e) = s
+        .repo
+        .terminal_set_exit(terminal_id, parsed.code, parsed.signal_killed)
+        .await
+    {
+        tracing::warn!(
+            terminal_id,
+            error = %e,
+            "persisting .exit sidecar to terminal row failed",
+        );
+    } else {
+        tracing::info!(
+            terminal_id,
+            exit_code = ?parsed.code,
+            signal_killed = parsed.signal_killed,
+            "persisted .exit sidecar to terminal row",
+        );
+    }
+}
+
 async fn resolve_live_sock(s: &AppState, id: &str) -> Result<LiveSock> {
     let term = s
         .repo
@@ -150,6 +222,17 @@ async fn resolve_live_sock(s: &AppState, id: &str) -> Result<LiveSock> {
             sock = %handle,
             "daemon socket unreachable with handle set — treating as clean child exit",
         );
+        // #306 — sidecar pickup. The daemon writes
+        // `<sock_path>.exit` with `{"code": <i32|null>,
+        // "signal_killed": <bool>}` immediately before its broadcast
+        // effects fire, so by the time we see the socket unreachable
+        // the file is on disk (modulo daemon-killed-by-SIGKILL, which
+        // never gets the chance to write — that branch leaves the
+        // row's exit_code at NULL and surfaces as DaemonLost in v2).
+        // We persist the parsed payload onto the terminal row so the
+        // REST card view + the badge logic on the frontend can render
+        // immediately, even without ever attaching to a WS.
+        persist_exit_sidecar(s, &term.id, handle).await;
         return Ok(LiveSock::ChildExited);
     }
     // No daemon_handle: with the spawn-site eager-write this should be
@@ -244,6 +327,32 @@ pub(crate) async fn cleanup_stale_daemon(
             );
         }
     }
+    // #306 — GC the daemon's `.exit` sidecar alongside the socket file.
+    // We tolerate ENOENT silently: the daemon may have been SIGKILL'd
+    // before it ever wrote the file, or another path may have already
+    // cleaned it up.
+    let exit_path = exit_sidecar_path(sock);
+    match std::fs::remove_file(&exit_path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            tracing::warn!(
+                terminal_id = %terminal_id,
+                path = ?exit_path,
+                error = %e,
+                "unlinking stale .exit sidecar failed"
+            );
+        }
+    }
+}
+
+/// #306 — derive the `<sock>.exit` sidecar path from a socket path.
+/// Lifted into a free function so the daemon's writer and the kernel's
+/// reader / GC use a single canonical formula.
+pub(crate) fn exit_sidecar_path(sock: &StdPath) -> PathBuf {
+    let mut s = sock.as_os_str().to_owned();
+    s.push(".exit");
+    PathBuf::from(s)
 }
 
 /// Outcome reported by [`pump`] when it returns. Lets [`handle`] decide

@@ -1012,6 +1012,8 @@ pub async fn terminal_create_tx(
         pid: None,
         theme_fg,
         theme_bg,
+        exit_code: None,
+        signal_killed: false,
         created_at: now,
     })
 }
@@ -1618,7 +1620,7 @@ impl RepoRead for SqlxRepo {
     async fn terminal_get(&self, id: &str) -> Result<Option<Terminal>> {
         let row = sqlx::query_as::<_, Terminal>(
             r#"SELECT id, card_id, program, cwd, env, daemon_handle, pid,
-                      theme_fg, theme_bg, created_at
+                      theme_fg, theme_bg, exit_code, signal_killed, created_at
                FROM terminals WHERE id = ?1"#,
         )
         .bind(id)
@@ -1630,7 +1632,7 @@ impl RepoRead for SqlxRepo {
     async fn terminal_get_by_card(&self, card_id: &str) -> Result<Option<Terminal>> {
         let row = sqlx::query_as::<_, Terminal>(
             r#"SELECT id, card_id, program, cwd, env, daemon_handle, pid,
-                      theme_fg, theme_bg, created_at
+                      theme_fg, theme_bg, exit_code, signal_killed, created_at
                FROM terminals WHERE card_id = ?1"#,
         )
         .bind(card_id)
@@ -1649,7 +1651,9 @@ impl RepoRead for SqlxRepo {
         let rows = sqlx::query_as::<_, Terminal>(
             r#"SELECT t.id, t.card_id, t.program, t.cwd, t.env,
                       t.daemon_handle, t.pid,
-                      t.theme_fg, t.theme_bg, t.created_at
+                      t.theme_fg, t.theme_bg,
+                      t.exit_code, t.signal_killed,
+                      t.created_at
                FROM terminals t
                WHERE NOT EXISTS (
                    SELECT 1 FROM cards c
@@ -1671,7 +1675,9 @@ impl RepoRead for SqlxRepo {
         let rows = sqlx::query_as::<_, Terminal>(
             r#"SELECT id, card_id, program, cwd, env,
                       daemon_handle, pid,
-                      theme_fg, theme_bg, created_at
+                      theme_fg, theme_bg,
+                      exit_code, signal_killed,
+                      created_at
                FROM terminals
                WHERE daemon_handle IS NOT NULL"#,
         )
@@ -1963,6 +1969,8 @@ impl RepoOutOfDomain for SqlxRepo {
             pid: None,
             theme_fg,
             theme_bg,
+            exit_code: None,
+            signal_killed: false,
             created_at: now,
         })
     }
@@ -1987,6 +1995,29 @@ impl RepoOutOfDomain for SqlxRepo {
             .bind(id)
             .execute(&self.pool)
             .await?;
+        if res.rows_affected() == 0 {
+            return Err(CalmError::NotFound(format!("terminal {id}")));
+        }
+        Ok(())
+    }
+
+    async fn terminal_set_exit(
+        &self,
+        id: &str,
+        exit_code: Option<i32>,
+        signal_killed: bool,
+    ) -> Result<()> {
+        // #306 — single UPDATE; the two columns are written together so
+        // a reader never sees a mismatched intermediate state. The
+        // mutual-exclusion invariant (signal_killed=true ⇒ exit_code=None)
+        // is the writer's responsibility — see daemon `spawn_child_waiter`.
+        let res =
+            sqlx::query("UPDATE terminals SET exit_code = ?1, signal_killed = ?2 WHERE id = ?3")
+                .bind(exit_code)
+                .bind(if signal_killed { 1_i64 } else { 0_i64 })
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
         if res.rows_affected() == 0 {
             return Err(CalmError::NotFound(format!("terminal {id}")));
         }

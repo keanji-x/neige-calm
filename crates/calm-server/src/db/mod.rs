@@ -540,6 +540,20 @@ pub trait RepoOutOfDomain: RepoRead {
     /// (and the WS-side revive path). The orphan-terminal sweeper uses this
     /// as a SIGTERM fallback target when graceful `ClientMsg::Kill` fails.
     async fn terminal_set_pid(&self, id: &str, pid: Option<u32>) -> Result<()>;
+    /// #306 — record the child's exit info captured by the daemon. The
+    /// kernel calls this from the WS upgrade path after reading the
+    /// daemon's `.exit` sidecar file (see
+    /// `crates/calm-server/src/ws/terminal.rs::resolve_live_sock`). The
+    /// two arguments are mutually exclusive at the writer: a signal-
+    /// killed child writes `exit_code = None, signal_killed = true`, an
+    /// `exit()` child writes `exit_code = Some(_), signal_killed = false`.
+    /// Callers must respect that invariant; the repo enforces neither.
+    async fn terminal_set_exit(
+        &self,
+        id: &str,
+        exit_code: Option<i32>,
+        signal_killed: bool,
+    ) -> Result<()>;
     /// Remove a terminal row by id. Surfaced on the trait so the sweeper
     /// can call it from inside its `write_with_event` closure via the
     /// `_tx`-suffixed helper.
