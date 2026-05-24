@@ -17,7 +17,7 @@
 // directly with no actor header) and the kernel attributes the write
 // to `ActorId::User`.
 
-import type { APIRequestContext } from '@playwright/test';
+import type { APIRequestContext, APIResponse } from '@playwright/test';
 
 import { REPLAY_PORT } from './reset';
 
@@ -70,6 +70,28 @@ export async function forceWaveLifecycle(
 }
 
 /**
+ * Sibling of `forceWaveLifecycle` that returns the raw `APIResponse`
+ * without throwing on 4xx. Used by the rejection-paths suite — the
+ * tests there *expect* the validator to reject (e.g. `draft → done`
+ * skip), so a throwing helper would defeat the point. Callers are
+ * responsible for asserting the status / parsing the body.
+ *
+ * Same wire shape, same headers, same actor (`ActorId::Kernel`) as
+ * the throwing variant — only the error handling differs.
+ */
+export async function forceWaveLifecycleRaw(
+  request: APIRequestContext,
+  waveId: string,
+  to: WaveLifecycle,
+): Promise<APIResponse> {
+  const url = `http://127.0.0.1:${REPLAY_PORT}/dev/force-wave-lifecycle`;
+  return request.post(url, {
+    data: { wave_id: waveId, to },
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+/**
  * PATCH `/api/waves/{id}` with `lifecycle: to`. No `X-Calm-Actor`
  * header → the kernel attributes the write to `ActorId::User`. Use for
  * kickoff (`draft → planning`), cancel, and reopen — the three user-
@@ -92,6 +114,33 @@ export async function patchWaveLifecycle(
     );
   }
   return (await response.json()) as WaveSnapshot;
+}
+
+/**
+ * Sibling of `patchWaveLifecycle` that returns the raw `APIResponse`
+ * without throwing on 4xx, and accepts an optional `X-Calm-Actor`
+ * header. The rejection-paths suite uses this for two flavors of
+ * negative test:
+ *   * default actor (User) attempting a spec-only edge → 403;
+ *   * explicit `ai:codex` actor (classified as `Worker` by the
+ *     lifecycle validator) attempting any edge → 403.
+ * Callers are responsible for asserting the status / parsing the body.
+ */
+export async function patchWaveLifecycleRaw(
+  request: APIRequestContext,
+  waveId: string,
+  to: WaveLifecycle,
+  opts: { actorHeader?: string } = {},
+): Promise<APIResponse> {
+  const url = `http://127.0.0.1:${REPLAY_PORT}/api/waves/${waveId}`;
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (opts.actorHeader !== undefined) {
+    headers['X-Calm-Actor'] = opts.actorHeader;
+  }
+  return request.patch(url, {
+    data: { lifecycle: to },
+    headers,
+  });
 }
 
 /**
