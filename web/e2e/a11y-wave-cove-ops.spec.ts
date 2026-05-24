@@ -249,14 +249,14 @@ test.describe('a11y · wave + cove ops', () => {
     // with the current value pre-selected (microtask `select()` in
     // `enter()`), so we explicitly `selectText()` before `fill()` to
     // force a deterministic replace regardless of whether the
-    // microtask landed before the test grabbed focus. We then commit
-    // by *blurring* the input rather than pressing Enter directly:
-    // `onBlur={save}` is the same code path Enter takes, and blur via
-    // focusing a sibling button avoids the subtle race where an Enter
-    // keydown can re-trigger the about-to-mount display button's
-    // default click handler (re-entering edit mode with a stale
-    // draft) — verified by inspecting the failure-mode screenshot
-    // for an earlier iteration of this test, see the trace artifact.
+    // microtask landed before the test grabbed focus. We commit by
+    // *blurring* the input (Tab-away) rather than pressing Enter —
+    // this exercises the `onBlur={save}` commit path specifically.
+    // The Enter-commit path is covered by the dedicated regression
+    // test below ("Cove rename: Enter then Tab — no second PATCH with
+    // stale name (issue #288)"), which pins that the keyboard commit
+    // doesn't leak a second PATCH via the Enter-keyup synthetic-click
+    // race (issue #288, fixed in PR #292).
     await input.selectText();
     await input.fill(newName);
     // Blur by tabbing away — the input's `onBlur={save}` runs and
