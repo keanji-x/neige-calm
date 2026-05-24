@@ -209,6 +209,52 @@ function EditableTitle({
   // drops to body and the keyboard user loses their place.
   const displayRef = useRef<HTMLButtonElement | null>(null);
   const restoreDisplayFocus = useRef(false);
+  // Re-entry guard for issue #288.
+  //
+  // When the user commits a rename via Enter, this sequence happens:
+  //   1. Enter `keydown` fires on the input → `save()` → `setEditing(false)`
+  //      → PATCH fires with the new name.
+  //   2. React commits — input unmounts, display button mounts, focus
+  //      restores to the display button via `restoreDisplayFocus`.
+  //   3. Browser delivers Enter's `keyup` to the now-focused display
+  //      button. The browser then synthesizes a `click` from that keyup
+  //      (intrinsic <button> activation semantics).
+  //   4. The synthetic click fires `enter()` → `setDraft(value)` →
+  //      `setEditing(true)`. `value` at this moment is still the OLD
+  //      name (the optimistic cache update has flushed to props but the
+  //      WS round-trip may also race in here), so `draft` is reset to
+  //      the OLD name.
+  //   5. The user's follow-up Tab / click-away triggers `onBlur` →
+  //      `save()` → trimmed = OLD, value = NEW (from optimistic) →
+  //      `trimmed !== value` so the early-return doesn't catch it →
+  //      **a second PATCH fires that writes the OLD name back to the
+  //      kernel.** The sidebar then flashes the new name (from the
+  //      optimistic update / first WS event) and reverts to the old
+  //      name when the second PATCH's WS event arrives.
+  //
+  // The fix: arm this one-shot ref ONLY when `save()` is about to fire
+  // `onSave()` via a keyboard commit (i.e. past the no-op early-return,
+  // when a real PATCH + unmount→remount→focus-restore→synthetic-click
+  // sequence will actually happen). `enter()` consumes & clears it on
+  // the next click, eating the synthetic Enter-keyup click.
+  //
+  // Two belt-and-suspenders precautions keep the flag from leaking:
+  //   * `enter()` clears the flag on entry whenever it actually re-enters
+  //     edit mode (a stale-armed flag from an earlier commit that never
+  //     produced the expected synthetic click is dropped here).
+  //   * The arm only fires past the early-return guard, so a keyboard
+  //     "commit" that was actually a no-op (empty trim or unchanged
+  //     value) doesn't arm at all — no synthetic click would land
+  //     because the focus-restore is the only thing that ran, and the
+  //     user's next genuine click on the display button isn't eaten.
+  //
+  // Real mouse clicks always have `detail >= 1`, but we don't gate on
+  // that — we just consume the one-shot flag, so if a legitimate click
+  // races in within the same tick as a real commit it will be eaten
+  // and the user has to click again. That cost is acceptable: a single
+  // extra click within a ~tick window, and the alternative (the kernel
+  // ending up with the wrong name) is worse.
+  const suppressNextDisplayActivation = useRef(false);
   // Stable id for the visually-hidden rename hint. The hint is referenced
   // via aria-describedby so the button's accessible *name* is just the
   // cove name (clean heading-nav narration) while AT still verbalizes the
@@ -229,6 +275,19 @@ function EditableTitle({
   }, [editing, value]);
 
   const enter = () => {
+    // Eat the synthetic click that follows a keyboard commit (see the
+    // `suppressNextDisplayActivation` doc above). The flag was set by
+    // `save()` when invoked from the Enter keydown handler.
+    if (suppressNextDisplayActivation.current) {
+      suppressNextDisplayActivation.current = false;
+      return;
+    }
+    // Belt-and-suspenders: clear any stale-armed suppressor before
+    // re-entering edit mode. If a prior commit armed the flag but no
+    // synthetic click ever consumed it (e.g. the user moved focus away
+    // before the keyup landed), drop it now so the next display-button
+    // click after THIS edit isn't surprised.
+    suppressNextDisplayActivation.current = false;
     setDraft(value);
     setEditing(true);
     queueMicrotask(() => {
@@ -240,11 +299,23 @@ function EditableTitle({
     restoreDisplayFocus.current = true;
     setEditing(false);
   };
-  const save = async () => {
+  const save = async (opts: { viaKeyboard?: boolean } = {}) => {
     const trimmed = draft.trim();
     restoreDisplayFocus.current = true;
     setEditing(false);
     if (!trimmed || trimmed === value) return;
+    // Issue #288 — when this save is the keyboard-Enter commit AND
+    // we're actually about to fire `onSave()` (past the no-op guard
+    // above), arm the one-shot click suppressor so the Enter `keyup`
+    // that the browser delivers to the newly-focused display button
+    // doesn't synthesize a click that re-enters edit mode with a
+    // stale draft. Arming AFTER the early-return is intentional: a
+    // keyboard "commit" that's actually a no-op doesn't trigger the
+    // unmount→remount→synthetic-click sequence, so arming the flag
+    // would leak it onto the user's next genuine click.
+    if (opts.viaKeyboard) {
+      suppressNextDisplayActivation.current = true;
+    }
     await onSave(trimmed);
   };
 
@@ -262,7 +333,7 @@ function EditableTitle({
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === 'Enter') void save();
+          if (e.key === 'Enter') void save({ viaKeyboard: true });
           else if (e.key === 'Escape') cancel();
         }}
         onBlur={() => void save()}
