@@ -486,7 +486,12 @@ function WaveBar({
         // CSS-token rule by specificity so the title/subscript pick
         // up the contrast-aware value automatically.
         color: fg,
-        opacity: style.opacity,
+        // No element-level opacity: axe composites opacity into the
+        // effective fg/bg before the contrast check, so a 0.6 alpha
+        // on the entire bar drove the cove-subscript text below WCAG
+        // AA even after pickFgForBg picked white. Lifecycle 强 / 弱
+        // is encoded via borderStyle, glyph, and the stripe gradient
+        // in `style.background` (handled inside `lifecycleStyle`).
         borderStyle: style.borderStyle,
         textDecoration: style.strike ? 'line-through' : 'none',
       }}
