@@ -99,8 +99,11 @@ test('/calendar shows coloured continuation bars and navigates on click', async 
   await sidebarNav.getByRole('button', { name: /calendar/i }).click();
   await expect(page).toHaveURL(/\/calm\/calendar$/);
 
-  // 7 day columns.
-  const headers = page.getByRole('columnheader');
+  // 7 day columns. The calendar layout is intentionally not an ARIA
+  // grid (the bars are real <button>s and the layout cells aren't a
+  // tabular header) — see Calendar.tsx for the rationale. We assert
+  // the visual day-header row via its class instead.
+  const headers = page.locator('.calendar-col-head');
   await expect(headers).toHaveCount(7);
 
   // Bars: locate via accessible name. Both waves should be in this

@@ -166,7 +166,11 @@ describe('<CalendarPage />', () => {
         onGo={() => {}}
       />,
     );
-    const columnHeaders = screen.getAllByRole('columnheader');
+    // The calendar is intentionally not an ARIA grid (see Calendar.tsx
+    // for the rationale — bars are real <button>s, layout cells are not
+    // a tabular header). We assert the day-header row via its class so
+    // the test mirrors the DOM AT actually walks.
+    const columnHeaders = document.querySelectorAll('.calendar-col-head');
     expect(columnHeaders).toHaveLength(7);
     // Header text is "Mon 13".."Sun 19" (the week containing 2024-05-15).
     expect(columnHeaders[0].textContent).toMatch(/^Mon\s+13/);

@@ -3342,7 +3342,7 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 .calendar-title {
   font-size: var(--text-xl);
   font-weight: 500;
-  margin: 0;
+  margin: var(--space-0);
   color: var(--text);
   letter-spacing: var(--tracking-tight);
 }
@@ -3446,9 +3446,9 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   grid-template-columns: repeat(7, 1fr);
   /* Each lane is a row of bars; small gap keeps stacked lanes legible. */
   padding: var(--space-2) var(--space-2);
-  gap: 0 var(--space-1);
+  gap: var(--space-0) var(--space-1);
   position: relative;
-  z-index: 1;
+  z-index: var(--z-raised);
 }
 
 .calendar-empty {
@@ -3460,7 +3460,7 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   font-style: italic;
   padding: var(--space-10);
   position: relative;
-  z-index: 1;
+  z-index: var(--z-raised);
 }
 
 .calendar-bar {
@@ -3505,14 +3505,14 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 
 .calendar-bar.clip-left {
   /* "Continues from earlier" — squared off + slim arrow-like notch. */
-  border-top-left-radius: 0;
-  border-bottom-left-radius: 0;
+  border-top-left-radius: var(--space-0);
+  border-bottom-left-radius: var(--space-0);
   border-left-width: 0;
 }
 
 .calendar-bar.clip-right {
-  border-top-right-radius: 0;
-  border-bottom-right-radius: 0;
+  border-top-right-radius: var(--space-0);
+  border-bottom-right-radius: var(--space-0);
   border-right-width: 0;
 }
 

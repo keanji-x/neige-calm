@@ -346,17 +346,25 @@ export function CalendarPage({
         </div>
       </header>
 
-      <div
-        className="calendar-grid"
-        role="grid"
-        aria-rowcount={lanes.length + 1}
-        aria-colcount={7}
-      >
-        <div className="calendar-row calendar-row-head" role="row">
+      {/*
+        The calendar is a visual layout — bars are real <button>s with
+        accessible names ("Wave <title> in cove <cove>, <lifecycle>"), so
+        AT users navigate via the button list. We deliberately avoid ARIA
+        grid semantics (role="grid"/"row"/"columnheader"/"gridcell"): the
+        previous wiring left the inner button and bg-cols as orphaned grid
+        children (axe: aria-required-parent / role gridcell missing),
+        and the day columns are not a tabular header — they're labels for
+        the visual layout. The outer landmark is provided by
+        <section aria-label="Calendar"> above; the navigation group above
+        carries the week-step controls. The grid layout below is presentation
+        only — `role="presentation"` tells AT to ignore the wrapper without
+        affecting the bars' native button role.
+      */}
+      <div className="calendar-grid" role="presentation">
+        <div className="calendar-row calendar-row-head" role="presentation">
           {days.map((d) => (
             <div
               key={d.date.toISOString()}
-              role="columnheader"
               className={'calendar-col-head' + (d.isToday ? ' is-today' : '')}
             >
               {d.label}
@@ -364,10 +372,12 @@ export function CalendarPage({
           ))}
         </div>
 
-        <div className="calendar-body">
+        <div className="calendar-body" role="presentation">
           {/* Background day columns so the grid lines read correctly even
-              when a lane has no bars in a given day. */}
-          <div className="calendar-bg-cols" aria-hidden="true">
+              when a lane has no bars in a given day. Decorative only —
+              already `aria-hidden`, role="presentation" makes the layout
+              wrapper itself transparent to AT. */}
+          <div className="calendar-bg-cols" role="presentation" aria-hidden="true">
             {days.map((d) => (
               <div
                 key={d.date.toISOString()}
@@ -380,12 +390,7 @@ export function CalendarPage({
             <div className="calendar-empty">No waves this week.</div>
           ) : (
             lanes.map((lane, laneIdx) => (
-              <div
-                key={laneIdx}
-                role="row"
-                className="calendar-lane"
-                aria-rowindex={laneIdx + 2}
-              >
+              <div key={laneIdx} className="calendar-lane" role="presentation">
                 {lane.map(({ wave, span, cove }) => (
                   <WaveBar
                     key={wave.id}

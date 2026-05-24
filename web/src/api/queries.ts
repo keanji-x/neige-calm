@@ -105,11 +105,15 @@ export const overlaysByKindQueryOptions = (entity_kind: 'wave' | 'card') => ({
  * Issue #250 PR 5 — calendar window options. The kernel uses inclusive
  * endpoints; the calendar always passes a week-aligned [Mon 00:00, Sun
  * 23:59:59.999] in local time so neighbouring weeks don't share cache
- * entries.
+ * entries. `gcTime` caps the per-window cache at 5 minutes so the user
+ * paging back and forth through weeks doesn't accrete an unbounded
+ * cache (each distinct week is a separate query key); WS events still
+ * invalidate the active window in real time.
  */
 export const wavesRangeQueryOptions = (since: number, until: number) => ({
   queryKey: queryKeys.wavesRange(since, until),
   queryFn: () => api.wavesRange({ since, until }),
+  gcTime: 5 * 60 * 1000,
 });
 
 // ---------------- Queries ----------------
