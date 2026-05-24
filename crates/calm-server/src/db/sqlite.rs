@@ -842,6 +842,71 @@ pub async fn card_update_tx(
     Ok(c)
 }
 
+/// Issue #247 PR1 — wave-report-specific transactional update that
+/// rewrites both the legacy `payload` JSON column AND the new opaque
+/// CRDT blob in `body_crdt` in one statement. Wraps [`card_update_tx`]
+/// for the JSON+timestamps path, then re-runs a single UPDATE to
+/// stamp the blob. Both writes happen inside the supplied `tx` so a
+/// rollback drops them together — the JSON cache and the CRDT
+/// authoritative bytes never drift.
+///
+/// `body_crdt` is the `automerge::AutoCommit::save()` bytes from
+/// `wave_report_doc::ReportDoc::to_bytes`; the kernel never
+/// interprets the column outside of the round-trip via that module.
+///
+/// This is a **wave-report-only** seam. Plain / terminal / codex /
+/// plugin cards continue going through `card_update_tx`, which never
+/// touches `body_crdt` — the column stays NULL on those rows forever.
+pub async fn card_update_with_crdt_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    p: CardPatch,
+    body_crdt: Vec<u8>,
+) -> Result<Card> {
+    // Reuse the existing JSON+timestamps update path so the two
+    // codepaths can't drift on what `updated_at` / payload-text
+    // semantics look like.
+    let card = card_update_tx(tx, id, p).await?;
+    // Second statement: stamp the opaque CRDT bytes onto the row.
+    // Split into its own UPDATE (rather than extending the one above)
+    // so plain `card_update_tx` callers never sqlx-bind a `Vec<u8>`
+    // they don't care about. The combined cost is one extra UPDATE
+    // per wave-report write, which is dominated by the surrounding
+    // event-emit work.
+    sqlx::query(r#"UPDATE cards SET body_crdt = ?1 WHERE id = ?2"#)
+        .bind(&body_crdt)
+        .bind(&card.id)
+        .execute(&mut **tx)
+        .await?;
+    Ok(card)
+}
+
+/// Issue #247 PR1 — read the opaque CRDT blob for a card inside an
+/// open transaction. Returns `None` when the column is NULL (every
+/// pre-PR1 row, plus non-wave-report cards which never get
+/// initialized). Returns `Some(bytes)` for any row whose first
+/// post-PR1 write has run through `card_update_with_crdt_tx`.
+///
+/// Read inside the same tx as the update so a concurrent writer
+/// can't slip a blob in between this read and our `to_bytes` write
+/// (the wave-report write path is the only writer of the column
+/// today, but pinning the read to the tx is cheap and matches the
+/// pattern the rest of `*_tx` uses).
+///
+/// Errors propagate as `CalmError::Db` for `NotFound` rows — the
+/// caller already validated the card exists before calling this.
+pub async fn card_body_crdt_get_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+) -> Result<Option<Vec<u8>>> {
+    let row: Option<(Option<Vec<u8>>,)> =
+        sqlx::query_as(r#"SELECT body_crdt FROM cards WHERE id = ?1"#)
+            .bind(id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    Ok(row.and_then(|(blob,)| blob))
+}
+
 pub async fn card_delete_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
