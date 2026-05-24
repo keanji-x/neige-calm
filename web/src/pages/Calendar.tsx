@@ -21,6 +21,7 @@
 import { useMemo } from 'react';
 import { useState } from '../shared/state';
 import type { Cove, Route, WaveLifecycle } from '../types';
+import { pickFgForBg } from '../util/contrast';
 
 const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
@@ -427,6 +428,13 @@ function WaveBar({
   const style = lifecycleStyle(wave.lifecycle);
   const color = cove?.color ?? 'var(--text-3)';
   const coveName = cove?.name ?? 'Unknown cove';
+  // Pick fg from the bar's own background luminance so title + cove
+  // subscript clear WCAG AA regardless of which cove colour the user
+  // picked. The CSS layer used to derive text from `var(--text)` ±
+  // page bg, which collapsed below 4.5:1 whenever the cove colour and
+  // the page text landed on the same end of the scale (light cove in
+  // light mode, dark cove in dark mode → axe color-contrast serious).
+  const fg = pickFgForBg(color);
 
   // Tooltip lines (newline-joined for the native `title` attr).
   const tooltip = [
@@ -472,6 +480,12 @@ function WaveBar({
       style={{
         gridColumn: `${colStart} / ${colEnd}`,
         background: bg,
+        // Drive `color` from the per-bar luminance pick and let the
+        // child .calendar-bar-title / .calendar-bar-cove inherit via
+        // `color: inherit` in the CSS layer. Inline beats the
+        // CSS-token rule by specificity so the title/subscript pick
+        // up the contrast-aware value automatically.
+        color: fg,
         opacity: style.opacity,
         borderStyle: style.borderStyle,
         textDecoration: style.strike ? 'line-through' : 'none',

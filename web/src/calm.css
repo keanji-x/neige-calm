@@ -3529,16 +3529,23 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 500;
-  /* Text colour: pick whichever of black/white reads against the bar
-     bg. We approximate with a mix on the painted surface — works for
-     both light and dark themes because the bar's own background
-     already encodes the cove colour. */
-  color: color-mix(in srgb, var(--text) 90%, var(--bg) 10%);
+  /* Inherit the contrast-aware foreground that <WaveBar> sets inline
+     on the bar root via pickFgForBg(cove.color). The previous
+     `color-mix(var(--text) 90%, var(--bg) 10%)` derivation collapsed
+     below WCAG AA when the cove colour landed on the same luminance
+     end as the page text (light cove + light mode, dark cove + dark
+     mode); axe-core flagged it as a serious color-contrast violation. */
+  color: inherit;
 }
 
 .calendar-bar-cove {
   font-size: var(--text-xs);
-  color: color-mix(in srgb, var(--text) 65%, var(--bg) 35%);
+  /* Inherit the per-bar contrast-aware foreground (see
+     .calendar-bar-title). The subscript used to dilute the text 65%
+     toward the page bg, which doubled-down on the same root cause;
+     plain inherit keeps it on the WCAG-AA side. */
+  color: inherit;
+  opacity: 0.85;
   white-space: nowrap;
   flex-shrink: 0;
 }
