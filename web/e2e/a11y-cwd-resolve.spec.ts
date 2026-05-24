@@ -270,3 +270,84 @@ test('sibling-prefix path is NOT a match (guards against naive string prefix)', 
 // `cross_cove_overlap_409_descendant`). It does not need a Playwright
 // spec — the wire path here adds no signal beyond the Rust integration
 // test and pays the browser tax for nothing.
+
+// ---------------------------------------------------------------------------
+// Edge cases called out in the #274 review, added as a #269 follow-up.
+// ---------------------------------------------------------------------------
+
+test('root `/` claim covers every absolute path on that cove', async ({ request }) => {
+  // Regression guard for `is_descendant_of`'s root special case at
+  // `crates/calm-server/src/routes/cove_folders.rs:74-77`. With
+  // `parent == "/"`, the function returns `true` for any candidate
+  // that itself starts with `/`. Without the early-return branch,
+  // the fallback would build `format!("{parent}/")` = `"//"` and
+  // miss every real cwd query.
+  //
+  // We claim `/` for cove A *without* using `createWaveInCove`
+  // (which auto-attaches `/tmp/playwright-cove-<id>` and would
+  // collide with the root claim under the create endpoint's
+  // ancestor/descendant overlap 409 — see the integration test
+  // `crates/calm-server/tests/cove_folders.rs`). The `beforeEach`
+  // reset drops every cove (and via `ON DELETE CASCADE` on
+  // `cove_folders.cove_id`, every claim) so the root row this test
+  // creates is the only one in the table when the resolve runs.
+  const ts = Date.now();
+  const cove = await createUserCove(request, `cove-root-${ts}`, '#5a9');
+  await claimFolder(request, cove.id, '/');
+
+  // Deep descendant resolves to cove A.
+  const hitDeep = await resolvePath(request, `/work-${ts}/repo/file.rs`);
+  expect(hitDeep).not.toBeNull();
+  expect(hitDeep!.cove_id).toBe(cove.id);
+  expect(hitDeep!.folder_path).toBe('/');
+
+  // Shallow descendant resolves to cove A.
+  const hitShallow = await resolvePath(request, `/anything-${ts}`);
+  expect(hitShallow).not.toBeNull();
+  expect(hitShallow!.cove_id).toBe(cove.id);
+  expect(hitShallow!.folder_path).toBe('/');
+
+  // The root itself resolves to cove A (`is_descendant_of("/", "/")`
+  // is true via the equality branch above the root-special-case).
+  const hitRoot = await resolvePath(request, '/');
+  expect(hitRoot).not.toBeNull();
+  expect(hitRoot!.cove_id).toBe(cove.id);
+  expect(hitRoot!.folder_path).toBe('/');
+});
+
+test('empty `path` query rejects with 400', async ({ request }) => {
+  // `?path=` deserializes as `q.path == ""`. The handler's first
+  // guard is `!q.path.starts_with('/')` — empty string doesn't
+  // start with `/`, so the rejection lands as a 400 BadRequest
+  // (`CalmError::BadRequest` → `StatusCode::BAD_REQUEST`).
+  //
+  // The wire body is the `{error, code}` shape from
+  // `error.rs::ErrorBody`; pin `code == "bad_request"` so a future
+  // refactor that swaps the error variant (e.g. to a new
+  // `EmptyPath` enum) is forced to update this assertion
+  // deliberately rather than silently slipping through.
+  const res = await request.get(`${API}/api/coves/resolve`, {
+    params: { path: '' },
+  });
+  expect(res.status(), 'empty path must reject with 400').toBe(400);
+  const body = (await res.json()) as { code?: string; error?: string };
+  expect(body.code).toBe('bad_request');
+  expect(body.error ?? '').toMatch(/absolute/i);
+});
+
+test('non-absolute `path` query rejects with 400', async ({ request }) => {
+  // The handler explicitly rejects any path that doesn't start with
+  // `/` — `relative/path` is the canonical regression case. Same
+  // `CalmError::BadRequest` → 400 mapping as the empty-path case
+  // above, but the error message references the offending input so
+  // we additionally pin that the bad value lands in the body
+  // (operators reading logs need it).
+  const res = await request.get(`${API}/api/coves/resolve`, {
+    params: { path: 'relative/path' },
+  });
+  expect(res.status(), 'non-absolute path must reject with 400').toBe(400);
+  const body = (await res.json()) as { code?: string; error?: string };
+  expect(body.code).toBe('bad_request');
+  expect(body.error ?? '').toMatch(/absolute/i);
+  expect(body.error ?? '').toMatch(/relative\/path/);
+});

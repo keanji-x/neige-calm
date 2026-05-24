@@ -284,6 +284,105 @@ test.describe('a11y · wave + cove ops', () => {
     ).toBeVisible();
   });
 
+  test('Wave delete dialog: Escape dismisses without deleting', async ({ page, request }) => {
+    // Negative-path counterpart to the happy delete test above. The
+    // ConfirmDialog primitive routes Esc to `onCancel` via the
+    // underlying Dialog's `onClose` (see
+    // `web/src/ui/ConfirmDialog/ConfirmDialog.tsx`); this asserts
+    // that contract end-to-end:
+    //   * Esc on the open dialog dismisses it,
+    //   * no `wave.deleted` event lands on the trace within a
+    //     bounded window (would mean the destructive action fired),
+    //   * the wave row still exists per GET /api/waves/:id (200),
+    //   * the page stays on the wave URL (no router push).
+    const cove = await createUserCove(request, 'AtlasEsc');
+    const wave = await createWaveInCove(request, cove.id, 'KeepMeEsc');
+
+    await page.goto(`/calm/wave/${wave.id}?trace=1`);
+    await waitForCoveInSidebar(page, 'AtlasEsc');
+    await clearEventTrace(page);
+
+    const deleteTrigger = page.getByRole('button', { name: `Delete wave "${wave.title}"` });
+    await expect(deleteTrigger).toBeVisible();
+    await deleteTrigger.click();
+
+    const dialog = page.getByRole('dialog', { name: 'Delete wave?' });
+    await expect(dialog).toBeVisible();
+    // Cancel-safe focus invariant — same probe as the happy-path
+    // test. If a future refactor lands focus on Confirm, this test
+    // would still pass (Esc cancels regardless of focus position),
+    // but the assertion documents the wider contract for the reader.
+    await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
+
+    // Esc — Dialog handles the keydown and routes through `onClose
+    // → onCancel`. The dialog unmounts; the destructive handler
+    // never runs.
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
+
+    // Bounded negative event-trace assertion. Mirrors the pattern
+    // used by the rename test above (`expect(async () =>
+    // waitForEvent(…)).rejects.toThrow(/Timeout/)`). 1500ms is the
+    // same window — comfortably wider than a normal kernel write +
+    // WS broadcast roundtrip, narrow enough not to slow the suite.
+    await expect(async () => {
+      await waitForEvent(page, 'wave.deleted', 1500);
+    }).rejects.toThrow(/Timeout/);
+
+    // Wave row still present via REST.
+    const detailRes = await request.get(`http://127.0.0.1:${REPLAY_PORT}/api/waves/${wave.id}`);
+    expect(detailRes.status(), 'wave row must still exist after Esc-cancel').toBe(200);
+
+    // URL didn't navigate away (the happy path would push to the
+    // cove page; the cancel path must leave the router untouched).
+    await expect(page).toHaveURL(new RegExp(`/calm/wave/${wave.id}(\\?|$)`));
+  });
+
+  test('Wave delete dialog: Cancel button click dismisses without deleting', async ({
+    page,
+    request,
+  }) => {
+    // Same cancel-without-deletion contract as the Esc test above,
+    // but exercised through the *button click* path. ConfirmDialog
+    // wires both into the same `onCancel` callback, so the
+    // assertion shape is identical. We split the two paths into
+    // separate tests so a regression that breaks one (e.g. a stray
+    // `e.stopPropagation()` on the Cancel button) surfaces cleanly
+    // without the other masking it.
+    const cove = await createUserCove(request, 'AtlasCancel');
+    const wave = await createWaveInCove(request, cove.id, 'KeepMeCancel');
+
+    await page.goto(`/calm/wave/${wave.id}?trace=1`);
+    await waitForCoveInSidebar(page, 'AtlasCancel');
+    await clearEventTrace(page);
+
+    const deleteTrigger = page.getByRole('button', { name: `Delete wave "${wave.title}"` });
+    await expect(deleteTrigger).toBeVisible();
+    await deleteTrigger.click();
+
+    const dialog = page.getByRole('dialog', { name: 'Delete wave?' });
+    await expect(dialog).toBeVisible();
+
+    // Click Cancel — `onClick={onCancel}` on the Cancel button (see
+    // `ConfirmDialog.tsx`). Dialog unmounts on the resulting state
+    // change in the parent.
+    const cancelBtn = dialog.getByRole('button', { name: 'Cancel' });
+    await cancelBtn.click();
+    await expect(dialog).not.toBeVisible();
+
+    // No destructive event landed.
+    await expect(async () => {
+      await waitForEvent(page, 'wave.deleted', 1500);
+    }).rejects.toThrow(/Timeout/);
+
+    // Wave row still present.
+    const detailRes = await request.get(`http://127.0.0.1:${REPLAY_PORT}/api/waves/${wave.id}`);
+    expect(detailRes.status(), 'wave row must still exist after Cancel-click').toBe(200);
+
+    // Still on the wave page.
+    await expect(page).toHaveURL(new RegExp(`/calm/wave/${wave.id}(\\?|$)`));
+  });
+
   test('Cove delete via confirm dialog cascades into cove_folders', async ({
     page,
     request,
@@ -357,5 +456,101 @@ test.describe('a11y · wave + cove ops', () => {
     expect(resolveAfter.ok()).toBe(true);
     const resolvedAfter = await resolveAfter.json();
     expect(resolvedAfter, 'cove_folders row should CASCADE-drop with the cove').toBeNull();
+  });
+
+  test('Cove delete cascades into MULTIPLE cove_folders rows', async ({ page, request }) => {
+    // Stronger sibling of the single-claim cascade test above. The
+    // migration 0015 `ON DELETE CASCADE` on `cove_folders.cove_id`
+    // should drop EVERY row attached to the cove, not just one;
+    // this test claims three non-overlapping paths and asserts that
+    // each independently resolves to null post-delete.
+    //
+    // Why three rather than two: at the SQL layer CASCADE fans out
+    // through the FK trigger, and a regression that accidentally
+    // limits the cascade (e.g. by adding a `LIMIT 1` in a future
+    // hand-rolled delete handler) would still pass with two rows
+    // 50% of the time depending on insert order. Three claims push
+    // the false-green probability low enough to catch the obvious
+    // failure mode every run.
+    //
+    // We bypass `createWaveInCove` entirely (it auto-attaches a
+    // `/tmp/playwright-cove-<id>` folder that would crowd the
+    // assertion noise and could collide with the explicit claims
+    // below if `Date.now()` falls in the wrong window). The cove
+    // here exists purely as the parent of three folder claims.
+    const cove = await createUserCove(request, 'AtlasMultiCascade');
+
+    // Three non-overlapping paths. Per-run randomization (`Date.now`
+    // + `Math.random`) guards against the unlikely case of the same
+    // claim being live across a non-hermetic re-run; in the a11y
+    // project the `beforeEach` reset already provides hermeticity
+    // but the namespacing keeps the spec safe to re-read against a
+    // shared server too.
+    const ts = Date.now();
+    const tag = Math.random().toString(36).slice(2, 8);
+    const paths = [
+      `/tmp/playwright-multi-${ts}-${tag}-alpha`,
+      `/tmp/playwright-multi-${ts}-${tag}-bravo`,
+      `/tmp/playwright-multi-${ts}-${tag}-charlie`,
+    ];
+    for (const p of paths) {
+      const res = await request.post(
+        `http://127.0.0.1:${REPLAY_PORT}/api/coves/${cove.id}/folders`,
+        {
+          data: { path: p },
+          headers: { 'content-type': 'application/json' },
+        },
+      );
+      expect(res.ok(), `claim ${p} → ${res.status()}`).toBe(true);
+    }
+
+    // Sanity: all three resolve to this cove BEFORE the cove
+    // delete. Without this check, the post-delete null assertion
+    // could false-green if the create-folder calls above silently
+    // no-op'd somehow.
+    for (const p of paths) {
+      const res = await request.get(
+        `http://127.0.0.1:${REPLAY_PORT}/api/coves/resolve?path=${encodeURIComponent(p)}`,
+      );
+      expect(res.ok()).toBe(true);
+      const body = (await res.json()) as { cove_id: string } | null;
+      expect(body, `resolve ${p} before delete`).not.toBeNull();
+      expect(body!.cove_id).toBe(cove.id);
+    }
+
+    // Drive the delete through the UI confirm dialog so this test
+    // covers the same path the user would. Mirrors the single-claim
+    // test above.
+    await page.goto(`/calm/cove/${cove.id}?trace=1`);
+    await waitForCoveInSidebar(page, 'AtlasMultiCascade');
+    await clearEventTrace(page);
+
+    const deleteTrigger = page.getByRole('button', { name: `Delete cove "${cove.name}"` });
+    await expect(deleteTrigger).toBeVisible();
+    await deleteTrigger.click();
+
+    const dialog = page.getByRole('dialog', { name: 'Delete cove?' });
+    await expect(dialog).toBeVisible();
+    const confirmBtn = dialog.getByRole('button', { name: 'Delete cove' });
+    await confirmBtn.click();
+
+    // Wait for the kernel to confirm the delete via the event bus
+    // before probing the post-delete state — otherwise the resolve
+    // calls below would race the FK CASCADE trigger.
+    const evt = await waitForEvent(page, 'cove.deleted');
+    expect((evt.data as { id: string }).id).toBe(cove.id);
+
+    // The core assertion: every claimed path now resolves to null.
+    // We probe each one independently rather than batching so a
+    // partial-cascade regression (e.g. only the first row got
+    // dropped) surfaces with a per-path failure message.
+    for (const p of paths) {
+      const res = await request.get(
+        `http://127.0.0.1:${REPLAY_PORT}/api/coves/resolve?path=${encodeURIComponent(p)}`,
+      );
+      expect(res.ok()).toBe(true);
+      const body = await res.json();
+      expect(body, `cove_folders row for ${p} should CASCADE-drop`).toBeNull();
+    }
   });
 });
