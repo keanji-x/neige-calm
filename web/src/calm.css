@@ -1697,6 +1697,29 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   border-color: var(--text);
 }
 .new-task-form-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+/* cwd field row — input + Browse… button sit on a single flex row so
+   the Browse affordance reads as an extension of the field rather than
+   a separate control below it. The input grows to fill remaining width;
+   Browse hugs its content. Matches the visual rhythm of the form's
+   other single-line inputs. */
+.new-task-form-cwd-row {
+  display: flex;
+  gap: var(--space-3);
+  align-items: stretch;
+}
+.new-task-form-cwd-input { flex: 1 1 auto; min-width: 0; }
+.new-task-form-cwd-browse {
+  flex: 0 0 auto;
+  font: inherit;
+  padding: var(--space-0) var(--space-5);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.new-task-form-cwd-browse:hover { color: var(--text); border-color: var(--text-3); }
 
 /* ===== Directory picker (SchemaForm `directory` field type) =====
    Two surfaces:

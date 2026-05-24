@@ -59,9 +59,11 @@ test('creates a new wave from a fresh cove via NewTaskForm and navigates to it',
   await coveBtn.click();
   await expect(page).toHaveURL(/\/calm\/cove\/[^/]+$/);
 
-  // Step 2 — click the "+ New wave" CTA. It expands into NewTaskForm
-  // inline (per #250 PR 3 the cove page no longer renders a one-line
-  // title input; all creation goes through the configuration card).
+  // Step 2 — click the "+ New wave" CTA. It opens a modal Dialog
+  // hosting the shared NewTaskForm (per #250 PR 3 the cove page no
+  // longer renders a one-line title input; all creation goes through
+  // the configuration card, now wrapped in a Dialog so the cwd
+  // Browse… picker can take over the modal body).
   const newWaveBtn = page.getByRole('button', { name: /new wave/i });
   await expect(newWaveBtn).toBeVisible();
   await newWaveBtn.click();

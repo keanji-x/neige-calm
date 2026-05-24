@@ -9,12 +9,13 @@
 // test instead of waiting through retry backoff.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import * as api from '../../api/calm';
 import { CalmApiError } from '../../api/calm';
 import { NewTaskForm } from './NewTaskForm';
+import { Dialog } from '../../ui/Dialog/Dialog';
 
 function renderForm(overrides: Partial<React.ComponentProps<typeof NewTaskForm>> = {}) {
   const onCreated = vi.fn(async () => {});
@@ -25,6 +26,28 @@ function renderForm(overrides: Partial<React.ComponentProps<typeof NewTaskForm>>
   const utils = render(
     <QueryClientProvider client={qc}>
       <NewTaskForm onCreated={onCreated} onCancel={onCancel} {...overrides} />
+    </QueryClientProvider>,
+  );
+  return { ...utils, onCreated, onCancel, qc };
+}
+
+// Variant that wraps NewTaskForm in a Dialog — required for the Browse…
+// button's `useModalView()` path to exercise (the dialog provides the
+// modal-view context). Matches how CovePage's NewWaveCTA renders the
+// form in production.
+function renderFormInDialog(
+  overrides: Partial<React.ComponentProps<typeof NewTaskForm>> = {},
+) {
+  const onCreated = vi.fn(async () => {});
+  const onCancel = vi.fn();
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  const utils = render(
+    <QueryClientProvider client={qc}>
+      <Dialog open onClose={() => {}} title="New wave">
+        <NewTaskForm onCreated={onCreated} onCancel={onCancel} {...overrides} />
+      </Dialog>
     </QueryClientProvider>,
   );
   return { ...utils, onCreated, onCancel, qc };
@@ -507,5 +530,94 @@ describe('NewTaskForm — cancel', () => {
     const { onCancel } = renderForm();
     await user.click(screen.getByRole('button', { name: /cancel/i }));
     expect(onCancel).toHaveBeenCalled();
+  });
+});
+
+// Browse… → DirectoryBrowser flow.
+//
+// In production NewTaskForm always renders inside a Dialog (NewWaveCTA
+// in Cove.tsx), so the Browse button's `useModalView()` push lands on a
+// real modal-view context. The test mirrors that wrapping so the
+// pushed-view path is the one we exercise — the inline fallback is
+// covered indirectly by the rule that production never hits it.
+describe('NewTaskForm — Browse cwd', () => {
+  it('Browse opens the directory browser and selecting a path updates the cwd input', async () => {
+    vi.spyOn(api, 'listCoves').mockResolvedValue([]);
+    // Two-step listing: the first call (initial mount of the browser)
+    // returns `/home/u` with one child directory `projects`. Clicking
+    // that entry triggers a second listDir for `/home/u/projects`,
+    // which we return empty so the user lands there and presses Select.
+    const listDirSpy = vi
+      .spyOn(api, 'listDir')
+      .mockImplementation(async (path?: string) => {
+        if (!path || path === '/home/u') {
+          return {
+            path: '/home/u',
+            parent: null,
+            entries: [{ name: 'projects', is_dir: true }],
+          };
+        }
+        return {
+          path,
+          parent: '/home/u',
+          entries: [],
+        };
+      });
+
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderFormInDialog();
+
+    // Pre-condition: cwd input is empty.
+    const cwdInput = screen.getByLabelText(/working directory/i) as HTMLInputElement;
+    expect(cwdInput.value).toBe('');
+
+    // Click Browse… — this is unique to the form (the dialog's close
+    // button has aria-label "Close", not "Browse"); the visible text
+    // "Browse…" is the accessible name.
+    const browseBtn = screen.getByRole('button', { name: /browse/i });
+    await act(async () => {
+      await user.click(browseBtn);
+      // Flush the focus rAF + the listDir microtask so the listbox is
+      // populated before we assert against it.
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+
+    // The pushed view now owns the dialog title + body. There's still
+    // exactly one role=dialog (no nested dialog).
+    const dialogs = screen.getAllByRole('dialog');
+    expect(dialogs).toHaveLength(1);
+    expect(dialogs[0]).toHaveAttribute('aria-label', 'Choose a directory');
+
+    // The browser's listbox is rendered with the mocked entries.
+    const listbox = within(dialogs[0]).getByRole('listbox', {
+      name: /directory entries/i,
+    });
+    expect(within(listbox).getByText('projects')).toBeTruthy();
+    expect(listDirSpy).toHaveBeenCalled();
+
+    // Click the directory entry → listDir refetches for the child path.
+    await act(async () => {
+      await user.click(within(listbox).getByRole('option', { name: /projects/i }));
+      // Flush the second listDir.
+      await waitFor(() =>
+        expect(listDirSpy).toHaveBeenCalledWith('/home/u/projects'),
+      );
+    });
+
+    // Confirm via "Select this directory" — commits the chosen path.
+    await act(async () => {
+      await user.click(
+        within(dialogs[0]).getByRole('button', { name: /select this directory/i }),
+      );
+    });
+
+    // The browser view popped; the form's normal children (heading +
+    // cwd input) are visible again. The cwd input now carries the
+    // picked path.
+    await waitFor(() => {
+      expect((screen.getByLabelText(/working directory/i) as HTMLInputElement).value).toBe(
+        '/home/u/projects',
+      );
+    });
   });
 });

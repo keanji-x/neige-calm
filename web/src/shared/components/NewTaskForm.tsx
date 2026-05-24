@@ -59,6 +59,7 @@
 // dense pages (Cove page below + calendar later).
 
 import { useCallback, useEffect, useId, useMemo, useRef } from 'react';
+import type { RefObject } from 'react';
 import { useState } from '../state';
 import { useQueryClient } from '@tanstack/react-query';
 import * as api from '../../api/calm';
@@ -71,6 +72,8 @@ import {
 } from '../../api/queries';
 import { DARK_THEME_RGB, LIGHT_THEME_RGB } from '../../api/themeRgb';
 import type { CoveResolveBody, FolderConflictBody, KernelWave } from '../../api/wire';
+import { DirectoryBrowser } from './DirectoryPicker';
+import { useModalView } from '../../ui/Dialog/Dialog';
 
 /** Result handed back to the caller on successful POST `/api/waves`. */
 export type NewTaskFormResult = KernelWave;
@@ -87,6 +90,14 @@ export interface NewTaskFormProps {
   /** Fired when the user dismisses the form (Esc, Cancel). Caller
    *  collapses the inline panel back to a CTA button. */
   onCancel: () => void;
+  /** Optional ref forwarded to the title textarea. When provided, the
+   *  caller (typically a host `<Dialog>`) uses this to claim initial
+   *  focus on the title input — the form skips its own
+   *  `queueMicrotask(focus)` mount effect to avoid racing against the
+   *  Dialog's rAF "focus first focusable" pass, which otherwise lands
+   *  focus on the Dialog's Close button. When omitted, the form falls
+   *  back to focusing the title field itself on mount. */
+  initialFocusRef?: RefObject<HTMLTextAreaElement | null>;
 }
 
 /** Debounce window for the cwd → resolve API call. 300ms balances
@@ -103,7 +114,12 @@ type CoveChoice =
   | { mode: 'existing'; coveId: string }
   | { mode: 'new'; name: string; color: string };
 
-export function NewTaskForm({ defaultCoveId, onCreated, onCancel }: NewTaskFormProps) {
+export function NewTaskForm({
+  defaultCoveId,
+  onCreated,
+  onCancel,
+  initialFocusRef,
+}: NewTaskFormProps) {
   const titleId = useId();
   const cwdId = useId();
   const coveSelectId = useId();
@@ -154,14 +170,30 @@ export function NewTaskForm({ defaultCoveId, onCreated, onCancel }: NewTaskFormP
   const createWave = useCreateWaveMutation();
   const createCove = useCreateCoveMutation();
   const qc = useQueryClient();
+  // Browse… → always pushes a DirectoryBrowser view into the surrounding
+  // Dialog's body via `useModalView()`. NewTaskForm is hosted exclusively
+  // inside a Dialog today (NewWaveCTA in Cove.tsx wraps it), so the
+  // modal-view context is always present in production. The dev-time
+  // `console.warn` below catches accidental Dialog-less renderings during
+  // refactors instead of silently breaking the Browse affordance.
+  const modalView = useModalView();
 
-  const titleRef = useRef<HTMLTextAreaElement | null>(null);
+  const localTitleRef = useRef<HTMLTextAreaElement | null>(null);
+  // When a caller forwards `initialFocusRef`, use it as the title
+  // textarea's ref — the host Dialog will own initial focus. Otherwise
+  // fall back to our own ref + the mount-time focus effect below.
+  const titleRef = initialFocusRef ?? localTitleRef;
   const cwdRef = useRef<HTMLInputElement | null>(null);
   // Focus the title field on mount — opening the form should land the
-  // caret in the first meaningful input without an extra click.
+  // caret in the first meaningful input without an extra click. Skipped
+  // when the caller forwarded `initialFocusRef`: the Dialog's own
+  // rAF-deferred focus pass would race against this microtask and
+  // sometimes win (landing on the Dialog Close button), so the contract
+  // is "Dialog focuses for us, we don't double-focus".
   useEffect(() => {
-    queueMicrotask(() => titleRef.current?.focus());
-  }, []);
+    if (initialFocusRef) return;
+    queueMicrotask(() => localTitleRef.current?.focus());
+  }, [initialFocusRef]);
 
   // Latest cwd at commit-time. The resolve effect captures `cwd` via
   // closure, but the in-flight `api.resolveCovePath` Promise may resolve
@@ -325,6 +357,42 @@ export function NewTaskForm({ defaultCoveId, onCreated, onCancel }: NewTaskFormP
     }
   };
 
+  // Browse… handler. Always pushes the DirectoryBrowser into the
+  // surrounding Dialog's body via `useModalView()` — same affordance the
+  // codex card uses, no nested popover. The initialPath is the current
+  // cwd if it looks absolute (we let the server fall through to $HOME
+  // otherwise via `null`). If `useModalView()` returns null we're
+  // rendered outside a Dialog, which only happens by mistake; warn once
+  // in dev and no-op so the visible Browse button doesn't appear to do
+  // anything (better than a confusing crash on click).
+  const startBrowse = useCallback(() => {
+    const seed = isAbsolutePath(cwd.trim()) ? cwd.trim() : null;
+    if (!modalView) {
+      if (import.meta.env?.DEV) {
+        console.warn(
+          '[NewTaskForm] Browse… clicked outside a <Dialog> — no modal-view context. Wrap NewTaskForm in <Dialog> to enable the directory picker.',
+        );
+      }
+      return;
+    }
+    const commit = (path: string) => {
+      setCwd(path);
+      modalView.popView();
+    };
+    const cancel = () => modalView.popView();
+    modalView.pushView({
+      title: 'Choose a directory',
+      onEscape: cancel,
+      body: (
+        <DirectoryBrowser
+          initialPath={seed}
+          onCancel={cancel}
+          onSelect={commit}
+        />
+      ),
+    });
+  }, [cwd, modalView]);
+
   return (
     <section
       role="form"
@@ -371,24 +439,46 @@ export function NewTaskForm({ defaultCoveId, onCreated, onCancel }: NewTaskFormP
         <label htmlFor={cwdId} className="new-task-form-label">
           Working directory<span className="new-task-form-required"> *</span>
         </label>
-        <input
-          id={cwdId}
-          ref={cwdRef}
-          type="text"
-          className="new-task-form-input"
-          value={cwd}
-          onChange={(e) => setCwd(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              void handleSubmit();
-            }
-          }}
-          placeholder="/Users/you/code/project"
-          aria-invalid={cwdError !== null}
-          aria-describedby={cwdError ? `${cwdId}-err` : undefined}
-          required
-        />
+        <div className="new-task-form-cwd-row">
+          <input
+            id={cwdId}
+            ref={cwdRef}
+            type="text"
+            className="new-task-form-input new-task-form-cwd-input"
+            value={cwd}
+            onChange={(e) => setCwd(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                void handleSubmit();
+              }
+            }}
+            placeholder="/Users/you/code/project"
+            aria-invalid={cwdError !== null}
+            aria-describedby={cwdError ? `${cwdId}-err` : undefined}
+            required
+          />
+          {/* Browse… opens the directory walker. Always pushes into the
+              surrounding Dialog via `useModalView()` — NewTaskForm is
+              hosted inside a Dialog in every in-app caller (NewWaveCTA
+              in Cove.tsx). The typed input above remains the source of
+              truth — Browse is just a shortcut that *sets* the cwd, it
+              doesn't replace the field. Accessible name comes from the
+              visible text ("Browse…") so
+              `getByLabel(/working directory/i)` on the surrounding
+              field still uniquely resolves to the cwd input; `title`
+              carries the contextual hint for sighted users and matches
+              the SR-description for screen readers without colliding
+              with the field's label text. */}
+          <button
+            type="button"
+            className="new-task-form-cwd-browse"
+            onClick={startBrowse}
+            title="Browse for working directory"
+          >
+            Browse…
+          </button>
+        </div>
         {cwdError && (
           <p id={`${cwdId}-err`} className="new-task-form-fielderr">
             {cwdError}
