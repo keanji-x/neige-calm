@@ -27,7 +27,7 @@ use axum::routing::post;
 use calm_server::auth::{AuthConfig, AuthState, DEFAULT_DISPLAY_NAME};
 use calm_server::db::sqlite::{SqlxRepo, wave_update_tx};
 use calm_server::db::write_with_events_typed;
-use calm_server::event::{Event, EventScope, EventBus};
+use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::ActorId;
 use calm_server::model::{WaveLifecycle, WavePatch};
 use calm_server::replay;
