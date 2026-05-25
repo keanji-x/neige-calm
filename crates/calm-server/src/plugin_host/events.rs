@@ -123,7 +123,10 @@ fn event_plugin_id(ev: &Event) -> Option<String> {
         | Event::CodexJobRequested { .. }
         | Event::TerminalJobRequested { .. }
         | Event::TaskCompleted { .. }
-        | Event::TaskFailed { .. } => None,
+        | Event::TaskFailed { .. }
+        // #318 INV-1 (b) — boot-takeover abandonment is a kernel-internal
+        // signal, no plugin attribution.
+        | Event::SpecPushAbandoned { .. } => None,
     }
 }
 
@@ -143,6 +146,9 @@ fn event_entity_kind(ev: &Event) -> Option<String> {
         Event::WaveUpdated(_) | Event::WaveDeleted { .. } | Event::WaveLifecycleChanged { .. } => {
             Some("wave".into())
         }
+        // #318 INV-1 (b) — wave-scoped abandonment signal; routes through
+        // plugin filters that select on `entity_kind="wave"`.
+        Event::SpecPushAbandoned { .. } => Some("wave".into()),
         Event::CardAdded(_) | Event::CardUpdated(_) | Event::CardDeleted { .. } => {
             Some("card".into())
         }
@@ -178,6 +184,9 @@ fn event_entity_id(ev: &Event) -> Option<String> {
         Event::WaveUpdated(w) => Some(w.id.to_string()),
         Event::WaveDeleted { id, .. } => Some(id.to_string()),
         Event::WaveLifecycleChanged { id, .. } => Some(id.to_string()),
+        // #318 INV-1 (b) — entity id is the abandoned wave's id, matching
+        // the entity_kind="wave" arm above.
+        Event::SpecPushAbandoned { wave_id, .. } => Some(wave_id.to_string()),
         Event::CardAdded(c) | Event::CardUpdated(c) => Some(c.id.to_string()),
         Event::CardDeleted { id, .. } => Some(id.to_string()),
         // Issue #247 PR2 — entity id is the report card's id, matching

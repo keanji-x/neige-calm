@@ -2806,4 +2806,24 @@ impl RepoEventWrite for SqlxRepo {
             .await?;
         Ok(row.0)
     }
+
+    async fn events_latest_id_for_wave(&self, wave_id: &str) -> Result<Option<i64>> {
+        // `MAX(id) … WHERE scope_wave = ?1`. Filters on the dedicated
+        // column added in migration 0007. Rows whose `scope_kind` is
+        // `'card'` are included automatically — the `EventScope::from_row`
+        // contract puts the card's parent wave in `scope_wave` for any
+        // card-scoped event, so the dispatcher's catch-up filter and this
+        // query agree on "events in scope for this wave".
+        //
+        // `MAX()` over an empty filtered set returns one `NULL` row,
+        // surfaced as `None` here — the call site maps that to `0` (the
+        // `events.id` "no row" sentinel) on the
+        // `SpecPushAbandoned.last_envelope_id` payload.
+        let row: (Option<i64>,) =
+            sqlx::query_as("SELECT MAX(id) FROM events WHERE scope_wave = ?1")
+                .bind(wave_id)
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(row.0)
+    }
 }

@@ -525,6 +525,53 @@ pub enum Event {
         idempotency_key: String,
         reason: String,
     },
+
+    /// #318 INV-1 (b) — boot takeover has given up on this wave's spec
+    /// push channel. Emitted exactly once by
+    /// [`crate::try_takeover_one_wave`] when the inert classifier fires
+    /// (`thread/resume` → `-32600 "no rollout"`, spawn/connect failure,
+    /// `mkdir` failure on the per-card sock dir, etc.) — i.e. every code
+    /// path that returns [`crate::TakeoverOutcome::Inert`].
+    ///
+    /// This closes the R1-B1 "no-skip" observability gap from #315
+    /// review: when takeover marks a wave inert, the spec card is
+    /// excluded from `spec_cards_for_boot_takeover` on subsequent boots,
+    /// so any wave-scoped event already persisted in the events log
+    /// (with `events.id > push_watermark`) would otherwise sit stranded
+    /// forever — the events row stays, but nothing will ever deliver it
+    /// to a spec thread. Without this signal, SRE / future
+    /// crash-recovery code has no durable record of "this wave needs
+    /// operator attention before its events can be replayed".
+    ///
+    /// `last_envelope_id` is the largest `events.id` of any envelope
+    /// scoped to this wave that existed at the moment of inert
+    /// classification. It's an upper bound on the abandoned set — every
+    /// id in `(push_watermark, last_envelope_id]` for this wave is at
+    /// risk. The kernel never *parses* this field; consumers (operator
+    /// dashboards, the future re-run path from #313 problem #2) use it
+    /// to size the stranded set. A wave with no in-scope events at the
+    /// time of abandonment surfaces `last_envelope_id = 0`, the same
+    /// sentinel `events.id` reserves for "no row".
+    ///
+    /// `cove_id` is on the payload for topic-routing symmetry with
+    /// [`Event::WaveDeleted`]: an operator subscribing to a cove sees
+    /// the abandonment without needing a separate join to recover the
+    /// wave's owning cove.
+    ///
+    /// Wave-scoped on the persisted row (`scope_wave = wave_id`,
+    /// `scope_cove = cove_id`). Topic mapping mirrors `WaveDeleted`
+    /// (`wave:<id>`, `cove:<cove_id>`, firehose).
+    ///
+    /// **Forward-compat note**: this is a strictly-additive variant. Old
+    /// clients see an unknown `ev` tag and ignore it; the WS replay
+    /// path's `from_kind_and_payload` round-trips it like every other
+    /// variant.
+    #[serde(rename = "spec_push.abandoned")]
+    SpecPushAbandoned {
+        wave_id: WaveId,
+        cove_id: CoveId,
+        last_envelope_id: i64,
+    },
 }
 
 impl Event {
@@ -552,6 +599,7 @@ impl Event {
             Event::TerminalJobRequested { .. } => "terminal.job_requested",
             Event::TaskCompleted { .. } => "task.completed",
             Event::TaskFailed { .. } => "task.failed",
+            Event::SpecPushAbandoned { .. } => "spec_push.abandoned",
         }
     }
 
@@ -680,6 +728,18 @@ pub fn topics(ev: &Event) -> Vec<String> {
         | Event::TerminalJobRequested { .. }
         | Event::TaskCompleted { .. }
         | Event::TaskFailed { .. } => vec!["*".into()],
+
+        // #318 INV-1 (b) — abandonment carries the wave/cove on the
+        // payload (symmetry with `WaveDeleted`), so a cove- or wave-
+        // scoped subscriber sees the stranding without needing the
+        // BroadcastEnvelope's scope field.
+        Event::SpecPushAbandoned {
+            wave_id, cove_id, ..
+        } => vec![
+            format!("wave:{}", wave_id),
+            format!("cove:{}", cove_id),
+            "*".into(),
+        ],
     }
 }
 
@@ -1415,6 +1475,89 @@ mod scope_tests {
             body_before: "old body".into(),
             body_after: "new body".into(),
         }
+    }
+
+    // ----- #318 INV-1 (b): Event::SpecPushAbandoned -----------------------
+    //
+    // Pin the wire shape of the abandonment signal emitted by
+    // `try_takeover_one_wave` on the inert path. Persisted row format
+    // and broadcast envelope shape are both wire contracts.
+
+    #[test]
+    fn spec_push_abandoned_kind_tag_pinned() {
+        let ev = Event::SpecPushAbandoned {
+            wave_id: WaveId::from("w-1"),
+            cove_id: CoveId::from("c-1"),
+            last_envelope_id: 42,
+        };
+        assert_eq!(ev.kind_tag(), "spec_push.abandoned");
+    }
+
+    #[test]
+    fn spec_push_abandoned_serde_round_trip() {
+        let ev = Event::SpecPushAbandoned {
+            wave_id: WaveId::from("w-1"),
+            cove_id: CoveId::from("c-1"),
+            last_envelope_id: 42,
+        };
+        let json = serde_json::to_value(&ev).unwrap();
+        assert_eq!(json["ev"], "spec_push.abandoned");
+        assert_eq!(json["data"]["wave_id"], "w-1");
+        assert_eq!(json["data"]["cove_id"], "c-1");
+        assert_eq!(json["data"]["last_envelope_id"], 42);
+
+        let back: Event = serde_json::from_value(json).unwrap();
+        match back {
+            Event::SpecPushAbandoned {
+                wave_id,
+                cove_id,
+                last_envelope_id,
+            } => {
+                assert_eq!(wave_id.as_str(), "w-1");
+                assert_eq!(cove_id.as_str(), "c-1");
+                assert_eq!(last_envelope_id, 42);
+            }
+            other => panic!("expected SpecPushAbandoned, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn spec_push_abandoned_replay_via_from_kind_and_payload() {
+        let payload = serde_json::json!({
+            "wave_id": "w-1",
+            "cove_id": "c-1",
+            "last_envelope_id": 7,
+        });
+        let ev = Event::from_kind_and_payload("spec_push.abandoned", payload)
+            .expect("replay decode SpecPushAbandoned");
+        assert_eq!(ev.kind_tag(), "spec_push.abandoned");
+        match ev {
+            Event::SpecPushAbandoned {
+                wave_id,
+                cove_id,
+                last_envelope_id,
+            } => {
+                assert_eq!(wave_id.as_str(), "w-1");
+                assert_eq!(cove_id.as_str(), "c-1");
+                assert_eq!(last_envelope_id, 7);
+            }
+            other => panic!("expected SpecPushAbandoned, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn spec_push_abandoned_topics_wave_and_cove() {
+        // Topic mapping — same shape as `WaveDeleted`: a subscriber
+        // listening on the wave OR its cove sees the abandonment.
+        let ev = Event::SpecPushAbandoned {
+            wave_id: WaveId::from("w-1"),
+            cove_id: CoveId::from("c-1"),
+            last_envelope_id: 0,
+        };
+        let t = topics(&ev);
+        assert!(t.iter().any(|s| s == "wave:w-1"), "topics={t:?}");
+        assert!(t.iter().any(|s| s == "cove:c-1"), "topics={t:?}");
+        assert!(t.iter().any(|s| s == "*"), "topics={t:?}");
     }
 
     #[test]

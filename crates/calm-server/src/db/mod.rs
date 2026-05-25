@@ -582,6 +582,26 @@ pub trait RepoEventWrite: RepoRead {
     /// events restart at id=1) detect "the server is no longer the
     /// kernel I was talking to" and re-bootstrap its cache. Issue #290.
     async fn events_latest_id(&self) -> Result<Option<i64>>;
+
+    /// #318 INV-1 (b) — largest `events.id` whose `scope_wave` matches
+    /// the given wave, or `None` when no wave-scoped row exists for
+    /// it.
+    ///
+    /// Used by [`crate::try_takeover_one_wave`] when the inert
+    /// classifier fires: the helper stamps this value onto
+    /// `Event::SpecPushAbandoned.last_envelope_id` so SRE / future
+    /// re-run code sees an upper bound on the stranded set
+    /// (`(push_watermark, last_envelope_id]` for this wave). Returning
+    /// `None` is mapped to `0` at the call site — the same sentinel
+    /// `events.id` reserves for "no row".
+    ///
+    /// Scope filter is `scope_wave = ?1` — `scope_kind` may be either
+    /// `'wave'` or `'card'` (cards under this wave count too — they
+    /// carry `scope_wave` per `EventScope::from_row`). Rows that
+    /// predate migration 0007 default to `scope_kind='system'` with
+    /// NULL ancestor cols and never appear in this query, which is
+    /// correct: pre-PR2 rows have no wave attribution.
+    async fn events_latest_id_for_wave(&self, wave_id: &str) -> Result<Option<i64>>;
 }
 
 /// Raw sync-domain entity writes. Gated: the trait object `RouteRepo` that
