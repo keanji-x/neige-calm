@@ -3,6 +3,7 @@
 //! `Clone` is cheap — everything inside is wrapped in `Arc` or already
 //! reference-counted internally.
 
+use crate::aspect::{AspectRegistry, WatermarkSinkInstalledAspect};
 use crate::card_role_cache::CardRoleCache;
 use crate::config::Config;
 use crate::db::{Repo, RouteRepo};
@@ -97,6 +98,17 @@ pub struct AppState {
     /// (`Arc<DashMap<…>>` inside); the dispatcher push path resolves a wave's
     /// client through this registry.
     pub spec_push: SpecPushRegistry,
+    /// #322 — aspect / join-point framework registry. Holds the boot-
+    /// installed aspects (today: [`WatermarkSinkInstalledAspect`] on
+    /// `BeforeHandleParkInRegistry`). Threaded into
+    /// [`SpecPushRegistry::park`](crate::spec_appserver::SpecPushRegistry::park)
+    /// at each production registration site. `Arc` so route handlers,
+    /// the dispatcher, and any future aspect-enforcing callsite share
+    /// one registry without re-installing aspects per request. The set
+    /// of aspects is fixed at boot — no runtime mutation, no per-test
+    /// override surface (test paths bypass via the bare
+    /// [`SpecPushRegistry::insert`](crate::spec_appserver::SpecPushRegistry::insert)).
+    pub aspects: Arc<AspectRegistry>,
     /// Full-capability handle. Held separately from `repo` so the gate at
     /// `AppState::repo` survives even though the underlying concrete impl
     /// is the same `SqlxRepo`. Kept private — callers must go through
@@ -107,6 +119,20 @@ pub struct AppState {
     /// out, but the production build keeps the field opaque on purpose.
     #[allow(dead_code)]
     raw: Arc<dyn Repo>,
+}
+
+/// #322 — boot-time aspect registration. The single source of truth for
+/// "which aspects ship in the kernel" — both [`AppState::new`] (production)
+/// and [`AppState::from_parts`] (tests / replay lib) go through this so a
+/// new aspect lands on every code path that constructs an `AppState`.
+/// Returns an `Arc` because [`AppState::aspects`] is `Arc<AspectRegistry>`
+/// (shared across handler dispatches without re-registering).
+fn build_aspect_registry() -> Arc<AspectRegistry> {
+    let mut reg = AspectRegistry::new();
+    // INV-6 — every `SpecPushHandle` parked in `SpecPushRegistry` must have
+    // a `WatermarkSink` installed (#322 minimum landing; #318 INV table).
+    reg.register_before_handle_park(Arc::new(WatermarkSinkInstalledAspect));
+    Arc::new(reg)
 }
 
 impl AppState {
@@ -201,6 +227,12 @@ impl AppState {
             // their own handles or drive the gated e2e; the default is empty.
             // Same instance the dispatcher above holds a clone of.
             spec_push,
+            // #322 — aspect registry. Identical set in test/replay and
+            // production (see `build_aspect_registry` doc) so a test
+            // exercising the production register path (e.g.
+            // `SpecPushRegistry::park`) trips the same aspects production
+            // would.
+            aspects: build_aspect_registry(),
             raw: repo,
         }
     }
@@ -380,6 +412,9 @@ impl AppState {
             // path now). The dispatcher above holds a clone of this same
             // instance for its push path.
             spec_push,
+            // #322 — aspect registry, boot-installed once and shared via
+            // `Arc` to every handler / actor that needs it.
+            aspects: build_aspect_registry(),
             raw: repo,
         };
 

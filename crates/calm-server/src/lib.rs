@@ -26,6 +26,10 @@
 //! ```
 
 pub mod actor;
+/// #322 — aspect / join-point framework: OCP-shaped invariant enforcement.
+/// See [`aspect`] module docs for the closed-set / open-impl split. Lives at
+/// the module-list head so reviewers see the framework boundary up top.
+pub mod aspect;
 pub mod auth;
 
 /// #177 root-cause refactor — replace the WS handler's auto-revive with
@@ -556,7 +560,19 @@ async fn register_and_catch_up(
             // Still under the per-wave lock, so any concurrent live event
             // for this wave waits at `Inner::push_to_spec`'s lock until
             // catch-up finishes.
-            state.spec_push.insert(wave_id.clone(), handle);
+            //
+            // #322 — `park` (not the bare `insert`) runs the aspect
+            // framework's `BeforeHandleParkInRegistry` checks first; INV-6
+            // (`WatermarkSinkInstalledAspect`) panics in release if a
+            // future refactor drops the `install_watermark_sink` call
+            // above. The `debug_assert!` above is the local fast-fail at
+            // the install site; the aspect is the framework-level
+            // enforcement at the park site (belt + suspenders, both
+            // pointing at INV-6).
+            state
+                .spec_push
+                .park(wave_id.clone(), handle, state.aspects.as_ref())
+                .await;
 
             // Read catch-up rows UNDER the lock (see CRITICAL above).
             let rows = match state.repo.events_since(watermark, None).await {
