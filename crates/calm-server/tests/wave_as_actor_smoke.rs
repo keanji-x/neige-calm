@@ -11,9 +11,11 @@
 //!      rule + AiSpec).
 //!   4. The PR5 dispatcher picks it up, mints a worker card with
 //!      `CardRole::Worker`.
-//!   5. PR6's dispatcher activation attempts the daemon spawn (stub
-//!      bin → fails, but the worker card row + terminal row land
-//!      and a `Event::TaskFailed` follows for PR8 to consume).
+//!   5. PR6's dispatcher activation runs the daemon spawn through
+//!      the `argv-recorder-daemon` fixture so the spawn completes
+//!      successfully — the worker card row + terminal row land and
+//!      survive past the post-#310 `rollback_orphan_worker` guard
+//!      (which would have deleted them on an OS-level spawn error).
 //!
 //! This is the first end-to-end "wave-as-actor" assertion in the
 //! suite. Any future regression that breaks (a) the role-cache
@@ -70,12 +72,20 @@ async fn boot() -> Boot {
         .await
         .unwrap();
 
-    // Stub daemon bin — spec card daemon spawn will fail at the
-    // post-commit phase (which is fine; we test the *event /
-    // role-gate / dispatcher* composition, not the daemon path).
+    // Daemon bin — point at the `argv-recorder-daemon` fixture so the
+    // dispatcher's worker spawn actually completes. A nonexistent
+    // binary used to be fine pre-#310 (the dispatcher committed the
+    // worker card BEFORE attempting the spawn, so the test could
+    // observe the orphan card row), but PR #312's fix for #310 flips
+    // that ordering: `rollback_orphan_worker` now DELETEs the
+    // pre-committed card row when the OS-level spawn errors out. With
+    // the recorder fixture in place the spawn succeeds, the card row
+    // survives, and this smoke test continues to assert what it
+    // actually cares about: the role-gate + dispatcher composition
+    // (AiSpec → CodexJobRequested → worker card mint).
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin: PathBuf::from("/nonexistent-daemon-bin-smoke-test"),
+        session_daemon_bin: PathBuf::from(env!("CARGO_BIN_EXE_argv-recorder-daemon")),
     });
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
