@@ -622,6 +622,19 @@ impl SpecPushHandle {
     pub async fn install_watermark_sink(&self, sink: WatermarkSink) {
         *self.watermark_sink.lock().await = Some(sink);
     }
+
+    /// #313 problem #1 round-3 (B2 / N7) — probe whether a
+    /// [`WatermarkSink`] has been installed on this handle. Used by
+    /// `debug_assert!` at every site that constructs a handle and parks
+    /// it in [`SpecPushRegistry`], so a future refactor that forgets to
+    /// install the sink fails fast in dev/test builds.
+    ///
+    /// Production callers must NOT branch on this — `Option<WatermarkSink>`
+    /// is internal to the queue-flush bookkeeping; an uninstalled sink
+    /// silently no-ops on flush (the bug the assertion guards against).
+    pub async fn has_watermark_sink(&self) -> bool {
+        self.watermark_sink.lock().await.is_some()
+    }
 }
 
 impl Drop for SpecPushHandle {
@@ -1056,6 +1069,93 @@ pub fn cleanup_sock_dir(sock: &Path) {
         // `remove_dir` only succeeds when empty — exactly what we want
         // (don't nuke a dir that unexpectedly holds other files).
         let _ = std::fs::remove_dir(dir);
+    }
+}
+
+/// #313 problem #1 round-3 (B1) — verify that the per-card socket at
+/// `sock` has a live listener BEFORE the caller signals the persisted
+/// `pgid`.
+///
+/// **Why this exists.** After a host reboot the persisted `appserver_pgid`
+/// almost certainly belongs to an unrelated process (PIDs/PGIDs are
+/// recycled), so a `kill(-pgid, SIGTERM/SIGKILL)` could nuke arbitrary
+/// user processes. The per-card socket path is UUID-scoped
+/// (`<data_dir>/appserver/<card_id>/sock`), so a live listener on that
+/// exact path is overwhelmingly likely to be our codex app-server (the
+/// only thing that ever binds it). We use that as a cheap ownership
+/// proxy: if the socket accepts a `connect(2)`, we trust the persisted
+/// pgid points at the listener; if it doesn't, we skip the kill entirely
+/// and just clean the dead socket file.
+///
+/// Returns `true` when the kill is **safe** (socket connect succeeded —
+/// caller should proceed with `signal_process_group`), `false` when the
+/// caller should **skip** the kill (socket missing or refused — caller
+/// should still `cleanup_sock_dir` to wipe the stale path before
+/// respawn).
+///
+/// We classify errors strictly: only `NotFound` (`ENOENT`) and
+/// `ConnectionRefused` (`ECONNREFUSED`) are treated as "stale → safe to
+/// skip". Any other error (e.g. `PermissionDenied`) is logged and treated
+/// the same as a refused connection (skip the kill — we can't prove
+/// ownership). This is the conservative default: a false-negative (we
+/// skip a kill we could have done) is harmless because boot recovery's
+/// `cleanup_sock_dir` plus respawn still works (the `bind(2)` succeeds
+/// when the listener really is gone), while a false-positive (we kill
+/// the wrong process) is the bug we're guarding against.
+///
+/// Optionally, callers could layer a JSON-RPC `initialize` probe on top
+/// for belt-and-suspenders ownership confirmation. We don't here — the
+/// UUID-scoped path is sufficient on its own and the extra round-trip
+/// would delay boot. If a future regression introduces socket-path reuse
+/// across non-codex daemons, fold an `initialize` probe in here.
+pub async fn socket_owned_by_appserver(sock: &Path) -> bool {
+    match tokio::net::UnixStream::connect(sock).await {
+        Ok(_stream) => {
+            // Connect succeeded → a listener is accepting on this exact
+            // per-card path. Trust it as ours and proceed with the kill.
+            // We drop `_stream` immediately; the listener saw an empty
+            // connection but that's harmless (no `initialize` was sent).
+            tracing::debug!(
+                sock = %sock.display(),
+                "takeover ownership probe: socket connect OK — persisted pgid presumed ours"
+            );
+            true
+        }
+        Err(e) => {
+            let kind = e.kind();
+            match kind {
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => {
+                    // ENOENT — socket file gone (graceful teardown / host
+                    // wipe) → no listener exists, nothing to kill.
+                    // ECONNREFUSED — socket path exists, no listener bound
+                    // (stale dirent from a crashed process) → likewise
+                    // nothing of ours to kill.
+                    tracing::info!(
+                        sock = %sock.display(),
+                        error = %e,
+                        "takeover ownership probe: socket has no live listener — \
+                         skipping kill of persisted pgid (post-reboot PID may be unrelated); \
+                         caller should still cleanup_sock_dir before respawn"
+                    );
+                    false
+                }
+                _ => {
+                    // Any other error (EACCES, EAGAIN, …): we can't prove
+                    // ownership. Default to skipping the kill — safety
+                    // over reaping a leaked group (the respawn path can
+                    // retry, but reviving a SIGKILLed user process can't).
+                    tracing::warn!(
+                        sock = %sock.display(),
+                        error = %e,
+                        error_kind = ?kind,
+                        "takeover ownership probe: socket connect failed with \
+                         non-NotFound/ConnectionRefused error — skipping kill \
+                         to avoid signaling unrelated process group"
+                    );
+                    false
+                }
+            }
+        }
     }
 }
 
@@ -2325,5 +2425,85 @@ mod tests {
         // Teardown: kill the child ourselves (kill_on_drop also covers it).
         let _ = child.kill().await;
         let _ = child.wait().await;
+    }
+
+    /// #313 problem #1 round-3 (B1) — `socket_owned_by_appserver` returns
+    /// `false` when the persisted socket *path does not exist* (graceful
+    /// teardown wiped it, or host reboot lost the tmpfs entry). The
+    /// caller must NOT signal the persisted pgid in this case; the
+    /// persisted pgid is presumably recycled.
+    #[tokio::test]
+    async fn socket_ownership_probe_missing_path_returns_false() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let sock = tmp
+            .path()
+            .join("appserver")
+            .join("missing-card")
+            .join("sock");
+        // Note: we don't create the parent dirs — the path is entirely absent.
+        assert!(
+            !sock.exists(),
+            "test precondition: socket path should be absent"
+        );
+        let ok = socket_owned_by_appserver(&sock).await;
+        assert!(
+            !ok,
+            "socket_owned_by_appserver must return false for an absent path \
+             (kill of persisted pgid would be unsafe — could hit unrelated process)"
+        );
+    }
+
+    /// #313 problem #1 round-3 (B1) — `socket_owned_by_appserver` returns
+    /// `false` when the socket FILE exists but no process is bound
+    /// (stale dirent from a crashed launcher). `UnixStream::connect`
+    /// returns `ECONNREFUSED` in that case; we treat it the same as
+    /// missing: skip the kill, just `cleanup_sock_dir` and respawn.
+    #[tokio::test]
+    async fn socket_ownership_probe_stale_dirent_returns_false() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let sock_dir = tmp.path().join("appserver").join("card-stale");
+        std::fs::create_dir_all(&sock_dir).expect("mkdir sock dir");
+        let sock = sock_dir.join("sock");
+        // Touch a regular file at the socket path — `UnixStream::connect`
+        // on a non-socket file returns `ECONNREFUSED` (or similar
+        // not-a-socket error mapped to `ConnectionRefused` on most
+        // Unixes). Either way the probe must return false.
+        std::fs::write(&sock, b"").expect("touch sock file");
+        assert!(sock.exists(), "test precondition: socket path should exist");
+        let ok = socket_owned_by_appserver(&sock).await;
+        assert!(
+            !ok,
+            "socket_owned_by_appserver must return false for a stale dirent / \
+             non-socket path (no live listener = no ownership = unsafe to kill)"
+        );
+    }
+
+    /// #313 problem #1 round-3 (B1) — `socket_owned_by_appserver` returns
+    /// `true` when a real listener is bound to the path. This is the
+    /// "our app-server is still running" case: caller proceeds with the
+    /// SIGTERM → grace → SIGKILL → cleanup_sock_dir sequence. We model
+    /// the listener with a bare `tokio::net::UnixListener` — the probe
+    /// only does `connect(2)`, not a codex JSON-RPC handshake, so any
+    /// accept-loop is sufficient evidence of a bound listener.
+    #[tokio::test]
+    async fn socket_ownership_probe_live_listener_returns_true() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let sock_dir = tmp.path().join("appserver").join("card-live");
+        std::fs::create_dir_all(&sock_dir).expect("mkdir sock dir");
+        let sock = sock_dir.join("sock");
+        let listener = tokio::net::UnixListener::bind(&sock).expect("bind listener");
+        // Drive a single accept in the background so the probe's
+        // connect resolves cleanly. We don't read or write — the probe
+        // just needs to confirm a listener exists.
+        let accept_task = tokio::spawn(async move {
+            let _ = listener.accept().await;
+        });
+        let ok = socket_owned_by_appserver(&sock).await;
+        assert!(
+            ok,
+            "socket_owned_by_appserver must return true when a listener is bound \
+             (the per-card path is UUID-scoped; a live listener is almost certainly ours)"
+        );
+        let _ = tokio::time::timeout(Duration::from_secs(1), accept_task).await;
     }
 }

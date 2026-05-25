@@ -2132,12 +2132,38 @@ impl RepoOutOfDomain for SqlxRepo {
         // any other field. `json_set(p, '$.k', v)` upserts the key in place.
         // A missing row is silently a no-op (the wave was deleted between
         // the dispatcher's bump and the persist; nothing to do).
+        //
+        // #313 problem #1 round-3 (N1) — MONOTONIC GUARD via the WHERE
+        // clause. Two persisters can race to this UPDATE:
+        //
+        //   * `Dispatcher::push_to_spec` on a successful `Issued` —
+        //     persists `max_envelope_id` (highest id of the just-issued
+        //     coalesced turn), under the per-wave push lock.
+        //   * The consumer task's `flush_push_queue` via the installed
+        //     [`WatermarkSink`] — persists the max id from the drained
+        //     queue, NOT under the same lock (the queue lock is
+        //     different).
+        //
+        // Both happen during normal operation. If `flush_push_queue`'s
+        // SQL is slow enough that a later `Issued` for a higher
+        // `max_envelope_id` lands AND persists FIRST, an unguarded
+        // `json_set` here could LOWER the stored watermark — a regression
+        // that boot catch-up would then mistake for "we never delivered
+        // ids in [old, new]" and re-push.
+        //
+        // The `WHERE … json_extract(payload,'$.push_watermark') < ?1`
+        // (coalesced to 0 for the never-persisted case) makes the UPDATE
+        // a no-op when the stored watermark is already at-or-above the
+        // proposed one. SQLite's WHERE evaluates atomically with the
+        // UPDATE under the same row lock, so the read-modify-write race
+        // is closed.
         let now = now_ms();
         let _ = sqlx::query(
             r#"UPDATE cards
                   SET payload    = json_set(COALESCE(payload, '{}'), '$.push_watermark', ?1),
                       updated_at = ?2
-                WHERE id = ?3"#,
+                WHERE id = ?3
+                  AND COALESCE(json_extract(payload, '$.push_watermark'), 0) < ?1"#,
         )
         .bind(watermark)
         .bind(now)

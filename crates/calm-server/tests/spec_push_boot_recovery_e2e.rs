@@ -515,6 +515,107 @@ async fn run_recovery_scenario(
         "[spec-push-boot-recovery-e2e] (2) pre-restart push PASS \
          (pre_envelope_id={pre_envelope_id} persisted_watermark={watermark_pre})"
     );
+
+    // (2b) #315 round-3 (B2) — CREATE-WAVE SINK COVERAGE.
+    //      Round-2 installed the WatermarkSink on the boot-takeover
+    //      `register_and_catch_up` path but missed the symmetric
+    //      `routes/waves.rs::spawn_push_appserver` create-wave path. A
+    //      push enqueued mid-turn against a freshly-created (not
+    //      recovered) handle would flush correctly but the durable
+    //      watermark would never advance — a kernel restart would then
+    //      replay already-delivered events to the spec thread.
+    //
+    //      To prove the round-3 fix is wired on the create-wave path
+    //      WITHOUT depending on the takeover flow, we exercise an
+    //      enqueue→flush cycle on the wave's ORIGINAL handle (the one
+    //      `spawn_push_appserver` installed earlier in this scenario —
+    //      no restart has happened yet here). Shape mirrors scenario
+    //      (6): kicker → wait for TurnRunning → queued envelope →
+    //      assert watermark unchanged → wait_until_idle (flush) →
+    //      assert watermark advanced past queued.
+    use calm_server::spec_appserver::SpecPushPhase as SpecPushPhaseB2;
+    eprintln!(
+        "[spec-push-boot-recovery-e2e] (2b) B2 create-wave sink check: \
+         exercising enqueue→flush on the ORIGINAL (no-restart) handle"
+    );
+    wait_until_idle(state, wave_id, Duration::from_secs(90)).await;
+    let watermark_pre_b2 = persisted_watermark(repo, &spec_card_id).await;
+    let kicker_b2 =
+        emit_task_completed(state, repo, wave_id, "boot-recovery-b2-create-kicker").await;
+    let key_b2: WaveId = wave_id.to_string().into();
+    let phase_deadline_b2 = Instant::now() + Duration::from_secs(60);
+    let mut saw_running_b2 = false;
+    while Instant::now() < phase_deadline_b2 {
+        if let Some(st) = state.spec_push.status(&key_b2).await
+            && matches!(
+                st.phase,
+                SpecPushPhaseB2::TurnRunning | SpecPushPhaseB2::Issuing
+            )
+        {
+            saw_running_b2 = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    if !saw_running_b2 {
+        return Err(format!(
+            "B2 create-wave: never observed TurnRunning/Issuing after kicker (kicker_b2={kicker_b2})"
+        ));
+    }
+    // Snapshot watermark while the kicker turn is running — kicker
+    // should have advanced it (single-issue Issued path).
+    let watermark_mid_b2 = persisted_watermark(repo, &spec_card_id).await;
+    if watermark_mid_b2 < kicker_b2 {
+        return Err(format!(
+            "B2 create-wave setup: kicker should have advanced watermark; \
+             watermark_mid_b2={watermark_mid_b2} kicker_b2={kicker_b2}"
+        ));
+    }
+    // Second event mid-turn → MUST hit Enqueue arm; durable watermark
+    // MUST NOT advance past the queued id until the flush.
+    let queued_b2 =
+        emit_task_completed(state, repo, wave_id, "boot-recovery-b2-create-queued").await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let watermark_after_enqueue_b2 = persisted_watermark(repo, &spec_card_id).await;
+    if watermark_after_enqueue_b2 >= queued_b2 {
+        return Err(format!(
+            "B2 create-wave VIOLATION: watermark advanced past a QUEUED envelope on the \
+             create-wave path: watermark_after_enqueue_b2={watermark_after_enqueue_b2} \
+             queued_b2={queued_b2} (kicker_b2={kicker_b2}, \
+             watermark_mid_b2={watermark_mid_b2}, watermark_pre_b2={watermark_pre_b2}) \
+             — sink was installed by Issued path, not Enqueue; round-3 fix missing"
+        ));
+    }
+    eprintln!(
+        "[spec-push-boot-recovery-e2e] (2b) B2 create-wave enqueue OK: \
+         watermark stayed at {watermark_after_enqueue_b2} (queued_b2={queued_b2})"
+    );
+    // Wait for flush via consumer task's `turn/completed` →
+    // `flush_push_queue` → installed sink call.
+    wait_until_idle(state, wave_id, Duration::from_secs(90)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let watermark_after_flush_b2 = persisted_watermark(repo, &spec_card_id).await;
+    if watermark_after_flush_b2 < queued_b2 {
+        return Err(format!(
+            "B2 create-wave VIOLATION: flush did NOT advance watermark past queued \
+             envelope on the create-wave path: watermark_after_flush_b2={watermark_after_flush_b2} \
+             queued_b2={queued_b2} — this is the exact bug the round-3 sink-on-create \
+             fix targets; without it the consumer task flushes the queue but the \
+             WatermarkSink slot is None, so persistence silently no-ops"
+        ));
+    }
+    eprintln!(
+        "[spec-push-boot-recovery-e2e] (2b) B2 create-wave flush PASS: \
+         watermark advanced to {watermark_after_flush_b2} after flush (queued_b2={queued_b2})"
+    );
+    // Refresh `watermark_pre` snapshot so downstream B3 race math
+    // (race_envelope > watermark_pre) reflects the post-(2b) state.
+    // (`emit_task_completed` for the kicker + queued advanced the
+    // events.id sequence; without this refresh, B3's `race_envelope >
+    // watermark_pre` precondition could spuriously fail if the IDs
+    // overlap in a regression. A normal run satisfies it trivially.)
+    let watermark_pre = persisted_watermark(repo, &spec_card_id).await;
+
     // Drop the pre-restart observer + its socket before we simulate restart.
     drop(observer_pre);
     drop(notifs_pre);
@@ -570,6 +671,14 @@ async fn run_recovery_scenario(
         ));
     }
     // Give the broadcast a beat to land on push_to_spec.
+    // TODO(#313 round-3 N4): replace this fixed sleep with deterministic
+    // synchronization — e.g., a counter/span incremented on the
+    // no-handle branch, polled with a bounded retry. The 200 ms guess
+    // can flake on a loaded box (broadcast → spawn → lock acquire →
+    // dedup check is normally <10 ms but can spike). The invariant we
+    // need is "dispatcher saw the race envelope", not "200 ms have
+    // elapsed". Deferred because the bounded-retry shape needs a tiny
+    // test hook on `EventBus` or `Dispatcher` to count receive ticks.
     tokio::time::sleep(Duration::from_millis(200)).await;
     // The cursor MUST still be 0 (B3 fix: no bump-without-handle).
     let cursor_after_race_emit = state.dispatcher.push_cursor_for_test(&spec_card_key);

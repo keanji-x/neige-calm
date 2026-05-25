@@ -280,15 +280,54 @@ async fn try_takeover_one_wave(
     //    SIGKILL and kept the socket bound.
     if let (Some(pgid), Some(sock)) = (persisted_pgid, persisted_sock) {
         let sock_path = std::path::Path::new(sock);
-        if pgid > 1 {
+        // #313 problem #1 round-3 (B1) — SOCKET-OWNERSHIP PROBE before kill.
+        //
+        // Round-2's always-respawn unconditionally signaled the persisted
+        // pgid whenever both fields were present. After a host reboot the
+        // kernel comes up on a freshly-recycled PID space, so the
+        // persisted `pgid` almost certainly belongs to an unrelated
+        // process group — sending SIGTERM/SIGKILL would nuke a random
+        // user process. Round-3 gates the kill on a cheap ownership
+        // proxy: the per-card socket path is UUID-scoped, so anything
+        // listening on it is overwhelmingly our codex app-server.
+        //
+        //   * connect OK         → live listener at our exact path → almost
+        //                          certainly our app-server (the only
+        //                          thing that binds <data_dir>/appserver/
+        //                          <card_id>/sock). Proceed with SIGTERM
+        //                          → grace → SIGKILL → cleanup_sock_dir.
+        //   * connect ENOENT     → socket file gone (graceful teardown
+        //                          from prior shutdown). No process to
+        //                          kill; cleanup is a no-op for ENOENT.
+        //   * connect ECONNREFUSED → socket dirent stale (crashed without
+        //                          cleanup). No live listener; the
+        //                          persisted pgid is presumably recycled.
+        //                          Skip kill, cleanup the dead socket so
+        //                          the respawn can rebind.
+        //   * connect other err  → ambiguous; default to SKIP the kill
+        //                          (false-negative is harmless; the
+        //                          respawn's `bind(2)` succeeds when the
+        //                          listener really is gone, and a true
+        //                          live duplicate causes EADDRINUSE which
+        //                          the respawn surfaces).
+        //
+        // Either way we still call `cleanup_sock_dir` so the new
+        // app-server can rebind a fresh socket file.
+        if pgid > 1 && spec_appserver::socket_owned_by_appserver(sock_path).await {
             tracing::debug!(
                 card_id, wave_id = %wave_id, pgid, sock,
-                "takeover: reaping any persisted app-server process group before respawn"
+                "takeover: socket probe confirms ownership — reaping persisted app-server process group before respawn"
             );
             spec_appserver::signal_process_group(pgid, libc::SIGTERM);
             // Brief grace so the launcher can flush before SIGKILL.
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             spec_appserver::signal_process_group(pgid, libc::SIGKILL);
+        } else if pgid > 1 {
+            tracing::info!(
+                card_id, wave_id = %wave_id, pgid, sock,
+                "takeover: skipping kill of persisted pgid — socket has no live listener \
+                 (likely host-reboot PID recycle); cleaning stale socket and respawning"
+            );
         }
         spec_appserver::cleanup_sock_dir(sock_path);
     }
@@ -350,8 +389,16 @@ async fn try_takeover_one_wave(
             // Clear the stale push fields so the next boot stops retrying
             // — the wave is inert until issue #313 problem #2 wires up a
             // re-run path (out of scope).
+            //
+            // #313 problem #1 round-3 (N3) — tighten the classifier to
+            // require BOTH "no rollout" AND "-32600". The earlier OR form
+            // would clear push state for *any* -32600 error (codex uses
+            // -32600 for several invalid-request shapes), which could
+            // wedge a wave whose rollout actually still exists. Both
+            // tokens together are codex's specific phrasing for the
+            // missing-rollout case.
             let msg = e.to_string();
-            let no_rollout = msg.contains("no rollout") || msg.contains("-32600");
+            let no_rollout = msg.contains("no rollout") && msg.contains("-32600");
             if no_rollout {
                 tracing::warn!(
                     card_id, wave_id = %wave_id, thread_id, error = %msg,
@@ -432,8 +479,19 @@ async fn register_and_catch_up(
     // B1 — install the watermark sink on the handle BEFORE the handle is
     // parked in the registry, so the very first queue flush triggered by
     // a catch-up push hitting `Enqueue` has a persister to call.
+    //
+    // #313 problem #1 round-3 (N7) — `debug_assert!` symmetric with the
+    // sister install site in `routes/waves.rs::spawn_push_appserver`. A
+    // future refactor that splits this install from its site would fail
+    // fast in dev/test rather than silently dropping flushed envelopes
+    // from the watermark.
     let sink = state.dispatcher.watermark_sink_for(card_key.clone());
     handle.install_watermark_sink(sink).await;
+    debug_assert!(
+        handle.has_watermark_sink().await,
+        "register_and_catch_up: install_watermark_sink did not take effect — \
+         queued-then-flushed envelopes would silently fail to persist their watermark"
+    );
 
     // B3 — hold the per-wave push lock for the WHOLE
     // `seed → insert → events_since → catch-up replay` sequence so any

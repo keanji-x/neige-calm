@@ -960,6 +960,34 @@ async fn spawn_push_appserver(
     )
     .await?;
 
+    // #313 problem #1 round-3 (B2) — install the watermark sink on the
+    // freshly-created handle BEFORE parking it in the registry. The
+    // round-2 boot-takeover path (`lib.rs::register_and_catch_up`) wired
+    // this for resumed handles, but the symmetric create-wave path was
+    // missed: a push landing while the freshly-created spec turn is
+    // active would hit `Enqueue` (the spec is mid-turn-1, the
+    // dispatcher's `Inner::push_to_spec` cannot issue a second
+    // `turn/start`), the consumer's later `flush_push_queue` would
+    // deliver the queued items, and — with no sink installed — the
+    // durable `push_watermark` would NEVER advance for those flushed
+    // ids. A subsequent restart would replay them all (boot catch-up
+    // uses `id > watermark` strictly), causing the spec thread to see
+    // already-delivered events twice.
+    //
+    // `Dispatcher::watermark_sink_for` is the single source of truth for
+    // the sink closure shape (it captures repo + the push cursor cache
+    // for in-process dedup symmetry); both this site and
+    // `register_and_catch_up` go through it.
+    let card_key: crate::ids::CardId = spec_card_id.to_string().into();
+    let sink = s.dispatcher.watermark_sink_for(card_key);
+    handle.install_watermark_sink(sink).await;
+    debug_assert!(
+        handle.has_watermark_sink().await,
+        "spawn_push_appserver: install_watermark_sink did not take effect — \
+         a future refactor split the install from the assert; queued-then-\
+         flushed envelopes would silently fail to persist their watermark"
+    );
+
     // Park the handle so PR3b's dispatcher can resolve the wave's
     // app-server client + thread, and so wave-delete / sweeper teardown
     // kills the child via `kill_on_drop`.
