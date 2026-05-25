@@ -1124,6 +1124,52 @@ pub async fn card_with_terminal_create_tx(
     Ok((card, term))
 }
 
+/// Issue #310 followup — atomically delete a card + its backing terminal
+/// row inside a single tx, in the order the `RESTRICT` FK demands
+/// (terminal first, then card). The structural inverse of
+/// [`card_with_terminal_create_tx`] / [`card_with_codex_create_tx`].
+///
+/// **Use site** is the dispatcher's post-commit failure cleanup: when
+/// `seed_codex_home_with_parts` or `spawn_daemon_with_parts` returns
+/// Err *after* the row-creation tx has already committed, the worker
+/// card + terminal row are orphans — the card payload references a
+/// terminal whose daemon never came up, and a retry with the same
+/// `idempotency_key` would short-circuit on the abandoned row instead
+/// of trying again. Rolling both rows back here lets the retry succeed.
+///
+/// **Idempotent shape.** Each delete swallows `NotFound` so a caller
+/// that races the orphan sweeper (which deletes terminals out from
+/// under us on a 30-60s cadence) still completes cleanly. The card
+/// delete may still surface `NotFound` if the sweeper additionally
+/// reaped the card — same shape as the route handler in
+/// `routes/cards.rs::delete_card`, where the comment notes the same
+/// race is acceptable.
+///
+/// `card_role_cache` is threaded through so the cache stays in
+/// lockstep with the row delete — same write-through invariant
+/// `card_delete_tx` itself enforces.
+pub async fn card_with_terminal_rollback_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card_id: &str,
+    terminal_id: &str,
+    card_role_cache: &CardRoleCache,
+) -> Result<()> {
+    // Order matters — the FK on `terminals.card_id` is `ON DELETE RESTRICT`
+    // since migration 0011, so the card delete would fail with a FK
+    // violation if the terminal row still existed.
+    match terminal_delete_tx(tx, terminal_id).await {
+        Ok(()) => {}
+        Err(CalmError::NotFound(_)) => {}
+        Err(e) => return Err(e),
+    }
+    match card_delete_tx(tx, card_id, card_role_cache).await {
+        Ok(()) => {}
+        Err(CalmError::NotFound(_)) => {}
+        Err(e) => return Err(e),
+    }
+    Ok(())
+}
+
 /// Atomically create a `codex`-kind card AND its associated terminal row
 /// inside a single transaction, stamping `terminal_id` (+ optional `cwd`)
 /// onto the card's payload before returning.

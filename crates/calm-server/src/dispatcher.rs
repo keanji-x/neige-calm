@@ -69,7 +69,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
 use crate::card_role_cache::CardRoleCache;
-use crate::db::sqlite::card_with_codex_create_tx;
+use crate::db::sqlite::{card_with_codex_create_tx, card_with_terminal_rollback_tx};
 use crate::db::write_in_tx_typed;
 use crate::db::{Repo, RouteRepo};
 use crate::error::CalmError;
@@ -1061,25 +1061,11 @@ impl Inner {
             (Some(s), Some(t)) => Some((s, t)),
             _ => None,
         };
-        if let Err(e) = seed_codex_home_with_parts(
-            codex.as_ref(),
-            card_id.as_str(),
-            &cwd,
-            wave_id.as_str(),
-            SeededCardRole::Worker,
-            mcp_block,
-        ) {
-            tracing::error!(
-                card_id = %card_id,
-                wave_id = %wave_id,
-                error = %e,
-                "worker codex CODEX_HOME seed failed; card persisted; sweeper will reap terminal",
-            );
-            return Err(e);
-        }
-
         // Fetch the terminal row the helper just minted. Guaranteed
-        // to exist post-commit.
+        // to exist post-commit. Pulled up BEFORE the seed step so the
+        // failure-rollback below has a `term.id` to delete by — keeping
+        // the orphan cleanup path symmetric with `spawn_daemon_with_parts`'s
+        // failure arm.
         let term = self
             .repo
             .terminal_get_by_card(card_id.as_str())
@@ -1089,6 +1075,38 @@ impl Inner {
                     "worker terminal vanished after commit for card {card_id}",
                 ))
             })?;
+
+        if let Err(e) = seed_codex_home_with_parts(
+            codex.as_ref(),
+            card_id.as_str(),
+            &cwd,
+            wave_id.as_str(),
+            SeededCardRole::Worker,
+            mcp_block,
+        ) {
+            // Issue #310 followup — the row-creation tx already
+            // committed (event-less); seeding the per-card CODEX_HOME
+            // failed post-commit. Without rollback, the card+terminal
+            // are orphans whose `idempotency_key` blocks a retry. Drop
+            // both rows so `run_one`'s outer retry loop / a user
+            // re-dispatch with the same key isn't short-circuited on
+            // the abandoned row.
+            rollback_orphan_worker(
+                self.repo.as_ref(),
+                &self.card_role_cache,
+                card_id.as_str(),
+                term.id.as_str(),
+            )
+            .await;
+            tracing::error!(
+                card_id = %card_id,
+                wave_id = %wave_id,
+                terminal_id = %term.id,
+                error = %e,
+                "worker codex CODEX_HOME seed failed; rolled back card + terminal",
+            );
+            return Err(e);
+        }
 
         // PR7a.1 — augment env with MCP token/socket before spawn.
         // Soft-fail: if either side is missing we still spawn the
@@ -1126,12 +1144,26 @@ impl Inner {
         )
         .await
         {
+            // Issue #310 followup — daemon spawn failed after the
+            // row-creation tx committed. Roll back card + terminal so
+            // a retry with the same `idempotency_key` isn't short-
+            // circuited on the orphan row (pre-rollback, the second
+            // SELECT in `find_card_by_idempotency_key_tx` would find
+            // this abandoned card and treat the dispatch as already
+            // done — the user could never re-dispatch).
+            rollback_orphan_worker(
+                self.repo.as_ref(),
+                &self.card_role_cache,
+                card_id.as_str(),
+                term.id.as_str(),
+            )
+            .await;
             tracing::error!(
                 card_id = %card_id,
                 wave_id = %wave_id,
                 terminal_id = %term.id,
                 error = %e,
-                "worker codex daemon spawn failed; card + terminal orphaned for sweeper",
+                "worker codex daemon spawn failed; rolled back card + terminal",
             );
             return Err(e);
         }
@@ -1376,12 +1408,24 @@ impl Inner {
         )
         .await
         {
+            // Issue #310 followup — daemon spawn failed after the
+            // row-creation tx committed. Roll back card + terminal so
+            // a retry with the same `idempotency_key` isn't short-
+            // circuited on the orphan row. Mirrors the codex path —
+            // see `spawn_codex_worker` for the full rationale.
+            rollback_orphan_worker(
+                self.repo.as_ref(),
+                &self.card_role_cache,
+                card_id.as_str(),
+                term.id.as_str(),
+            )
+            .await;
             tracing::error!(
                 card_id = %card_id,
                 wave_id = %wave_id,
                 terminal_id = %term.id,
                 error = %e,
-                "worker terminal daemon spawn failed; card + terminal orphaned for sweeper",
+                "worker terminal daemon spawn failed; rolled back card + terminal",
             );
             return Err(e);
         }
@@ -1463,6 +1507,63 @@ fn build_observation(event: &Event) -> String {
                 other.kind_tag()
             )
         }
+    }
+}
+
+/// Issue #310 followup — roll back the worker card + backing terminal
+/// row when a post-commit spawn step fails. Logs (best-effort) and
+/// swallows DB errors so the caller can still surface the original
+/// spawn error (which is what `run_one`'s retry loop emits as
+/// `task.failed`).
+///
+/// **Why this exists.** The dispatcher's two-stage spawn pipeline
+/// commits the row-creation tx *before* the daemon spawn runs (the
+/// daemon binary is OS-side; no way to make it transactional with the
+/// row). If the post-commit step returns Err — bad cmd path, missing
+/// daemon binary, fd exhaustion, readiness timeout — the worker card
+/// and its terminal row are orphans: the card payload references the
+/// terminal so the orphan-row sweeper passes them over, and the
+/// `idempotency_key` on the card makes a retry with the same key
+/// short-circuit on the abandoned row. The user can't re-dispatch.
+///
+/// The fix here re-opens a small tx and DELETEs both rows in the order
+/// the `RESTRICT` FK demands (terminal first, then card) via
+/// [`card_with_terminal_rollback_tx`]. After this returns, a retry
+/// with the same `idempotency_key` no longer finds the orphan and
+/// goes through fresh — the correct semantic for "first attempt
+/// failed; please try again".
+///
+/// **Best-effort.** A failure inside this rollback (e.g. SQLite
+/// busy/locked, FK weirdness, the orphan sweeper raced us) is logged
+/// at `error` level but swallowed: surfacing the rollback error would
+/// mask the original spawn error in the `task.failed` event, which is
+/// the more actionable signal for the user. The orphan sweeper is the
+/// fallback for rollback failures (same role it plays for crash-time
+/// orphans).
+async fn rollback_orphan_worker(
+    repo: &dyn Repo,
+    card_role_cache: &CardRoleCache,
+    card_id: &str,
+    terminal_id: &str,
+) {
+    let card_id_for_tx = card_id.to_string();
+    let term_id_for_tx = terminal_id.to_string();
+    let cache_for_tx = card_role_cache.clone();
+    let rollback = repo
+        .write_in_tx(Box::new(move |tx| {
+            Box::pin(async move {
+                card_with_terminal_rollback_tx(tx, &card_id_for_tx, &term_id_for_tx, &cache_for_tx)
+                    .await
+            })
+        }))
+        .await;
+    if let Err(e) = rollback {
+        tracing::error!(
+            card_id = %card_id,
+            terminal_id = %terminal_id,
+            error = %e,
+            "dispatcher: orphan-worker rollback failed; sweeper will reap on next tick",
+        );
     }
 }
 

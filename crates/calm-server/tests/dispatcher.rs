@@ -240,14 +240,27 @@ async fn subscribe_filtered_skips_lagged_without_panic() {
 async fn dispatcher_happy_path_mints_worker_card() {
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
 
+    // #310 followup — the dispatcher now rolls back the worker card +
+    // terminal row when `spawn_daemon_with_parts` returns Err (orphan
+    // cleanup; see `rollback_orphan_worker`). Pre-rollback we could
+    // use `stub_daemon()` here and catch the orphan card with
+    // `wait_for` because it stuck around; post-rollback the card is
+    // deleted before `wait_for` can poll for it, making this happy-
+    // path test flaky. Point the daemon at the argv-recorder fixture
+    // so spawn actually succeeds and the card stays.
     let codex = stub_codex();
+    let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
+    let daemon = Arc::new(calm_server::state::DaemonClient {
+        data_dir: tmp.path().to_path_buf(),
+        session_daemon_bin: locate_recorder_bin(),
+    });
     let _dispatcher = Dispatcher::spawn(
         repo.clone(),
         events.clone(),
         cache.clone(),
         wcc.clone(),
         codex.clone(),
-        stub_daemon(),
+        daemon,
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,    // permits
@@ -307,15 +320,24 @@ async fn dispatcher_happy_path_mints_worker_card() {
 async fn dispatcher_role_is_worker_via_role_cache() {
     // Variant of the happy-path test that doesn't need to crack open
     // the pool — we verify role=Worker via `card_role_cache.get(...)`.
+    //
+    // #310 followup — see `dispatcher_happy_path_mints_worker_card`:
+    // the rollback path deletes the card on spawn failure, so a happy-
+    // path assertion needs the recorder fixture to make spawn succeed.
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
     let codex = stub_codex();
+    let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
+    let daemon = Arc::new(calm_server::state::DaemonClient {
+        data_dir: tmp.path().to_path_buf(),
+        session_daemon_bin: locate_recorder_bin(),
+    });
     let _dispatcher = Dispatcher::spawn(
         repo.clone(),
         events.clone(),
         cache.clone(),
         wcc.clone(),
         codex.clone(),
-        stub_daemon(),
+        daemon,
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,
@@ -360,23 +382,30 @@ async fn dispatcher_role_is_worker_via_role_cache() {
 /// case (real Conflict propagates) is unit-tested in the in-module
 /// `idempotency_collision_distinct_from_conflict` test.
 ///
-/// Note: the stub `DaemonClient` points at a non-existent daemon
-/// binary, so the **first** (winning) dispatch still emits one
-/// `task.failed` from the post-commit `spawn_daemon_with_parts` step.
-/// Exactly one — not two — is the dedup signal we assert on. (Two
-/// would indicate the catch arm misfired and the second emit reran
-/// the spawn chain.)
+/// Note (#310 followup): the dispatcher now rolls back the worker card
+/// + terminal row when the post-commit `spawn_daemon_with_parts` step
+/// fails — see `rollback_orphan_worker`. That means a failing daemon
+/// is the WRONG fixture to test the dedup invariant against: the
+/// orphan no longer persists and the "exactly one card stays" signal
+/// disappears. We point the daemon at the argv-recorder fixture so the
+/// first dispatch succeeds end-to-end (no rollback, no task.failed)
+/// and the dedup'd second emit silently short-circuits as it should.
 #[tokio::test]
 async fn dispatcher_dedup_does_not_double_emit_task_failed() {
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
     let codex = stub_codex();
+    let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
+    let daemon = Arc::new(calm_server::state::DaemonClient {
+        data_dir: tmp.path().to_path_buf(),
+        session_daemon_bin: locate_recorder_bin(),
+    });
     let _dispatcher = Dispatcher::spawn(
         repo.clone(),
         events.clone(),
         cache.clone(),
         wcc.clone(),
         codex.clone(),
-        stub_daemon(),
+        daemon,
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,
@@ -400,9 +429,9 @@ async fn dispatcher_dedup_does_not_double_emit_task_failed() {
         .unwrap();
     }
 
-    // Give the dispatcher time to drain both emits + the daemon-
-    // spawn failure path on the winning one.
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    // Give the dispatcher time to drain both emits — first one spawns
+    // a real worker through the recorder fixture; second one dedups.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
 
     // Drain the bus and count `task.failed` events carrying our idem.
     let mut failed_count = 0usize;
@@ -415,13 +444,18 @@ async fn dispatcher_dedup_does_not_double_emit_task_failed() {
             failed_count += 1;
         }
     }
-    // Exactly one — from the winning dispatch's daemon-spawn step
-    // (stub daemon binary is missing). The dedup'd second emit must
-    // not produce a second `task.failed`.
+    // Zero — both dispatches must complete cleanly. The first spawns
+    // through the recorder fixture (success); the second short-circuits
+    // on the IdempotencyCollision catch arm (also success). A task.failed
+    // here would indicate either a real spawn-pipeline regression OR the
+    // catch arm misfiring and the second emit re-running the spawn chain
+    // against a now-bound socket (which would still succeed but should
+    // never have re-entered the spawn path).
     assert_eq!(
-        failed_count, 1,
-        "expected exactly one task.failed (from the winning dispatch's daemon spawn); got {failed_count}. \
-         A second event here would indicate the IdempotencyCollision catch arm misfired."
+        failed_count, 0,
+        "expected zero task.failed events (both dispatches must complete cleanly); got {failed_count}. \
+         A non-zero count indicates a regression in either the spawn pipeline or the \
+         IdempotencyCollision catch arm."
     );
 
     // Sanity check: exactly one worker card landed.
@@ -441,13 +475,22 @@ async fn dispatcher_dedup_does_not_double_emit_task_failed() {
 async fn dispatcher_dedupes_same_idempotency_key() {
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
     let codex = stub_codex();
+    // #310 followup — see `dispatcher_dedup_does_not_double_emit_task_failed`
+    // for why this test needs a real (recorder) daemon now: the orphan-row
+    // rollback wipes the card on spawn failure, so testing dedup against
+    // a failing daemon no longer leaves the "exactly one card" signal.
+    let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
+    let daemon = Arc::new(calm_server::state::DaemonClient {
+        data_dir: tmp.path().to_path_buf(),
+        session_daemon_bin: locate_recorder_bin(),
+    });
     let _dispatcher = Dispatcher::spawn(
         repo.clone(),
         events.clone(),
         cache.clone(),
         wcc.clone(),
         codex.clone(),
-        stub_daemon(),
+        daemon,
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,
@@ -469,8 +512,9 @@ async fn dispatcher_dedupes_same_idempotency_key() {
         .unwrap();
     }
 
-    // Give the dispatcher time to process both.
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    // Give the dispatcher time to process both (recorder readiness
+    // takes ~50-300ms; 1.5s is generous).
+    tokio::time::sleep(Duration::from_millis(1500)).await;
 
     let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
     let worker_cards: Vec<_> = cards
@@ -500,14 +544,26 @@ async fn dispatcher_semaphore_caps_concurrent_spawns() {
     // semaphore's `available_permits()` should never go below 0
     // (it can't by construction) and shouldn't exceed 2 minus the
     // number currently held — i.e. `available <= 2` at any sample.
+    //
+    // #310 followup — needs a real (recorder) daemon: with the
+    // orphan-row rollback, a failing daemon spawn no longer leaves the
+    // worker card behind, so the "5 cards land" tail assertion needs
+    // an actually-succeeding spawn path. The semaphore-cap assertion
+    // is orthogonal to daemon success/failure — what we care about is
+    // that 5 emits eventually settle through the permit pool.
     let codex = stub_codex();
+    let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
+    let daemon = Arc::new(calm_server::state::DaemonClient {
+        data_dir: tmp.path().to_path_buf(),
+        session_daemon_bin: locate_recorder_bin(),
+    });
     let dispatcher = Arc::new(Dispatcher::spawn(
         repo.clone(),
         events.clone(),
         cache.clone(),
         wcc.clone(),
         codex.clone(),
-        stub_daemon(),
+        daemon,
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         2,
@@ -658,15 +714,25 @@ async fn dispatcher_card_added_emit_passes_role_gate() {
     // unrestricted (see `role_gate.rs:110`). This test verifies that
     // the dispatcher's actual write path (which goes through
     // `write_with_event` → `enforce_role`) doesn't get rejected.
+    //
+    // #310 followup — same recorder-fixture switch as the other happy-
+    // path tests: the orphan rollback now wipes the worker card on
+    // spawn failure, so a happy-path "card lands" probe needs the
+    // recorder to make spawn succeed.
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
     let codex = stub_codex();
+    let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
+    let daemon = Arc::new(calm_server::state::DaemonClient {
+        data_dir: tmp.path().to_path_buf(),
+        session_daemon_bin: locate_recorder_bin(),
+    });
     let _dispatcher = Dispatcher::spawn(
         repo.clone(),
         events.clone(),
         cache.clone(),
         wcc.clone(),
         codex.clone(),
-        stub_daemon(),
+        daemon,
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,
@@ -711,14 +777,26 @@ async fn dispatcher_dedupes_under_real_concurrent_race() {
     let _ = tracing_subscriber::fmt::try_init();
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
     // Permits >= 2 so both racers can run concurrently.
+    //
+    // #310 followup: switched from `stub_daemon()` (nonexistent binary,
+    // every spawn fails) to the argv-recorder fixture. Pre-rollback the
+    // failing winning racer left an orphan card the assertion below
+    // counted as "exactly one"; post-rollback that orphan is wiped, so
+    // we need the spawn to actually succeed for the "exactly one card
+    // lands" dedup signal to remain meaningful.
     let codex = stub_codex();
+    let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
+    let daemon = Arc::new(calm_server::state::DaemonClient {
+        data_dir: tmp.path().to_path_buf(),
+        session_daemon_bin: locate_recorder_bin(),
+    });
     let _dispatcher = Dispatcher::spawn(
         repo.clone(),
         events.clone(),
         cache.clone(),
         wcc.clone(),
         codex.clone(),
-        stub_daemon(),
+        daemon,
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,
@@ -1226,4 +1304,266 @@ async fn dispatcher_terminal_card_added_after_daemon_handle_set_issue_310() {
     let _ = tokio::net::UnixStream::connect(&handle)
         .await
         .expect("daemon socket must accept a connect by the time CardAdded fires");
+}
+
+// ---------------------------------------------------------------------------
+// 12. Issue #310 followup (codex's P2 escalation) — orphan-row rollback on
+//     post-commit spawn failure.
+//
+//     Pre-fix: when `spawn_daemon_with_parts` returned Err after the
+//     row-creation tx committed (real failure modes: missing daemon
+//     binary, fd exhaustion, permission denied, readiness timeout), the
+//     dispatcher returned the error WITHOUT cleaning up the card +
+//     terminal row. The orphan row carried the `idempotency_key`, so a
+//     retry with the same key short-circuited on the abandoned row —
+//     the user could never re-dispatch. Strictly worse than pre-#310:
+//     pre-fix at least `CardAdded` fired at tx-commit, so the card was
+//     visible/closeable; post-fix it was invisible AND idempotency-locked.
+//
+//     The fix: on spawn failure, open a separate tx that DELETEs both
+//     the terminal row (`ON DELETE RESTRICT` since #11 means terminal
+//     first) and the card row, THEN propagate the spawn error so
+//     `run_one` emits `TaskFailed`. A retry with the same key now goes
+//     through fresh.
+//
+//     This test pins all three legs of the contract:
+//        a) dispatch returns Err → task.failed fires.
+//        b) no card with that idempotency_key remains in the DB.
+//        c) A re-dispatch with the SAME idempotency_key (this time with
+//           a working daemon binary) succeeds — proves the orphan row
+//           is not blocking retries.
+//
+//     We provoke spawn failure by pointing `DaemonClient.session_daemon_bin`
+//     at a nonexistent path (same trick `stub_daemon()` uses) — `cmd.spawn()`
+//     returns ENOENT, `spawn_daemon_with_parts` maps it to
+//     `CalmError::Internal`. Then we swap the bin to the argv-recorder
+//     fixture for the retry leg.
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn dispatcher_rolls_back_card_on_codex_daemon_spawn_failure_issue_310() {
+    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
+
+    // First dispatcher uses a bogus daemon path → spawn always fails.
+    let codex = stub_codex();
+    let dispatcher_fail = Dispatcher::spawn(
+        repo.clone(),
+        events.clone(),
+        cache.clone(),
+        wcc.clone(),
+        codex.clone(),
+        stub_daemon(), // session_daemon_bin = /nonexistent-daemon-bin
+        None,
+        4,
+    );
+
+    let idem = "rollback-codex-1";
+    let req = codex_req(idem, "rollback-test");
+    let scope = wave_scope(&wave_id, &cove_id);
+
+    // Subscribe before emitting so we can confirm task.failed fired.
+    let mut rx = events.subscribe();
+
+    repo.log_pure_event(
+        ActorId::User,
+        scope.clone(),
+        None,
+        &events,
+        &cache,
+        &wcc,
+        req,
+    )
+    .await
+    .unwrap();
+
+    // Wait for the dispatcher to drain → emit task.failed (the canonical
+    // signal that the spawn pipeline ran to its failure end). The
+    // rollback runs synchronously inside the spawn fn before Err
+    // propagates, so by the time task.failed is on the bus, the orphan
+    // row must already be gone.
+    let mut saw_failed = false;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+            Ok(Ok(env)) => {
+                if let Event::TaskFailed {
+                    idempotency_key, ..
+                } = &env.event
+                    && idempotency_key == idem
+                {
+                    saw_failed = true;
+                    break;
+                }
+            }
+            Ok(Err(_)) => break,
+            Err(_) => continue,
+        }
+    }
+    assert!(
+        saw_failed,
+        "expected dispatcher to emit task.failed after spawn failure"
+    );
+
+    // Leg (a) + (b): no worker card under our idempotency key — the
+    // row was rolled back.
+    let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
+    let leftover: Vec<_> = cards
+        .iter()
+        .filter(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem))
+        .collect();
+    assert!(
+        leftover.is_empty(),
+        "expected card row to be rolled back after spawn failure; \
+         found {} leftover cards: {:?}",
+        leftover.len(),
+        leftover.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+    );
+
+    // Leg (c): retry with the SAME idempotency_key against a fresh
+    // dispatcher whose daemon binary actually exists. Pre-rollback, the
+    // orphan row would short-circuit this on `IdempotencyCollision`;
+    // post-rollback, the SELECT inside the tx sees no match and the
+    // spawn proceeds normally.
+    //
+    // We deliberately spin up a FRESH `EventBus` for the retry leg.
+    // `dispatcher_fail`'s background task subscribes to `events` and
+    // doesn't shut down on `drop()` — its `Dispatcher::spawn` task
+    // only exits on broadcast `Closed`, which we can't trigger without
+    // dropping every sender. If we re-emitted into `events`, both
+    // dispatchers would race for the retry envelope; the failing one
+    // could win the in-tx SELECT, spawn-fail, and roll back the
+    // success-side dispatcher's card. A dedicated retry bus side-
+    // steps the race entirely — the failing dispatcher only ever sees
+    // the original (failed) envelope; the retry envelope goes solely
+    // to the success dispatcher.
+    drop(dispatcher_fail);
+    let events_retry = calm_server::event::EventBus::new();
+    let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
+    let daemon_ok = Arc::new(calm_server::state::DaemonClient {
+        data_dir: tmp.path().to_path_buf(),
+        session_daemon_bin: locate_recorder_bin(),
+    });
+    let _dispatcher_ok = Dispatcher::spawn(
+        repo.clone(),
+        events_retry.clone(),
+        cache.clone(),
+        wcc.clone(),
+        codex.clone(),
+        daemon_ok,
+        None,
+        4,
+    );
+
+    repo.log_pure_event(
+        ActorId::User,
+        scope,
+        None,
+        &events_retry,
+        &cache,
+        &wcc,
+        codex_req(idem, "rollback-test-retry"),
+    )
+    .await
+    .unwrap();
+
+    // The retry should mint a card carrying our idempotency_key. If
+    // the rollback didn't fire, the orphan row would short-circuit and
+    // no NEW card lands — `wait_for` returns None and we panic.
+    let card = wait_for(Duration::from_secs(5), || async {
+        let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
+        cards
+            .into_iter()
+            .find(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem))
+    })
+    .await
+    .expect(
+        "retry with the same idempotency_key MUST succeed in spawning a fresh worker card \
+         — if this times out, the orphan row from the failed first attempt is short-\
+         circuiting the retry (the rollback didn't fire or didn't remove the row)",
+    );
+
+    // Sanity: the card was actually freshly created (the post-rollback
+    // SELECT-in-tx found nothing → `card_with_codex_create_tx` minted a
+    // new row). The goal text differentiates this from the first
+    // (failed) dispatch.
+    assert_eq!(
+        card.payload.get("goal").and_then(|v| v.as_str()),
+        Some("rollback-test-retry"),
+        "retry must mint a NEW card with the retry's goal, not return the orphan",
+    );
+    assert!(
+        repo.card_get(card.id.as_ref()).await.unwrap().is_some(),
+        "the retry's card must be live in the DB",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 13. Issue #310 followup — terminal-worker mirror of test 12. The codex
+//     path AND terminal path share the post-commit / pre-spawn orphan
+//     window; this test pins the terminal half so a future refactor
+//     that drops the rollback on only the terminal helper still trips
+//     a regression.
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310() {
+    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
+
+    let codex = stub_codex();
+    let _dispatcher_fail = Dispatcher::spawn(
+        repo.clone(),
+        events.clone(),
+        cache.clone(),
+        wcc.clone(),
+        codex.clone(),
+        stub_daemon(),
+        None,
+        4,
+    );
+
+    let idem = "rollback-terminal-1";
+    let req = Event::TerminalJobRequested {
+        idempotency_key: idem.into(),
+        cmd: "/bin/true".into(),
+        cwd: None,
+    };
+    let scope = wave_scope(&wave_id, &cove_id);
+    let mut rx = events.subscribe();
+
+    repo.log_pure_event(ActorId::User, scope, None, &events, &cache, &wcc, req)
+        .await
+        .unwrap();
+
+    let mut saw_failed = false;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+            Ok(Ok(env)) => {
+                if let Event::TaskFailed {
+                    idempotency_key, ..
+                } = &env.event
+                    && idempotency_key == idem
+                {
+                    saw_failed = true;
+                    break;
+                }
+            }
+            Ok(Err(_)) => break,
+            Err(_) => continue,
+        }
+    }
+    assert!(
+        saw_failed,
+        "expected dispatcher to emit task.failed after terminal-worker spawn failure"
+    );
+
+    let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
+    let leftover: Vec<_> = cards
+        .iter()
+        .filter(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem))
+        .collect();
+    assert!(
+        leftover.is_empty(),
+        "expected terminal-worker card row to be rolled back after spawn failure; \
+         found {} leftover cards",
+        leftover.len(),
+    );
 }
