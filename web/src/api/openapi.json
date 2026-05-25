@@ -3210,6 +3210,8 @@
           "env",
           "theme_fg",
           "theme_bg",
+          "exit_code",
+          "signal_killed",
           "created_at"
         ],
         "properties": {
@@ -3232,6 +3234,14 @@
           "env": {
             "type": "object"
           },
+          "exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "#306 — child exit code captured by the daemon at `child.wait()`.\n`Some(_)` means the child returned via `exit()` / main return;\n`None` means either the child hasn't exited yet, was killed by a\nsignal (see `signal_killed`), or the daemon died without writing\nthe sidecar (DaemonLost; not surfaced in v1). Required column\n(NULL-able in SQL, but always serialized) per the [Required over\nOption] policy: the absence of an exit code is itself information\nthe frontend renders, so a missing-field response is a bug.\n`required = true` flips the utoipa default (\"Option ⇒ optional\")\nso the OpenAPI schema marks the field as required-but-nullable,\nwhich `openapi-typescript` renders as `number | null` (no `?:`)\n— matching the contract intent: every response carries the\nfield, even if its value is `null`."
+          },
           "id": {
             "type": "string"
           },
@@ -3245,6 +3255,10 @@
           },
           "program": {
             "type": "string"
+          },
+          "signal_killed": {
+            "type": "boolean",
+            "description": "#306 — true when the child was killed by a signal (SIGTERM,\nSIGKILL, SIGSEGV, …). Mutually exclusive with `exit_code.is_some()`\nat the writer: the daemon picks one branch on the way out and\nnever both. Required (NOT NULL DEFAULT 0 in SQL) — every row\ncarries a value, even if `false`."
           },
           "theme_bg": {
             "type": "string",

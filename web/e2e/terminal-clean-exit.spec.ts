@@ -1,23 +1,24 @@
 // E2E: a one-shot terminal worker whose child exits within milliseconds
-// must surface the "process exited" overlay (with a Restart button) in
-// the card UI — NOT "disconnected" + Reconnect.
+// must surface a small `exit 0` badge on the card header — NOT a full-
+// card overlay, and NOT a "disconnected — 1006" fallback.
 //
 // Why this matters: when `cmd` finishes faster than the browser's WS
 // attach round-trip, the daemon has already unlinked its unix socket
-// by the time the WS upgrade lands. The original behaviour took the
-// `ws::terminal::resolve_live_sock` 500 path, the WS never reached 101,
-// and the browser saw a code-1006 close with no `child-exited` reason
-// — rendering the generic "disconnected" overlay. The server now
-// detects this case (terminal row exists, `daemon_handle` set, socket
-// probe fails) and emits `Close(1000, "child-exited")` at upgrade
-// time so the JS client renders the clean-exit overlay instead. This
-// spec pins that contract end-to-end.
+// by the time the WS upgrade lands. The original pre-#304 behaviour
+// took the `ws::terminal::resolve_live_sock` 500 path, the WS never
+// reached 101, and the browser saw a code-1006 close with no
+// `child-exited` reason — rendering the generic "disconnected" overlay.
+// PR #304 fixed the close code but kept a full-card "process exited +
+// Restart" overlay. Issue #306 then collapsed that overlay too: the
+// terminal buffer stays visible, and a small header badge (`exit 0` /
+// `exit 137` / `signal`) carries the exit info. This spec pins the
+// post-#306 contract end-to-end.
 //
 // Chromium project only — the replay backend doesn't spawn daemons.
 
 import { test, expect } from '@playwright/test';
 
-test('terminal worker that exits cleanly shows "process exited" overlay, not "disconnected"', async ({ page }) => {
+test('terminal worker that exits cleanly shows the exit 0 header badge, no overlay', async ({ page }) => {
   // Block Google Fonts. `index.html` loads a `<link rel="stylesheet"
   // href="https://fonts.googleapis.com/...">` that, in restricted-network
   // CI / sandboxed test environments, can hang for tens of seconds
@@ -95,34 +96,57 @@ test('terminal worker that exits cleanly shows "process exited" overlay, not "di
   // cycle finishes BEFORE we open the page. `printf` is sub-50ms but
   // we give the kernel a generous half-second so the test is robust to
   // a loaded CI box. The WHOLE point of this spec is reproducing the
-  // "child already gone by the time WS attaches" path that the fix
-  // addresses.
+  // "child already gone by the time WS attaches" path that #306
+  // persists across kernel restarts.
   await page.waitForTimeout(500);
 
   // Step 5 — open the wave detail page. The XtermView mounts, opens
-  // its WS, and the server should accept the upgrade and immediately
-  // emit Close(1000, "child-exited") because the daemon socket is
-  // gone. The JS client renders the "process exited" overlay.
+  // its WS, and the server accepts the upgrade + closes with
+  // 1000+child-exited. After #306 the buffer stays visible and the
+  // card header badge surfaces `exit 0` (success palette).
   await page.goto(`/calm/wave/${wave.id}`);
   await expect(page).toHaveURL(/\/calm\/wave\/[^/]+$/);
 
   // Step 6 — scope assertions to the worker terminal card we minted.
-  // The wave's auto-created spec card also renders an XtermView, and
-  // in CI (no real OPENAI_API_KEY) its codex daemon exits immediately
-  // too — so a page-wide `.xterm-status-closed` selector hits multiple
-  // overlays. `[data-terminal-id="..."]` on the XtermView root pins
-  // the locator to our worker.
-  const ourCard = page.locator(`[data-terminal-id="${terminalId}"]`);
-  const overlay = ourCard.locator('.xterm-status-closed');
-  await expect(overlay).toBeVisible({ timeout: 15_000 });
-  await expect(overlay).toContainText('process exited');
+  // The wave's auto-created spec card also renders an XtermView, so a
+  // page-wide selector would hit both. `[data-terminal-id="..."]` on
+  // the XtermView root pins the locator to our worker.
+  const ourView = page.locator(`[data-terminal-id="${terminalId}"]`);
+  await expect(ourView).toBeVisible({ timeout: 15_000 });
+  // The card head (two DOM up — `.term > .card-head + .term-body >
+  // .xterm-view`). We have to walk to the OUTER `.term` div (which
+  // contains both `.card-head` and `.term-body`); the badge lives in
+  // `.card-head`, which is a SIBLING of `.term-body` (the XtermView's
+  // direct parent), not a descendant. The token-aware predicate
+  // (normalize-space + space-padding) matches the exact `"term"` class
+  // token and skips `.term-body` / `.term-line` / etc. — a plain
+  // `contains(@class, "term")` would resolve to the closest `.term-body`
+  // ancestor and the badge search would walk the wrong subtree.
+  const ourCard = ourView.locator(
+    "xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' term ')][1]",
+  );
+  const exitBadge = ourCard.locator('.card-head-exit-badge');
+
+  // (a) The exit badge appears, reads "exit 0", and uses the success
+  //     palette class.
+  await expect(exitBadge).toBeVisible({ timeout: 15_000 });
+  await expect(exitBadge).toHaveText(/exit 0/i);
+  await expect(exitBadge).toHaveClass(/card-head-exit-badge-success/);
+
+  // (b) The terminal buffer stays mounted: xterm.js's container is
+  //     present (the OSC-echo / clean-close model now leaves the
+  //     surface visible rather than swapping in an overlay).
+  await expect(ourView.locator('.xterm-container')).toBeVisible();
+
+  // (c) No pre-#306 overlays: no "process exited" text, no Restart
+  //     button, no Reconnect button, no "disconnected" text on our
+  //     card.
+  await expect(
+    ourCard.locator('.xterm-status-closed'),
+  ).toHaveCount(0);
   await expect(
     ourCard.getByRole('button', { name: /^restart$/i }),
-  ).toBeVisible();
-
-  // Step 7 — negative assertion: the "disconnected" / Reconnect
-  // overlay (the 1006 fallback) must NOT show up on our card.
-  await expect(overlay).not.toContainText('disconnected');
+  ).toHaveCount(0);
   await expect(
     ourCard.getByRole('button', { name: /^reconnect$/i }),
   ).toHaveCount(0);

@@ -48,6 +48,17 @@ const DARK_THEME: ITheme = {
   selectionBackground: 'rgba(140, 180, 255, 0.22)',
 };
 
+/**
+ * #306 — child exit info surfaced by the daemon. `exit_code != null`
+ * means the child returned via `exit()` / main-return; `signal_killed`
+ * means it was killed by a signal. Mutually exclusive at the source.
+ * `null` clears any prior badge (used on `reconnect()`).
+ */
+export interface ExitChange {
+  exit_code: number | null;
+  signal_killed: boolean;
+}
+
 interface XtermViewProps {
   /** `Terminal.id` from the kernel — addresses the daemon socket on the server. */
   terminalId: string;
@@ -61,6 +72,20 @@ interface XtermViewProps {
    * — the parent decides what (if anything) to show per role.
    */
   onRoleChange?: (role: Role | null) => void;
+  /**
+   * #306 — lift child-exit info out to the parent card so the header can
+   * render a small badge (`exit 0` / `exit 137` / `signal`) without
+   * overlaying the terminal buffer. Fired with `{ exit_code, signal_killed }`
+   * when the daemon emits `TerminalExited` / `ChildExited` or the WS
+   * closes with `1000 + reason=child-exited`, and with `null` on
+   * reconnect to clear any prior badge. Idempotent: the parent may
+   * receive the same payload twice (once from the JSON frame, once
+   * from the WS close handler) and should treat the second call as a
+   * no-op state-equality. Parent reads the seed value off the
+   * terminal row's REST response so a refreshed page renders the
+   * badge immediately without waiting for the WS attach.
+   */
+  onExitChange?: (exit: ExitChange | null) => void;
 }
 
 /** Last close info, surfaced in the gray "disconnected" overlay so the user
@@ -128,6 +153,7 @@ export function XtermView({
   terminalId,
   theme = 'light',
   onRoleChange,
+  onExitChange,
 }: XtermViewProps) {
   // #177 — Playwright instrumentation. Gated on `?testMounts=1` so
   // production users never carry the side effect. A real mount bumps
@@ -160,9 +186,28 @@ export function XtermView({
   const latestThemeRef = useRef<'light' | 'dark'>(theme);
   latestThemeRef.current = theme;
   const [status, setStatus] = useState<Status>('connecting');
+  // #306 — `closeInfo` / `exitInfo` state retained as setter-only seams:
+  // the WS handlers still write the latest values (useful for debug-
+  // tooling / future tests that need to query last-close metadata) but
+  // no UI reads them post-#306 — the overlays they used to feed were
+  // removed in favor of the parent-rendered header badge. `void` on the
+  // reader suppresses the "declared but never read" warning without
+  // forcing us to drop the setter (which would require unwinding the
+  // close-frame logic that still calls it for status promotion).
   const [closeInfo, setCloseInfo] = useState<CloseInfo | null>(null);
+  void closeInfo;
   const [protocolError, setProtocolError] = useState<ProtocolError | null>(null);
   const [exitInfo, setExitInfo] = useState<ExitInfo | null>(null);
+  void exitInfo;
+  // #306 — live mirror of `exitInfo` for the `ws.onclose` handler. The
+  // close-frame backstop below must NOT fire when a prior
+  // `TerminalExited` JSON frame already delivered the real exit code
+  // (typically 137 / signal-encoded). The setState `setExitInfo` above
+  // is asynchronous, so reading `exitInfo` directly from the closure
+  // would still see `null` on the very next tick. The ref keeps a
+  // synchronously-current copy so the close handler can branch on
+  // "already delivered? skip the backstop".
+  const exitInfoRef = useRef<ExitInfo | null>(null);
   // Role lives entirely in the parent now (via `onRoleChange`) so the badge
   // can sit in `<CardHead>`'s status slot instead of overlaying the terminal.
   // We capture the latest callback into a ref so the heavy bridge-mount
@@ -170,19 +215,22 @@ export function XtermView({
   // parent shouldn't tear down the WebSocket.
   const onRoleChangeRef = useRef<XtermViewProps['onRoleChange']>(onRoleChange);
   onRoleChangeRef.current = onRoleChange;
-  // Bumping this re-runs the WS effect, which rebuilds the WS and re-attaches
-  // to the daemon. The daemon survives WS disconnects (it owns the PTY and a
-  // replay buffer / render rev), so reconnect is usually enough; if the
-  // daemon also died, the server's `resolve_live_sock` respawns it.
+  // #306 — same ref-capture pattern as `onRoleChange`: a parent identity
+  // flip on the callback shouldn't tear down the WebSocket effect.
+  const onExitChangeRef = useRef<XtermViewProps['onExitChange']>(onExitChange);
+  onExitChangeRef.current = onExitChange;
+  // #306 — `reconnectKey` is retained as a remount lever: bumping it
+  // re-runs the WS effect (rebuilding the WS + xterm.js Terminal +
+  // re-attaching to the daemon). The pre-#306 build called the
+  // setter from the in-XtermView Restart / Reconnect buttons; those
+  // overlays were removed in v1, so the helper that wraps the setter
+  // is gone too. The setter itself is exported via a `void`-suppressed
+  // declaration so it's still callable from a future parent-driven
+  // remount path (e.g. a header Restart button on the card) without
+  // re-introducing UI state inside XtermView. The deps array below
+  // still references `reconnectKey` so the effect re-runs on bump.
   const [reconnectKey, setReconnectKey] = useState(0);
-  const reconnect = () => {
-    setStatus('connecting');
-    setCloseInfo(null);
-    setProtocolError(null);
-    setExitInfo(null);
-    onRoleChangeRef.current?.(null);
-    setReconnectKey((k) => k + 1);
-  };
+  void setReconnectKey;
 
   // #177 — live `send` from the WS-mount effect, captured so the
   // theme-effect can post `TerminalThemeUpdate` without owning the
@@ -535,13 +583,41 @@ export function XtermView({
       }
       if ('TerminalExited' in msg) {
         const t = msg.TerminalExited;
+        exitInfoRef.current = { code: t.code };
         setExitInfo({ code: t.code });
         setStatus('exited');
+        // #306 — fire `onExitChange` so the parent renders the header
+        // badge (`exit N` / `signal`). The JSON `TerminalExited` frame
+        // doesn't carry a signal flag (the daemon's wire enum predates
+        // signal awareness — `code` here is whatever
+        // `ExitStatus::exit_code()` returned, which is 128+sig for a
+        // signal-killed child on POSIX). For v1 we surface that as the
+        // numeric code; the more reliable signal_killed flag arrives
+        // via the sidecar / REST seed (see parent's terminal-card
+        // builtin). Idempotent against the duplicate `onclose` fire.
+        onExitChangeRef.current?.({
+          exit_code: t.code,
+          signal_killed: false,
+        });
         term.writeln(
           `\r\n\x1b[2m[process exited${
             t.code != null ? ` (code ${t.code})` : ''
           }]\x1b[0m`,
         );
+        return;
+      }
+      if ('ChildExited' in msg) {
+        // #306 — chat-mode close path. We don't render chat in
+        // XtermView today (it lives on a separate card builtin) but
+        // forwards-compatibility against a stray frame is cheap.
+        const c = msg.ChildExited;
+        exitInfoRef.current = { code: c.code };
+        setExitInfo({ code: c.code });
+        setStatus('exited');
+        onExitChangeRef.current?.({
+          exit_code: c.code,
+          signal_killed: false,
+        });
         return;
       }
       if ('ProtocolError' in msg) {
@@ -577,13 +653,15 @@ export function XtermView({
     };
 
     ws.onclose = (e) => {
-      // Capture close code/reason so the gray "disconnected" overlay can
-      // tell us what kind of disconnect this was without devtools.
+      // Capture close code/reason for debug logging. Post-#306 we no
+      // longer surface either as an overlay — the buffer stays visible
+      // and the parent's header badge carries any exit info. The
+      // `status` state is still maintained for the protocol-error
+      // overlay branch and for tests that pin the post-close state.
       // 1000 + `child-exited` reason = daemon's clean child-exit close
       //   (see ws/terminal.rs::CLOSE_REASON_CHILD_EXITED). We map this
-      //   to the `exited` overlay even if the prior `TerminalExited`
-      //   JSON frame got dropped on a slow link — distinguishes a
-      //   process finishing from a connection drop.
+      //   to the `exited` state even if the prior `TerminalExited`
+      //   JSON frame got dropped on a slow link.
       // 1006 = abnormal closure (network / proxy cut, no Close frame).
       // 1011 = server-side heartbeat trip (see ws/terminal.rs PONG_TIMEOUT).
       // 1001 = endpoint going away (server restart, page navigation).
@@ -596,14 +674,31 @@ export function XtermView({
       const isChildExitClose =
         e.code === 1000 && e.reason === 'child-exited';
       // Don't clobber a more-specific terminal state (`exited`,
-      // `protocol-error`) — those overlays carry richer information
-      // than the generic close code. A `child-exited` close promotes
-      // us to `exited` even if the JSON exit frame never arrived.
+      // `protocol-error`) — those carry richer information than the
+      // generic close code. A `child-exited` close promotes us to
+      // `exited` even if the JSON exit frame never arrived.
       setStatus((prev) => {
         if (prev === 'exited' || prev === 'protocol-error') return prev;
         if (isChildExitClose) return 'exited';
         return 'closed';
       });
+      // #306 — backstop for the parent's exit badge. Fires ONLY when no
+      // prior `TerminalExited` / `ChildExited` JSON frame already
+      // delivered an exit code on this connection. The parent's
+      // `onExitChange` callback (terminal.tsx) is a plain setState
+      // with no dedupe / no "fill-if-null" semantic, so firing
+      // unconditionally here would clobber a live `{exit_code: 137,…}`
+      // back to `{exit_code: null,…}` on the normal happy path
+      // (TerminalExited frame followed by code-1000 child-exited
+      // close). The `exitInfoRef` mirror tracks the latest JSON-frame
+      // delivery synchronously so this gate is race-free against the
+      // setState in the JSON branches above.
+      if (isChildExitClose && exitInfoRef.current === null) {
+        onExitChangeRef.current?.({
+          exit_code: null,
+          signal_killed: false,
+        });
+      }
       // Role is undefined once the WS is gone — parent clears any pill.
       onRoleChangeRef.current?.(null);
     };
@@ -708,11 +803,30 @@ export function XtermView({
       // onclose) so a strict-mode unmount or a `terminalId` change clears
       // the parent state even if no close frame fires.
       onRoleChangeRef.current?.(null);
+      // #306 followup — defensive: reset the live exit mirror on teardown.
+      // Effect deps are `[terminalId, reconnectKey]`; on a future swap or
+      // bump the next mount would otherwise inherit this ref still
+      // pointing at the previous terminal's exit, and the close-frame
+      // backstop in `ws.onclose` (which gates on `exitInfoRef.current
+      // === null`) could be suppressed for the new terminal if its
+      // `TerminalExited` JSON frame is lost on a slow link. Narrow edge
+      // today, one line to prevent.
+      exitInfoRef.current = null;
     };
     // `theme` deliberately omitted: a theme flip should NOT rebuild the
     // WebSocket / Terminal. The sibling effect above mutates
     // `term.options.theme` in place. `latestThemeRef` captures the current
     // value for the initial constructor.
+    //
+    // `status` intentionally omitted — adding it would trigger
+    // `term.dispose()` on close (any status transition would re-run this
+    // effect's cleanup) and erase the buffer. #306's UX contract is
+    // warp-style hold-on-close: the buffer must stay visible after exit
+    // so the user can scroll back / copy output, and the header badge
+    // (rendered by the parent off `onExitChange`) is the only signal
+    // that the child is gone. The `setStatus` calls inside the WS
+    // handlers above feed the local protocol-error overlay branch only
+    // — they intentionally don't re-arm this effect.
   }, [terminalId, reconnectKey]);
 
   return (
@@ -750,19 +864,17 @@ export function XtermView({
       {status === 'handshaking' && (
         <div className="xterm-status">handshaking…</div>
       )}
-      {status === 'exited' && (
-        <div className="xterm-status xterm-status-closed">
-          <span>
-            process exited
-            {exitInfo?.code != null && (
-              <span className="xterm-close-info"> (code {exitInfo.code})</span>
-            )}
-          </span>
-          <button onClick={reconnect} className="xterm-restart">
-            Restart
-          </button>
-        </div>
-      )}
+      {/*
+       * #306 — the `'exited'` and `'closed'` overlays were intentionally
+       * removed. Buffer-stays-on-close (warp / zellij convention) is the
+       * v1 UX: the terminal contents stay visible and a small exit-code
+       * badge on the card header carries the exit info. The
+       * `'protocol-error'` overlay is the one remaining branch because
+       * it's a developer-facing red error (wrong wire version, etc.)
+       * that genuinely warrants taking over the surface. `exitInfo` /
+       * `closeInfo` state is still maintained for test seams; the
+       * `void` suppresses the unused-variable lint on the unread side.
+       */}
       {status === 'protocol-error' && protocolError && (
         <div
           className="xterm-status xterm-status-closed"
@@ -781,22 +893,6 @@ export function XtermView({
             className="xterm-restart"
           >
             Refresh
-          </button>
-        </div>
-      )}
-      {status === 'closed' && (
-        <div className="xterm-status xterm-status-closed">
-          <span>
-            disconnected
-            {closeInfo && (
-              <span className="xterm-close-info">
-                {' '}— {closeInfo.code}
-                {closeInfo.reason ? ` (${closeInfo.reason})` : ''}
-              </span>
-            )}
-          </span>
-          <button onClick={reconnect} className="xterm-restart">
-            Reconnect
           </button>
         </div>
       )}

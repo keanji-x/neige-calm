@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { z } from 'zod';
 import type { TerminalCardData } from '../../types';
 import type { CardEntry } from '../registry';
@@ -7,7 +7,10 @@ import { useTheme } from '../../app/theme';
 import { useState } from '../../shared/state';
 import { CardHead } from '../CardHead';
 import { CardStatusDot } from '../../shared/components/CardStatusDot';
+import { CardExitBadge } from '../../shared/components/CardExitBadge';
 import type { Role } from '../../api/generated-terminal';
+import type { ExitChange } from '../../XtermView';
+import { getTerminalForCard } from '../../api/calm';
 import {
   TERMINAL_PAYLOAD_SCHEMA_VERSION,
   payloadSchemaVersion,
@@ -43,13 +46,52 @@ function TerminalCard({
   card: TerminalCardData;
   onClose?: () => void;
 }) {
-  const { title, lines, terminalId, unsupportedVersion } = card;
+  const { id: cardId, title, lines, terminalId, unsupportedVersion } = card;
   const { resolved: theme } = useTheme();
   // Daemon-assigned role lifted out of `<XtermView>` so the head can render
   // an "observing" pill in its status slot when this client doesn't hold
   // write. `null` until handshake completes, and reset to `null` on
   // disconnect/teardown — see XtermView's `onRoleChange` calls.
   const [role, setRole] = useState<Role | null>(null);
+  // #306 — exit info for the header badge. Seeded on mount from the
+  // terminal row's REST data (so a refreshed page with an already-
+  // exited terminal shows the badge immediately, without waiting for
+  // the WS attach / close), then overridden by `<XtermView>`'s
+  // `onExitChange` whenever the daemon emits a new exit event over
+  // the live channel.
+  const [exit, setExit] = useState<ExitChange | null>(null);
+  useEffect(() => {
+    if (!cardId || !terminalId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const t = await getTerminalForCard(cardId);
+        if (cancelled) return;
+        // The kernel guarantees both fields are present on the wire (the
+        // Terminal struct treats them as required, see model.rs comments).
+        // We still nullable-guard `exit_code` because that branch is
+        // legitimate semantics ("no numeric code yet"), and seed the
+        // badge only when at least one of the two fields says "exited".
+        const hasExit =
+          t.exit_code !== null && t.exit_code !== undefined;
+        const wasSignaled = !!t.signal_killed;
+        if (hasExit || wasSignaled) {
+          setExit({
+            exit_code: hasExit ? (t.exit_code as number) : null,
+            signal_killed: wasSignaled,
+          });
+        }
+      } catch {
+        // Card may have just been minted (no terminal row yet) or
+        // deleted concurrently. Either way, render with no badge —
+        // a subsequent `onExitChange` from the live WS will replace
+        // this no-op once the daemon hits child-exit.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [cardId, terminalId]);
   if (unsupportedVersion !== undefined) {
     return (
       <div className="term term-unsupported-version">
@@ -93,7 +135,21 @@ function TerminalCard({
               {role === 'Observer' && (
                 <span className="card-head-observing-pill">observing</span>
               )}
-              <CardStatusDot state="Working" />
+              {/*
+                #306 — exit badge sits LEFT of the working dot so its
+                anchor doesn't shift when the role pill appears /
+                disappears (left-justified anchor at the dot stays put).
+                Rendered only when the daemon's reported an exit; an
+                still-running terminal carries the working dot alone.
+              */}
+              {exit && <CardExitBadge exit={exit} />}
+              {/*
+                Don't show a "Working" dot once we have exit info — the
+                badge already says the process is finished. Keeping the
+                green dot would read as "still running" and contradict
+                the badge.
+              */}
+              {!exit && <CardStatusDot state="Working" />}
             </>
           ) : undefined
         }
@@ -101,7 +157,12 @@ function TerminalCard({
       <div className="term-body">
         {live ? (
           <Suspense fallback={<div className="term-line k-cursor">Loading terminal…</div>}>
-            <XtermView terminalId={terminalId!} theme={theme} onRoleChange={setRole} />
+            <XtermView
+              terminalId={terminalId!}
+              theme={theme}
+              onRoleChange={setRole}
+              onExitChange={setExit}
+            />
           </Suspense>
         ) : (
           <>

@@ -268,3 +268,167 @@ async fn ws_upgrade_with_stale_daemon_handle_emits_child_exited_close_and_does_n
         "ws upgrade must NOT rewrite the daemon handle (no auto-respawn)",
     );
 }
+
+/// #306 — companion to the stale-handle path: when the daemon DID get
+/// a chance to write the `<sock>.exit` sidecar before exiting (the
+/// common case for a clean child exit — the daemon's `spawn_child_waiter`
+/// writes the file before broadcasting its TerminalExited frame), the
+/// kernel must read the sidecar at WS-upgrade time and persist
+/// `exit_code` + `signal_killed` on the terminal row. The frontend's
+/// terminal-card builtin then reads those columns off the REST DTO and
+/// seeds the header badge before the WS even attaches.
+#[tokio::test]
+async fn ws_upgrade_reads_exit_sidecar_and_persists_exit_code() {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::Message as TMessage;
+
+    let boot = boot_with_terminal_row().await;
+
+    // Plant a stale handle + a sidecar file at `<handle>.exit`. The
+    // handle file itself doesn't exist (and that's what
+    // `resolve_live_sock`'s probe fails on); the sidecar is at the
+    // canonical `<sock>.exit` path and carries `{"code": 0,
+    // "signal_killed": false}` — the shape the daemon's
+    // `spawn_child_waiter` writes on a `printf done`-style clean
+    // exit.
+    let stale_sock = boot._tmp.path().join("stale-with-sidecar.sock");
+    let stale_sock_str = stale_sock.to_string_lossy().to_string();
+    boot.repo
+        .terminal_set_handle(&boot.term_id, Some(&stale_sock_str))
+        .await
+        .unwrap();
+    std::fs::write(
+        format!("{stale_sock_str}.exit"),
+        r#"{"code":0,"signal_killed":false}"#,
+    )
+    .expect("write sidecar");
+
+    // Precondition: row carries no exit info yet.
+    let pre = boot
+        .repo
+        .terminal_get(&boot.term_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(pre.exit_code, None);
+    assert!(!pre.signal_killed);
+
+    let url = format!("ws://{}/api/terminals/{}", boot.addr, boot.term_id);
+    let (mut ws, _resp) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("upgrade must reach 101");
+
+    // First frame: JSON `TerminalExited { code: Some(0), .. }` so the
+    // browser's live exit-badge state picks up the real code without
+    // waiting on the REST seed (which races the WS upgrade and may
+    // read the row before `persist_exit_sidecar` writes). The frame
+    // shape matches the in-pump path so the client's
+    // `'TerminalExited' in msg` branch handles it.
+    let first = tokio::time::timeout(Duration::from_secs(2), ws.next())
+        .await
+        .expect("ws recv (text) timed out")
+        .expect("ws closed before sending TerminalExited")
+        .expect("ws error");
+    match first {
+        TMessage::Text(t) => {
+            let parsed: serde_json::Value = serde_json::from_str(&t)
+                .unwrap_or_else(|e| panic!("parsing JSON failed for {t}: {e}"));
+            let exited = parsed
+                .get("TerminalExited")
+                .unwrap_or_else(|| panic!("expected `TerminalExited` envelope, got {parsed}"));
+            assert_eq!(
+                exited.get("code").and_then(|v| v.as_i64()),
+                Some(0),
+                "expected TerminalExited.code == 0, got {parsed}"
+            );
+        }
+        other => panic!("expected Text(TerminalExited), got {other:?}"),
+    }
+
+    // Second frame: the existing `Close(1000, "child-exited")`. The
+    // pump path and the upgrade-time path now share the
+    // JSON-then-Close shape.
+    let close = tokio::time::timeout(Duration::from_secs(2), ws.next())
+        .await
+        .expect("ws recv (close) timed out")
+        .expect("ws closed without sending Close")
+        .expect("ws error");
+    match close {
+        TMessage::Close(Some(cf)) => {
+            assert_eq!(u16::from(cf.code), 1000);
+            assert_eq!(cf.reason.as_ref(), "child-exited");
+        }
+        other => panic!("expected Close(1000, child-exited), got {other:?}"),
+    }
+
+    // Post: the row now reflects the sidecar's payload. This is the
+    // load-bearing fix for #306: a refreshed page (or any subsequent
+    // REST poll of the terminal row) returns `exit_code = Some(0),
+    // signal_killed = false` so the frontend can render the badge
+    // immediately, without waiting for the WS attach or the JSON
+    // `TerminalExited` frame.
+    let post = boot
+        .repo
+        .terminal_get(&boot.term_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        post.exit_code,
+        Some(0),
+        "WS upgrade must persist exit_code from `.exit` sidecar"
+    );
+    assert!(!post.signal_killed);
+}
+
+/// #306 — SIGKILL'd daemon case: stale handle, NO sidecar on disk
+/// (the daemon never reached its `child.wait()` write site). The
+/// kernel surfaces `Close(1000, "child-exited")` (the v1 conflation —
+/// v2 will distinguish DaemonLost) but MUST NOT write garbage onto
+/// the row: `exit_code` stays NULL, `signal_killed` stays false.
+#[tokio::test]
+async fn ws_upgrade_with_stale_handle_and_no_sidecar_leaves_exit_code_null() {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::Message as TMessage;
+
+    let boot = boot_with_terminal_row().await;
+
+    let stale_sock = boot._tmp.path().join("stale-no-sidecar.sock");
+    let stale_sock_str = stale_sock.to_string_lossy().to_string();
+    boot.repo
+        .terminal_set_handle(&boot.term_id, Some(&stale_sock_str))
+        .await
+        .unwrap();
+    // Belt-and-braces: assert there's no leftover sidecar from a
+    // prior test run (tempdir-per-boot makes this trivially true,
+    // but explicit > implicit on regression guards).
+    assert!(!std::path::Path::new(&format!("{stale_sock_str}.exit")).exists());
+
+    let url = format!("ws://{}/api/terminals/{}", boot.addr, boot.term_id);
+    let (mut ws, _resp) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("upgrade must reach 101");
+    let _ = tokio::time::timeout(Duration::from_secs(2), ws.next())
+        .await
+        .expect("ws recv (close) timed out")
+        .expect("ws closed without sending Close")
+        .expect("ws error");
+    // Drop the WS; the row read below is what we actually care about.
+    let _ = ws;
+    let _ = TMessage::Text("".into());
+
+    let post = boot
+        .repo
+        .terminal_get(&boot.term_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        post.exit_code, None,
+        "absent sidecar must leave exit_code NULL (DaemonLost shape)"
+    );
+    assert!(
+        !post.signal_killed,
+        "absent sidecar must leave signal_killed false"
+    );
+}

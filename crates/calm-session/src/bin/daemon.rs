@@ -584,7 +584,13 @@ async fn run_terminal(cli: Cli, mut parent_death: ParentDeathSignals) -> anyhow:
 
     // ---- Child-exit watcher ----
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-    spawn_child_waiter(child, render_plane.clone(), event_tx.clone(), shutdown_tx);
+    spawn_child_waiter(
+        child,
+        render_plane.clone(),
+        event_tx.clone(),
+        shutdown_tx,
+        cli.sock.clone(),
+    );
 
     // ---- ChildReady poll timer ----
     //
@@ -779,10 +785,25 @@ async fn run_chat(cli: Cli, mut parent_death: ParentDeathSignals) -> anyhow::Res
     // ---- child-exit watcher ----
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let event_tx_w = event_tx.clone();
+    let chat_exit_sock = cli.sock.clone();
     tokio::spawn(async move {
         let status = child.wait().await.ok();
         let code = status.and_then(|s| s.code());
         tracing::info!(?code, "chat runner wait returned");
+        // #306 — chat-mode `Child` is `tokio::process::Child` whose
+        // `ExitStatus` doesn't expose the underlying signal name on
+        // this path, so for v1 we just record the numeric code (or
+        // None) and stamp `signal_killed = false`. Matches terminal-
+        // mode's sidecar shape so the kernel can read either branch
+        // with the same parser.
+        let exit_path = format!("{}.exit", chat_exit_sock.display());
+        let payload = serde_json::json!({
+            "code": code,
+            "signal_killed": false,
+        });
+        if let Err(e) = std::fs::write(&exit_path, payload.to_string()) {
+            tracing::warn!(error = %e, path = %exit_path, "failed to write .exit sidecar (chat)");
+        }
         let _ = event_tx_w.send(ChatEvt::Exit(code));
         let _ = shutdown_tx.send(());
     });
@@ -1039,11 +1060,40 @@ fn spawn_child_waiter(
     render_plane: SharedRenderPlane,
     event_tx: broadcast::Sender<DaemonMsg>,
     shutdown_tx: oneshot::Sender<()>,
+    sock_path: PathBuf,
 ) {
     tokio::task::spawn_blocking(move || {
         let status = child.wait().ok();
-        let code = status.map(|s| s.exit_code() as i32);
-        tracing::info!(?code, "child wait returned");
+        // #306 — capture both exit_code and signal_killed before the
+        // broadcast effects fire, so by the time the WS pump sees the
+        // socket EOF the kernel can read the sidecar file off disk and
+        // persist the exit info on the terminal row. portable-pty 0.9
+        // gained `ExitStatus::signal() -> Option<&str>`, which is the
+        // discriminator we need: `Some(_)` ⇒ killed by signal,
+        // `None`     ⇒ returned via exit() / main-return.
+        let (code, signal_killed): (Option<i32>, bool) = match status.as_ref() {
+            Some(s) if s.signal().is_some() => (None, true),
+            Some(s) => (Some(s.exit_code() as i32), false),
+            None => (None, false),
+        };
+        tracing::info!(?code, signal_killed, "child wait returned");
+        // Write `.exit` sidecar BEFORE the broadcast effects fire. By
+        // the time the WS pump observes the socket close, the kernel's
+        // `resolve_live_sock` (and the pump-time `Close(1000, …)` path)
+        // can read this file and persist the exit info on the terminal
+        // row via `terminal_set_exit`. JSON shape matches what
+        // `crates/calm-server/src/ws/terminal.rs` expects.
+        let exit_path = format!("{}.exit", sock_path.display());
+        let payload = serde_json::json!({
+            "code": code,
+            "signal_killed": signal_killed,
+        });
+        if let Err(e) = std::fs::write(&exit_path, payload.to_string()) {
+            // Non-fatal: the kernel will treat the missing sidecar as
+            // "daemon died without writing exit info" (DaemonLost in
+            // v2). Logged so an operator can dig into it.
+            tracing::warn!(error = %e, path = %exit_path, "failed to write .exit sidecar");
+        }
         // `on_child_exit` only emits `Broadcast(TerminalExited)`; inline
         // the dispatch so we don't need to thread `stdin_tx` here.
         let effects = match render_plane.lock() {

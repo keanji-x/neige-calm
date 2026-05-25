@@ -1287,3 +1287,71 @@ async fn open_succeeds_on_fresh_and_current_db() {
         .await
         .expect("reopen with current binary");
 }
+
+// ---------------------------------------------- #306 terminal_set_exit ----
+
+/// Round-trip every branch of `terminal_set_exit` so the SQL writes both
+/// columns coherently and the read path surfaces them via
+/// `Terminal.exit_code` + `signal_killed`. The four states correspond to
+/// the four shapes the daemon can write to `<sock>.exit`:
+///
+///   - clean exit (`exit_code = Some(0)`)
+///   - non-zero exit (`exit_code = Some(137)`)
+///   - signal-killed (`exit_code = None`, `signal_killed = true`)
+///   - back to unset (`exit_code = None`, `signal_killed = false`) —
+///     not a real daemon write path, but exercised here so a future
+///     "clear exit on respawn" caller has a known-good shape.
+#[tokio::test]
+async fn terminal_set_exit_round_trip_all_branches() {
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "C").await;
+    let w = make_wave(&repo, c.id.as_str(), "W").await;
+    let card = make_card(&repo, w.id.as_str(), "terminal").await;
+    let t = repo
+        .terminal_create(NewTerminal {
+            card_id: card.id.clone(),
+            program: "bash".into(),
+            cwd: "/tmp".into(),
+            env: json!({}),
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    // Fresh row → both fields default per the 0020 migration:
+    //   exit_code IS NULL, signal_killed = 0.
+    assert_eq!(t.exit_code, None);
+    assert!(!t.signal_killed);
+
+    // (a) clean exit
+    repo.terminal_set_exit(&t.id, Some(0), false).await.unwrap();
+    let r = repo.terminal_get(&t.id).await.unwrap().unwrap();
+    assert_eq!(r.exit_code, Some(0));
+    assert!(!r.signal_killed);
+
+    // (b) non-zero exit
+    repo.terminal_set_exit(&t.id, Some(137), false)
+        .await
+        .unwrap();
+    let r = repo.terminal_get(&t.id).await.unwrap().unwrap();
+    assert_eq!(r.exit_code, Some(137));
+    assert!(!r.signal_killed);
+
+    // (c) signal-killed (mutually exclusive: exit_code = None)
+    repo.terminal_set_exit(&t.id, None, true).await.unwrap();
+    let r = repo.terminal_get(&t.id).await.unwrap().unwrap();
+    assert_eq!(r.exit_code, None);
+    assert!(r.signal_killed);
+
+    // (d) clear back to unset
+    repo.terminal_set_exit(&t.id, None, false).await.unwrap();
+    let r = repo.terminal_get(&t.id).await.unwrap().unwrap();
+    assert_eq!(r.exit_code, None);
+    assert!(!r.signal_killed);
+
+    // Missing id → NotFound, mirroring `terminal_set_pid` / `_set_handle`.
+    let err = repo
+        .terminal_set_exit("no-such-id", Some(0), false)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, CalmError::NotFound(_)));
+}

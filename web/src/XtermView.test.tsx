@@ -414,8 +414,22 @@ describe('XtermView v3 terminal states', () => {
     expect(screen.getByRole('button', { name: /refresh/i })).toBeInTheDocument();
   });
 
-  it('shows the exited overlay with the code on TerminalExited', () => {
-    render(<XtermView terminalId="term_test" />);
+  it('fires onExitChange with the code on TerminalExited and renders no overlay', () => {
+    // #306 — the pre-#306 build surfaced "process exited (code N) +
+    // Restart" as a full-card overlay. The v1 of this PR drops the
+    // overlay entirely and lifts the exit info to the parent via
+    // `onExitChange`, where a small header badge takes the role the
+    // overlay used to play. This test pins the new contract.
+    const exitChanges: Array<{
+      exit_code: number | null;
+      signal_killed: boolean;
+    } | null> = [];
+    render(
+      <XtermView
+        terminalId="term_test"
+        onExitChange={(e) => exitChanges.push(e)}
+      />,
+    );
     const ws = currentWs();
     act(() => {
       ws.fireOpen();
@@ -428,13 +442,92 @@ describe('XtermView v3 terminal states', () => {
         TerminalExited: { code: 137, pty_seq: 10, render_rev: 5 },
       });
     });
-    expect(screen.getByText(/process exited/i)).toBeInTheDocument();
-    expect(screen.getByText(/code 137/)).toBeInTheDocument();
+    // Parent received the exit info: numeric code from the JSON frame,
+    // signal_killed=false because the JSON frame has no signal info
+    // (the more-reliable signal flag arrives via the REST seed).
+    expect(exitChanges).toContainEqual({
+      exit_code: 137,
+      signal_killed: false,
+    });
+    // No "process exited" overlay, no Restart button. The buffer
+    // stays mounted; xterm.js's `term.writeln` still emits the dim
+    // inline marker so the user sees "[process exited (code 137)]"
+    // in the buffer itself — that's a `mockTerm.writeln` call, not
+    // a React-rendered DOM node, so it stays out of the overlay
+    // assertion.
+    expect(screen.queryByText(/process exited/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /restart/i }),
+    ).not.toBeInTheDocument();
     expect(mockTerm.writeln).toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: /restart/i })).toBeInTheDocument();
   });
 
-  it('shows the disconnected overlay with close code on plain WS close', () => {
+  it('preserves the live exit code through the close-frame backstop (TerminalExited → child-exited close)', () => {
+    // #306 regression — the normal happy-path sequence on a clean
+    // child exit is:
+    //   1. daemon emits `TerminalExited { code: 137 }` JSON frame
+    //   2. kernel pump forwards it as the JSON message above
+    //   3. WS closes with code 1000 + reason "child-exited"
+    // The parent (`terminal.tsx` / `codex.tsx`) wires `onExitChange`
+    // directly to a setState with no dedupe — so if the close-frame
+    // backstop unconditionally fires `{exit_code: null, …}`, the
+    // badge flips from "exit 137" (error palette) to "exit" (neutral
+    // palette) at step 3 and stays there. The fix: the close handler
+    // gates the backstop on `exitInfoRef.current === null` (i.e. no
+    // prior JSON frame already delivered an exit code). This test
+    // exercises the COMBINED sequence and asserts the FINAL value
+    // received by the parent is the real code, not null.
+    const exitChanges: Array<{
+      exit_code: number | null;
+      signal_killed: boolean;
+    } | null> = [];
+    render(
+      <XtermView
+        terminalId="term_test"
+        onExitChange={(e) => exitChanges.push(e)}
+      />,
+    );
+    const ws = currentWs();
+    act(() => {
+      ws.fireOpen();
+    });
+    act(() => {
+      ws.push(serverHello());
+    });
+    // Step 1+2: the JSON frame lands first and fires onExitChange
+    // with the real code.
+    act(() => {
+      ws.push({
+        TerminalExited: { code: 137, pty_seq: 10, render_rev: 5 },
+      });
+    });
+    // Step 3: the WS closes with the canonical child-exit reason.
+    // Pre-fix this would push a second `{exit_code: null, …}` and
+    // clobber the parent's setState; post-fix the gate suppresses
+    // the backstop because `exitInfoRef.current` is already set.
+    act(() => {
+      ws.fireClose(1000, 'child-exited');
+    });
+    // The parent saw the real code at least once.
+    expect(exitChanges).toContainEqual({
+      exit_code: 137,
+      signal_killed: false,
+    });
+    // And — the load-bearing assertion — the LAST value the parent
+    // saw is still the real code, not the close-frame null. (The
+    // parent's setState would otherwise show the badge as neutral
+    // "exit" instead of the error-palette "exit 137".)
+    expect(exitChanges.at(-1)).toEqual({
+      exit_code: 137,
+      signal_killed: false,
+    });
+  });
+
+  it('does not render a disconnected overlay on plain WS close (buffer stays visible)', () => {
+    // #306 — the pre-#306 build surfaced "disconnected — 1006/1005 +
+    // Reconnect" as a full-card overlay on every non-clean close. v1
+    // drops this overlay entirely: the buffer stays visible and the
+    // user can either reload the page or wait for the WS to recover.
     render(<XtermView terminalId="term_test" />);
     const ws = currentWs();
     act(() => {
@@ -446,20 +539,29 @@ describe('XtermView v3 terminal states', () => {
     act(() => {
       ws.fireClose(1006, 'abnormal');
     });
-    expect(screen.getByText(/disconnected/i)).toBeInTheDocument();
-    expect(screen.getByText(/1006/)).toBeInTheDocument();
-    expect(screen.getByText(/abnormal/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /reconnect/i })).toBeInTheDocument();
+    expect(screen.queryByText(/disconnected/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /reconnect/i }),
+    ).not.toBeInTheDocument();
   });
 
-  it('shows the exited overlay on a 1000 child-exited close even with no prior TerminalExited frame', () => {
+  it('fires onExitChange backstop on a 1000 child-exited close even with no prior TerminalExited frame', () => {
     // Race recovery: the daemon emits TerminalExited → kernel pump
     // forwards it as JSON then closes WS with code 1000 + reason
     // `child-exited`. Even when the JSON frame is dropped on a slow
-    // link, the close-frame reason alone must promote us to the
-    // "exited" overlay — not "disconnected". See ws/terminal.rs
+    // link, the close-frame reason alone must fire `onExitChange`
+    // so the parent's badge appears. See ws/terminal.rs
     // `CLOSE_REASON_CHILD_EXITED`.
-    render(<XtermView terminalId="term_test" />);
+    const exitChanges: Array<{
+      exit_code: number | null;
+      signal_killed: boolean;
+    } | null> = [];
+    render(
+      <XtermView
+        terminalId="term_test"
+        onExitChange={(e) => exitChanges.push(e)}
+      />,
+    );
     const ws = currentWs();
     act(() => {
       ws.fireOpen();
@@ -470,12 +572,19 @@ describe('XtermView v3 terminal states', () => {
     act(() => {
       ws.fireClose(1000, 'child-exited');
     });
-    expect(screen.getByText(/process exited/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /restart/i })).toBeInTheDocument();
-    // The "disconnected" overlay (and its Reconnect button) must not
-    // appear — the kernel told us this was a clean child exit, not a
-    // network drop.
+    // exit_code is null on this path because the close-frame backstop
+    // doesn't carry the code — only the JSON `TerminalExited` does.
+    // Parent renders an "exit" badge in the neutral palette.
+    expect(exitChanges).toContainEqual({
+      exit_code: null,
+      signal_killed: false,
+    });
+    // No overlays at all — buffer stays visible, no Restart button.
+    expect(screen.queryByText(/process exited/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/disconnected/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /restart/i }),
+    ).not.toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: /reconnect/i }),
     ).not.toBeInTheDocument();
