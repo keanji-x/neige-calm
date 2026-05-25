@@ -304,21 +304,45 @@ pub trait RepoRead: Send + Sync + 'static {
     /// payload carries a `codex_thread_id` whose parent wave is not in a
     /// terminal lifecycle state (`done` / `canceled` / `failed`), as
     /// `(card_id, wave_id, codex_thread_id, appserver_pgid, appserver_sock,
-    /// push_watermark)`.
+    /// appserver_start_time, appserver_boot_id, push_watermark)`.
     ///
-    /// `appserver_pgid` and `appserver_sock` may be missing if a prior boot
-    /// only persisted the thread id (defensive — every code path that writes
-    /// `codex_thread_id` today also writes both); `push_watermark` defaults
-    /// to 0 when absent (waves persisted before #313 didn't have the field,
-    /// and 0 means "replay every event for this wave on recovery" — which is
-    /// the correct conservative default).
+    /// `appserver_pgid` / `appserver_sock` / `appserver_start_time` /
+    /// `appserver_boot_id` may be missing if a prior boot only persisted
+    /// a subset (defensive — every code path that writes
+    /// `codex_thread_id` today also writes the first two, and #318 added
+    /// the start_time + boot_id identity stamp); `push_watermark`
+    /// defaults to 0 when absent (waves persisted before #313 didn't have
+    /// the field, and 0 means "replay every event for this wave on
+    /// recovery" — the correct conservative default).
+    ///
+    /// `(appserver_start_time, appserver_boot_id)` is the identity stamp
+    /// captured at spawn:
+    ///   * `appserver_start_time` — field 22 (1-indexed) of
+    ///     `/proc/<pid>/stat`, clock-ticks since boot.
+    ///   * `appserver_boot_id` — `/proc/sys/kernel/random/boot_id`, a
+    ///     per-boot UUID. Distinguishes "host rebooted, every prior pid
+    ///     is dead" from "same boot, possible mid-boot pid recycle".
+    ///
+    /// The boot-recovery path verifies BOTH against the live `/proc`
+    /// entries before signaling the persisted pgid (#318 INV-5 / R3-B1).
     ///
     /// Used exclusively by [`crate::takeover_spec_appservers_on_boot`] during
     /// startup to re-establish the push channel for in-flight waves (boot
     /// takeover replaces today's boot kill).
     async fn spec_cards_for_boot_takeover(
         &self,
-    ) -> Result<Vec<(String, String, String, Option<i32>, Option<String>, i64)>>;
+    ) -> Result<
+        Vec<(
+            String,
+            String,
+            String,
+            Option<i32>,
+            Option<String>,
+            Option<u64>,
+            Option<String>,
+            i64,
+        )>,
+    >;
 
     // ---- plugins (read-only)
     async fn plugins_list(&self) -> Result<Vec<Plugin>>;
@@ -712,15 +736,23 @@ pub trait RepoOutOfDomain: RepoRead {
 
     /// #313 problem #1 — after boot takeover RESPAWNS a fresh codex
     /// app-server for a spec card, persist the new launcher pgid + sock
-    /// so the NEXT boot cycle (or a graceful teardown) targets the
-    /// right process. Single-statement JSON-merge; touches only
-    /// `appserver_pgid` + `appserver_sock`. Does NOT touch
-    /// `codex_thread_id` or `push_watermark`.
+    /// (+ #318 INV-5 `(start_time, boot_id)` identity stamp) so the NEXT
+    /// boot cycle (or a graceful teardown) targets the right process.
+    /// Single-statement JSON-merge; touches only `appserver_pgid` +
+    /// `appserver_sock` + `appserver_start_time` + `appserver_boot_id`.
+    /// Does NOT touch `codex_thread_id` or `push_watermark`.
+    ///
+    /// `start_time` / `boot_id` are `Option` because non-Linux targets /
+    /// transient `/proc` read failures yield no stamp; in that case the
+    /// field is removed from the payload (NULL), and boot-recovery
+    /// conservatively skips the kill (same posture as a mismatch).
     async fn spec_card_set_appserver_after_takeover(
         &self,
         card_id: &str,
         pgid: i32,
         sock: &str,
+        start_time: Option<u64>,
+        boot_id: Option<&str>,
     ) -> Result<()>;
 
     // ---- spec push queue (#318 INV-3 / R2-B1)

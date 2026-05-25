@@ -1739,18 +1739,40 @@ impl RepoRead for SqlxRepo {
 
     async fn spec_cards_for_boot_takeover(
         &self,
-    ) -> Result<Vec<(String, String, String, Option<i32>, Option<String>, i64)>> {
+    ) -> Result<
+        Vec<(
+            String,
+            String,
+            String,
+            Option<i32>,
+            Option<String>,
+            Option<u64>,
+            Option<String>,
+            i64,
+        )>,
+    > {
         // #313 problem #1 — boot takeover input. Spec cards whose payload
         // carries `codex_thread_id`, JOINed against `waves` so we can filter
         // out terminal-lifecycle waves in SQL rather than re-querying per
-        // card from Rust. `appserver_pgid` / `appserver_sock` are nullable in
-        // the projection (defensive — every write that lands `codex_thread_id`
-        // today also writes both, but a malformed row shouldn't strand the
-        // whole boot sweep). `push_watermark` defaults to 0 when absent —
-        // 0 is the "no events pushed yet" sentinel the in-memory
-        // `EventCursorCache` returns for an unknown card, so a missing field
-        // produces identical replay behavior (replay every event for this
-        // wave, then bump).
+        // card from Rust. `appserver_pgid` / `appserver_sock` /
+        // `appserver_start_time` / `appserver_boot_id` are nullable in the
+        // projection (defensive — every write that lands `codex_thread_id`
+        // today also writes the first two, and #318 added the start_time +
+        // boot_id companion; a malformed or pre-#318 row shouldn't strand
+        // the whole boot sweep). `push_watermark` defaults to 0 when
+        // absent — 0 is the "no events pushed yet" sentinel the in-memory
+        // `EventCursorCache` returns for an unknown card, so a missing
+        // field produces identical replay behavior (replay every event
+        // for this wave, then bump).
+        //
+        // #318 (R3-B1) — `(appserver_start_time, appserver_boot_id)` is
+        // the identity stamp from `/proc/<pid>/stat` field 22 and
+        // `/proc/sys/kernel/random/boot_id` at spawn. The boot-recovery
+        // path (`try_takeover_one_wave`) verifies BOTH against the live
+        // `/proc` entries BEFORE signaling the persisted pgid (defends
+        // against same-boot pid recycling AND cross-reboot recycling).
+        // A missing stamp falls through to "skip the kill"
+        // (conservative).
         //
         // #315 round-4 (B1) — `c.role = 'spec'` is REQUIRED. Plugin and
         // opaque card payloads can legitimately carry arbitrary keys; a
@@ -1775,12 +1797,16 @@ impl RepoRead for SqlxRepo {
             Option<i64>,
             Option<String>,
             Option<i64>,
+            Option<String>,
+            Option<i64>,
         )> = sqlx::query_as(
             r#"SELECT c.id,
                       c.wave_id,
                       json_extract(c.payload, '$.codex_thread_id'),
                       json_extract(c.payload, '$.appserver_pgid'),
                       json_extract(c.payload, '$.appserver_sock'),
+                      json_extract(c.payload, '$.appserver_start_time'),
+                      json_extract(c.payload, '$.appserver_boot_id'),
                       json_extract(c.payload, '$.push_watermark')
                FROM cards c
                JOIN waves w ON w.id = c.wave_id
@@ -1792,11 +1818,22 @@ impl RepoRead for SqlxRepo {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(card_id, wave_id, thread_id, pgid, sock, watermark)| {
-                let pgid = pgid.and_then(|v| i32::try_from(v).ok());
-                let watermark = watermark.unwrap_or(0);
-                (card_id, wave_id, thread_id, pgid, sock, watermark)
-            })
+            .map(
+                |(card_id, wave_id, thread_id, pgid, sock, start_time, boot_id, watermark)| {
+                    let pgid = pgid.and_then(|v| i32::try_from(v).ok());
+                    // #318 INV-5 — `starttime` in `/proc/<pid>/stat` is
+                    // jiffies-since-boot (unsigned long in the kernel).
+                    // We persist it as a JSON number; SQLite hands it back
+                    // as i64. Negative values would be corruption — drop
+                    // them (treat as missing → skip kill conservatively).
+                    let start_time =
+                        start_time.and_then(|v| if v >= 0 { Some(v as u64) } else { None });
+                    let watermark = watermark.unwrap_or(0);
+                    (
+                        card_id, wave_id, thread_id, pgid, sock, start_time, boot_id, watermark,
+                    )
+                },
+            )
             .collect())
     }
 
@@ -2201,23 +2238,41 @@ impl RepoOutOfDomain for SqlxRepo {
         card_id: &str,
         pgid: i32,
         sock: &str,
+        start_time: Option<u64>,
+        boot_id: Option<&str>,
     ) -> Result<()> {
-        // Two-key JSON merge — leaves `codex_thread_id` and
+        // Four-key JSON merge — leaves `codex_thread_id` and
         // `push_watermark` untouched. Missing row is a no-op (the wave
         // was deleted between takeover and persist).
+        //
+        // #318 INV-5 (R3-B1) — `appserver_start_time` + `appserver_boot_id`
+        // are the identity stamp captured at respawn. SQLite has no
+        // native u64 so start_time is bound as i64; jiffies-since-boot
+        // fits comfortably (i64::MAX jiffies is ~3 trillion years at
+        // HZ=100). When the spawn-time `/proc` read failed (non-Linux /
+        // transient ENOENT) we EXPLICITLY null the field via
+        // `json_set(..., NULL)` so a prior stale stamp doesn't outlive
+        // its process. SQLite's `json_set` writes JSON `null` for a
+        // NULL bind value, which `json_extract` returns as NULL → boot
+        // recovery skips the kill (correct conservative posture).
         let now = now_ms();
+        let st_i64 = start_time.and_then(|v| i64::try_from(v).ok());
         let _ = sqlx::query(
             r#"UPDATE cards
                   SET payload = json_set(
                                     COALESCE(payload, '{}'),
                                     '$.appserver_pgid', ?1,
-                                    '$.appserver_sock', ?2
+                                    '$.appserver_sock', ?2,
+                                    '$.appserver_start_time', ?3,
+                                    '$.appserver_boot_id', ?4
                                 ),
-                      updated_at = ?3
-                WHERE id = ?4"#,
+                      updated_at = ?5
+                WHERE id = ?6"#,
         )
         .bind(pgid)
         .bind(sock)
+        .bind(st_i64)
+        .bind(boot_id)
         .bind(now)
         .bind(card_id)
         .execute(&self.pool)
@@ -2226,10 +2281,15 @@ impl RepoOutOfDomain for SqlxRepo {
     }
 
     async fn spec_card_clear_push_state(&self, card_id: &str) -> Result<()> {
-        // Remove the four push-related fields so the next boot doesn't
+        // Remove the six push-related fields so the next boot doesn't
         // re-attempt the stale thread/resume. Leaves everything else in
         // the payload intact. `json_remove` on a missing key is a no-op,
         // so the SQL stays one statement.
+        //
+        // #318 INV-5 (R3-B1) — `appserver_start_time` +
+        // `appserver_boot_id` are the identity stamp; they go out with
+        // the rest of the push state so a re-spawned-from-scratch wave
+        // doesn't carry a stale stamp.
         let now = now_ms();
         let _ = sqlx::query(
             r#"UPDATE cards
@@ -2238,6 +2298,8 @@ impl RepoOutOfDomain for SqlxRepo {
                                        '$.codex_thread_id',
                                        '$.appserver_sock',
                                        '$.appserver_pgid',
+                                       '$.appserver_start_time',
+                                       '$.appserver_boot_id',
                                        '$.push_watermark'
                                    ),
                       updated_at = ?1

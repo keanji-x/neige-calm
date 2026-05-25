@@ -202,7 +202,17 @@ pub async fn takeover_spec_appservers_on_boot(state: &state::AppState) {
 
     let mut respawned = 0usize;
     let mut inert = 0usize;
-    for (card_id, wave_id, thread_id, persisted_pgid, persisted_sock, watermark) in cards {
+    for (
+        card_id,
+        wave_id,
+        thread_id,
+        persisted_pgid,
+        persisted_sock,
+        persisted_start_time,
+        persisted_boot_id,
+        watermark,
+    ) in cards
+    {
         let wave_key: crate::ids::WaveId = wave_id.clone().into();
         // Per-wave best-effort: failures inside this block are logged and
         // we move on to the next wave (the kernel boot proceeds regardless).
@@ -214,6 +224,8 @@ pub async fn takeover_spec_appservers_on_boot(state: &state::AppState) {
             &thread_id,
             persisted_pgid,
             persisted_sock.as_deref(),
+            persisted_start_time,
+            persisted_boot_id.as_deref(),
             watermark,
         )
         .await;
@@ -261,6 +273,8 @@ async fn try_takeover_one_wave(
     thread_id: &str,
     persisted_pgid: Option<i32>,
     persisted_sock: Option<&str>,
+    persisted_start_time: Option<u64>,
+    persisted_boot_id: Option<&str>,
     watermark: i64,
 ) -> TakeoverOutcome {
     // 1. #313 PR4-round2 (B2): **always respawn**. We unconditionally reap
@@ -284,43 +298,75 @@ async fn try_takeover_one_wave(
     //    SIGKILL and kept the socket bound.
     if let (Some(pgid), Some(sock)) = (persisted_pgid, persisted_sock) {
         let sock_path = std::path::Path::new(sock);
-        // #313 problem #1 round-3 (B1) — SOCKET-OWNERSHIP PROBE before kill.
+        // #318 INV-5 (R3-B1) — STRONG PID OWNERSHIP CHECK before kill.
         //
-        // Round-2's always-respawn unconditionally signaled the persisted
-        // pgid whenever both fields were present. After a host reboot the
-        // kernel comes up on a freshly-recycled PID space, so the
-        // persisted `pgid` almost certainly belongs to an unrelated
-        // process group — sending SIGTERM/SIGKILL would nuke a random
-        // user process. Round-3 gates the kill on a cheap ownership
-        // proxy: the per-card socket path is UUID-scoped, so anything
-        // listening on it is overwhelmingly our codex app-server.
+        // Round-3 of #313 gated the kill on `socket_owned_by_appserver`
+        // (a `UnixStream::connect` to the per-card socket path). That's
+        // good for the steady-state (a connectable listener at our
+        // UUID-scoped path is overwhelmingly ours), but suffers a TOCTOU
+        // window between the probe returning `true` and the
+        // `signal_process_group` syscall fired ~400 ms later (SIGTERM →
+        // grace → SIGKILL). Inside that window the original listener
+        // can exit, its pid/pgid can be recycled by the kernel, and our
+        // SIGTERM/SIGKILL then lands on an unrelated process group.
         //
-        //   * connect OK         → live listener at our exact path → almost
-        //                          certainly our app-server (the only
-        //                          thing that binds <data_dir>/appserver/
-        //                          <card_id>/sock). Proceed with SIGTERM
-        //                          → grace → SIGKILL → cleanup_sock_dir.
-        //   * connect ENOENT     → socket file gone (graceful teardown
-        //                          from prior shutdown). No process to
-        //                          kill; cleanup is a no-op for ENOENT.
-        //   * connect ECONNREFUSED → socket dirent stale (crashed without
-        //                          cleanup). No live listener; the
-        //                          persisted pgid is presumably recycled.
-        //                          Skip kill, cleanup the dead socket so
-        //                          the respawn can rebind.
-        //   * connect other err  → ambiguous; default to SKIP the kill
-        //                          (false-negative is harmless; the
-        //                          respawn's `bind(2)` succeeds when the
-        //                          listener really is gone, and a true
-        //                          live duplicate causes EADDRINUSE which
-        //                          the respawn surfaces).
+        // The fix is `(pid, start_time, boot_id)` identity: we captured
+        // the launcher's `starttime` (`/proc/<pgid>/stat` field 22,
+        // jiffies-since-boot) AND the kernel's `boot_id`
+        // (`/proc/sys/kernel/random/boot_id`) at spawn and persisted
+        // both on the spec card payload. `verify_owned_pid` rejects on
+        // ANY of:
+        //   * `boot_id` mismatch → host rebooted → prior boot's pid
+        //     namespace is dead in its entirety, regardless of any
+        //     pid's stamp.
+        //   * `/proc/<pid>` ENOENT → process is gone.
+        //   * `starttime` mismatch → same-boot pid recycle, recycled
+        //     process started after our stamp.
+        //
+        // We require BOTH identity (via `verify_owned_pid`) AND socket
+        // liveness (via `socket_owned_by_appserver`) to fire the kill.
+        // Belt-and-suspenders: identity proves "this pid is ours";
+        // socket-owned proves "and it's still listening on our path".
+        // Either alone is a stronger guarantee than pre-#318, but
+        // requiring both closes the residual gap where identity check
+        // passes against a same-boot ours-but-frozen process (we
+        // crashed mid-accept, the socket dirent is stale, and we're
+        // about to respawn) — we'd be SIGKILL'ing a zombie that
+        // wouldn't have interfered with `bind(2)` anyway, so skipping
+        // is strictly safer.
+        //
+        // Decision matrix:
+        //   * identity_ok AND socket_live → fire SIGTERM → grace →
+        //     SIGKILL → cleanup.
+        //   * identity_ok AND NOT socket_live → skip kill. The
+        //     persisted pid is alive and ours but not listening; the
+        //     respawn's `bind(2)` will succeed once we
+        //     `cleanup_sock_dir`. (Rare leak: one stale process group
+        //     survives until host shutdown or manual cleanup. Benign.)
+        //   * NOT identity_ok → skip kill regardless of socket. The
+        //     persisted pid is dead / belongs to someone else.
+        //   * persisted stamp/boot_id absent (`None`) → can't prove
+        //     identity → skip kill. Conservative; same posture as
+        //     pre-#318 for legacy rows.
         //
         // Either way we still call `cleanup_sock_dir` so the new
         // app-server can rebind a fresh socket file.
-        if pgid > 1 && spec_appserver::socket_owned_by_appserver(sock_path).await {
+        let identity_ok = match (persisted_start_time, persisted_boot_id) {
+            (Some(st), Some(boot)) => spec_appserver::verify_owned_pid(pgid, st, boot),
+            _ => false,
+        };
+        let socket_live = if identity_ok && pgid > 1 {
+            spec_appserver::socket_owned_by_appserver(sock_path).await
+        } else {
+            false
+        };
+        if pgid > 1 && identity_ok && socket_live {
             tracing::debug!(
                 card_id, wave_id = %wave_id, pgid, sock,
-                "takeover: socket probe confirms ownership — reaping persisted app-server process group before respawn"
+                start_time = ?persisted_start_time,
+                boot_id = ?persisted_boot_id,
+                "takeover: pid identity AND socket liveness both verified — \
+                 reaping persisted app-server process group before respawn"
             );
             spec_appserver::signal_process_group(pgid, libc::SIGTERM);
             // Brief grace so the launcher can flush before SIGKILL.
@@ -329,8 +375,13 @@ async fn try_takeover_one_wave(
         } else if pgid > 1 {
             tracing::info!(
                 card_id, wave_id = %wave_id, pgid, sock,
-                "takeover: skipping kill of persisted pgid — socket has no live listener \
-                 (likely host-reboot PID recycle); cleaning stale socket and respawning"
+                identity_ok, socket_live,
+                start_time = ?persisted_start_time,
+                boot_id = ?persisted_boot_id,
+                "takeover: skipping kill of persisted pgid — \
+                 identity check or socket probe failed (likely host-reboot pid \
+                 recycle, missing pre-#318 stamp, or stale dirent); cleaning \
+                 stale socket and respawning"
             );
         }
         spec_appserver::cleanup_sock_dir(sock_path);
@@ -377,9 +428,10 @@ async fn try_takeover_one_wave(
                 card_id, wave_id = %wave_id, thread_id,
                 "takeover: respawned codex app-server + thread/resume succeeded",
             );
-            // Persist the fresh pgid + sock for the NEXT boot cycle so a
-            // hard-crash between this point and the next graceful
-            // teardown can probe the persisted pgid against the new
+            // Persist the fresh pgid + sock + (start_time, boot_id) for
+            // the NEXT boot cycle so a hard-crash between this point and
+            // the next graceful teardown can verify the persisted pgid's
+            // identity (#318 INV-5) AND probe its socket against the new
             // process. (Same write `create_wave` does post-spawn, minus
             // the codex_thread_id which is already persisted.)
             persist_post_respawn_fields(
@@ -387,6 +439,8 @@ async fn try_takeover_one_wave(
                 card_id,
                 handle.pgid,
                 &handle.sock.to_string_lossy(),
+                handle.start_time,
+                handle.boot_id.as_deref(),
             )
             .await;
             register_and_catch_up(state, card_id, wave_id, watermark, handle).await;
@@ -557,6 +611,8 @@ async fn persist_post_respawn_fields(
     card_id: &str,
     pgid: i32,
     sock: &str,
+    start_time: Option<u64>,
+    boot_id: Option<&str>,
 ) {
     // Same pattern as `spec_card_set_push_watermark`: a single-statement
     // JSON-merge UPDATE that touches only the named keys. Going through
@@ -565,12 +621,12 @@ async fn persist_post_respawn_fields(
     // handles go through `RepoOutOfDomain` instead.
     if let Err(e) = state
         .repo
-        .spec_card_set_appserver_after_takeover(card_id, pgid, sock)
+        .spec_card_set_appserver_after_takeover(card_id, pgid, sock, start_time, boot_id)
         .await
     {
         tracing::warn!(
             card_id, error = %e,
-            "takeover: persist post-respawn pgid+sock failed; in-memory handle is parked, next boot will probe stale fields",
+            "takeover: persist post-respawn pgid+sock+identity failed; in-memory handle is parked, next boot will probe stale fields",
         );
     }
 }
