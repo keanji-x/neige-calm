@@ -679,7 +679,15 @@ async fn register_and_catch_up(
     // path reads ids straight off `spec_card_queued_observations`, which
     // are the same `events.id` values `events_since` returns, so equality
     // is exact.
-    let rehydrated_ids = handle.rehydrate_queue_from_persist().await;
+    // #325 round-2 P2 — pass the watermark in so rehydrate can drop rows
+    // whose `envelope_id <= watermark` (already delivered to codex on a
+    // prior process — the flush succeeded and bumped the watermark, but
+    // the `dequeue` write didn't commit). Those rows are physically
+    // deleted from `spec_push_queue` inside `rehydrate_queue_from_persist`
+    // so a third boot doesn't see them either, and only the live
+    // (un-delivered) envelope_ids are returned for the catch-up
+    // dedup skip-set.
+    let rehydrated_ids = handle.rehydrate_queue_from_persist(watermark).await;
     let rehydrated_skip: std::collections::HashSet<i64> = rehydrated_ids.iter().copied().collect();
     let rehydrated_count = rehydrated_ids.len();
     if rehydrated_count > 0 {
