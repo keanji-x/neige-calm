@@ -27,7 +27,6 @@ export function Sidebar({
   onCreateCove,
   onDeleteCove,
   onPinWave,
-  onGoToCove,
   onOpenSettings,
   onSignOut,
 }: {
@@ -50,9 +49,6 @@ export function Sidebar({
    *  sidebar without a mutation hook don't have to wire it up. When
    *  provided, every wave row renders a hover-revealed pin button. */
   onPinWave?: (waveId: string, pin: boolean) => void | Promise<void>;
-  /** Navigate directly to a cove from a wave row's cove-name button.
-   *  Optional: no-op if not provided (mirrors onPinWave shape). */
-  onGoToCove?: (coveId: string) => void;
   /** Open the app-global settings page. Optional so tests / sub-trees that
    *  render the sidebar without a router don't have to wire it up. */
   onOpenSettings?: () => void;
@@ -125,7 +121,6 @@ export function Sidebar({
                 title={(cove?.name ?? '') + ' · ' + w.title}
                 onGo={() => onGo({ name: 'wave', id: w.id })}
                 onPinWave={onPinWave}
-                onGoToCove={onGoToCove}
               />
             );
           })}
@@ -147,7 +142,6 @@ export function Sidebar({
                 title={(cove?.name ?? '') + ' · ' + w.title}
                 onGo={() => onGo({ name: 'wave', id: w.id })}
                 onPinWave={onPinWave}
-                onGoToCove={onGoToCove}
               />
             );
           })}
@@ -390,7 +384,6 @@ function WaveRow({
   title,
   onGo,
   onPinWave,
-  onGoToCove,
 }: {
   wave: Wave;
   active: boolean;
@@ -398,7 +391,6 @@ function WaveRow({
   title: string;
   onGo: () => void;
   onPinWave?: (waveId: string, pin: boolean) => void | Promise<void>;
-  onGoToCove?: (coveId: string) => void;
 }) {
   const pinned = wave.pinnedAt != null;
   return (
@@ -409,21 +401,8 @@ function WaveRow({
         title={title}
       >
         <span className="side-wave-title">{wave.title}</span>
+        {cove && <span className="side-wave-cove">{cove.name}</span>}
       </button>
-      {cove && (
-        <button
-          type="button"
-          className="side-wave-cove"
-          onClick={(e) => {
-            e.stopPropagation();
-            onGoToCove?.(cove.id);
-          }}
-          aria-label={`Go to cove ${cove.name}`}
-          title={cove.name}
-        >
-          {cove.name}
-        </button>
-      )}
       {onPinWave && (
         <button
           type="button"

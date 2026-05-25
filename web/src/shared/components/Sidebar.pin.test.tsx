@@ -52,7 +52,6 @@ function makeWave(overrides: Partial<Wave> = {}): Wave {
 function sidebarProps(
   waves: Wave[],
   onPinWave?: (id: string, pin: boolean) => void,
-  onGoToCove?: (coveId: string) => void,
 ) {
   return {
     coves: [makeCove()],
@@ -60,7 +59,6 @@ function sidebarProps(
     route: { name: 'today' } as const,
     onGo: () => {},
     onPinWave,
-    onGoToCove,
   };
 }
 
@@ -155,32 +153,8 @@ describe('Sidebar per-cove badge parity with Waiting section', () => {
   });
 });
 
-describe('Sidebar WaveRow cove-name button', () => {
-  it('clicking cove-name button calls onGoToCove with correct id and does not call onGo', () => {
-    const onGo = vi.fn();
-    const onGoToCove = vi.fn();
-    const onPinWave = vi.fn();
-    const wave = makeWave({ id: 'w-cove', lifecycle: 'blocked', pinnedAt: null });
-    render(
-      wrap(
-        <Sidebar
-          coves={[makeCove('c1')]}
-          waves={[wave]}
-          route={{ name: 'today' }}
-          onGo={onGo}
-          onPinWave={onPinWave}
-          onGoToCove={onGoToCove}
-        />,
-      ),
-    );
-    const coveBtn = screen.getByRole('button', { name: 'Go to cove Atlas' });
-    fireEvent.click(coveBtn);
-    expect(onGoToCove).toHaveBeenCalledWith('c1');
-    // Wave navigation must NOT fire when the cove button is clicked.
-    expect(onGo).not.toHaveBeenCalled();
-  });
-
-  it('wave with no matching cove renders without a cove-name button', () => {
+describe('Sidebar WaveRow cove-name span', () => {
+  it('wave with no matching cove renders without the cove text span', () => {
     // coveId does not match any cove in the list → orphan wave
     const wave = makeWave({ id: 'w-orphan', coveId: 'nonexistent', lifecycle: 'blocked', pinnedAt: null });
     render(
@@ -193,9 +167,9 @@ describe('Sidebar WaveRow cove-name button', () => {
         />,
       ),
     );
-    // Only the wave-nav button and pin button render; no "Go to cove" button.
-    expect(screen.queryByRole('button', { name: /Go to cove/ })).toBeNull();
-    // The wave title button is still present.
+    // No .side-wave-cove span rendered when cove is not found.
+    expect(document.querySelector('.side-wave-cove')).toBeNull();
+    // The wave nav button is still present.
     expect(screen.getByRole('button', { name: /My wave/i })).toBeTruthy();
   });
 });

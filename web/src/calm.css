@@ -599,8 +599,8 @@ input, textarea { font: inherit; color: inherit; }
 .side .side-wave-row {
   position: relative;
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
+  flex-direction: row;
+  align-items: center;
   border-radius: var(--radius-md);
   overflow: hidden;
 }
@@ -610,29 +610,16 @@ input, textarea { font: inherit; color: inherit; }
      absolutely-positioned pin button. */
   padding-right: calc(var(--space-5) + 20px + var(--space-3));
 }
-/* Cove-name secondary button — line 2 of the wave row. */
+/* Cove-name plain-text label — inline after the wave title inside the nav button. */
 .side .side-wave-cove {
-  display: block;
-  width: 100%;
-  padding: var(--space-1) var(--space-3);
   font-size: var(--text-xs);
   color: var(--text-3);
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  text-align: left;
-  white-space: nowrap;
+  margin-left: var(--space-3);
+  flex-shrink: 0;
+  max-width: 60px;
   overflow: hidden;
   text-overflow: ellipsis;
-  /* Reserve space on the right so cove name never runs under the pin. */
-  padding-right: calc(var(--space-5) + 20px + var(--space-3));
-  transition: background var(--motion-quick), color var(--motion-quick);
-}
-.side .side-wave-cove:hover { background: var(--overlay-hover-faint); color: var(--text-2); }
-[data-theme="dark"] .side .side-wave-cove:hover { background: var(--overlay-hover); }
-.side .side-wave-cove:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  white-space: nowrap;
 }
 .side .side-wave-row:hover .side-wave { background: var(--overlay-hover-faint); color: var(--text); }
 [data-theme="dark"] .side .side-wave-row:hover .side-wave { background: var(--overlay-hover); }

@@ -1,4 +1,4 @@
-// Inline SVG pushpin glyph — stroke-only to match CloseIcon/PlusIcon line style.
+// Up-arrow glyph for pin/unpin — semantic "raise to top".
 export function PinIcon() {
   return (
     <svg
@@ -12,9 +12,8 @@ export function PinIcon() {
       aria-hidden="true"
       focusable="false"
     >
-      <path d="M7 6 L17 6" />
-      <path d="M9 9 L15 9" />
-      <path d="M12 9 L12 18" />
+      <path d="M12 5 L12 19" />
+      <path d="M6 11 L12 5 L18 11" />
     </svg>
   );
 }
