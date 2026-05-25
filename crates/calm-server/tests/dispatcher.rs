@@ -1124,3 +1124,106 @@ async fn dispatcher_codex_card_added_after_daemon_handle_set_issue_310() {
         .await
         .expect("daemon socket must accept a connect by the time CardAdded fires");
 }
+
+// ---------------------------------------------------------------------------
+// 11. Issue #310 — same ordering contract as test 10, but for the
+//     terminal-worker path (`spawn_terminal_worker`). The pre-fix bug
+//     existed on BOTH spawn helpers: each emitted `CardAdded` inside the
+//     row-creation tx, so a hot subscriber saw the card frame before
+//     `spawn_daemon_with_parts` populated `daemon_handle`. The fix
+//     deferred the broadcast in both helpers; this test guards the
+//     terminal half so a future refactor that reverts ONLY the terminal
+//     change (leaving the codex test green) still trips a regression.
+//
+//     Mirrors `dispatcher_codex_card_added_after_daemon_handle_set_issue_310`
+//     in shape — see that test's doc comment for the full bug rationale.
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn dispatcher_terminal_card_added_after_daemon_handle_set_issue_310() {
+    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
+
+    let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
+    let daemon = Arc::new(calm_server::state::DaemonClient {
+        data_dir: tmp.path().to_path_buf(),
+        session_daemon_bin: locate_recorder_bin(),
+    });
+
+    let codex = stub_codex();
+    let _dispatcher = Dispatcher::spawn(
+        repo.clone(),
+        events.clone(),
+        cache.clone(),
+        wcc.clone(),
+        codex.clone(),
+        daemon,
+        None,
+        4,
+    );
+
+    // Subscribe BEFORE emitting so we don't race past the CardAdded
+    // frame. Filter on the kind below so the dispatch's own
+    // `TerminalJobRequested` echo doesn't show up as the "first" event.
+    let mut rx = events.subscribe();
+
+    let idem = "issue-310-ordering-terminal";
+    let req = Event::TerminalJobRequested {
+        idempotency_key: idem.into(),
+        cmd: "/bin/true".into(),
+        cwd: None,
+    };
+    let scope = wave_scope(&wave_id, &cove_id);
+    repo.log_pure_event(ActorId::User, scope, None, &events, &cache, &wcc, req)
+        .await
+        .unwrap();
+
+    // Drain the bus until we see the worker's CardAdded. Skip the
+    // initial TerminalJobRequested envelope we just emitted; skip any
+    // unrelated kinds.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut worker_card: Option<calm_server::model::Card> = None;
+    while Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+            Ok(Ok(env)) => {
+                if let Event::CardAdded(card) = &env.event
+                    && card.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem)
+                {
+                    worker_card = Some(card.clone());
+                    break;
+                }
+            }
+            Ok(Err(_)) => break,
+            Err(_) => continue,
+        }
+    }
+    let card = worker_card
+        .expect("dispatcher must broadcast CardAdded for the terminal worker card within 5s");
+
+    // Same canonical payload shape as the codex path —
+    // `card_with_terminal_create_tx` stamps `terminal_id` before the
+    // dispatcher merges its bookkeeping in.
+    let terminal_id = card
+        .payload
+        .get("terminal_id")
+        .and_then(|v| v.as_str())
+        .expect("worker card payload.terminal_id must be set");
+    let term = repo
+        .terminal_get(terminal_id)
+        .await
+        .unwrap()
+        .expect("terminal row for the worker card must exist post-CardAdded");
+    let handle = term.daemon_handle.expect(
+        "issue #310 regression (terminal path): terminal.daemon_handle MUST \
+             be populated by the time CardAdded reaches subscribers — \
+             otherwise a hot subscriber's WS attach hits resolve_live_sock's \
+             \"no daemon_handle = clean child exit\" branch and reports a \
+             false child-exited close",
+    );
+    assert!(
+        !handle.is_empty(),
+        "daemon_handle must be a non-empty socket path; got {handle:?}"
+    );
+
+    let _ = tokio::net::UnixStream::connect(&handle)
+        .await
+        .expect("daemon socket must accept a connect by the time CardAdded fires");
+}
