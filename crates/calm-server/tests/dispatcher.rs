@@ -1865,3 +1865,211 @@ async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
         leftover.len()
     );
 }
+
+/// Locate the fast-exit fake daemon (#310 fix-loop round 4). Writes
+/// `<sock>.exit` with `{"code":0,"signal_killed":false}` then exits
+/// 0 without binding the socket — drives the kernel's readiness probe
+/// to timeout, then the dispatcher's rollback discriminator into the
+/// `Preserved` branch (case 2 of `rollback_orphan_worker`).
+fn locate_fast_exit_bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_fast-exit-daemon"))
+}
+
+// ---------------------------------------------------------------------------
+// 12. Issue #310 fix-loop round 4 — codex caught a regression in the round-3
+//     rollback patch: a fast-exit terminal worker (e.g. `printf done`,
+//     `/bin/true`, `make build`) writes the daemon's `.exit` sidecar AND
+//     exits before the kernel's 40ms readiness probe sees the socket.
+//     `spawn_daemon_with_parts` returned Err for this case, and round 3's
+//     unconditional rollback would then DELETE the card + terminal row —
+//     turning a completed worker into `task.failed` with no card/output
+//     for the user to inspect.
+//
+//     The fix discriminates inside `rollback_orphan_worker`: when the
+//     re-fetched terminal row has `daemon_handle = Some(...)` AND a
+//     `<handle>.exit` sidecar exists on disk, the helper persists the
+//     sidecar's exit_code/signal_killed onto the row and returns
+//     `Preserved` (no row delete). The caller then broadcasts
+//     `CardAdded` and returns Ok(()) instead of the spawn Err.
+//
+//     This test pins that preservation contract:
+//
+//        a) Point the dispatcher at `fast-exit-daemon` — spawns OK,
+//           writes `<sock>.exit` with `{"code":0,"signal_killed":false}`,
+//           exits 0 without binding the socket. The kernel's readiness
+//           probe (75 * 40ms = ~3s) exhausts and returns Err.
+//
+//        b) Subscribe to the bus BEFORE emitting so we capture both
+//           the (would-be) `task.failed` AND the `CardAdded` envelope.
+//
+//        c) Assert:
+//           - `CardAdded` IS broadcast for the dispatched worker.
+//           - `TaskFailed` is NOT broadcast for the dispatched key.
+//           - The card row + terminal row both survive.
+//           - The terminal row's `exit_code = Some(0)` and
+//             `signal_killed = false` (persisted by the discriminator
+//             from the sidecar).
+//           - The terminal row's `daemon_handle` is still set
+//             (preserved, not nulled by the rollback path).
+//
+//     This test would FAIL on the round-3 code (rollback always
+//     deletes), pinning that the discriminator is wired and the
+//     fast-exit success path is preserved end-to-end.
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
+    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
+
+    // Same intentional leak as the never-ready test: the daemon child
+    // is short-lived (exits immediately), but lingering filesystem
+    // cleanup can race the test tempdir drop.
+    let tmp_path = tempfile::TempDir::new()
+        .expect("tempdir for daemon sockets")
+        .keep();
+    let daemon = Arc::new(calm_server::state::DaemonClient {
+        data_dir: tmp_path.clone(),
+        session_daemon_bin: locate_fast_exit_bin(),
+    });
+
+    let codex = stub_codex();
+    let _dispatcher = Dispatcher::spawn(
+        repo.clone(),
+        events.clone(),
+        cache.clone(),
+        wcc.clone(),
+        codex.clone(),
+        daemon,
+        None,
+        4,
+    );
+
+    let idem = "fast-exit-preserve-1";
+    // Subscribe BEFORE emitting so we capture every envelope, in
+    // particular the discriminator's `CardAdded` broadcast that lands
+    // AFTER the readiness probe times out.
+    let mut rx = events.subscribe();
+
+    let req = Event::TerminalJobRequested {
+        idempotency_key: idem.into(),
+        // The cmd string is only used by the real daemon — our fixture
+        // ignores it. We pass a representative string for log clarity.
+        cmd: "printf done\n".into(),
+        cwd: None,
+    };
+    let scope = wave_scope(&wave_id, &cove_id);
+    repo.log_pure_event(ActorId::User, scope, None, &events, &cache, &wcc, req)
+        .await
+        .unwrap();
+
+    // Drain the bus. The dispatcher's readiness probe takes ~3s; the
+    // discriminator's sidecar pickup + CardAdded broadcast happens
+    // after. Allow a generous deadline.
+    let mut saw_card_added: Option<calm_server::ids::CardId> = None;
+    let mut saw_task_failed = false;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+            Ok(Ok(env)) => match &env.event {
+                Event::CardAdded(card)
+                    if card.payload.get("idempotency_key").and_then(|v| v.as_str())
+                        == Some(idem) =>
+                {
+                    saw_card_added = Some(card.id.clone());
+                }
+                Event::TaskFailed {
+                    idempotency_key, ..
+                } if idempotency_key == idem => {
+                    saw_task_failed = true;
+                }
+                _ => {}
+            },
+            Ok(Err(_)) => break,
+            Err(_) => {
+                // Once we've seen CardAdded for this idem, give a
+                // small grace window for a stray late TaskFailed (we
+                // want to assert ABSENCE) — break after a half-second
+                // of quiet.
+                if saw_card_added.is_some()
+                    && Instant::now() + Duration::from_millis(500) < deadline
+                {
+                    // keep polling until deadline to catch a late
+                    // TaskFailed; loop continues below.
+                }
+                continue;
+            }
+        }
+    }
+
+    let card_id = saw_card_added.expect(
+        "dispatcher must broadcast CardAdded for the fast-exit worker — \
+         pre-fix this would never fire because the rollback path deleted \
+         the row + propagated the spurious readiness-timeout Err as \
+         task.failed",
+    );
+    assert!(
+        !saw_task_failed,
+        "task.failed must NOT be emitted for a fast-exit success — the worker \
+         actually completed (exit_code = 0 in `.exit` sidecar); pre-fix this \
+         fired because spawn_daemon_with_parts's readiness timeout error \
+         propagated unconditionally to `run_one`",
+    );
+
+    // Card row survives.
+    let card_row = repo
+        .card_get(card_id.as_str())
+        .await
+        .expect("card_get ok")
+        .expect("preserved card must still exist post-spawn-Err");
+    assert_eq!(
+        card_row
+            .payload
+            .get("idempotency_key")
+            .and_then(|v| v.as_str()),
+        Some(idem),
+    );
+
+    // Terminal row survives, has daemon_handle preserved, and the
+    // discriminator persisted exit_code = 0 / signal_killed = false
+    // from the sidecar.
+    let terminal_id = card_row
+        .payload
+        .get("terminal_id")
+        .and_then(|v| v.as_str())
+        .expect("preserved card payload carries terminal_id");
+    let term_row = repo
+        .terminal_get(terminal_id)
+        .await
+        .expect("terminal_get ok")
+        .expect("preserved terminal row must still exist");
+    assert!(
+        term_row.daemon_handle.is_some(),
+        "preserved row must keep daemon_handle set (so the WS attach fast \
+         path can resolve to ChildExited from the sidecar)",
+    );
+    assert_eq!(
+        term_row.exit_code,
+        Some(0),
+        "rollback_orphan_worker's case-2 branch must persist exit_code=0 \
+         from `.exit` sidecar onto the row; got {:?}",
+        term_row.exit_code,
+    );
+    assert!(
+        !term_row.signal_killed,
+        "signal_killed must be false for a clean fast-exit; got true",
+    );
+
+    // The `.exit` sidecar is left on disk by the discriminator
+    // (preservation never unlinks; only `reap_terminal_artifacts`
+    // does). Verify it's still there — the WS attach path's GC will
+    // clean it up later, but for now its presence is part of the
+    // preserved-row contract.
+    let exit_sidecar = std::path::PathBuf::from(format!(
+        "{}.exit",
+        term_row.daemon_handle.as_deref().unwrap()
+    ));
+    assert!(
+        exit_sidecar.exists(),
+        "preserved row must leave the `.exit` sidecar on disk \
+         (no reap → no unlink); expected file at {exit_sidecar:?}",
+    );
+}
