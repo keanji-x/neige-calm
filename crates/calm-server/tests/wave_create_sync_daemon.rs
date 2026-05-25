@@ -342,6 +342,142 @@ async fn ws_revive_path_does_not_trigger_respawn_for_freshly_created_wave() {
     );
 }
 
+/// Issue #293 / PR #311 — the spec-push app-server boot is NON-FATAL to
+/// wave creation. Every codex-free environment (CI's web a11y job, the
+/// chromium docker stack) has no working `codex`, so booting the
+/// kernel-owned app-server fails. This MUST NOT 500 the wave create:
+/// the route logs a warning and returns **201** with an inert wave (the
+/// spec card has no `codex_thread_id` and no parked `spec_push` handle).
+///
+/// This test boots with a deterministically-broken `codex_bin` (an
+/// absolute path that does not exist, so the boot fails fast regardless
+/// of whether a real `codex` is on PATH) and asserts:
+///   1. `POST /api/waves` returns 201 (boot failure is tolerated),
+///   2. the wave + spec card rows are committed,
+///   3. the spec card payload has NO `codex_thread_id` / `appserver_sock`
+///      (the persist step is skipped on the failure path),
+///   4. the `spec_push` registry has NO handle for the wave (inert).
+#[tokio::test]
+async fn post_api_waves_tolerates_broken_codex_bin_returns_201_inert_wave() {
+    let tmp = TempDir::new().expect("tempdir for daemon sockets");
+    let repo: Arc<dyn Repo> = Arc::new(
+        SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite"),
+    );
+    let cove = repo
+        .cove_create(NewCove {
+            name: "broken-codex-tolerant-test".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+
+    let daemon = Arc::new(DaemonClient {
+        data_dir: tmp.path().to_path_buf(),
+        session_daemon_bin: locate_daemon_bin(),
+    });
+    let card_role_cache = CardRoleCache::new();
+    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+
+    // Deterministically-broken codex bin: absolute, absent → the
+    // spec-push app-server `spawn` fails fast with
+    // "No such file or directory", which is exactly the codex-free CI
+    // shape. We capture the `AppState` here (the shared `boot()` helper
+    // doesn't expose `spec_push`) so we can probe the registry.
+    let mut codex = calm_server::state::CodexClient::new_stub();
+    codex.codex_bin = "/nonexistent-codex-bin-tolerant-201-test".into();
+
+    let state = AppState::from_parts(
+        repo.clone(),
+        EventBus::new(),
+        daemon,
+        Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            repo.clone(),
+            PathBuf::new(),
+            std::env::temp_dir().join("calm-plugins-data-broken-codex-test"),
+            Vec::new(),
+            EventBus::new(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+        )),
+        Arc::new(codex),
+        Some(card_role_cache.clone()),
+        Some(wave_cove_cache.clone()),
+    );
+    let spec_push = state.spec_push.clone();
+
+    let app = routes::router()
+        .layer(axum::middleware::from_fn(
+            calm_server::actor::actor_middleware,
+        ))
+        .with_state(state);
+
+    let cove_id = cove.id.to_string();
+    let (status, body) = post(
+        app.clone(),
+        "/api/waves",
+        json!({"cove_id": cove_id, "title": "inert wave", "cwd": "/tmp/issue-293-tolerant", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+    )
+    .await;
+
+    // (1) Boot failure is tolerated → 201, not 500.
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "broken codex bin must yield 201 (inert wave), not 500 (issue #293 / PR #311); body={body}",
+    );
+
+    // (2) The wave + spec card rows committed.
+    let waves = repo.waves_by_cove(&cove_id).await.unwrap();
+    assert_eq!(
+        waves.len(),
+        1,
+        "exactly one wave persisted despite boot failure"
+    );
+    let wave = waves.into_iter().next().unwrap();
+    let cards = repo.cards_by_wave(wave.id.as_str()).await.unwrap();
+    let spec_card = cards
+        .iter()
+        .find(|c| card_role_cache.get(&c.id) == Some(calm_server::model::CardRole::Spec))
+        .expect("spec card persisted even though the spec agent didn't start");
+
+    // (3) The spec is NOT running: no codex_thread_id / appserver_sock
+    // were persisted (those writes live AFTER the boot, on the success
+    // path only).
+    assert!(
+        spec_card
+            .payload
+            .get("codex_thread_id")
+            .is_none_or(Value::is_null),
+        "inert wave's spec card must NOT carry a codex_thread_id; payload = {}",
+        spec_card.payload,
+    );
+    assert!(
+        spec_card
+            .payload
+            .get("appserver_sock")
+            .is_none_or(Value::is_null),
+        "inert wave's spec card must NOT carry an appserver_sock; payload = {}",
+        spec_card.payload,
+    );
+
+    // (4) No app-server handle parked in the registry for this wave.
+    assert!(
+        !spec_push.contains(&wave.id),
+        "inert wave must have NO parked spec_push handle (registry len = {})",
+        spec_push.len(),
+    );
+    assert!(
+        spec_push.is_empty(),
+        "no push channels should exist when every boot failed (len = {})",
+        spec_push.len(),
+    );
+}
+
 /// Issue #251 (closes) — the wave's title must be threaded into the
 /// spec card so the codex TUI mounts with the goal pre-filled and
 /// `codex_auto_submit` fires its `\r` injection.

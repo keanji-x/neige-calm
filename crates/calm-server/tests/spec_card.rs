@@ -95,7 +95,16 @@ async fn boot() -> Boot {
             card_role_cache.clone(),
             wave_cove_cache.clone(),
         )),
-        Arc::new(CodexClient::new_stub()),
+        {
+            // Deterministically-broken codex bin (absolute, absent) so the
+            // spec-push app-server boot fails fast regardless of PATH. Wave
+            // create tolerates this (#293 / PR #311) and returns 201; the
+            // commit-time events still broadcast before the boot attempt,
+            // which is what this test asserts.
+            let mut codex = CodexClient::new_stub();
+            codex.codex_bin = "/nonexistent-codex-bin-spec-card-test".into();
+            Arc::new(codex)
+        },
         Some(card_role_cache.clone()),
         Some(wave_cove_cache.clone()),
     );
@@ -191,16 +200,15 @@ async fn post_api_waves_mints_spec_card_atomically() {
         json!({"cove_id": boot.cove_id, "title": "first wave", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
-    // Issue #236: spawn is synchronous on the response hot path. With
-    // a stub daemon bin the spawn fails and the route returns 500.
-    // The persisted rows (wave + spec card + terminal) and the two
-    // events that emitted at commit-time still survive (no rollback
-    // — losing the user's typed title for a recoverable spawn issue
-    // is worse UX than a retriable error).
+    // Issue #293 / PR #311: the spec-push app-server boot is non-fatal.
+    // With a broken codex bin the boot fails, but the route still returns
+    // 201 (inert wave). The persisted rows (wave + spec card + terminal)
+    // and the events that emitted at commit-time — which is what this test
+    // asserts — survive regardless of the boot outcome.
     assert_eq!(
         status,
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "stub daemon bin → 500 (synchronous spawn fails); persisted rows + events still survive; body={body}",
+        StatusCode::CREATED,
+        "broken codex bin → 201 (boot is non-fatal, #293/#311); persisted rows + events still survive; body={body}",
     );
 
     // Drain the envelope subscription with a generous deadline.

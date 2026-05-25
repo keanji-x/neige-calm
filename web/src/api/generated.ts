@@ -772,8 +772,8 @@ export interface components {
              *     `idempotency_collision`, `bad_request`, `unauthorized`,
              *     `forbidden`, `plugin_install`, `plugin_permission`,
              *     `plugin_conflict`, `plugin_kernel_too_old`, `db_error`,
-             *     `io_error`, `serde_error`, `internal`, `forbidden_tool`,
-             *     `not_a_card_tool`, `tool_call_failed`.
+             *     `io_error`, `serde_error`, `codex_app_server`, `internal`,
+             *     `forbidden_tool`, `not_a_card_tool`, `tool_call_failed`.
              */
             code: string;
             /** @description Human-readable error message. */

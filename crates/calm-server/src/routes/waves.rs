@@ -27,13 +27,16 @@
 //! no-MCP one, breaking the codex MCP handshake.
 //!
 //! The fix awaits the seed + spawn inline before returning 201, so the
-//! response payload never reflects a daemon-less spec card. If the
-//! daemon spawn fails the handler returns 500 — the wave is unusable
-//! without its daemon — but the DB tx is **not** rolled back: the wave
-//! row stays so the user can retry the daemon spawn out-of-band rather
-//! than losing their typed title. Persisted rows + the two events
-//! still survive on the 500 path; the orphan-terminal sweeper reaps
-//! the dangling terminal row (~60 s grace) if the user doesn't retry.
+//! response payload never reflects a daemon-less spec card when the spawn
+//! succeeds. Spawning the spec agent is **non-fatal** (issue #293 / PR
+//! #311): if the codex app-server can't boot (missing/broken binary, auth
+//! hiccup, or the overall boot deadline) the handler still returns 201
+//! with the created wave — the spec card just has no `codex_thread_id`
+//! and no running daemon (inert / not-running, recoverable by retry or
+//! delete). The DB tx is never rolled back: the wave row stays so the
+//! user keeps their typed title. Persisted rows + the two events survive;
+//! the orphan-terminal sweeper reaps the dangling terminal row (~60 s
+//! grace) if no daemon is attached.
 //!
 //! The earlier rationale for the `tokio::spawn` form was the
 //! `spawn_daemon_for` busy-poll wait-until-socket-ready loop (~3 s
@@ -710,20 +713,27 @@ pub(crate) async fn create_wave(
     // spawn the PTY daemon in **resume mode** (`codex resume <tid> --remote
     // unix://<sock>`). There is no legacy bare-`codex '<title>'` path anymore.
     //
-    // S2 (#293, accepted trade-off) — DEAD-WAVE ON TRANSIENT BOOT FAILURE.
+    // S2 (#293, #311) — SPEC BOOT IS NON-FATAL TO WAVE CREATION.
     // The wave + spec card + report card rows are already committed (and
     // their `CardAdded`/`WaveUpdated` events already broadcast) by the time
-    // we boot the app-server here. If the boot fails — a missing/broken
-    // codex binary, a transient model/auth hiccup, or the S1 overall
-    // deadline elapsing — we return a 500 but the rows STAY (no rollback;
-    // rolling back would discard the user's typed title, judged worse UX
-    // than a retriable error). The cutover deliberately dropped the old
-    // pull/recovery machinery, so a transient failure here leaves a
-    // persisted-but-dead wave with no agent driving it; the sweeper reaps
-    // the orphan terminal, but the wave row lingers until the user deletes
-    // or retries. The maintainer has accepted this reduced robustness for
-    // the cutover (no pull, no self-healing). The 500 below names the
-    // failure clearly so the operator knows the wave/spec could not start.
+    // we boot the app-server here. The app-server boot must therefore be
+    // NON-FATAL: if it fails — a missing/broken codex binary (every
+    // codex-free environment: CI's web a11y job, the chromium docker stack),
+    // a transient model/auth hiccup, or the S1 `OVERALL_BOOT_BUDGET`
+    // deadline elapsing — we DO NOT return 500. `spawn_push_appserver`'s
+    // internal `SpawnRollback` guard has already torn down the failed
+    // app-server process group + socket dir (no orphan), so on the error
+    // arm we simply `warn!` that the spec agent couldn't start, SKIP the
+    // `codex_thread_id` persist + registry insert + `--remote` TUI spawn
+    // (all of which live in `spawn_push_appserver` / the
+    // `seed_and_spawn_spec_daemon` call below), and return **201 with the
+    // created wave**. The wave/spec-card/report/terminal rows already
+    // committed stay; the spec card simply has no `codex_thread_id` and no
+    // running daemon (inert / not-running, recoverable by retry or delete).
+    // The dispatcher's missing-handle path already warns (no crash), so an
+    // inert wave is safe. Pre-cutover the PTY path tolerated codex failing
+    // (it only 500'd if the daemon BINARY was missing); this restores that
+    // tolerance for the push path so codex-free UI jobs get a 201.
     let push_args = match spawn_push_appserver(
         &s,
         &spec_card_id,
@@ -733,54 +743,65 @@ pub(crate) async fn create_wave(
     )
     .await
     {
-        Ok(args) => args,
+        Ok(args) => Some(args),
         Err(e) => {
-            tracing::error!(
+            // Non-fatal: the app-server's `SpawnRollback` guard already
+            // reaped its process group + socket dir on the way out (no
+            // orphan). Log the wave as created-but-inert and fall through
+            // to return 201 with the wave; we skip the daemon spawn below.
+            tracing::warn!(
                 card_id = %spec_card_id,
                 wave_id = %wave.id,
                 error = %e,
-                "spec push app-server spawn failed on wave create; wave row persisted (dead wave, no recovery — #293 S2), terminal will be reaped by sweeper",
+                "spec push app-server failed to boot on wave create; wave created but the spec agent is NOT running (inert wave, recoverable via retry/delete) — returning 201",
             );
-            // Clear, actionable 500: the spec agent's codex app-server
-            // could not be started, so this wave has no agent driving it.
-            // The wave row was persisted; retry by recreating (or delete
-            // the dead wave). The underlying cause (`{e}`) is included.
-            return Err(CalmError::Internal(format!(
-                "could not start the spec agent for this wave: its codex \
-                 app-server failed to boot, so the wave was persisted but is \
-                 not running. Retry, or delete the wave and recreate it. \
-                 Cause: {e}",
-            )));
+            None
         }
     };
 
-    if let Err(e) = seed_and_spawn_spec_daemon(
-        s.clone(),
-        spec_card_id.clone(),
-        wave.id.as_str().to_string(),
-        wave.cwd.clone(),
-        env_for_spawn,
-        mcp_token.clone(),
-        push_args,
-    )
-    .await
-    {
-        tracing::error!(
+    // Only spawn the resume-mode `--remote` TUI daemon when the app-server
+    // actually booted (turn #1 started, thread persisted, handle parked).
+    // If the boot failed above, `push_args` is `None` and the wave is inert
+    // — there is no thread to `codex resume`, so we skip the daemon spawn
+    // entirely and return the created wave.
+    if let Some(push_args) = push_args {
+        if let Err(e) = seed_and_spawn_spec_daemon(
+            s.clone(),
+            spec_card_id.clone(),
+            wave.id.as_str().to_string(),
+            wave.cwd.clone(),
+            env_for_spawn,
+            mcp_token.clone(),
+            push_args,
+        )
+        .await
+        {
+            // Non-fatal, mirroring the app-server boot path: the wave +
+            // rows are committed and the app-server already booted (its
+            // handle is parked in `state.spec_push`). A failed PTY daemon
+            // spawn leaves the wave inert/not-running rather than 500'ing;
+            // the sweeper reaps the orphan terminal.
+            tracing::warn!(
+                card_id = %spec_card_id,
+                wave_id = %wave.id,
+                error = %e,
+                "spec daemon spawn failed on wave create; wave created but the spec TUI daemon is NOT running (inert wave) — returning 201",
+            );
+        } else {
+            tracing::info!(
+                card_id = %spec_card_id,
+                wave_id = %wave.id,
+                "spec card persisted + daemon spawned inline",
+            );
+        }
+    } else {
+        tracing::info!(
             card_id = %spec_card_id,
             wave_id = %wave.id,
-            error = %e,
-            "spec daemon spawn failed on wave create; wave row persisted, terminal will be reaped by sweeper",
+            "wave created without a running spec agent (app-server boot failed; inert wave)",
         );
-        return Err(CalmError::Internal(format!(
-            "spec daemon spawn failed: {e}",
-        )));
     }
 
-    tracing::info!(
-        card_id = %spec_card_id,
-        wave_id = %wave.id,
-        "spec card persisted + daemon spawned inline",
-    );
     Ok((StatusCode::CREATED, Json(wave)).into_response())
 }
 
@@ -793,9 +814,12 @@ pub(crate) async fn create_wave(
 /// handle in `state.spec_push`, and returns the
 /// [`SpecPushDaemonArgs`] the PTY daemon spawn needs.
 ///
-/// On any failure the caller returns a 5xx; the persisted rows survive
-/// and the sweeper reaps the orphan terminal — same contract as
-/// `seed_and_spawn_spec_daemon`.
+/// On any failure the `SpawnRollback` guard in `spawn_spec_appserver`
+/// reaps the failed app-server's process group + socket dir, and this
+/// function's `?` propagates the error. The caller (`create_wave`) treats
+/// that error as **non-fatal** (issue #293 / PR #311): it logs a warning,
+/// skips the daemon spawn, and returns 201 with an inert wave — the
+/// persisted rows survive and the sweeper reaps the orphan terminal.
 async fn spawn_push_appserver(
     s: &AppState,
     spec_card_id: &str,
