@@ -30,7 +30,7 @@ use sqlx::Transaction;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
 use super::{
-    RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, WriteWithEventFn,
+    RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, WriteInTxFn, WriteWithEventFn,
     WriteWithEventsFn,
 };
 use crate::card_role_cache::CardRoleCache;
@@ -2500,6 +2500,26 @@ impl RepoEventWrite for SqlxRepo {
             event,
         });
         Ok(event_id)
+    }
+
+    /// Issue #310 — event-less tx wrapper. Runs the caller-supplied
+    /// closure inside one sqlx transaction; commits on `Ok(())`, rolls
+    /// back on `Err(_)`. No event row is appended to the `events` log;
+    /// no broadcast is emitted. The caller is responsible for
+    /// broadcasting any downstream event via `log_pure_event` after
+    /// this returns. See [`crate::db::WriteInTxFn`] for the rationale.
+    async fn write_in_tx(&self, f: WriteInTxFn<'_>) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        let fut: BoxFuture<'_, Result<()>> = f(&mut tx);
+        match fut.await {
+            Ok(()) => {}
+            Err(e) => {
+                let _ = tx.rollback().await;
+                return Err(e);
+            }
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     async fn events_since(

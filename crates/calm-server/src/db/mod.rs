@@ -144,6 +144,31 @@ pub type WriteWithEventsFn<'a> = Box<
         + 'a,
 >;
 
+/// Issue #310 — event-less counterpart to [`WriteWithEventFn`]. Closure
+/// runs in one sqlx transaction and returns nothing; no event row is
+/// appended to the `events` log, no broadcast is sent. Used by the
+/// dispatcher's two-stage worker spawn, where the `card.added` event
+/// must be deferred until *after* `daemon_handle` is written
+/// post-`spawn_daemon_with_parts` (see `dispatcher.rs::spawn_codex_worker`
+/// and `spawn_terminal_worker`). Without this surface, the event lands
+/// inside the row-creation tx and a subscriber that mounts an `XtermView`
+/// on `CardAdded` immediately attempts a WS attach and hits the "no
+/// daemon_handle = clean child exit" branch in `ws::terminal::resolve_live_sock`,
+/// producing a spurious `Close(1000, "child-exited")` for a daemon that
+/// is in fact ~670ms away from being alive.
+///
+/// **Caveat**: a process crash between commit and the post-spawn
+/// `log_pure_event(CardAdded)` leaves the card row on disk with no
+/// matching event in the events log. The dispatcher's `TaskFailed`
+/// emission only fires on a returned error, not on a process death; the
+/// orphan is then reaped by the terminal-sweeper on next boot. Replay
+/// from the events log will not surface the card. This is acceptable
+/// — the alternative (emitting CardAdded inside the tx) is the bug
+/// we're fixing.
+pub type WriteInTxFn<'a> = Box<
+    dyn for<'tx> FnOnce(&'tx mut Transaction<'_, Sqlite>) -> BoxFuture<'tx, Result<()>> + Send + 'a,
+>;
+
 // ---------------------------------------------------------------------------
 // Sub-trait split. See the "Trait capability split" section in the module
 // docs for the rationale. Each sub-trait carries `Send + Sync + 'static` so
@@ -440,6 +465,33 @@ pub trait RepoEventWrite: RepoRead {
         wave_cove_cache: &WaveCoveCache,
         event: Event,
     ) -> Result<i64>;
+
+    /// Issue #310 — run a tx-scoped write without persisting or broadcasting
+    /// an event. Same atomicity contract as `write_with_event` (closure
+    /// runs in one tx, error rolls back, success commits), but the caller
+    /// takes responsibility for broadcasting any downstream event(s) via
+    /// `log_pure_event` after this returns.
+    ///
+    /// The dispatcher uses this for the first stage of its two-stage
+    /// worker-spawn pipeline: the tx mints the worker card + terminal row
+    /// (with `daemon_handle = NULL`), commits, and only *then* runs
+    /// `spawn_daemon_with_parts` to write `daemon_handle` and probe
+    /// readiness. The `card.added` event is then emitted via
+    /// `log_pure_event` post-spawn-success so subscribers (spec cards
+    /// already mounted on the same wave page) never see a `CardAdded`
+    /// frame whose backing terminal has no `daemon_handle` yet —
+    /// closing the TOCTOU window described in #310.
+    ///
+    /// **Why a separate method instead of passing a no-op event to
+    /// `write_with_event`**: the broadcast bus is hard-coded into
+    /// `write_with_event`'s post-commit step; suppressing the broadcast
+    /// would require a flag on the trait method that every other call
+    /// site has to default. A dedicated event-less method makes the
+    /// "no event from this tx" intent explicit at the call site and
+    /// keeps the role-gate machinery out of the path (no event = no
+    /// gate to enforce; cache write-through still happens inside
+    /// `card_create_with_id_tx` exactly as before).
+    async fn write_in_tx(&self, f: WriteInTxFn<'_>) -> Result<()>;
 
     /// Scope D — replay query. Read events with `id > since_id` from the
     /// persistent log, deserialize each `(kind, payload)` row back into a
@@ -832,4 +884,51 @@ where
             )
         })?;
     Ok((row, event_ids))
+}
+
+/// Issue #310 — typed counterpart to [`RepoEventWrite::write_in_tx`].
+/// Same `R`-capture trick as [`write_with_event_typed`]: the trait
+/// method's closure returns `()` (no event, no row) so a typed row
+/// has to be carried out via an `Arc<Mutex<Option<R>>>` set inside
+/// the closure. The free function below does that capture so callers
+/// can stay on the ergonomic `(R) → typed-R out` shape.
+///
+/// Used by the dispatcher to mint a worker card + terminal row in
+/// one tx without broadcasting `CardAdded`; the post-spawn
+/// `log_pure_event(CardAdded)` then carries the row to subscribers
+/// after `daemon_handle` is populated.
+pub async fn write_in_tx_typed<R, F>(repo: &dyn RepoEventWrite, f: F) -> Result<R>
+where
+    R: Send + 'static,
+    F: for<'tx> FnOnce(&'tx mut Transaction<'_, Sqlite>) -> BoxFuture<'tx, Result<R>>
+        + Send
+        + 'static,
+{
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    let captured: Arc<Mutex<Option<R>>> = Arc::new(Mutex::new(None));
+    let captured_inner = Arc::clone(&captured);
+
+    let boxed: WriteInTxFn<'_> = Box::new(move |tx| {
+        let captured_inner = Arc::clone(&captured_inner);
+        Box::pin(async move {
+            let row = f(tx).await?;
+            *captured_inner.lock().await = Some(row);
+            Ok(())
+        })
+    });
+
+    repo.write_in_tx(boxed).await?;
+    let row = Arc::try_unwrap(captured)
+        .map_err(|_| {
+            crate::error::CalmError::Internal(
+                "write_in_tx_typed: outstanding reference to captured row".into(),
+            )
+        })?
+        .into_inner()
+        .ok_or_else(|| {
+            crate::error::CalmError::Internal("write_in_tx_typed: closure did not set row".into())
+        })?;
+    Ok(row)
 }

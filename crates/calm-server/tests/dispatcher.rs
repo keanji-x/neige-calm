@@ -1006,3 +1006,121 @@ async fn dispatcher_codex_worker_spawn_carries_prompt_argv() {
         "codex argv must carry the goal as a positional prompt; got: {argv_text:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 10. Issue #310 — `CardAdded` ordering contract: the dispatcher must NOT
+//     broadcast `Event::CardAdded` for a worker card until AFTER
+//     `spawn_daemon_with_parts` has written `daemon_handle` on the backing
+//     terminal row.
+//
+//     The pre-#310 bug: `CardAdded` was emitted inside the row-creation tx,
+//     so a spec card hot-subscribed to the wave's event stream saw the
+//     card frame, mounted an `XtermView`, attempted WS attach, and hit
+//     `resolve_live_sock`'s "no daemon_handle = clean child exit" branch
+//     (#304) — producing a spurious `Close(1000, "child-exited")` for a
+//     daemon ~670ms away from being alive.
+//
+//     The regression guard below subscribes to the bus BEFORE the request
+//     emit, dispatches a codex worker through the recorder daemon fixture
+//     (so daemon spawn actually succeeds), captures the FIRST `CardAdded`
+//     envelope, then queries the matching `terminal_get(...)` row and
+//     asserts:
+//        - `daemon_handle.is_some()`  ← the core ordering contract
+//        - the socket path is connectable (the daemon really is up)
+//
+//     If anyone reverts the dispatcher back to emitting `CardAdded`
+//     inside the tx (e.g. by routing it through `write_with_event_typed`
+//     again), this test trips loudly.
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn dispatcher_codex_card_added_after_daemon_handle_set_issue_310() {
+    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
+
+    let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
+    let daemon = Arc::new(calm_server::state::DaemonClient {
+        data_dir: tmp.path().to_path_buf(),
+        session_daemon_bin: locate_recorder_bin(),
+    });
+
+    let codex = stub_codex();
+    let _dispatcher = Dispatcher::spawn(
+        repo.clone(),
+        events.clone(),
+        cache.clone(),
+        wcc.clone(),
+        codex.clone(),
+        daemon,
+        None,
+        4,
+    );
+
+    // Subscribe BEFORE emitting so we don't race past the CardAdded
+    // frame. Filter on the kind below so the dispatch's own
+    // `CodexJobRequested` echo doesn't show up as the "first" event.
+    let mut rx = events.subscribe();
+
+    let idem = "issue-310-ordering";
+    let req = codex_req(idem, "verify ordering contract");
+    let scope = wave_scope(&wave_id, &cove_id);
+    repo.log_pure_event(ActorId::User, scope, None, &events, &cache, &wcc, req)
+        .await
+        .unwrap();
+
+    // Drain the bus until we see the worker's CardAdded. Skip the
+    // initial CodexJobRequested envelope we just emitted; skip any
+    // unrelated kinds.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut worker_card: Option<calm_server::model::Card> = None;
+    while Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+            Ok(Ok(env)) => {
+                if let Event::CardAdded(card) = &env.event
+                    && card.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem)
+                {
+                    worker_card = Some(card.clone());
+                    break;
+                }
+            }
+            Ok(Err(_)) => break,
+            Err(_) => continue,
+        }
+    }
+    let card =
+        worker_card.expect("dispatcher must broadcast CardAdded for the worker card within 5s");
+
+    // The card's payload carries the terminal_id (canonical layout
+    // stamped by `card_with_codex_create_tx`); use it to fetch the
+    // terminal row and assert `daemon_handle.is_some()` AT THE MOMENT
+    // the bus delivered CardAdded.
+    let terminal_id = card
+        .payload
+        .get("terminal_id")
+        .and_then(|v| v.as_str())
+        .expect("worker card payload.terminal_id must be set");
+    let term = repo
+        .terminal_get(terminal_id)
+        .await
+        .unwrap()
+        .expect("terminal row for the worker card must exist post-CardAdded");
+    let handle = term.daemon_handle.expect(
+        "issue #310 regression: terminal.daemon_handle MUST be populated \
+             by the time CardAdded reaches subscribers — otherwise a hot \
+             subscriber's WS attach hits resolve_live_sock's \"no \
+             daemon_handle = clean child exit\" branch and reports a false \
+             child-exited close",
+    );
+    assert!(
+        !handle.is_empty(),
+        "daemon_handle must be a non-empty socket path; got {handle:?}"
+    );
+
+    // Belt-and-braces: the socket the handle points at must actually
+    // accept a connect — confirms the daemon is up, not just that the
+    // handle was written ahead of a still-unbound socket. The recorder
+    // fixture binds the socket before exiting its setup phase, so this
+    // succeeds whenever the dispatcher's spawn-helper readiness probe
+    // also succeeded.
+    let _ = tokio::net::UnixStream::connect(&handle)
+        .await
+        .expect("daemon socket must accept a connect by the time CardAdded fires");
+}

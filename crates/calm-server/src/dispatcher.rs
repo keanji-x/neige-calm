@@ -70,7 +70,7 @@ use tokio::task::JoinHandle;
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::card_with_codex_create_tx;
-use crate::db::write_with_event_typed;
+use crate::db::write_in_tx_typed;
 use crate::db::{Repo, RouteRepo};
 use crate::error::CalmError;
 use crate::event::{
@@ -893,27 +893,33 @@ impl Inner {
         let env_for_tx = env.clone();
         let bookkeeping_for_tx = bookkeeping_value.clone();
 
-        // Single tx: idempotency check + worker card + terminal row +
-        // bookkeeping merge + CardAdded event. Closure returns
-        // `Conflict` on duplicate, which rolls everything back
-        // (matches the issue v2 invariant: no spurious event when the
-        // request is a duplicate).
+        // Issue #310 — two-stage spawn. Stage 1: a tx that mints the
+        // worker card + terminal row (`daemon_handle = NULL`).
+        // **Does NOT emit `CardAdded` here.** Stage 2 (post-commit,
+        // below): `seed_codex_home_with_parts` + `spawn_daemon_with_parts`
+        // (writes `daemon_handle`, spawns daemon, probes readiness).
+        // Stage 3 (post-spawn-success): broadcast `CardAdded` via
+        // `log_pure_event` so subscribers see the card only after the
+        // backing terminal has a live daemon. Without this split, a
+        // spec card hot-subscribed to the wave's event stream sees
+        // `CardAdded` immediately, mounts its `XtermView`, attempts a
+        // WS attach, and hits `resolve_live_sock`'s "no daemon_handle
+        // = clean child exit" branch (#304) — producing a spurious
+        // `Close(1000, "child-exited")` for a daemon that's in fact
+        // ~670ms away from being alive.
         //
-        // PR7a.1 (#136 followup) — the closure returns `(card_id,
+        // PR7a.1 (#136 followup) — the closure returns `(card,
         // mcp_token)` so the post-commit env-assembly path below can
         // fold `NEIGE_MCP_TOKEN` into the daemon env (mirroring
         // `routes::waves::create_wave`). The token is `Some` for every
         // worker card (the helper mints one unconditionally for the
         // `Worker` role), but we keep the `Option` shape to stay in
-        // step with the helper's return contract.
-        let card_id_result = write_with_event_typed::<(CardId, Option<String>), _>(
+        // step with the helper's return contract. We also carry the
+        // *whole* card row out of the tx so the post-spawn broadcast
+        // can hand it to `Event::CardAdded(card)` without an extra
+        // post-commit fetch.
+        let card_id_result = write_in_tx_typed::<(crate::model::Card, Option<String>), _>(
             self.repo.as_ref(),
-            ActorId::KernelDispatcher,
-            scope.clone(),
-            None,
-            &self.events,
-            &self.card_role_cache,
-            &self.wave_cove_cache,
             move |tx| {
                 Box::pin(async move {
                     // SELECT-inside-tx idempotency check. SQLite's
@@ -1000,15 +1006,14 @@ impl Inner {
                         .await?;
                     }
 
-                    let id = card.id.clone();
-                    Ok(((id, mcp_token), Event::CardAdded(card)))
+                    Ok((card, mcp_token))
                 })
             },
         )
         .await;
 
-        let (card_id, mcp_token) = match card_id_result {
-            Ok(((id, mcp_token), _event_id)) => (id, mcp_token),
+        let (card, mcp_token) = match card_id_result {
+            Ok((card, mcp_token)) => (card, mcp_token),
             Err(CalmError::IdempotencyCollision(msg)) => {
                 tracing::info!(
                     idempotency_key = %idempotency_key,
@@ -1019,6 +1024,7 @@ impl Inner {
             }
             Err(e) => return Err(e),
         };
+        let card_id = card.id.clone();
 
         // Post-commit: seed CODEX_HOME and spawn the daemon. Failure
         // here returns an error to the caller, which emits
@@ -1130,6 +1136,45 @@ impl Inner {
             return Err(e);
         }
 
+        // Issue #310 — Stage 3: broadcast `CardAdded` only after
+        // `spawn_daemon_with_parts` has written `daemon_handle` and
+        // probed daemon readiness. Subscribers (the spec card on the
+        // requesting wave page) now see the new worker card with a
+        // populated `daemon_handle`; the WS attach in
+        // `ws::terminal::resolve_live_sock` resolves to `Alive` (or,
+        // for a genuine fast-exit, the existing `ChildExited` branch)
+        // — never the spurious "no daemon_handle = clean child exit"
+        // path that #304 introduced for actual zero-handle rows. See
+        // module-level doc comment for the cross-PR rationale.
+        if let Err(e) = self
+            .repo
+            .log_pure_event(
+                ActorId::KernelDispatcher,
+                scope,
+                None,
+                &self.events,
+                &self.card_role_cache,
+                &self.wave_cove_cache,
+                Event::CardAdded(card),
+            )
+            .await
+        {
+            // Card row + terminal + daemon are all live; the only
+            // thing this branch loses is the broadcast. Subscribers
+            // will discover the card on next REST refresh / page
+            // reload. Log loudly so an operator notices a regression
+            // in the event-bus write path; do NOT return Err — that
+            // would emit `TaskFailed` for a worker that is in fact
+            // running.
+            tracing::error!(
+                card_id = %card_id,
+                wave_id = %wave_id,
+                terminal_id = %term.id,
+                error = %e,
+                "worker codex card.added broadcast failed; card + daemon live, subscribers stale",
+            );
+        }
+
         tracing::info!(
             idempotency_key = %idempotency_key,
             card_id = %card_id,
@@ -1225,15 +1270,13 @@ impl Inner {
         let cmd_for_tx = cmd.clone();
         let bookkeeping_for_tx = bookkeeping_value.clone();
 
-        let card_id_result = write_with_event_typed::<CardId, _>(
-            self.repo.as_ref(),
-            ActorId::KernelDispatcher,
-            scope.clone(),
-            None,
-            &self.events,
-            &self.card_role_cache,
-            &self.wave_cove_cache,
-            move |tx| {
+        // Issue #310 — two-stage spawn (see `spawn_codex_worker`
+        // module-level doc for the full rationale). The tx mints the
+        // worker card + terminal row but does NOT emit `CardAdded`;
+        // the broadcast is deferred until after `spawn_daemon_with_parts`
+        // populates `daemon_handle`, mirroring the codex path.
+        let card_id_result =
+            write_in_tx_typed::<crate::model::Card, _>(self.repo.as_ref(), move |tx| {
                 Box::pin(async move {
                     if let Some(existing) =
                         find_card_by_idempotency_key_tx(tx, &idem_for_tx).await?
@@ -1291,15 +1334,13 @@ impl Inner {
                         )
                         .await?;
                     }
-                    let id = card.id.clone();
-                    Ok((id, Event::CardAdded(card)))
+                    Ok(card)
                 })
-            },
-        )
-        .await;
+            })
+            .await;
 
-        let card_id = match card_id_result {
-            Ok((id, _event_id)) => id,
+        let card = match card_id_result {
+            Ok(card) => card,
             Err(CalmError::IdempotencyCollision(msg)) => {
                 tracing::info!(
                     idempotency_key = %idempotency_key,
@@ -1310,6 +1351,7 @@ impl Inner {
             }
             Err(e) => return Err(e),
         };
+        let card_id = card.id.clone();
 
         // Post-commit: spawn the terminal daemon. No CODEX_HOME
         // seeding for the terminal worker — it's a plain shell
@@ -1342,6 +1384,32 @@ impl Inner {
                 "worker terminal daemon spawn failed; card + terminal orphaned for sweeper",
             );
             return Err(e);
+        }
+
+        // Issue #310 — broadcast `CardAdded` post-spawn-success so the
+        // emitted snapshot's backing terminal row has a populated
+        // `daemon_handle`. See `spawn_codex_worker` for the full
+        // rationale + cross-PR pointers.
+        if let Err(e) = self
+            .repo
+            .log_pure_event(
+                ActorId::KernelDispatcher,
+                scope,
+                None,
+                &self.events,
+                &self.card_role_cache,
+                &self.wave_cove_cache,
+                Event::CardAdded(card),
+            )
+            .await
+        {
+            tracing::error!(
+                card_id = %card_id,
+                wave_id = %wave_id,
+                terminal_id = %term.id,
+                error = %e,
+                "worker terminal card.added broadcast failed; card + daemon live, subscribers stale",
+            );
         }
 
         tracing::info!(
