@@ -1146,7 +1146,7 @@ input, textarea { font: inherit; color: inherit; }
 }
 .wave-row-wrapper:hover .side-wave-pin,
 .wave-row-wrapper:focus-within .side-wave-pin { opacity: 1; }
-.wave-row-wrapper .side-wave-pin.pinned { opacity: 1; color: var(--accent); }
+.wave-row-wrapper .side-wave-pin.pinned { opacity: 1; }
 .wave-row-wrapper .side-wave-pin:hover { background: var(--overlay-hover); color: var(--text); }
 .wave-row-wrapper .side-wave-pin:focus-visible {
   outline: 2px solid var(--accent);

@@ -413,7 +413,7 @@ function WaveRow({
           }}
           aria-label={pinned ? 'Unpin wave' : 'Pin wave'}
         >
-          <PinIcon />
+          <PinIcon down={pinned} />
         </button>
       )}
     </div>
