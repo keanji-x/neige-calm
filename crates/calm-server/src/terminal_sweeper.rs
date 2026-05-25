@@ -361,6 +361,38 @@ pub async fn reap_spec_push(state: &AppState, wave_id: &WaveId) {
 /// handler (or the sweep tick) any longer than necessary before forcing it.
 const GROUP_KILL_GRACE: Duration = Duration::from_millis(500);
 
+/// SIGTERM a known pid for a partial spawn that wrote `pid` to the
+/// terminal row but never reached the `daemon_handle` write. The
+/// dispatcher's rollback path uses this when it detects case 1b
+/// (handle = None AND pid = Some): the daemon process is alive (the
+/// `cmd.spawn()` succeeded and we persisted the pid before the
+/// `terminal_set_handle` write that subsequently failed), but the
+/// usual [`reap_terminal_artifacts`] graceful path is a no-op because
+/// it keys off `daemon_handle`. Without this direct kill the daemon
+/// would leak once the row is deleted — the sweeper can no longer find
+/// the pid.
+///
+/// Best-effort like the rest of the cleanup contract: a failed `kill`
+/// (most commonly ESRCH — the daemon raced us and is already gone) is
+/// logged at debug and swallowed. The caller proceeds to the row
+/// delete unconditionally.
+pub fn reap_terminal_pid_only(terminal_id: &str, pid: i64) {
+    if let Err(e) = send_sigterm(pid) {
+        tracing::debug!(
+            terminal_id = %terminal_id,
+            pid,
+            error = %e,
+            "reap_terminal_pid_only: SIGTERM failed (likely already exited or recycled)"
+        );
+    } else {
+        tracing::info!(
+            terminal_id = %terminal_id,
+            pid,
+            "reap_terminal_pid_only: SIGTERM delivered to pid-only partial-spawn daemon"
+        );
+    }
+}
+
 /// Open the daemon's unix socket, send the required v2 `ClientHello`
 /// (so the daemon's handshake accepts us and routes the connection
 /// through `TerminalSessionState`), then a `Kill` frame, drop the

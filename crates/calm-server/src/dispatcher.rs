@@ -85,7 +85,7 @@ use crate::routes::terminal::spawn_daemon_with_parts;
 use crate::spec_appserver::SpecPushRegistry;
 use crate::spec_card::{SeededCardRole, build_codex_env_map, seed_codex_home_with_parts};
 use crate::state::{CodexClient, DaemonClient};
-use crate::terminal_sweeper::reap_terminal_artifacts;
+use crate::terminal_sweeper::{reap_terminal_artifacts, reap_terminal_pid_only};
 use crate::wave_cove_cache::WaveCoveCache;
 use crate::ws::terminal::exit_sidecar_path;
 
@@ -1647,12 +1647,24 @@ enum RollbackOutcome {
 ///
 /// **The three cases (after re-fetching the terminal row):**
 ///
-///   * **case 1: `daemon_handle = None`** — spawn never wrote a handle,
-///     so the daemon never bound the socket / never got far enough.
-///     There is no daemon process to reap (`spawn_daemon_with_parts`
-///     persists `daemon_handle` AFTER `cmd.spawn()` succeeds; absence
-///     means either `cmd.spawn()` itself failed or the post-spawn pid /
-///     handle write race lost). Just delete the rows.
+///   * **case 1: `daemon_handle = None`** — spawn never wrote a handle.
+///     This splits on `pid`:
+///
+///       * **case 1a: `pid = None`** — `cmd.spawn()` itself failed (or
+///         the pid persistence write lost the race before we even got
+///         to fork return), so there is no daemon process to reap.
+///         Just delete the rows.
+///
+///       * **case 1b: `pid = Some(...)`** — `cmd.spawn()` succeeded
+///         and `terminal_set_pid` persisted the pid, but the
+///         subsequent `terminal_set_handle` failed (rare: a
+///         `SQLITE_BUSY` at the exact wrong moment, disk full, etc.).
+///         The daemon process is alive but `reap_terminal_artifacts`
+///         would no-op because it keys off `daemon_handle`. We must
+///         SIGTERM the pid directly via
+///         [`reap_terminal_pid_only`] BEFORE the row delete —
+///         otherwise the sweeper can't see it once the row is gone and
+///         the daemon leaks until reboot.
 ///
 ///   * **case 2: `daemon_handle = Some(...)` AND `<handle>.exit`
 ///     exists** — the daemon DID spawn, ran its command (e.g.
@@ -1796,11 +1808,24 @@ async fn rollback_orphan_worker(
             // case 3 — daemon_handle set but no sidecar. Reap +
             // delete. This is the original P1 leak fix.
             reap_terminal_artifacts(term).await;
+        } else if let Some(pid) = term.pid {
+            // case 1b — handle = None but pid = Some. The daemon
+            // process is alive (cmd.spawn() succeeded and
+            // terminal_set_pid persisted the pid before
+            // terminal_set_handle was attempted), but the handle
+            // write failed mid-spawn. We can't go through
+            // `reap_terminal_artifacts` because its graceful-Kill +
+            // socket-unlink steps both key off `daemon_handle`.
+            // Send SIGTERM directly via the pid before the row
+            // delete; the sweeper would otherwise never find this
+            // pid (the row is about to be deleted).
+            reap_terminal_pid_only(&term.id, pid);
         }
-        // case 1 (term present but daemon_handle = None) falls through
-        // to the row delete below — no daemon was bound to a socket,
-        // so the reap step would be a no-op anyway. We skip it to
-        // avoid a SIGTERM at a pid that isn't ours / never existed.
+        // case 1a (term present, daemon_handle = None, pid = None)
+        // falls through to the row delete below — `cmd.spawn()`
+        // either failed outright or never made it to pid persistence,
+        // so there is no daemon process. We skip the reap to avoid a
+        // SIGTERM at a pid that isn't ours / never existed.
     } else {
         // Row vanished — sweeper raced us, or some other path already
         // cleaned up. Nothing to reap; fall through to rollback tx

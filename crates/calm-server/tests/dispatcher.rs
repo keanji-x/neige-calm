@@ -1985,16 +1985,9 @@ async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
             },
             Ok(Err(_)) => break,
             Err(_) => {
-                // Once we've seen CardAdded for this idem, give a
-                // small grace window for a stray late TaskFailed (we
-                // want to assert ABSENCE) — break after a half-second
-                // of quiet.
-                if saw_card_added.is_some()
-                    && Instant::now() + Duration::from_millis(500) < deadline
-                {
-                    // keep polling until deadline to catch a late
-                    // TaskFailed; loop continues below.
-                }
+                // Recv timeout — keep polling until the 15s deadline
+                // so a stray late `TaskFailed` (which we're asserting
+                // is ABSENT) still has a chance to land in the loop.
                 continue;
             }
         }
