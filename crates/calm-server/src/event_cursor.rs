@@ -1,44 +1,35 @@
-//! Per-card event cursor cache used by PR8's `wait_for_events` MCP tool
-//! and the `/internal/codex/pending_events` HTTP fallback.
+//! Per-card event watermark cache.
 //!
-//! ## What it solves
+//! ## What it's for now (#293 cutover)
 //!
-//! Both code paths are long-poll APIs the codex daemon calls between
-//! turns: "tell me what's happened on my wave since my last call". The
-//! caller's reasonable default for `since` is "advance from where I
-//! left off last", but the caller is the codex daemon — short-lived
-//! per Stop hook, no place to durably remember a cursor across
-//! invocations. The kernel knows the bound card identity, so it
-//! tracks the cursor server-side, keyed on `CardId`.
+//! The pull machinery that originally owned this cache
+//! (`calm.wait_for_events` + the `/internal/codex/pending_events`
+//! long-poll) was deleted in the #293 push cutover. The sole remaining
+//! consumer is the dispatcher's **push watermark** (`Inner.push_cursor`
+//! in `dispatcher.rs`): keyed by the spec `CardId`, it dedups pushed
+//! observations so a re-delivered broadcast envelope (at-least-once
+//! delivery) doesn't issue a duplicate `turn/start`. A push fires only
+//! when `envelope_id > cursor`, then bumps.
 //!
 //! ## Semantics
 //!
-//! The cursor is the highest `events.id` the kernel has handed back to
-//! a wait/pending call for that card. A subsequent call with `since`
-//! omitted defaults to this value, so the caller never sees the same
-//! event id twice. Callers can also pass an explicit `since` to
-//! re-replay from an earlier point (the cache update only happens when
-//! we *return* events with higher ids — re-replay is non-destructive).
+//! The cursor is the highest `events.id` already acted on for that card.
+//! [`EventCursorCache::bump`] is monotonic, so an out-of-order / lower id
+//! never rewinds it.
 //!
 //! ## What it is NOT
 //!
-//! It is not durable across server restarts. A restart drops the
-//! cache, and the next call starts at id 0 (catch-up returns the
-//! entire scoped history up to the per-call `limit`). This is fine for
-//! the Stop-hook use case: the spec daemon's prior decisions are
-//! already encoded in the wave's persisted state, and replaying old
-//! task lifecycle events is idempotent (the spec sees them, decides
-//! they were already handled, moves on). Durability would require a
-//! new column on `cards` and a write per pending-events call, which
-//! isn't worth the cost for a soft optimization.
+//! It is not durable across server restarts. A restart drops the cache;
+//! since there is no crash-recovery for in-flight waves (#293), this is
+//! moot for the push path — a lost handle means the wave is undriven
+//! regardless of the cursor.
 //!
 //! ## Concurrency
 //!
-//! `DashMap` per-key locking. Two concurrent wait calls for the same
-//! card race to the higher cursor; whichever ran last wins. That race
-//! is benign: both callers see the events they were given, the cache
-//! converges on the winner's max id, and the next call starts cleanly
-//! from there.
+//! `DashMap` per-key locking. The dispatcher additionally serializes the
+//! `(get → compare → bump → push)` sequence per-wave (see
+//! `Inner.push_locks`) so the read-modify-write is atomic against other
+//! same-wave pushes.
 
 use crate::ids::CardId;
 use dashmap::DashMap;
@@ -57,8 +48,8 @@ impl EventCursorCache {
     }
 
     /// Current cursor for `card`. Returns `0` when no entry exists —
-    /// the wait/pending handlers treat `0` as "send the full scoped
-    /// history up to `limit`".
+    /// the dispatcher's push path treats any positive `envelope_id` as
+    /// newer than the initial `0`, so the first push always fires.
     pub fn get(&self, card: &CardId) -> i64 {
         self.inner.get(card).map(|v| *v).unwrap_or(0)
     }
@@ -87,12 +78,11 @@ impl EventCursorCache {
     /// Drop a card's entry. Currently exercised only by the unit tests
     /// — the card-delete path doesn't yet thread this cache through, so
     /// stale entries linger until the next server restart. That's
-    /// harmless: the cursor is a soft optimization (see the "What it is
-    /// NOT" section above), a deleted card is unreachable from the
-    /// scope filter, and a future caller with the same id (collisions
-    /// notwithstanding) would `bump` past whatever stale value we held.
-    /// Kept on the surface so a future wire-up is a one-line change.
-    /// Safe on missing keys.
+    /// harmless: the cursor is a soft dedup watermark, a deleted card is
+    /// unreachable from the push path, and a future caller with the same
+    /// id (collisions notwithstanding) would `bump` past whatever stale
+    /// value we held. Kept on the surface so a future wire-up is a
+    /// one-line change. Safe on missing keys.
     pub fn remove(&self, card: &CardId) {
         self.inner.remove(card);
     }

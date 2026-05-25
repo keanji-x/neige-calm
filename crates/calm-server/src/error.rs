@@ -24,8 +24,8 @@ pub struct ErrorBody {
     /// `idempotency_collision`, `bad_request`, `unauthorized`,
     /// `forbidden`, `plugin_install`, `plugin_permission`,
     /// `plugin_conflict`, `plugin_kernel_too_old`, `db_error`,
-    /// `io_error`, `serde_error`, `internal`, `forbidden_tool`,
-    /// `not_a_card_tool`, `tool_call_failed`.
+    /// `io_error`, `serde_error`, `codex_app_server`, `internal`,
+    /// `forbidden_tool`, `not_a_card_tool`, `tool_call_failed`.
     pub code: String,
 }
 
@@ -98,6 +98,17 @@ pub enum CalmError {
     #[error("serde: {0}")]
     Serde(#[from] serde_json::Error),
 
+    /// 500 — a codex `app-server` interaction failed: WebSocket transport
+    /// error, a JSON-RPC error frame returned by the server, or the
+    /// connection's reader task dying mid-request. Issue #293 PR2 — the
+    /// [`crate::codex_appserver`] client maps every failure mode onto this
+    /// one variant; the carried string is the human-readable cause (it is
+    /// never surfaced to an HTTP client today, the client is a daemon-side
+    /// control channel, so a single coarse variant keeps `CalmError` from
+    /// sprouting transport-specific shapes).
+    #[error("codex app-server: {0}")]
+    CodexAppServer(String),
+
     #[error("internal: {0}")]
     Internal(String),
 }
@@ -118,6 +129,7 @@ impl CalmError {
             CalmError::Db(_) => "db_error",
             CalmError::Io(_) => "io_error",
             CalmError::Serde(_) => "serde_error",
+            CalmError::CodexAppServer(_) => "codex_app_server",
             CalmError::Internal(_) => "internal",
         }
     }
@@ -132,9 +144,11 @@ impl CalmError {
             CalmError::Unauthorized => StatusCode::UNAUTHORIZED,
             CalmError::Forbidden(_) | CalmError::PluginPermission(_) => StatusCode::FORBIDDEN,
             CalmError::PluginKernelTooOld(_) => StatusCode::UNPROCESSABLE_ENTITY,
-            CalmError::Db(_) | CalmError::Io(_) | CalmError::Serde(_) | CalmError::Internal(_) => {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
+            CalmError::Db(_)
+            | CalmError::Io(_)
+            | CalmError::Serde(_)
+            | CalmError::CodexAppServer(_)
+            | CalmError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 }

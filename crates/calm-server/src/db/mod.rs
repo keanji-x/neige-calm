@@ -250,6 +250,15 @@ pub trait RepoRead: Send + Sync + 'static {
     /// were still running and their sockets are stale on disk).
     async fn terminals_with_daemon_handle(&self) -> Result<Vec<Terminal>>;
 
+    /// #293 PR3a (B1 crash recovery) — return every card whose payload
+    /// carries a spec-push `appserver_pgid`, as
+    /// `(card_id, appserver_pgid, appserver_sock)`. Rows missing a numeric
+    /// pgid or a string sock are skipped. Used exclusively by
+    /// [`crate::reap_orphan_appserver_groups_on_boot`] during startup to
+    /// `kill(-pgid, …)` any leaked `codex app-server` process group left by
+    /// a kernel hard-crash (the in-process `SpecPushHandle` reap never ran).
+    async fn spec_cards_with_appserver_pgid(&self) -> Result<Vec<(String, i32, String)>>;
+
     // ---- plugins (read-only)
     async fn plugins_list(&self) -> Result<Vec<Plugin>>;
     async fn plugins_list_all(&self) -> Result<Vec<Plugin>>;

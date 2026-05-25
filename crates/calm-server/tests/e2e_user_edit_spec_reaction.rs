@@ -1,5 +1,5 @@
-//! Issue #247 PR5 — end-to-end coverage for the user-edit → spec-wake
-//! → spec-reread loop.
+//! Issue #247 PR5 — end-to-end coverage for the user-edit → spec-reaction
+//! loop.
 //!
 //! Earlier PRs built the building blocks separately:
 //!
@@ -10,14 +10,15 @@
 //!     endpoint persists + emits `WaveReportEdited` with
 //!     `author == User`.
 //!   * PR4 — the UI pencil/edit affordance that drives that REST POST.
-//!   * PR1's `wait_for_events` — the spec daemon's long-poll primitive.
 //!
 //! What's NOT covered by any of those, and what this file pins, is the
-//! whole loop end-to-end: a user-edit landing through the REST surface
-//! must surface to a spec card that is currently `calm.wait_for_events`-
-//! ing on its wave, and the spec must then be able to `calm.report.read`
-//! and observe the user's body verbatim. That round-trip is the only
-//! way to assert that:
+//! whole loop end-to-end. #293 cutover: the spec daemon no longer
+//! long-polls (`calm.wait_for_events` is gone) — instead the dispatcher
+//! subscribes to the wave's event stream with a `SubscribeFilter` and
+//! pushes the matching `wave.report_edited` onto the spec's codex thread
+//! as a turn input. This test mirrors that delivery path by subscribing
+//! to the same bus (via `EventBus::subscribe_filtered` + the dispatcher's
+//! wave-scope `SubscribeFilter`) and asserting:
 //!
 //!   1. PR3's `EditAuthor::User` actually serializes as the lowercase
 //!      `"user"` string on the wire that PR5's spec system prompt
@@ -25,17 +26,17 @@
 //!   2. The CRDT merge from a user-write is visible to a subsequent
 //!      MCP `calm.report.read` (no read-after-write staleness through
 //!      the JSON-cache projection).
-//!   3. The same `WaveReportEdited` envelope reaches the spec's
-//!      long-poll via the wave scope filter (PR1's filter must
-//!      accept Card-scoped events under the wave; otherwise the
-//!      user's edit silently disappears from the spec's perspective).
+//!   3. The same `WaveReportEdited` envelope reaches a wave-scoped
+//!      subscriber (the dispatcher's filter must accept Card-scoped
+//!      events under the wave; otherwise the user's edit silently
+//!      disappears from the push path).
 //!
-//! The negative-half of test #4 also pins that spec-authored writes
-//! land with `author == "spec"` — so the spec system prompt's "ignore
-//! your own echoes" guidance is testable for regression. A future
-//! serialization break (rename of `EditAuthor` arms, change of
-//! `#[serde(rename_all = "lowercase")]`, etc.) would flip both halves
-//! at once and fail loud.
+//! The negative-half also pins that spec-authored writes land with
+//! `author == "spec"` — so the spec system prompt's "ignore your own
+//! echoes" guidance (and the dispatcher's user-only push gate) is
+//! testable for regression. A future serialization break (rename of
+//! `EditAuthor` arms, change of `#[serde(rename_all = "lowercase")]`,
+//! etc.) would flip both halves at once and fail loud.
 
 #![cfg(unix)]
 
@@ -47,11 +48,9 @@ use calm_server::auth::{self, AuthConfig, AuthState, SESSION_COOKIE};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
-use calm_server::event::EventBus;
-use calm_server::event_cursor::EventCursorCache;
+use calm_server::event::{BroadcastEnvelope, EventBus, SubscribeFilter, SubscribeScope};
 use calm_server::ids::{CardId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
-use calm_server::mcp_server::tools::wait::TOOL_WAIT_FOR_EVENTS;
 use calm_server::mcp_server::tools::wave_report::{TOOL_REPORT_READ, TOOL_REPORT_WRITE};
 use calm_server::mcp_server::{CardIdentity, ToolRegistry};
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
@@ -175,16 +174,13 @@ async fn boot() -> Boot {
     });
 
     // MCP context — repo + the same bus the REST writes broadcast on,
-    // plus the shared role/cove caches. The cursor cache is
-    // tool-private (the MCP wait long-poll advances it); a fresh one
-    // is fine for the test boot.
+    // plus the shared role/cove caches.
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let ctx = Arc::new(AppContext {
         repo: route_repo,
         events: events.clone(),
         card_role_cache,
         wave_cove_cache,
-        event_cursor_cache: EventCursorCache::new(),
     });
     let mut registry = ToolRegistry::new();
     calm_server::mcp_server::tools::register_default_tools(&mut registry);
@@ -273,31 +269,84 @@ async fn call_mcp(
     handler(boot.ctx.clone(), identity, args).await
 }
 
+/// The dispatcher's push path subscribes to the wave's event stream with
+/// a `SubscribeFilter` and reacts to `wave.report_edited` (it pushes the
+/// matching observation onto the spec's codex thread). This helper mirrors
+/// that subscriber: it builds the same wave-scoped filter and returns a
+/// receiver the test can drain, so we exercise the exact delivery path the
+/// dispatcher uses — without booting a real codex thread.
+fn subscribe_wave_report_edits(boot: &Boot) -> tokio::sync::broadcast::Receiver<BroadcastEnvelope> {
+    boot.state.events.subscribe_filtered()
+}
+
+fn wave_report_filter(boot: &Boot) -> SubscribeFilter {
+    SubscribeFilter {
+        scope: SubscribeScope::Wave(boot.wave_id.clone()),
+        include_descendants: true,
+        kinds: Some(vec!["wave.report_edited".into()]),
+    }
+}
+
+/// Drain matching `wave.report_edited` envelopes off a subscription until
+/// `want` of them have arrived or a short deadline expires, rendering each
+/// to the same `{ev, data, ...}` wire JSON the dispatcher/WS path produces.
+async fn drain_report_edits(
+    rx: &mut tokio::sync::broadcast::Receiver<BroadcastEnvelope>,
+    filter: &SubscribeFilter,
+    want: usize,
+) -> Vec<Value> {
+    let mut out = Vec::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while out.len() < want {
+        match tokio::time::timeout_at(deadline, rx.recv()).await {
+            Ok(Ok(env)) => {
+                if filter.matches(&env) {
+                    let mut v = serde_json::to_value(&env.event).unwrap();
+                    if let Value::Object(ref mut m) = v {
+                        m.insert("_id".into(), Value::from(env.id));
+                    }
+                    out.push(v);
+                }
+            }
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+            Ok(Err(_)) | Err(_) => break,
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Happy path — the full user-edit → spec-wake → spec-reread loop
 // ---------------------------------------------------------------------------
 
-/// The canonical loop the spec system prompt now documents:
+/// The canonical loop the spec system prompt now documents (push model):
 ///
 ///   1. Spec seeds a known initial body via `calm.report.write`.
-///   2. Spec issues `calm.wait_for_events`, which advances its
-///      per-card cursor past the seed write.
+///   2. A wave-scoped subscriber (the dispatcher's push filter) observes
+///      the spec's own seed write as `author == "spec"`.
 ///   3. User edits via REST (`POST /api/waves/:id/report`), appending a
 ///      sentinel string.
-///   4. Spec's next `calm.wait_for_events` returns a single
-///      `wave.report_edited` envelope with `author == "user"` and the
-///      sentinel inside `body_after`.
+///   4. The same subscriber observes a single `wave.report_edited`
+///      envelope with `author == "user"` and the sentinel inside
+///      `body_after` — this is exactly the event the dispatcher pushes
+///      onto the spec's thread as a turn input.
 ///   5. Spec calls `calm.report.read` and observes the user's body
 ///      (the sentinel is in the read result, the spec's seed body is
 ///      gone).
 ///
 /// The assertions at step 4 are load-bearing: PR5's spec prompt tells
 /// the agent to gate the "stop and re-read" behavior on `author ==
-/// "user"`, so the lowercase string spelling has to be guaranteed by
-/// this path's serde shape.
+/// "user"`, and the dispatcher's push gate only fires for user edits, so
+/// the lowercase string spelling has to be guaranteed by this path's
+/// serde shape.
 #[tokio::test]
-async fn user_edit_via_rest_wakes_spec_wait_and_spec_reads_back_user_body() {
+async fn user_edit_via_rest_reaches_wave_subscriber_and_spec_reads_back_user_body() {
     let boot = boot().await;
+
+    // Subscribe to the wave's event stream BEFORE any write, exactly as
+    // the dispatcher's push path does (it subscribes once at spawn).
+    let mut rx = subscribe_wave_report_edits(&boot);
+    let filter = wave_report_filter(&boot);
 
     // ----- step 1: spec seeds an initial body.
     let initial_body = "# Goal\n\nv0 initial content from spec\n";
@@ -313,47 +362,19 @@ async fn user_edit_via_rest_wakes_spec_wait_and_spec_reads_back_user_body() {
     .await
     .expect("spec seeds initial body");
 
-    // ----- step 2: spec calls wait_for_events with since=0 so it
-    // catches up across its own seed write. After this call returns,
-    // the per-card cursor cache is bumped past the spec's
-    // CardUpdated + WaveReportEdited so the next call sees only what
-    // comes after.
-    let catchup = call_mcp(
-        &boot,
-        TOOL_WAIT_FOR_EVENTS,
-        spec_identity(&boot),
-        // Explicit since=0 forces a replay — without it the cache
-        // would already say "you're caught up" because the cache
-        // entry defaults to 0 anyway. Either way, this call returns
-        // immediately because catch-up is non-empty.
-        json!({"timeout_ms": 5000, "since": 0}),
-    )
-    .await
-    .expect("spec catch-up wait ok");
-    let catchup_events = catchup["events"].as_array().expect("events array");
-    let saved_cursor = catchup["since"]
-        .as_i64()
-        .expect("since is the catch-up max id");
-    assert!(
-        !catchup_events.is_empty(),
-        "catch-up should surface the spec's own seed writes; got {catchup}",
-    );
-    // The seed write emitted both CardUpdated and WaveReportEdited
-    // (PR2 invariant). At minimum the WaveReportEdited should appear
-    // tagged as Spec — that's the half this catch-up doubles as a
-    // regression for.
-    let spec_authored: Vec<_> = catchup_events
-        .iter()
-        .filter(|e| e["ev"] == "wave.report_edited")
-        .collect();
+    // ----- step 2: the subscriber observes the spec's own seed write
+    // tagged as Spec. (The dispatcher's push gate would SKIP this — it
+    // only pushes user edits — but the envelope still reaches the
+    // wave-scoped subscriber, which is the surface this asserts.)
+    let seed_edits = drain_report_edits(&mut rx, &filter, 1).await;
     assert_eq!(
-        spec_authored.len(),
+        seed_edits.len(),
         1,
-        "exactly one WaveReportEdited in the catch-up batch; got {catchup_events:?}",
+        "exactly one WaveReportEdited from the spec's seed write; got {seed_edits:?}",
     );
     assert_eq!(
-        spec_authored[0]["data"]["author"], "spec",
-        "self-write author must be lowercase \"spec\" on the wire (spec prompt matches on it); got {catchup_events:?}",
+        seed_edits[0]["data"]["author"], "spec",
+        "self-write author must be lowercase \"spec\" on the wire (spec prompt matches on it); got {seed_edits:?}",
     );
 
     // ----- step 3: user edits via REST. We POST through the live
@@ -382,28 +403,18 @@ async fn user_edit_via_rest_wakes_spec_wait_and_spec_reads_back_user_body() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK, "REST user edit must succeed");
 
-    // ----- step 4: spec's next wait_for_events returns the user's
-    // edit. Re-issue with `since == saved_cursor` so the wait starts
-    // exactly where the catch-up call left off — anything pre-cursor
-    // belongs to the spec, anything post-cursor was authored after
-    // the spec's last sighting (i.e. the user's REST edit).
-    let woken = call_mcp(
-        &boot,
-        TOOL_WAIT_FOR_EVENTS,
-        spec_identity(&boot),
-        json!({"timeout_ms": 5000, "since": saved_cursor}),
-    )
-    .await
-    .expect("spec wakes on user edit");
-    let woken_events = woken["events"].as_array().expect("events array");
+    // ----- step 4: the wave subscriber observes the user's edit — the
+    // exact `wave.report_edited` the dispatcher pushes onto the spec's
+    // thread as a turn input.
+    let woken_events = drain_report_edits(&mut rx, &filter, 1).await;
     let user_edits: Vec<_> = woken_events
         .iter()
-        .filter(|e| e["ev"] == "wave.report_edited" && e["data"]["author"].as_str() == Some("user"))
+        .filter(|e| e["data"]["author"].as_str() == Some("user"))
         .collect();
     assert_eq!(
         user_edits.len(),
         1,
-        "exactly one user-authored WaveReportEdited woke the spec; got {woken_events:?}",
+        "exactly one user-authored WaveReportEdited reached the subscriber; got {woken_events:?}",
     );
     let user_edit = user_edits[0];
     assert_eq!(
@@ -480,22 +491,27 @@ async fn user_edit_via_rest_wakes_spec_wait_and_spec_reads_back_user_body() {
 /// PR5's spec system prompt tells the agent to *ignore* `WaveReportEdited`
 /// events with `author == "spec"` (they're the agent's own writes echoing
 /// back via the event stream — acting on them would burn cycles and
-/// risk write loops). This test pins that contract: after a spec
-/// `report.write`, the next `wait_for_events` returns the matching
-/// envelope tagged as Spec, with the same wire spelling the prompt's
-/// instruction depends on (`"spec"`, not `"Spec"` / `"SPEC"`).
+/// risk write loops), and the dispatcher's push gate only forwards
+/// user-authored edits for the same reason. This test pins that contract:
+/// a spec `report.write` surfaces on the wave stream tagged as Spec, with
+/// the same wire spelling the prompt's instruction depends on (`"spec"`,
+/// not `"Spec"` / `"SPEC"`).
 ///
 /// A future regression that broke `EditAuthor` serialization (e.g.
 /// stripping the `#[serde(rename_all = "lowercase")]` attribute) would
 /// flip the user-half test above AND this spec-half test simultaneously
-/// — exactly the lockstep we want, so the agent's prompt instructions
-/// stay testable against the wire shape.
+/// — exactly the lockstep we want, so the agent's prompt instructions and
+/// the dispatcher's gate stay testable against the wire shape.
 #[tokio::test]
-async fn spec_self_write_echoes_as_author_spec_on_the_wait_stream() {
+async fn spec_self_write_echoes_as_author_spec_on_the_wave_stream() {
     let boot = boot().await;
 
-    // Establish a known cursor — same pattern as the happy path: a
-    // priming write so the spec has a real cursor to start from.
+    // Subscribe to the wave stream first (as the dispatcher does).
+    let mut rx = subscribe_wave_report_edits(&boot);
+    let filter = wave_report_filter(&boot);
+
+    // A priming write, drained off the subscription so the next drain
+    // only sees what follows.
     call_mcp(
         &boot,
         TOOL_REPORT_WRITE,
@@ -507,20 +523,18 @@ async fn spec_self_write_echoes_as_author_spec_on_the_wait_stream() {
     )
     .await
     .expect("priming write ok");
-    let prime = call_mcp(
-        &boot,
-        TOOL_WAIT_FOR_EVENTS,
-        spec_identity(&boot),
-        json!({"timeout_ms": 5000, "since": 0}),
-    )
-    .await
-    .expect("priming wait ok");
-    let cursor = prime["since"].as_i64().expect("priming since");
+    let primed = drain_report_edits(&mut rx, &filter, 1).await;
+    assert_eq!(
+        primed.len(),
+        1,
+        "priming write surfaces once; got {primed:?}"
+    );
 
-    // Now: a second spec-authored write. The wait that follows must
-    // see this as `author == "spec"`, NOT `"user"` (which would be a
-    // serialization regression — the spec prompt would then be unable
-    // to distinguish self-echoes from user edits).
+    // Now: a second spec-authored write. The stream must surface this
+    // as `author == "spec"`, NOT `"user"` (which would be a
+    // serialization regression — the spec prompt and the dispatcher's
+    // push gate would then be unable to distinguish self-echoes from
+    // user edits).
     call_mcp(
         &boot,
         TOOL_REPORT_WRITE,
@@ -532,27 +546,15 @@ async fn spec_self_write_echoes_as_author_spec_on_the_wait_stream() {
     )
     .await
     .expect("second spec write ok");
-    let echo = call_mcp(
-        &boot,
-        TOOL_WAIT_FOR_EVENTS,
-        spec_identity(&boot),
-        json!({"timeout_ms": 5000, "since": cursor}),
-    )
-    .await
-    .expect("spec sees its own echo");
-    let events = echo["events"].as_array().expect("events array");
-    let self_echoes: Vec<_> = events
-        .iter()
-        .filter(|e| e["ev"] == "wave.report_edited")
-        .collect();
+    let self_echoes = drain_report_edits(&mut rx, &filter, 1).await;
     assert_eq!(
         self_echoes.len(),
         1,
-        "exactly one WaveReportEdited after the spec write; got {events:?}",
+        "exactly one WaveReportEdited after the spec write; got {self_echoes:?}",
     );
     assert_eq!(
         self_echoes[0]["data"]["author"], "spec",
-        "spec-authored echoes MUST surface with the lowercase \"spec\" string; got {events:?}",
+        "spec-authored echoes MUST surface with the lowercase \"spec\" string; got {self_echoes:?}",
     );
     assert_eq!(
         self_echoes[0]["data"]["wave_id"],
@@ -564,12 +566,12 @@ async fn spec_self_write_echoes_as_author_spec_on_the_wait_stream() {
         boot.report_card_id.as_str(),
         "card_id on the envelope must match the report card",
     );
-    // No user envelope hiding among the events — distinguishing the
-    // two halves is the prompt instruction's whole point.
+    // No user envelope hiding among the echoes — distinguishing the
+    // two halves is the prompt instruction's (and push gate's) whole point.
     assert!(
-        events
+        self_echoes
             .iter()
             .all(|e| e["data"]["author"].as_str() != Some("user")),
-        "spec self-write must not appear as author=user; got {events:?}",
+        "spec self-write must not appear as author=user; got {self_echoes:?}",
     );
 }

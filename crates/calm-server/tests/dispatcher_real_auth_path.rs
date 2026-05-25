@@ -122,7 +122,14 @@ async fn boot() -> Boot {
             card_role_cache.clone(),
             wave_cove_cache.clone(),
         )),
-        Arc::new(CodexClient::new_stub()),
+        {
+            // Deterministically-broken codex bin (absolute, absent) so the
+            // spec-push app-server boot fails fast regardless of PATH. Wave
+            // create tolerates this (#293 / PR #311) and returns 201.
+            let mut codex = CodexClient::new_stub();
+            codex.codex_bin = "/nonexistent-codex-bin-dispatcher-real-auth".into();
+            Arc::new(codex)
+        },
         Some(card_role_cache.clone()),
         Some(wave_cove_cache.clone()),
     );
@@ -190,8 +197,8 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
     .await;
     assert_eq!(
         status,
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "wave create returns 500 when daemon spawn fails synchronously (issue #236); spec card + role-cache write-through still happen pre-spawn so the assertions below still hold",
+        StatusCode::CREATED,
+        "wave create returns 201 even when the spec app-server boot fails (issue #293 / PR #311 — boot is non-fatal); spec card + role-cache write-through still happen pre-boot so the assertions below still hold",
     );
 
     let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();

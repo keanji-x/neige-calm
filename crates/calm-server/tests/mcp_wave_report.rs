@@ -137,7 +137,6 @@ async fn boot() -> Boot {
         repo: route_repo,
         events,
         card_role_cache,
-        event_cursor_cache: calm_server::event_cursor::EventCursorCache::new(),
         wave_cove_cache,
     });
 
@@ -336,9 +335,9 @@ async fn write_replaces_body_and_emits_card_updated() {
         other => panic!("expected WaveReportEdited second, got {other:?}"),
     }
     // Same card scope as the CardUpdated envelope, and the scope row
-    // must also populate `scope_wave` + `scope_card` so PR8's
-    // `wait_for_events` long-poll filter can subscribe to the wave's
-    // edit log without scanning the firehose.
+    // must also populate `scope_wave` + `scope_card` so the dispatcher's
+    // push filter can subscribe to the wave's edit log without scanning
+    // the firehose.
     match &envs[1].scope {
         EventScope::Card { card, wave, .. } => {
             assert_eq!(card, &report_id, "scope_card persisted on the events row");
@@ -493,10 +492,10 @@ async fn write_with_unchanged_content_still_emits_wave_report_edited() {
 #[tokio::test]
 async fn wave_report_edited_persisted_with_wave_and_card_scope_columns() {
     // The `WaveReportEdited` row must land in the `events` table with
-    // `scope_wave = wave_id` and `scope_card = card_id` so PR8's
-    // `wait_for_events` long-poll filter (and PR5's dispatcher) can
-    // subscribe to a single wave's edit log without scanning the
-    // firehose. Query the table directly through the replay path so
+    // `scope_wave = wave_id` and `scope_card = card_id` so the
+    // dispatcher's push filter can subscribe to a single wave's edit log
+    // without scanning the firehose. Query the table directly through
+    // the replay path so
     // we're testing what's persisted, not just what's broadcast.
     let boot = boot().await;
     call_tool(

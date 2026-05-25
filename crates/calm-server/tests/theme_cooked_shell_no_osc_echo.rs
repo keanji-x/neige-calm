@@ -172,7 +172,16 @@ async fn boot_full() -> Boot {
         session_daemon_bin: locate_daemon_bin(),
     });
     let card_role_cache = CardRoleCache::new();
-    let codex_client = CodexClient::new_stub();
+    // #293 cutover: `POST /api/waves` now synchronously boots a `codex
+    // app-server` via `codex_bin` (the kernel-owned spec-push channel),
+    // BEFORE returning 201. Point `codex_bin` at the `osc-probe-child`
+    // fixture, which answers the app-server handshake when invoked with the
+    // `app-server` subcommand (see `tests/fixtures/osc-probe-child/appserver.rs`).
+    // The codex-CARD spawn under test still resolves `codex` via the staged
+    // PATH symlink (→ cooked-shell-child) — that path runs `sh -c codex`, not
+    // `codex_bin`, so this only affects the wave-create boot.
+    let mut codex_client = CodexClient::new_stub();
+    codex_client.codex_bin = env!("CARGO_BIN_EXE_osc-probe-child").to_string();
     let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
     let state = AppState::from_parts(
         repo.clone(),

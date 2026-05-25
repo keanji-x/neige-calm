@@ -27,13 +27,16 @@
 //! no-MCP one, breaking the codex MCP handshake.
 //!
 //! The fix awaits the seed + spawn inline before returning 201, so the
-//! response payload never reflects a daemon-less spec card. If the
-//! daemon spawn fails the handler returns 500 — the wave is unusable
-//! without its daemon — but the DB tx is **not** rolled back: the wave
-//! row stays so the user can retry the daemon spawn out-of-band rather
-//! than losing their typed title. Persisted rows + the two events
-//! still survive on the 500 path; the orphan-terminal sweeper reaps
-//! the dangling terminal row (~60 s grace) if the user doesn't retry.
+//! response payload never reflects a daemon-less spec card when the spawn
+//! succeeds. Spawning the spec agent is **non-fatal** (issue #293 / PR
+//! #311): if the codex app-server can't boot (missing/broken binary, auth
+//! hiccup, or the overall boot deadline) the handler still returns 201
+//! with the created wave — the spec card just has no `codex_thread_id`
+//! and no running daemon (inert / not-running, recoverable by retry or
+//! delete). The DB tx is never rolled back: the wave row stays so the
+//! user keeps their typed title. Persisted rows + the two events survive;
+//! the orphan-terminal sweeper reaps the dangling terminal row (~60 s
+//! grace) if no daemon is attached.
 //!
 //! The earlier rationale for the `tokio::spawn` form was the
 //! `spawn_daemon_for` busy-poll wait-until-socket-ready loop (~3 s
@@ -58,22 +61,23 @@
 use crate::actor::Actor;
 use crate::auth::Principal;
 use crate::db::sqlite::{
-    card_create_with_id_tx, card_with_codex_create_tx, cove_folder_create_tx, overlay_upsert_tx,
-    terminal_delete_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
+    card_create_with_id_tx, card_update_tx, card_with_codex_create_tx, cove_folder_create_tx,
+    overlay_upsert_tx, terminal_delete_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
 };
 use crate::db::{write_with_event_typed, write_with_events_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{EditAuthor, Event, EventScope};
 use crate::ids::ActorId;
 use crate::model::{
-    CardRole, CoveKind, FolderConflict, FolderConflictKind, NewCard, NewOverlay, NewWave, Wave,
-    WaveDetail, WavePatch, new_id,
+    CardPatch, CardRole, CoveKind, FolderConflict, FolderConflictKind, NewCard, NewOverlay,
+    NewWave, Wave, WaveDetail, WavePatch, new_id,
 };
 use crate::routes::cove_folders::{is_descendant_of, normalize_path};
 use crate::routes::settings::load_settings;
-use crate::spec_card::{build_codex_env_map, seed_and_spawn_spec_daemon};
+use crate::spec_appserver::spawn_spec_appserver;
+use crate::spec_card::{SpecPushDaemonArgs, build_codex_env_map, seed_and_spawn_spec_daemon};
 use crate::state::AppState;
-use crate::terminal_sweeper::reap_terminal_artifacts;
+use crate::terminal_sweeper::{reap_spec_push, reap_terminal_artifacts};
 use crate::wave_lifecycle::validate_transition;
 use crate::wave_report::{WaveReportPayload, persist_report, resolve_report_for_wave};
 use axum::{
@@ -701,34 +705,284 @@ pub(crate) async fn create_wave(
     // contract narrow ("whatever ended up on the row is what the
     // daemon runs under") and matches the same path the spec card's
     // terminal-row write recorded.
-    if let Err(e) = seed_and_spawn_spec_daemon(
-        s.clone(),
-        spec_card_id.clone(),
-        wave.id.as_str().to_string(),
-        wave.cwd.clone(),
-        env_for_spawn,
-        mcp_token.clone(),
-        Some(wave.title.clone()),
+    //
+    // #293 cutover — push is the ONLY path. Every wave drives DECISION A's
+    // blocking sequence: boot the kernel-owned `codex app-server`, run turn
+    // #1, await `turn/started`, persist `codex_thread_id` + `appserver_sock`
+    // on the spec card payload, park the handle in `state.spec_push`, then
+    // spawn the PTY daemon in **resume mode** (`codex resume <tid> --remote
+    // unix://<sock>`). There is no legacy bare-`codex '<title>'` path anymore.
+    //
+    // S2 (#293, #311) — SPEC BOOT IS NON-FATAL TO WAVE CREATION.
+    // The wave + spec card + report card rows are already committed (and
+    // their `CardAdded`/`WaveUpdated` events already broadcast) by the time
+    // we boot the app-server here. The app-server boot must therefore be
+    // NON-FATAL: if it fails — a missing/broken codex binary (every
+    // codex-free environment: CI's web a11y job, the chromium docker stack),
+    // a transient model/auth hiccup, or the S1 `OVERALL_BOOT_BUDGET`
+    // deadline elapsing — we DO NOT return 500. `spawn_push_appserver`'s
+    // internal `SpawnRollback` guard has already torn down the failed
+    // app-server process group + socket dir (no orphan), so on the error
+    // arm we simply `warn!` that the spec agent couldn't start, SKIP the
+    // `codex_thread_id` persist + registry insert + `--remote` TUI spawn
+    // (all of which live in `spawn_push_appserver` / the
+    // `seed_and_spawn_spec_daemon` call below), and return **201 with the
+    // created wave**. The wave/spec-card/report/terminal rows already
+    // committed stay; the spec card simply has no `codex_thread_id` and no
+    // running daemon (inert / not-running, recoverable by retry or delete).
+    // The dispatcher's missing-handle path already warns (no crash), so an
+    // inert wave is safe. Pre-cutover the PTY path tolerated codex failing
+    // (it only 500'd if the daemon BINARY was missing); this restores that
+    // tolerance for the push path so codex-free UI jobs get a 201.
+    let push_args = match spawn_push_appserver(
+        &s,
+        &spec_card_id,
+        &wave,
+        &env_for_spawn,
+        mcp_token.as_deref(),
     )
     .await
     {
-        tracing::error!(
+        Ok(args) => Some(args),
+        Err(e) => {
+            // Non-fatal: the app-server's `SpawnRollback` guard already
+            // reaped its process group + socket dir on the way out (no
+            // orphan). Log the wave as created-but-inert and fall through
+            // to return 201 with the wave; we skip the daemon spawn below.
+            tracing::warn!(
+                card_id = %spec_card_id,
+                wave_id = %wave.id,
+                error = %e,
+                "spec push app-server failed to boot on wave create; wave created but the spec agent is NOT running (inert wave, recoverable via retry/delete) — returning 201",
+            );
+            None
+        }
+    };
+
+    // Only spawn the resume-mode `--remote` TUI daemon when the app-server
+    // actually booted (turn #1 started, thread persisted, handle parked).
+    // If the boot failed above, `push_args` is `None` and the wave is inert
+    // — there is no thread to `codex resume`, so we skip the daemon spawn
+    // entirely and return the created wave.
+    if let Some(push_args) = push_args {
+        if let Err(e) = seed_and_spawn_spec_daemon(
+            s.clone(),
+            spec_card_id.clone(),
+            wave.id.as_str().to_string(),
+            wave.cwd.clone(),
+            env_for_spawn,
+            mcp_token.clone(),
+            push_args,
+        )
+        .await
+        {
+            // Non-fatal, mirroring the app-server boot path: the wave +
+            // rows are committed and the app-server already booted (its
+            // handle is parked in `state.spec_push`). A failed PTY daemon
+            // spawn leaves the wave inert/not-running rather than 500'ing;
+            // the sweeper reaps the orphan terminal.
+            tracing::warn!(
+                card_id = %spec_card_id,
+                wave_id = %wave.id,
+                error = %e,
+                "spec daemon spawn failed on wave create; wave created but the spec TUI daemon is NOT running (inert wave) — returning 201",
+            );
+        } else {
+            tracing::info!(
+                card_id = %spec_card_id,
+                wave_id = %wave.id,
+                "spec card persisted + daemon spawned inline",
+            );
+        }
+    } else {
+        tracing::info!(
             card_id = %spec_card_id,
             wave_id = %wave.id,
-            error = %e,
-            "spec daemon spawn failed on wave create; wave row persisted, terminal will be reaped by sweeper",
+            "wave created without a running spec agent (app-server boot failed; inert wave)",
         );
-        return Err(CalmError::Internal(format!(
-            "spec daemon spawn failed: {e}",
-        )));
     }
+
+    Ok((StatusCode::CREATED, Json(wave)).into_response())
+}
+
+/// PR3a (#293) — DECISION A's create-wave blocking sequence for the push
+/// path. Boots the kernel-owned `codex app-server`, runs turn #1 with the
+/// wave's title as the goal, awaits `turn/started` (so a rollout exists on
+/// disk for the `--remote` TUI to resume), persists `codex_thread_id` +
+/// `appserver_sock` on the spec card payload (eventized — same audited
+/// `write_with_event_typed` path every other write uses), parks the
+/// handle in `state.spec_push`, and returns the
+/// [`SpecPushDaemonArgs`] the PTY daemon spawn needs.
+///
+/// On any failure the `SpawnRollback` guard in `spawn_spec_appserver`
+/// reaps the failed app-server's process group + socket dir, and this
+/// function's `?` propagates the error. The caller (`create_wave`) treats
+/// that error as **non-fatal** (issue #293 / PR #311): it logs a warning,
+/// skips the daemon spawn, and returns 201 with an inert wave — the
+/// persisted rows survive and the sweeper reaps the orphan terminal.
+async fn spawn_push_appserver(
+    s: &AppState,
+    spec_card_id: &str,
+    wave: &Wave,
+    env_for_spawn: &serde_json::Value,
+    mcp_token: Option<&str>,
+) -> Result<SpecPushDaemonArgs> {
+    // Seed the spec card's `$CODEX_HOME` FIRST. The kernel-owned
+    // `app-server` is spawned with `CODEX_HOME = <codex_homes_dir>/<card_id>`
+    // (in `env_for_spawn`); codex exits at boot with "CODEX_HOME … does not
+    // exist" if the dir (with its seeded auth.json + config.toml) isn't
+    // there yet. The legacy path seeds inside `seed_and_spawn_spec_daemon`,
+    // but in push mode the app-server boots BEFORE that call, so we seed
+    // here. The later `seed_and_spawn_spec_daemon` re-seed is idempotent
+    // (the copy is skipped on the now-existing dir; config.toml is
+    // rewritten identically).
+    crate::spec_card::seed_codex_home_for_card(
+        s,
+        spec_card_id,
+        &wave.cwd,
+        wave.id.as_str(),
+        crate::spec_card::SeededCardRole::Spec,
+        mcp_token,
+    )?;
+
+    // Per-card listen socket under the user-owned data dir (the server
+    // 0700-chmods the socket's parent dir; `appserver_sock_dir` resolves
+    // it to `<data_dir>/appserver/<card_id>/`, never the shared root).
+    // Create the dir now so `spawn_spec_appserver` can bind into it.
+    let sock = s.daemon.appserver_sock_path(spec_card_id);
+    let sock_dir = s.daemon.appserver_sock_dir(spec_card_id);
+    std::fs::create_dir_all(&sock_dir).map_err(|e| {
+        CalmError::Internal(format!(
+            "mkdir appserver sock dir {}: {e}",
+            sock_dir.display()
+        ))
+    })?;
+
+    // DECISION A's blocking sequence (boot → connect → initialize →
+    // thread/start → turn/start(goal) → await turn/started). The wave
+    // title is the agent's goal — the same value the legacy path passes
+    // as codex's positional `[PROMPT]`. We do NOT await `turn/completed`.
+    let handle =
+        spawn_spec_appserver(&s.codex.codex_bin, env_for_spawn, &wave.title, &sock).await?;
+    let thread_id = handle.thread_id.clone();
+    let sock_for_args = handle.sock.clone();
+    let pgid = handle.pgid;
+
+    // Persist `codex_thread_id` + `appserver_sock` + `appserver_pgid` on
+    // the spec card payload (merge into the existing payload —
+    // `card_update_tx` replaces the whole `payload` column, so we
+    // read-modify-write). `codex_thread_id` is also the
+    // `codex_auto_submit` skip signal: the kernel already drove turn #1,
+    // so no `\r` is injected into the resumed TUI. `appserver_pgid` is the
+    // crash-recovery reap target — `reap_orphan_appserver_groups_on_boot`
+    // reads it to `kill(-pgid, …)` a leaked group after a hard crash.
+    //
+    // NOTE: this persists AFTER the handle is built but BEFORE it is parked
+    // in the registry. If this write fails (`?`), `handle` is dropped on
+    // the early return → its `Drop` fires a group SIGTERM (B1), so the
+    // freshly-booted app-server is reaped rather than leaked, and nothing
+    // is parked in the registry. The socket dir is left for the sweeper /
+    // next boot recovery (the pgid was not persisted, so boot-recovery
+    // can't see it; but the Drop already killed the group, so there is no
+    // live server to leak — only an empty stale socket file, harmless).
+    // The wave is in hand, so the card scope needs no extra DB round-trip.
+    let scope = EventScope::Card {
+        card: spec_card_id.into(),
+        wave: wave.id.clone(),
+        cove: wave.cove_id.clone(),
+    };
+    let card_id_for_tx = spec_card_id.to_string();
+    let thread_id_for_tx = thread_id.clone();
+    let sock_str = sock_for_args.to_string_lossy().to_string();
+    let (_card, _id) = write_with_event_typed(
+        s.repo.as_ref(),
+        ActorId::Kernel,
+        scope,
+        None,
+        &s.events,
+        &s.card_role_cache,
+        &s.wave_cove_cache,
+        move |tx| {
+            Box::pin(async move {
+                // Read current payload, merge the push fields, write back.
+                // N1: a spec card's payload must be a JSON object — the
+                // push fields can only be inserted into one. If it isn't
+                // (corruption / unexpected shape), fail loudly rather than
+                // silently dropping `codex_thread_id` (which would hand the
+                // `--remote` TUI a `codex resume` argv with no persisted
+                // thread id and leave the booted app-server parked but
+                // unreferenceable).
+                let mut payload = s_repo_card_get(tx, &card_id_for_tx).await?;
+                let Some(map) = payload.as_object_mut() else {
+                    return Err(CalmError::Internal(format!(
+                        "spec card {card_id_for_tx} payload is not a JSON object; \
+                         cannot persist codex_thread_id/appserver_sock/appserver_pgid",
+                    )));
+                };
+                map.insert(
+                    "codex_thread_id".into(),
+                    serde_json::Value::String(thread_id_for_tx),
+                );
+                map.insert("appserver_sock".into(), serde_json::Value::String(sock_str));
+                map.insert(
+                    "appserver_pgid".into(),
+                    serde_json::Value::Number(pgid.into()),
+                );
+                let card = card_update_tx(
+                    tx,
+                    &card_id_for_tx,
+                    CardPatch {
+                        kind: None,
+                        sort: None,
+                        payload: Some(payload),
+                        deletable: None,
+                    },
+                )
+                .await?;
+                Ok((card.clone(), Event::CardUpdated(card)))
+            })
+        },
+    )
+    .await?;
+
+    // Park the handle so PR3b's dispatcher can resolve the wave's
+    // app-server client + thread, and so wave-delete / sweeper teardown
+    // kills the child via `kill_on_drop`.
+    s.spec_push.insert(wave.id.clone(), handle);
 
     tracing::info!(
         card_id = %spec_card_id,
         wave_id = %wave.id,
-        "spec card persisted + daemon spawned inline",
+        thread_id = %thread_id,
+        sock = %sock_for_args.display(),
+        "spec push: app-server booted, turn #1 started, thread persisted",
     );
-    Ok((StatusCode::CREATED, Json(wave)).into_response())
+
+    Ok(SpecPushDaemonArgs {
+        thread_id,
+        sock: sock_for_args,
+    })
+}
+
+/// Fetch a card's current `payload` JSON inside a transaction (read step
+/// of the read-modify-write payload merge in [`spawn_push_appserver`]).
+async fn s_repo_card_get(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    card_id: &str,
+) -> Result<serde_json::Value> {
+    let row: Option<(String,)> = sqlx::query_as("SELECT payload FROM cards WHERE id = ?1")
+        .bind(card_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    let payload_text = row
+        .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?
+        .0;
+    // N1: surface a malformed payload as an explicit error rather than
+    // masking it as `Value::Null` (the prior `unwrap_or(Null)`), which
+    // would then silently drop the merged push fields downstream. The
+    // caller additionally rejects a well-formed-but-non-object payload.
+    serde_json::from_str(&payload_text)
+        .map_err(|e| CalmError::Internal(format!("card {card_id} payload is not valid JSON: {e}")))
 }
 
 #[utoipa::path(
@@ -895,6 +1149,15 @@ pub(crate) async fn delete_wave(
         .ok_or_else(|| CalmError::NotFound(format!("wave {id}")))?;
     let cove_id = wave.cove_id.clone();
     let wave_id = wave.id.clone();
+
+    // PR3a (#293) — eager teardown of the wave's spec-push app-server
+    // handle (if any): kills the kernel-owned `codex app-server` *process
+    // group* (SIGTERM→SIGKILL, reaping both the node launcher and the
+    // native child) and removes the listen socket + per-card dir. No-op
+    // when the flag is off or no handle exists. Done alongside the
+    // PTY-daemon reaping below so both processes are torn down before the
+    // rows drop.
+    reap_spec_push(&s, &wave_id).await;
 
     let cards = s.repo.cards_by_wave(wave_id.as_str()).await?;
     let mut terminal_ids: Vec<String> = Vec::new();

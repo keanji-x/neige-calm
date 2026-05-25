@@ -4,8 +4,9 @@
 //! These tools complete the spec-card closed loop: a spec daemon reads
 //! the current wave snapshot, mutates wave-level metadata (title /
 //! sort / archive), and marks individual worker results as accepted /
-//! rejected during validation. PR8's `wait_for_events` then closes the
-//! loop by letting the spec wait on the next worker-emitted event.
+//! rejected during validation. The dispatcher then closes the loop by
+//! pushing the next worker-emitted event onto the spec's thread as a
+//! turn input (#293 — no polling).
 //!
 //! ## Tool surface
 //!

@@ -8,9 +8,9 @@ use crate::config::Config;
 use crate::db::{Repo, RouteRepo};
 use crate::dispatcher::Dispatcher;
 use crate::event::EventBus;
-use crate::event_cursor::EventCursorCache;
 use crate::mcp_server::McpServer;
 use crate::plugin_host::{PluginHost, PluginRegistry};
+use crate::spec_appserver::SpecPushRegistry;
 use crate::wave_cove_cache::WaveCoveCache;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -63,11 +63,6 @@ pub struct AppState {
     /// table in [`AppState::new`]; tests use the empty default via
     /// [`AppState::from_parts`] or pre-populate it manually.
     pub wave_cove_cache: WaveCoveCache,
-    /// PR8 (#136) — per-card event cursor cache used by
-    /// `calm.wait_for_events` MCP tool and `/internal/codex/pending_events`
-    /// HTTP fallback. Boot-fresh (empty) on every `AppState` construction;
-    /// not persisted — see `crate::event_cursor` module doc for rationale.
-    pub event_cursor_cache: EventCursorCache,
     /// PR5 (#136) — dispatcher worker handle. Subscribes via
     /// [`EventBus::subscribe_filtered`] to `*.job_requested` envelopes
     /// and mints worker-roled cards (+ optionally spawns the codex /
@@ -92,6 +87,16 @@ pub struct AppState {
     /// tests need a live MCP server. The production `AppState::new`
     /// path always populates this.
     pub mcp_server: Option<Arc<McpServer>>,
+    /// #293 — per-wave codex `app-server` push handles. Each entry owns the
+    /// kernel-spawned `codex app-server` child + its programmatic
+    /// [`crate::codex_appserver::CodexAppServer`] client + the thread id
+    /// turn #1 ran on (one spec card per wave → keyed by `WaveId`).
+    /// Populated by `routes::waves::create_wave` for every wave (push is the
+    /// only path now). Removed (→ child killed via `kill_on_drop`) by the
+    /// wave-delete teardown + `terminal_sweeper`. Clone-cheap
+    /// (`Arc<DashMap<…>>` inside); the dispatcher push path resolves a wave's
+    /// client through this registry.
+    pub spec_push: SpecPushRegistry,
     /// Full-capability handle. Held separately from `repo` so the gate at
     /// `AppState::repo` survives even though the underlying concrete impl
     /// is the same `SqlxRepo`. Kept private — callers must go through
@@ -157,6 +162,10 @@ impl AppState {
         // event. Permit count honors `NEIGE_DISPATCHER_PERMITS` for
         // the rare test that twiddles the env var; the default 8 is
         // the value tests will see otherwise.
+        // #293 — the push registry, shared with the dispatcher. Clone-cheap
+        // (`Arc<DashMap>` inside); the dispatcher takes a clone so its push
+        // path resolves the same handles `create_wave` parks here.
+        let spec_push = SpecPushRegistry::new();
         let dispatcher = Arc::new(Dispatcher::spawn(
             repo.clone(),
             events.clone(),
@@ -167,6 +176,8 @@ impl AppState {
             // `from_parts` is the test / replay hatch — no live MCP
             // server. PR7a.1 (#136 followup) added this slot.
             None,
+            // #293 — share the push registry (push is the only path now).
+            spec_push.clone(),
             Dispatcher::permits_from_env(8),
         ));
         Self {
@@ -182,16 +193,14 @@ impl AppState {
             db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
             card_role_cache,
             wave_cove_cache,
-            // PR8 (#136) — empty cursor cache. Integration tests that
-            // want to assert "second call's `since` defaults to first
-            // call's max id" exercise the cache through the wait/pending
-            // handlers; `from_parts` callers that need to pre-seed for
-            // a fixture can reach the cache through `state.event_cursor_cache`.
-            event_cursor_cache: EventCursorCache::new(),
             dispatcher,
             // `from_parts` is the test / replay-lib hatch — no live MCP
             // server. Production goes through `new` below.
             mcp_server: None,
+            // #293 — push registry. Tests that exercise the push path build
+            // their own handles or drive the gated e2e; the default is empty.
+            // Same instance the dispatcher above holds a clone of.
+            spec_push,
             raw: repo,
         }
     }
@@ -278,9 +287,9 @@ impl AppState {
         // PR7a (#136) — boot the kernel-as-MCP-server. Socket lives at
         // `<data_dir>/mcp/kernel.sock`; `neige-mcp-stdio-shim` is the
         // bridge binary the codex daemon launches per session. We
-        // build the tool registry now (PR7a registers the three emit
-        // tools; PR7b/PR8 will extend) and let `McpServer::spawn`
-        // own the listener task. Boot failure surfaces as a hard
+        // build the tool registry now (emit + wave-state + wave-report
+        // tools) and let `McpServer::spawn` own the listener task. Boot
+        // failure surfaces as a hard
         // anyhow error — no MCP server means spec / worker cards
         // can't emit events, which would silently break the wave
         // FSM. The operator deserves a clear boot-time failure.
@@ -289,13 +298,6 @@ impl AppState {
         // so the dispatcher can take an `Arc<McpServer>` at construction
         // time and use it for worker codex daemon spawn (mirrors the
         // spec card path in `routes::waves::create_wave`).
-        // PR8 (#136) — event cursor cache. Empty at boot; the wait /
-        // pending handlers grow it on demand. Cloned into `AppContext`
-        // (via `McpServer::spawn`) and stashed on `AppState` so the
-        // HTTP fallback (`/internal/codex/pending_events`) sees the
-        // same map.
-        let event_cursor_cache = EventCursorCache::new();
-
         let mcp_socket_path = cfg.data_dir_resolved().join("mcp").join("kernel.sock");
         let mcp_shim_bin = resolve_mcp_stdio_shim_bin();
         let mcp_registry = crate::mcp_server::build_default_registry();
@@ -304,7 +306,6 @@ impl AppState {
             events.clone(),
             card_role_cache.clone(),
             wave_cove_cache.clone(),
-            event_cursor_cache.clone(),
             mcp_socket_path,
             mcp_shim_bin,
             mcp_registry,
@@ -319,6 +320,11 @@ impl AppState {
         // before plugins start emitting; the role cache is already
         // seeded so the dispatcher's `card_create_with_id_tx` write-
         // through into the cache sees the seeded state.
+        // #293 — the push registry, shared with the dispatcher and filled by
+        // `create_wave` (push is the only path now). Construct it before the
+        // dispatcher spawn so the dispatcher's push path and the route both
+        // touch the same `Arc<DashMap>`.
+        let spec_push = SpecPushRegistry::new();
         let dispatcher = Arc::new(crate::dispatcher::Dispatcher::spawn(
             repo.clone(),
             events.clone(),
@@ -330,6 +336,8 @@ impl AppState {
             // worker codex spawns can join the same MCP wire the spec
             // card uses.
             Some(mcp_server.clone()),
+            // #293 — share the push registry (push is the only path now).
+            spec_push.clone(),
             crate::dispatcher::Dispatcher::permits_from_env(8),
         ));
 
@@ -366,9 +374,12 @@ impl AppState {
             db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
             card_role_cache,
             wave_cove_cache,
-            event_cursor_cache,
             dispatcher,
             mcp_server: Some(mcp_server),
+            // #293 — push registry, filled by `create_wave` (push is the only
+            // path now). The dispatcher above holds a clone of this same
+            // instance for its push path.
+            spec_push,
             raw: repo,
         };
 
@@ -448,6 +459,30 @@ impl DaemonClient {
     /// Socket path for a given terminal id.
     pub fn sock_path(&self, terminal_id: &str) -> PathBuf {
         self.data_dir.join(format!("{terminal_id}.sock"))
+    }
+
+    /// PR3a (#293) — per-card directory for a spec card's `codex
+    /// app-server` listen socket: `<data_dir>/appserver/<card_id>/`.
+    ///
+    /// **Must be user-owned**, NOT a bare sticky `/tmp` directory: the
+    /// `codex app-server` `chmod 0700`s the socket's *parent* dir at boot
+    /// and EPERMs if it can't (spike caveat #2). We hang it off the daemon
+    /// data dir's parent (`self.data_dir` is `<data_dir>/terminals`, so
+    /// `parent()` is the resolved `data_dir`, which is the user-owned
+    /// `$HOME/.local/share/neige-calm` in production and a per-test
+    /// tempdir under test). The 0700 chmod lands on this per-card subdir,
+    /// **never** the shared `data_dir` itself. Falls back to `self.data_dir`
+    /// only in the degenerate case where it has no parent.
+    pub fn appserver_sock_dir(&self, card_id: &str) -> PathBuf {
+        let base = self.data_dir.parent().unwrap_or(&self.data_dir);
+        base.join("appserver").join(card_id)
+    }
+
+    /// PR3a (#293) — the `app.sock` path inside [`appserver_sock_dir`].
+    /// Passed to `codex app-server --listen unix://<path>` (kernel side)
+    /// and `codex resume <tid> --remote unix://<path>` (TUI side).
+    pub fn appserver_sock_path(&self, card_id: &str) -> PathBuf {
+        self.appserver_sock_dir(card_id).join("app.sock")
     }
 
     /// Kernel-private transient stdin injection. Opens the daemon's unix
@@ -779,4 +814,41 @@ fn resolve_mcp_stdio_shim_bin() -> PathBuf {
         }
     }
     PathBuf::from("neige-mcp-stdio-shim")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// PR3a (#293) — the per-card app-server socket must land under the
+    /// user-owned data dir (the `app-server` 0700-chmods the socket's
+    /// parent, which EPERMs on a shared sticky /tmp), in a per-card subdir
+    /// — NOT directly in the shared data dir.
+    #[test]
+    fn appserver_sock_path_is_under_user_owned_data_dir_per_card() {
+        // Mirror production: data_dir = <data_dir>/terminals.
+        let data_dir = PathBuf::from("/home/u/.local/share/neige-calm");
+        let daemon = DaemonClient {
+            data_dir: data_dir.join("terminals"),
+            session_daemon_bin: PathBuf::from("calm-session-daemon"),
+        };
+
+        let dir = daemon.appserver_sock_dir("card-abc");
+        let sock = daemon.appserver_sock_path("card-abc");
+
+        // Per-card subdir under <data_dir>/appserver/<card_id>/.
+        assert_eq!(dir, data_dir.join("appserver").join("card-abc"));
+        assert_eq!(sock, dir.join("app.sock"));
+
+        // The 0700 chmod lands on the per-card subdir, never the shared
+        // data dir itself.
+        assert_ne!(dir, data_dir);
+        assert!(sock.starts_with(&data_dir));
+        assert!(sock.starts_with(data_dir.join("appserver")));
+        // Each card gets its own subdir.
+        assert_ne!(
+            daemon.appserver_sock_dir("card-abc"),
+            daemon.appserver_sock_dir("card-xyz")
+        );
+    }
 }

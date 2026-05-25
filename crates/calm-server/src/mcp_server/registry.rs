@@ -4,11 +4,12 @@
 //! ## What lives here
 //!
 //! [`ToolRegistry`] is a name -> handler map the transport consults on
-//! every `tools/call`. Today PR7a registers three handlers
+//! every `tools/call`. PR7a registers the three emit handlers
 //! (`calm.dispatch_request`, `calm.task_completed`, `calm.task_failed`);
-//! PR7b will register `calm.update_wave_state` / `calm.get_wave_state`
-//! and PR8 will register `calm.wait_for_events`. Each handler is
-//! `Send + Sync + 'static` and receives:
+//! PR7b registers `calm.update_wave_state` / `calm.get_wave_state` /
+//! `calm.update_task_meta` and #229 PR B the three `calm.report.*` tools.
+//! (The old `calm.wait_for_events` pull tool was removed in the #293
+//! cutover.) Each handler is `Send + Sync + 'static` and receives:
 //!
 //!   * an [`AppContext`] — repo, event bus, role cache, and the codex
 //!     home parent (already on `AppState`, factored down to the minimum
@@ -35,7 +36,6 @@
 use crate::card_role_cache::CardRoleCache;
 use crate::db::RouteRepo;
 use crate::event::EventBus;
-use crate::event_cursor::EventCursorCache;
 use crate::ids::{ActorId, CardId};
 use crate::mcp_server::framing::RpcError;
 use crate::model::CardRole;
@@ -125,9 +125,7 @@ pub struct AppContext {
     /// `AppState::repo`, so the dyn-trait gate is preserved (no
     /// sync-domain raw writes reachable from a tool handler).
     pub repo: Arc<dyn RouteRepo>,
-    /// Event bus for `write_with_event_typed` broadcasts. PR8's
-    /// `calm.wait_for_events` will additionally `subscribe_filtered` on
-    /// this same bus.
+    /// Event bus for `write_with_event_typed` broadcasts.
     pub events: EventBus,
     /// Role cache, threaded through to `write_with_event_typed` so the
     /// in-tx role gate runs without a DB lookup.
@@ -135,12 +133,6 @@ pub struct AppContext {
     /// #234 — parallel wave→cove cache the role gate consults alongside
     /// `card_role_cache`.
     pub wave_cove_cache: WaveCoveCache,
-    /// PR8 (#136) — per-card event cursor cache. Used by
-    /// `calm.wait_for_events` (this module's `tools/wait.rs`) and by
-    /// the `/internal/codex/pending_events` HTTP fallback so a wait
-    /// call defaults `since` to wherever the last call left off for
-    /// that card.
-    pub event_cursor_cache: EventCursorCache,
 }
 
 /// Boxed future returned by a tool handler. Handlers are async fns;
@@ -174,8 +166,7 @@ pub struct ToolDescriptor {
 }
 
 /// Map of tool name → handler + descriptor. Populated by
-/// [`build_default_registry`] (PR7a wires three tools; PR7b/PR8 will
-/// extend it).
+/// [`build_default_registry`] (emit + wave-state + wave-report tools).
 pub struct ToolRegistry {
     by_name: HashMap<String, (ToolDescriptor, ToolHandler)>,
 }

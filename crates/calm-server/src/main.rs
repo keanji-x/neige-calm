@@ -45,6 +45,13 @@ async fn main() -> anyhow::Result<()> {
     // race the sweep.
     calm_server::revive_orphans_on_boot(&state).await;
 
+    // #293 PR3a (B1) — boot-time reap of any leaked `codex app-server`
+    // process group from a previous kernel hard-crash. Reads the
+    // persisted `appserver_pgid` off spec-card payloads and kills any
+    // group still bound to its (now-orphaned) per-card socket. Runs once
+    // at boot, before the registry holds any live handle.
+    calm_server::reap_orphan_appserver_groups_on_boot(&state).await;
+
     // Optional session-recording — when `RECORD_SESSION=<path>` is set,
     // every event broadcast on the bus is appended to that file as
     // line-delimited JSON in the replay-fixture per-event shape. The

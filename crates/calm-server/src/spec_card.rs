@@ -43,7 +43,7 @@ use crate::state::{AppState, CodexClient};
 ///
 /// `{wave_id}` is the only substitution: at seed time the kernel replaces
 /// it with the freshly minted wave id so the agent has a stable reference
-/// for `wait_for_events` (PR8) calls.
+/// for the `calm.*` wave-state / report tools.
 ///
 /// Kept short on purpose: the codex CLI prepends this to every turn, so
 /// every additional token is a per-turn cost. The substantive instructions
@@ -78,33 +78,46 @@ the goal, `dispatching` before your first `calm.dispatch_request`, \
 `working` once a worker is running, `reviewing` when results land, and \
 `done` only after acceptance.
 
-## Your loop
+## How you are driven
 
-1. Read the wave's goal and acceptance criteria; call \
-   `calm.update_wave_state(lifecycle=\"planning\")`.
-2. Decompose work into one or more sub-jobs by calling \
-   `calm.dispatch_request`. Required args: `kind` (\"codex\" or \
-   \"terminal\"), `idempotency_key` (stable across retries), plus \
-   `goal` (codex) or `cmd` (terminal). Before the first dispatch, \
-   advance to `dispatching`; once at least one worker is running, \
-   advance to `working`.
-3. Wait for `task.completed` / `task.failed` events that match your \
-   idempotency keys via the `calm.wait_for_events` MCP tool. Workers \
-   report progress by calling the `calm.task_completed` / \
-   `calm.task_failed` tools themselves.
-4. When worker output is ready to validate, advance to `reviewing` and \
-   record verdicts via `calm.update_task_meta(status=...)`. When the \
-   wave is complete, advance to `done`. If you cannot proceed without \
-   user input, advance to `blocked` and wait.
-5. Update other wave metadata (title, archive status) only when it \
-   genuinely changes. Worker cards must NOT touch the wave row; the \
-   kernel's role gate enforces this.
+You are **turn-reactive**, not a polling loop. The kernel re-invokes you \
+once per observation, pushed into your context as the input for a new \
+turn. Each turn begins with exactly one of:
 
-After each decision, call `calm.wait_for_events(timeout_ms=30000)` to \
-wait for task lifecycle events on your wave. If the call returns an empty \
-`events` array, immediately call it again — empty means the long-poll \
-timed out, not that no more events will ever arrive. Keep this loop \
-running for the spec's entire session.
+  * the **wave goal** (your first turn);
+  * a **dispatched task completed or failed** (a worker reported \
+    `task.completed` / `task.failed` against one of your idempotency keys);
+  * the **user edited the wave report** (a `wave.report_edited` from the user).
+
+On each turn:
+
+1. Call `calm.get_wave_state` to read the wave's current shape (lifecycle, \
+   dispatched jobs, task results). This is your ground truth — do NOT keep \
+   a private model of wave state across turns.
+2. Decide what to do next and act:
+   * Advance lifecycle via `calm.update_wave_state(lifecycle=...)` — \
+     `planning` once you've read the goal, `dispatching` before your \
+     first `calm.dispatch_request`, `working` once a worker is running, \
+     `reviewing` when results land, `done` only after acceptance, \
+     `blocked` when you need the user.
+   * Dispatch sub-jobs via `calm.dispatch_request`. Required args: \
+     `kind` (\"codex\" or \"terminal\"), `idempotency_key` (stable \
+     across retries so a redelivered observation can't double-dispatch), \
+     plus `goal` (codex) or `cmd` (terminal).
+   * Record verdicts via `calm.update_task_meta(status=...)` when worker \
+     output is ready to validate.
+   * Keep the wave report current (see below).
+3. **END YOUR TURN.** Do NOT poll, do NOT call `calm.wait_for_events` \
+   (it no longer exists), do NOT loop waiting for the next event. The \
+   kernel pushes the next observation as a fresh turn the moment it \
+   arrives — you will be re-invoked automatically. If there is nothing \
+   left to do this turn, just stop; if the wave is `done`/`failed`/ \
+   `blocked` and you're waiting on the user, stop and wait to be \
+   re-invoked.
+
+Update other wave metadata (title, archive status) only when it genuinely \
+changes. Worker cards must NOT touch the wave row; the kernel's role gate \
+enforces this.
 
 ## Wave Report (issue #229)
 
@@ -149,9 +162,9 @@ it's a status board, not a chat log.
 ### Reacting to user edits
 
 The user can edit the report directly from the UI. When that happens, \
-your `calm.wait_for_events` long-poll returns a batch containing a \
-`wave.report_edited` event with `author = \"user\"`. Before doing \
-anything else:
+the kernel re-invokes you with a `wave.report_edited` (author = \
+\"user\") observation as that turn's input. Before doing anything else \
+on that turn:
 
 1. Call `calm.report.read` to fetch the latest body.
 2. Reconcile the user's changes with what you were about to write — \
@@ -159,8 +172,8 @@ anything else:
 3. Then continue your task. Do NOT blindly `report.write` your \
    previous draft; that would overwrite the user's edits.
 
-`author = \"spec\"` events are your own writes echoing back through \
-the same stream — ignore them.
+You will never be pushed your own (`author = \"spec\"`) edits — the \
+kernel only re-invokes you for user-authored report edits.
 
 Do not mint new spec cards from within this session.
 ";
@@ -168,8 +181,7 @@ Do not mint new spec cards from within this session.
 /// Worker-agent system prompt. PR8 (#136) replaces the PR6 stub with
 /// the production prompt: workers are short-lived, fire-and-forget,
 /// driven by the spec card via `calm.dispatch_request`. They run one
-/// job and exit — they do NOT loop on `calm.wait_for_events` (that
-/// tool is spec-only and the soft role gate refuses worker callers).
+/// job and exit.
 ///
 /// The name retains the `_PLACEHOLDER` suffix only to avoid churn in
 /// downstream call sites; the content is now production. A followup
@@ -195,9 +207,10 @@ You were spawned to execute one job. Your contract:
      file/blob references you produced.
    * On failure: `calm.task_failed(idempotency_key, reason)` with \
      a free-form failure description.
-4. Exit. You are short-lived by design — do NOT call `calm.wait_for_events`. \
-   The spec card is listening for your `task.completed` / `task.failed` \
-   on its own polling loop and will continue the wave from there.
+4. Exit. You are short-lived by design — run your single job and stop. \
+   The kernel delivers your `task.completed` / `task.failed` to the \
+   spec card as a pushed turn input, and the spec continues the wave \
+   from there. You do not wait for or observe anything.
 
 You may NOT call `calm.update_wave_state` or `calm.update_task_meta` — \
 those are spec-only tools and the kernel's role gate will refuse you. \
@@ -535,6 +548,35 @@ pub(crate) fn seed_codex_home_with_parts(
     Ok(codex_home)
 }
 
+/// PR3a (#293) — push-mode PTY daemon arguments for
+/// [`seed_and_spawn_spec_daemon`]. Carries the codex thread id the kernel
+/// already created + drove turn #1 on, and the `app-server` listen socket
+/// the `--remote` TUI rejoins. Built by `create_wave` from the
+/// [`crate::spec_appserver::SpecPushHandle`].
+#[derive(Debug, Clone)]
+pub(crate) struct SpecPushDaemonArgs {
+    /// `codex_thread_id` — the shared thread; `codex resume <thread_id>`.
+    pub thread_id: String,
+    /// The `app-server` listen socket; `--remote unix://<sock>`.
+    pub sock: PathBuf,
+}
+
+impl SpecPushDaemonArgs {
+    /// Build the PTY daemon command line for push mode:
+    /// `codex resume <thread_id> --remote unix://<sock>`, with both the
+    /// thread id and the socket path shell-quoted (the command is handed
+    /// to `sh -c`, so any metacharacters must land in codex's argv
+    /// verbatim — same contract as the legacy `codex '<title>'` build).
+    fn command_line(&self) -> String {
+        let remote = format!("unix://{}", self.sock.display());
+        format!(
+            "codex resume {} --remote {}",
+            shell_single_quote(&self.thread_id),
+            shell_single_quote(&remote),
+        )
+    }
+}
+
 /// Seed `$CODEX_HOME` for the spec card, then spawn the codex daemon
 /// bound to its terminal row.
 ///
@@ -569,6 +611,12 @@ pub(crate) fn seed_codex_home_with_parts(
 /// `[mcp_servers.calm].env` block (#236 followup) so the shim
 /// subprocess sees it even though codex CLI 0.132 doesn't pass the
 /// daemon env through.
+// The create-wave path threads several owned inputs through to the
+// post-commit spawn (state, ids, cwd, env, token, push args). Bundling them
+// buys nothing here (each is used once, at the single route call site) and
+// the codebase already uses this allow for the same input-threading shape
+// (see `dispatcher.rs`, `db/sqlite.rs`).
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn seed_and_spawn_spec_daemon(
     state: AppState,
     spec_card_id: String,
@@ -576,11 +624,13 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
     cwd: String,
     env: serde_json::Value,
     mcp_token: Option<String>,
-    // Issue #251 — wave title threaded in as the positional `[PROMPT]`
-    // arg for codex. Empty / whitespace-only titles (defensively
-    // trimmed at the route boundary) fall back to launching codex with
-    // no positional arg so the TUI mounts on an empty composer.
-    wave_title: Option<String>,
+    // #293 — push-mode arguments. `create_wave` has already booted the
+    // kernel-owned `codex app-server`, run turn #1, and persisted the thread
+    // id; the PTY daemon runs `codex resume <thread_id> --remote
+    // unix://<sock>` to *rejoin* the kernel's thread (sharing it with the
+    // kernel's programmatic client). Push is the only path — there is no
+    // legacy bare-`codex '<title>'` fallback.
+    push: SpecPushDaemonArgs,
 ) -> Result<()> {
     // 1. Seed `$CODEX_HOME` for the spec card. Filesystem-only — fast,
     //    bounded by a handful of mkdir + small write_alls.
@@ -627,33 +677,19 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
     };
 
     // 3. Spawn the daemon. The spec agent's system prompt lives in
-    //    `$CODEX_HOME/config.toml`'s `instructions` field (seeded
-    //    above); the positional arg here is the user's wave title /
-    //    goal — codex's `[PROMPT]` arg pre-fills the composer with it.
-    //    `codex_auto_submit` (kernel subscriber) then watches for
-    //    `hook.codex.session_start` and injects a `\r` so the goal is
-    //    submitted the moment the TUI is ready, kicking off the spec
-    //    agent's "Read the wave's goal…" loop. Issue #251 — before
-    //    this, the command line was a bare `codex` and the composer
-    //    mounted empty, leaving the spec agent waiting forever.
+    //    `$CODEX_HOME/config.toml`'s `instructions` field (seeded above).
     //
-    //    `shell_single_quote` mirrors the helper plain codex cards use
-    //    (see `routes::codex_cards::create_codex_card`): the command
-    //    is handed to `sh -c`, so any shell metacharacters in the
-    //    title must be quoted to land in codex's argv verbatim.
+    //    #293 — push is the only path: the TUI runs `codex resume
+    //    <thread_id> --remote unix://<sock>` to rejoin the thread the kernel
+    //    already created and started turn #1 on. The wave goal was already
+    //    submitted by the kernel's `turn/start`, so there is no positional
+    //    `[PROMPT]` arg and `codex_auto_submit` is skipped on the
+    //    `codex_thread_id` payload (no `\r` is injected into the resumed TUI).
     //
-    //    `spawn_daemon_for` includes a busy-poll wait-until-socket-
-    //    ready loop (up to ~3 s). Since #236, this is on the response
-    //    hot path; #236 considered that an acceptable cost vs. the
-    //    correctness bug it closes.
-    let command_line = match wave_title
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        Some(p) => format!("codex {}", shell_single_quote(p)),
-        None => "codex".to_string(),
-    };
+    //    `spawn_daemon_for` includes a busy-poll wait-until-socket-ready loop
+    //    (up to ~3 s). Since #236, this is on the response hot path; #236
+    //    considered that an acceptable cost vs. the correctness bug it closes.
+    let command_line = push.command_line();
     if let Err(e) = spawn_daemon_for(&state, &term, &command_line, &cwd, &env).await {
         tracing::warn!(
             card_id = %spec_card_id,
@@ -677,6 +713,40 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
 mod tests {
     use super::*;
 
+    /// PR3a (#293) — push-mode command is `codex resume <tid> --remote
+    /// unix://<sock>`, with both the thread id and the `unix://` URI
+    /// shell-quoted (the command runs under `sh -c`).
+    #[test]
+    fn push_mode_command_line_is_codex_resume_remote() {
+        let args = SpecPushDaemonArgs {
+            thread_id: "thread-abc123".into(),
+            sock: PathBuf::from("/home/u/.local/share/neige-calm/appserver/card-9/app.sock"),
+        };
+        assert_eq!(
+            args.command_line(),
+            "codex resume 'thread-abc123' \
+             --remote 'unix:///home/u/.local/share/neige-calm/appserver/card-9/app.sock'",
+        );
+    }
+
+    /// Shell metacharacters in the thread id / socket path must land in
+    /// codex's argv verbatim (single-quoted), not be interpreted by the
+    /// `sh -c` wrapper.
+    #[test]
+    fn push_mode_command_line_quotes_metacharacters() {
+        let args = SpecPushDaemonArgs {
+            thread_id: "a b; rm -rf /".into(),
+            sock: PathBuf::from("/tmp/has space/app.sock"),
+        };
+        let line = args.command_line();
+        assert!(
+            line.starts_with(
+                "codex resume 'a b; rm -rf /' --remote 'unix:///tmp/has space/app.sock'"
+            ),
+            "metacharacters must be single-quoted; got: {line}"
+        );
+    }
+
     #[test]
     fn render_system_prompt_substitutes_wave_id() {
         let out = render_system_prompt(SPEC_SYSTEM_PROMPT_TEMPLATE, "wave-abc");
@@ -687,6 +757,56 @@ mod tests {
         assert!(
             !out.contains("{wave_id}"),
             "placeholder should be gone; got: {out}"
+        );
+    }
+
+    /// #293 cutover — the spec prompt must be push-native, not pull. It must
+    /// NOT instruct the agent to poll via `calm.wait_for_events`, and it must
+    /// carry the turn-reactive guidance (driven by pushed observations, end
+    /// the turn, no looping). The only allowed mention of `wait_for_events`
+    /// is the explicit "do NOT call it" instruction.
+    #[test]
+    fn spec_prompt_is_push_native_not_pull() {
+        let p = SPEC_SYSTEM_PROMPT_TEMPLATE;
+
+        // No pull loop. The single permitted occurrence of the old tool
+        // name is the explicit prohibition; it must never be presented as
+        // a thing to call (e.g. `calm.wait_for_events(...)` with args).
+        assert!(
+            !p.contains("calm.wait_for_events(timeout_ms"),
+            "prompt must not tell the spec to poll wait_for_events with a timeout"
+        );
+        assert!(
+            !p.contains("long-poll"),
+            "prompt must not describe a long-poll loop"
+        );
+        // The one mention that remains is the "do NOT call" guidance.
+        assert!(
+            p.contains("do NOT call `calm.wait_for_events`"),
+            "prompt should explicitly tell the agent wait_for_events is gone"
+        );
+
+        // Turn-reactive guidance present.
+        assert!(
+            p.contains("turn-reactive") || p.contains("END YOUR TURN"),
+            "prompt must carry turn-reactive guidance"
+        );
+        assert!(
+            p.contains("END YOUR TURN"),
+            "prompt must tell the agent to end its turn"
+        );
+        assert!(
+            p.contains("re-invoked"),
+            "prompt must explain the kernel re-invokes the agent per observation"
+        );
+        assert!(
+            p.contains("Do NOT poll") && p.contains("do NOT loop"),
+            "prompt must forbid polling / looping"
+        );
+        // Still references the kernel MCP tools the agent drives each turn.
+        assert!(
+            p.contains("calm.get_wave_state") && p.contains("calm.dispatch_request"),
+            "prompt must still reference get_wave_state + dispatch_request"
         );
     }
 

@@ -67,15 +67,11 @@ command = "/usr/local/bin/neige-codex-bridge"
 type = "command"
 command = "/usr/local/bin/neige-codex-bridge"
 
-# Stop hook: bridge does a synchronous 30s long-poll against
-# `/internal/codex/pending_events` (see crates/calm-codex-bridge,
-# #136 PR8). The bridge's own HTTP client has a 35s ureq timeout, so this
-# `timeout = 60` on the codex side is defense-in-depth: it pins a 30s
-# margin over the long-poll window before codex would kill the hook
-# subprocess. NO `async = true` here — the hook must stay synchronous so
-# codex reads our `{decision:"block",...}` frame from stdout.
-[[hooks.Stop]]
-[[hooks.Stop.hooks]]
-type = "command"
-command = "/usr/local/bin/neige-codex-bridge"
-timeout = 60
+# NOTE: there is intentionally NO `[[hooks.Stop]]` block. Before the #293
+# push cutover, the Stop hook ran a synchronous long-poll against
+# `/internal/codex/pending_events` and emitted `{decision:"block",...}` to
+# re-prompt the spec agent (the pull model). Pull is gone — spec agents are
+# now driven by observations the kernel pushes onto their codex thread — so
+# the Stop hook is no longer needed. The bridge still treats any Stop event
+# it receives as a plain fire-and-forget POST to `/internal/codex/hook`, but
+# we don't register the hook here.

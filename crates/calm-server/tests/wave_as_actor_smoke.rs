@@ -95,7 +95,17 @@ async fn boot() -> Boot {
             card_role_cache.clone(),
             wave_cove_cache.clone(),
         )),
-        Arc::new(CodexClient::new_stub()),
+        {
+            // Deterministically-broken codex bin: an absolute path that
+            // does not exist, so the spec-push app-server boot fails fast
+            // (`spawn codex app-server: No such file or directory`)
+            // regardless of whether a real `codex` happens to be on the
+            // test process's PATH. Wave create is now tolerant of this
+            // (issue #293 / PR #311): it returns 201 with an inert wave.
+            let mut codex = CodexClient::new_stub();
+            codex.codex_bin = "/nonexistent-codex-bin-wave-as-actor-smoke".into();
+            Arc::new(codex)
+        },
         Some(card_role_cache.clone()),
         Some(wave_cove_cache.clone()),
     );
@@ -159,12 +169,12 @@ async fn wave_as_actor_smoke_spec_dispatches_worker_via_kernel() {
     let boot = boot().await;
 
     // 1. POST /api/waves — atomically mints wave + spec card. Issue
-    //    #236: the daemon spawn is now synchronous on the response
-    //    hot path, so a stub-bin spawn failure now surfaces as 500;
-    //    the wave + spec card + terminal rows still persist and the
-    //    WaveUpdated + CardAdded events still emit (events broadcast
-    //    at tx commit, before the spawn attempt). The test digs into
-    //    the persisted state to find the spec card id.
+    //    #293 / PR #311: the spec-push app-server boot is now NON-FATAL,
+    //    so a broken codex bin surfaces as **201** (inert wave) rather
+    //    than 500; the wave + spec card + terminal rows still persist and
+    //    the WaveUpdated + CardAdded events still emit (events broadcast
+    //    at tx commit, before the boot attempt). The test digs into the
+    //    persisted state to find the spec card id.
     let (status, _body) = post(
         boot.app.clone(),
         "/api/waves",
@@ -173,8 +183,8 @@ async fn wave_as_actor_smoke_spec_dispatches_worker_via_kernel() {
     .await;
     assert_eq!(
         status,
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "wave create returns 500 when daemon spawn fails (issue #236 sync spawn); rows + events still persisted (got: {status:?})",
+        StatusCode::CREATED,
+        "wave create returns 201 even when the spec app-server boot fails (issue #293 / PR #311 — boot is non-fatal); rows + events still persisted (got: {status:?})",
     );
 
     // 2. Find the spec card the route minted under the cove.

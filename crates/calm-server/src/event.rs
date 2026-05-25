@@ -63,9 +63,9 @@ use ts_rs::TS;
 /// hash / content-type / storage-uri fields.
 ///
 /// Today the variant is referenced only by `Event::TaskCompleted.artifacts`,
-/// which carries a list of these so the (future) `wait_for_events` MCP tool
-/// can hand a spec card a manifest of what its worker produced. Keep this
-/// minimal — #129 territory expands the shape, not PR4.
+/// which carries a list of these so the dispatcher's push path can hand a
+/// spec card a manifest of what its worker produced. Keep this minimal —
+/// #129 territory expands the shape, not PR4.
 ///
 /// Wire shape is a bare string via `#[serde(transparent)]`, matching the
 /// typed-id pattern in [`crate::ids`]. ts-rs emits `export type ArtifactRef
@@ -156,8 +156,8 @@ pub enum EditAuthor {
 ///
 ///   * PR3 (`enforce_role`) gates writes per card scope.
 ///   * PR5 (`SubscribeFilter` + `Dispatcher`) routes notifications + work
-///     queues by wave scope.
-///   * PR8 (`wait_for_events`) long-polls a scoped cursor for MCP tools.
+///     queues by wave scope, and the dispatcher's push path (#293) resolves
+///     a wave's spec card to deliver task/report events as turn inputs.
 ///
 /// `EventScope::System` is the catch-all for events that genuinely don't
 /// belong to a single cove/wave/card (`Event::PluginState`, the
@@ -384,10 +384,9 @@ pub enum Event {
     /// replay.
     ///
     /// Card-scoped: the kernel persists this row with
-    /// `scope_wave = wave_id` and `scope_card = card_id` so
-    /// PR8's `wait_for_events` long-poll filter (and PR5's dispatcher)
-    /// can subscribe to a single wave's edit log without scanning the
-    /// firehose.
+    /// `scope_wave = wave_id` and `scope_card = card_id` so the
+    /// dispatcher's push filter can subscribe to a single wave's edit
+    /// log without scanning the firehose.
     #[serde(rename = "wave.report_edited")]
     WaveReportEdited {
         wave_id: WaveId,
@@ -459,11 +458,11 @@ pub enum Event {
     },
 
     /// Spec/worker card asks the kernel dispatcher to spawn a codex worker
-    /// card. PR4 of #136 introduces this **schema-only** — there is no
-    /// emitter yet. PR5's `Dispatcher` subscribes to `kinds=["*.requested"]`
-    /// on the event bus and reacts by minting a worker card; PR8's
-    /// `wait_for_events` long-polls the matching `task.completed` /
-    /// `task.failed` on behalf of the requesting spec card.
+    /// card. PR4 of #136 introduced this **schema-only**. PR5's `Dispatcher`
+    /// subscribes to `kinds=["*.requested"]` on the event bus and reacts by
+    /// minting a worker card; the dispatcher's push path (#293) then delivers
+    /// the matching `task.completed` / `task.failed` to the requesting spec
+    /// card as a turn input.
     ///
     /// `idempotency_key` lets the dispatcher dedupe replays — a retried
     /// MCP call surfaces the same key and the dispatcher short-circuits to
@@ -497,8 +496,8 @@ pub enum Event {
         cwd: Option<String>,
     },
 
-    /// Worker card reports task completion. PR4 schema-only; PR8's
-    /// `wait_for_events` delivers this to the requesting spec card. The
+    /// Worker card reports task completion. PR4 schema-only; the
+    /// dispatcher's push path delivers this to the requesting spec card. The
     /// `idempotency_key` echoes back the one from the matching
     /// `*.job_requested` event so the spec can correlate without parsing
     /// the worker card's identity.
@@ -515,8 +514,8 @@ pub enum Event {
         artifacts: Vec<ArtifactRef>,
     },
 
-    /// Worker card reports task failure. PR4 schema-only; PR8's
-    /// `wait_for_events` delivers this to the requesting spec card.
+    /// Worker card reports task failure. PR4 schema-only; the dispatcher's
+    /// push path delivers this to the requesting spec card.
     ///
     /// `reason` is a free-form failure string — the kernel never parses
     /// it, but persists it on the events table so audit-log replay can
@@ -674,9 +673,9 @@ pub fn topics(ev: &Event) -> Vec<String> {
 
         // PR4 of #136: kernel-internal dispatcher / task-lifecycle signals.
         // No card/wave/cove ids on the payload itself (the BroadcastEnvelope
-        // carries the originating `EventScope` instead — see `Dispatcher`
-        // and `wait_for_events` in PR5/PR8). Subscribers identify these
-        // via the firehose plus the dispatcher's `kinds=` filter (PR5).
+        // carries the originating `EventScope` instead — see `Dispatcher`).
+        // Subscribers identify these via the firehose plus the dispatcher's
+        // `kinds=` filter (PR5).
         Event::CodexJobRequested { .. }
         | Event::TerminalJobRequested { .. }
         | Event::TaskCompleted { .. }
@@ -779,6 +778,29 @@ impl EventBus {
         });
     }
 
+    /// Test-only re-broadcast of a fully-formed [`BroadcastEnvelope`]
+    /// (explicit `id` + `scope`), mirroring the at-least-once redelivery a
+    /// reconnecting subscriber would see off the broadcast channel.
+    ///
+    /// The production emit paths (`write_with_event` / `log_pure_event`)
+    /// assign a fresh strictly-increasing `events.id` each call, so they
+    /// can't reproduce "the SAME id delivered twice". The #293 PR3b
+    /// dispatcher dedups its spec-push on `envelope.id`; its gated e2e uses
+    /// this helper to redeliver a previously-persisted envelope verbatim and
+    /// assert the second delivery does NOT double-push.
+    ///
+    /// `#[doc(hidden)]` to keep it off the public docs, and available
+    /// outside `#[cfg(test)]` for the same reason [`emit`](Self::emit) is:
+    /// integration tests link the library normally and don't see
+    /// `#[cfg(test)]`-gated items. ([`emit`](Self::emit) itself is NOT
+    /// `#[doc(hidden)]`; only the "available outside `#[cfg(test)]`" rationale
+    /// is shared.) Production code must never call this — it bypasses
+    /// persistence.
+    #[doc(hidden)]
+    pub fn emit_envelope_for_test(&self, env: BroadcastEnvelope) {
+        let _ = self.tx.send(env);
+    }
+
     /// New subscriber. The receiver picks up envelopes emitted after this
     /// call.
     pub fn subscribe(&self) -> broadcast::Receiver<BroadcastEnvelope> {
@@ -798,9 +820,8 @@ impl EventBus {
     /// The filter itself is server-internal — no wire format, no schema
     /// cost. Plugins still subscribe through the WS `topics()` /
     /// `plugin_host::events` filter API; `SubscribeFilter` is for the
-    /// dispatcher (PR5), `wait_for_events` (PR8), and any future
-    /// kernel-internal worker that needs a per-`EventScope` / per-`kind`
-    /// cut of the firehose.
+    /// dispatcher (PR5) and any future kernel-internal worker that needs a
+    /// per-`EventScope` / per-`kind` cut of the firehose.
     ///
     /// **Glob support for `kinds` is out of scope for PR5** — exact
     /// kind-tag match only. A future extension can add prefix globs
@@ -825,8 +846,8 @@ impl EventBus {
 // ---------------------------------------------------------------------------
 
 /// Server-internal subscription filter. PR5 of #136 lands the type +
-/// matching logic; the dispatcher (`crate::dispatcher`) and PR8's
-/// `wait_for_events` are the only consumers today.
+/// matching logic; the dispatcher (`crate::dispatcher`) is the only
+/// consumer today.
 ///
 /// The filter combines a scope predicate (where in the cove→wave→card
 /// tree we care about) with an optional kind predicate (which event
@@ -1103,11 +1124,9 @@ mod scope_tests {
 
     // ----- PR4 of #136: new Event variants + ArtifactRef -----------------
     //
-    // Schema-only PR — these tests pin the wire shape of the four new
-    // dispatcher / task-lifecycle variants and the `ArtifactRef`
-    // placeholder. No emitters exist yet (PR5 wires the dispatcher), but
-    // PR8's `wait_for_events` and the web zod schemas already need a
-    // stable wire shape to compile against.
+    // These tests pin the wire shape of the dispatcher / task-lifecycle
+    // variants and the `ArtifactRef` placeholder. The dispatcher (PR5) and
+    // the web zod schemas both rely on a stable wire shape.
 
     #[test]
     fn artifact_ref_transparent_serde() {

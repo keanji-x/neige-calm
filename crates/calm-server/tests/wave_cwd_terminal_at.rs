@@ -4,12 +4,14 @@
 //! calendar window query `GET /api/waves?since&until&cove_id`.
 //!
 //! These tests boot a stub-daemon router (no real codex / no real
-//! `calm-session-daemon`) so the spec-daemon spawn fails synchronously
-//! on `POST /api/waves` — the route returns 500 on that branch but
-//! the wave + cards + (optional) cove_folder rows still land at
-//! commit time. Every assertion below targets DB state, the lifecycle
-//! → terminal_at wiring, and the route-layer body shapes — none of
-//! the assertions need the daemon to actually exec the codex binary.
+//! `calm-session-daemon`) so the spec-push app-server boot fails on
+//! `POST /api/waves`. Issue #293 / PR #311 made that boot NON-FATAL —
+//! the route now returns 201 (inert wave) on that branch rather than
+//! 500 — and the wave + cards + (optional) cove_folder rows land at
+//! commit time regardless. The assertions below tolerate either 201 or
+//! 500 (legacy) since they target DB state, the lifecycle → terminal_at
+//! wiring, and the route-layer body shapes — none of them need the
+//! daemon to actually exec the codex binary.
 //!
 //! Tests in `wave_create_sync_daemon.rs` cover the real-daemon path
 //! end-to-end (spec daemon cwd == wave.cwd, codex argv carries title);

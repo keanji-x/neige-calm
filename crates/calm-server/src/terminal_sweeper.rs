@@ -71,7 +71,7 @@ use crate::db::sqlite::terminal_delete_tx;
 use crate::db::write_with_event_typed;
 use crate::error::Result;
 use crate::event::{Event, EventScope};
-use crate::ids::ActorId;
+use crate::ids::{ActorId, WaveId};
 use crate::model::Terminal;
 use crate::state::AppState;
 use calm_session::{
@@ -166,11 +166,19 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
     let card_id = term.card_id.clone();
     let scope = match state.repo.card_get(card_id.as_str()).await? {
         Some(c) => match state.repo.wave_get(c.wave_id.as_str()).await? {
-            Some(w) => EventScope::Card {
-                card: c.id,
-                wave: w.id,
-                cove: w.cove_id,
-            },
+            Some(w) => {
+                // PR3a (#293) — defensively reap any spec-push handle for
+                // this wave on the crash-recovery path too. The eager
+                // wave/spec-card delete already reaps it; this catches the
+                // residual shape where a spec terminal was orphaned but
+                // the handle is still parked in the registry.
+                reap_spec_push(state, &w.id).await;
+                EventScope::Card {
+                    card: c.id,
+                    wave: w.id,
+                    cove: w.cove_id,
+                }
+            }
             None => EventScope::System,
         },
         None => EventScope::System,
@@ -281,6 +289,77 @@ pub async fn reap_terminal_artifacts(term: &Terminal) {
         let _ = std::fs::remove_file(sock);
     }
 }
+
+/// PR3a (#293) — reap a wave's `codex app-server` push channel, if any.
+///
+/// This is the spec-push parallel to [`reap_terminal_artifacts`] for the
+/// PTY daemon: the wave-delete eager-teardown path calls it before dropping
+/// rows, and the orphan sweeper calls it (best-effort, by resolved wave)
+/// for crash-recovery residue. No-op when the registry has no entry for the
+/// wave (e.g. a prior teardown / sweep already removed it, or the kernel
+/// restarted and lost the in-memory handle).
+///
+/// ## Why this kills the process GROUP, not just the pid (B1)
+///
+/// The spawned PID is a `node` launcher (`codex.js`) that forks a **native
+/// `codex app-server` child** holding the listening socket FDs. A pid-only
+/// kill — including `kill_on_drop` — SIGKILLs only the launcher; the native
+/// child survives, is reparented under `systemd --user`, and keeps serving.
+/// So the reap escalates over the child's **process group**
+/// (`kill(-pgid, …)`; the launcher is spawned as a group leader so the
+/// native child shares its pgid):
+///
+///   1. `SIGTERM` the group, give it [`GROUP_KILL_GRACE`] to exit, then
+///   2. `SIGKILL` the group if anything's left,
+///   3. remove the listen socket + the now-empty per-card dir (B2 —
+///      mirrors the PTY `remove_file(sock)` in [`reap_terminal_artifacts`];
+///      otherwise `<data_dir>/appserver/<card_id>/` accumulates forever),
+///   4. drop the handle (the [`SpecPushHandle::drop`] safety-net group
+///      SIGTERM is a no-op by now, plus consumer/reader task aborts).
+///
+/// ## Hard-crash orphan gap → closed by pgid persistence
+///
+/// If the kernel is `SIGKILL`ed (or the box loses power) the in-process
+/// reap never runs. To close that gap the pgid is **persisted** on the
+/// spec-card payload (`appserver_pgid`, written alongside `codex_thread_id`
+/// / `appserver_sock` on the create-wave hot path); the boot-time recovery
+/// sweep [`crate::reap_orphan_appserver_groups_on_boot`] reads it back and
+/// `kill(-pgid, …)`s any orphaned group whose owning terminal is gone —
+/// the same shape the PTY sweeper uses (`terminal_set_pid` + SIGTERM),
+/// extended to the process group.
+pub async fn reap_spec_push(state: &AppState, wave_id: &WaveId) {
+    let Some(handle) = state.spec_push.remove(wave_id) else {
+        return;
+    };
+    let pgid = handle.pgid;
+    let sock = handle.sock.clone();
+    tracing::info!(
+        wave_id = %wave_id,
+        thread_id = %handle.thread_id,
+        pgid,
+        sock = %sock.display(),
+        "spec push: reaping app-server handle on wave/spec-card delete (group SIGTERM→SIGKILL)",
+    );
+    // Load-bearing reap: SIGTERM the whole group, then SIGKILL after a
+    // short grace. `signal_process_group` returns false on ESRCH (group
+    // already gone), so we skip the grace+SIGKILL when SIGTERM found
+    // nothing.
+    if crate::spec_appserver::signal_process_group(pgid, libc::SIGTERM) {
+        tokio::time::sleep(GROUP_KILL_GRACE).await;
+        crate::spec_appserver::signal_process_group(pgid, libc::SIGKILL);
+    }
+    // B2: remove the stale socket + the now-empty per-card dir.
+    crate::spec_appserver::cleanup_sock_dir(&sock);
+    // Drop the handle last: aborts the consumer + client reader tasks. The
+    // handle's Drop also fires a best-effort group SIGTERM, a no-op here.
+    drop(handle);
+}
+
+/// Grace window between the group `SIGTERM` and the follow-up `SIGKILL` in
+/// [`reap_spec_push`]. Short — a healthy `codex app-server` exits on
+/// SIGTERM in well under a second; we don't want to block a wave-delete
+/// handler (or the sweep tick) any longer than necessary before forcing it.
+const GROUP_KILL_GRACE: Duration = Duration::from_millis(500);
 
 /// Open the daemon's unix socket, send the required v2 `ClientHello`
 /// (so the daemon's handshake accepts us and routes the connection

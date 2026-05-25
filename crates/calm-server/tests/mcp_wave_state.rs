@@ -121,7 +121,6 @@ async fn boot() -> Boot {
         events,
         card_role_cache,
         wave_cove_cache,
-        event_cursor_cache: calm_server::event_cursor::EventCursorCache::new(),
     });
 
     let mut registry = ToolRegistry::new();

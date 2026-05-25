@@ -112,8 +112,81 @@ pub async fn revive_orphans_on_boot(state: &state::AppState) {
     tracing::info!(respawned, alive, "revive_orphans_on_boot: complete",);
 }
 
+/// #293 PR3a (B1 crash recovery) — reap any **leaked `codex app-server`
+/// process group** left by a previous kernel hard-crash.
+///
+/// The graceful teardown path
+/// ([`terminal_sweeper::reap_spec_push`](crate::terminal_sweeper::reap_spec_push))
+/// kills the app-server's process group while the kernel is alive. But if
+/// the kernel is `SIGKILL`ed (or the box loses power), the in-process
+/// reap never runs and the native `codex app-server` child survives,
+/// reparented under `systemd --user`, still bound to its per-card listen
+/// socket. The kernel persists the launcher's pgid on the spec-card
+/// payload (`appserver_pgid`) precisely so this boot-time sweep can find
+/// and reap that orphan — the spec-push parallel to the PTY sweeper's
+/// `terminal_set_pid` + SIGTERM recovery, extended to the process group.
+///
+/// Pid-recycling guard: a persisted pgid could, after a reboot, name an
+/// unrelated process. We only `kill(-pgid, …)` a group whose **per-card
+/// listen socket still accepts a connection** — i.e. a `codex app-server`
+/// is genuinely still bound there. A recycled, unrelated pid would not be
+/// listening on our socket, so it is never signaled. After the kill we
+/// clean the socket dir. This runs at boot before the registry holds any
+/// handle, so there is no live owner to race.
+pub async fn reap_orphan_appserver_groups_on_boot(state: &state::AppState) {
+    let cards = match state.repo.spec_cards_with_appserver_pgid().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "reap_orphan_appserver_groups_on_boot: query failed; skipping"
+            );
+            return;
+        }
+    };
+    if cards.is_empty() {
+        return;
+    }
+    let mut reaped = 0usize;
+    for (card_id, pgid, sock) in cards {
+        // Only reap a group that is genuinely a live, leaked app-server:
+        // its listen socket must still accept a connection. This both
+        // confirms the server survived the crash AND guards against pid
+        // recycling (an unrelated recycled pgid isn't bound to our socket).
+        let sock_path = std::path::Path::new(&sock);
+        let connectable = tokio::net::UnixStream::connect(sock_path).await.is_ok();
+        if !connectable {
+            // Either the server already died (socket stale) or never came
+            // up. Clean any stale socket file/dir and move on — nothing to
+            // kill. (Killing a recycled pgid here would be unsafe.)
+            tracing::debug!(
+                card_id = %card_id,
+                pgid,
+                sock = %sock,
+                "reap_orphan_appserver_groups_on_boot: socket not connectable; not signaling pgid (stale/recycled)"
+            );
+            spec_appserver::cleanup_sock_dir(sock_path);
+            continue;
+        }
+        tracing::warn!(
+            card_id = %card_id,
+            pgid,
+            sock = %sock,
+            "reap_orphan_appserver_groups_on_boot: leaked codex app-server group found (socket live) — killing group"
+        );
+        if spec_appserver::signal_process_group(pgid, libc::SIGTERM) {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            spec_appserver::signal_process_group(pgid, libc::SIGKILL);
+            reaped += 1;
+        }
+        spec_appserver::cleanup_sock_dir(sock_path);
+    }
+    tracing::info!(reaped, "reap_orphan_appserver_groups_on_boot: complete");
+}
+
 pub mod card_fsm;
 pub mod card_role_cache;
+pub mod codex_appserver;
 pub mod codex_auto_submit;
 pub mod config;
 pub mod db;
@@ -129,6 +202,7 @@ pub mod plugin_host;
 pub mod replay;
 pub mod role_gate;
 pub mod routes;
+pub mod spec_appserver;
 pub mod spec_card;
 pub mod state;
 pub mod terminal_sweeper;

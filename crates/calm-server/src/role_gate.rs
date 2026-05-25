@@ -765,15 +765,14 @@ mod tests {
 
     // ---- PR4 of #136: new Event variants flow through enforce_role ------
     //
-    // PR4 is schema-only — there are no emitters of these variants yet,
-    // but PR5 (dispatcher) and PR8 (wait_for_events) will rely on the
-    // gate's existing logic to route + authorize them. These tests lock
-    // in the behavior PR5 will depend on:
+    // PR4 was schema-only — but the dispatcher (PR5) and its push
+    // delivery path (#293) rely on the gate's existing logic to route +
+    // authorize them. These tests lock in that behavior:
     //
     //   * a worker card emitting `codex.job_requested` within its own
     //     card scope is permitted (PR5's job request fan-out path);
     //   * a worker card emitting `task.completed` within its own card
-    //     scope is permitted (PR8's wait_for_events delivery path);
+    //     scope is permitted (the dispatcher push delivery path);
     //   * an AiSpec actor with an empty CardId is rejected via the
     //     section-1 guard, even when the payload is a new variant — the
     //     guard is variant-agnostic by design;
@@ -827,7 +826,7 @@ mod tests {
 
     #[test]
     fn worker_can_emit_task_completed_in_own_scope() {
-        // PR8's wait_for_events delivery path: workers report
+        // The dispatcher push delivery path: workers report
         // task.completed scoped to themselves.
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();

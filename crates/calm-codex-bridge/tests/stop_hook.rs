@@ -1,28 +1,32 @@
-//! PR8 (#136) — integration tests for the `neige-codex-bridge` Stop
-//! hook behavior.
+//! #293 cutover — integration test for the `neige-codex-bridge` Stop hook.
 //!
-//! The bridge is a small CLI that codex spawns per hook event. For the
-//! `Stop` event it long-polls
-//! `GET /internal/codex/pending_events?card_id=...&timeout_ms=30000`
-//! and emits one of two stdout shapes:
+//! The bridge is a small CLI that codex spawns per hook event. Before the
+//! #293 push cutover, the `Stop` event was special-cased: it long-polled
+//! `GET /internal/codex/pending_events` and emitted
+//! `{"decision":"block","reason":...}` when events came back (the pull
+//! model). Pull is gone — spec agents are now driven by observations pushed
+//! onto their codex thread by the kernel — so `Stop` no longer special-cases
+//! anything. It takes the same fire-and-forget path every other hook does:
 //!
-//!   * `{"decision":"block","reason":"<json>"}` when events came back,
-//!   * `{}` otherwise (server error, empty events, timeout, ...).
+//!   * POST the raw payload to `POST /internal/codex/hook?card_id=...`, and
+//!   * print `{}` to stdout (the codex hook contract for "continue").
 //!
 //! Strategy:
-//!   1. Spin up a tiny tokio TCP listener that answers exactly one HTTP
-//!      response in a scripted shape (the bridge connects once per
-//!      run).
+//!   1. Spin up a tiny tokio TCP listener that captures the request line +
+//!      headers and answers a `204 No Content` (what `/internal/codex/hook`
+//!      returns).
 //!   2. Spawn the compiled bridge binary (via `env!("CARGO_BIN_EXE_<name>")`)
-//!      with `NEIGE_CARD_ID` + `NEIGE_CALM_BASE_URL` pointing at the
-//!      stub.
-//!   3. Pipe `Stop` hook JSON on stdin, assert on stdout/exit code.
+//!      with `NEIGE_CARD_ID` + `NEIGE_CALM_BASE_URL` pointing at the stub.
+//!   3. Pipe `Stop` hook JSON on stdin, assert stdout is `{}`, exit 0, and
+//!      the request hit `/internal/codex/hook` (NOT the removed
+//!      `/internal/codex/pending_events`).
 //!
-//! Tests use a 10s wall-clock cap on the whole bridge process so a
-//! hung test doesn't strand the suite.
+//! Tests use a 10s wall-clock cap on the whole bridge process so a hung test
+//! doesn't strand the suite.
 
 use std::io::Write;
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -42,62 +46,28 @@ async fn bind_stub() -> (TcpListener, String) {
     (listener, base)
 }
 
-/// Accept exactly one connection, slurp the request, and respond with
-/// `body` (which must already be JSON; we tack on the right
-/// Content-Type + Content-Length).
-async fn serve_one_response(listener: TcpListener, body: String) {
+/// Accept exactly one connection, capture the raw request bytes into
+/// `captured`, and answer `204 No Content` (what `/internal/codex/hook`
+/// returns on success).
+async fn serve_one_hook(listener: TcpListener, captured: Arc<Mutex<String>>) {
     let (mut stream, _) = listener.accept().await.expect("accept stub conn");
-    // Drain the request headers. ureq sends a complete request before
-    // it reads the response, so we just need to consume enough bytes
-    // for it to flush. A small buffer slurp is fine for tests.
-    let mut req_buf = vec![0u8; 4096];
-    // Best-effort read; ignore EOF, partial reads.
-    let _ = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut req_buf)).await;
+    let mut req_buf = vec![0u8; 8192];
+    let n = match tokio::time::timeout(Duration::from_secs(2), stream.read(&mut req_buf)).await {
+        Ok(Ok(n)) => n,
+        _ => 0,
+    };
+    {
+        let mut g = captured.lock().unwrap();
+        *g = String::from_utf8_lossy(&req_buf[..n]).to_string();
+    }
 
-    let resp = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        body.len(),
-        body,
-    );
+    let resp = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
     let _ = stream.write_all(resp.as_bytes()).await;
     let _ = stream.shutdown().await;
 }
 
-/// Same as [`serve_one_response`] but emits a 404 — used by the
-/// "server returns error" test.
-async fn serve_one_error(listener: TcpListener, status_line: &str) {
-    let (mut stream, _) = listener.accept().await.expect("accept stub conn");
-    let mut req_buf = vec![0u8; 4096];
-    let _ = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut req_buf)).await;
-
-    let body = "{}";
-    let resp = format!(
-        "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        status_line,
-        body.len(),
-        body,
-    );
-    let _ = stream.write_all(resp.as_bytes()).await;
-    let _ = stream.shutdown().await;
-}
-
-/// Accept one connection, then deliberately hang (drop bytes on the
-/// floor without responding) until the bridge bails on its own
-/// timeout.
-async fn serve_one_hang(listener: TcpListener) {
-    let (mut stream, _) = listener.accept().await.expect("accept stub conn");
-    let mut req_buf = vec![0u8; 4096];
-    let _ = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut req_buf)).await;
-    // Hold the connection open without sending bytes. Block for the
-    // full test budget; the bridge will surface its own timeout long
-    // before this returns.
-    tokio::time::sleep(TEST_BUDGET).await;
-    // Drop `stream` here to satisfy the borrow checker.
-    drop(stream);
-}
-
-/// Spawn the bridge as a subprocess with a `Stop` hook payload on
-/// stdin. Returns `(stdout_string, exit_status, stderr_string)`.
+/// Spawn the bridge as a subprocess with a `Stop` hook payload on stdin.
+/// Returns `(stdout_string, exit_status, stderr_string)`.
 fn spawn_bridge_with_stop(base_url: &str) -> (String, std::process::ExitStatus, String) {
     let bridge_bin = env!("CARGO_BIN_EXE_neige-codex-bridge");
     let mut child = std::process::Command::new(bridge_bin)
@@ -121,8 +91,6 @@ fn spawn_bridge_with_stop(base_url: &str) -> (String, std::process::ExitStatus, 
         .unwrap();
     child.stdin.take(); // close stdin so the bridge proceeds
 
-    // Bound the wait so a hung subprocess fails the test rather than
-    // stranding the suite.
     let output = wait_with_timeout(child, TEST_BUDGET);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -133,7 +101,6 @@ fn wait_with_timeout(mut child: std::process::Child, timeout: Duration) -> std::
     let deadline = std::time::Instant::now() + timeout;
     loop {
         if let Some(_status) = child.try_wait().expect("try_wait") {
-            // Capture remaining piped streams.
             return child.wait_with_output().expect("wait_with_output");
         }
         if std::time::Instant::now() >= deadline {
@@ -150,21 +117,14 @@ fn wait_with_timeout(mut child: std::process::Child, timeout: Duration) -> std::
 // Tests
 // ---------------------------------------------------------------------------
 
+/// #293 — Stop takes the fire-and-forget POST path: it POSTs the payload to
+/// `/internal/codex/hook` and prints `{}` (no `decision:"block"`, no
+/// long-poll against the removed `/internal/codex/pending_events`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stop_with_pending_events_emits_block_decision() {
+async fn stop_posts_to_hook_and_emits_empty_object() {
     let (listener, base) = bind_stub().await;
-    // Stub returns one event in the array — bridge should print
-    // `{"decision":"block","reason":<json string>}`.
-    let resp_body = serde_json::json!({
-        "events": [
-            { "_id": 42, "ev": "task.completed", "data": { "idempotency_key": "k", "result": null, "artifacts": [] } }
-        ],
-        "since": 42
-    })
-    .to_string();
-    // Spawn the stub on the multi-threaded runtime so the bridge
-    // subprocess can be join-blocked on this same runtime.
-    let stub_handle = tokio::spawn(serve_one_response(listener, resp_body));
+    let captured = Arc::new(Mutex::new(String::new()));
+    let stub_handle = tokio::spawn(serve_one_hook(listener, captured.clone()));
 
     let base_clone = base.clone();
     let (stdout, status, _stderr) =
@@ -172,95 +132,27 @@ async fn stop_with_pending_events_emits_block_decision() {
             .await
             .expect("spawn_blocking join");
 
-    // Wait for stub to finish.
     let _ = tokio::time::timeout(Duration::from_secs(2), stub_handle).await;
 
     assert!(status.success(), "bridge must exit 0 (got {status:?})");
-    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
-        .unwrap_or_else(|_| panic!("bridge stdout is JSON; got: {stdout}"));
-    assert_eq!(parsed["decision"], "block", "got: {stdout}");
-    // `reason` carries the events array serialized as a string. The
-    // bridge stringifies it so codex injects the raw payload into the
-    // agent's next turn as a single observation.
-    let reason = parsed["reason"].as_str().expect("reason is a string");
-    let events_in_reason: serde_json::Value = serde_json::from_str(reason).expect("reason parses");
-    assert_eq!(events_in_reason[0]["_id"], 42);
-}
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stop_with_no_events_emits_empty_object() {
-    let (listener, base) = bind_stub().await;
-    let resp_body = serde_json::json!({ "events": [], "since": null }).to_string();
-    let stub_handle = tokio::spawn(serve_one_response(listener, resp_body));
-
-    let base_clone = base.clone();
-    let (stdout, status, _stderr) =
-        tokio::task::spawn_blocking(move || spawn_bridge_with_stop(&base_clone))
-            .await
-            .expect("spawn_blocking join");
-    let _ = tokio::time::timeout(Duration::from_secs(2), stub_handle).await;
-
-    assert!(status.success(), "bridge must exit 0 (got {status:?})");
+    // stdout is the bare `{}` continue contract — never a `decision:"block"`.
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|_| panic!("bridge stdout is JSON; got: {stdout}"));
     assert!(
         parsed.as_object().map(|o| o.is_empty()).unwrap_or(false),
-        "expected `{{}}` for empty events; got: {stdout}",
+        "Stop must print bare `{{}}` (fire-and-forget); got: {stdout}",
     );
-}
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stop_with_server_error_emits_empty_object() {
-    let (listener, base) = bind_stub().await;
-    let stub_handle =
-        tokio::spawn(async move { serve_one_error(listener, "500 Internal Server Error").await });
-
-    let base_clone = base.clone();
-    let (stdout, status, _stderr) =
-        tokio::task::spawn_blocking(move || spawn_bridge_with_stop(&base_clone))
-            .await
-            .expect("spawn_blocking join");
-    let _ = tokio::time::timeout(Duration::from_secs(2), stub_handle).await;
-
-    // The bridge does NOT fail the hook on server error — it prints
-    // `{}` and exits 0 so codex doesn't get stuck.
+    // The request went to /internal/codex/hook (the ingest route), NOT the
+    // removed pending_events long-poll endpoint.
+    let req = captured.lock().unwrap().clone();
     assert!(
-        status.success(),
-        "bridge must always exit 0 (got {status:?})"
+        req.contains("POST /internal/codex/hook"),
+        "Stop must POST to /internal/codex/hook; request was:\n{req}"
     );
-    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
-        .unwrap_or_else(|_| panic!("bridge stdout is JSON; got: {stdout}"));
     assert!(
-        parsed.as_object().map(|o| o.is_empty()).unwrap_or(false),
-        "expected `{{}}` on server error; got: {stdout}",
+        !req.contains("pending_events"),
+        "Stop must NOT hit the removed pending_events endpoint; request was:\n{req}"
     );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stop_falls_back_to_empty_object_when_server_hangs() {
-    // The bridge's own ureq client has a 35s timeout (matching the
-    // 30s long-poll + 5s slack). To test hang-handling without
-    // waiting 35s per CI run, we'd ideally inject a knob; that's not
-    // worth a public API just for testability. Instead, we assert the
-    // simpler property: the bridge eventually terminates with `{}` on
-    // any error path, and the hung path *would* surface as such on
-    // its 35s timeout. Marking this test ignored by default keeps CI
-    // fast — opt in with `cargo test stop_falls_back -- --ignored`.
-    if std::env::var_os("RUN_HANG_TEST").is_none() {
-        eprintln!("skipping hang test (set RUN_HANG_TEST=1 to run)");
-        return;
-    }
-    let (listener, base) = bind_stub().await;
-    let stub_handle = tokio::spawn(serve_one_hang(listener));
-
-    let base_clone = base.clone();
-    let (stdout, status, _stderr) =
-        tokio::task::spawn_blocking(move || spawn_bridge_with_stop(&base_clone))
-            .await
-            .expect("spawn_blocking join");
-    let _ = tokio::time::timeout(Duration::from_secs(2), stub_handle).await;
-
-    assert!(status.success(), "bridge must exit 0 even after timeout");
-    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
-    assert!(parsed.as_object().map(|o| o.is_empty()).unwrap_or(false));
 }
