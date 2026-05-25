@@ -60,6 +60,7 @@ function fixture(overrides: Partial<Wave>): Wave {
     // waveNeedsUserAttention matrix but the typechecker insists.
     createdAt: 0,
     terminalAt: null,
+    pinnedAt: null,
     ...overrides,
   };
 }

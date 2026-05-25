@@ -56,6 +56,7 @@ function makeWave(overrides: Partial<Wave> = {}): Wave {
     now: '',
     createdAt: PINNED_NOW - 3 * DAY_MS,
     terminalAt: null,
+    pinnedAt: null,
     cards: [],
     ...overrides,
   };

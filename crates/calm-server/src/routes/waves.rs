@@ -1053,7 +1053,8 @@ pub(crate) async fn update_wave(
     // no other field was supplied) there's nothing to write and
     // nothing to emit — return the wave as-is. This is the
     // idempotent retry path for "spec re-sends the current state."
-    let patch_has_other_changes = p.title.is_some() || p.sort.is_some() || p.archived_at.is_some();
+    let patch_has_other_changes =
+        p.title.is_some() || p.sort.is_some() || p.archived_at.is_some() || p.pinned_at.is_some();
     if lifecycle_change.is_none() && !patch_has_other_changes {
         return Ok(Json(existing));
     }

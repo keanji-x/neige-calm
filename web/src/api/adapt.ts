@@ -101,6 +101,7 @@ export function adaptWave(k: KernelWave, overlays: KernelOverlay[] = []): Wave {
     // UI side never has to distinguish.
     createdAt: k.created_at,
     terminalAt: k.terminal_at ?? null,
+    pinnedAt: k.pinned_at ?? null,
   };
 }
 

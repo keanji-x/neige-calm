@@ -1297,6 +1297,8 @@ export interface components {
         Wave: {
             /** Format: int64 */
             archived_at?: number | null;
+            /** Format: int64 */
+            pinned_at?: number | null;
             cove_id: string;
             /** Format: int64 */
             created_at: number;
@@ -1395,6 +1397,12 @@ export interface components {
              *     or omit (`None`) to leave alone.
              */
             archived_at?: number | null;
+            /**
+             * Format: int64
+             * @description Pass `Some(Some(ts))` to pin, `Some(None)` to unpin,
+             *     or omit (`None`) to leave alone.
+             */
+            pinned_at?: number | null;
             lifecycle?: null | components["schemas"]["WaveLifecycle"];
             /** Format: double */
             sort?: number | null;

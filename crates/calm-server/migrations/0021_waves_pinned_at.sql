@@ -1,0 +1,1 @@
+ALTER TABLE waves ADD COLUMN pinned_at INTEGER;

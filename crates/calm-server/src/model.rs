@@ -333,6 +333,7 @@ pub struct Wave {
     pub title: String,
     pub sort: f64,
     pub archived_at: Option<i64>,
+    pub pinned_at: Option<i64>,
     /// Issue #145 — the wave's lifecycle state. **Required** (no
     /// `Option`): every wave-creating code path must seed
     /// [`WaveLifecycle::Draft`] explicitly. Per the project's
@@ -434,6 +435,11 @@ pub struct WavePatch {
     #[serde(default, deserialize_with = "deserialize_double_option")]
     #[schema(value_type = Option<i64>, nullable = true)]
     pub archived_at: Option<Option<i64>>,
+    /// Pass `Some(Some(ts))` to pin, `Some(None)` to unpin,
+    /// or omit (`None`) to leave alone.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    #[schema(value_type = Option<i64>, nullable = true)]
+    pub pinned_at: Option<Option<i64>>,
     /// Issue #145 — request a lifecycle transition. The actual
     /// transition validation runs through `crate::wave_lifecycle`,
     /// inside the write transaction. Omitting (`None`) means "leave

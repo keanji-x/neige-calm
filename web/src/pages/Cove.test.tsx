@@ -29,6 +29,7 @@ function makeWave(overrides: Partial<Wave> = {}): Wave {
     // load-bearing for spotting forgotten fields in production code.
     createdAt: 0,
     terminalAt: null,
+    pinnedAt: null,
     cards: [],
     ...overrides,
   };

@@ -89,6 +89,7 @@ export const waveSchema = z.object({
   title: z.string(),
   sort: z.number(),
   archived_at: z.number().nullable(),
+  pinned_at: z.number().nullable().default(null),
   /**
    * Issue #145 — the wave's lifecycle state. Defaulted at the schema
    * layer to `'draft'` so a missing field on pre-#145 wire payloads
