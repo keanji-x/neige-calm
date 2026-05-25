@@ -395,6 +395,7 @@ fn parse_wave_patch(args: &Value) -> Result<WavePatch, RpcError> {
         title,
         sort,
         archived_at,
+        pinned_at: None,
         lifecycle,
     })
 }

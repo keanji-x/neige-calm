@@ -36,6 +36,7 @@ import {
   useCreateCoveMutation,
   useDeleteCoveMutation,
   useOverlaysByKindQuery,
+  useUpdateWaveMutation,
 } from './api/queries';
 import { useGo } from './app/navigation';
 import { logout } from './api/auth';
@@ -123,6 +124,7 @@ export function CalmApp() {
 
   const createCove = useCreateCoveMutation();
   const deleteCove = useDeleteCoveMutation();
+  const updateWave = useUpdateWaveMutation();
 
   // Sign-out (issue #189). POSTs `/api/auth/logout` which drops the
   // server-side session + clears the `calm-session` cookie. We then
@@ -161,6 +163,12 @@ export function CalmApp() {
             } catch (err) {
               console.warn('[Calm] cove delete failed:', err);
             }
+          }}
+          onPinWave={async (waveId, pin) => {
+            await updateWave.mutateAsync({
+              id: waveId,
+              body: { pinned_at: pin ? Date.now() : null },
+            });
           }}
           onOpenSettings={() => go({ name: 'settings' })}
           onSignOut={handleSignOut}

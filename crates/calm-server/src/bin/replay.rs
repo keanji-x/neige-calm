@@ -452,6 +452,7 @@ async fn dev_force_wave_lifecycle(
         title: None,
         sort: None,
         archived_at: None,
+        pinned_at: None,
         lifecycle: Some(to),
     };
 

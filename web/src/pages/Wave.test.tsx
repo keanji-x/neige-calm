@@ -86,6 +86,7 @@ function makeWave(overrides: Partial<Wave> = {}): Wave {
     // deterministic.
     createdAt: 0,
     terminalAt: null,
+    pinnedAt: null,
     cards: [],
     ...overrides,
   };

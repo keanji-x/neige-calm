@@ -115,6 +115,7 @@ async fn wave_crud_round_trip() {
                 title: Some("renamed".into()),
                 sort: None,
                 archived_at: Some(Some(42)),
+                pinned_at: None,
                 lifecycle: None,
             },
         )
@@ -130,6 +131,7 @@ async fn wave_crud_round_trip() {
                 title: None,
                 sort: None,
                 archived_at: Some(None),
+                pinned_at: None,
                 lifecycle: None,
             },
         )
@@ -172,6 +174,7 @@ async fn wave_lifecycle_round_trips_through_patch() {
                 title: None,
                 sort: None,
                 archived_at: None,
+                pinned_at: None,
                 lifecycle: Some(WaveLifecycle::Planning),
             },
         )
@@ -190,6 +193,7 @@ async fn wave_lifecycle_round_trips_through_patch() {
                 title: Some("renamed-only".into()),
                 sort: None,
                 archived_at: None,
+                pinned_at: None,
                 lifecycle: None,
             },
         )

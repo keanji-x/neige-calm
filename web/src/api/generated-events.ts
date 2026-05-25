@@ -293,7 +293,7 @@ kind: string,
  */
 payload: unknown, updated_at: number, };
 
-export type Wave = { id: WaveId, cove_id: CoveId, title: string, sort: number, archived_at: number | null, 
+export type Wave = { id: WaveId, cove_id: CoveId, title: string, sort: number, archived_at: number | null, pinned_at: number | null, 
 /**
  * Issue #145 — the wave's lifecycle state. **Required** (no
  * `Option`): every wave-creating code path must seed

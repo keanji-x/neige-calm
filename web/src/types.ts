@@ -229,6 +229,13 @@ export interface Wave {
    * error rather than silently dropping open waves from the agenda.
    */
   terminalAt: number | null;
+  /**
+   * Unix-ms timestamp when the wave was pinned, `null` when unpinned.
+   * `null` rather than optional so a missing field from old wire payloads
+   * surfaces as a type error rather than silent `undefined` in sort/filter
+   * logic.
+   */
+  pinnedAt: number | null;
   cards?: WaveCardSlot[];
 }
 

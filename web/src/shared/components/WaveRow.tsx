@@ -1,6 +1,7 @@
 import type { Cove, Wave } from '../../types';
 import { isRunning } from '../lifecycle';
 import { CloseIcon } from './CloseIcon';
+import { PinIcon } from './PinIcon';
 import { ProgressBar } from './ProgressBar';
 import { WaveGlyph } from './WaveGlyph';
 import { WaveLifecycleBadge } from './WaveLifecycleBadge';
@@ -13,6 +14,7 @@ export function WaveRow({
   showCove = true,
   onClick,
   onDelete,
+  onPinWave,
 }: {
   wave: Wave;
   cove?: Cove;
@@ -22,6 +24,10 @@ export function WaveRow({
    *  on the right of the row. Caller is responsible for its own confirm
    *  dialog (so the row delete and header delete read identically). */
   onDelete?: () => void;
+  /** Optional pin/unpin. When supplied, a hover-revealed pin button appears
+   *  on the row — always visible when the wave is already pinned so unpin
+   *  is discoverable on touch. Mirrors the sidebar's WaveRow pin button. */
+  onPinWave?: (waveId: string, pin: boolean) => void | Promise<void>;
 }) {
   // Avoid the "double-bullet" effect: only emit the `·` separator when both
   // a cove tag AND a `now` line are going to render. Empty `now` (i.e. no
@@ -31,6 +37,7 @@ export function WaveRow({
   const showEta = !!wave.eta;
   const running = isRunning(wave.lifecycle);
   const showProgress = running && wave.progress > 0;
+  const pinned = wave.pinnedAt != null;
 
   // The row is a real <button> so Enter/Space activation and focus
   // semantics come for free. The hover-reveal × delete is a SIBLING
@@ -106,6 +113,19 @@ export function WaveRow({
           aria-label={`Delete "${wave.title}"`}
         >
           <CloseIcon />
+        </button>
+      )}
+      {onPinWave && (
+        <button
+          type="button"
+          className={'side-wave-pin' + (pinned ? ' pinned' : '')}
+          onClick={(e) => {
+            e.stopPropagation();
+            void onPinWave(wave.id, !pinned);
+          }}
+          aria-label={pinned ? 'Unpin wave' : 'Pin wave'}
+        >
+          <PinIcon down={pinned} />
         </button>
       )}
     </div>

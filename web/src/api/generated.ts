@@ -1329,6 +1329,8 @@ export interface components {
              *     migration 0012.
              */
             lifecycle?: components["schemas"]["WaveLifecycle"];
+            /** Format: int64 */
+            pinned_at?: number | null;
             /** Format: double */
             sort: number;
             /**
@@ -1396,6 +1398,12 @@ export interface components {
              */
             archived_at?: number | null;
             lifecycle?: null | components["schemas"]["WaveLifecycle"];
+            /**
+             * Format: int64
+             * @description Pass `Some(Some(ts))` to pin, `Some(None)` to unpin,
+             *     or omit (`None`) to leave alone.
+             */
+            pinned_at?: number | null;
             /** Format: double */
             sort?: number | null;
             title?: string | null;

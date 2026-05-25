@@ -214,6 +214,9 @@
   --space-11: 28px;
   --space-12: 32px;
 
+  /* Width of the .side-coves scroll-gutter; .side-section uses it as right padding to keep its content right-edge aligned with .cove-row. */
+  --rail-scrollbar-gutter: var(--space-4);
+
   /* Motion duration scale (slice 5 of #165). Six-tier vocabulary that
      consolidates ad-hoc transition / animation durations scattered across
      the file. The migration is intentionally lossy — pre-consolidation we
@@ -454,6 +457,12 @@ input, textarea { font: inherit; color: inherit; }
   gap: var(--space-1);
   min-width: 0;
 }
+/* .side-coves uses scrollbar-gutter: stable which reserves --rail-scrollbar-gutter
+   of right gutter. Match that on .side-section so the pin button x-aligns with
+   the cove-row × and the Coves header + button. */
+.side .side-section {
+  padding-right: var(--rail-scrollbar-gutter);
+}
 /* The Coves nav grows to fill the column between the Today nav (or the
    "Waiting on you" section) and the user menu, then scrolls internally
    when the list overflows. `min-height: 0` is the load-bearing piece —
@@ -465,7 +474,7 @@ input, textarea { font: inherit; color: inherit; }
   overflow-y: auto;
   scrollbar-gutter: stable;
 }
-.side .side-coves::-webkit-scrollbar { width: 8px; }
+.side .side-coves::-webkit-scrollbar { width: var(--rail-scrollbar-gutter); }
 .side .side-coves::-webkit-scrollbar-thumb {
   background: var(--hairline-strong);
   border-radius: var(--radius-pill);
@@ -580,16 +589,82 @@ input, textarea { font: inherit; color: inherit; }
   font-weight: 500;
 }
 [data-theme="dark"] .side .side-wave.active { background: var(--overlay-active); }
-.side .side-wave-dot {
-  width: 7px; height: 7px;
-  border-radius: var(--radius-pill);
-  background: var(--warn);
-  flex-shrink: 0;
-  box-shadow: 0 0 0 3px var(--warn-soft);
-}
 .side .side-wave-title {
   flex: 1; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Wave row group: wraps the wave-nav button, optional cove-nav button,
+   and pin button so none are nested inside the others (avoids nested-button
+   a11y violation). The row itself carries hover/active states. Overflow
+   hidden clips child backgrounds to the row's border-radius so per-child
+   radius management isn't needed. */
+.side .side-wave-row {
+  position: relative;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.side .side-wave-row .side-wave {
+  border-radius: var(--radius-md);
+  /* Reserve space on the right so the title never ellipsizes under the
+     absolutely-positioned pin button. */
+  padding-right: calc(var(--space-5) + 20px + var(--space-3));
+}
+/* Cove-name plain-text label — inline after the wave title inside the nav button. */
+.side .side-wave-cove {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  margin-left: var(--space-3);
+  flex-shrink: 0;
+  /* 60px chosen empirically to fit ~6 chars of cove name on the 200px sidebar without crowding the wave title. */
+  max-width: 60px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.side .side-wave-row:hover .side-wave { background: var(--overlay-hover-faint); color: var(--text); }
+[data-theme="dark"] .side .side-wave-row:hover .side-wave { background: var(--overlay-hover); }
+.side .side-wave-row .side-wave.active {
+  background: var(--overlay-active);
+  color: var(--text);
+  font-weight: 500;
+}
+[data-theme="dark"] .side .side-wave-row .side-wave.active { background: var(--overlay-active); }
+/* Override the direct .side-wave hover rules so they don't double-apply
+   when the row wrapper already handles hover. */
+.side .side-wave-row .side-wave:hover { background: transparent; }
+/* Pin button: hidden by default; revealed on row hover or when pinned.
+   Sits absolutely at the same x column as .cove-row-delete and the
+   Coves-header `+` so all three right-edge slots line up vertically. */
+.side .side-wave-pin {
+  position: absolute;
+  right: var(--space-5);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px; height: 20px;
+  display: grid; place-items: center;
+  padding: var(--space-0);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  /* 12px not --text-xs (11px): the SVG icon needs 12px to land at the same optical
+     weight as the +/× controls which render at 18px (--text-lg). */
+  font-size: 12px;
+  line-height: var(--leading-none);
+  color: var(--text-3);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--motion-quick), background var(--motion-quick), color var(--motion-quick);
+}
+.side .side-wave-row:hover .side-wave-pin,
+.side .side-wave-pin.pinned { opacity: 1; }
+.side .side-wave-pin:hover { background: var(--overlay-hover); color: var(--text); }
+.side .side-wave-pin:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  opacity: 1;
 }
 /* ===== Sidebar user menu =====
    The avatar row is a single <button> that opens a popover menu
@@ -1022,17 +1097,17 @@ input, textarea { font: inherit; color: inherit; }
    not the row. */
 .wave-row-wrapper .wave-row-delete {
   position: absolute;
-  right: 6px;
+  right: 0;
   top: 50%;
   transform: translateY(-50%);
-  width: 24px; height: 24px;
+  width: 28px; height: 28px;
   display: flex; align-items: center; justify-content: center;
   background: transparent;
   border: none;
   border-radius: var(--radius-md);
   color: var(--text-3);
   font: inherit;
-  font-size: var(--text-md);
+  font-size: var(--text-lg);
   line-height: var(--leading-none);
   cursor: pointer;
   opacity: 0;
@@ -1043,6 +1118,48 @@ input, textarea { font: inherit; color: inherit; }
 .wave-row-wrapper .wave-row-delete:hover {
   background: var(--warn-soft);
   color: var(--warn);
+}
+
+/* Per-row pin button in cove-page wave rows. Reuses `.side-wave-pin`
+   visual rules (opacity/color transitions) and sits absolutely so the
+   eta/progress cluster isn't displaced. When only the pin is present it
+   lands at right: 0 (matching .cove-head-add); when the delete button
+   is also present (`:has`) it shifts left to avoid overlap. Always
+   visible when pinned. */
+.wave-row-wrapper .side-wave-pin {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-md);
+  color: var(--text-3);
+  font: inherit;
+  font-size: var(--text-lg);
+  line-height: var(--leading-none);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--motion-quick), color var(--motion-quick), background var(--motion-quick);
+}
+/* When both delete and pin are present, push pin left to avoid overlap
+   and widen the row's right gutter so neither button clips the content.
+   Pin offset: 28px (delete width) + 4px gap = 32px from right edge.
+   Double-button padding: 28 + 4 + 28 = 60px total clearance needed. */
+.wave-row-wrapper:has(.wave-row-delete) .side-wave-pin { right: calc(var(--space-11) + var(--space-2)); }
+.wave-row-wrapper:has(.wave-row-delete):has(.side-wave-pin) .wave-row {
+  padding-right: calc(2 * var(--space-11) + var(--space-2));
+}
+.wave-row-wrapper:hover .side-wave-pin,
+.wave-row-wrapper:focus-within .side-wave-pin { opacity: 1; }
+.wave-row-wrapper .side-wave-pin.pinned { opacity: 1; }
+.wave-row-wrapper .side-wave-pin:hover { background: var(--overlay-hover); color: var(--text); }
+.wave-row-wrapper .side-wave-pin:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  opacity: 1;
 }
 
 /* fill bar */
@@ -1239,7 +1356,7 @@ input, textarea { font: inherit; color: inherit; }
   border: none;
   border-radius: var(--radius-md);
   color: var(--text-3);
-  font-size: 18px;
+  font-size: var(--text-lg);
   line-height: var(--leading-none);
   cursor: pointer;
   transition: background var(--motion-quick), color var(--motion-quick);

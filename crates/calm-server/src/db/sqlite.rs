@@ -567,8 +567,8 @@ pub async fn wave_create_tx(
     // by construction; `WaveLifecycle::is_terminal` returns false for it).
     sqlx::query(
         r#"INSERT INTO waves
-           (id, cove_id, title, sort, archived_at, lifecycle, cwd, terminal_at, created_at, updated_at)
-           VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, NULL, ?7, ?8)"#,
+           (id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, terminal_at, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, NULL, ?7, ?8)"#,
     )
     .bind(&id)
     .bind(&p.cove_id)
@@ -592,6 +592,7 @@ pub async fn wave_create_tx(
         title: p.title,
         sort,
         archived_at: None,
+        pinned_at: None,
         lifecycle,
         cwd: p.cwd,
         terminal_at: None,
@@ -606,7 +607,7 @@ pub async fn wave_update_tx(
     p: WavePatch,
 ) -> Result<Wave> {
     let mut w = sqlx::query_as::<_, Wave>(
-        r#"SELECT id, cove_id, title, sort, archived_at, lifecycle, cwd, terminal_at, created_at, updated_at
+        r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, terminal_at, created_at, updated_at
            FROM waves WHERE id = ?1"#,
     )
     .bind(id)
@@ -622,6 +623,9 @@ pub async fn wave_update_tx(
     }
     if let Some(v) = p.archived_at {
         w.archived_at = v;
+    }
+    if let Some(v) = p.pinned_at {
+        w.pinned_at = v;
     }
     // Issue #145 — `WavePatch.lifecycle` is applied here, but the
     // transition is validated by `validate_transition` at the call
@@ -661,13 +665,14 @@ pub async fn wave_update_tx(
 
     sqlx::query(
         r#"UPDATE waves
-           SET title = ?1, sort = ?2, archived_at = ?3, lifecycle = ?4,
-               terminal_at = ?5, updated_at = ?6
-           WHERE id = ?7"#,
+           SET title = ?1, sort = ?2, archived_at = ?3, pinned_at = ?4,
+               lifecycle = ?5, terminal_at = ?6, updated_at = ?7
+           WHERE id = ?8"#,
     )
     .bind(&w.title)
     .bind(w.sort)
     .bind(w.archived_at)
+    .bind(w.pinned_at)
     .bind(w.lifecycle)
     .bind(w.terminal_at)
     .bind(w.updated_at)
@@ -1506,7 +1511,7 @@ impl RepoRead for SqlxRepo {
     // ---------------------------------------------------------------- waves
     async fn waves_by_cove(&self, cove_id: &str) -> Result<Vec<Wave>> {
         let rows = sqlx::query_as::<_, Wave>(
-            r#"SELECT id, cove_id, title, sort, archived_at, lifecycle, cwd, terminal_at, created_at, updated_at
+            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, terminal_at, created_at, updated_at
                FROM waves WHERE cove_id = ?1 ORDER BY sort ASC"#,
         )
         .bind(cove_id)
@@ -1517,7 +1522,7 @@ impl RepoRead for SqlxRepo {
 
     async fn wave_get(&self, id: &str) -> Result<Option<Wave>> {
         let row = sqlx::query_as::<_, Wave>(
-            r#"SELECT id, cove_id, title, sort, archived_at, lifecycle, cwd, terminal_at, created_at, updated_at
+            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, terminal_at, created_at, updated_at
                FROM waves WHERE id = ?1"#,
         )
         .bind(id)
@@ -1540,7 +1545,7 @@ impl RepoRead for SqlxRepo {
         //   * `until`       : `created_at <= ?`
         //   * `since`       : `(terminal_at IS NULL OR terminal_at >= ?)`
         let mut sql = String::from(
-            "SELECT id, cove_id, title, sort, archived_at, lifecycle, cwd, terminal_at, \
+            "SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, terminal_at, \
              created_at, updated_at FROM waves",
         );
         let mut where_clauses: Vec<&str> = Vec::new();
@@ -1575,7 +1580,7 @@ impl RepoRead for SqlxRepo {
     async fn wave_detail(&self, id: &str) -> Result<Option<WaveDetail>> {
         let mut tx = self.pool.begin().await?;
         let wave = sqlx::query_as::<_, Wave>(
-            r#"SELECT id, cove_id, title, sort, archived_at, lifecycle, cwd, terminal_at, created_at, updated_at
+            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, terminal_at, created_at, updated_at
                FROM waves WHERE id = ?1"#,
         )
         .bind(id)
