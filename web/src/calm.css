@@ -656,7 +656,6 @@ input, textarea { font: inherit; color: inherit; }
 .side .side-wave-row:hover .side-wave-pin,
 .side .side-wave-pin.pinned { opacity: 1; }
 .side .side-wave-pin:hover { background: var(--overlay-hover); color: var(--text); }
-.side .side-wave-pin.pinned { color: var(--accent); }
 .side .side-wave-pin:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
