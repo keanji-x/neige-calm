@@ -878,26 +878,44 @@ pub async fn adopt_live_appserver(
     thread_id: &str,
     sock: &Path,
 ) -> Result<SpecPushHandle> {
-    // Connect to the existing socket. No spawn — the server is already
-    // bound there (the boot caller probed connectability before calling us).
-    let (client, notifs) = CodexAppServer::connect(sock).await?;
-    let client = Arc::new(client);
-    client
-        .initialize(ClientInfo {
-            name: "neige-calm-spec-push".into(),
-            version: env!("CARGO_PKG_VERSION").into(),
-        })
-        .await?;
-    let resumed = client.thread_resume(thread_id).await?;
-    if let Some(echoed) = resumed.thread_id()
-        && echoed != thread_id
+    // #313 PR4 N6 — wrap the network/IPC chain (connect → initialize →
+    // thread_resume) in `OVERALL_BOOT_BUDGET` for parity with the respawn
+    // path. A wedged-but-listening app-server could otherwise hang boot
+    // indefinitely on `initialize` or `thread_resume`. Local dummy-child
+    // spawn + handle construction stay outside the timeout (they're not
+    // network-bound and a hang there is a kernel bug, not a remote-end
+    // problem).
+    let (client, notifs) = match tokio::time::timeout(OVERALL_BOOT_BUDGET, async {
+        let (client, notifs) = CodexAppServer::connect(sock).await?;
+        let client = Arc::new(client);
+        client
+            .initialize(ClientInfo {
+                name: "neige-calm-spec-push".into(),
+                version: env!("CARGO_PKG_VERSION").into(),
+            })
+            .await?;
+        let resumed = client.thread_resume(thread_id).await?;
+        if let Some(echoed) = resumed.thread_id()
+            && echoed != thread_id
+        {
+            tracing::warn!(
+                persisted = %thread_id,
+                echoed = %echoed,
+                "spec push (adopt): server echoed a different thread id than persisted; using persisted",
+            );
+        }
+        Ok::<_, CalmError>((client, notifs))
+    })
+    .await
     {
-        tracing::warn!(
-            persisted = %thread_id,
-            echoed = %echoed,
-            "spec push (adopt): server echoed a different thread id than persisted; using persisted",
-        );
-    }
+        Ok(res) => res?,
+        Err(_elapsed) => {
+            return Err(CalmError::CodexAppServer(format!(
+                "codex app-server adopt did not complete within {}s overall",
+                OVERALL_BOOT_BUDGET.as_secs()
+            )));
+        }
+    };
     tracing::info!(
         pgid, %thread_id, sock = %sock.display(),
         "spec push (adopt): re-attached to live codex app-server",

@@ -150,6 +150,37 @@ impl Dispatcher {
         self.permits
     }
 
+    /// #313 problem #1 (boot takeover) — seed the in-memory push watermark
+    /// cache for a spec card from its persisted `payload.push_watermark`,
+    /// BEFORE any catch-up replay or live envelope can reach `push_to_spec`.
+    ///
+    /// Uses the same monotonic [`EventCursorCache::bump`] semantics the
+    /// live push path uses — a concurrent live event landing while we're
+    /// seeding can only ratchet the cache UP (a lower id is a no-op),
+    /// never down, so the seed is race-safe against a freshly-registered
+    /// handle's first push. Called once per wave from
+    /// [`crate::takeover_spec_appservers_on_boot`].
+    pub fn seed_push_cursor(&self, spec_card_id: CardId, watermark: i64) {
+        self.inner.push_cursor.bump(spec_card_id, watermark);
+    }
+
+    /// Test-only — clear the in-memory push cursor for a card so the next
+    /// access falls back to the default `0`. Used by the boot-recovery
+    /// e2e to simulate a cold-boot cache (no in-process state surviving
+    /// across the simulated restart). Production code does not call this.
+    #[doc(hidden)]
+    pub fn clear_push_cursor_for_test(&self, spec_card_id: &CardId) {
+        self.inner.push_cursor.remove(spec_card_id);
+    }
+
+    /// Test-only — read the current in-memory push cursor for a card.
+    /// Used by the boot-recovery e2e to assert that `seed_push_cursor`
+    /// actually planted the persisted watermark into the cache.
+    #[doc(hidden)]
+    pub fn push_cursor_for_test(&self, spec_card_id: &CardId) -> i64 {
+        self.inner.push_cursor.get(spec_card_id)
+    }
+
     /// #313 problem #1 (boot takeover catch-up) — replay an already-persisted
     /// `(envelope_id, scope, event)` through the dispatcher's push path,
     /// **without** going through the broadcast bus.
@@ -171,20 +202,6 @@ impl Dispatcher {
     /// Wave-scope-only: the live push path discards events without a wave
     /// scope before they reach `push_to_spec`; this helper preserves that
     /// invariant (caller filters to wave-scoped events).
-    /// #313 problem #1 (boot takeover) — seed the in-memory push watermark
-    /// cache for a spec card from its persisted `payload.push_watermark`,
-    /// BEFORE any catch-up replay or live envelope can reach `push_to_spec`.
-    ///
-    /// Uses the same monotonic [`EventCursorCache::bump`] semantics the
-    /// live push path uses — a concurrent live event landing while we're
-    /// seeding can only ratchet the cache UP (a lower id is a no-op),
-    /// never down, so the seed is race-safe against a freshly-registered
-    /// handle's first push. Called once per wave from
-    /// [`crate::takeover_spec_appservers_on_boot`].
-    pub fn seed_push_cursor(&self, spec_card_id: CardId, watermark: i64) {
-        self.inner.push_cursor.bump(spec_card_id, watermark);
-    }
-
     pub async fn catch_up_push(
         &self,
         wave_id: WaveId,
@@ -656,17 +673,29 @@ impl Inner {
     ///   1. **Resolve the spec card** — scan `cards_by_wave(wave_id)` for
     ///      the one whose `card_role_cache` role is [`CardRole::Spec`].
     ///   2. **Dedup / ordering** — only push when `envelope_id` is strictly
-    ///      above the dedicated push watermark for that spec `CardId`; then
-    ///      bump. Idempotent under at-least-once broadcast delivery.
+    ///      above the in-memory push cursor for that spec `CardId`; then
+    ///      bump the cursor (in-process dedup hint). Idempotent under
+    ///      at-least-once broadcast delivery.
     ///   3. **Resolve the handle** — `spec_push.pusher(wave_id)`. If absent
     ///      (a kernel restart lost the in-memory handle), `warn!` and return
-    ///      — never crash. There is no recovery: the wave stays undriven
-    ///      until the kernel re-creates a handle (which it doesn't do today).
-    ///      See the missing-handle warn below.
+    ///      — never crash. #313 problem #1: boot takeover
+    ///      ([`crate::takeover_spec_appservers_on_boot`]) re-registers a
+    ///      handle for every non-terminal wave with a persisted
+    ///      `codex_thread_id` and replays events above the durable
+    ///      watermark, so a missing handle here just means "boot takeover
+    ///      hasn't run yet" (mid-boot, the route layer isn't up so no
+    ///      event can reach here) OR "takeover failed for this wave"
+    ///      (warn was logged at boot; wave is inert).
     ///   4. **Build + deliver** the observation via
     ///      [`crate::spec_appserver::SpecPusher::push_observation`],
     ///      which decides `turn/start`-now vs enqueue based on the tracked
     ///      turn phase.
+    ///   5. **Persist durable watermark** — only AFTER a successful
+    ///      delivery, persist `envelope_id` onto `payload.push_watermark`
+    ///      via `spec_card_set_push_watermark`. The next boot's
+    ///      `events_since(watermark)` uses strict `id > watermark`, so
+    ///      persisting before/without successful delivery would
+    ///      permanently skip the envelope on recovery (#313 PR4 B1).
     async fn push_to_spec(self: &Arc<Self>, wave_id: WaveId, event: &Event, envelope_id: i64) {
         // Resolve the spec card for this wave via the role cache.
         let spec_card_id = match self.resolve_spec_card(&wave_id).await {
@@ -719,42 +748,13 @@ impl Inner {
             );
             return;
         }
+        // #293 PR3b — bump the in-process dedup cursor BEFORE we attempt
+        // delivery. This is a per-process hint only, not a correctness fence:
+        // if delivery fails, a same-process redelivery of this envelope id
+        // would dedup here anyway (we already decided to act on it once).
+        // Cross-restart durability is the DURABLE watermark below — which we
+        // only advance after a SUCCESSFUL delivery (see B1 below).
         self.push_cursor.bump(spec_card_id.clone(), envelope_id);
-        // #313 problem #1 — persist the watermark to the spec card payload
-        // atomically with the in-memory bump so a kernel restart can seed
-        // the cache from disk and resume catch-up from the last acked
-        // envelope. We persist BEFORE the actual push: if the persist
-        // fails we warn but proceed (the in-memory cache is already
-        // bumped, so retrying the same envelope would dedup anyway), and
-        // if the kernel crashes between persist and push, the next boot's
-        // takeover will re-push the envelope (because the watermark says
-        // we already pushed) — which is wrong direction, BUT codex's own
-        // `thread_resume` handles a re-push as a no-op spam (the spec
-        // agent is told "an event happened, re-read state" — idempotent
-        // by construction; the watermark is a dedup hint, not a
-        // correctness fence). Persisting BEFORE the push (rather than
-        // after) is therefore the safer choice: we never miss a watermark
-        // bump for an envelope codex saw, only ever over-bump for one it
-        // didn't.
-        //
-        // The write goes through the OutOfDomain trait (no `CardUpdated`
-        // event emitted) because the dispatcher's filter doesn't watch
-        // `CardUpdated` and the field is server-private bookkeeping (same
-        // treatment terminal PIDs/handles get).
-        if let Err(e) = self
-            .repo
-            .spec_card_set_push_watermark(spec_card_id.as_str(), envelope_id)
-            .await
-        {
-            tracing::warn!(
-                wave_id = %wave_id,
-                spec_card_id = %spec_card_id,
-                envelope_id,
-                error = %e,
-                "dispatcher push: persist push_watermark failed; in-memory cache still bumped, \
-                 boot takeover may re-push this envelope (idempotent)",
-            );
-        }
 
         // Resolve the live push handle. Absent → warn + return (no crash).
         // #313 problem #1: this is no longer the "permanent failure" state —
@@ -764,6 +764,12 @@ impl Inner {
         // takeover hasn't run yet (we're mid-boot — the route layer isn't
         // up so no event can land here) OR (b) the takeover failed for this
         // wave specifically (warn was logged at boot; wave is inert).
+        //
+        // We MUST NOT persist the durable watermark when the handle is
+        // missing — codex never saw this envelope, so the next boot's
+        // catch-up needs to replay it (events_since uses `id > watermark`
+        // strictly, so persisting envelope_id here would silently drop it
+        // at boot).
         let pusher = match self.spec_push.pusher(&wave_id) {
             Some(p) => p,
             None => {
@@ -789,16 +795,55 @@ impl Inner {
             "dispatcher push: delivering observation to spec thread"
         );
         if let Err(e) = pusher.push_observation(&observation).await {
-            // A failed delivery is logged but not fatal. There is no pull
-            // backstop anymore (#293 cutover removed `wait_for_events`); a
-            // dropped observation means the spec may miss this event. The
-            // dedicated push watermark was already bumped above, so a
-            // redelivery of the same envelope won't retry — accepted.
+            // Delivery failed (transport / turn_start error). Do NOT persist
+            // the durable watermark: the next boot's catch-up replay must
+            // re-deliver this envelope. The in-process dedup cursor is
+            // already bumped, but that's a per-process hint — restart-time
+            // recovery seeds from disk, not memory.
             tracing::warn!(
                 wave_id = %wave_id,
                 envelope_id,
                 error = %e,
-                "dispatcher push: push_observation failed; no pull backstop (#293) — observation may be lost"
+                "dispatcher push: push_observation failed — durable watermark NOT persisted; \
+                 boot recovery will replay this envelope (#313)"
+            );
+            return;
+        }
+
+        // #313 problem #1 (B1) — push-then-persist. Advance the DURABLE
+        // watermark only after `push_observation` returned `Ok(())`:
+        //   * `Ok` covers both the immediate `turn/start` issue AND the
+        //     queue-buffered enqueue (mid-turn observations). Both are
+        //     "delivered to codex" from the dispatcher's POV — the queue
+        //     is owned by `SpecPushHandle`, drained on the next
+        //     `turn/completed`, and survives a graceful shutdown via
+        //     reap of the codex app-server child.
+        //   * `Err` (handled above) returns before this point, so we never
+        //     advance the watermark for a dropped envelope.
+        //
+        // At-least-once semantics across restart: if the kernel crashes
+        // between a successful `push_observation` and this persist, the
+        // next boot replays the envelope (events_since uses strict `>`),
+        // and codex's `thread_resume` handles a re-push as idempotent
+        // spam ("an event happened, re-read state"). In-process dedup via
+        // the bumped `push_cursor` above prevents same-process re-fire.
+        //
+        // The write goes through `RepoOutOfDomain` (no `CardUpdated`
+        // event emitted) — the dispatcher's filter doesn't watch
+        // `CardUpdated` and the field is server-private bookkeeping
+        // (same treatment terminal PIDs/handles get).
+        if let Err(e) = self
+            .repo
+            .spec_card_set_push_watermark(spec_card_id.as_str(), envelope_id)
+            .await
+        {
+            tracing::warn!(
+                wave_id = %wave_id,
+                spec_card_id = %spec_card_id,
+                envelope_id,
+                error = %e,
+                "dispatcher push: persist push_watermark failed AFTER successful delivery; \
+                 in-memory cache still bumped, next boot may re-push this envelope (idempotent)",
             );
         }
     }

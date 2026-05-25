@@ -259,18 +259,28 @@ async fn try_takeover_one_wave(
     // 1. Try to adopt a live, persisted app-server first. The pid-recycling
     //    guard from the old reap sweep applies here too: only treat the
     //    persisted pgid as "alive" if the persisted socket actually accepts
-    //    a connection AND the pgid still exists. A recycled, unrelated pgid
-    //    won't be listening on our socket, so it never reaches the adopt
-    //    path. (The probe is non-destructive: a failed adoption falls
-    //    through to respawn.)
+    //    a connection. A recycled, unrelated pgid won't be listening on our
+    //    socket, so it never reaches the adopt path. (The probe is
+    //    non-destructive: a failed adoption falls through to respawn.)
+    //
+    //    #313 PR4 B2 — adoption is gated on **socket connectability alone**,
+    //    not on a `kill(pgid, 0)` liveness probe. The old probe targeted
+    //    the group LEADER pid only, so if the node launcher had exited
+    //    but the native `codex app-server` child (in the same group) was
+    //    still alive and bound to the socket, `kill(pgid, 0)` would return
+    //    `ESRCH` and we'd unnecessarily fall through to respawn — leaking
+    //    the still-running native child. A `kill(-pgid, 0)` would check
+    //    the whole group, but socket connectability is the load-bearing
+    //    signal anyway: a responsive socket means SOMETHING useful is
+    //    bound there, and that's what adoption actually needs. Kept the
+    //    `pgid > 1` floor as a sanity guard against bogus persisted ids.
     if let (Some(pgid), Some(sock)) = (persisted_pgid, persisted_sock) {
         let sock_path = std::path::Path::new(sock);
         let connectable = tokio::net::UnixStream::connect(sock_path).await.is_ok();
-        let alive = pgid > 1 && unsafe { libc::kill(pgid, 0) } == 0;
-        if connectable && alive {
+        if connectable && pgid > 1 {
             tracing::info!(
                 card_id, wave_id = %wave_id, thread_id, pgid, sock,
-                "takeover: persisted app-server is alive; adopting (no respawn)",
+                "takeover: persisted app-server socket is live; adopting (no respawn)",
             );
             match spec_appserver::adopt_live_appserver(pgid, thread_id, sock_path).await {
                 Ok(handle) => {
@@ -288,10 +298,13 @@ async fn try_takeover_one_wave(
                         card_id, wave_id = %wave_id, error = %e,
                         "takeover: adopt failed against persisted live app-server; trying respawn",
                     );
-                    // Kill the wedged server so the respawn can rebind the
-                    // socket. (The old reap sweep's pid-recycling guard ran
-                    // BEFORE this fallback, so we know the pgid really
-                    // names our server.)
+                    // Kill the wedged server (whole process group) so the
+                    // respawn can rebind the socket. We use the negative
+                    // pgid form via `signal_process_group` so EVERY member
+                    // of the group goes down, not just the leader — this
+                    // is the symmetric fix to the probe change above
+                    // (B2): we no longer assume the leader pid alone
+                    // identifies "the server".
                     spec_appserver::signal_process_group(pgid, libc::SIGTERM);
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     spec_appserver::signal_process_group(pgid, libc::SIGKILL);
@@ -299,14 +312,21 @@ async fn try_takeover_one_wave(
                 }
             }
         } else {
-            // Either the persisted process is gone (graceful teardown
-            // already killed it on the way down) or it was alive but
-            // unreachable. Clean any stale socket and move to respawn.
+            // Socket is dead (graceful teardown killed the server, or it
+            // crashed). Clean any stale socket and move to respawn.
             tracing::debug!(
                 card_id, wave_id = %wave_id, pgid, sock,
-                connectable, alive,
-                "takeover: persisted app-server not adoptable; will respawn",
+                connectable,
+                "takeover: persisted app-server socket not connectable; will respawn",
             );
+            // Belt-and-suspenders: if the persisted pgid is still pointing
+            // at a wedged-but-not-listening process group, kill it before
+            // the respawn unlinks the socket. `signal_process_group` is a
+            // no-op if the group is already gone.
+            if pgid > 1 {
+                spec_appserver::signal_process_group(pgid, libc::SIGTERM);
+                spec_appserver::signal_process_group(pgid, libc::SIGKILL);
+            }
             spec_appserver::cleanup_sock_dir(sock_path);
         }
     }

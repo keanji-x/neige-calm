@@ -21,18 +21,24 @@
 //!    `push_watermark` past 0.
 //! 3. **Simulated kernel restart**: we drop the `SpecPushRegistry` entry
 //!    (the in-memory handle disappears, mirroring what kernel exit does)
-//!    AND seed the in-memory `EventCursorCache` back to 0 (mirroring a
-//!    cold-boot cache). Right after, we run
-//!    [`calm_server::takeover_spec_appservers_on_boot`] — the boot path
-//!    `main.rs` invokes — against the same `AppState`.
+//!    AND wipe the in-memory push cursor for the spec card via
+//!    `clear_push_cursor_for_test` (mirroring a cold-boot cache). This
+//!    step is load-bearing — without it, the surviving in-process bump
+//!    from step 2 would mask a regression in `seed_push_cursor`. Right
+//!    after, we run [`calm_server::takeover_spec_appservers_on_boot`] —
+//!    the boot path `main.rs` invokes — against the same `AppState`.
 //! 4. Takeover re-registers a `SpecPushHandle` for the wave and seeds the
-//!    push watermark back from the persisted field (so the test wave is
-//!    once again live + the cache is at its pre-restart value).
+//!    push cursor back from the persisted `payload.push_watermark`. We
+//!    ASSERT the in-memory cursor reads back to the persisted value (so
+//!    the test fails if `seed_push_cursor` regresses to a no-op).
 //! 5. A NEW `task.completed` emitted AFTER restart (its `events.id` is
 //!    above the watermark) reaches the spec thread as a fresh
 //!    `turn/started` — the takeover handle is connected.
 //! 6. Re-delivering a previously-acked envelope (its `events.id` is at or
 //!    below the watermark) is silently deduped — no extra `turn/started`.
+//!    We additionally wipe + re-seed the cursor BEFORE this probe so
+//!    the dedup hit is provably keyed on the SEEDED watermark (not on a
+//!    surviving in-process bump from step 5's live push).
 //!
 //! ## Self-skip
 //!
@@ -379,9 +385,13 @@ async fn boot_takeover_resumes_spec_thread_and_dedups_via_watermark() {
     // pass/fail so we never leak a codex app-server on assertion failure.
     let outcome = run_recovery_scenario(&state, &repo, app.clone(), &wave_id).await;
 
-    // Teardown: reap whatever's currently in the registry (the takeover
-    // handle, if it took over; otherwise the original).
-    let _ = state.spec_push.remove(&WaveId::from(wave_id.clone()));
+    // Teardown: use the production reap path (SIGTERM → 500ms grace →
+    // SIGKILL → socket cleanup) rather than a bare `spec_push.remove`,
+    // so a slow shutdown doesn't flake the no-leak assert. The bare
+    // `remove` only fires `Drop` (one SIGTERM, no escalation) and was
+    // the source of intermittent count drift on a loaded box.
+    // #313 PR4 N7.
+    calm_server::terminal_sweeper::reap_spec_push(&state, &WaveId::from(wave_id.clone())).await;
     tokio::time::sleep(Duration::from_millis(800)).await;
 
     let servers_after = count_codex_app_servers();
@@ -471,8 +481,24 @@ async fn run_recovery_scenario(
     // Also drop any spec_push handle we still hold so the takeover starts
     // from a TRULY empty registry — that's what a kernel restart looks like.
     let _ = state.spec_push.remove(&WaveId::from(wave_id.to_string()));
+    // #313 PR4 B3 — ALSO clear the in-memory push cursor. The previous
+    // version of this test left the cache populated, so the cold-boot
+    // seed path (`seed_push_cursor`) was never actually exercised — a
+    // regression that broke seeding would have been silently masked
+    // (dedup in scenario 6 still passed via the surviving in-process
+    // watermark). Wipe to mirror a true cold cache: empty → seed from
+    // disk → first push observed.
+    let spec_card_key: CardId = spec_card_id.clone().into();
+    state.dispatcher.clear_push_cursor_for_test(&spec_card_key);
+    let cursor_after_clear = state.dispatcher.push_cursor_for_test(&spec_card_key);
+    if cursor_after_clear != 0 {
+        return Err(format!(
+            "test setup bug: clear_push_cursor_for_test left cursor at {cursor_after_clear}"
+        ));
+    }
     eprintln!(
-        "[spec-push-boot-recovery-e2e] (3a) simulated kernel restart: dropped registry handle"
+        "[spec-push-boot-recovery-e2e] (3a) simulated kernel restart: dropped registry handle \
+         AND cleared in-memory push cursor (cold-boot cache simulation)"
     );
 
     // (3b) Run the boot takeover the kernel's main.rs would run.
@@ -483,7 +509,23 @@ async fn run_recovery_scenario(
             "takeover did not re-register a SpecPushHandle for the in-flight wave".to_string(),
         );
     }
-    eprintln!("[spec-push-boot-recovery-e2e] (3b) takeover registered a fresh push handle");
+    // B3 — explicit assert: after takeover, the in-memory cursor must
+    // match the persisted watermark. If `seed_push_cursor` regresses to
+    // a no-op, the cursor stays at 0 and this assertion fires — that's
+    // the load-bearing invariant the previous test missed.
+    let cursor_after_seed = state.dispatcher.push_cursor_for_test(&spec_card_key);
+    if cursor_after_seed != watermark_pre {
+        return Err(format!(
+            "takeover did not seed in-memory cursor from persisted watermark: \
+             cursor_after_seed={cursor_after_seed} expected={watermark_pre} \
+             (the test wiped the cache to 0 before takeover; if seed_push_cursor \
+             regressed to a no-op the cursor would still read 0 here)"
+        ));
+    }
+    eprintln!(
+        "[spec-push-boot-recovery-e2e] (3b) takeover registered a fresh push handle \
+         AND seeded in-memory cursor to {cursor_after_seed} (== persisted watermark)"
+    );
 
     // (4) New push AFTER restart with id > watermark → turn/started fires.
     //     Attach a new observer to whatever socket the takeover handle owns
@@ -531,7 +573,31 @@ async fn run_recovery_scenario(
     //     specifically (a fresh `log_pure_event` would advance the id past
     //     the watermark and bypass the dedup). The catch-up path uses the
     //     same dedup as the live path, so a dedup hit there proves the
-    //     invariant. After the call, wait + assert zero new turn/started.
+    //     invariant.
+    //
+    //     #313 PR4 B3 — to prove dedup operates on the SEEDED watermark
+    //     (not a surviving in-process bump from the post-restart push in
+    //     scenario 4), we wipe the in-memory cursor again and re-seed
+    //     from disk before the dedup probe. This makes the test fail if
+    //     someone re-introduces a regression where dedup leans on the
+    //     live in-process cursor instead of the persisted floor.
+    state.dispatcher.clear_push_cursor_for_test(&spec_card_key);
+    let persisted_now = persisted_watermark(repo, &spec_card_id).await;
+    state
+        .dispatcher
+        .seed_push_cursor(spec_card_key.clone(), persisted_now);
+    let cursor_pre_dedup = state.dispatcher.push_cursor_for_test(&spec_card_key);
+    if cursor_pre_dedup != persisted_now {
+        return Err(format!(
+            "dedup setup: re-seed did not restore cursor to persisted watermark: \
+             cursor={cursor_pre_dedup} expected={persisted_now}"
+        ));
+    }
+    eprintln!(
+        "[spec-push-boot-recovery-e2e] (5a) wiped + re-seeded cursor to {persisted_now} \
+         before dedup probe (proves dedup keys on SEEDED value)"
+    );
+
     let pre_event = Event::TaskCompleted {
         idempotency_key: "boot-recovery-pre".into(),
         result: json!({ "note": "boot-recovery-e2e" }),
