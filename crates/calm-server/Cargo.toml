@@ -248,6 +248,13 @@ criterion = { version = "0.5", features = ["async_tokio"] }
 # killed the partial-spawn daemon. `libc` is already a normal dep but
 # integration-test crates need it re-declared as dev-dep to link.
 libc = "0.2"
+# #318 INV-4 (codex P1 follow-up) — `spec_appserver` resume-reconcile
+# timer tests drive virtual time via `tokio::time::pause()` /
+# `tokio::time::advance` / `#[tokio::test(start_paused = true)]`, all of
+# which live behind tokio's `test-util` feature. Adding it as a dev-only
+# feature unifier (tokio is already a normal dep above) keeps the prod
+# build free of the extra clock machinery.
+tokio = { version = "1", features = ["full", "test-util"] }
 
 [[bench]]
 name = "event_append"
