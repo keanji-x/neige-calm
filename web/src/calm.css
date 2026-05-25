@@ -1092,17 +1092,17 @@ input, textarea { font: inherit; color: inherit; }
    not the row. */
 .wave-row-wrapper .wave-row-delete {
   position: absolute;
-  right: 6px;
+  right: 0;
   top: 50%;
   transform: translateY(-50%);
-  width: 24px; height: 24px;
+  width: 28px; height: 28px;
   display: flex; align-items: center; justify-content: center;
   background: transparent;
   border: none;
   border-radius: var(--radius-md);
   color: var(--text-3);
   font: inherit;
-  font-size: var(--text-md);
+  font-size: 18px;
   line-height: var(--leading-none);
   cursor: pointer;
   opacity: 0;
@@ -1118,31 +1118,34 @@ input, textarea { font: inherit; color: inherit; }
 /* Per-row pin button in cove-page wave rows. Reuses `.side-wave-pin`
    visual rules (opacity/color transitions) and sits absolutely so the
    eta/progress cluster isn't displaced. When only the pin is present it
-   lands at right: 6px; when the delete button is also present (`:has`)
-   it shifts left to avoid overlap. Always visible when pinned. */
+   lands at right: 0 (matching .cove-head-add); when the delete button
+   is also present (`:has`) it shifts left to avoid overlap. Always
+   visible when pinned. */
 .wave-row-wrapper .side-wave-pin {
   position: absolute;
-  right: 6px;
+  right: 0;
   top: 50%;
   transform: translateY(-50%);
-  width: 24px; height: 24px;
+  width: 28px; height: 28px;
   display: flex; align-items: center; justify-content: center;
   background: transparent;
   border: none;
   border-radius: var(--radius-md);
   color: var(--text-3);
   font: inherit;
-  font-size: var(--text-md);
+  font-size: 18px;
   line-height: var(--leading-none);
   cursor: pointer;
   opacity: 0;
   transition: opacity var(--motion-quick), color var(--motion-quick), background var(--motion-quick);
 }
 /* When both delete and pin are present, push pin left to avoid overlap
-   and widen the row's right gutter so neither button clips the content. */
-.wave-row-wrapper:has(.wave-row-delete) .side-wave-pin { right: 34px; }
+   and widen the row's right gutter so neither button clips the content.
+   Pin offset: 28px (delete width) + 4px gap = 32px from right edge.
+   Double-button padding: 28 + 4 + 28 = 60px total clearance needed. */
+.wave-row-wrapper:has(.wave-row-delete) .side-wave-pin { right: calc(var(--space-11) + var(--space-2)); }
 .wave-row-wrapper:has(.wave-row-delete):has(.side-wave-pin) .wave-row {
-  padding-right: calc(var(--space-12) + 28px);
+  padding-right: calc(2 * var(--space-11) + var(--space-2));
 }
 .wave-row-wrapper:hover .side-wave-pin,
 .wave-row-wrapper:focus-within .side-wave-pin { opacity: 1; }
