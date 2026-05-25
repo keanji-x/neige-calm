@@ -918,6 +918,15 @@ fn locate_recorder_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_argv-recorder-daemon"))
 }
 
+/// Locate the never-ready fake daemon (#310 followup). Spawns
+/// successfully, persists its pid to `<sock>.partial-pid`, then
+/// sleeps without binding the socket — guaranteed to trip the
+/// kernel's `~3s` readiness probe timeout and surface the partial-
+/// spawn state the rollback reap path is supposed to clean up.
+fn locate_never_ready_bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_never-ready-daemon"))
+}
+
 /// Wait up to `timeout` for any `*.argv` file under `data_dir` to
 /// land + return its lines. The recorder writes the file BEFORE
 /// binding the unix socket so by the time the kernel sees the daemon
@@ -1437,9 +1446,20 @@ async fn dispatcher_rolls_back_card_on_codex_daemon_spawn_failure_issue_310() {
     // to the success dispatcher.
     drop(dispatcher_fail);
     let events_retry = calm_server::event::EventBus::new();
-    let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
+    // Intentionally leak the tempdir (`TempDir::keep()` consumes the
+    // guard without scheduling cleanup) so the recorder daemon's
+    // argv-sidecar writes still find a live directory after the test
+    // fn returns. The dispatcher task we spawn below never observes a
+    // shutdown signal in the test harness, so its child daemon
+    // outlives this scope; without `keep` the `TempDir` drop deletes
+    // the dir and the still-running daemon panics with "create argv
+    // sidecar: Os { code: 2, kind: NotFound }" stderr noise that masks
+    // real failures in adjacent tests.
+    let tmp_path = tempfile::TempDir::new()
+        .expect("tempdir for daemon sockets")
+        .keep();
     let daemon_ok = Arc::new(calm_server::state::DaemonClient {
-        data_dir: tmp.path().to_path_buf(),
+        data_dir: tmp_path,
         session_daemon_bin: locate_recorder_bin(),
     });
     let _dispatcher_ok = Dispatcher::spawn(
@@ -1502,13 +1522,20 @@ async fn dispatcher_rolls_back_card_on_codex_daemon_spawn_failure_issue_310() {
 //     window; this test pins the terminal half so a future refactor
 //     that drops the rollback on only the terminal helper still trips
 //     a regression.
+//
+//     Same three-leg contract as test 12:
+//        a) dispatch returns Err → task.failed fires.
+//        b) no card with that idempotency_key remains in the DB.
+//        c) A re-dispatch with the SAME idempotency_key (this time
+//           with a working daemon binary) succeeds — proves the orphan
+//           row is not blocking retries.
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310() {
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
 
     let codex = stub_codex();
-    let _dispatcher_fail = Dispatcher::spawn(
+    let dispatcher_fail = Dispatcher::spawn(
         repo.clone(),
         events.clone(),
         cache.clone(),
@@ -1528,9 +1555,17 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
     let scope = wave_scope(&wave_id, &cove_id);
     let mut rx = events.subscribe();
 
-    repo.log_pure_event(ActorId::User, scope, None, &events, &cache, &wcc, req)
-        .await
-        .unwrap();
+    repo.log_pure_event(
+        ActorId::User,
+        scope.clone(),
+        None,
+        &events,
+        &cache,
+        &wcc,
+        req,
+    )
+    .await
+    .unwrap();
 
     let mut saw_failed = false;
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -1565,5 +1600,268 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
         "expected terminal-worker card row to be rolled back after spawn failure; \
          found {} leftover cards",
         leftover.len(),
+    );
+
+    // Leg (c): retry with the SAME idempotency_key against a fresh
+    // dispatcher whose daemon binary actually exists. See test 12's
+    // leg (c) doc comment for the full rationale (including why a
+    // fresh `EventBus` is needed to avoid the failing dispatcher
+    // racing the success dispatcher on the retry envelope).
+    drop(dispatcher_fail);
+    let events_retry = calm_server::event::EventBus::new();
+    // Intentionally leak the tempdir — see test 12's note for the
+    // rationale (daemon outlives the test fn; tempdir drop deletes
+    // the data dir; daemon panics on next argv-sidecar write).
+    let tmp_path = tempfile::TempDir::new()
+        .expect("tempdir for daemon sockets")
+        .keep();
+    let daemon_ok = Arc::new(calm_server::state::DaemonClient {
+        data_dir: tmp_path,
+        session_daemon_bin: locate_recorder_bin(),
+    });
+    let _dispatcher_ok = Dispatcher::spawn(
+        repo.clone(),
+        events_retry.clone(),
+        cache.clone(),
+        wcc.clone(),
+        codex.clone(),
+        daemon_ok,
+        None,
+        4,
+    );
+
+    let req_retry = Event::TerminalJobRequested {
+        idempotency_key: idem.into(),
+        cmd: "/bin/true".into(),
+        cwd: None,
+    };
+    repo.log_pure_event(
+        ActorId::User,
+        scope,
+        None,
+        &events_retry,
+        &cache,
+        &wcc,
+        req_retry,
+    )
+    .await
+    .unwrap();
+
+    // The retry should mint a card carrying our idempotency_key. If
+    // the rollback didn't fire, the orphan row would short-circuit and
+    // no NEW card lands — `wait_for` returns None and we panic.
+    let card = wait_for(Duration::from_secs(5), || async {
+        let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
+        cards
+            .into_iter()
+            .find(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem))
+    })
+    .await
+    .expect(
+        "retry with the same idempotency_key MUST succeed in spawning a fresh terminal worker \
+         card — if this times out, the orphan row from the failed first attempt is short-\
+         circuiting the retry (the rollback didn't fire or didn't remove the row)",
+    );
+
+    assert!(
+        repo.card_get(card.id.as_ref()).await.unwrap().is_some(),
+        "the retry's card must be live in the DB",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 14. Issue #310 followup (codex's P1 escalation) — daemon reap on rollback.
+//
+//     Pre-fix: when `spawn_daemon_with_parts` returned Err AFTER it had
+//     already spawned the daemon child + persisted `pid` + persisted
+//     `daemon_handle` but before the readiness probe succeeded (real
+//     failure mode: readiness timeout because the daemon hangs during
+//     setup), `rollback_orphan_worker` deleted the rows but left the
+//     daemon process + unix socket leaking — the sweeper's SQL excludes
+//     terminals still referenced by a card row, but we just deleted the
+//     card, so the sweeper *also* never sees the orphan. Result: a
+//     daemon process bound to a socket on disk, with no DB row to
+//     anchor cleanup, until the next kernel boot.
+//
+//     The fix re-fetches the terminal row (to pick up any post-commit
+//     pid / daemon_handle writes) and calls `reap_terminal_artifacts`
+//     before the row delete. This test pins that ordering by:
+//        a) Pointing the dispatcher at `never-ready-daemon` — spawns
+//           OK, persists pid via a `.partial-pid` sidecar, then sleeps
+//           without binding the socket. The kernel's readiness probe
+//           times out (~3s) and returns Err.
+//        b) Waiting for `task.failed` (proves the rollback path ran
+//           to its end).
+//        c) Asserting the recorded pid is no longer alive
+//           (`kill(pid, 0)` returns ESRCH) — proves the reap fired.
+//        d) Asserting the socket file is gone — proves the unlink
+//           step of `reap_terminal_artifacts` fired.
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
+    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
+
+    // Intentionally leak the tempdir — even after the reap kills the
+    // never-ready daemon pid, lingering filesystem cleanup races with
+    // the test's `tmp.drop()` would print stderr noise. The dir
+    // itself is small (just the socket parent).
+    let tmp_path = tempfile::TempDir::new()
+        .expect("tempdir for daemon sockets")
+        .keep();
+    let daemon = Arc::new(calm_server::state::DaemonClient {
+        data_dir: tmp_path.clone(),
+        session_daemon_bin: locate_never_ready_bin(),
+    });
+
+    let codex = stub_codex();
+    let _dispatcher = Dispatcher::spawn(
+        repo.clone(),
+        events.clone(),
+        cache.clone(),
+        wcc.clone(),
+        codex.clone(),
+        daemon,
+        None,
+        4,
+    );
+
+    // Use the terminal-worker path: simpler (no codex env / MCP
+    // plumbing) but exercises the same `rollback_orphan_worker` call
+    // site as the codex path. Both paths funnel through the same
+    // helper, so reap-on-rollback proven for one path holds for both.
+    let idem = "reap-on-rollback-1";
+    let req = Event::TerminalJobRequested {
+        idempotency_key: idem.into(),
+        cmd: "/bin/true".into(),
+        cwd: None,
+    };
+    let scope = wave_scope(&wave_id, &cove_id);
+    let mut rx = events.subscribe();
+
+    repo.log_pure_event(ActorId::User, scope, None, &events, &cache, &wcc, req)
+        .await
+        .unwrap();
+
+    // Wait for task.failed — the dispatcher's readiness probe in
+    // `spawn_daemon_with_parts` waits up to 75 * 40ms ≈ 3s before
+    // returning the timeout error. The rollback then runs synchronously
+    // before `run_one` emits `task.failed`. Allow a generous deadline.
+    let mut saw_failed = false;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+            Ok(Ok(env)) => {
+                if let Event::TaskFailed {
+                    idempotency_key, ..
+                } = &env.event
+                    && idempotency_key == idem
+                {
+                    saw_failed = true;
+                    break;
+                }
+            }
+            Ok(Err(_)) => break,
+            Err(_) => continue,
+        }
+    }
+    assert!(
+        saw_failed,
+        "expected dispatcher to emit task.failed after readiness timeout"
+    );
+
+    // Locate the partial-pid sidecar written by the fixture. Sockets
+    // land directly under `data_dir` as `<term_id>.sock` (see
+    // `DaemonClient::sock_path`); the partial-pid sidecar sits next to
+    // it as `<term_id>.sock.partial-pid`.
+    let mut partial_pid_path: Option<std::path::PathBuf> = None;
+    let mut sock_path: Option<std::path::PathBuf> = None;
+    let scan_deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < scan_deadline {
+        let mut found = false;
+        if let Ok(read) = std::fs::read_dir(&tmp_path) {
+            for entry in read.flatten() {
+                let p = entry.path();
+                if p.extension().and_then(|s| s.to_str()) == Some("partial-pid") {
+                    partial_pid_path = Some(p.clone());
+                    if let Some(stem) = p.to_str().and_then(|s| s.strip_suffix(".partial-pid")) {
+                        sock_path = Some(std::path::PathBuf::from(stem));
+                    }
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if found {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+    let partial_pid_path = partial_pid_path
+        .expect("never-ready daemon never wrote its partial-pid sidecar; spawn pipeline broken");
+    let sock_path = sock_path.expect("derived sock path from sidecar stem");
+
+    let pid_str = std::fs::read_to_string(&partial_pid_path)
+        .expect("read partial-pid sidecar")
+        .trim()
+        .to_string();
+    let pid: i32 = pid_str
+        .parse()
+        .unwrap_or_else(|e| panic!("parse partial-pid {pid_str:?}: {e}"));
+
+    // Reap may complete asynchronously w.r.t. task.failed emission
+    // (graceful-kill helper has a 5s timeout; then SIGTERM; then the
+    // daemon's exit propagation has its own schedule). Poll for up to
+    // a few seconds.
+    let kill_check_deadline = Instant::now() + Duration::from_secs(15);
+    let mut process_dead = false;
+    while Instant::now() < kill_check_deadline {
+        // `kill(pid, 0)` is the standard liveness probe: returns 0
+        // when the process exists, ESRCH when it's gone. We don't
+        // actually deliver a signal.
+        let alive = unsafe { libc::kill(pid, 0) } == 0;
+        if !alive {
+            process_dead = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    if !process_dead {
+        // Last-ditch cleanup so we don't leak this process past the
+        // test fn — the rollback path was supposed to kill it but
+        // didn't. SIGKILL bypasses any signal handler the daemon
+        // might have installed.
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+        panic!(
+            "issue #310 regression: rollback reap did NOT kill the partial-spawn daemon \
+             (pid {pid}) — the sweeper can't see this orphan because we just deleted the \
+             card+terminal rows that referenced it, so the daemon would leak until the \
+             next kernel boot. `reap_terminal_artifacts` must run BEFORE the row delete."
+        );
+    }
+
+    // Socket file: `reap_terminal_artifacts` unlinks `daemon_handle`
+    // best-effort. With our never-ready fixture the daemon never bound
+    // the socket in the first place, so the path may never have
+    // existed on disk — but the reap helper still calls `remove_file`
+    // and tolerates ENOENT. The contract we assert: by the time the
+    // rollback returns, no live socket file remains for that terminal.
+    assert!(
+        !sock_path.exists(),
+        "socket file {sock_path:?} should be gone after reap (the fixture never bound it, \
+         so this assertion mostly proves the rollback didn't somehow CREATE one)"
+    );
+
+    // And: the card row is gone (rollback step 3 fired).
+    let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
+    let leftover: Vec<_> = cards
+        .iter()
+        .filter(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem))
+        .collect();
+    assert!(
+        leftover.is_empty(),
+        "card row should be deleted by the rollback tx; found {} leftover",
+        leftover.len()
     );
 }

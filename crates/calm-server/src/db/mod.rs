@@ -157,14 +157,39 @@ pub type WriteWithEventsFn<'a> = Box<
 /// producing a spurious `Close(1000, "child-exited")` for a daemon that
 /// is in fact ~670ms away from being alive.
 ///
-/// **Caveat**: a process crash between commit and the post-spawn
-/// `log_pure_event(CardAdded)` leaves the card row on disk with no
-/// matching event in the events log. The dispatcher's `TaskFailed`
-/// emission only fires on a returned error, not on a process death; the
-/// orphan is then reaped by the terminal-sweeper on next boot. Replay
-/// from the events log will not surface the card. This is acceptable
-/// — the alternative (emitting CardAdded inside the tx) is the bug
-/// we're fixing.
+/// **Caveat — crash-window orphan.** The window between the row-creation
+/// tx commit and the post-spawn `log_pure_event(CardAdded)` is on the
+/// order of microseconds (the daemon spawn + readiness probe sit
+/// inside it, so it's actually closer to ~700ms in the codex case),
+/// but it's real. If the kernel process dies mid-window (SIGKILL,
+/// OOM, panic that escapes the tokio task supervisor), the durable
+/// state on next boot is:
+///   * The card row is on disk; the terminal row is on disk; the
+///     daemon child may or may not be alive depending on when in the
+///     window we died.
+///   * No `CardAdded` event was appended to the events log — replay
+///     will not surface the card.
+///   * No `CardAdded` broadcast fired — no subscriber learned about
+///     the row at the time it was written.
+///   * The terminal-sweeper will NOT reap the orphan: its SQL excludes
+///     terminals still referenced by a card (`terminals_orphaned` only
+///     returns rows with no matching `cards.payload.terminal_id`), and
+///     the card row IS pointing at this terminal.
+///   * The `idempotency_key` short-circuits future retries — a user
+///     who re-dispatches with the same key gets the silent-skip path
+///     in `find_card_by_idempotency_key_tx`.
+///
+/// The dispatcher's `TaskFailed` emission only fires on a returned
+/// error from a live spawn, not on a process death mid-spawn, so the
+/// requesting spec card's `wait_for_events` loop never wakes up
+/// either. Net effect: an undead card that nothing knows about.
+///
+/// This is accepted scope for the current fix (the alternative —
+/// emitting `CardAdded` inside the tx — is the live `child-exited`
+/// bug we're solving). A proper fix needs boot-time events-log
+/// reconciliation (scan for terminal rows whose `cards.payload.id`
+/// has no corresponding `CardAdded` event and either emit the event
+/// or rollback the row). Tracked for followup; see issue TBD.
 pub type WriteInTxFn<'a> = Box<
     dyn for<'tx> FnOnce(&'tx mut Transaction<'_, Sqlite>) -> BoxFuture<'tx, Result<()>> + Send + 'a,
 >;

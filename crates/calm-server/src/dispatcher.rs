@@ -85,6 +85,7 @@ use crate::routes::terminal::spawn_daemon_with_parts;
 use crate::spec_appserver::SpecPushRegistry;
 use crate::spec_card::{SeededCardRole, build_codex_env_map, seed_codex_home_with_parts};
 use crate::state::{CodexClient, DaemonClient};
+use crate::terminal_sweeper::reap_terminal_artifacts;
 use crate::wave_cove_cache::WaveCoveCache;
 
 /// Default number of permits when `NEIGE_DISPATCHER_PERMITS` is unset /
@@ -1066,6 +1067,25 @@ impl Inner {
         // failure-rollback below has a `term.id` to delete by — keeping
         // the orphan cleanup path symmetric with `spawn_daemon_with_parts`'s
         // failure arm.
+        //
+        // NOTE (#310 followup, accepted scope): an error from this
+        // `?` does NOT trigger `rollback_orphan_worker` — we can't
+        // call it without a `terminal_id` and we don't have one. In
+        // theory the card row could leak as an orphan that the next
+        // retry idempotency-collides with. In practice this branch
+        // requires either (a) a SQLite read failure on the terminal
+        // table immediately after a successful write in the same
+        // connection (extremely unlikely; would be a hardware fault
+        // or a connection-pool bug), or (b) `terminal_get_by_card`
+        // returning `Ok(None)` for a terminal we just minted in the
+        // same tx (impossible barring a sweeper race, which the 60s
+        // grace window in `terminals_orphaned` prevents on freshly-
+        // committed rows). Wrapping this in rollback would require
+        // first extracting `terminal_id` from `card.payload` (the
+        // helper stamps it before commit) — cheap-ish, but the read
+        // path is the same one we just failed on, so the rollback
+        // helper would also have to fall back to deleting by card_id
+        // alone. Not worth the complexity for a path this cold.
         let term = self
             .repo
             .terminal_get_by_card(card_id.as_str())
@@ -1388,6 +1408,11 @@ impl Inner {
         // Post-commit: spawn the terminal daemon. No CODEX_HOME
         // seeding for the terminal worker — it's a plain shell
         // session, not a codex one.
+        //
+        // NOTE (#310 followup, accepted scope): see the matching note
+        // in `spawn_codex_worker` for why an error from this `?` is
+        // not wrapped in `rollback_orphan_worker`. Same cold-path
+        // argument applies here.
         let term = self
             .repo
             .terminal_get_by_card(card_id.as_str())
@@ -1526,26 +1551,93 @@ fn build_observation(event: &Event) -> String {
 /// `idempotency_key` on the card makes a retry with the same key
 /// short-circuit on the abandoned row. The user can't re-dispatch.
 ///
-/// The fix here re-opens a small tx and DELETEs both rows in the order
-/// the `RESTRICT` FK demands (terminal first, then card) via
-/// [`card_with_terminal_rollback_tx`]. After this returns, a retry
-/// with the same `idempotency_key` no longer finds the orphan and
-/// goes through fresh — the correct semantic for "first attempt
-/// failed; please try again".
+/// The fix here:
+///   1. **Re-fetches the terminal row** — `spawn_daemon_with_parts` may
+///      have populated `pid` / `daemon_handle` on the row before it
+///      failed (e.g. the daemon child actually spawned and its socket
+///      came up but readiness probe timed out, or any post-pid_write
+///      error). The original `term` value handed in from the caller
+///      predates that write, so we re-SELECT to pick up the latest
+///      state.
+///   2. **Reaps the daemon process + socket** via
+///      [`reap_terminal_artifacts`] (same helper the sweeper +
+///      eager-teardown route handlers use). Without this step, a
+///      partial spawn followed by row-only deletion would leak the
+///      daemon process + unix socket forever — the sweeper can't see
+///      them because we just deleted the row that referenced them,
+///      and no other code path knows the artifacts exist.
+///   3. **DELETEs both rows** in the order the `RESTRICT` FK demands
+///      (terminal first, then card) via
+///      [`card_with_terminal_rollback_tx`]. After this returns, a
+///      retry with the same `idempotency_key` no longer finds the
+///      orphan and goes through fresh.
 ///
-/// **Best-effort.** A failure inside this rollback (e.g. SQLite
-/// busy/locked, FK weirdness, the orphan sweeper raced us) is logged
-/// at `error` level but swallowed: surfacing the rollback error would
-/// mask the original spawn error in the `task.failed` event, which is
-/// the more actionable signal for the user. The orphan sweeper is the
-/// fallback for rollback failures (same role it plays for crash-time
-/// orphans).
+/// **Best-effort.** A failure inside the reap step (socket unreachable,
+/// pid already gone) is swallowed by `reap_terminal_artifacts` itself
+/// — it's idempotent against missing artifacts. A failure inside the
+/// rollback tx (SQLite busy/locked, FK weirdness, the orphan sweeper
+/// raced us) is logged at `error` level but swallowed: surfacing the
+/// rollback error would mask the original spawn error in the
+/// `task.failed` event, which is the more actionable signal for the
+/// user. The orphan sweeper is the fallback for rollback failures
+/// (same role it plays for crash-time orphans).
 async fn rollback_orphan_worker(
     repo: &dyn Repo,
     card_role_cache: &CardRoleCache,
     card_id: &str,
     terminal_id: &str,
 ) {
+    // 1. Re-fetch the terminal row. `spawn_daemon_with_parts` may have
+    //    written `pid` + `daemon_handle` between the row-creation tx
+    //    commit and its eventual error return (e.g. readiness probe
+    //    timeout, post-spawn IO error). The `term` snapshot the caller
+    //    passes in was taken pre-spawn and would miss those columns.
+    //
+    //    A NotFound here (the orphan sweeper raced us; the user just
+    //    nuked the row via REST; …) is fine — we skip the reap entirely
+    //    and fall through to the rollback tx, which is itself NotFound-
+    //    tolerant. A Db error gets logged and we still attempt the
+    //    rollback tx since row-deletion-blocks-retry is the more
+    //    important guarantee here.
+    match repo.terminal_get(terminal_id).await {
+        Ok(Some(latest)) => {
+            // 2. Reap the daemon process + socket BEFORE the row delete.
+            //    After the row goes away, the sweeper has no way to
+            //    find these artifacts — they would leak until the next
+            //    server reboot.
+            //
+            //    `reap_terminal_artifacts` is idempotent against
+            //    missing artifacts: if `pid` / `daemon_handle` are
+            //    still None (the daemon spawn failed before writing
+            //    them), the helper is a near-no-op. If they ARE
+            //    populated, it tears the daemon down cleanly the same
+            //    way the sweeper would on its next tick.
+            reap_terminal_artifacts(&latest).await;
+        }
+        Ok(None) => {
+            // Row vanished — sweeper raced us, or some other path
+            // already cleaned up. Nothing to reap; fall through to
+            // rollback tx (the card row may still be live).
+            tracing::debug!(
+                card_id = %card_id,
+                terminal_id = %terminal_id,
+                "rollback_orphan_worker: terminal row vanished pre-reap; skipping reap step",
+            );
+        }
+        Err(e) => {
+            tracing::error!(
+                card_id = %card_id,
+                terminal_id = %terminal_id,
+                error = %e,
+                "rollback_orphan_worker: terminal re-fetch failed; \
+                 skipping reap (daemon may leak until sweeper next tick)",
+            );
+        }
+    }
+
+    // 3. Delete both rows. This is the step that actually unblocks the
+    //    retry — without it, the orphan card's idempotency_key short-
+    //    circuits future dispatches with the same key.
     let card_id_for_tx = card_id.to_string();
     let term_id_for_tx = terminal_id.to_string();
     let cache_for_tx = card_role_cache.clone();
