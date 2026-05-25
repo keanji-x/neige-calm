@@ -2269,16 +2269,18 @@ impl RepoOutOfDomain for SqlxRepo {
         // `SqlxRepo::open`); an INSERT against a non-existent card_id
         // fails with `SQLITE_CONSTRAINT_FOREIGNKEY` rather than silently
         // orphaning a row.
-        let now = now_ms();
+        // #325 — no `enqueued_at`/wall-clock column on `spec_push_queue`:
+        // nothing reads it (FIFO is established by the AUTOINCREMENT `id`),
+        // so persisting a `now_ms()` per row was dead bytes. See the
+        // migration header for the followup story.
         let row = sqlx::query(
-            r#"INSERT INTO spec_push_queue (card_id, envelope_id, text, enqueued_at)
-               VALUES (?1, ?2, ?3, ?4)
+            r#"INSERT INTO spec_push_queue (card_id, envelope_id, text)
+               VALUES (?1, ?2, ?3)
                RETURNING id"#,
         )
         .bind(card_id)
         .bind(envelope_id)
         .bind(text)
-        .bind(now)
         .fetch_one(&self.pool)
         .await?;
         Ok(row.get::<i64, _>("id"))

@@ -663,12 +663,30 @@ async fn register_and_catch_up(
          enqueued-but-not-yet-flushed observations would not survive the \
          next process restart, silently reintroducing the INV-3 (#318) regression"
     );
-    let rehydrated = handle.rehydrate_queue_from_persist().await;
-    if rehydrated > 0 {
+    // #325 fix — capture the rehydrated envelope_ids so the catch-up
+    // replay below can skip them. Without this skip-set, a crash AFTER the
+    // `Enqueue` arm persisted its row but BEFORE the consumer's flush
+    // advanced `push_watermark` leaves both (a) a row that rehydrates here
+    // and (b) the same envelope id in `events_since(watermark)` (the
+    // dispatcher cooperatively withholds `push_watermark` on `Enqueued` —
+    // PR #315 PR4 B1 — exactly so the events log is a recovery safety
+    // net). With both surfaces present, the first catch-up push would
+    // trigger `StartTurnNow` on the resumed (Idle) handle, drain the
+    // rehydrated row, AND append the catch-up envelope as a *second copy*
+    // of the same observation — a duplicate to codex on every recovery.
+    //
+    // Dedup is by `envelope_id` (the persisted `events.id`) — the rehydrate
+    // path reads ids straight off `spec_card_queued_observations`, which
+    // are the same `events.id` values `events_since` returns, so equality
+    // is exact.
+    let rehydrated_ids = handle.rehydrate_queue_from_persist().await;
+    let rehydrated_skip: std::collections::HashSet<i64> = rehydrated_ids.iter().copied().collect();
+    let rehydrated_count = rehydrated_ids.len();
+    if rehydrated_count > 0 {
         tracing::info!(
             card_id,
             wave_id = %wave_id,
-            count = rehydrated,
+            count = rehydrated_count,
             "takeover: rehydrated spec push queue from durable rows; \
              items will deliver on the next turn/completed flush",
         );
@@ -746,6 +764,7 @@ async fn register_and_catch_up(
                 )
             };
             let mut replayed = 0usize;
+            let mut skipped_rehydrated = 0usize;
             for (id, _ver, scope, ev) in rows {
                 // Only events scoped to (or under) this wave count; only the
                 // three push kinds the dispatcher routes; only the user-
@@ -765,6 +784,23 @@ async fn register_and_catch_up(
                 {
                     continue;
                 }
+                // #325 fix — skip envelopes whose row is already sitting in
+                // the rehydrated in-memory queue. Without this skip, the
+                // very first un-skipped catch-up call on the resumed
+                // (Idle) handle triggers `StartTurnNow`, drains the
+                // rehydrated row AND appends this catch-up envelope as a
+                // SECOND copy of the same observation — both ride one
+                // `turn/start`, codex sees the same wave event twice, and
+                // the `Enqueue` arm persists ANOTHER `spec_push_queue` row
+                // for the duplicate. The rehydrated rows themselves still
+                // deliver via the normal drain path (the first non-skipped
+                // catch-up envelope's `StartTurnNow` drains the queue; if
+                // no catch-up envelope remains after dedup, the explicit
+                // `flush_pending` below drains them).
+                if rehydrated_skip.contains(&id) {
+                    skipped_rehydrated += 1;
+                    continue;
+                }
                 // Run the dedup-check-and-deliver body WITHOUT re-taking
                 // the per-wave lock (we already hold it). Same shape as a
                 // live push, sans lock acquisition.
@@ -774,9 +810,9 @@ async fn register_and_catch_up(
                     .await;
                 replayed += 1;
             }
-            if replayed > 0 {
+            if replayed > 0 || skipped_rehydrated > 0 {
                 tracing::info!(
-                    card_id, wave_id = %wave_id, replayed, watermark,
+                    card_id, wave_id = %wave_id, replayed, skipped_rehydrated, watermark,
                     "takeover: catch-up replay pushed events to resumed spec thread",
                 );
             } else {
@@ -784,6 +820,29 @@ async fn register_and_catch_up(
                     card_id, wave_id = %wave_id, watermark,
                     "takeover: no catch-up events above watermark",
                 );
+            }
+
+            // #325 fix — when rehydrate restocked the queue but every
+            // catch-up envelope was skipped as already-rehydrated, no
+            // `StartTurnNow` fired during the loop above, so the
+            // rehydrated rows are still sitting in the in-memory queue.
+            // Explicitly drive a `flush_push_queue` on the handle to
+            // deliver them now (idempotent — no-op when the queue is
+            // empty or another issuer already claimed the cycle). This
+            // keeps the boot-takeover path's "rehydrated items deliver
+            // promptly" semantics symmetric with the steady-state path
+            // (consumer task's `turn/completed` flush always drains).
+            //
+            // We resolve the handle through the registry to share the
+            // same `Arc`-wrapped components the dispatcher will see for
+            // live pushes; `pusher().push_observation` and `flush_pending`
+            // both operate on those slots, so this nudge is identical to
+            // a steady-state flush.
+            if rehydrated_count > 0
+                && replayed == 0
+                && let Some(pusher) = state.spec_push.pusher(wave_id)
+            {
+                pusher.flush_pending().await;
             }
         })
         .await;

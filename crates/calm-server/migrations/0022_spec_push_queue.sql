@@ -48,12 +48,19 @@
 -- repo writes route through `RepoOutOfDomain` (no `CardUpdated`
 -- emitted on enqueue/dequeue).
 
+-- No `enqueued_at` / wall-clock column: nothing in the kernel reads or
+-- orders by enqueue time (FIFO is already established by the
+-- AUTOINCREMENT `id`, and the flush path operates on rows in id order,
+-- not by age). The earlier draft of this migration carried an
+-- `enqueued_at INTEGER` column that the INSERT populated but the SELECT
+-- never returned; #325 dropped it as observability-only dead weight.
+-- If a future observability story needs enqueue timestamps, add the
+-- column back in a follow-up migration alongside the consumer.
 CREATE TABLE spec_push_queue (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     card_id     TEXT    NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
     envelope_id INTEGER NOT NULL,
-    text        TEXT    NOT NULL,
-    enqueued_at INTEGER NOT NULL
+    text        TEXT    NOT NULL
 );
 
 -- FIFO retrieval per card: `WHERE card_id = ? ORDER BY id ASC`. The
