@@ -673,6 +673,12 @@ pub trait RepoOutOfDomain: RepoRead {
     /// `appserver_sock` / `appserver_pgid` / other payload fields. A
     /// missing card row is a no-op (the wave was deleted between the bump
     /// and the persist).
+    ///
+    // TODO(runtime-state-table): push_watermark — along with appserver_pgid,
+    // appserver_sock, codex_thread_id — is kernel-private runtime bookkeeping
+    // living on the card payload via OutOfDomain (no CardUpdated event). When
+    // the dedicated runtime-state table lands, migrate these fields out of
+    // card payload into it. Acceptable short-term per #315 review.
     async fn spec_card_set_push_watermark(&self, card_id: &str, watermark: i64) -> Result<()>;
 
     /// #313 problem #1 — clear a spec card's `codex_thread_id` (and the

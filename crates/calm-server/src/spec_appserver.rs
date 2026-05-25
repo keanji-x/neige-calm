@@ -255,6 +255,42 @@ pub enum PushAction {
     Enqueue,
 }
 
+/// #313 problem #1 (B1) — outcome reported back to the dispatcher so the
+/// **durable watermark** is only persisted for observations that codex
+/// has actually received (in a `turn/start` we issued), not merely
+/// buffered into the in-memory queue.
+///
+/// The dispatcher consumes this verbatim in `push_to_spec`:
+///   * `Issued { max_envelope_id }` — `turn/start` succeeded. The
+///     `max_envelope_id` is the highest envelope id among (drained queue
+///     items + this push's observation). Persisting watermark =
+///     `max_envelope_id` is safe: every id ≤ it was either previously
+///     persisted or just rode this same turn/start.
+///   * `Enqueued` — observation lives only in the in-memory queue;
+///     dispatcher MUST NOT advance the durable watermark (a kernel crash
+///     before the queue flushes would lose it; boot catch-up replays
+///     `id > watermark` and would skip it). The watermark is bumped later
+///     by the queue-flushed path via the [`WatermarkSink`] callback (see
+///     [`SpecPushHandle::install_watermark_sink`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PushOutcome {
+    /// Observation rode a successful `turn/start` (alone or coalesced with
+    /// previously-queued items). Dispatcher persists watermark =
+    /// `max_envelope_id` (highest id issued in this turn).
+    Issued {
+        /// Highest persisted `events.id` delivered in this coalesced turn.
+        /// May be > the current push's envelope id (the drain pulled in
+        /// items with higher ids — see flush below) OR < (the drain
+        /// pulled in older items that were enqueued earlier; the new push
+        /// is the max).
+        max_envelope_id: i64,
+    },
+    /// Observation was buffered (a turn was already running / being issued).
+    /// Dispatcher MUST NOT persist watermark — boot catch-up needs to
+    /// replay it on crash before the flush.
+    Enqueued,
+}
+
 /// Pure decision: given the connection's coarse [`SpecPushPhase`], should
 /// a push observation start a turn immediately or be enqueued for the
 /// next `turn/completed` flush? See [`PushAction`] for the rationale.
@@ -287,7 +323,49 @@ type SharedStatus = Arc<Mutex<SpecPushStatus>>;
 /// next `turn/completed`. `Arc<Mutex<…>>` because both the dispatcher
 /// (enqueue side, via [`SpecPushHandle::push_observation`]) and the
 /// consumer task (flush side) touch it.
-type PushQueue = Arc<Mutex<VecDeque<String>>>;
+///
+/// #313 problem #1 (B1) — each entry remembers the persisted `events.id`
+/// of the envelope that produced it. The dispatcher hands the id in via
+/// `push_observation`; on flush, the consumer task reports
+/// `max(envelope_id)` of the drained batch back to the dispatcher (via
+/// [`WatermarkSink`]) so the durable `push_watermark` advances past the
+/// just-delivered items. Without per-item ids the watermark would either
+/// (a) advance prematurely on enqueue and lose data on crash-before-flush,
+/// or (b) never advance for queued-then-flushed items.
+type PushQueue = Arc<Mutex<VecDeque<QueuedObservation>>>;
+
+/// One queued observation: the envelope id (so the flush path can report
+/// the max delivered id to the dispatcher) plus the rendered text codex
+/// will receive.
+#[derive(Debug, Clone)]
+struct QueuedObservation {
+    envelope_id: i64,
+    text: String,
+}
+
+/// Callback the dispatcher installs on a [`SpecPushHandle`] so the
+/// queue-flush path (which runs from the consumer task on `turn/completed`)
+/// can persist the durable `push_watermark` for envelope ids that were
+/// only delivered out of the queue.
+///
+/// Boxed because it captures the dispatcher's repo handle + the spec
+/// card id at handle-construction time; we never want to import
+/// `crate::Repo` into `spec_appserver.rs`.
+///
+/// Called with the highest `events.id` actually delivered in a successful
+/// `turn/start`. Failure (e.g. SQLite write error) is the implementation's
+/// responsibility to log — the flush path is fire-and-forget here.
+pub type WatermarkSink =
+    Arc<dyn Fn(i64) -> futures_util::future::BoxFuture<'static, ()> + Send + Sync>;
+
+/// `Arc<Mutex<Option<WatermarkSink>>>` so the handle can construct itself
+/// without a sink (the boot/create path doesn't have the repo handle in
+/// scope at construction time) and the dispatcher installs it later via
+/// [`SpecPushHandle::install_watermark_sink`]. `Option` (not "always
+/// present"): test paths (`fake_handle()`) skip it; on those, queue flushes
+/// simply don't persist a watermark — fine, because tests don't run
+/// dispatcher-side persistence assertions.
+type WatermarkSinkSlot = Arc<Mutex<Option<WatermarkSink>>>;
 
 /// Everything the kernel owns for one spec card's push channel.
 ///
@@ -341,6 +419,17 @@ pub struct SpecPushHandle {
     /// the consumer task drains them into one coalesced `turn/start` on the
     /// next `turn/completed`. Shared with the consumer task.
     queue: PushQueue,
+    /// #313 problem #1 (B1) — durable watermark persister. The consumer
+    /// task's [`flush_push_queue`] calls this with the max envelope id of
+    /// the just-flushed batch so the durable `push_watermark` advances past
+    /// items that were ONLY delivered out of the queue (the dispatcher
+    /// itself never sees those items hit codex).
+    ///
+    /// Installed post-construction by the dispatcher
+    /// ([`install_watermark_sink`](Self::install_watermark_sink)). `None` on
+    /// the brief window before it lands and in tests that don't exercise
+    /// the persistence path.
+    watermark_sink: WatermarkSinkSlot,
 }
 
 /// PR3b — a cheaply-cloneable handle onto just the parts of a
@@ -355,6 +444,11 @@ pub struct SpecPusher {
     thread_id: String,
     status: SharedStatus,
     queue: PushQueue,
+    /// Shared with the parent handle (`Arc<Mutex<Option<…>>>`). Read only
+    /// by the consumer task's flush path; pushers carry it so the queue
+    /// itself stays self-contained alongside its persistence callback.
+    #[allow(dead_code)]
+    watermark_sink: WatermarkSinkSlot,
 }
 
 impl SpecPusher {
@@ -400,7 +494,7 @@ impl SpecPusher {
     /// (drain + append), releases it, then issues. [`flush_push_queue`]
     /// uses the same status-then-queue, never-nested order. Preserving this
     /// keeps the path deadlock-free (the review confirmed today's code is).
-    pub async fn push_observation(&self, text: &str) -> Result<()> {
+    pub async fn push_observation(&self, envelope_id: i64, text: &str) -> Result<PushOutcome> {
         // Decide + (winner only) claim the issue right atomically under ONE
         // status-lock acquisition: a between-turns phase is flipped to
         // `Issuing` before the lock is released, so exactly one caller wins
@@ -421,15 +515,35 @@ impl SpecPusher {
                 // is lost — it all rides one `turn/start`. (Anything
                 // enqueued AFTER this drain waits for the next cycle, which
                 // is correct: it arrived while a turn is being issued.)
-                let mut items: Vec<String> = {
+                let mut items: Vec<QueuedObservation> = {
                     let mut q = self.queue.lock().await;
                     q.drain(..).collect()
                 };
-                items.push(text.to_string());
-                let coalesced = items.join("\n");
+                items.push(QueuedObservation {
+                    envelope_id,
+                    text: text.to_string(),
+                });
+                // #313 B1: durable watermark must advance to the MAX
+                // envelope id we are about to deliver, not just the
+                // current push's id. The drained items were enqueued
+                // earlier (typically lower ids), but we still compute
+                // `max` defensively so the contract holds even if a
+                // future scheduler ordering or out-of-order persistence
+                // sent a higher id into the queue first.
+                let max_envelope_id = items
+                    .iter()
+                    .map(|o| o.envelope_id)
+                    .max()
+                    .unwrap_or(envelope_id);
+                let coalesced = items
+                    .iter()
+                    .map(|o| o.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 tracing::debug!(
                     thread_id = %self.thread_id,
                     count = items.len(),
+                    max_envelope_id,
                     "spec push: winner issuing coalesced turn/start (queue drained + new observation)"
                 );
                 if let Err(e) = self
@@ -452,15 +566,19 @@ impl SpecPusher {
                     }
                     return Err(e);
                 }
-                Ok(())
+                Ok(PushOutcome::Issued { max_envelope_id })
             }
             PushAction::Enqueue => {
-                self.queue.lock().await.push_back(text.to_string());
+                self.queue.lock().await.push_back(QueuedObservation {
+                    envelope_id,
+                    text: text.to_string(),
+                });
                 tracing::debug!(
                     thread_id = %self.thread_id,
+                    envelope_id,
                     "spec push: turn active / being issued — enqueued observation for flush"
                 );
-                Ok(())
+                Ok(PushOutcome::Enqueued)
             }
         }
     }
@@ -482,13 +600,27 @@ impl SpecPushHandle {
             thread_id: self.thread_id.clone(),
             status: self.status.clone(),
             queue: self.queue.clone(),
+            watermark_sink: self.watermark_sink.clone(),
         }
     }
 
     /// PR3b — convenience delegate so callers holding a `&SpecPushHandle`
     /// (and the unit tests) can push without first cloning a [`SpecPusher`].
-    pub async fn push_observation(&self, text: &str) -> Result<()> {
-        self.pusher().push_observation(text).await
+    pub async fn push_observation(&self, envelope_id: i64, text: &str) -> Result<PushOutcome> {
+        self.pusher().push_observation(envelope_id, text).await
+    }
+
+    /// #313 problem #1 (B1) — install the dispatcher-side persistence
+    /// callback used by the queue-flush path. Called by the dispatcher
+    /// (`Inner::push_to_spec`) right after the handle is registered, so
+    /// the consumer task's [`flush_push_queue`] can persist the durable
+    /// watermark for items it delivers out of the queue.
+    ///
+    /// Installing twice replaces the previous sink (the second
+    /// dispatcher's repo handle wins). Production calls this exactly once
+    /// per handle.
+    pub async fn install_watermark_sink(&self, sink: WatermarkSink) {
+        *self.watermark_sink.lock().await = Some(sink);
     }
 }
 
@@ -849,108 +981,30 @@ pub async fn resume_spec_appserver(
     Ok(handle)
 }
 
-/// #313 problem #1 — connect to an **already-live** `codex app-server`
-/// (the kernel was restarted, but the launcher + native child are still
-/// bound to the per-card socket because they were reparented under
-/// `systemd --user` when the kernel `SIGKILL`ed) and `initialize` +
-/// `thread/resume(<thread_id>)` against it. No respawn, no new child,
-/// no kill — pure takeover.
-///
-/// `pgid` is the persisted launcher pgid that was found alive at boot.
-/// We do NOT own/spawn the child here — we adopt the existing process by
-/// recording its pgid on the resulting [`SpecPushHandle`] so the normal
-/// teardown path (handle Drop → `kill(-pgid, SIGTERM)`) reaps it on
-/// shutdown, exactly as if `create_wave` had spawned it. The handle's
-/// `child` field is set to a dummy long-running `sleep` process owned by
-/// this handle so the `Child` type's API contract is satisfied
-/// (`kill_on_drop` belt-and-suspenders), but the load-bearing reap is
-/// the group kill — which targets the **adopted** native server, not the
-/// dummy.
-///
-/// Failure modes (all surface as [`CalmError`] so the caller can warn +
-/// leave inert):
-///   * socket connect/handshake fails → log warn at the call site,
-///   * `initialize` or `thread/resume` errors (including `-32600 "no rollout
-///     found"`) → same — clear `codex_thread_id` from the card payload so the
-///     next boot doesn't re-try the dead resume.
-pub async fn adopt_live_appserver(
-    pgid: i32,
-    thread_id: &str,
-    sock: &Path,
-) -> Result<SpecPushHandle> {
-    // #313 PR4 N6 — wrap the network/IPC chain (connect → initialize →
-    // thread_resume) in `OVERALL_BOOT_BUDGET` for parity with the respawn
-    // path. A wedged-but-listening app-server could otherwise hang boot
-    // indefinitely on `initialize` or `thread_resume`. Local dummy-child
-    // spawn + handle construction stay outside the timeout (they're not
-    // network-bound and a hang there is a kernel bug, not a remote-end
-    // problem).
-    let (client, notifs) = match tokio::time::timeout(OVERALL_BOOT_BUDGET, async {
-        let (client, notifs) = CodexAppServer::connect(sock).await?;
-        let client = Arc::new(client);
-        client
-            .initialize(ClientInfo {
-                name: "neige-calm-spec-push".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
-            })
-            .await?;
-        let resumed = client.thread_resume(thread_id).await?;
-        if let Some(echoed) = resumed.thread_id()
-            && echoed != thread_id
-        {
-            tracing::warn!(
-                persisted = %thread_id,
-                echoed = %echoed,
-                "spec push (adopt): server echoed a different thread id than persisted; using persisted",
-            );
-        }
-        Ok::<_, CalmError>((client, notifs))
-    })
-    .await
-    {
-        Ok(res) => res?,
-        Err(_elapsed) => {
-            return Err(CalmError::CodexAppServer(format!(
-                "codex app-server adopt did not complete within {}s overall",
-                OVERALL_BOOT_BUDGET.as_secs()
-            )));
-        }
-    };
-    tracing::info!(
-        pgid, %thread_id, sock = %sock.display(),
-        "spec push (adopt): re-attached to live codex app-server",
-    );
-
-    // Dummy child so the `SpecPushHandle.child` invariant (an owned
-    // `Child`) is satisfied without us having spawned the real server.
-    // `kill_on_drop(true)` reaps the dummy; the load-bearing reap of the
-    // **real** server is the group kill on `pgid` in `Drop`. The dummy
-    // lives in its own process group too so a `kill(-pgid)` to its dummy
-    // group never accidentally hits the adopted real server.
-    let dummy = Command::new("sleep")
-        .arg("3650d")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .process_group(0)
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| CalmError::Internal(format!("spawn dummy child for adopt: {e}")))?;
-
-    let status: SharedStatus = Arc::new(Mutex::new(SpecPushStatus {
-        last_thread_id: Some(thread_id.to_string()),
-        ..Default::default()
-    }));
-    Ok(park_handle(
-        dummy,
-        pgid,
-        client,
-        thread_id.to_string(),
-        sock,
-        notifs,
-        status,
-    ))
-}
+// #313 PR4-round2 (B2): `adopt_live_appserver` removed.
+//
+// Earlier rounds tried to *adopt* a persisted-still-alive app-server (the
+// rare case where the kernel `SIGKILL`ed but the native `codex
+// app-server` child was reparented under `systemd --user` and stayed
+// bound to the socket). Safe adoption required either probing the
+// server's live turn-phase (no `thread/status` query exists on the
+// codex JSON-RPC) or seeding the handle pessimistically as
+// `TurnRunning` + a fallback timer — both add complexity for a marginal
+// optimization. Worse, the round-1 implementation left the adopted
+// handle's phase as the default `Idle`; boot catch-up then fired a
+// `turn/start` against a possibly-mid-turn server and codex silently
+// dropped it (the very bug #293 PR3b's queue exists to prevent).
+//
+// The cleanest correctness fix is to ALWAYS respawn on takeover:
+// kill the persisted process group (best-effort SIGTERM + SIGKILL),
+// clean the stale socket, and call [`resume_spec_appserver`]. The
+// `thread/resume(<thread_id>)` rejoins the rollout on disk; the fresh
+// server's notification stream reconciles the consumer-tracked phase
+// (`Idle` until a `turn/started`/`turn/completed` arrives), so a push
+// landing immediately after takeover either starts a new turn (idle —
+// safe) or rides the next flush (mid-turn — buffered correctly).
+// The downside (one extra spawn per restart in the rare adopt-eligible
+// case) is well worth the simpler, race-free code path.
 
 /// Best-effort rollback guard for the post-spawn fallible sequence
 /// (S2/B1). While *armed*, dropping it sends `SIGTERM` to the child's
@@ -1148,14 +1202,19 @@ fn park_handle(
     status: SharedStatus,
 ) -> SpecPushHandle {
     let queue: PushQueue = Arc::new(Mutex::new(VecDeque::new()));
+    // #313 B1 — sink slot is empty here; the dispatcher installs the real
+    // persister right after registering the handle.
+    let watermark_sink: WatermarkSinkSlot = Arc::new(Mutex::new(None));
     let consumer_status = status.clone();
     let consumer_thread = thread_id.clone();
+    let consumer_sink = watermark_sink.clone();
     let consumer = tokio::spawn(consume_notifications(
         notifs,
         consumer_thread,
         consumer_status,
         client.clone(),
         queue.clone(),
+        consumer_sink,
     ));
     SpecPushHandle {
         child,
@@ -1166,6 +1225,7 @@ fn park_handle(
         consumer,
         status,
         queue,
+        watermark_sink,
     }
 }
 
@@ -1259,6 +1319,7 @@ async fn consume_notifications(
     status: SharedStatus,
     client: Arc<CodexAppServer>,
     queue: PushQueue,
+    watermark_sink: WatermarkSinkSlot,
 ) {
     while let Some(n) = notifs.recv().await {
         warn_on_approval(&n);
@@ -1268,7 +1329,7 @@ async fn consume_notifications(
         // them between turns (codex silently drops a turn/start issued while
         // a turn is active, so we can only start one here, between turns).
         if matches!(n, Notification::TurnCompleted { .. }) {
-            flush_push_queue(&thread_id, &status, &client, &queue).await;
+            flush_push_queue(&thread_id, &status, &client, &queue, &watermark_sink).await;
         }
     }
     tracing::debug!(
@@ -1302,6 +1363,7 @@ async fn flush_push_queue(
     status: &SharedStatus,
     client: &Arc<CodexAppServer>,
     queue: &PushQueue,
+    watermark_sink: &WatermarkSinkSlot,
 ) {
     // Atomically claim the issue right: only flip to `Issuing` (and win) if
     // we observe a between-turns phase. If a `push_observation` already won
@@ -1326,7 +1388,7 @@ async fn flush_push_queue(
     }
 
     // We are the winner. Drain everything currently queued.
-    let drained: Vec<String> = {
+    let drained: Vec<QueuedObservation> = {
         let mut q = queue.lock().await;
         q.drain(..).collect()
     };
@@ -1340,10 +1402,23 @@ async fn flush_push_queue(
         }
         return;
     }
-    let text = drained.join("\n");
+    // #313 B1: compute the max envelope id we are about to deliver so the
+    // dispatcher-side watermark sink can advance the durable
+    // `push_watermark` past every item in this coalesced turn.
+    let max_envelope_id = drained
+        .iter()
+        .map(|o| o.envelope_id)
+        .max()
+        .expect("drained is non-empty (checked above)");
+    let text = drained
+        .iter()
+        .map(|o| o.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     tracing::debug!(
         thread_id,
         count = drained.len(),
+        max_envelope_id,
         "spec push: flush winner issuing queued observations as one coalesced turn/start"
     );
     if let Err(e) = client
@@ -1375,6 +1450,25 @@ async fn flush_push_queue(
         if g.phase == SpecPushPhase::Issuing {
             g.phase = SpecPushPhase::TurnCompleted;
         }
+        return;
+    }
+
+    // #313 B1 — flush succeeded. Persist the durable watermark via the
+    // dispatcher-installed sink so a kernel crash AFTER this point doesn't
+    // cause boot catch-up to redeliver items codex already accepted. The
+    // sink is `None` only in test paths that don't exercise persistence
+    // (the production dispatcher always installs one in
+    // `register_handle_with_sink` before the first push can land).
+    let sink = watermark_sink.lock().await.clone();
+    if let Some(sink) = sink {
+        sink(max_envelope_id).await;
+    } else {
+        tracing::debug!(
+            thread_id,
+            max_envelope_id,
+            "spec push: flush succeeded but no watermark sink installed (test path) — \
+             durable watermark not advanced for queue-flushed items"
+        );
     }
 }
 
@@ -1466,6 +1560,7 @@ mod tests {
         let pgid = i32::try_from(child.id().expect("dummy child pid")).expect("pid fits i32");
         let status: SharedStatus = Arc::new(Mutex::new(SpecPushStatus::default()));
         let queue: PushQueue = Arc::new(Mutex::new(VecDeque::new()));
+        let watermark_sink: WatermarkSinkSlot = Arc::new(Mutex::new(None));
         let client = Arc::new(client);
         let consumer = tokio::spawn(consume_notifications(
             notifs,
@@ -1473,6 +1568,7 @@ mod tests {
             status.clone(),
             client.clone(),
             queue.clone(),
+            watermark_sink.clone(),
         ));
         let handle = SpecPushHandle {
             child,
@@ -1483,6 +1579,7 @@ mod tests {
             consumer,
             status,
             queue,
+            watermark_sink,
         };
         (handle, server)
     }
@@ -1585,7 +1682,9 @@ mod tests {
         let (handle, mut server) = fake_handle().await;
         // Idle by default → push should fire a turn/start.
         let push = tokio::spawn(async move {
-            handle.push_observation("an observation").await.unwrap();
+            let outcome = handle.push_observation(1, "an observation").await.unwrap();
+            // Single observation, no queue drain → max id is this push's id.
+            assert_eq!(outcome, PushOutcome::Issued { max_envelope_id: 1 });
             // Phase claimed as `Issuing` by the winning push_observation (B1);
             // a real `turn/started` would later reconcile it to TurnRunning.
             assert_eq!(handle.status().await.phase, SpecPushPhase::Issuing);
@@ -1642,8 +1741,14 @@ mod tests {
             g.phase = SpecPushPhase::TurnRunning;
         }
         // Two pushes while "running" — both enqueue, no frame on the wire.
-        handle.push_observation("obs one").await.unwrap();
-        handle.push_observation("obs two").await.unwrap();
+        assert_eq!(
+            handle.push_observation(10, "obs one").await.unwrap(),
+            PushOutcome::Enqueued
+        );
+        assert_eq!(
+            handle.push_observation(11, "obs two").await.unwrap(),
+            PushOutcome::Enqueued
+        );
         assert_eq!(handle.queue.lock().await.len(), 2);
 
         // Drive a turn/completed THROUGH the real notification channel so
@@ -1712,11 +1817,17 @@ mod tests {
 
         let (handle, server) = fake_handle().await;
         let handle = Arc::new(handle);
-        // Phase = TurnCompleted (between turns) with A already queued.
+        // Phase = TurnCompleted (between turns) with A already queued. The
+        // envelope ids on queue items are arbitrary in this test (delivery
+        // is asserted on `text`, not id) — pick 1 for A, the driver picks
+        // 2 for B.
         {
             let mut g = handle.status.lock().await;
             g.phase = SpecPushPhase::TurnCompleted;
-            handle.queue.lock().await.push_back("A".to_string());
+            handle.queue.lock().await.push_back(QueuedObservation {
+                envelope_id: 1,
+                text: "A".to_string(),
+            });
         }
 
         // Server task: model codex's silent-drop. A turn is "active" for a
@@ -1864,13 +1975,14 @@ mod tests {
         let delivered = b1_collect_delivered(|handle| async move {
             // Winner push (drains [A] + appends B, post-fix). Pre-fix it
             // issues only "B", stranding A for the racy flush below.
-            let _ = handle.push_observation("B").await;
+            let _ = handle.push_observation(2, "B").await;
             // The flush that, pre-fix, issues the second (dropped) turn.
             flush_push_queue(
                 &handle.thread_id,
                 &handle.status,
                 &handle.client,
                 &handle.queue,
+                &handle.watermark_sink,
             )
             .await;
         })
@@ -1903,12 +2015,13 @@ mod tests {
                         &h_flush.status,
                         &h_flush.client,
                         &h_flush.queue,
+                        &h_flush.watermark_sink,
                     )
                     .await;
                 });
                 let h_push = Arc::clone(&handle);
                 let push = tokio::spawn(async move {
-                    let _ = h_push.push_observation("B").await;
+                    let _ = h_push.push_observation(2, "B").await;
                 });
                 let _ = tokio::join!(flush, push);
             })

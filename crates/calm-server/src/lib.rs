@@ -196,7 +196,6 @@ pub async fn takeover_spec_appservers_on_boot(state: &state::AppState) {
         }
     };
 
-    let mut reused = 0usize;
     let mut respawned = 0usize;
     let mut inert = 0usize;
     for (card_id, wave_id, thread_id, persisted_pgid, persisted_sock, watermark) in cards {
@@ -215,13 +214,11 @@ pub async fn takeover_spec_appservers_on_boot(state: &state::AppState) {
         )
         .await;
         match outcome {
-            TakeoverOutcome::Reused => reused += 1,
             TakeoverOutcome::Respawned => respawned += 1,
             TakeoverOutcome::Inert => inert += 1,
         }
     }
     tracing::info!(
-        reused,
         respawned,
         inert,
         "takeover_spec_appservers_on_boot: complete"
@@ -229,14 +226,20 @@ pub async fn takeover_spec_appservers_on_boot(state: &state::AppState) {
 }
 
 /// Per-wave outcome of [`takeover_spec_appservers_on_boot`].
+///
+/// #313 PR4-round2 (B2): the previous `Reused` variant for *adopting* a
+/// still-live persisted app-server was removed. Adopting safely required
+/// either a `thread/status` probe (no such method on codex JSON-RPC) or
+/// a pessimistic phase + reconciliation timer; the simpler correctness
+/// fix is to ALWAYS respawn. The rare case where the prior server
+/// survived a kernel SIGKILL (reparented under `systemd --user`) is now
+/// reaped via `signal_process_group(pgid, …)` before the respawn so the
+/// new server can rebind the socket.
 #[derive(Debug, Clone, Copy)]
 enum TakeoverOutcome {
-    /// The persisted app-server was still alive and accepting connections;
-    /// we adopted it via `initialize` + `thread/resume`. Existing process
-    /// group is now owned by the registered [`SpecPushHandle`].
-    Reused,
-    /// The persisted app-server was gone (or never alive); we spawned a
-    /// fresh one and ran `initialize` + `thread/resume` against it.
+    /// We spawned a fresh app-server and ran `initialize` + `thread/resume`
+    /// against it. The previous persisted process group (if any) was
+    /// reaped on the way in.
     Respawned,
     /// The wave is left without a live push channel. Either resume
     /// returned `-32600` (no rollout — payload cleared) or the
@@ -256,79 +259,38 @@ async fn try_takeover_one_wave(
     persisted_sock: Option<&str>,
     watermark: i64,
 ) -> TakeoverOutcome {
-    // 1. Try to adopt a live, persisted app-server first. The pid-recycling
-    //    guard from the old reap sweep applies here too: only treat the
-    //    persisted pgid as "alive" if the persisted socket actually accepts
-    //    a connection. A recycled, unrelated pgid won't be listening on our
-    //    socket, so it never reaches the adopt path. (The probe is
-    //    non-destructive: a failed adoption falls through to respawn.)
+    // 1. #313 PR4-round2 (B2): **always respawn**. We unconditionally reap
+    //    any persisted process group and clean the stale socket before
+    //    `resume_spec_appserver`. The previous adopt path (re-attach to
+    //    a still-listening server) was removed: safe adoption needed
+    //    either a `thread/status` probe (no such method on codex
+    //    JSON-RPC) or a pessimistic phase + reconciliation timer, both
+    //    adding complexity for a marginal optimization. Worse, the
+    //    round-1 adopt seeded the handle as `Idle` and boot catch-up
+    //    fired a `turn/start` against a possibly-mid-turn server →
+    //    codex silently dropped the catch-up envelope (the very bug the
+    //    push queue exists to prevent).
     //
-    //    #313 PR4 B2 — adoption is gated on **socket connectability alone**,
-    //    not on a `kill(pgid, 0)` liveness probe. The old probe targeted
-    //    the group LEADER pid only, so if the node launcher had exited
-    //    but the native `codex app-server` child (in the same group) was
-    //    still alive and bound to the socket, `kill(pgid, 0)` would return
-    //    `ESRCH` and we'd unnecessarily fall through to respawn — leaking
-    //    the still-running native child. A `kill(-pgid, 0)` would check
-    //    the whole group, but socket connectability is the load-bearing
-    //    signal anyway: a responsive socket means SOMETHING useful is
-    //    bound there, and that's what adoption actually needs. Kept the
-    //    `pgid > 1` floor as a sanity guard against bogus persisted ids.
+    //    The reap below is best-effort: `signal_process_group` is a
+    //    no-op (ESRCH) if the group is already gone (graceful teardown
+    //    on prior shutdown). It uses the negative-pgid form so the
+    //    whole group goes down, not just the leader — fixing the
+    //    earlier hazard where the native `codex app-server` child
+    //    (reparented under `systemd --user`) survived a leader-only
+    //    SIGKILL and kept the socket bound.
     if let (Some(pgid), Some(sock)) = (persisted_pgid, persisted_sock) {
         let sock_path = std::path::Path::new(sock);
-        let connectable = tokio::net::UnixStream::connect(sock_path).await.is_ok();
-        if connectable && pgid > 1 {
-            tracing::info!(
-                card_id, wave_id = %wave_id, thread_id, pgid, sock,
-                "takeover: persisted app-server socket is live; adopting (no respawn)",
-            );
-            match spec_appserver::adopt_live_appserver(pgid, thread_id, sock_path).await {
-                Ok(handle) => {
-                    register_and_catch_up(state, card_id, wave_id, watermark, handle).await;
-                    return TakeoverOutcome::Reused;
-                }
-                Err(e) => {
-                    // Adoption handshake failed — likely `-32600 "no rollout
-                    // found"` against a half-broken server. Fall through to
-                    // respawn rather than give up: a fresh server may answer
-                    // the resume (the rollout is on disk; the existing
-                    // server may be wedged for some other reason). If the
-                    // respawn ALSO fails we land in the inert path.
-                    tracing::warn!(
-                        card_id, wave_id = %wave_id, error = %e,
-                        "takeover: adopt failed against persisted live app-server; trying respawn",
-                    );
-                    // Kill the wedged server (whole process group) so the
-                    // respawn can rebind the socket. We use the negative
-                    // pgid form via `signal_process_group` so EVERY member
-                    // of the group goes down, not just the leader — this
-                    // is the symmetric fix to the probe change above
-                    // (B2): we no longer assume the leader pid alone
-                    // identifies "the server".
-                    spec_appserver::signal_process_group(pgid, libc::SIGTERM);
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    spec_appserver::signal_process_group(pgid, libc::SIGKILL);
-                    spec_appserver::cleanup_sock_dir(sock_path);
-                }
-            }
-        } else {
-            // Socket is dead (graceful teardown killed the server, or it
-            // crashed). Clean any stale socket and move to respawn.
+        if pgid > 1 {
             tracing::debug!(
                 card_id, wave_id = %wave_id, pgid, sock,
-                connectable,
-                "takeover: persisted app-server socket not connectable; will respawn",
+                "takeover: reaping any persisted app-server process group before respawn"
             );
-            // Belt-and-suspenders: if the persisted pgid is still pointing
-            // at a wedged-but-not-listening process group, kill it before
-            // the respawn unlinks the socket. `signal_process_group` is a
-            // no-op if the group is already gone.
-            if pgid > 1 {
-                spec_appserver::signal_process_group(pgid, libc::SIGTERM);
-                spec_appserver::signal_process_group(pgid, libc::SIGKILL);
-            }
-            spec_appserver::cleanup_sock_dir(sock_path);
+            spec_appserver::signal_process_group(pgid, libc::SIGTERM);
+            // Brief grace so the launcher can flush before SIGKILL.
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            spec_appserver::signal_process_group(pgid, libc::SIGKILL);
         }
+        spec_appserver::cleanup_sock_dir(sock_path);
     }
 
     // 2. Respawn path: build the env the way `create_wave` does, point at
@@ -439,9 +401,25 @@ async fn persist_post_respawn_fields(
     }
 }
 
-/// Register the resumed/adopted [`SpecPushHandle`] in the registry and
-/// catch the spec thread up with every event `id > watermark` for this
-/// wave via the dispatcher's normal push path.
+/// Register the resumed [`SpecPushHandle`] in the registry and catch the
+/// spec thread up with every event `id > watermark` for this wave via the
+/// dispatcher's normal push path.
+///
+/// #313 problem #1 round-2 (B3) — the whole sequence
+/// `(seed_push_cursor → install_watermark_sink → spec_push.insert →
+/// catch_up_push for every event)` runs **under the dispatcher's per-wave
+/// push lock**. Live `Inner::push_to_spec` paths take the same lock, so a
+/// `task.completed`/`task.failed`/`wave.report_edited` arriving on the
+/// broadcast bus while takeover is mid-catch-up serializes behind it
+/// instead of slipping past the seeded watermark. Without this guard, a
+/// live event landing in the window between `insert` and the final
+/// `catch_up_push` could:
+///   * see the freshly-seeded cursor,
+///   * `bump` it to its own envelope id,
+///   * try to resolve the handle — race against `insert`,
+///   * and `events_since(watermark)` (already evaluated against the
+///     pre-bump watermark in this fn) would then NOT see ids between the
+///     bump and the live event, losing them.
 async fn register_and_catch_up(
     state: &state::AppState,
     card_id: &str,
@@ -449,77 +427,115 @@ async fn register_and_catch_up(
     watermark: i64,
     handle: spec_appserver::SpecPushHandle,
 ) {
-    // Seed the in-memory push cursor from the persisted watermark BEFORE
-    // we register the handle, so a concurrent live event landing right
-    // after we register still dedups against the correct floor (the live
-    // event would `bump` to its own id; that's monotonic, so seeding to
-    // `watermark` only ever raises the floor from 0 to watermark).
     let card_key: crate::ids::CardId = card_id.to_string().into();
-    state.dispatcher.seed_push_cursor(card_key, watermark);
 
-    // Register the handle — dispatcher.push_to_spec resolves on this.
-    state.spec_push.insert(wave_id.clone(), handle);
+    // B1 — install the watermark sink on the handle BEFORE the handle is
+    // parked in the registry, so the very first queue flush triggered by
+    // a catch-up push hitting `Enqueue` has a persister to call.
+    let sink = state.dispatcher.watermark_sink_for(card_key.clone());
+    handle.install_watermark_sink(sink).await;
 
-    // Catch-up replay: read every `id > watermark` event from the log and
-    // re-route the wave-scoped push kinds through the dispatcher.
-    let kinds_match = |e: &event::Event| {
-        matches!(
-            e,
-            event::Event::TaskCompleted { .. }
-                | event::Event::TaskFailed { .. }
-                | event::Event::WaveReportEdited { .. }
-        )
-    };
-    let rows = match state.repo.events_since(watermark, None).await {
-        Ok(rows) => rows,
-        Err(e) => {
-            tracing::warn!(
-                card_id, wave_id = %wave_id, watermark, error = %e,
-                "takeover: events_since(catch-up) failed; spec thread will only see new live events from here",
-            );
-            return;
-        }
-    };
-    let mut replayed = 0usize;
-    for (id, _ver, scope, ev) in rows {
-        // Only events scoped to (or under) this wave count; only the three
-        // push kinds the dispatcher routes; only the user-authored
-        // `wave.report_edited` (matches the dispatcher's live filter).
-        let Some(ev_wave) = scope.wave_id() else {
-            continue;
-        };
-        if ev_wave != wave_id {
-            continue;
-        }
-        if !kinds_match(&ev) {
-            continue;
-        }
-        if let event::Event::WaveReportEdited { author, .. } = &ev
-            && *author != event::EditAuthor::User
-        {
-            continue;
-        }
-        // Push through the dispatcher so dedup (watermark check), per-wave
-        // serialization, and the turn-phase decision all run identically to
-        // steady state. The dedup will skip any rows that were re-broadcast
-        // by the bus between persist and now (rare; the kernel just booted).
-        state
-            .dispatcher
-            .catch_up_push(wave_id.clone(), ev, id)
-            .await;
-        replayed += 1;
-    }
-    if replayed > 0 {
-        tracing::info!(
-            card_id, wave_id = %wave_id, replayed, watermark,
-            "takeover: catch-up replay pushed events to resumed spec thread",
-        );
-    } else {
-        tracing::debug!(
-            card_id, wave_id = %wave_id, watermark,
-            "takeover: no catch-up events above watermark",
-        );
-    }
+    // B3 — hold the per-wave push lock for the WHOLE
+    // `seed → insert → events_since → catch-up replay` sequence so any
+    // live event landing on the bus during this window serializes behind
+    // takeover at the `Inner::push_to_spec` site (it tries to take the
+    // SAME `Arc<Mutex>`). Without this, a live event could:
+    //   * see the freshly-seeded cursor (or worse, the un-seeded 0),
+    //   * `bump` to its own envelope id,
+    //   * persist watermark to its own id,
+    //   * and our catch-up replays for ids ≤ the live event would dedup
+    //     silently, losing every event between the persisted watermark
+    //     and the live event.
+    //
+    // We use `catch_up_push_under_lock` (not the public `catch_up_push`)
+    // inside the closure because `tokio::sync::Mutex` is not reentrant.
+    //
+    // CRITICAL: every state-mutating step — seed, insert, events_since,
+    // replay — runs INSIDE the lock. Reading `events_since` OUTSIDE would
+    // open a window where a live event lands between the read and the
+    // lock acquisition: it'd take the lock first (we're awaiting the
+    // SELECT), `bump` the (un-seeded) cursor to its own id, miss the
+    // handle (not yet inserted), warn-and-return — and our subsequent
+    // replay for ids ≤ that bump would dedup silently. By doing the SELECT
+    // under the lock, a live push for the same wave blocks at our lock;
+    // its own row IS in our snapshot (it was persisted before we ran
+    // the SELECT, OR it lands during the replay window and serializes
+    // behind us, in which case its own push_to_spec replays it correctly
+    // after we release).
+    state
+        .dispatcher
+        .with_push_lock(wave_id, async move {
+            // Seed the in-memory push cursor from the persisted watermark.
+            // Monotonic bump: a re-seed can never lower the floor.
+            state.dispatcher.seed_push_cursor(card_key, watermark);
+
+            // Register the handle — `Inner::push_to_spec` resolves on this.
+            // Still under the per-wave lock, so any concurrent live event
+            // for this wave waits at `Inner::push_to_spec`'s lock until
+            // catch-up finishes.
+            state.spec_push.insert(wave_id.clone(), handle);
+
+            // Read catch-up rows UNDER the lock (see CRITICAL above).
+            let rows = match state.repo.events_since(watermark, None).await {
+                Ok(rows) => rows,
+                Err(e) => {
+                    tracing::warn!(
+                        card_id, wave_id = %wave_id, watermark, error = %e,
+                        "takeover: events_since(catch-up) failed; spec thread will only see new live events from here",
+                    );
+                    return;
+                }
+            };
+            let kinds_match = |e: &event::Event| {
+                matches!(
+                    e,
+                    event::Event::TaskCompleted { .. }
+                        | event::Event::TaskFailed { .. }
+                        | event::Event::WaveReportEdited { .. }
+                )
+            };
+            let mut replayed = 0usize;
+            for (id, _ver, scope, ev) in rows {
+                // Only events scoped to (or under) this wave count; only the
+                // three push kinds the dispatcher routes; only the user-
+                // authored `wave.report_edited` (matches the dispatcher's
+                // live filter).
+                let Some(ev_wave) = scope.wave_id() else {
+                    continue;
+                };
+                if ev_wave != wave_id {
+                    continue;
+                }
+                if !kinds_match(&ev) {
+                    continue;
+                }
+                if let event::Event::WaveReportEdited { author, .. } = &ev
+                    && *author != event::EditAuthor::User
+                {
+                    continue;
+                }
+                // Run the dedup-check-and-deliver body WITHOUT re-taking
+                // the per-wave lock (we already hold it). Same shape as a
+                // live push, sans lock acquisition.
+                state
+                    .dispatcher
+                    .catch_up_push_under_lock(wave_id.clone(), ev, id)
+                    .await;
+                replayed += 1;
+            }
+            if replayed > 0 {
+                tracing::info!(
+                    card_id, wave_id = %wave_id, replayed, watermark,
+                    "takeover: catch-up replay pushed events to resumed spec thread",
+                );
+            } else {
+                tracing::debug!(
+                    card_id, wave_id = %wave_id, watermark,
+                    "takeover: no catch-up events above watermark",
+                );
+            }
+        })
+        .await;
 }
 
 pub mod card_fsm;
