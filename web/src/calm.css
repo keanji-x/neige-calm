@@ -1094,6 +1094,45 @@ input, textarea { font: inherit; color: inherit; }
   color: var(--warn);
 }
 
+/* Per-row pin button in cove-page wave rows. Reuses `.side-wave-pin`
+   visual rules (opacity/color transitions) and sits absolutely so the
+   eta/progress cluster isn't displaced. When only the pin is present it
+   lands at right: 6px; when the delete button is also present (`:has`)
+   it shifts left to avoid overlap. Always visible when pinned. */
+.wave-row-wrapper .side-wave-pin {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 24px; height: 24px;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-md);
+  color: var(--text-3);
+  font: inherit;
+  font-size: var(--text-md);
+  line-height: var(--leading-none);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--motion-quick), color var(--motion-quick), background var(--motion-quick);
+}
+/* When both delete and pin are present, push pin left to avoid overlap
+   and widen the row's right gutter so neither button clips the content. */
+.wave-row-wrapper:has(.wave-row-delete) .side-wave-pin { right: 34px; }
+.wave-row-wrapper:has(.wave-row-delete):has(.side-wave-pin) .wave-row {
+  padding-right: calc(var(--space-12) + 28px);
+}
+.wave-row-wrapper:hover .side-wave-pin,
+.wave-row-wrapper:focus-within .side-wave-pin { opacity: 1; }
+.wave-row-wrapper .side-wave-pin.pinned { opacity: 1; color: var(--accent); }
+.wave-row-wrapper .side-wave-pin:hover { background: var(--overlay-hover); color: var(--text); }
+.wave-row-wrapper .side-wave-pin:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  opacity: 1;
+}
+
 /* fill bar */
 .fill {
   position: relative;

@@ -119,3 +119,33 @@ describe('Sidebar pinned section', () => {
     expect(buttons[1]).toHaveTextContent('First');
   });
 });
+
+describe('Sidebar per-cove badge parity with Waiting section', () => {
+  it('pinned blocked wave does not increment the cove red waiting badge', () => {
+    // A wave that is pinned AND blocked should appear in Pinned, not in the
+    // Waiting section, and the cove badge should show no red waiting count.
+    const wave = makeWave({ id: 'w-pinned-blocked', lifecycle: 'blocked', pinnedAt: 1000 });
+    render(wrap(<Sidebar {...sidebarProps([wave])} />));
+    // Pinned section shows up
+    expect(screen.getByRole('region', { name: 'Pinned' })).toBeTruthy();
+    // Waiting section is absent
+    expect(screen.queryByRole('region', { name: 'Waiting on you' })).toBeNull();
+    // Cove badge: no warn badge (no unpinned waiting wave) — the badge should
+    // show the muted total count (1), not a warn (red) count.
+    // The muted badge reads "1" (total cove waves) and has className "muted".
+    const badge = document.querySelector('.cove-nav-badge');
+    expect(badge).toBeTruthy();
+    expect(badge?.classList.contains('warn')).toBe(false);
+    expect(badge?.classList.contains('muted')).toBe(true);
+    expect(badge?.textContent).toBe('1');
+  });
+
+  it('unpinned blocked wave increments the cove red waiting badge', () => {
+    const wave = makeWave({ id: 'w-unblocked', lifecycle: 'blocked', pinnedAt: null });
+    render(wrap(<Sidebar {...sidebarProps([wave])} />));
+    const badge = document.querySelector('.cove-nav-badge');
+    expect(badge).toBeTruthy();
+    expect(badge?.classList.contains('warn')).toBe(true);
+    expect(badge?.textContent).toBe('1');
+  });
+});

@@ -211,6 +211,7 @@ function CoveComponent() {
   const updateCove = useUpdateCoveMutation();
   const deleteCove = useDeleteCoveMutation();
   const deleteWave = useDeleteWaveMutation();
+  const updateWave = useUpdateWaveMutation();
 
   const kernelCove = covesQ.data?.find((c) => c.id === coveId);
   if (!kernelCove) {
@@ -259,6 +260,12 @@ function CoveComponent() {
         } catch (err) {
           console.warn('[Calm] wave delete failed:', err);
         }
+      }}
+      onPinWave={async (waveId, pin) => {
+        await updateWave.mutateAsync({
+          id: waveId,
+          body: { pinned_at: pin ? Date.now() : null },
+        });
       }}
     />
   );

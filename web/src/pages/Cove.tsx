@@ -35,6 +35,7 @@ export function CovePage({
   onRenameCove,
   onDeleteCove,
   onDeleteWave,
+  onPinWave,
 }: {
   cove: Cove;
   waves: Wave[];
@@ -56,6 +57,10 @@ export function CovePage({
    *  ConfirmDialog at the page level (driven by `pendingDeleteWave`)
    *  and routes confirmed deletes to this callback. */
   onDeleteWave?: (waveId: string) => void | Promise<void>;
+  /** Pin or unpin a wave from within the cove page. When provided,
+   *  every wave row renders a hover-revealed pin button. Mirrors the
+   *  sidebar's onPinWave contract. */
+  onPinWave?: (waveId: string, pin: boolean) => void | Promise<void>;
 }) {
   // Per-row delete uses Pattern B (close-then-await): the dialog closes
   // on Confirm and the parent's onDeleteWave promise runs without UI
@@ -181,6 +186,7 @@ export function CovePage({
                 showCove={false}
                 onClick={() => onGo({ name: 'wave', id: w.id })}
                 onDelete={onDeleteWave ? () => openDeleteWaveDialog(w) : undefined}
+                onPinWave={onPinWave}
               />
             ))}
           </div>

@@ -373,3 +373,71 @@ describe('CovePage delete-wave ConfirmDialog (Pattern B)', () => {
     expect(onDeleteWave).toHaveBeenCalledWith('w-b');
   });
 });
+
+describe('CovePage pin button on wave rows', () => {
+  it('renders no pin button when onPinWave is not provided', () => {
+    render(
+      <CovePage
+        cove={makeCove()}
+        waves={[makeWave()]}
+        onGo={() => {}}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: /pin wave/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /unpin wave/i })).toBeNull();
+  });
+
+  it('renders a "Pin wave" button when onPinWave is provided and wave is unpinned', () => {
+    render(
+      <CovePage
+        cove={makeCove()}
+        waves={[makeWave({ pinnedAt: null })]}
+        onGo={() => {}}
+        onPinWave={() => {}}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Pin wave' })).toBeTruthy();
+  });
+
+  it('renders an "Unpin wave" button when the wave is already pinned', () => {
+    render(
+      <CovePage
+        cove={makeCove()}
+        waves={[makeWave({ pinnedAt: 1000 })]}
+        onGo={() => {}}
+        onPinWave={() => {}}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Unpin wave' })).toBeTruthy();
+  });
+
+  it('calls onPinWave(id, true) when Pin wave is clicked', async () => {
+    const user = userEvent.setup();
+    const onPinWave = vi.fn();
+    render(
+      <CovePage
+        cove={makeCove()}
+        waves={[makeWave({ id: 'w-cove', pinnedAt: null })]}
+        onGo={() => {}}
+        onPinWave={onPinWave}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Pin wave' }));
+    expect(onPinWave).toHaveBeenCalledWith('w-cove', true);
+  });
+
+  it('calls onPinWave(id, false) when Unpin wave is clicked', async () => {
+    const user = userEvent.setup();
+    const onPinWave = vi.fn();
+    render(
+      <CovePage
+        cove={makeCove()}
+        waves={[makeWave({ id: 'w-cove', pinnedAt: 9000 })]}
+        onGo={() => {}}
+        onPinWave={onPinWave}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Unpin wave' }));
+    expect(onPinWave).toHaveBeenCalledWith('w-cove', false);
+  });
+});

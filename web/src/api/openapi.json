@@ -3482,6 +3482,13 @@
             "$ref": "#/components/schemas/WaveLifecycle",
             "description": "Issue #145 — the wave's lifecycle state. **Required** (no\n`Option`): every wave-creating code path must seed\n[`WaveLifecycle::Draft`] explicitly. Per the project's\n\"required over Option\" preference, Option here would silently\nhide missing-data bugs — the field is core kernel contract.\n\n`#[serde(default)]` lets wire payloads emitted before #145\nlanded (event-log replay fixtures) parse as `Draft` without\nforcing a fixture rewrite — matches the DB DEFAULT in\nmigration 0012."
           },
+          "pinned_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
           "sort": {
             "type": "number",
             "format": "double"
@@ -3565,6 +3572,14 @@
                 "description": "Issue #145 — request a lifecycle transition. The actual\ntransition validation runs through `crate::wave_lifecycle`,\ninside the write transaction. Omitting (`None`) means \"leave\nalone\"; `Some(<state>)` triggers the validator against the\n(actor, from → to) triple before any DB write or event emit."
               }
             ]
+          },
+          "pinned_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Pass `Some(Some(ts))` to pin, `Some(None)` to unpin,\nor omit (`None`) to leave alone."
           },
           "sort": {
             "type": [

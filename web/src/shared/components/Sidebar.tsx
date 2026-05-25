@@ -4,8 +4,17 @@ import { Menu, type MenuItem } from '../../ui/Menu/Menu';
 import { useSession } from '../../app/SessionProvider';
 import type { Cove, Route, Wave } from '../../types';
 import { isRunning, waveNeedsUserAttention } from '../lifecycle';
+
+// A wave that needs user attention AND is not pinned. Used to keep the
+// top-section "Waiting on you" row count and each cove's red badge count
+// in parity — both exclude pinned waves so no wave shows a warning badge
+// while being invisible from the Waiting section.
+function isUnpinnedAndWaiting(w: Wave): boolean {
+  return waveNeedsUserAttention(w) && w.pinnedAt == null;
+}
 import { ConfirmDialog } from '../../ui/ConfirmDialog/ConfirmDialog';
 import { CloseIcon } from './CloseIcon';
+import { PinIcon } from './PinIcon';
 import { PlusIcon } from './PlusIcon';
 
 // ---------------- Sidebar ----------------
@@ -69,9 +78,7 @@ export function Sidebar({
   // lifecycle". The latter is the regression hole #248's deletion of
   // the wave-level FSM union left open.
   // Pinned waves are excluded to avoid double-rendering across sections.
-  const waitingWaves = waves.filter(
-    (w) => waveNeedsUserAttention(w) && w.pinnedAt == null,
-  );
+  const waitingWaves = waves.filter(isUnpinnedAndWaiting);
   // Sub-landmarks inside the outer <aside aria-label="Navigation">:
   //   <nav aria-label="Sidebar navigation">  → Today button
   //   <section aria-label="Pinned">          → pinned wave rows (when any)
@@ -148,7 +155,9 @@ export function Sidebar({
           const running = cw.filter((w) => isRunning(w.lifecycle)).length;
           // Match the top-of-sidebar "Waiting on you" predicate so the
           // per-cove waiting count and the top-section row count agree.
-          const waiting = cw.filter((w) => waveNeedsUserAttention(w)).length;
+          // isUnpinnedAndWaiting mirrors the waitingWaves filter above,
+          // keeping the badge and section counts in parity.
+          const waiting = cw.filter(isUnpinnedAndWaiting).length;
           const active = route.name === 'cove' && route.coveId === cove.id;
           // Single right-edge badge slot: warn-red waiting count beats
           // muted total count; empty when there are no waves at all.
@@ -404,7 +413,7 @@ function WaveRow({
           }}
           aria-label={pinned ? 'Unpin wave' : 'Pin wave'}
         >
-          📌
+          <PinIcon />
         </button>
       )}
     </div>
