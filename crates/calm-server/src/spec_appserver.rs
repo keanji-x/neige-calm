@@ -1808,6 +1808,7 @@ async fn build_handle_after_spawn_resume(
         client,
         handle.queue.clone(),
         handle.watermark_sink.clone(),
+        handle.queue_persist.clone(),
     ));
     handle.resume_reconciler = Some(reconciler);
 
@@ -1833,6 +1834,7 @@ async fn resume_reconcile_task(
     client: Arc<CodexAppServer>,
     queue: PushQueue,
     watermark_sink: WatermarkSinkSlot,
+    queue_persist: QueuePersistSlot,
 ) {
     tokio::time::sleep(budget).await;
     // CAS under the status lock: only promote if still Resumed. A real
@@ -1861,7 +1863,15 @@ async fn resume_reconcile_task(
         "spec push (resume reconcile): no lifecycle notification within budget; \
          promoting Resumed -> TurnCompleted and flushing queued observations"
     );
-    flush_push_queue(&thread_id, &status, &client, &queue, &watermark_sink).await;
+    flush_push_queue(
+        &thread_id,
+        &status,
+        &client,
+        &queue,
+        &watermark_sink,
+        &queue_persist,
+    )
+    .await;
 }
 
 /// Shared tail of both build paths (spawn + resume): spawn the consumer
@@ -3768,6 +3778,7 @@ mod tests {
             handle.queue.lock().await.push_back(QueuedObservation {
                 envelope_id: 7,
                 text: "catch-up obs".to_string(),
+                db_id: None,
             });
         }
 
@@ -3782,6 +3793,7 @@ mod tests {
             handle.client.clone(),
             handle.queue.clone(),
             handle.watermark_sink.clone(),
+            handle.queue_persist.clone(),
         ));
 
         // Before the budget elapses, NOTHING should happen — phase is
@@ -3887,6 +3899,7 @@ mod tests {
             handle.client.clone(),
             handle.queue.clone(),
             handle.watermark_sink.clone(),
+            handle.queue_persist.clone(),
         ));
 
         // Within the budget, simulate the consumer task seeing a real
