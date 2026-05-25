@@ -388,16 +388,87 @@ type SharedStatus = Arc<Mutex<SpecPushStatus>>;
 /// just-delivered items. Without per-item ids the watermark would either
 /// (a) advance prematurely on enqueue and lose data on crash-before-flush,
 /// or (b) never advance for queued-then-flushed items.
+///
+/// #318 INV-3 (R2-B1) — the in-memory `VecDeque` is now a CACHE in front
+/// of a durable `spec_push_queue` table. Every `QueuedObservation` whose
+/// enqueue went through a [`QueuePersistSlot`]-installed handle also
+/// carries the persisted `db_id`, so the flush path can DELETE the right
+/// rows after a successful `turn/start`. A kernel crash between persist
+/// and the flush leaves the rows; boot-takeover's
+/// [`SpecPushHandle::rehydrate_queue_from_persist`] rebuilds the
+/// `VecDeque` from the table before catch-up replay starts. Test paths
+/// without a persist slot still use the in-memory cache alone (entries
+/// have `db_id = None`).
 type PushQueue = Arc<Mutex<VecDeque<QueuedObservation>>>;
 
 /// One queued observation: the envelope id (so the flush path can report
 /// the max delivered id to the dispatcher) plus the rendered text codex
-/// will receive.
+/// will receive, plus — when a [`QueuePersistSlot`] is installed on the
+/// handle — the `spec_push_queue.id` row id assigned at persist-time so
+/// the flush path can dequeue it from the durable store after a
+/// successful `turn/start` (#318 INV-3).
 #[derive(Debug, Clone)]
 struct QueuedObservation {
     envelope_id: i64,
     text: String,
+    /// `Some(row_id)` when the entry was persisted via the
+    /// [`QueuePersist::enqueue`] callback; `None` for entries that only
+    /// live in the in-memory cache (test paths that skip the slot, or
+    /// the brief window after a `turn/start` error re-buffers a drained
+    /// batch — those rows remain in the durable store under their
+    /// original ids so the requeue is purely the in-memory side).
+    db_id: Option<i64>,
 }
+
+/// #318 INV-3 — closure surface the dispatcher installs on a
+/// [`SpecPushHandle`] so the queue paths can persist + dequeue
+/// observations through the durable `spec_push_queue` table without
+/// importing `crate::Repo` into this module. Mirrors the
+/// [`WatermarkSink`] callback pattern: the install site
+/// (`routes/waves.rs::spawn_push_appserver` for create-wave,
+/// `lib.rs::register_and_catch_up` for boot-takeover) captures `repo` +
+/// `card_id` at handle-construction time and builds the closures.
+///
+/// Three operations:
+///   * `enqueue(envelope_id, text) -> Option<i64>` — persist one row,
+///     return the assigned `spec_push_queue.id`. `None` on a repo
+///     error (logged at the install site / inside the closure) so the
+///     in-memory cache still receives the entry — at worst, the next
+///     boot has nothing extra to rehydrate, matching today's
+///     in-memory-only baseline.
+///   * `dequeue(ids)` — batch-delete the rows for a successful flush;
+///     no-op on empty input.
+///   * `list()` — read every pending row for the handle's card id, used
+///     once by [`SpecPushHandle::rehydrate_queue_from_persist`].
+pub struct QueuePersist {
+    pub enqueue: QueuePersistEnqueueFn,
+    pub dequeue: QueuePersistDequeueFn,
+    pub list: QueuePersistListFn,
+}
+
+/// One-row INSERT into the durable `spec_push_queue`. `Some(row_id)` on
+/// success, `None` on a repo error (the install-site closure logs + maps
+/// the error to `None`, so the in-memory cache still receives the entry).
+pub type QueuePersistEnqueueFn =
+    Arc<dyn Fn(i64, String) -> futures_util::future::BoxFuture<'static, Option<i64>> + Send + Sync>;
+
+/// Batch DELETE by row id. Empty input is a no-op at the closure layer.
+pub type QueuePersistDequeueFn =
+    Arc<dyn Fn(Vec<i64>) -> futures_util::future::BoxFuture<'static, ()> + Send + Sync>;
+
+/// SELECT every pending row for this handle's card id, as
+/// `(row_id, envelope_id, text)` in id-ASC order — the same order the
+/// in-memory `VecDeque` was filled in.
+pub type QueuePersistListFn = Arc<
+    dyn Fn() -> futures_util::future::BoxFuture<'static, Vec<(i64, i64, String)>> + Send + Sync,
+>;
+
+/// `Arc<Mutex<Option<QueuePersist>>>` so the handle can construct itself
+/// without a persist slot (the boot/create paths don't have the repo
+/// handle in scope at construction time) and the dispatcher installs it
+/// later via [`SpecPushHandle::install_queue_persist`]. `None` is the
+/// test-path posture, matching [`WatermarkSinkSlot`].
+type QueuePersistSlot = Arc<Mutex<Option<Arc<QueuePersist>>>>;
 
 /// Callback the dispatcher installs on a [`SpecPushHandle`] so the
 /// queue-flush path (which runs from the consumer task on `turn/completed`)
@@ -498,6 +569,16 @@ pub struct SpecPushHandle {
     /// the brief window before it lands and in tests that don't exercise
     /// the persistence path.
     watermark_sink: WatermarkSinkSlot,
+    /// #318 INV-3 (R2-B1) — durable enqueue/dequeue callbacks installed
+    /// alongside the watermark sink. When `Some`, every `Enqueue`-arm
+    /// observation is persisted to `spec_push_queue` BEFORE the
+    /// in-memory `push_back` (so a crash between persist and the next
+    /// flush leaves the row for boot-takeover to rehydrate). `None` on
+    /// the brief window before install + in test paths that skip it.
+    ///
+    /// Installed via [`install_queue_persist`](Self::install_queue_persist)
+    /// at the same sites that install the watermark sink.
+    queue_persist: QueuePersistSlot,
 }
 
 /// PR3b — a cheaply-cloneable handle onto just the parts of a
@@ -517,6 +598,13 @@ pub struct SpecPusher {
     /// itself stays self-contained alongside its persistence callback.
     #[allow(dead_code)]
     watermark_sink: WatermarkSinkSlot,
+    /// #318 INV-3 — shared with the parent handle. The `Enqueue` arm of
+    /// [`push_observation`](Self::push_observation) reads this and
+    /// (when populated) persists to `spec_push_queue` before the
+    /// in-memory `push_back`. The `StartTurnNow` winner's drain reads
+    /// it to dequeue persisted ids after a successful coalesced
+    /// `turn/start`.
+    queue_persist: QueuePersistSlot,
 }
 
 impl SpecPusher {
@@ -547,7 +635,13 @@ impl SpecPusher {
     ///   * [`PushAction::Enqueue`] (TurnRunning / Issuing) — push the text
     ///     onto the per-handle queue; the winner (this cycle's issuer) or the
     ///     consumer task flushes the whole queue as one coalesced
-    ///     `turn/start` on the next `turn/completed`.
+    ///     `turn/start` on the next `turn/completed`. After the append, the
+    ///     status is re-checked: if a `turn/completed` raced past us while
+    ///     `persist_one` was awaiting the DB insert, the consumer's flush
+    ///     drained an empty queue and walked the phase to `TurnCompleted` —
+    ///     stranding our just-appended row. The Enqueue arm drives an
+    ///     idempotent `flush_pending` in that case so nothing is left
+    ///     undelivered (#325 round-2 P1).
     ///
     /// Errors only on the immediate-`turn/start` transport path (a queued
     /// observation can't fail here — its delivery is the consumer task's
@@ -559,9 +653,12 @@ impl SpecPusher {
     ///
     /// This fn never holds the status lock and the queue lock at the same
     /// time: it takes status (decide + flip), releases it, then takes queue
-    /// (drain + append), releases it, then issues. [`flush_push_queue`]
-    /// uses the same status-then-queue, never-nested order. Preserving this
-    /// keeps the path deadlock-free (the review confirmed today's code is).
+    /// (drain + append), releases it, then issues. The Enqueue arm's
+    /// post-append `status.lock()` is also taken alone (released before
+    /// `flush_pending` runs, which itself acquires the same lock).
+    /// [`flush_push_queue`] uses the same status-then-queue, never-nested
+    /// order. Preserving this keeps the path deadlock-free (the review
+    /// confirmed today's code is).
     pub async fn push_observation(&self, envelope_id: i64, text: &str) -> Result<PushOutcome> {
         // Decide + (winner only) claim the issue right atomically under ONE
         // status-lock acquisition: a between-turns phase is flipped to
@@ -575,6 +672,29 @@ impl SpecPusher {
             }
             action
         };
+
+        // #318 INV-3 — persist-first. The durable `spec_push_queue` row goes
+        // in BEFORE we either issue or enqueue, so a crash anywhere between
+        // here and (a) `turn/start` success / (b) consumer-task flush success
+        // leaves a recoverable row that boot-takeover's
+        // `rehydrate_queue_from_persist` will surface to the next process.
+        //
+        // The `Enqueue` arm's contract — `Ok(Enqueued)` is the system's
+        // promise that the observation will be delivered — is the load-
+        // bearing case (the dispatcher cooperatively withholds the
+        // `push_watermark` on `Enqueued`, PR #315 PR4 B1, so the events-log
+        // replay is a safety net; INV-3 says the queue must also hold its
+        // own durability rather than transitively borrow that net).
+        //
+        // The `StartTurnNow` arm persists too so a `turn/start` failure that
+        // re-buffers the just-issued observation has the same recovery
+        // guarantee as the items that were already in the queue.
+        //
+        // `None` from `persist_one` is the no-slot case (test paths that
+        // skip the install + the brief window before the dispatcher
+        // installs the slot in production); the in-memory cache still
+        // receives the entry, matching pre-fix posture.
+        let db_id = self.persist_one(envelope_id, text).await;
 
         match action {
             PushAction::StartTurnNow => {
@@ -590,6 +710,7 @@ impl SpecPusher {
                 items.push(QueuedObservation {
                     envelope_id,
                     text: text.to_string(),
+                    db_id,
                 });
                 // #313 B1: durable watermark must advance to the MAX
                 // envelope id we are about to deliver, not just the
@@ -621,7 +742,21 @@ impl SpecPusher {
                 {
                     // Roll the `Issuing` claim back and re-buffer the drained
                     // items (front, order preserved) so a later
-                    // `turn/completed` flush retries them.
+                    // `turn/completed` flush retries them. The persisted
+                    // rows stay — `flush_push_queue` (or the next boot's
+                    // rehydrate) will deliver and then dequeue them.
+                    //
+                    // #318 INV-3 db_id interaction: each re-buffered
+                    // `QueuedObservation` carries its original `db_id`
+                    // (the row was persisted before this `turn/start`
+                    // attempt — see `persist_one` above). We deliberately
+                    // do NOT call `dequeue_many` on the items: the rows
+                    // are still pending delivery, so the next successful
+                    // flush will dequeue them via the same id. The
+                    // in-memory re-buffer + on-disk persistence therefore
+                    // stay 1:1 — a kernel crash here still leaves a
+                    // recoverable `spec_push_queue` row per drained item,
+                    // matching the steady-state Enqueue-arm posture.
                     {
                         let mut q = self.queue.lock().await;
                         for obs in items.into_iter().rev() {
@@ -634,21 +769,95 @@ impl SpecPusher {
                     }
                     return Err(e);
                 }
+                // #318 INV-3 — `turn/start` succeeded; dequeue every
+                // persisted row in this coalesced batch. Anything without
+                // a `db_id` (test paths / no-slot windows) is naturally
+                // skipped by `dequeue_many`.
+                self.dequeue_many(items.iter().filter_map(|o| o.db_id).collect())
+                    .await;
                 Ok(PushOutcome::Issued { max_envelope_id })
             }
             PushAction::Enqueue => {
                 self.queue.lock().await.push_back(QueuedObservation {
                     envelope_id,
                     text: text.to_string(),
+                    db_id,
                 });
                 tracing::debug!(
                     thread_id = %self.thread_id,
                     envelope_id,
+                    db_id,
                     "spec push: turn active / being issued — enqueued observation for flush"
                 );
+                // #325 round-2 P1 — close the persist-await race window.
+                // `action` was fixed to `Enqueue` BEFORE the `persist_one`
+                // await above. If a `turn/completed` arrived while
+                // `persist_one` was awaiting the DB insert, the consumer
+                // task's `flush_push_queue` may have already drained the
+                // queue (saw it empty, since our row wasn't appended yet)
+                // and walked the phase to `TurnCompleted` — at which point
+                // NO future `turn/completed` can be expected to flush our
+                // just-appended entry, and it would sit stranded until an
+                // unrelated live event or process restart nudged the
+                // queue.
+                //
+                // Re-acquire the status lock AFTER the append. If the
+                // phase is no longer in {Issuing, TurnRunning}, drive
+                // `flush_pending` to deliver the entry we just buffered.
+                // `flush_pending` is idempotent (it's a no-op when
+                // another issuer already owns the cycle or the queue is
+                // empty), so the worst case is a redundant call when a
+                // new `Issuing` claim landed in the gap — harmless. The
+                // status mutex is released before `flush_pending` runs
+                // (it takes the same lock itself), keeping the
+                // status-then-queue ordering and avoiding any
+                // re-entrancy.
+                let needs_flush = {
+                    let g = self.status.lock().await;
+                    !matches!(g.phase, SpecPushPhase::Issuing | SpecPushPhase::TurnRunning)
+                };
+                if needs_flush {
+                    tracing::debug!(
+                        thread_id = %self.thread_id,
+                        envelope_id,
+                        "spec push: persist-await race detected (phase walked past Issuing/TurnRunning while persist_one awaited); driving flush_pending to avoid stranding the enqueued row"
+                    );
+                    self.flush_pending().await;
+                }
                 Ok(PushOutcome::Enqueued)
             }
         }
+    }
+
+    /// #318 INV-3 — small wrapper around the [`QueuePersist::enqueue`] slot
+    /// so the call sites (`push_observation`'s two arms, and the consumer
+    /// task's never-reached "fresh enqueue" path) read as one line. Returns
+    /// `Some(row_id)` on success and `None` either when no slot is
+    /// installed (test paths / pre-install window) or when the persist
+    /// callback itself returned `None` (the install-site closure swallowed
+    /// the repo error). A `None` here means "this entry is in-memory only";
+    /// the in-memory cache still receives it (matching pre-fix posture),
+    /// at worst leaving the next boot with nothing extra to rehydrate.
+    async fn persist_one(&self, envelope_id: i64, text: &str) -> Option<i64> {
+        let persist = self.queue_persist.lock().await.clone()?;
+        (persist.enqueue)(envelope_id, text.to_string()).await
+    }
+
+    /// #318 INV-3 — batch counterpart of [`persist_one`] for the dequeue
+    /// side. Empty input is a no-op; missing slot is a no-op (and a
+    /// `debug_assert!` would fire in production install paths since the
+    /// dispatcher installs both watermark + persist atomically — but we
+    /// don't assert here because the test fakes legitimately skip the
+    /// slot).
+    async fn dequeue_many(&self, ids: Vec<i64>) {
+        if ids.is_empty() {
+            return;
+        }
+        let persist = match self.queue_persist.lock().await.clone() {
+            Some(p) => p,
+            None => return,
+        };
+        (persist.dequeue)(ids).await;
     }
 }
 
@@ -669,6 +878,7 @@ impl SpecPushHandle {
             status: self.status.clone(),
             queue: self.queue.clone(),
             watermark_sink: self.watermark_sink.clone(),
+            queue_persist: self.queue_persist.clone(),
         }
     }
 
@@ -702,6 +912,158 @@ impl SpecPushHandle {
     /// silently no-ops on flush (the bug the assertion guards against).
     pub async fn has_watermark_sink(&self) -> bool {
         self.watermark_sink.lock().await.is_some()
+    }
+
+    /// #318 INV-3 — install the durable enqueue/dequeue/list callbacks.
+    /// Called by both production install sites
+    /// (`routes/waves.rs::spawn_push_appserver` and
+    /// `lib.rs::register_and_catch_up`) right after `install_watermark_sink`,
+    /// so a push landing immediately after registration has both the
+    /// persist path AND the watermark path available.
+    ///
+    /// Installing twice replaces the previous slot (latest dispatcher
+    /// wins, symmetric with [`install_watermark_sink`]).
+    pub async fn install_queue_persist(&self, persist: QueuePersist) {
+        *self.queue_persist.lock().await = Some(Arc::new(persist));
+    }
+
+    /// #318 INV-3 — debug-assert symmetric with [`has_watermark_sink`].
+    /// Production callers must NOT branch on this — an absent slot means
+    /// the in-memory `VecDeque` is the only durability surface (today's
+    /// pre-fix behavior, intentional only on test paths).
+    pub async fn has_queue_persist(&self) -> bool {
+        self.queue_persist.lock().await.is_some()
+    }
+
+    /// #318 INV-3 — rehydrate the in-memory `VecDeque` from the durable
+    /// `spec_push_queue` rows. Called by boot-takeover's
+    /// `register_and_catch_up` AFTER `install_queue_persist`, BEFORE
+    /// catch-up replay starts, so observations a prior process enqueued
+    /// but didn't flush are still available for the next `turn/completed`
+    /// flush.
+    ///
+    /// The current in-memory cache is left in place — typical case is
+    /// "freshly-constructed handle whose cache is empty", but a defensive
+    /// `extend_back` is correct on any cache state (we never write
+    /// duplicate rows: the durable rows weren't in the in-memory cache
+    /// before this call, and any in-memory entry added after this call
+    /// goes through the live enqueue path).
+    ///
+    /// No-op when no persist slot is installed (returns an empty `Vec`).
+    ///
+    /// ## Watermark filtering (#325 round-2 P2)
+    ///
+    /// `watermark` is the durable `push_watermark` for this card. Any row
+    /// whose `envelope_id <= watermark` has ALREADY been delivered to
+    /// codex (the watermark advances on flush success — see
+    /// `flush_push_queue`), so its persistence is stale: the flush
+    /// succeeded, the watermark advanced, but the process crashed before
+    /// the `dequeue` write committed (or the dequeue write itself failed
+    /// — the install closure logs and swallows; see
+    /// `dispatcher::queue_persist_for`). Without filtering, those rows
+    /// would be re-pushed into the in-memory queue and `flush_pending`
+    /// (or the next live `turn/completed`) would redeliver them to codex
+    /// — bypassing the durable watermark that `events_since(watermark)`
+    /// itself correctly skips. We instead delete those rows in the same
+    /// rehydrate call (via the installed `dequeue` callback) so a
+    /// future boot won't see them either, and return only the LIVE
+    /// envelope_ids (`> watermark`).
+    ///
+    /// ## Return value (#325 fix)
+    ///
+    /// Returns the persisted `envelope_id`s the rehydrated rows carried, in
+    /// the same FIFO order they were re-pushed into the in-memory queue —
+    /// after stale-row filtering. Boot-takeover's catch-up replay path
+    /// (`lib.rs::register_and_catch_up`) feeds these ids into a skip-set
+    /// so the subsequent `events_since(watermark)` replay doesn't deliver
+    /// the SAME envelope a second time: a crash between `Ok(Enqueued)` and
+    /// the consumer's `turn/completed` flush leaves the durable
+    /// `push_watermark` BELOW the queued envelope's id (by design — see
+    /// PR #315 PR4 B1), so `events_since(watermark)` and the rehydrated
+    /// rows overlap on exactly that envelope. Without dedup, the
+    /// `StartTurnNow` triggered by the catch-up call would drain the
+    /// rehydrated row AND append the catch-up envelope as a duplicate,
+    /// breaking the "at-least-once across restart" promise into
+    /// "predictably twice on every recovery".
+    ///
+    /// Caller can use `.len()` on the returned slice for the observability
+    /// count.
+    pub async fn rehydrate_queue_from_persist(&self, watermark: i64) -> Vec<i64> {
+        let persist = match self.queue_persist.lock().await.clone() {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+        let rows = (persist.list)().await;
+        if rows.is_empty() {
+            return Vec::new();
+        }
+        // #325 round-2 P2 — partition by watermark. `stale_db_ids` will be
+        // dequeued (deleted) below so a future boot doesn't see them; the
+        // live rows are appended to the in-memory queue and their
+        // envelope_ids are returned for the caller's dedup skip-set.
+        let mut envelope_ids = Vec::with_capacity(rows.len());
+        let mut stale_db_ids: Vec<i64> = Vec::new();
+        {
+            let mut q = self.queue.lock().await;
+            for (db_id, envelope_id, text) in rows {
+                if envelope_id <= watermark {
+                    stale_db_ids.push(db_id);
+                    continue;
+                }
+                envelope_ids.push(envelope_id);
+                q.push_back(QueuedObservation {
+                    envelope_id,
+                    text,
+                    db_id: Some(db_id),
+                });
+            }
+        }
+        if !stale_db_ids.is_empty() {
+            tracing::info!(
+                thread_id = %self.thread_id,
+                watermark,
+                stale_count = stale_db_ids.len(),
+                "spec push: rehydrate dropped rows already covered by durable watermark (envelope_id <= watermark); deleting from spec_push_queue so the next boot won't see them again"
+            );
+            (persist.dequeue)(stale_db_ids).await;
+        }
+        envelope_ids
+    }
+
+    /// #325 fix — drive a one-shot `flush_push_queue` against the handle's
+    /// own queue + status + persistence slots. Used by boot-takeover after
+    /// `rehydrate_queue_from_persist` re-loaded the in-memory queue from
+    /// disk in the edge case where catch-up replay is fully deduped
+    /// against the rehydrated set (so no `StartTurnNow` was triggered to
+    /// drain the rehydrated rows). Without this nudge, rehydrated items
+    /// would sit in the queue until the next live event arrived — fine
+    /// for liveness, but the explicit flush keeps the "boot recovers a
+    /// pending observation" path symmetric with the create-wave path
+    /// (where the consumer's `turn/completed` handler always flushes).
+    ///
+    /// Idempotent: if the queue is empty or another issuer already owns
+    /// the cycle (phase is `Issuing`/`TurnRunning`), this no-ops — same
+    /// guarantees as the consumer task's `turn/completed` flush.
+    pub async fn flush_pending(&self) {
+        self.pusher().flush_pending().await;
+    }
+}
+
+impl SpecPusher {
+    /// #325 fix — see [`SpecPushHandle::flush_pending`]. Delegated here so
+    /// callers holding a [`SpecPusher`] (e.g. the registry) can drive the
+    /// boot-takeover post-rehydrate flush without holding a `DashMap`
+    /// guard across the `.await`.
+    pub async fn flush_pending(&self) {
+        flush_push_queue(
+            &self.thread_id,
+            &self.status,
+            &self.client,
+            &self.queue,
+            &self.watermark_sink,
+            &self.queue_persist,
+        )
+        .await;
     }
 }
 
@@ -1446,6 +1808,7 @@ async fn build_handle_after_spawn_resume(
         client,
         handle.queue.clone(),
         handle.watermark_sink.clone(),
+        handle.queue_persist.clone(),
     ));
     handle.resume_reconciler = Some(reconciler);
 
@@ -1471,6 +1834,7 @@ async fn resume_reconcile_task(
     client: Arc<CodexAppServer>,
     queue: PushQueue,
     watermark_sink: WatermarkSinkSlot,
+    queue_persist: QueuePersistSlot,
 ) {
     tokio::time::sleep(budget).await;
     // CAS under the status lock: only promote if still Resumed. A real
@@ -1499,7 +1863,15 @@ async fn resume_reconcile_task(
         "spec push (resume reconcile): no lifecycle notification within budget; \
          promoting Resumed -> TurnCompleted and flushing queued observations"
     );
-    flush_push_queue(&thread_id, &status, &client, &queue, &watermark_sink).await;
+    flush_push_queue(
+        &thread_id,
+        &status,
+        &client,
+        &queue,
+        &watermark_sink,
+        &queue_persist,
+    )
+    .await;
 }
 
 /// Shared tail of both build paths (spawn + resume): spawn the consumer
@@ -1520,9 +1892,13 @@ fn park_handle(
     // #313 B1 — sink slot is empty here; the dispatcher installs the real
     // persister right after registering the handle.
     let watermark_sink: WatermarkSinkSlot = Arc::new(Mutex::new(None));
+    // #318 INV-3 — queue persist slot is empty here; the same dispatcher
+    // sites that install the watermark sink also install this.
+    let queue_persist: QueuePersistSlot = Arc::new(Mutex::new(None));
     let consumer_status = status.clone();
     let consumer_thread = thread_id.clone();
     let consumer_sink = watermark_sink.clone();
+    let consumer_persist = queue_persist.clone();
     let consumer = tokio::spawn(consume_notifications(
         notifs,
         consumer_thread,
@@ -1530,6 +1906,7 @@ fn park_handle(
         client.clone(),
         queue.clone(),
         consumer_sink,
+        consumer_persist,
     ));
     SpecPushHandle {
         child,
@@ -1545,6 +1922,7 @@ fn park_handle(
         status,
         queue,
         watermark_sink,
+        queue_persist,
     }
 }
 
@@ -1639,6 +2017,7 @@ async fn consume_notifications(
     client: Arc<CodexAppServer>,
     queue: PushQueue,
     watermark_sink: WatermarkSinkSlot,
+    queue_persist: QueuePersistSlot,
 ) {
     while let Some(n) = notifs.recv().await {
         warn_on_approval(&n);
@@ -1648,7 +2027,15 @@ async fn consume_notifications(
         // them between turns (codex silently drops a turn/start issued while
         // a turn is active, so we can only start one here, between turns).
         if matches!(n, Notification::TurnCompleted { .. }) {
-            flush_push_queue(&thread_id, &status, &client, &queue, &watermark_sink).await;
+            flush_push_queue(
+                &thread_id,
+                &status,
+                &client,
+                &queue,
+                &watermark_sink,
+                &queue_persist,
+            )
+            .await;
         }
     }
     tracing::debug!(
@@ -1683,6 +2070,7 @@ async fn flush_push_queue(
     client: &Arc<CodexAppServer>,
     queue: &PushQueue,
     watermark_sink: &WatermarkSinkSlot,
+    queue_persist: &QueuePersistSlot,
 ) {
     // Atomically claim the issue right: only flip to `Issuing` (and win) if
     // we observe a between-turns phase. If a `push_observation` already won
@@ -1807,6 +2195,28 @@ async fn flush_push_queue(
              durable watermark not advanced for queue-flushed items"
         );
     }
+
+    // #318 INV-3 — `turn/start` succeeded; dequeue every persisted row in
+    // this coalesced batch. Drained entries without a `db_id` (test paths /
+    // pre-install windows) are naturally filtered out. Done AFTER the
+    // watermark sink so that a watermark-persist failure that strands the
+    // in-memory cache bump does not block dequeueing rows codex already
+    // accepted (rows kept around when codex didn't accept them would be
+    // double-delivered on the next boot's rehydrate).
+    let to_dequeue: Vec<i64> = drained.iter().filter_map(|o| o.db_id).collect();
+    if !to_dequeue.is_empty() {
+        let persist = queue_persist.lock().await.clone();
+        if let Some(persist) = persist {
+            (persist.dequeue)(to_dequeue).await;
+        } else {
+            tracing::debug!(
+                thread_id,
+                count = drained.len(),
+                "spec push: flush succeeded but no queue-persist slot installed (test path) — \
+                 durable queue rows not dequeued (none should exist either)"
+            );
+        }
+    }
 }
 
 /// Fold one notification into the tracked status.
@@ -1898,6 +2308,7 @@ mod tests {
         let status: SharedStatus = Arc::new(Mutex::new(SpecPushStatus::default()));
         let queue: PushQueue = Arc::new(Mutex::new(VecDeque::new()));
         let watermark_sink: WatermarkSinkSlot = Arc::new(Mutex::new(None));
+        let queue_persist: QueuePersistSlot = Arc::new(Mutex::new(None));
         let client = Arc::new(client);
         let consumer = tokio::spawn(consume_notifications(
             notifs,
@@ -1906,6 +2317,7 @@ mod tests {
             client.clone(),
             queue.clone(),
             watermark_sink.clone(),
+            queue_persist.clone(),
         ));
         let handle = SpecPushHandle {
             child,
@@ -1918,6 +2330,7 @@ mod tests {
             status,
             queue,
             watermark_sink,
+            queue_persist,
         };
         (handle, server)
     }
@@ -2219,6 +2632,500 @@ mod tests {
         let _server = server;
     }
 
+    /// #325 regression — `rehydrate_queue_from_persist` returns the
+    /// envelope_ids it just re-loaded, in FIFO order. Boot-takeover's
+    /// `register_and_catch_up` feeds these into a skip-set so the
+    /// subsequent `events_since(watermark)` catch-up replay doesn't
+    /// re-deliver the same envelope that is already sitting in the
+    /// rehydrated queue.
+    ///
+    /// Without the returned ids, the dedup invariant would be impossible
+    /// to enforce — the catch-up loop has no other way to know which
+    /// rows came from disk vs. which arrived live.
+    #[tokio::test]
+    async fn rehydrate_queue_from_persist_returns_envelope_ids_for_dedup() {
+        use std::sync::Mutex as StdMutex;
+
+        let (handle, _server) = fake_handle().await;
+
+        // Stub QueuePersist: `list` returns three pre-seeded rows with
+        // known envelope_ids; `enqueue` / `dequeue` aren't exercised here.
+        let stored: Arc<StdMutex<Vec<(i64, i64, String)>>> = Arc::new(StdMutex::new(vec![
+            (101, 5, "obs-five".to_string()),
+            (102, 7, "obs-seven".to_string()),
+            (103, 9, "obs-nine".to_string()),
+        ]));
+        let stored_for_list = Arc::clone(&stored);
+        let persist = QueuePersist {
+            enqueue: Arc::new(|_, _| Box::pin(async { None })),
+            dequeue: Arc::new(|_| Box::pin(async {})),
+            list: Arc::new(move || {
+                let snapshot = stored_for_list.lock().unwrap().clone();
+                Box::pin(async move { snapshot })
+            }),
+        };
+        handle.install_queue_persist(persist).await;
+
+        // watermark=0 means "nothing already delivered" — all three rows
+        // are live and should rehydrate (this test predates the round-2
+        // watermark-filter; see `rehydrate_filters_stale_rows_against_watermark`
+        // for the filter coverage).
+        let ids = handle.rehydrate_queue_from_persist(0).await;
+        assert_eq!(
+            ids,
+            vec![5, 7, 9],
+            "#325: rehydrate must return the envelope_ids in FIFO order so \
+             catch-up can dedup against them"
+        );
+
+        // Queue restored.
+        let q = handle.queue.lock().await;
+        assert_eq!(q.len(), 3);
+        assert_eq!(q[0].envelope_id, 5);
+        assert_eq!(q[0].db_id, Some(101));
+        assert_eq!(q[1].envelope_id, 7);
+        assert_eq!(q[2].envelope_id, 9);
+    }
+
+    /// #325 regression — full Enqueue-persist → crash → rehydrate +
+    /// catch-up flow, asserting NO duplicate `turn/start` payload.
+    ///
+    /// The scenario codex's P1 review flagged:
+    ///
+    /// 1. Pre-crash: a `task.completed` envelope (id=10) arrives mid-turn
+    ///    → `Inner::push_to_spec` returns `Ok(Enqueued)` → the Enqueue
+    ///    arm of `push_observation` persists a `spec_push_queue` row +
+    ///    pushes onto the in-memory `VecDeque`. The dispatcher
+    ///    deliberately does NOT advance the durable `push_watermark` on
+    ///    `Enqueued` (PR #315 PR4 B1).
+    /// 2. Kernel crashes between persist and the consumer task's flush.
+    /// 3. Boot-takeover resumes the spec thread (phase = Idle).
+    ///    `rehydrate_queue_from_persist` re-loads row id=10 into the
+    ///    in-memory queue. `events_since(watermark)` ALSO returns id=10
+    ///    (watermark < 10 because step 1 deliberately didn't advance it).
+    /// 4. Without dedup: catch-up replay calls
+    ///    `catch_up_push_under_lock(10)` → `push_observation` on the Idle
+    ///    handle → `StartTurnNow` → drains rehydrated row + appends the
+    ///    catch-up envelope → ONE `turn/start` with TWO copies of the
+    ///    SAME observation. (And a SECOND `spec_push_queue` row is
+    ///    persisted for the appended item if there's contention; here we
+    ///    assert on the wire because the wire is the codex-facing
+    ///    contract that matters.)
+    /// 5. With dedup (this PR's fix): catch-up skips id=10 because it's
+    ///    in the rehydrated skip-set. The explicit `flush_pending` then
+    ///    drives ONE `turn/start` with ONE copy of the observation.
+    ///
+    /// The test stays under the spec_appserver layer (no dispatcher
+    /// wiring) — we directly model what `register_and_catch_up` does
+    /// after rehydrate: build the skip-set from rehydrate's return value
+    /// and only deliver catch-up envelopes whose id isn't in it.
+    #[tokio::test]
+    async fn rehydrate_then_catch_up_does_not_double_deliver_same_envelope() {
+        use futures_util::{SinkExt, StreamExt};
+        use std::collections::HashSet;
+        use std::sync::Mutex as StdMutex;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let (handle, mut server) = fake_handle().await;
+        let handle = Arc::new(handle);
+
+        // Stub persist: pre-seeded with one "surviving from prior process"
+        // row at envelope_id = 10. Track dequeue ids to verify the flush
+        // wires up correctly post-recovery.
+        let stored: Arc<StdMutex<Vec<(i64, i64, String)>>> = Arc::new(StdMutex::new(vec![(
+            999,
+            10,
+            "task.completed-for-id-10".to_string(),
+        )]));
+        let dequeued: Arc<StdMutex<Vec<i64>>> = Arc::new(StdMutex::new(Vec::new()));
+        let stored_for_list = Arc::clone(&stored);
+        let stored_for_enq = Arc::clone(&stored);
+        let dequeued_for_close = Arc::clone(&dequeued);
+        let persist = QueuePersist {
+            enqueue: Arc::new(move |envelope_id, text| {
+                // Mimic the SQL INSERT: append + return a fresh row id.
+                let stored = Arc::clone(&stored_for_enq);
+                Box::pin(async move {
+                    let mut g = stored.lock().unwrap();
+                    let new_id = g.iter().map(|(id, _, _)| *id).max().unwrap_or(0) + 1;
+                    g.push((new_id, envelope_id, text));
+                    Some(new_id)
+                })
+            }),
+            dequeue: Arc::new(move |ids| {
+                let dequeued = Arc::clone(&dequeued_for_close);
+                Box::pin(async move {
+                    dequeued.lock().unwrap().extend(ids);
+                })
+            }),
+            list: Arc::new(move || {
+                let snap = stored_for_list.lock().unwrap().clone();
+                Box::pin(async move { snap })
+            }),
+        };
+        handle.install_queue_persist(persist).await;
+
+        // Step 3: rehydrate. The skip-set is built from the returned ids
+        // — same as `register_and_catch_up` does in production.
+        // watermark=9: the prior process's dispatcher cooperatively
+        // withheld push_watermark on Enqueued (PR #315 PR4 B1), so the
+        // durable watermark is BELOW envelope_id=10 and the rehydrate
+        // filter keeps the row live.
+        let rehydrated_ids = handle.rehydrate_queue_from_persist(9).await;
+        assert_eq!(
+            rehydrated_ids,
+            vec![10],
+            "rehydrate must return the envelope_ids of pending rows"
+        );
+        let skip: HashSet<i64> = rehydrated_ids.iter().copied().collect();
+
+        // Step 4: simulate catch-up replay. `events_since(watermark)`
+        // would return id=10 (since the watermark is below it — see
+        // step 1 in the docstring). We model the catch-up loop's
+        // dedup-then-deliver: if id is in skip-set, do NOT call
+        // push_observation; otherwise call it.
+        //
+        // With dedup ON (this PR's fix): id=10 is in skip → loop does
+        // nothing → no StartTurnNow fires.
+        let catch_up_ids = [10i64];
+        let mut replayed = 0usize;
+        for id in catch_up_ids {
+            if skip.contains(&id) {
+                continue;
+            }
+            // We don't actually exercise the dispatcher here — the
+            // production catch_up_push_under_lock would call
+            // push_observation. The skip path means this branch is dead
+            // in this test; asserting via `replayed` below.
+            let _ = handle
+                .push_observation(id, "would-be-duplicate-payload")
+                .await;
+            replayed += 1;
+        }
+        assert_eq!(
+            replayed, 0,
+            "#325 dedup: id=10 must be skipped because the same envelope \
+             already sits in the rehydrated queue"
+        );
+
+        // Step 5: explicit flush_pending — the no-other-catch-up edge
+        // case `register_and_catch_up` now drives. With our fix, this
+        // issues ONE `turn/start` with ONE copy of the rehydrated
+        // observation.
+        let flush_handle = Arc::clone(&handle);
+        let flush = tokio::spawn(async move {
+            flush_handle.flush_pending().await;
+        });
+
+        // Read frames from the server side; capture every `turn/start`
+        // payload and ack so the client's request resolves.
+        let observed_turns: Arc<StdMutex<Vec<String>>> = Arc::new(StdMutex::new(Vec::new()));
+        let observed_for_task = Arc::clone(&observed_turns);
+        let server_task = tokio::spawn(async move {
+            // Bounded — one turn/start expected, plus generous slack.
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+            while tokio::time::Instant::now() < deadline {
+                let f = match tokio::time::timeout(Duration::from_millis(250), server.next()).await
+                {
+                    Ok(Some(Ok(Message::Text(t)))) => t,
+                    Ok(Some(Ok(_))) => continue,
+                    Ok(None) | Ok(Some(Err(_))) => break,
+                    Err(_) => continue,
+                };
+                let v: Value = match serde_json::from_str(&f) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                if v.get("method").and_then(Value::as_str) != Some("turn/start") {
+                    continue;
+                }
+                let id = v.get("id").cloned().unwrap_or(Value::Null);
+                let text = v
+                    .pointer("/params/input/0/text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                observed_for_task.lock().unwrap().push(text);
+                // Ack so the client's `turn_start` future resolves.
+                let _ = server
+                    .send(Message::Text(
+                        serde_json::to_string(&serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "result": { "turn": { "id": "t-recovery" } }
+                        }))
+                        .unwrap(),
+                    ))
+                    .await;
+            }
+            server
+        });
+
+        // Wait for the flush to finish (client side resolves).
+        flush.await.expect("flush_pending joins");
+        // Give the server task time to observe the turn/start frame.
+        let _ = tokio::time::timeout(Duration::from_millis(500), server_task).await;
+
+        let turns = observed_turns.lock().unwrap().clone();
+        assert_eq!(
+            turns.len(),
+            1,
+            "#325: exactly one `turn/start` must be issued after rehydrate + \
+             catch-up — not two (duplicate-payload bug) and not zero \
+             (rehydrated items left undelivered). got: {turns:?}"
+        );
+        assert_eq!(
+            turns[0], "task.completed-for-id-10",
+            "#325: the single `turn/start` must carry the rehydrated \
+             observation's text exactly once (no double-line coalescing)"
+        );
+
+        // Sanity: the rehydrated row was dequeued after delivery, so a
+        // hypothetical *third* boot wouldn't see it again. This mirrors
+        // the persist↔in-memory 1:1 invariant `flush_push_queue` upholds.
+        let drained = dequeued.lock().unwrap().clone();
+        assert_eq!(
+            drained,
+            vec![999],
+            "#325: the rehydrated row's db_id must be dequeued after the \
+             explicit flush_pending — otherwise a third boot would replay it again"
+        );
+    }
+
+    /// #325 round-2 P1 — `Enqueue`-arm persist-await race close.
+    ///
+    /// The race codex's round-2 review flagged:
+    /// 1. Phase observed as `TurnRunning` → action fixed to `Enqueue`.
+    /// 2. `persist_one` awaits the DB insert (real-world: tens of ms).
+    /// 3. During (2), a `turn/completed` arrives; consumer task's
+    ///    `flush_push_queue` runs, finds the queue empty (our row not yet
+    ///    appended), walks phase Issuing→TurnCompleted with nothing to
+    ///    flush — and no further `turn/completed` is expected.
+    /// 4. `persist_one` returns; we append to the in-memory queue and
+    ///    return `Ok(Enqueued)`. Without the round-2 fix, the row stays
+    ///    stranded until an unrelated live event or restart.
+    ///
+    /// The fix: after the append, re-acquire status and — if phase is no
+    /// longer in `{Issuing, TurnRunning}` — drive an idempotent
+    /// `flush_pending`. This test:
+    ///   * installs a slow `persist.enqueue` that blocks on a oneshot,
+    ///     simulating the DB-insert window;
+    ///   * starts the push (it blocks inside `persist_one`);
+    ///   * walks the phase to `TurnCompleted` from outside (simulating
+    ///     the consumer's flush-of-empty path);
+    ///   * unblocks `persist_one`;
+    ///   * asserts the row is FLUSHED via a `turn/start` on the wire —
+    ///     not stranded in the queue.
+    #[tokio::test]
+    async fn enqueue_arm_flushes_when_persist_await_races_past_turn_completed() {
+        use futures_util::{SinkExt, StreamExt};
+        use std::sync::Mutex as StdMutex;
+        use tokio::sync::oneshot;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let (handle, mut server) = fake_handle().await;
+        let handle = Arc::new(handle);
+        // Force phase to `TurnRunning` so `push_observation`'s `decide` picks
+        // `Enqueue` (the racy arm).
+        {
+            let mut g = handle.status.lock().await;
+            g.phase = SpecPushPhase::TurnRunning;
+        }
+
+        // Slow persist: block on a oneshot so we control exactly when
+        // `persist_one` returns. The same closure must also serve
+        // dequeues (flush success path).
+        let (release_tx, release_rx) = oneshot::channel::<()>();
+        let release_rx = Arc::new(StdMutex::new(Some(release_rx)));
+        let next_db_id = Arc::new(std::sync::atomic::AtomicI64::new(0));
+        let next_db_id_e = Arc::clone(&next_db_id);
+        let release_rx_e = Arc::clone(&release_rx);
+        let persist = QueuePersist {
+            enqueue: Arc::new(move |_envelope_id, _text| {
+                let next_db_id = Arc::clone(&next_db_id_e);
+                let release_rx = Arc::clone(&release_rx_e);
+                Box::pin(async move {
+                    // Take the receiver (single-shot); if absent, no wait.
+                    let rx_opt = release_rx.lock().unwrap().take();
+                    if let Some(rx) = rx_opt {
+                        let _ = rx.await;
+                    }
+                    Some(next_db_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1)
+                })
+            }),
+            dequeue: Arc::new(|_| Box::pin(async {})),
+            list: Arc::new(|| Box::pin(async { Vec::new() })),
+        };
+        handle.install_queue_persist(persist).await;
+
+        // Step 1+2: start the push; it blocks inside `persist_one`.
+        let push_handle = Arc::clone(&handle);
+        let push =
+            tokio::spawn(async move { push_handle.push_observation(42, "racy-observation").await });
+
+        // Wait for `push_observation` to enter the persist await. We can't
+        // observe the precise moment, so yield + brief sleep is sufficient
+        // — `push_observation`'s status-lock + decide work is pure-CPU.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Step 3: simulate the consumer's `flush_push_queue` on an empty
+        // queue — it walks phase Issuing→TurnCompleted but finds nothing
+        // to flush. We just set the phase directly: the bug is "after this
+        // walk, no `turn/completed` is expected to come back", and our
+        // post-append recheck must detect that and force a flush.
+        {
+            let mut g = handle.status.lock().await;
+            g.phase = SpecPushPhase::TurnCompleted;
+        }
+
+        // Step 4: release `persist_one` so `push_observation` continues.
+        // The Enqueue arm appends to the queue, re-acquires status, sees
+        // `TurnCompleted` (NOT in {Issuing, TurnRunning}), and drives
+        // `flush_pending` → `flush_push_queue` → coalesced `turn/start`.
+        let _ = release_tx.send(());
+
+        // Server side: expect ONE `turn/start` with our observation text.
+        // Ack it so the client's request resolves and `flush_pending`
+        // returns.
+        let req = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                match server.next().await.expect("frame").expect("ws ok") {
+                    Message::Text(t) => {
+                        let v: Value = serde_json::from_str(&t).unwrap();
+                        if v.get("method").and_then(Value::as_str) == Some("turn/start") {
+                            break v;
+                        }
+                    }
+                    _ => continue,
+                }
+            }
+        })
+        .await
+        .expect(
+            "#325 round-2 P1: the stranded row must be flushed via flush_pending — \
+             no `turn/start` arrived within 3s, meaning the row is still sitting \
+             in the queue undelivered",
+        );
+
+        let text = req
+            .pointer("/params/input/0/text")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert_eq!(
+            text, "racy-observation",
+            "#325 round-2 P1: the forced flush must carry the just-appended observation"
+        );
+
+        // Ack so the push future resolves.
+        let id = req.get("id").cloned().unwrap();
+        server
+            .send(Message::Text(
+                serde_json::to_string(&serde_json::json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "result": { "turn": { "id": "t-race-close" } }
+                }))
+                .unwrap(),
+            ))
+            .await
+            .unwrap();
+
+        let outcome = push.await.unwrap().unwrap();
+        assert_eq!(
+            outcome,
+            PushOutcome::Enqueued,
+            "#325 round-2 P1: outcome is still Enqueued (the contract holds — the \
+             caller never sees the internal force-flush); the flush_pending is a \
+             best-effort safety net on top, not a new outcome variant"
+        );
+
+        // Queue must be empty post-flush (the row was flushed, then dequeued).
+        assert!(
+            handle.queue.lock().await.is_empty(),
+            "#325 round-2 P1: queue must drain after the forced flush"
+        );
+
+        let _server = server;
+    }
+
+    /// #325 round-2 P2 — `rehydrate_queue_from_persist` must drop rows
+    /// whose `envelope_id <= watermark` (the prior process's flush
+    /// succeeded and bumped the watermark, but the `dequeue` write didn't
+    /// commit — or committed and the row is stale). Without filtering,
+    /// those rows would be re-pushed into the in-memory queue and
+    /// redelivered to codex, bypassing the durable watermark that
+    /// `events_since(watermark)` itself correctly skips.
+    ///
+    /// Scenario: watermark=10; rehydrate sees rows with envelope_ids
+    /// `[5, 7, 12]`. 5 and 7 are stale (already delivered) and must be
+    /// physically dequeued; 12 is live and must be queued + returned.
+    #[tokio::test]
+    async fn rehydrate_filters_stale_rows_against_watermark() {
+        use std::sync::Mutex as StdMutex;
+
+        let (handle, _server) = fake_handle().await;
+
+        // Stub persist: pre-seed three rows; one above watermark, two
+        // below. Track dequeue ids so we can assert the stale rows are
+        // physically removed.
+        let stored: Arc<StdMutex<Vec<(i64, i64, String)>>> = Arc::new(StdMutex::new(vec![
+            (501, 5, "stale-five".to_string()),
+            (502, 7, "stale-seven".to_string()),
+            (503, 12, "live-twelve".to_string()),
+        ]));
+        let dequeued: Arc<StdMutex<Vec<i64>>> = Arc::new(StdMutex::new(Vec::new()));
+        let stored_for_list = Arc::clone(&stored);
+        let dequeued_for_close = Arc::clone(&dequeued);
+        let persist = QueuePersist {
+            enqueue: Arc::new(|_, _| Box::pin(async { None })),
+            dequeue: Arc::new(move |ids| {
+                let dequeued = Arc::clone(&dequeued_for_close);
+                Box::pin(async move {
+                    dequeued.lock().unwrap().extend(ids);
+                })
+            }),
+            list: Arc::new(move || {
+                let snap = stored_for_list.lock().unwrap().clone();
+                Box::pin(async move { snap })
+            }),
+        };
+        handle.install_queue_persist(persist).await;
+
+        // watermark=10 — rows with envelope_id <= 10 (i.e. 5, 7) are
+        // already delivered and must be dropped + dequeued.
+        let live_ids = handle.rehydrate_queue_from_persist(10).await;
+        assert_eq!(
+            live_ids,
+            vec![12],
+            "#325 round-2 P2: only rows with envelope_id > watermark must be \
+             returned for the catch-up skip-set"
+        );
+
+        // In-memory queue must contain ONLY the live row.
+        let q = handle.queue.lock().await;
+        assert_eq!(
+            q.len(),
+            1,
+            "#325 round-2 P2: stale rows (envelope_id <= watermark) must be \
+             skipped during in-memory rehydrate"
+        );
+        assert_eq!(q[0].envelope_id, 12);
+        assert_eq!(q[0].text, "live-twelve");
+        assert_eq!(q[0].db_id, Some(503));
+        drop(q);
+
+        // Stale rows must be physically dequeued so the NEXT boot doesn't
+        // see them again. Order in `dequeued` matches stored-row iteration
+        // order (5 before 7) — the rehydrate code processes the list in
+        // order and collects stale_db_ids in encounter order.
+        let mut deq = dequeued.lock().unwrap().clone();
+        deq.sort();
+        assert_eq!(
+            deq,
+            vec![501, 502],
+            "#325 round-2 P2: stale rows must be physically deleted via the \
+             persist.dequeue callback so a future boot doesn't see them again"
+        );
+    }
+
     /// Shared B1 harness: build a fake handle whose server faithfully models
     /// codex's **silent-drop** — a `turn/start` that arrives while a turn is
     /// already active is OK-acked but produces NO `turn/started`/
@@ -2249,6 +3156,7 @@ mod tests {
             handle.queue.lock().await.push_back(QueuedObservation {
                 envelope_id: 1,
                 text: "A".to_string(),
+                db_id: None,
             });
         }
 
@@ -2405,6 +3313,7 @@ mod tests {
                 &handle.client,
                 &handle.queue,
                 &handle.watermark_sink,
+                &handle.queue_persist,
             )
             .await;
         })
@@ -2438,6 +3347,7 @@ mod tests {
                         &h_flush.client,
                         &h_flush.queue,
                         &h_flush.watermark_sink,
+                        &h_flush.queue_persist,
                     )
                     .await;
                 });
@@ -2868,6 +3778,7 @@ mod tests {
             handle.queue.lock().await.push_back(QueuedObservation {
                 envelope_id: 7,
                 text: "catch-up obs".to_string(),
+                db_id: None,
             });
         }
 
@@ -2882,6 +3793,7 @@ mod tests {
             handle.client.clone(),
             handle.queue.clone(),
             handle.watermark_sink.clone(),
+            handle.queue_persist.clone(),
         ));
 
         // Before the budget elapses, NOTHING should happen — phase is
@@ -2987,6 +3899,7 @@ mod tests {
             handle.client.clone(),
             handle.queue.clone(),
             handle.watermark_sink.clone(),
+            handle.queue_persist.clone(),
         ));
 
         // Within the budget, simulate the consumer task seeing a real

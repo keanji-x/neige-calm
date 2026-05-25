@@ -979,13 +979,34 @@ async fn spawn_push_appserver(
     // for in-process dedup symmetry); both this site and
     // `register_and_catch_up` go through it.
     let card_key: crate::ids::CardId = spec_card_id.to_string().into();
-    let sink = s.dispatcher.watermark_sink_for(card_key);
+    let sink = s.dispatcher.watermark_sink_for(card_key.clone());
     handle.install_watermark_sink(sink).await;
     debug_assert!(
         handle.has_watermark_sink().await,
         "spawn_push_appserver: install_watermark_sink did not take effect — \
          a future refactor split the install from the assert; queued-then-\
          flushed envelopes would silently fail to persist their watermark"
+    );
+
+    // #318 INV-3 (R2-B1) — install the durable queue-persist callbacks
+    // BEFORE parking the handle in the registry, symmetric with the
+    // watermark sink above. A push landing immediately after registration
+    // hits `SpecPusher::push_observation`, whose `Enqueue` arm persists to
+    // `spec_push_queue` BEFORE the in-memory `push_back` — so a kernel
+    // crash between persist and the consumer task's flush leaves a
+    // recoverable row that boot-takeover's `rehydrate_queue_from_persist`
+    // re-delivers on the next process.
+    //
+    // The sister install lives in `lib.rs::register_and_catch_up` for the
+    // boot-takeover path (INV-6 — symmetric startup hooks across both
+    // entry points; #318).
+    let persist = s.dispatcher.queue_persist_for(card_key);
+    handle.install_queue_persist(persist).await;
+    debug_assert!(
+        handle.has_queue_persist().await,
+        "spawn_push_appserver: install_queue_persist did not take effect — \
+         enqueued-but-not-yet-flushed observations would not be durable, \
+         silently re-introducing the INV-3 (#318) regression"
     );
 
     // Park the handle so PR3b's dispatcher can resolve the wave's

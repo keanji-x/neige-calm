@@ -723,6 +723,66 @@ pub trait RepoOutOfDomain: RepoRead {
         sock: &str,
     ) -> Result<()>;
 
+    // ---- spec push queue (#318 INV-3 / R2-B1)
+    //
+    // Durable backing store for `spec_appserver::PushQueue`. Before this
+    // surface, the queue lived only as `Arc<Mutex<VecDeque<…>>>` —
+    // `push_observation` returning `Ok(Enqueued)` would lose the buffered
+    // observation on a kernel crash before the next `turn/completed`
+    // flush. The only thing that re-delivered it was the events-log
+    // replay (gated by the dispatcher cooperatively withholding the
+    // `push_watermark` on `Enqueued`, PR #315 PR4 B1) — incidental
+    // durability that INV-3 says the queue should not lean on.
+    //
+    // These methods are server-private operational state (no event
+    // emission, no sync-domain entry) — they live on `RepoOutOfDomain`
+    // alongside `spec_card_set_push_watermark` for the same reason.
+    //
+    // TODO(runtime-state-table): along with `push_watermark`,
+    // `appserver_pgid`, `appserver_sock`, `codex_thread_id`, this is
+    // kernel-private runtime bookkeeping. When the dedicated runtime-
+    // state table lands, `spec_push_queue` can move into the same
+    // surface (or stay separate — it's row-shaped, not card-payload
+    // shaped, so a separate table is already correct).
+
+    /// #318 INV-3 — persist one observation onto the durable spec push
+    /// queue for `card_id`. Called from `SpecPusher::push_observation`'s
+    /// `Enqueue` arm BEFORE the in-memory `VecDeque::push_back` and
+    /// BEFORE returning `Ok(PushOutcome::Enqueued)`. Returns the row id
+    /// (`spec_push_queue.id`) so the consumer task's `flush_push_queue`
+    /// can `spec_card_dequeue_observations(&[id, …])` the right rows
+    /// after a successful coalesced `turn/start`.
+    ///
+    /// `envelope_id` is the `events.id` from the originating push; the
+    /// flush path reports `max(envelope_id)` back to the dispatcher via
+    /// the `WatermarkSink` callback so the durable `push_watermark`
+    /// advances past every item in the flushed turn (#313 B1).
+    async fn spec_card_enqueue_observation(
+        &self,
+        card_id: &str,
+        envelope_id: i64,
+        text: &str,
+    ) -> Result<i64>;
+
+    /// #318 INV-3 — read every pending row for `card_id` in id order,
+    /// as `(row_id, envelope_id, text)`. Used by boot-takeover's
+    /// `register_and_catch_up` to rehydrate the in-memory queue from
+    /// disk before catch-up replay starts (so any observation a prior
+    /// process enqueued but didn't flush is re-delivered on the next
+    /// `turn/completed`).
+    async fn spec_card_queued_observations(&self, card_id: &str)
+    -> Result<Vec<(i64, i64, String)>>;
+
+    /// #318 INV-3 — delete the named queue rows. Called by
+    /// `flush_push_queue` (and the `StartTurnNow` winner's drain) AFTER
+    /// the coalesced `turn/start` resolves successfully. On `turn/start`
+    /// failure the caller does NOT call this — the rows remain so a
+    /// later flush (or the next boot's replay) retries.
+    ///
+    /// A batch delete keeps the flush hot path one round-trip; an empty
+    /// `ids` slice is a no-op.
+    async fn spec_card_dequeue_observations(&self, ids: &[i64]) -> Result<()>;
+
     // ---- plugins (writes)
     //
     // M3 (Slice A) surface: install / enable / get-by-id / delete / list-all.

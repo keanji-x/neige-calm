@@ -2250,6 +2250,94 @@ impl RepoOutOfDomain for SqlxRepo {
         Ok(())
     }
 
+    // ---- spec push queue (#318 INV-3 / R2-B1) ---------------------------
+
+    async fn spec_card_enqueue_observation(
+        &self,
+        card_id: &str,
+        envelope_id: i64,
+        text: &str,
+    ) -> Result<i64> {
+        // Persist-first: the caller (`SpecPusher::push_observation`)
+        // INSERTs here BEFORE pushing the in-memory `VecDeque` entry and
+        // BEFORE returning `Ok(PushOutcome::Enqueued)`, so a crash
+        // between the persist and the in-memory push leaves a row that
+        // boot-takeover's `spec_card_queued_observations` can rehydrate.
+        //
+        // The FK (`card_id REFERENCES cards(id) ON DELETE CASCADE`) is
+        // enforced by `PRAGMA foreign_keys = ON` (set per-connection in
+        // `SqlxRepo::open`); an INSERT against a non-existent card_id
+        // fails with `SQLITE_CONSTRAINT_FOREIGNKEY` rather than silently
+        // orphaning a row.
+        // #325 — no `enqueued_at`/wall-clock column on `spec_push_queue`:
+        // nothing reads it (FIFO is established by the AUTOINCREMENT `id`),
+        // so persisting a `now_ms()` per row was dead bytes. See the
+        // migration header for the followup story.
+        let row = sqlx::query(
+            r#"INSERT INTO spec_push_queue (card_id, envelope_id, text)
+               VALUES (?1, ?2, ?3)
+               RETURNING id"#,
+        )
+        .bind(card_id)
+        .bind(envelope_id)
+        .bind(text)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.get::<i64, _>("id"))
+    }
+
+    async fn spec_card_queued_observations(
+        &self,
+        card_id: &str,
+    ) -> Result<Vec<(i64, i64, String)>> {
+        // Ordered by id so the caller's rehydrated in-memory queue
+        // preserves the original enqueue order. The composite index
+        // `idx_spec_push_queue_card_id_id` covers this scan.
+        let rows = sqlx::query(
+            r#"SELECT id, envelope_id, text
+                 FROM spec_push_queue
+                WHERE card_id = ?1
+                ORDER BY id ASC"#,
+        )
+        .bind(card_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                (
+                    r.get::<i64, _>("id"),
+                    r.get::<i64, _>("envelope_id"),
+                    r.get::<String, _>("text"),
+                )
+            })
+            .collect())
+    }
+
+    async fn spec_card_dequeue_observations(&self, ids: &[i64]) -> Result<()> {
+        // Empty-input fast path so callers don't have to special-case
+        // "nothing drained".
+        if ids.is_empty() {
+            return Ok(());
+        }
+        // Variadic `?, ?, …` placeholder list. The queue is per-card and
+        // batch sizes are bounded by what fit into one coalesced
+        // `turn/start` (small — observations are wave events), so the
+        // dynamic SQL stays well under any `SQLITE_MAX_COMPOUND_SELECT`
+        // / parameter-count limit. A single batched DELETE keeps the
+        // flush path to one round-trip.
+        let placeholders = std::iter::repeat_n("?", ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!("DELETE FROM spec_push_queue WHERE id IN ({placeholders})");
+        let mut q = sqlx::query(&sql);
+        for id in ids {
+            q = q.bind(id);
+        }
+        let _ = q.execute(&self.pool).await?;
+        Ok(())
+    }
+
     // --------------------------------------------------------------- plugins
     async fn plugin_install(&self, p: NewPlugin) -> Result<Plugin> {
         let manifest_text = serde_json::to_string(&p.manifest)?;

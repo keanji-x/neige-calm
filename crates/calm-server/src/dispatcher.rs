@@ -247,6 +247,97 @@ impl Dispatcher {
         })
     }
 
+    /// #318 INV-3 (R2-B1) — build the [`crate::spec_appserver::QueuePersist`]
+    /// the `SpecPushHandle` uses to mirror its in-memory `VecDeque` into the
+    /// durable `spec_push_queue` table. Captures `repo` + the spec card id;
+    /// emits no events (the rows are server-private operational state, same
+    /// posture as the `watermark_sink_for` closure).
+    ///
+    /// Three closures:
+    ///   * `enqueue(envelope_id, text)` — INSERT one row, returning the
+    ///     assigned `id`. On error, log and return `None` so the in-memory
+    ///     cache still receives the entry (matching pre-fix posture).
+    ///   * `dequeue(ids)` — batch DELETE by id; empty input is a no-op,
+    ///     errors are logged.
+    ///   * `list()` — SELECT every pending row for the card in id order;
+    ///     errors are logged + an empty vec returned (boot-takeover then
+    ///     proceeds as if nothing was queued — same conservative posture as
+    ///     a `push_watermark = 0` read on a missing field).
+    ///
+    /// Installed by both production sites alongside
+    /// [`Self::watermark_sink_for`]:
+    ///   * `routes/waves.rs::spawn_push_appserver` — create-wave path,
+    ///   * `lib.rs::register_and_catch_up`        — boot-takeover path.
+    pub fn queue_persist_for(&self, spec_card_id: CardId) -> crate::spec_appserver::QueuePersist {
+        let repo_e = Arc::clone(&self.inner.repo);
+        let card_e = spec_card_id.clone();
+        let repo_d = Arc::clone(&self.inner.repo);
+        let card_d = spec_card_id.clone();
+        let repo_l = Arc::clone(&self.inner.repo);
+        let card_l = spec_card_id;
+        crate::spec_appserver::QueuePersist {
+            enqueue: Arc::new(move |envelope_id: i64, text: String| {
+                let repo = Arc::clone(&repo_e);
+                let card_id = card_e.clone();
+                Box::pin(async move {
+                    match repo
+                        .spec_card_enqueue_observation(card_id.as_str(), envelope_id, &text)
+                        .await
+                    {
+                        Ok(id) => Some(id),
+                        Err(e) => {
+                            tracing::warn!(
+                                spec_card_id = %card_id,
+                                envelope_id,
+                                error = %e,
+                                "spec push: persist enqueue failed; entry kept in-memory only \
+                                 (next-boot rehydrate will not see it)"
+                            );
+                            None
+                        }
+                    }
+                })
+            }),
+            dequeue: Arc::new(move |ids: Vec<i64>| {
+                let repo = Arc::clone(&repo_d);
+                let card_id = card_d.clone();
+                Box::pin(async move {
+                    if ids.is_empty() {
+                        return;
+                    }
+                    if let Err(e) = repo.spec_card_dequeue_observations(&ids).await {
+                        tracing::warn!(
+                            spec_card_id = %card_id,
+                            count = ids.len(),
+                            error = %e,
+                            "spec push: persist dequeue failed; rows may be redelivered on next boot \
+                             (idempotent — the spec thread's turn semantics tolerate retries)"
+                        );
+                    }
+                })
+            }),
+            list: Arc::new(move || {
+                let repo = Arc::clone(&repo_l);
+                let card_id = card_l.clone();
+                Box::pin(async move {
+                    match repo.spec_card_queued_observations(card_id.as_str()).await {
+                        Ok(rows) => rows,
+                        Err(e) => {
+                            tracing::warn!(
+                                spec_card_id = %card_id,
+                                error = %e,
+                                "spec push: persist list failed; boot-takeover proceeds with empty \
+                                 in-memory queue (any unflushed observations are stranded until a \
+                                 future repo read succeeds)"
+                            );
+                            Vec::new()
+                        }
+                    }
+                })
+            }),
+        }
+    }
+
     /// #313 problem #1 (boot takeover catch-up) — replay an already-persisted
     /// `(envelope_id, scope, event)` through the dispatcher's push path,
     /// **without** going through the broadcast bus.
