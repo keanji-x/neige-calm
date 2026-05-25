@@ -476,6 +476,31 @@ async fn register_and_catch_up(
 ) {
     let card_key: crate::ids::CardId = card_id.to_string().into();
 
+    // #315 round-4 (B1 defence-in-depth) — the SQL filter in
+    // `spec_cards_for_boot_takeover` is the primary guard against a
+    // non-spec card's payload field colliding with the takeover query
+    // (see `db/sqlite.rs::spec_cards_for_boot_takeover` for the
+    // rationale + role predicate). This `debug_assert!` re-checks the
+    // invariant against the in-memory role cache so any future query
+    // refactor that drops the role predicate (or any new takeover
+    // entry-point) fails fast in dev/test rather than silently
+    // registering the wrong handle for a wave. The cache is seeded from
+    // the persisted `cards.role` column at boot
+    // (`seed_card_role_cache`); a card that reached this fn without
+    // role = Spec means either (a) the SQL filter regressed or (b) the
+    // cache is stale (likely a bug in `card_create_with_id_tx`'s
+    // write-through). Either way, abort early in test runs — production
+    // builds elide the check.
+    debug_assert!(
+        state
+            .card_role_cache
+            .get(&card_key)
+            .is_none_or(|role| role == crate::model::CardRole::Spec),
+        "register_and_catch_up: card {card_id:?} is not CardRole::Spec; \
+         the boot-takeover query MUST scope to spec-role cards \
+         (see spec_cards_for_boot_takeover)"
+    );
+
     // B1 — install the watermark sink on the handle BEFORE the handle is
     // parked in the registry, so the very first queue flush triggered by
     // a catch-up push hitting `Enqueue` has a persister to call.

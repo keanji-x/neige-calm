@@ -1746,6 +1746,23 @@ impl RepoRead for SqlxRepo {
         // `EventCursorCache` returns for an unknown card, so a missing field
         // produces identical replay behavior (replay every event for this
         // wave, then bump).
+        //
+        // #315 round-4 (B1) — `c.role = 'spec'` is REQUIRED. Plugin and
+        // opaque card payloads can legitimately carry arbitrary keys; a
+        // non-spec card that happens to have a `codex_thread_id` key in its
+        // payload (e.g. an MCP tool result echoing a codex id, a debug
+        // marker, a plugin storing an unrelated codex handle) MUST NOT be
+        // treated as a takeover candidate. Without the role predicate,
+        // takeover would respawn an app-server for a wave it doesn't own,
+        // register the handle under the wave's slot, and start sending
+        // pushes / watermark updates against the wrong thread (and, when
+        // a real spec card also matches for the same wave, the row order
+        // would decide which handle "wins" the spec_push registry slot
+        // — non-deterministic and silent). The role column is the
+        // canonical authorization label (migration 0008); lowercase
+        // string form per `CardRole` serde (migration 0008 comment) and
+        // matches the other spec-role SQL in the codebase
+        // (`migrations/0013_cards_deletable.sql`, `migrations/0014_*`).
         let rows: Vec<(
             String,
             String,
@@ -1762,7 +1779,8 @@ impl RepoRead for SqlxRepo {
                       json_extract(c.payload, '$.push_watermark')
                FROM cards c
                JOIN waves w ON w.id = c.wave_id
-               WHERE json_extract(c.payload, '$.codex_thread_id') IS NOT NULL
+               WHERE c.role = 'spec'
+                 AND json_extract(c.payload, '$.codex_thread_id') IS NOT NULL
                  AND w.lifecycle NOT IN ('done', 'canceled', 'failed')"#,
         )
         .fetch_all(&self.pool)

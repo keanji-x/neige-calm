@@ -1355,3 +1355,122 @@ async fn terminal_set_exit_round_trip_all_branches() {
         .unwrap_err();
     assert!(matches!(err, CalmError::NotFound(_)));
 }
+
+// ---------------------------------------------------------- #315 round-4 B1 ----
+
+/// #315 round-4 (B1) regression test for
+/// `spec_cards_for_boot_takeover` — the takeover query MUST filter on
+/// `c.role = 'spec'` so a non-spec card whose payload happens to carry
+/// `codex_thread_id` (legitimate for plugin / opaque payloads) is NEVER
+/// returned as a takeover candidate.
+///
+/// Without the role predicate, takeover would respawn an app-server for
+/// a wave it doesn't own and (depending on row order) could even replace
+/// the real spec handle in the registry — silently sending pushes /
+/// watermark updates against the wrong thread.
+///
+/// This test seeds two cards in the same wave:
+///   * a real spec card (`CardRole::Spec`) with a `codex_thread_id`,
+///   * a plain (`CardRole::Plain`) card whose payload mimics the
+///     collision shape: `codex_thread_id` + `appserver_pgid` +
+///     `appserver_sock` keys (plugin/opaque cards can carry arbitrary
+///     fields; an MCP tool result echoing a codex id, a debug marker,
+///     or a plugin storing an unrelated codex handle would land here).
+///
+/// Then it calls `spec_cards_for_boot_takeover` and asserts ONLY the
+/// spec card is returned. Reverting the SQL fix (`c.role = 'spec'`)
+/// makes the test fail with both rows in the result.
+#[tokio::test]
+async fn spec_cards_for_boot_takeover_filters_to_spec_role() {
+    use calm_server::card_role_cache::CardRoleCache;
+    use calm_server::model::{CardRole, NewCard};
+
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "filter-test").await;
+    let w = make_wave(&repo, c.id.as_str(), "filter-wave").await;
+
+    let cache = CardRoleCache::new();
+
+    // (1) Real spec card with the takeover payload shape.
+    let mut tx = repo.pool().begin().await.unwrap();
+    let spec = calm_server::db::sqlite::card_create_with_id_tx(
+        &mut tx,
+        calm_server::model::new_id(),
+        NewCard {
+            wave_id: w.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({
+                "codex_thread_id": "thread-real-spec",
+                "appserver_pgid": 99_991,
+                "appserver_sock": "/tmp/calm-spec-real.sock",
+                "push_watermark": 17,
+            }),
+        },
+        CardRole::Spec,
+        false,
+        &cache,
+    )
+    .await
+    .expect("create spec card");
+    tx.commit().await.unwrap();
+
+    // (2) Non-spec (plain) card in the SAME wave whose payload mimics
+    // the collision shape — every field the takeover query reads is
+    // present and looks plausible. A plugin/opaque card could
+    // legitimately carry these keys.
+    let mut tx = repo.pool().begin().await.unwrap();
+    let plain = calm_server::db::sqlite::card_create_with_id_tx(
+        &mut tx,
+        calm_server::model::new_id(),
+        NewCard {
+            wave_id: w.id.clone(),
+            kind: "plugin-opaque".into(),
+            sort: None,
+            payload: json!({
+                "codex_thread_id": "thread-collision-bait",
+                "appserver_pgid": 12_345,
+                "appserver_sock": "/tmp/calm-not-spec.sock",
+                "push_watermark": 99,
+            }),
+        },
+        CardRole::Plain,
+        true,
+        &cache,
+    )
+    .await
+    .expect("create plain card");
+    tx.commit().await.unwrap();
+
+    // (3) Run the takeover query. Result MUST be exactly the spec card.
+    let rows = repo
+        .spec_cards_for_boot_takeover()
+        .await
+        .expect("takeover query");
+    assert_eq!(
+        rows.len(),
+        1,
+        "spec_cards_for_boot_takeover must return ONLY spec-role cards; \
+         got {} rows: {:?} \
+         (the plain card with a colliding `codex_thread_id` key MUST be filtered out — \
+         see B1 in #315 round-4: without `c.role = 'spec'` the takeover would respawn \
+         an app-server for a wave it doesn't own and could replace the real spec handle)",
+        rows.len(),
+        rows,
+    );
+    let (card_id, wave_id, thread_id, pgid, sock, watermark) = &rows[0];
+    assert_eq!(card_id.as_str(), spec.id.as_str());
+    assert_eq!(wave_id.as_str(), w.id.as_str());
+    assert_eq!(thread_id, "thread-real-spec");
+    assert_eq!(*pgid, Some(99_991));
+    assert_eq!(sock.as_deref(), Some("/tmp/calm-spec-real.sock"));
+    assert_eq!(*watermark, 17);
+
+    // Sanity: the plain card still exists in the DB — the filter is on
+    // the read, not a destructive op.
+    let got_plain = repo.card_get(plain.id.as_str()).await.unwrap();
+    assert!(
+        got_plain.is_some(),
+        "plain card must still exist; takeover query is read-only"
+    );
+}

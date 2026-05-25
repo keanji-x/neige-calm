@@ -997,7 +997,9 @@ impl Inner {
                         max_envelope_id,
                         error = %e,
                         "dispatcher push: persist push_watermark failed AFTER successful delivery; \
-                         in-memory cache still bumped, next boot may re-push this envelope (idempotent)",
+                         in-memory cache still bumped, next boot may re-push this envelope \
+                         (spec thread may see this observation twice on a re-push — codex does \
+                         not dedup re-pushed observations)",
                     );
                 }
                 // Keep the in-memory cache in sync with the durable

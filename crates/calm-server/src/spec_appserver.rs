@@ -1144,6 +1144,19 @@ pub async fn socket_owned_by_appserver(sock: &Path) -> bool {
                     // ownership. Default to skipping the kill — safety
                     // over reaping a leaked group (the respawn path can
                     // retry, but reviving a SIGKILLed user process can't).
+                    //
+                    // #315 round-4 (N3) — the conservative-skip-kill on
+                    // unrecognized errors trades a worst-case "stale
+                    // socket file leaks forever" (no listener, but we
+                    // also don't clean up its dirent on every boot) for
+                    // the worst-case "we SIGTERM/SIGKILL an unrelated
+                    // process group whose pid was recycled into our
+                    // persisted pgid slot post-reboot". The leak is
+                    // benign — the next boot's takeover sees the same
+                    // probe outcome and respawn still works (bind(2)
+                    // succeeds on the path once the OS frees it via
+                    // socket-file unlink in `cleanup_sock_dir`); nuking
+                    // an unrelated process group is unrecoverable.
                     tracing::warn!(
                         sock = %sock.display(),
                         error = %e,
@@ -1556,9 +1569,12 @@ async fn flush_push_queue(
     // #313 B1 — flush succeeded. Persist the durable watermark via the
     // dispatcher-installed sink so a kernel crash AFTER this point doesn't
     // cause boot catch-up to redeliver items codex already accepted. The
-    // sink is `None` only in test paths that don't exercise persistence
-    // (the production dispatcher always installs one in
-    // `register_handle_with_sink` before the first push can land).
+    // sink is `None` only in test paths that don't exercise persistence.
+    // The two production install sites are:
+    //   * `routes/waves.rs::spawn_push_appserver` — for create-wave path,
+    //   * `lib.rs::register_and_catch_up`        — for boot-takeover path.
+    // Both install BEFORE the handle is reachable by any push, so by the
+    // time a flush runs the sink slot is always populated in production.
     let sink = watermark_sink.lock().await.clone();
     if let Some(sink) = sink {
         sink(max_envelope_id).await;
