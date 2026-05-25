@@ -169,6 +169,38 @@ const TURN_STARTED_BUDGET: Duration = Duration::from_secs(30);
 /// being a hard ceiling a sick model can't blow past.
 const OVERALL_BOOT_BUDGET: Duration = Duration::from_secs(45);
 
+/// #318 INV-4 (codex P1 follow-up) — how long [`build_handle_after_spawn_resume`]
+/// waits for a lifecycle notification (`turn/started` or `turn/completed`)
+/// to arrive on a `thread/resume`-d connection before assuming the server
+/// is idle and promoting [`SpecPushPhase::Resumed`] → [`SpecPushPhase::TurnCompleted`].
+///
+/// Why a timer is needed: `thread/resume` does NOT replay prior-boot
+/// lifecycle notifications. If the server was *idle* between turns when
+/// the kernel crashed, NO `turn/started` and NO `turn/completed` will
+/// ever arrive on the resumed stream, so the consumer task's
+/// `turn/completed`-triggered [`flush_push_queue`] will never run, and a
+/// catch-up observation enqueued under `decide(Resumed) == Enqueue` would
+/// be stuck in the in-memory queue indefinitely (until some unrelated
+/// future external turn completes).
+///
+/// The timer is the synthetic "the server is idle, go ahead and flush"
+/// reconcile we'd otherwise get from a `thread/status` probe (no such
+/// codex JSON-RPC exists). 5 s is generous for a healthy mid-turn server
+/// to emit its in-flight turn's `turn/completed` if it's about to land,
+/// while still being short enough that the user-visible delay for a
+/// boot-takeover catch-up push on a truly-idle thread is bounded.
+///
+/// **Trade-off**: if a prior-boot turn is genuinely mid-flight and
+/// running longer than this budget, the timer fires first and the
+/// resulting `turn/start` would be silently dropped by codex (the very
+/// hazard `Resumed` was meant to prevent). Accepted as the lesser of
+/// two evils: the alternative (no timer) loses the observation 100% of
+/// the time on idle resumes; the timer loses it only on the rare
+/// "mid-long-turn at crash" intersection. A future codex `thread/status`
+/// API (or an idle-detect heuristic over the notification stream) would
+/// remove this trade-off.
+const RESUMED_RECONCILE_BUDGET: Duration = Duration::from_secs(5);
+
 /// Last-seen thread/turn lifecycle status the consumer task tracks for
 /// PR3b to read. PR3a only *records* it; the dispatcher push path (PR3b)
 /// will consult it to decide between `turn/start` / `turn/steer` /
@@ -224,6 +256,18 @@ pub enum SpecPushPhase {
     TurnRunning,
     /// The last lifecycle signal was `turn/completed`.
     TurnCompleted,
+    /// #318 INV-4 (R2-B2) — the connection was `thread/resume`-d during a
+    /// boot takeover and no lifecycle notification has yet arrived to
+    /// reconcile it. `thread/resume` does **not** tell us whether a turn
+    /// is mid-flight on the server, so we must NOT treat the thread as
+    /// between turns: issuing a `turn/start` here while codex is still
+    /// running the prior boot's turn would be silently dropped (verified;
+    /// see [`decide`] / [`PushAction::Enqueue`]). The first `turn/started`
+    /// reconciles us to `TurnRunning`; the first `turn/completed`
+    /// reconciles us to `TurnCompleted` (at which point the consumer
+    /// task's [`flush_push_queue`] will drain anything that piled up in
+    /// the meantime).
+    Resumed,
 }
 
 /// What [`SpecPushHandle::push_observation`] should do with a single
@@ -312,6 +356,18 @@ pub fn decide(phase: SpecPushPhase) -> PushAction {
         // silently dropped (verified) / would lose the single-winner race,
         // so buffer and let the winner / next `turn/completed` flush it.
         SpecPushPhase::TurnRunning | SpecPushPhase::Issuing => PushAction::Enqueue,
+        // #318 INV-4 (R2-B2) — `thread/resume` does NOT prove the server is
+        // between turns; a prior-boot turn could still be running on the
+        // resumed thread. Issuing a `turn/start` now would be silently
+        // dropped by codex (the same B1-style hazard), losing the catch-up
+        // observation. Enqueue and let the consumer task's
+        // `flush_push_queue` issue once the next `turn/completed` proves
+        // we are between turns. If instead the server is already between
+        // turns, the first push's `turn/started` reconciles `Resumed` →
+        // `TurnRunning`, and the matching `turn/completed` flips us to
+        // `TurnCompleted` and flushes — same delivery, one extra
+        // notification round-trip.
+        SpecPushPhase::Resumed => PushAction::Enqueue,
     }
 }
 
@@ -412,6 +468,18 @@ pub struct SpecPushHandle {
     /// approval-shape warning + PR3b push-queue flush on `turn/completed`).
     /// Aborted on drop.
     consumer: JoinHandle<()>,
+    /// #318 INV-4 (codex P1 follow-up) — optional reconcile task spawned
+    /// only by the [`build_handle_after_spawn_resume`] path. After
+    /// [`RESUMED_RECONCILE_BUDGET`] it atomically promotes
+    /// [`SpecPushPhase::Resumed`] → [`SpecPushPhase::TurnCompleted`] (only
+    /// if still `Resumed` — a real lifecycle notification reconciling the
+    /// phase aborts the promotion via the CAS) and runs one
+    /// [`flush_push_queue`] so an idle-resume case (no lifecycle
+    /// notifications ever arrive) doesn't strand a catch-up observation in
+    /// the in-memory queue forever. `None` on the spawn path (which seeds
+    /// `Idle` via `turn/started`'s normal reconciliation). Aborted on
+    /// drop alongside `consumer`.
+    resume_reconciler: Option<JoinHandle<()>>,
     /// Shared status the consumer task writes; PR3b reads it.
     status: SharedStatus,
     /// PR3b push queue. Observations buffered by
@@ -653,6 +721,11 @@ impl Drop for SpecPushHandle {
         // required.) The `CodexAppServer` reader task aborts on its own
         // drop.
         self.consumer.abort();
+        // #318 INV-4 — abort the resume reconciler timer too if present,
+        // so it doesn't outlive the handle on early-drop / replacement.
+        if let Some(t) = self.resume_reconciler.take() {
+            t.abort();
+        }
     }
 }
 
@@ -1279,25 +1352,100 @@ async fn build_handle_after_spawn_resume(
     }
     tracing::info!(thread_id = %thread_id, "spec push (resume): thread resumed");
 
-    // Seed the consumer-tracked status with the resumed thread id. Phase
-    // stays `Idle` until the notification stream tells us otherwise — the
-    // next observation will start a turn if no turn is in flight; if one
-    // is, the server's `turn/started`/`turn/completed` will reconcile the
-    // phase before any push tries to issue.
+    // #318 INV-4 (R2-B2) — seed the consumer-tracked phase as `Resumed`,
+    // NOT `Idle`. `thread/resume` does not prove the server is between
+    // turns: a prior-boot turn could still be running on the resumed
+    // thread. `decide(Resumed) == Enqueue` so a catch-up push buffers
+    // instead of firing a (silently-dropped) `turn/start` mid-turn; the
+    // server's first `turn/started` / `turn/completed` then reconciles
+    // the phase (via `record()`) before any issue actually runs.
     let status: SharedStatus = Arc::new(Mutex::new(SpecPushStatus {
+        phase: SpecPushPhase::Resumed,
         last_thread_id: Some(thread_id.to_string()),
-        ..Default::default()
+        last_turn_id: None,
     }));
 
-    Ok(park_handle(
+    let mut handle = park_handle(
         child,
         pgid,
-        client,
+        client.clone(),
         thread_id.to_string(),
         sock,
         notifs,
+        status.clone(),
+    );
+
+    // #318 INV-4 (codex P1) — spawn the idle-resume reconcile timer. See
+    // [`RESUMED_RECONCILE_BUDGET`] for the full rationale. The timer
+    // CAS-promotes `Resumed → TurnCompleted` only if a real lifecycle
+    // notification has NOT already moved the phase (via `record()`); if it
+    // has, the timer no-ops. After a successful promotion it invokes
+    // [`flush_push_queue`] once so any catch-up observations the
+    // dispatcher enqueued under `decide(Resumed) == Enqueue` get issued
+    // as a coalesced `turn/start` instead of being stranded forever on a
+    // truly-idle resumed thread (the case where neither `turn/started`
+    // nor `turn/completed` will EVER arrive).
+    let reconciler = tokio::spawn(resume_reconcile_task(
+        RESUMED_RECONCILE_BUDGET,
+        thread_id.to_string(),
         status,
-    ))
+        client,
+        handle.queue.clone(),
+        handle.watermark_sink.clone(),
+    ));
+    handle.resume_reconciler = Some(reconciler);
+
+    Ok(handle)
+}
+
+/// #318 INV-4 (codex P1) — the idle-resume reconcile timer body, extracted
+/// so unit tests can drive it under `tokio::time::pause()` /
+/// `tokio::time::advance` without standing up a real codex app-server.
+///
+/// Sleep `budget`, then under ONE [`SharedStatus`] lock acquisition CAS
+/// [`SpecPushPhase::Resumed`] → [`SpecPushPhase::TurnCompleted`] iff still
+/// `Resumed` — a concurrent `record()` driven by a real
+/// `turn/started`/`turn/completed` notification arriving during the budget
+/// wins the race and the timer no-ops. On a successful promotion the timer
+/// invokes [`flush_push_queue`] once so any catch-up observation enqueued
+/// under `decide(Resumed) == Enqueue` rides a coalesced `turn/start`
+/// instead of being stranded indefinitely on a truly-idle resumed thread.
+async fn resume_reconcile_task(
+    budget: Duration,
+    thread_id: String,
+    status: SharedStatus,
+    client: Arc<CodexAppServer>,
+    queue: PushQueue,
+    watermark_sink: WatermarkSinkSlot,
+) {
+    tokio::time::sleep(budget).await;
+    // CAS under the status lock: only promote if still Resumed. A real
+    // `turn/started`/`turn/completed` via `record()` would have already
+    // moved the phase to `TurnRunning`/`TurnCompleted` — in which case
+    // the consumer task already owns the lifecycle, do nothing.
+    let promoted = {
+        let mut g = status.lock().await;
+        if g.phase == SpecPushPhase::Resumed {
+            g.phase = SpecPushPhase::TurnCompleted;
+            true
+        } else {
+            false
+        }
+    };
+    if !promoted {
+        tracing::debug!(
+            thread_id,
+            "spec push (resume reconcile): phase already reconciled by lifecycle notification; no-op"
+        );
+        return;
+    }
+    tracing::info!(
+        thread_id,
+        budget_secs = budget.as_secs(),
+        "spec push (resume reconcile): no lifecycle notification within budget; \
+         promoting Resumed -> TurnCompleted and flushing queued observations"
+    );
+    flush_push_queue(&thread_id, &status, &client, &queue, &watermark_sink).await;
 }
 
 /// Shared tail of both build paths (spawn + resume): spawn the consumer
@@ -1336,6 +1484,10 @@ fn park_handle(
         thread_id,
         sock: sock.to_path_buf(),
         consumer,
+        // Populated only by `build_handle_after_spawn_resume` (post-park).
+        // The spawn path seeds `Idle` and reconciles via the normal
+        // `turn/started`/`turn/completed` lifecycle, so it needs no timer.
+        resume_reconciler: None,
         status,
         queue,
         watermark_sink,
@@ -1494,6 +1646,21 @@ async fn flush_push_queue(
                 tracing::debug!(
                     thread_id,
                     "spec push: flush no-op — another issuer owns this cycle"
+                );
+                return;
+            }
+            SpecPushPhase::Resumed => {
+                // #318 INV-4 (R2-B2) — defensive: this branch is only
+                // reachable if `flush_push_queue` runs before any
+                // lifecycle notification has arrived (the consumer task
+                // only invokes flush on `TurnCompleted`, which itself
+                // reconciles phase → `TurnCompleted` via `record()` first,
+                // so in practice we won't see `Resumed` here). Stay
+                // conservative: don't issue while the resume state is
+                // unproven.
+                tracing::debug!(
+                    thread_id,
+                    "spec push: flush no-op — phase is Resumed (waiting for lifecycle signal)"
                 );
                 return;
             }
@@ -1693,6 +1860,7 @@ mod tests {
             thread_id: "thread-test".into(),
             sock: PathBuf::from("/tmp/test/app.sock"),
             consumer,
+            resume_reconciler: None,
             status,
             queue,
             watermark_sink,
@@ -1784,6 +1952,12 @@ mod tests {
         // B1: a caller observing `Issuing` must enqueue, never issue a second
         // (silently-dropped) turn/start.
         assert_eq!(decide(SpecPushPhase::Issuing), PushAction::Enqueue);
+        // #318 INV-4 (R2-B2): a caller observing `Resumed` (boot-takeover
+        // path right after `thread/resume`, before any lifecycle
+        // notification has reconciled the phase) must enqueue — the
+        // server may still be running the prior boot's turn and a
+        // `turn/start` would be silently dropped.
+        assert_eq!(decide(SpecPushPhase::Resumed), PushAction::Enqueue);
     }
 
     /// `push_observation` on an idle handle issues a `turn/start` the fake
@@ -2521,5 +2695,196 @@ mod tests {
              (the per-card path is UUID-scoped; a live listener is almost certainly ours)"
         );
         let _ = tokio::time::timeout(Duration::from_secs(1), accept_task).await;
+    }
+
+    /// #318 INV-4 (codex P1) — sanity on the budget constant: short enough
+    /// that the boot-takeover catch-up delay is bounded, long enough that
+    /// a healthy mid-turn server's in-flight `turn/completed` can land
+    /// before we falsely promote and (potentially) silent-drop a flush.
+    #[test]
+    fn resumed_reconcile_budget_sane() {
+        assert!(RESUMED_RECONCILE_BUDGET >= Duration::from_secs(1));
+        assert!(RESUMED_RECONCILE_BUDGET <= Duration::from_secs(30));
+        assert_eq!(RESUMED_RECONCILE_BUDGET, Duration::from_secs(5));
+    }
+
+    /// #318 INV-4 (codex P1) — idle-resume case: the reconcile timer fires
+    /// (no `turn/started`/`turn/completed` ever arrives on the resumed
+    /// stream because the prior boot's turn already completed before
+    /// kernel crash), promotes `Resumed` -> `TurnCompleted`, and flushes a
+    /// queued catch-up observation as a coalesced `turn/start`.
+    ///
+    /// Without this timer (pre-fix), the observation sits in the in-memory
+    /// queue forever — codex never sends `turn/completed` on a truly-idle
+    /// thread, so the consumer task's `flush_push_queue` never fires.
+    ///
+    /// Drives time with `tokio::time::pause()` / `advance` so the test is
+    /// fully deterministic and doesn't depend on the wall-clock 5s budget.
+    #[tokio::test(start_paused = true)]
+    async fn resume_reconcile_flushes_queue_on_idle_resume() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let (handle, mut server) = fake_handle().await;
+        // Seed the post-`thread/resume` state: phase = Resumed, with a
+        // catch-up observation already buffered (the dispatcher's
+        // `decide(Resumed) == Enqueue` placed it here, awaiting a
+        // lifecycle signal that, in the idle-resume case, never arrives).
+        {
+            let mut g = handle.status.lock().await;
+            g.phase = SpecPushPhase::Resumed;
+            handle.queue.lock().await.push_back(QueuedObservation {
+                envelope_id: 7,
+                text: "catch-up obs".to_string(),
+            });
+        }
+
+        // Spawn the reconciler the way `build_handle_after_spawn_resume`
+        // does (via the extracted helper), with a tiny test budget so the
+        // assertions about timing are explicit.
+        let budget = Duration::from_secs(5);
+        let reconciler = tokio::spawn(resume_reconcile_task(
+            budget,
+            handle.thread_id.clone(),
+            handle.status.clone(),
+            handle.client.clone(),
+            handle.queue.clone(),
+            handle.watermark_sink.clone(),
+        ));
+
+        // Before the budget elapses, NOTHING should happen — phase is
+        // still Resumed and the queue is untouched. Advance just shy of
+        // the budget and confirm.
+        tokio::time::advance(budget - Duration::from_millis(50)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(handle.status.lock().await.phase, SpecPushPhase::Resumed);
+        assert_eq!(handle.queue.lock().await.len(), 1);
+
+        // Advance past the budget — the timer fires, CAS-promotes to
+        // TurnCompleted, then `flush_push_queue` claims `Issuing` and
+        // issues a `turn/start` carrying the queued observation. Read it
+        // off the wire to prove the flush actually happened.
+        tokio::time::advance(Duration::from_millis(200)).await;
+
+        // The flush will issue `turn/start` and await its response.
+        // Resume real wall-clock so the WS round-trip doesn't deadlock on
+        // paused time waiting for a frame that arrives via the IO runtime.
+        tokio::time::resume();
+
+        let req = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match server.next().await.expect("frame").expect("ws ok") {
+                    Message::Text(t) => {
+                        let v: Value = serde_json::from_str(&t).unwrap();
+                        if v.get("method").and_then(Value::as_str) == Some("turn/start") {
+                            break v;
+                        }
+                    }
+                    _ => continue,
+                }
+            }
+        })
+        .await
+        .expect("reconcile flush must issue a turn/start within budget");
+
+        let input_text = req
+            .pointer("/params/input/0/text")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert_eq!(
+            input_text, "catch-up obs",
+            "reconcile flush must deliver the queued catch-up observation"
+        );
+
+        // Answer the turn/start so the flush's await resolves cleanly and
+        // the reconciler task completes (otherwise its outstanding request
+        // would dangle on the fake server's WS pair).
+        let id = req.get("id").cloned().unwrap();
+        server
+            .send(Message::Text(
+                serde_json::to_string(&serde_json::json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "result": { "turn": { "id": "t-reconcile-1" } }
+                }))
+                .unwrap(),
+            ))
+            .await
+            .unwrap();
+
+        reconciler
+            .await
+            .expect("reconcile task must complete after issuing the flush");
+
+        // Post-conditions: queue drained, phase rolled forward off Resumed.
+        assert!(handle.queue.lock().await.is_empty());
+        let phase = handle.status.lock().await.phase;
+        // After a successful turn/start, phase is `Issuing` (waiting on
+        // server's `turn/started` to reconcile to `TurnRunning`). The key
+        // invariant: it is NO LONGER `Resumed`, so a later push will not
+        // route to `Enqueue` again for the wrong reason.
+        assert_ne!(
+            phase,
+            SpecPushPhase::Resumed,
+            "phase must advance past Resumed after the reconcile flush"
+        );
+        let _server = server;
+    }
+
+    /// #318 INV-4 (codex P1) — race-window: if a real `turn/started` (or
+    /// `turn/completed`) lands DURING the reconcile budget, the consumer
+    /// task's `record()` advances the phase off `Resumed` and the timer's
+    /// CAS must NO-OP (no spurious `turn/start` issued). This guards the
+    /// "mid-turn resume that emits its `turn/completed` within budget"
+    /// case — we must not double-issue when the natural lifecycle is
+    /// about to drive the flush itself.
+    #[tokio::test(start_paused = true)]
+    async fn resume_reconcile_no_ops_when_notification_arrives_first() {
+        let (handle, server) = fake_handle().await;
+        {
+            let mut g = handle.status.lock().await;
+            g.phase = SpecPushPhase::Resumed;
+            // Queue intentionally empty — this test only asserts the CAS
+            // no-op behavior, not the flush body.
+        }
+
+        let budget = Duration::from_secs(5);
+        let reconciler = tokio::spawn(resume_reconcile_task(
+            budget,
+            handle.thread_id.clone(),
+            handle.status.clone(),
+            handle.client.clone(),
+            handle.queue.clone(),
+            handle.watermark_sink.clone(),
+        ));
+
+        // Within the budget, simulate the consumer task seeing a real
+        // `turn/started` -> `record()` flips phase to TurnRunning.
+        tokio::time::advance(Duration::from_secs(1)).await;
+        record(
+            &handle.status,
+            &Notification::TurnStarted {
+                thread_id: handle.thread_id.clone(),
+                turn: serde_json::json!({ "id": "u-resume-1" }),
+            },
+        )
+        .await;
+        assert_eq!(handle.status.lock().await.phase, SpecPushPhase::TurnRunning);
+
+        // Now advance past the budget. The timer fires, observes
+        // `phase != Resumed`, and no-ops (does NOT issue a flush).
+        tokio::time::advance(budget).await;
+        reconciler
+            .await
+            .expect("reconcile task must complete (no-op branch)");
+
+        // Phase must still be TurnRunning — the timer did not clobber it
+        // back to TurnCompleted (which would be a correctness bug: a turn
+        // really IS running on the server).
+        assert_eq!(
+            handle.status.lock().await.phase,
+            SpecPushPhase::TurnRunning,
+            "reconcile timer must not overwrite a real lifecycle-driven phase"
+        );
+        let _server = server;
     }
 }
