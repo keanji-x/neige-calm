@@ -645,6 +645,35 @@ async fn register_and_catch_up(
          queued-then-flushed envelopes would silently fail to persist their watermark"
     );
 
+    // #318 INV-3 (R2-B1) — install the durable queue-persist callbacks
+    // alongside the watermark sink, then rehydrate the in-memory queue
+    // from any rows a prior process enqueued but didn't flush. Both steps
+    // happen BEFORE the handle is parked in the registry below (under the
+    // per-wave push lock) so the very first catch-up push has both the
+    // persist path AND the rehydrated cache available.
+    //
+    // Sister install: `routes/waves.rs::spawn_push_appserver` (create-wave
+    // path). INV-6 demands the two paths run the same init hook —
+    // installing here keeps boot-takeover symmetric with create-wave.
+    let persist = state.dispatcher.queue_persist_for(card_key.clone());
+    handle.install_queue_persist(persist).await;
+    debug_assert!(
+        handle.has_queue_persist().await,
+        "register_and_catch_up: install_queue_persist did not take effect — \
+         enqueued-but-not-yet-flushed observations would not survive the \
+         next process restart, silently reintroducing the INV-3 (#318) regression"
+    );
+    let rehydrated = handle.rehydrate_queue_from_persist().await;
+    if rehydrated > 0 {
+        tracing::info!(
+            card_id,
+            wave_id = %wave_id,
+            count = rehydrated,
+            "takeover: rehydrated spec push queue from durable rows; \
+             items will deliver on the next turn/completed flush",
+        );
+    }
+
     // B3 — hold the per-wave push lock for the WHOLE
     // `seed → insert → events_since → catch-up replay` sequence so any
     // live event landing on the bus during this window serializes behind

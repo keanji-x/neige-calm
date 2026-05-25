@@ -388,16 +388,87 @@ type SharedStatus = Arc<Mutex<SpecPushStatus>>;
 /// just-delivered items. Without per-item ids the watermark would either
 /// (a) advance prematurely on enqueue and lose data on crash-before-flush,
 /// or (b) never advance for queued-then-flushed items.
+///
+/// #318 INV-3 (R2-B1) — the in-memory `VecDeque` is now a CACHE in front
+/// of a durable `spec_push_queue` table. Every `QueuedObservation` whose
+/// enqueue went through a [`QueuePersistSlot`]-installed handle also
+/// carries the persisted `db_id`, so the flush path can DELETE the right
+/// rows after a successful `turn/start`. A kernel crash between persist
+/// and the flush leaves the rows; boot-takeover's
+/// [`SpecPushHandle::rehydrate_queue_from_persist`] rebuilds the
+/// `VecDeque` from the table before catch-up replay starts. Test paths
+/// without a persist slot still use the in-memory cache alone (entries
+/// have `db_id = None`).
 type PushQueue = Arc<Mutex<VecDeque<QueuedObservation>>>;
 
 /// One queued observation: the envelope id (so the flush path can report
 /// the max delivered id to the dispatcher) plus the rendered text codex
-/// will receive.
+/// will receive, plus — when a [`QueuePersistSlot`] is installed on the
+/// handle — the `spec_push_queue.id` row id assigned at persist-time so
+/// the flush path can dequeue it from the durable store after a
+/// successful `turn/start` (#318 INV-3).
 #[derive(Debug, Clone)]
 struct QueuedObservation {
     envelope_id: i64,
     text: String,
+    /// `Some(row_id)` when the entry was persisted via the
+    /// [`QueuePersist::enqueue`] callback; `None` for entries that only
+    /// live in the in-memory cache (test paths that skip the slot, or
+    /// the brief window after a `turn/start` error re-buffers a drained
+    /// batch — those rows remain in the durable store under their
+    /// original ids so the requeue is purely the in-memory side).
+    db_id: Option<i64>,
 }
+
+/// #318 INV-3 — closure surface the dispatcher installs on a
+/// [`SpecPushHandle`] so the queue paths can persist + dequeue
+/// observations through the durable `spec_push_queue` table without
+/// importing `crate::Repo` into this module. Mirrors the
+/// [`WatermarkSink`] callback pattern: the install site
+/// (`routes/waves.rs::spawn_push_appserver` for create-wave,
+/// `lib.rs::register_and_catch_up` for boot-takeover) captures `repo` +
+/// `card_id` at handle-construction time and builds the closures.
+///
+/// Three operations:
+///   * `enqueue(envelope_id, text) -> Option<i64>` — persist one row,
+///     return the assigned `spec_push_queue.id`. `None` on a repo
+///     error (logged at the install site / inside the closure) so the
+///     in-memory cache still receives the entry — at worst, the next
+///     boot has nothing extra to rehydrate, matching today's
+///     in-memory-only baseline.
+///   * `dequeue(ids)` — batch-delete the rows for a successful flush;
+///     no-op on empty input.
+///   * `list()` — read every pending row for the handle's card id, used
+///     once by [`SpecPushHandle::rehydrate_queue_from_persist`].
+pub struct QueuePersist {
+    pub enqueue: QueuePersistEnqueueFn,
+    pub dequeue: QueuePersistDequeueFn,
+    pub list: QueuePersistListFn,
+}
+
+/// One-row INSERT into the durable `spec_push_queue`. `Some(row_id)` on
+/// success, `None` on a repo error (the install-site closure logs + maps
+/// the error to `None`, so the in-memory cache still receives the entry).
+pub type QueuePersistEnqueueFn =
+    Arc<dyn Fn(i64, String) -> futures_util::future::BoxFuture<'static, Option<i64>> + Send + Sync>;
+
+/// Batch DELETE by row id. Empty input is a no-op at the closure layer.
+pub type QueuePersistDequeueFn =
+    Arc<dyn Fn(Vec<i64>) -> futures_util::future::BoxFuture<'static, ()> + Send + Sync>;
+
+/// SELECT every pending row for this handle's card id, as
+/// `(row_id, envelope_id, text)` in id-ASC order — the same order the
+/// in-memory `VecDeque` was filled in.
+pub type QueuePersistListFn = Arc<
+    dyn Fn() -> futures_util::future::BoxFuture<'static, Vec<(i64, i64, String)>> + Send + Sync,
+>;
+
+/// `Arc<Mutex<Option<QueuePersist>>>` so the handle can construct itself
+/// without a persist slot (the boot/create paths don't have the repo
+/// handle in scope at construction time) and the dispatcher installs it
+/// later via [`SpecPushHandle::install_queue_persist`]. `None` is the
+/// test-path posture, matching [`WatermarkSinkSlot`].
+type QueuePersistSlot = Arc<Mutex<Option<Arc<QueuePersist>>>>;
 
 /// Callback the dispatcher installs on a [`SpecPushHandle`] so the
 /// queue-flush path (which runs from the consumer task on `turn/completed`)
@@ -498,6 +569,16 @@ pub struct SpecPushHandle {
     /// the brief window before it lands and in tests that don't exercise
     /// the persistence path.
     watermark_sink: WatermarkSinkSlot,
+    /// #318 INV-3 (R2-B1) — durable enqueue/dequeue callbacks installed
+    /// alongside the watermark sink. When `Some`, every `Enqueue`-arm
+    /// observation is persisted to `spec_push_queue` BEFORE the
+    /// in-memory `push_back` (so a crash between persist and the next
+    /// flush leaves the row for boot-takeover to rehydrate). `None` on
+    /// the brief window before install + in test paths that skip it.
+    ///
+    /// Installed via [`install_queue_persist`](Self::install_queue_persist)
+    /// at the same sites that install the watermark sink.
+    queue_persist: QueuePersistSlot,
 }
 
 /// PR3b — a cheaply-cloneable handle onto just the parts of a
@@ -517,6 +598,13 @@ pub struct SpecPusher {
     /// itself stays self-contained alongside its persistence callback.
     #[allow(dead_code)]
     watermark_sink: WatermarkSinkSlot,
+    /// #318 INV-3 — shared with the parent handle. The `Enqueue` arm of
+    /// [`push_observation`](Self::push_observation) reads this and
+    /// (when populated) persists to `spec_push_queue` before the
+    /// in-memory `push_back`. The `StartTurnNow` winner's drain reads
+    /// it to dequeue persisted ids after a successful coalesced
+    /// `turn/start`.
+    queue_persist: QueuePersistSlot,
 }
 
 impl SpecPusher {
@@ -576,6 +664,29 @@ impl SpecPusher {
             action
         };
 
+        // #318 INV-3 — persist-first. The durable `spec_push_queue` row goes
+        // in BEFORE we either issue or enqueue, so a crash anywhere between
+        // here and (a) `turn/start` success / (b) consumer-task flush success
+        // leaves a recoverable row that boot-takeover's
+        // `rehydrate_queue_from_persist` will surface to the next process.
+        //
+        // The `Enqueue` arm's contract — `Ok(Enqueued)` is the system's
+        // promise that the observation will be delivered — is the load-
+        // bearing case (the dispatcher cooperatively withholds the
+        // `push_watermark` on `Enqueued`, PR #315 PR4 B1, so the events-log
+        // replay is a safety net; INV-3 says the queue must also hold its
+        // own durability rather than transitively borrow that net).
+        //
+        // The `StartTurnNow` arm persists too so a `turn/start` failure that
+        // re-buffers the just-issued observation has the same recovery
+        // guarantee as the items that were already in the queue.
+        //
+        // `None` from `persist_one` is the no-slot case (test paths that
+        // skip the install + the brief window before the dispatcher
+        // installs the slot in production); the in-memory cache still
+        // receives the entry, matching pre-fix posture.
+        let db_id = self.persist_one(envelope_id, text).await;
+
         match action {
             PushAction::StartTurnNow => {
                 // We are the single winner. Drain the whole queue and append
@@ -590,6 +701,7 @@ impl SpecPusher {
                 items.push(QueuedObservation {
                     envelope_id,
                     text: text.to_string(),
+                    db_id,
                 });
                 // #313 B1: durable watermark must advance to the MAX
                 // envelope id we are about to deliver, not just the
@@ -621,7 +733,9 @@ impl SpecPusher {
                 {
                     // Roll the `Issuing` claim back and re-buffer the drained
                     // items (front, order preserved) so a later
-                    // `turn/completed` flush retries them.
+                    // `turn/completed` flush retries them. The persisted
+                    // rows stay — `flush_push_queue` (or the next boot's
+                    // rehydrate) will deliver and then dequeue them.
                     {
                         let mut q = self.queue.lock().await;
                         for obs in items.into_iter().rev() {
@@ -634,21 +748,60 @@ impl SpecPusher {
                     }
                     return Err(e);
                 }
+                // #318 INV-3 — `turn/start` succeeded; dequeue every
+                // persisted row in this coalesced batch. Anything without
+                // a `db_id` (test paths / no-slot windows) is naturally
+                // skipped by `dequeue_many`.
+                self.dequeue_many(items.iter().filter_map(|o| o.db_id).collect())
+                    .await;
                 Ok(PushOutcome::Issued { max_envelope_id })
             }
             PushAction::Enqueue => {
                 self.queue.lock().await.push_back(QueuedObservation {
                     envelope_id,
                     text: text.to_string(),
+                    db_id,
                 });
                 tracing::debug!(
                     thread_id = %self.thread_id,
                     envelope_id,
+                    db_id,
                     "spec push: turn active / being issued — enqueued observation for flush"
                 );
                 Ok(PushOutcome::Enqueued)
             }
         }
+    }
+
+    /// #318 INV-3 — small wrapper around the [`QueuePersist::enqueue`] slot
+    /// so the call sites (`push_observation`'s two arms, and the consumer
+    /// task's never-reached "fresh enqueue" path) read as one line. Returns
+    /// `Some(row_id)` on success and `None` either when no slot is
+    /// installed (test paths / pre-install window) or when the persist
+    /// callback itself returned `None` (the install-site closure swallowed
+    /// the repo error). A `None` here means "this entry is in-memory only";
+    /// the in-memory cache still receives it (matching pre-fix posture),
+    /// at worst leaving the next boot with nothing extra to rehydrate.
+    async fn persist_one(&self, envelope_id: i64, text: &str) -> Option<i64> {
+        let persist = self.queue_persist.lock().await.clone()?;
+        (persist.enqueue)(envelope_id, text.to_string()).await
+    }
+
+    /// #318 INV-3 — batch counterpart of [`persist_one`] for the dequeue
+    /// side. Empty input is a no-op; missing slot is a no-op (and a
+    /// `debug_assert!` would fire in production install paths since the
+    /// dispatcher installs both watermark + persist atomically — but we
+    /// don't assert here because the test fakes legitimately skip the
+    /// slot).
+    async fn dequeue_many(&self, ids: Vec<i64>) {
+        if ids.is_empty() {
+            return;
+        }
+        let persist = match self.queue_persist.lock().await.clone() {
+            Some(p) => p,
+            None => return,
+        };
+        (persist.dequeue)(ids).await;
     }
 }
 
@@ -669,6 +822,7 @@ impl SpecPushHandle {
             status: self.status.clone(),
             queue: self.queue.clone(),
             watermark_sink: self.watermark_sink.clone(),
+            queue_persist: self.queue_persist.clone(),
         }
     }
 
@@ -702,6 +856,64 @@ impl SpecPushHandle {
     /// silently no-ops on flush (the bug the assertion guards against).
     pub async fn has_watermark_sink(&self) -> bool {
         self.watermark_sink.lock().await.is_some()
+    }
+
+    /// #318 INV-3 — install the durable enqueue/dequeue/list callbacks.
+    /// Called by both production install sites
+    /// (`routes/waves.rs::spawn_push_appserver` and
+    /// `lib.rs::register_and_catch_up`) right after `install_watermark_sink`,
+    /// so a push landing immediately after registration has both the
+    /// persist path AND the watermark path available.
+    ///
+    /// Installing twice replaces the previous slot (latest dispatcher
+    /// wins, symmetric with [`install_watermark_sink`]).
+    pub async fn install_queue_persist(&self, persist: QueuePersist) {
+        *self.queue_persist.lock().await = Some(Arc::new(persist));
+    }
+
+    /// #318 INV-3 — debug-assert symmetric with [`has_watermark_sink`].
+    /// Production callers must NOT branch on this — an absent slot means
+    /// the in-memory `VecDeque` is the only durability surface (today's
+    /// pre-fix behavior, intentional only on test paths).
+    pub async fn has_queue_persist(&self) -> bool {
+        self.queue_persist.lock().await.is_some()
+    }
+
+    /// #318 INV-3 — rehydrate the in-memory `VecDeque` from the durable
+    /// `spec_push_queue` rows. Called by boot-takeover's
+    /// `register_and_catch_up` AFTER `install_queue_persist`, BEFORE
+    /// catch-up replay starts, so observations a prior process enqueued
+    /// but didn't flush are still available for the next `turn/completed`
+    /// flush.
+    ///
+    /// The current in-memory cache is left in place — typical case is
+    /// "freshly-constructed handle whose cache is empty", but a defensive
+    /// `extend_back` is correct on any cache state (we never write
+    /// duplicate rows: the durable rows weren't in the in-memory cache
+    /// before this call, and any in-memory entry added after this call
+    /// goes through the live enqueue path).
+    ///
+    /// No-op when no persist slot is installed (returns 0). Caller can
+    /// log the returned count for observability.
+    pub async fn rehydrate_queue_from_persist(&self) -> usize {
+        let persist = match self.queue_persist.lock().await.clone() {
+            Some(p) => p,
+            None => return 0,
+        };
+        let rows = (persist.list)().await;
+        if rows.is_empty() {
+            return 0;
+        }
+        let count = rows.len();
+        let mut q = self.queue.lock().await;
+        for (db_id, envelope_id, text) in rows {
+            q.push_back(QueuedObservation {
+                envelope_id,
+                text,
+                db_id: Some(db_id),
+            });
+        }
+        count
     }
 }
 
@@ -1520,9 +1732,13 @@ fn park_handle(
     // #313 B1 — sink slot is empty here; the dispatcher installs the real
     // persister right after registering the handle.
     let watermark_sink: WatermarkSinkSlot = Arc::new(Mutex::new(None));
+    // #318 INV-3 — queue persist slot is empty here; the same dispatcher
+    // sites that install the watermark sink also install this.
+    let queue_persist: QueuePersistSlot = Arc::new(Mutex::new(None));
     let consumer_status = status.clone();
     let consumer_thread = thread_id.clone();
     let consumer_sink = watermark_sink.clone();
+    let consumer_persist = queue_persist.clone();
     let consumer = tokio::spawn(consume_notifications(
         notifs,
         consumer_thread,
@@ -1530,6 +1746,7 @@ fn park_handle(
         client.clone(),
         queue.clone(),
         consumer_sink,
+        consumer_persist,
     ));
     SpecPushHandle {
         child,
@@ -1545,6 +1762,7 @@ fn park_handle(
         status,
         queue,
         watermark_sink,
+        queue_persist,
     }
 }
 
@@ -1639,6 +1857,7 @@ async fn consume_notifications(
     client: Arc<CodexAppServer>,
     queue: PushQueue,
     watermark_sink: WatermarkSinkSlot,
+    queue_persist: QueuePersistSlot,
 ) {
     while let Some(n) = notifs.recv().await {
         warn_on_approval(&n);
@@ -1648,7 +1867,15 @@ async fn consume_notifications(
         // them between turns (codex silently drops a turn/start issued while
         // a turn is active, so we can only start one here, between turns).
         if matches!(n, Notification::TurnCompleted { .. }) {
-            flush_push_queue(&thread_id, &status, &client, &queue, &watermark_sink).await;
+            flush_push_queue(
+                &thread_id,
+                &status,
+                &client,
+                &queue,
+                &watermark_sink,
+                &queue_persist,
+            )
+            .await;
         }
     }
     tracing::debug!(
@@ -1683,6 +1910,7 @@ async fn flush_push_queue(
     client: &Arc<CodexAppServer>,
     queue: &PushQueue,
     watermark_sink: &WatermarkSinkSlot,
+    queue_persist: &QueuePersistSlot,
 ) {
     // Atomically claim the issue right: only flip to `Issuing` (and win) if
     // we observe a between-turns phase. If a `push_observation` already won
@@ -1807,6 +2035,28 @@ async fn flush_push_queue(
              durable watermark not advanced for queue-flushed items"
         );
     }
+
+    // #318 INV-3 — `turn/start` succeeded; dequeue every persisted row in
+    // this coalesced batch. Drained entries without a `db_id` (test paths /
+    // pre-install windows) are naturally filtered out. Done AFTER the
+    // watermark sink so that a watermark-persist failure that strands the
+    // in-memory cache bump does not block dequeueing rows codex already
+    // accepted (rows kept around when codex didn't accept them would be
+    // double-delivered on the next boot's rehydrate).
+    let to_dequeue: Vec<i64> = drained.iter().filter_map(|o| o.db_id).collect();
+    if !to_dequeue.is_empty() {
+        let persist = queue_persist.lock().await.clone();
+        if let Some(persist) = persist {
+            (persist.dequeue)(to_dequeue).await;
+        } else {
+            tracing::debug!(
+                thread_id,
+                count = drained.len(),
+                "spec push: flush succeeded but no queue-persist slot installed (test path) — \
+                 durable queue rows not dequeued (none should exist either)"
+            );
+        }
+    }
 }
 
 /// Fold one notification into the tracked status.
@@ -1898,6 +2148,7 @@ mod tests {
         let status: SharedStatus = Arc::new(Mutex::new(SpecPushStatus::default()));
         let queue: PushQueue = Arc::new(Mutex::new(VecDeque::new()));
         let watermark_sink: WatermarkSinkSlot = Arc::new(Mutex::new(None));
+        let queue_persist: QueuePersistSlot = Arc::new(Mutex::new(None));
         let client = Arc::new(client);
         let consumer = tokio::spawn(consume_notifications(
             notifs,
@@ -1906,6 +2157,7 @@ mod tests {
             client.clone(),
             queue.clone(),
             watermark_sink.clone(),
+            queue_persist.clone(),
         ));
         let handle = SpecPushHandle {
             child,
@@ -1918,6 +2170,7 @@ mod tests {
             status,
             queue,
             watermark_sink,
+            queue_persist,
         };
         (handle, server)
     }
@@ -2249,6 +2502,7 @@ mod tests {
             handle.queue.lock().await.push_back(QueuedObservation {
                 envelope_id: 1,
                 text: "A".to_string(),
+                db_id: None,
             });
         }
 
@@ -2405,6 +2659,7 @@ mod tests {
                 &handle.client,
                 &handle.queue,
                 &handle.watermark_sink,
+                &handle.queue_persist,
             )
             .await;
         })
@@ -2438,6 +2693,7 @@ mod tests {
                         &h_flush.client,
                         &h_flush.queue,
                         &h_flush.watermark_sink,
+                        &h_flush.queue_persist,
                     )
                     .await;
                 });
