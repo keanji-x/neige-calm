@@ -120,6 +120,13 @@ pub struct Dispatcher {
     /// signal drive the loop down naturally).
     #[allow(dead_code)]
     handle: JoinHandle<()>,
+    /// #313 problem #1 — boot takeover catch-up reaches `push_to_spec`
+    /// through this. Held as a strong `Arc` so the same instance the
+    /// background task is consuming is the one
+    /// [`Dispatcher::catch_up_push`] calls into; the background task
+    /// also holds its own clone, so the dispatcher stays alive as long
+    /// as either side does.
+    inner: Arc<Inner>,
 }
 
 impl Dispatcher {
@@ -141,6 +148,159 @@ impl Dispatcher {
     /// Configured permit count. Exposed for assertions in tests.
     pub fn permits(&self) -> usize {
         self.permits
+    }
+
+    /// #313 problem #1 (boot takeover) — seed the in-memory push watermark
+    /// cache for a spec card from its persisted `payload.push_watermark`,
+    /// BEFORE any catch-up replay or live envelope can reach `push_to_spec`.
+    ///
+    /// Uses the same monotonic [`EventCursorCache::bump`] semantics the
+    /// live push path uses — a concurrent live event landing while we're
+    /// seeding can only ratchet the cache UP (a lower id is a no-op),
+    /// never down, so the seed is race-safe against a freshly-registered
+    /// handle's first push. Called once per wave from
+    /// [`crate::takeover_spec_appservers_on_boot`].
+    pub fn seed_push_cursor(&self, spec_card_id: CardId, watermark: i64) {
+        self.inner.push_cursor.bump(spec_card_id, watermark);
+    }
+
+    /// Test-only — clear the in-memory push cursor for a card so the next
+    /// access falls back to the default `0`. Used by the boot-recovery
+    /// e2e to simulate a cold-boot cache (no in-process state surviving
+    /// across the simulated restart). Production code does not call this.
+    #[doc(hidden)]
+    pub fn clear_push_cursor_for_test(&self, spec_card_id: &CardId) {
+        self.inner.push_cursor.remove(spec_card_id);
+    }
+
+    /// Test-only — read the current in-memory push cursor for a card.
+    /// Used by the boot-recovery e2e to assert that `seed_push_cursor`
+    /// actually planted the persisted watermark into the cache.
+    #[doc(hidden)]
+    pub fn push_cursor_for_test(&self, spec_card_id: &CardId) -> i64 {
+        self.inner.push_cursor.get(spec_card_id)
+    }
+
+    /// #313 problem #1 round-2 (B3) — acquire the per-wave push lock and
+    /// hold it for the duration of `body`.
+    ///
+    /// The dispatcher's `Inner::push_to_spec` takes this same per-wave
+    /// `Mutex` across `(get → compare → bump → push_observation)`. Boot
+    /// takeover holds it across `(seed_push_cursor → spec_push.insert →
+    /// catch_up_push_under_lock for every event)` so a live event landing
+    /// on the bus during the window (between insert and the catch-up's
+    /// last replay) serializes behind takeover instead of slipping past
+    /// the seeded watermark without being delivered. Without this
+    /// serialization, the live event would see a freshly-seeded cursor,
+    /// `bump` it to its own envelope id, and our catch-up replays for
+    /// ids ≤ that bump would dedup silently — losing every event that
+    /// landed while the kernel was down up to and including that id.
+    ///
+    /// IMPORTANT: while holding this lock, the only safe way to drive
+    /// catch-up is via [`Dispatcher::catch_up_push_under_lock`] (not the
+    /// public [`Dispatcher::catch_up_push`]). The latter takes the same
+    /// per-wave lock and `tokio::sync::Mutex` is NOT reentrant — calling
+    /// `catch_up_push` here would deadlock.
+    pub async fn with_push_lock<F, T>(&self, wave_id: &WaveId, body: F) -> T
+    where
+        F: std::future::Future<Output = T>,
+    {
+        Inner::with_wave_push_lock(&self.inner, wave_id, body).await
+    }
+
+    /// #313 problem #1 round-2 (B1) — build the [`WatermarkSink`] the
+    /// `SpecPushHandle` consumer task will call on a successful queue
+    /// flush, so the durable `push_watermark` advances for envelope ids
+    /// that were ONLY delivered out of the queue (the dispatcher's
+    /// own `push_to_spec` never re-runs for those).
+    ///
+    /// Captures `repo` + the spec card id; emits no `CardUpdated` event
+    /// (same posture as `Inner::push_to_spec`'s direct call).
+    pub fn watermark_sink_for(&self, spec_card_id: CardId) -> crate::spec_appserver::WatermarkSink {
+        let repo = Arc::clone(&self.inner.repo);
+        let push_cursor = self.inner.push_cursor.clone();
+        Arc::new(move |max_envelope_id: i64| {
+            let repo = Arc::clone(&repo);
+            let push_cursor = push_cursor.clone();
+            let spec_card_id = spec_card_id.clone();
+            Box::pin(async move {
+                // Mirror `push_to_spec`'s post-success bookkeeping: bump
+                // the in-memory cache too so a same-process re-delivery
+                // dedups against the just-flushed id. Monotonic bump is
+                // a no-op if the cache is already at/above this id (which
+                // happens when push_to_spec already saw + queued this
+                // envelope earlier).
+                push_cursor.bump(spec_card_id.clone(), max_envelope_id);
+                if let Err(e) = repo
+                    .spec_card_set_push_watermark(spec_card_id.as_str(), max_envelope_id)
+                    .await
+                {
+                    tracing::warn!(
+                        spec_card_id = %spec_card_id,
+                        max_envelope_id,
+                        error = %e,
+                        "spec push (flush sink): persist push_watermark failed; \
+                         in-memory cache bumped, next boot may re-push these envelopes (idempotent)"
+                    );
+                }
+            })
+        })
+    }
+
+    /// #313 problem #1 (boot takeover catch-up) — replay an already-persisted
+    /// `(envelope_id, scope, event)` through the dispatcher's push path,
+    /// **without** going through the broadcast bus.
+    ///
+    /// Used exclusively by [`crate::takeover_spec_appservers_on_boot`] to
+    /// catch a freshly-resumed spec thread up with events that landed while
+    /// the kernel was down. Reuses the exact same `Inner::push_to_spec`
+    /// helper that live envelopes go through (dedup against the persisted
+    /// watermark, per-wave serialization lock, `SpecPusher::push_observation`
+    /// with its turn-phase decision + queue semantics) so catch-up and
+    /// steady-state are byte-identical on the spec side.
+    ///
+    /// `envelope_id` must be the real persisted `events.id` — the watermark
+    /// dedup keys on it. If the caller hands the same `(id, event)` twice
+    /// (e.g. via a redelivery on the bus right after catch-up), the second
+    /// call is a no-op (it `<= cursor`); see the dedup invariant in
+    /// `Inner::push_to_spec`.
+    ///
+    /// Wave-scope-only: the live push path discards events without a wave
+    /// scope before they reach `push_to_spec`; this helper preserves that
+    /// invariant (caller filters to wave-scoped events).
+    pub async fn catch_up_push(
+        &self,
+        wave_id: WaveId,
+        event: crate::event::Event,
+        envelope_id: i64,
+    ) {
+        // `Inner::push_to_spec` takes `self: &Arc<Self>` (it spawns
+        // nothing, but the receiver shape is shared with other methods on
+        // `Inner`). Call it through `&self.inner` directly — `Arc<Inner>`
+        // auto-derefs, and Rust resolves the method against the `&Arc<Self>`
+        // receiver because of the field type.
+        Inner::push_to_spec(&self.inner, wave_id, &event, envelope_id).await;
+    }
+
+    /// #313 problem #1 round-2 (B3) — variant of [`catch_up_push`] that
+    /// runs the lock-free body of `push_to_spec` directly, for callers
+    /// already holding the per-wave push lock via
+    /// [`Dispatcher::with_push_lock`]. Must NOT be called outside such a
+    /// scope — the dedup `(get → compare → bump)` is non-atomic without
+    /// the lock and would race with concurrent live pushes.
+    ///
+    /// Used by [`crate::takeover_spec_appservers_on_boot`] to replay
+    /// catch-up events under the same lock that gates a concurrently-
+    /// arriving live event.
+    pub async fn catch_up_push_under_lock(
+        &self,
+        wave_id: WaveId,
+        event: crate::event::Event,
+        envelope_id: i64,
+    ) {
+        self.inner
+            .push_to_spec_locked(wave_id, &event, envelope_id)
+            .await;
     }
 
     /// Reference to the global semaphore. Exposed so tests can probe
@@ -298,6 +458,7 @@ impl Dispatcher {
             semaphore,
             permits,
             handle,
+            inner,
         }
     }
 }
@@ -599,30 +760,30 @@ impl Inner {
     ///   1. **Resolve the spec card** — scan `cards_by_wave(wave_id)` for
     ///      the one whose `card_role_cache` role is [`CardRole::Spec`].
     ///   2. **Dedup / ordering** — only push when `envelope_id` is strictly
-    ///      above the dedicated push watermark for that spec `CardId`; then
-    ///      bump. Idempotent under at-least-once broadcast delivery.
+    ///      above the in-memory push cursor for that spec `CardId`; then
+    ///      bump the cursor (in-process dedup hint). Idempotent under
+    ///      at-least-once broadcast delivery.
     ///   3. **Resolve the handle** — `spec_push.pusher(wave_id)`. If absent
     ///      (a kernel restart lost the in-memory handle), `warn!` and return
-    ///      — never crash. There is no recovery: the wave stays undriven
-    ///      until the kernel re-creates a handle (which it doesn't do today).
-    ///      See the missing-handle warn below.
+    ///      — never crash. #313 problem #1: boot takeover
+    ///      ([`crate::takeover_spec_appservers_on_boot`]) re-registers a
+    ///      handle for every non-terminal wave with a persisted
+    ///      `codex_thread_id` and replays events above the durable
+    ///      watermark, so a missing handle here just means "boot takeover
+    ///      hasn't run yet" (mid-boot, the route layer isn't up so no
+    ///      event can reach here) OR "takeover failed for this wave"
+    ///      (warn was logged at boot; wave is inert).
     ///   4. **Build + deliver** the observation via
     ///      [`crate::spec_appserver::SpecPusher::push_observation`],
     ///      which decides `turn/start`-now vs enqueue based on the tracked
     ///      turn phase.
+    ///   5. **Persist durable watermark** — only AFTER a successful
+    ///      delivery, persist `envelope_id` onto `payload.push_watermark`
+    ///      via `spec_card_set_push_watermark`. The next boot's
+    ///      `events_since(watermark)` uses strict `id > watermark`, so
+    ///      persisting before/without successful delivery would
+    ///      permanently skip the envelope on recovery (#313 PR4 B1).
     async fn push_to_spec(self: &Arc<Self>, wave_id: WaveId, event: &Event, envelope_id: i64) {
-        // Resolve the spec card for this wave via the role cache.
-        let spec_card_id = match self.resolve_spec_card(&wave_id).await {
-            Some(id) => id,
-            None => {
-                tracing::debug!(
-                    wave_id = %wave_id,
-                    "dispatcher push: no spec card found for wave; skipping"
-                );
-                return;
-            }
-        };
-
         // S1 — serialize the whole dedup-check-and-deliver PER WAVE so the
         // monotonic watermark only dedups true redeliveries, never a
         // distinct lower-id event that lost the concurrent
@@ -636,12 +797,60 @@ impl Inner {
         // We clone the `Arc<Mutex>` out of the `DashMap` under the brief
         // sync guard, then drop the guard before awaiting the lock (never
         // hold a `DashMap` shard guard across an `.await`).
+        //
+        // #313 round-2 (B3) — `with_push_lock` is the same helper boot
+        // takeover uses, so the lock is shared between live pushes and
+        // catch-up replay; either side waits if the other is mid-sequence.
+        let inner = Arc::clone(self);
+        let wave_id_for_body = wave_id.clone();
+        let event = event.clone();
+        Self::with_wave_push_lock(self, &wave_id, async move {
+            inner
+                .push_to_spec_locked(wave_id_for_body, &event, envelope_id)
+                .await;
+        })
+        .await;
+    }
+
+    /// #313 round-2 (B3) — per-wave push lock helper, shared between
+    /// `Inner::push_to_spec` (steady state) and
+    /// [`Dispatcher::with_push_lock`] (boot takeover catch-up). Held by
+    /// either side serializes the other.
+    async fn with_wave_push_lock<F, T>(self: &Arc<Self>, wave_id: &WaveId, body: F) -> T
+    where
+        F: std::future::Future<Output = T>,
+    {
         let wave_lock = self
             .push_locks
             .entry(wave_id.clone())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone();
         let _serialize = wave_lock.lock().await;
+        body.await
+    }
+
+    /// #313 round-2 (B3) — the lock-free body of [`push_to_spec`]. Must
+    /// only be called by a caller already holding the per-wave push lock
+    /// for `wave_id` (boot takeover holds it across the catch-up sequence;
+    /// `push_to_spec` takes it then calls here). `tokio::sync::Mutex` is
+    /// NOT reentrant, so we can't grab it again here.
+    async fn push_to_spec_locked(
+        self: &Arc<Self>,
+        wave_id: WaveId,
+        event: &Event,
+        envelope_id: i64,
+    ) {
+        // Resolve the spec card for this wave via the role cache.
+        let spec_card_id = match self.resolve_spec_card(&wave_id).await {
+            Some(id) => id,
+            None => {
+                tracing::debug!(
+                    wave_id = %wave_id,
+                    "dispatcher push: no spec card found for wave; skipping"
+                );
+                return;
+            }
+        };
 
         // Dedup: push only when this envelope is newer than the watermark
         // for the spec card. A persisted event always has a positive id;
@@ -662,16 +871,32 @@ impl Inner {
             );
             return;
         }
-        self.push_cursor.bump(spec_card_id.clone(), envelope_id);
 
         // Resolve the live push handle. Absent → warn + return (no crash).
-        // #293: there is NO crash-recovery. A kernel restart drops every
-        // in-memory `SpecPushHandle`, and the kernel does not respawn the
-        // `codex app-server` or `thread_resume` the persisted thread on boot.
-        // The consequence is accepted and explicit: in-flight waves whose
-        // handle was lost are left UNDRIVEN — no push lands, and there is no
-        // pull backstop anymore (the old `wait_for_events` poll was removed in
-        // this cutover). The user must restart the wave to recover.
+        // #313 problem #1: this is no longer the "permanent failure" state —
+        // boot takeover ([`crate::takeover_spec_appservers_on_boot`]) re-
+        // registers the handle for every non-terminal wave with a persisted
+        // `codex_thread_id`. A missing handle here means EITHER (a) boot
+        // takeover hasn't run yet (we're mid-boot — the route layer isn't
+        // up so no event can land here) OR (b) the takeover failed for this
+        // wave specifically (warn was logged at boot; wave is inert).
+        //
+        // We MUST NOT persist the durable watermark when the handle is
+        // missing — codex never saw this envelope, so the next boot's
+        // catch-up needs to replay it (events_since uses `id > watermark`
+        // strictly, so persisting envelope_id here would silently drop it
+        // at boot).
+        //
+        // #315 round-2 (B3) — also MUST NOT bump the in-memory cursor
+        // when the handle is missing. Previously we bumped pre-handle-
+        // resolve; if a live event landed during boot (between takeover's
+        // `clear_cache` and `seed_push_cursor`), the bump-without-deliver
+        // would later cause boot catch-up's `catch_up_push_under_lock`
+        // to dedup against the bumped cursor and silently drop the
+        // event (catch-up gets the lock SECOND in that race). Bumping
+        // ONLY after a successful handle lookup ensures the cursor only
+        // ever advances when we're about to actually deliver — making
+        // the dedup invariant honest: "cursor at X means we sent X".
         let pusher = match self.spec_push.pusher(&wave_id) {
             Some(p) => p,
             None => {
@@ -680,12 +905,27 @@ impl Inner {
                     spec_card_id = %spec_card_id,
                     envelope_id,
                     kind = event.kind_tag(),
-                    "dispatcher push: no live SpecPushHandle for wave (kernel restart lost the \
-                     handle); wave left undriven — no crash-recovery, no pull backstop (#293)"
+                    "dispatcher push: no live SpecPushHandle for wave — boot takeover \
+                     either did not run yet, or did not register this wave (e.g. -32600 \
+                     no rollout, or app-server boot failed); wave left undriven (#313). \
+                     Cursor NOT bumped so boot takeover's catch-up will redeliver this id."
                 );
                 return;
             }
         };
+
+        // #293 PR3b — bump the in-process dedup cursor before we attempt
+        // delivery (handle is in scope now, so we WILL deliver). This is a
+        // per-process hint only, not a correctness fence: if delivery
+        // fails, a same-process redelivery of this envelope id would
+        // dedup here anyway (we already decided to act on it once).
+        // Cross-restart durability is the DURABLE watermark below — which
+        // we only advance after a SUCCESSFUL delivery (see B1 below).
+        //
+        // #315 round-2 (B3) — moved AFTER the handle lookup so we never
+        // poison the dedup cursor for an event we didn't actually try to
+        // send. See the no-handle arm above.
+        self.push_cursor.bump(spec_card_id.clone(), envelope_id);
 
         let observation = build_observation(event);
         tracing::info!(
@@ -695,18 +935,88 @@ impl Inner {
             kind = event.kind_tag(),
             "dispatcher push: delivering observation to spec thread"
         );
-        if let Err(e) = pusher.push_observation(&observation).await {
-            // A failed delivery is logged but not fatal. There is no pull
-            // backstop anymore (#293 cutover removed `wait_for_events`); a
-            // dropped observation means the spec may miss this event. The
-            // dedicated push watermark was already bumped above, so a
-            // redelivery of the same envelope won't retry — accepted.
-            tracing::warn!(
-                wave_id = %wave_id,
-                envelope_id,
-                error = %e,
-                "dispatcher push: push_observation failed; no pull backstop (#293) — observation may be lost"
-            );
+        let outcome = match pusher.push_observation(envelope_id, &observation).await {
+            Ok(o) => o,
+            Err(e) => {
+                // Delivery failed (transport / turn_start error). Do NOT
+                // persist the durable watermark: the next boot's catch-up
+                // replay must re-deliver this envelope. The in-process dedup
+                // cursor is already bumped, but that's a per-process hint —
+                // restart-time recovery seeds from disk, not memory.
+                tracing::warn!(
+                    wave_id = %wave_id,
+                    envelope_id,
+                    error = %e,
+                    "dispatcher push: push_observation failed — durable watermark NOT persisted; \
+                     boot recovery will replay this envelope (#313)"
+                );
+                return;
+            }
+        };
+
+        // #313 problem #1 round-2 (B1) — persist the durable watermark
+        // ONLY when the observation actually rode a successful `turn/start`
+        // (codex received it). The previous implementation persisted on
+        // any `Ok(())`, including the `Enqueue` path where the observation
+        // lives only in the in-memory `PushQueue`; a kernel crash before
+        // the next `turn/completed` flush would then lose that envelope
+        // permanently (boot catch-up uses `id > watermark` strictly).
+        //
+        //   * `Issued { max_envelope_id }` — turn/start went out.
+        //     `max_envelope_id` is the highest id among (drained queue
+        //     items + this push's observation), so persisting watermark =
+        //     `max_envelope_id` advances past every item that just rode
+        //     this coalesced turn — including queued items previously
+        //     held back from persistence. **At-least-once across restart**:
+        //     if the kernel crashes between this `Issued` and our persist
+        //     below, boot replays the envelope and codex's `thread_resume`
+        //     handles a re-push idempotently.
+        //   * `Enqueued` — observation buffered in the in-memory queue.
+        //     We DO NOT persist the watermark; the queue-flush path on the
+        //     next `turn/completed` persists via the [`WatermarkSink`]
+        //     callback the dispatcher installs on each registered handle.
+        //     **Boot reliability**: if the kernel crashes between Enqueue
+        //     and the flush, the watermark stays where it was; boot
+        //     catch-up's `events_since(watermark)` re-delivers the queued
+        //     event because we never advanced the durable floor past it.
+        //
+        // The write goes through `RepoOutOfDomain` (no `CardUpdated`
+        // event emitted) — the dispatcher's filter doesn't watch
+        // `CardUpdated` and the field is server-private bookkeeping
+        // (same treatment terminal PIDs/handles get).
+        match outcome {
+            crate::spec_appserver::PushOutcome::Issued { max_envelope_id } => {
+                if let Err(e) = self
+                    .repo
+                    .spec_card_set_push_watermark(spec_card_id.as_str(), max_envelope_id)
+                    .await
+                {
+                    tracing::warn!(
+                        wave_id = %wave_id,
+                        spec_card_id = %spec_card_id,
+                        max_envelope_id,
+                        error = %e,
+                        "dispatcher push: persist push_watermark failed AFTER successful delivery; \
+                         in-memory cache still bumped, next boot may re-push this envelope \
+                         (spec thread may see this observation twice on a re-push — codex does \
+                         not dedup re-pushed observations)",
+                    );
+                }
+                // Keep the in-memory cache in sync with the durable
+                // watermark for the queue-drained items too — same
+                // `bump` semantics the WatermarkSink uses on flush.
+                if max_envelope_id > envelope_id {
+                    self.push_cursor.bump(spec_card_id.clone(), max_envelope_id);
+                }
+            }
+            crate::spec_appserver::PushOutcome::Enqueued => {
+                tracing::debug!(
+                    wave_id = %wave_id,
+                    spec_card_id = %spec_card_id,
+                    envelope_id,
+                    "dispatcher push: observation enqueued (mid-turn); durable watermark deferred to flush"
+                );
+            }
         }
     }
 
@@ -2439,5 +2749,111 @@ mod tests {
         assert!(8 > cursor.get(&card));
         cursor.bump(card.clone(), 8);
         assert_eq!(cursor.get(&card), 8);
+    }
+
+    /// #313 round-2 (B3) — the per-wave push lock map must serialize
+    /// concurrent acquisitions for the SAME wave (so boot takeover's
+    /// `with_push_lock` and the live `push_to_spec`'s lock cannot run
+    /// the dedup-check-and-deliver body concurrently — which would lose
+    /// events in the seed→insert window). DIFFERENT waves must remain
+    /// independent so a slow takeover for wave A doesn't block live
+    /// pushes for wave B.
+    ///
+    /// Models the exact `DashMap::entry(...).or_insert_with(Arc::new
+    /// Mutex)` + `clone().lock().await` pattern both
+    /// `Inner::with_wave_push_lock` and `Dispatcher::with_push_lock`
+    /// implement (the latter delegates to the former).
+    #[tokio::test]
+    async fn per_wave_push_lock_serializes_same_wave_runs_in_parallel_across_waves() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // Same map shape as `Inner::push_locks`.
+        let push_locks: DashMap<WaveId, Arc<tokio::sync::Mutex<()>>> = DashMap::new();
+        let take_lock = |wave_id: &WaveId| -> Arc<tokio::sync::Mutex<()>> {
+            push_locks
+                .entry(wave_id.clone())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+
+        // Track concurrent occupancy. Same-wave: must never exceed 1.
+        let in_flight_a = Arc::new(AtomicUsize::new(0));
+        let max_in_flight_a = Arc::new(AtomicUsize::new(0));
+        let wave_a = WaveId::from("wave-a");
+
+        let mut handles = vec![];
+        for i in 0..8 {
+            let lock = take_lock(&wave_a);
+            let in_flight = in_flight_a.clone();
+            let max_in_flight = max_in_flight_a.clone();
+            handles.push(tokio::spawn(async move {
+                let _g = lock.lock().await;
+                let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                max_in_flight.fetch_max(now, Ordering::SeqCst);
+                // Simulate the dedup-check-and-deliver body holding the
+                // lock for a few yields (representative of `push_to_spec`'s
+                // async work).
+                tokio::task::yield_now().await;
+                tokio::time::sleep(std::time::Duration::from_millis(2 * (i as u64 + 1))).await;
+                in_flight.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+        assert_eq!(
+            max_in_flight_a.load(Ordering::SeqCst),
+            1,
+            "same-wave per-wave lock must serialize: observed concurrent holders"
+        );
+
+        // Different waves: independent locks → can run in parallel.
+        let in_flight_total = Arc::new(AtomicUsize::new(0));
+        let max_in_flight_total = Arc::new(AtomicUsize::new(0));
+        let mut handles = vec![];
+        for i in 0..6 {
+            let wave: WaveId = format!("wave-parallel-{i}").into();
+            let lock = take_lock(&wave);
+            let in_flight = in_flight_total.clone();
+            let max_in_flight = max_in_flight_total.clone();
+            handles.push(tokio::spawn(async move {
+                let _g = lock.lock().await;
+                let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                max_in_flight.fetch_max(now, Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+                in_flight.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+        // We expect parallelism > 1 across distinct wave keys (otherwise
+        // the per-wave keying is broken). With 6 spawns and ~15ms each on a
+        // multi-threaded runtime they should overlap routinely.
+        assert!(
+            max_in_flight_total.load(Ordering::SeqCst) > 1,
+            "different-wave locks must allow parallel runs; observed serialization"
+        );
+    }
+
+    /// #313 round-2 (B1) — `PushOutcome::Issued { max_envelope_id }`
+    /// carries the highest envelope id from the coalesced turn (drained
+    /// queue + the new push). The dispatcher persists that exact id;
+    /// `Enqueued` must NOT trigger persistence. This is the structural
+    /// invariant; the spec_appserver tests cover the queue mechanics, and
+    /// the e2e proves the durable watermark behavior end-to-end.
+    #[test]
+    fn push_outcome_shape() {
+        use crate::spec_appserver::PushOutcome;
+        match (PushOutcome::Issued {
+            max_envelope_id: 42,
+        }) {
+            PushOutcome::Issued { max_envelope_id } => assert_eq!(max_envelope_id, 42),
+            PushOutcome::Enqueued => panic!("expected Issued"),
+        }
+        match PushOutcome::Enqueued {
+            PushOutcome::Enqueued => {}
+            PushOutcome::Issued { .. } => panic!("expected Enqueued"),
+        }
     }
 }

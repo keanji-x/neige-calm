@@ -17,12 +17,21 @@
 //! [`EventCursorCache::bump`] is monotonic, so an out-of-order / lower id
 //! never rewinds it.
 //!
-//! ## What it is NOT
+//! ## Durability
 //!
-//! It is not durable across server restarts. A restart drops the cache;
-//! since there is no crash-recovery for in-flight waves (#293), this is
-//! moot for the push path — a lost handle means the wave is undriven
-//! regardless of the cursor.
+//! The cache itself is in-memory only. The dispatcher's PRODUCTION push
+//! path mirrors the cursor onto the spec card's `payload.push_watermark`
+//! (see `spec_card_set_push_watermark`) after a successful delivery, so
+//! a kernel restart can seed the cache from disk via
+//! [`crate::dispatcher::Dispatcher::seed_push_cursor`] and resume catch-up
+//! from the last acked envelope (#313 problem #1). The in-memory cache
+//! and the persisted watermark serve different roles:
+//!   * **in-memory cursor** — per-process dedup hint, bumped before a
+//!     push attempt so a redelivery within the same process is dropped
+//!     even if delivery is in flight.
+//!   * **persisted watermark** — durable floor for cross-restart catch-up;
+//!     advanced ONLY on successful delivery so a crash mid-push replays
+//!     the envelope on the next boot.
 //!
 //! ## Concurrency
 //!

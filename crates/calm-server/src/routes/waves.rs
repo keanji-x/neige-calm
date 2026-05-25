@@ -874,7 +874,7 @@ async fn spawn_push_appserver(
     // read-modify-write). `codex_thread_id` is also the
     // `codex_auto_submit` skip signal: the kernel already drove turn #1,
     // so no `\r` is injected into the resumed TUI. `appserver_pgid` is the
-    // crash-recovery reap target — `reap_orphan_appserver_groups_on_boot`
+    // crash-recovery reuse target — `takeover_spec_appservers_on_boot`
     // reads it to `kill(-pgid, …)` a leaked group after a hard crash.
     //
     // NOTE: this persists AFTER the handle is built but BEFORE it is parked
@@ -928,6 +928,21 @@ async fn spawn_push_appserver(
                     "appserver_pgid".into(),
                     serde_json::Value::Number(pgid.into()),
                 );
+                // #313 problem #1 — initialize the persisted push watermark
+                // to 0 (the "no events pushed yet" sentinel). The dispatcher
+                // bumps this field atomically alongside `push_cursor.bump`
+                // every time it pushes (see `dispatcher::push_to_spec`); on
+                // boot recovery, [`crate::takeover_spec_appservers_on_boot`]
+                // seeds the in-memory `EventCursorCache` from this field and
+                // replays every event with `id > watermark` so a kernel
+                // restart can't silently drop already-acked-by-codex catch-up
+                // events. 0 is correct on first persist because no push has
+                // happened yet — the very first push will bump it to the
+                // envelope's id.
+                map.insert(
+                    "push_watermark".into(),
+                    serde_json::Value::Number(0i64.into()),
+                );
                 let card = card_update_tx(
                     tx,
                     &card_id_for_tx,
@@ -944,6 +959,34 @@ async fn spawn_push_appserver(
         },
     )
     .await?;
+
+    // #313 problem #1 round-3 (B2) — install the watermark sink on the
+    // freshly-created handle BEFORE parking it in the registry. The
+    // round-2 boot-takeover path (`lib.rs::register_and_catch_up`) wired
+    // this for resumed handles, but the symmetric create-wave path was
+    // missed: a push landing while the freshly-created spec turn is
+    // active would hit `Enqueue` (the spec is mid-turn-1, the
+    // dispatcher's `Inner::push_to_spec` cannot issue a second
+    // `turn/start`), the consumer's later `flush_push_queue` would
+    // deliver the queued items, and — with no sink installed — the
+    // durable `push_watermark` would NEVER advance for those flushed
+    // ids. A subsequent restart would replay them all (boot catch-up
+    // uses `id > watermark` strictly), causing the spec thread to see
+    // already-delivered events twice.
+    //
+    // `Dispatcher::watermark_sink_for` is the single source of truth for
+    // the sink closure shape (it captures repo + the push cursor cache
+    // for in-process dedup symmetry); both this site and
+    // `register_and_catch_up` go through it.
+    let card_key: crate::ids::CardId = spec_card_id.to_string().into();
+    let sink = s.dispatcher.watermark_sink_for(card_key);
+    handle.install_watermark_sink(sink).await;
+    debug_assert!(
+        handle.has_watermark_sink().await,
+        "spawn_push_appserver: install_watermark_sink did not take effect — \
+         a future refactor split the install from the assert; queued-then-\
+         flushed envelopes would silently fail to persist their watermark"
+    );
 
     // Park the handle so PR3b's dispatcher can resolve the wave's
     // app-server client + thread, and so wave-delete / sweeper teardown

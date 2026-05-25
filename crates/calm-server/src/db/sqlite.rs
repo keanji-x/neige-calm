@@ -1732,31 +1732,65 @@ impl RepoRead for SqlxRepo {
         Ok(rows)
     }
 
-    async fn spec_cards_with_appserver_pgid(&self) -> Result<Vec<(String, i32, String)>> {
-        // #293 PR3a (B1) — boot-time leaked-group recovery input. Cards
-        // whose payload carries a spec-push `appserver_pgid` (persisted on
-        // the create-wave hot path alongside `codex_thread_id` /
-        // `appserver_sock`). `json_extract` returns NULL when the key is
-        // absent or the payload isn't an object, so the WHERE filters to
-        // exactly the spec-push cards. We pull the sock too so the boot
-        // sweep can confirm the group is genuinely a live (leaked)
-        // app-server (socket still connectable) before signaling it —
-        // guarding against pid-recycling false positives.
-        let rows: Vec<(String, i64, Option<String>)> = sqlx::query_as(
-            r#"SELECT id,
-                      json_extract(payload, '$.appserver_pgid'),
-                      json_extract(payload, '$.appserver_sock')
-               FROM cards
-               WHERE json_extract(payload, '$.appserver_pgid') IS NOT NULL"#,
+    async fn spec_cards_for_boot_takeover(
+        &self,
+    ) -> Result<Vec<(String, String, String, Option<i32>, Option<String>, i64)>> {
+        // #313 problem #1 — boot takeover input. Spec cards whose payload
+        // carries `codex_thread_id`, JOINed against `waves` so we can filter
+        // out terminal-lifecycle waves in SQL rather than re-querying per
+        // card from Rust. `appserver_pgid` / `appserver_sock` are nullable in
+        // the projection (defensive — every write that lands `codex_thread_id`
+        // today also writes both, but a malformed row shouldn't strand the
+        // whole boot sweep). `push_watermark` defaults to 0 when absent —
+        // 0 is the "no events pushed yet" sentinel the in-memory
+        // `EventCursorCache` returns for an unknown card, so a missing field
+        // produces identical replay behavior (replay every event for this
+        // wave, then bump).
+        //
+        // #315 round-4 (B1) — `c.role = 'spec'` is REQUIRED. Plugin and
+        // opaque card payloads can legitimately carry arbitrary keys; a
+        // non-spec card that happens to have a `codex_thread_id` key in its
+        // payload (e.g. an MCP tool result echoing a codex id, a debug
+        // marker, a plugin storing an unrelated codex handle) MUST NOT be
+        // treated as a takeover candidate. Without the role predicate,
+        // takeover would respawn an app-server for a wave it doesn't own,
+        // register the handle under the wave's slot, and start sending
+        // pushes / watermark updates against the wrong thread (and, when
+        // a real spec card also matches for the same wave, the row order
+        // would decide which handle "wins" the spec_push registry slot
+        // — non-deterministic and silent). The role column is the
+        // canonical authorization label (migration 0008); lowercase
+        // string form per `CardRole` serde (migration 0008 comment) and
+        // matches the other spec-role SQL in the codebase
+        // (`migrations/0013_cards_deletable.sql`, `migrations/0014_*`).
+        let rows: Vec<(
+            String,
+            String,
+            String,
+            Option<i64>,
+            Option<String>,
+            Option<i64>,
+        )> = sqlx::query_as(
+            r#"SELECT c.id,
+                      c.wave_id,
+                      json_extract(c.payload, '$.codex_thread_id'),
+                      json_extract(c.payload, '$.appserver_pgid'),
+                      json_extract(c.payload, '$.appserver_sock'),
+                      json_extract(c.payload, '$.push_watermark')
+               FROM cards c
+               JOIN waves w ON w.id = c.wave_id
+               WHERE c.role = 'spec'
+                 AND json_extract(c.payload, '$.codex_thread_id') IS NOT NULL
+                 AND w.lifecycle NOT IN ('done', 'canceled', 'failed')"#,
         )
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
             .into_iter()
-            .filter_map(|(id, pgid, sock)| {
-                let pgid = i32::try_from(pgid).ok()?;
-                let sock = sock?;
-                Some((id, pgid, sock))
+            .map(|(card_id, wave_id, thread_id, pgid, sock, watermark)| {
+                let pgid = pgid.and_then(|v| i32::try_from(v).ok());
+                let watermark = watermark.unwrap_or(0);
+                (card_id, wave_id, thread_id, pgid, sock, watermark)
             })
             .collect())
     }
@@ -2107,6 +2141,107 @@ impl RepoOutOfDomain for SqlxRepo {
         if res.rows_affected() == 0 {
             return Err(CalmError::NotFound(format!("terminal {id}")));
         }
+        Ok(())
+    }
+
+    async fn spec_card_set_push_watermark(&self, card_id: &str, watermark: i64) -> Result<()> {
+        // JSON merge so we only touch `payload.push_watermark` — never
+        // clobber `codex_thread_id` / `appserver_sock` / `appserver_pgid` /
+        // any other field. `json_set(p, '$.k', v)` upserts the key in place.
+        // A missing row is silently a no-op (the wave was deleted between
+        // the dispatcher's bump and the persist; nothing to do).
+        //
+        // #313 problem #1 round-3 (N1) — MONOTONIC GUARD via the WHERE
+        // clause. Two persisters can race to this UPDATE:
+        //
+        //   * `Dispatcher::push_to_spec` on a successful `Issued` —
+        //     persists `max_envelope_id` (highest id of the just-issued
+        //     coalesced turn), under the per-wave push lock.
+        //   * The consumer task's `flush_push_queue` via the installed
+        //     [`WatermarkSink`] — persists the max id from the drained
+        //     queue, NOT under the same lock (the queue lock is
+        //     different).
+        //
+        // Both happen during normal operation. If `flush_push_queue`'s
+        // SQL is slow enough that a later `Issued` for a higher
+        // `max_envelope_id` lands AND persists FIRST, an unguarded
+        // `json_set` here could LOWER the stored watermark — a regression
+        // that boot catch-up would then mistake for "we never delivered
+        // ids in [old, new]" and re-push.
+        //
+        // The `WHERE … json_extract(payload,'$.push_watermark') < ?1`
+        // (coalesced to 0 for the never-persisted case) makes the UPDATE
+        // a no-op when the stored watermark is already at-or-above the
+        // proposed one. SQLite's WHERE evaluates atomically with the
+        // UPDATE under the same row lock, so the read-modify-write race
+        // is closed.
+        let now = now_ms();
+        let _ = sqlx::query(
+            r#"UPDATE cards
+                  SET payload    = json_set(COALESCE(payload, '{}'), '$.push_watermark', ?1),
+                      updated_at = ?2
+                WHERE id = ?3
+                  AND COALESCE(json_extract(payload, '$.push_watermark'), 0) < ?1"#,
+        )
+        .bind(watermark)
+        .bind(now)
+        .bind(card_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn spec_card_set_appserver_after_takeover(
+        &self,
+        card_id: &str,
+        pgid: i32,
+        sock: &str,
+    ) -> Result<()> {
+        // Two-key JSON merge — leaves `codex_thread_id` and
+        // `push_watermark` untouched. Missing row is a no-op (the wave
+        // was deleted between takeover and persist).
+        let now = now_ms();
+        let _ = sqlx::query(
+            r#"UPDATE cards
+                  SET payload = json_set(
+                                    COALESCE(payload, '{}'),
+                                    '$.appserver_pgid', ?1,
+                                    '$.appserver_sock', ?2
+                                ),
+                      updated_at = ?3
+                WHERE id = ?4"#,
+        )
+        .bind(pgid)
+        .bind(sock)
+        .bind(now)
+        .bind(card_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn spec_card_clear_push_state(&self, card_id: &str) -> Result<()> {
+        // Remove the four push-related fields so the next boot doesn't
+        // re-attempt the stale thread/resume. Leaves everything else in
+        // the payload intact. `json_remove` on a missing key is a no-op,
+        // so the SQL stays one statement.
+        let now = now_ms();
+        let _ = sqlx::query(
+            r#"UPDATE cards
+                  SET payload    = json_remove(
+                                       COALESCE(payload, '{}'),
+                                       '$.codex_thread_id',
+                                       '$.appserver_sock',
+                                       '$.appserver_pgid',
+                                       '$.push_watermark'
+                                   ),
+                      updated_at = ?1
+                WHERE id = ?2"#,
+        )
+        .bind(now)
+        .bind(card_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
