@@ -170,6 +170,7 @@ export function CalmApp() {
               body: { pinned_at: pin ? Date.now() : null },
             });
           }}
+          onGoToCove={(coveId) => go({ name: 'cove', coveId })}
           onOpenSettings={() => go({ name: 'settings' })}
           onSignOut={handleSignOut}
         />

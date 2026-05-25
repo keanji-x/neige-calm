@@ -27,6 +27,7 @@ export function Sidebar({
   onCreateCove,
   onDeleteCove,
   onPinWave,
+  onGoToCove,
   onOpenSettings,
   onSignOut,
 }: {
@@ -49,6 +50,9 @@ export function Sidebar({
    *  sidebar without a mutation hook don't have to wire it up. When
    *  provided, every wave row renders a hover-revealed pin button. */
   onPinWave?: (waveId: string, pin: boolean) => void | Promise<void>;
+  /** Navigate directly to a cove from a wave row's cove-name button.
+   *  Optional: no-op if not provided (mirrors onPinWave shape). */
+  onGoToCove?: (coveId: string) => void;
   /** Open the app-global settings page. Optional so tests / sub-trees that
    *  render the sidebar without a router don't have to wire it up. */
   onOpenSettings?: () => void;
@@ -117,10 +121,11 @@ export function Sidebar({
                 key={w.id}
                 wave={w}
                 active={active}
-                coveColor={cove?.color ?? null}
+                cove={cove ?? null}
                 title={(cove?.name ?? '') + ' · ' + w.title}
                 onGo={() => onGo({ name: 'wave', id: w.id })}
                 onPinWave={onPinWave}
+                onGoToCove={onGoToCove}
               />
             );
           })}
@@ -138,10 +143,11 @@ export function Sidebar({
                 key={w.id}
                 wave={w}
                 active={active}
-                coveColor={cove?.color ?? null}
+                cove={cove ?? null}
                 title={(cove?.name ?? '') + ' · ' + w.title}
                 onGo={() => onGo({ name: 'wave', id: w.id })}
                 onPinWave={onPinWave}
+                onGoToCove={onGoToCove}
               />
             );
           })}
@@ -380,17 +386,19 @@ function CovesHeader({
 function WaveRow({
   wave,
   active,
-  coveColor,
+  cove,
   title,
   onGo,
   onPinWave,
+  onGoToCove,
 }: {
   wave: Wave;
   active: boolean;
-  coveColor: string | null;
+  cove: { id: string; name: string } | null;
   title: string;
   onGo: () => void;
   onPinWave?: (waveId: string, pin: boolean) => void | Promise<void>;
+  onGoToCove?: (coveId: string) => void;
 }) {
   const pinned = wave.pinnedAt != null;
   return (
@@ -400,11 +408,22 @@ function WaveRow({
         onClick={onGo}
         title={title}
       >
-        <span className="swatch-wrap">
-          <span className="swatch" style={{ background: coveColor ?? 'transparent' }} />
-        </span>
         <span className="side-wave-title">{wave.title}</span>
       </button>
+      {cove && (
+        <button
+          type="button"
+          className="side-wave-cove"
+          onClick={(e) => {
+            e.stopPropagation();
+            onGoToCove?.(cove.id);
+          }}
+          aria-label={`Go to cove ${cove.name}`}
+          title={cove.name}
+        >
+          {cove.name}
+        </button>
+      )}
       {onPinWave && (
         <button
           type="button"

@@ -454,6 +454,13 @@ input, textarea { font: inherit; color: inherit; }
   gap: var(--space-1);
   min-width: 0;
 }
+/* .side-coves uses scrollbar-gutter: stable which reserves 8px of right
+   gutter (matching the --space-4 / 8px scrollbar width). Match that on
+   .side-section so the pin button x-aligns with the cove-row × and the
+   Coves header + button. */
+.side .side-section {
+  padding-right: var(--space-4);
+}
 /* The Coves nav grows to fill the column between the Today nav (or the
    "Waiting on you" section) and the user menu, then scrolls internally
    when the list overflows. `min-height: 0` is the load-bearing piece —
@@ -584,33 +591,48 @@ input, textarea { font: inherit; color: inherit; }
   flex: 1; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-/* Wave row group: wraps the nav button + pin button so neither is nested
-   inside the other (avoids nested-button a11y violation). The row itself
-   carries the hover / active states so the pin button inherits them. */
+/* Wave row group: wraps the wave-nav button, optional cove-nav button,
+   and pin button so none are nested inside the others (avoids nested-button
+   a11y violation). The row itself carries hover/active states. Overflow
+   hidden clips child backgrounds to the row's border-radius so per-child
+   radius management isn't needed. */
 .side .side-wave-row {
   position: relative;
   display: flex;
+  flex-direction: column;
   align-items: stretch;
   border-radius: var(--radius-md);
+  overflow: hidden;
 }
 .side .side-wave-row .side-wave {
-  flex: 1;
   border-radius: var(--radius-md);
   /* Reserve space on the right so the title never ellipsizes under the
      absolutely-positioned pin button. */
   padding-right: calc(var(--space-5) + 20px + var(--space-3));
 }
-/* Swatch inside a wave row — mirrors .cove-nav .swatch-wrap / .swatch
-   so pinned/waiting wave rows share the same [swatch] [title] pattern. */
-.side .side-wave .swatch-wrap {
-  position: relative;
-  width: 12px; height: 12px;
-  flex-shrink: 0;
-}
-.side .side-wave .swatch {
-  width: 10px; height: 10px;
-  border-radius: var(--radius-sm);
+/* Cove-name secondary button — line 2 of the wave row. */
+.side .side-wave-cove {
   display: block;
+  width: 100%;
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* Reserve space on the right so cove name never runs under the pin. */
+  padding-right: calc(var(--space-5) + 20px + var(--space-3));
+  transition: background var(--motion-quick), color var(--motion-quick);
+}
+.side .side-wave-cove:hover { background: var(--overlay-hover-faint); color: var(--text-2); }
+[data-theme="dark"] .side .side-wave-cove:hover { background: var(--overlay-hover); }
+.side .side-wave-cove:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 .side .side-wave-row:hover .side-wave { background: var(--overlay-hover-faint); color: var(--text); }
 [data-theme="dark"] .side .side-wave-row:hover .side-wave { background: var(--overlay-hover); }
