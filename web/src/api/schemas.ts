@@ -381,6 +381,27 @@ export const taskFailedSchema = z.object({
   }),
 });
 
+/**
+ * Issue #318 INV-1 (b) — `Event::SpecPushAbandoned`. Emitted exactly once
+ * when the dispatcher's push path takes over an inert spec daemon and
+ * drops the queued envelope tail (`last_envelope_id` is the highest
+ * envelope id that was abandoned). Wave-scoped (routes to `wave:<id>`
+ * and `cove:<cove_id>` topics, mirrors `wave.deleted`'s topic mapping).
+ *
+ * Strictly additive on the wire: old frontends see an unknown `ev` tag
+ * and skip; the runtime validator here is the conformance-test pin that
+ * keeps the zod union in lockstep with the ts-rs generated `Event`
+ * union.
+ */
+export const specPushAbandonedSchema = z.object({
+  ev: z.literal('spec_push.abandoned'),
+  data: z.object({
+    wave_id: z.string(),
+    cove_id: z.string(),
+    last_envelope_id: z.number(),
+  }),
+});
+
 // ---------------- EventScope (mirror event.rs) ----------------
 
 /**
@@ -435,6 +456,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   terminalJobRequestedSchema,
   taskCompletedSchema,
   taskFailedSchema,
+  specPushAbandonedSchema,
 ]);
 
 // ---------------- Inferred types ----------------
@@ -465,5 +487,6 @@ export type CodexJobRequestedEvent = z.infer<typeof codexJobRequestedSchema>;
 export type TerminalJobRequestedEvent = z.infer<typeof terminalJobRequestedSchema>;
 export type TaskCompletedEvent = z.infer<typeof taskCompletedSchema>;
 export type TaskFailedEvent = z.infer<typeof taskFailedSchema>;
+export type SpecPushAbandonedEvent = z.infer<typeof specPushAbandonedSchema>;
 
 export type WireEvent = z.infer<typeof wireEventSchema>;

@@ -361,6 +361,12 @@ async fn try_takeover_one_wave(
             card_id, wave_id = %wave_id, error = %e,
             "takeover: mkdir appserver sock dir failed; leaving wave inert",
         );
+        // #318 INV-1 (b) — abandonment signal for the no-skip review gap
+        // from #315. Mkdir failure means we never even attempted resume,
+        // so events with `id > push_watermark` for this wave will sit
+        // stranded; emit so SRE / future re-run path (#313 problem #2)
+        // sees a durable record.
+        emit_spec_push_abandoned(state, wave_id).await;
         return TakeoverOutcome::Inert;
     }
     match spec_appserver::resume_spec_appserver(&state.codex.codex_bin, &env_map, thread_id, &sock)
@@ -420,8 +426,125 @@ async fn try_takeover_one_wave(
                     "takeover: respawn app-server / resume failed; leaving wave inert (next boot retries)",
                 );
             }
+            // #318 INV-1 (b) — abandonment signal. Both inert sub-paths
+            // here (resume returned `-32600 "no rollout"`, or spawn /
+            // connect / handshake errored) leave the wave without a
+            // live push channel, so any persisted event with `id >
+            // push_watermark` for this wave is stranded until manual
+            // re-run wiring lands (#313 problem #2). Emit unconditionally
+            // for every Inert path so the signal isn't conditional on
+            // the classifier sub-branch — the consumer downstream
+            // doesn't care WHY we abandoned, only THAT we did.
+            emit_spec_push_abandoned(state, wave_id).await;
             TakeoverOutcome::Inert
         }
+    }
+}
+
+/// #318 INV-1 (b) — emit [`Event::SpecPushAbandoned`] for a wave that
+/// boot takeover gave up on. Centralized here so every
+/// [`TakeoverOutcome::Inert`] exit point in [`try_takeover_one_wave`]
+/// routes through the same persistence + broadcast call: the spec card
+/// is now excluded from `spec_cards_for_boot_takeover` on future boots
+/// (no `codex_thread_id` after clear, OR resume keeps failing), so this
+/// is the only durable record that SRE / future re-run code will see
+/// for the stranded envelopes.
+///
+/// **Why `log_pure_event` and not `EventBus::emit`**: the abandonment
+/// must survive a kernel restart that happens between this call and a
+/// human reading it — otherwise the signal is no more observable than
+/// the existing `tracing::warn!`. `log_pure_event` persists the row in
+/// the events table BEFORE broadcasting, so a subscriber catching up
+/// via `events_since(cursor)` after a future restart still sees the
+/// signal.
+///
+/// **`last_envelope_id` semantics**: pulled from
+/// [`crate::db::RepoEventWrite::events_latest_id_for_wave`] — the
+/// largest `events.id` whose `scope_wave` matches this wave at the
+/// moment of abandonment. Upper bound on the stranded set: every id in
+/// `(push_watermark, last_envelope_id]` for this wave is at risk.
+/// `None` (no wave-scoped rows yet — abandonment happened before any
+/// event was emitted in scope) maps to `0`, the `events.id` "no row"
+/// sentinel. Callers that want the *exact* stranded set can run their
+/// own `events_since(push_watermark)` filtered to this wave_id; this
+/// payload field is a cheap upper bound for sizing.
+///
+/// **`cove_id` resolution**: via [`crate::wave_cove_cache::WaveCoveCache`]
+/// (write-through cache seeded at boot from `waves.cove_id`). A miss
+/// here means the wave row was deleted between
+/// `spec_cards_for_boot_takeover` returning the row and this point —
+/// which would also fail the SQL JOIN in `spec_cards_for_boot_takeover`,
+/// so it's effectively unreachable. We log + return without emitting
+/// rather than fabricating a sentinel cove_id; the wave is gone, the
+/// signal would route to no live subscriber, and the consumer can rely
+/// on cove_id being authoritative.
+///
+/// Persistence + broadcast failure is logged at `warn!` and otherwise
+/// swallowed — boot stays best-effort (one wave's signal failing must
+/// not skip takeover for the next wave). The persisted event itself
+/// is the durability boundary; if the write fails the wave is still
+/// inert from `tracing::warn!`'s perspective.
+async fn emit_spec_push_abandoned(state: &state::AppState, wave_id: &crate::ids::WaveId) {
+    let Some(cove_id) = state.wave_cove_cache.cove_of(wave_id) else {
+        // Wave row deleted between the takeover-input SELECT and this
+        // emit — the JOIN in `spec_cards_for_boot_takeover` would have
+        // filtered it out, so in practice this branch is unreachable.
+        // Log loudly so a future regression in cache seeding (or a new
+        // takeover entry-point that doesn't go through the boot SELECT)
+        // shows up here.
+        tracing::warn!(
+            wave_id = %wave_id,
+            "takeover: skipping SpecPushAbandoned emit — wave_cove_cache miss \
+             (wave row deleted concurrently?)"
+        );
+        return;
+    };
+    let last_envelope_id = match state.repo.events_latest_id_for_wave(wave_id.as_str()).await {
+        Ok(opt) => opt.unwrap_or(0),
+        Err(e) => {
+            // SELECT failure shouldn't block the signal — emit with the
+            // `0` sentinel and log the underlying error. Consumers that
+            // want the exact set can re-query off the `wave_id` topic.
+            tracing::warn!(
+                wave_id = %wave_id, error = %e,
+                "takeover: events_latest_id_for_wave failed; \
+                 emitting SpecPushAbandoned with last_envelope_id = 0"
+            );
+            0
+        }
+    };
+    let event = crate::event::Event::SpecPushAbandoned {
+        wave_id: wave_id.clone(),
+        cove_id: cove_id.clone(),
+        last_envelope_id,
+    };
+    let scope = crate::event::EventScope::Wave {
+        wave: wave_id.clone(),
+        cove: cove_id,
+    };
+    if let Err(e) = state
+        .repo
+        .log_pure_event(
+            crate::ids::ActorId::Kernel,
+            scope,
+            None,
+            &state.events,
+            &state.card_role_cache,
+            &state.wave_cove_cache,
+            event,
+        )
+        .await
+    {
+        tracing::warn!(
+            wave_id = %wave_id, error = %e,
+            "takeover: log_pure_event(SpecPushAbandoned) failed; \
+             wave is still inert but signal was not persisted"
+        );
+    } else {
+        tracing::info!(
+            wave_id = %wave_id, last_envelope_id,
+            "takeover: emitted SpecPushAbandoned (#318 INV-1 b)"
+        );
     }
 }
 
