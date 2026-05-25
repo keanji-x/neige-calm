@@ -711,7 +711,61 @@ impl SpecPushRegistry {
 
     /// Insert (or replace) the handle for a wave. A replaced handle is
     /// returned so the caller can observe it; dropping it kills its child.
+    ///
+    /// **Production code should use [`Self::park`] instead** — `park` runs
+    /// the aspect framework's
+    /// [`JoinPoint::BeforeHandleParkInRegistry`](crate::aspect::JoinPoint::BeforeHandleParkInRegistry)
+    /// invariants (INV-6's `WatermarkSinkInstalledAspect` today). `insert`
+    /// is retained for the spec-push test crate, which constructs handles
+    /// without going through the full install path and intentionally
+    /// bypasses the aspect check.
     pub fn insert(&self, wave_id: WaveId, handle: SpecPushHandle) -> Option<SpecPushHandle> {
+        self.0.insert(wave_id, handle)
+    }
+
+    /// #322 — production registration path. Runs every aspect installed on
+    /// the [`crate::aspect::JoinPoint::BeforeHandleParkInRegistry`] slot,
+    /// then `insert`s the handle. An aspect violation panics (release-mode
+    /// fail-fast: a kernel that parks a handle missing its watermark sink
+    /// has already corrupted the durable push-watermark contract and the
+    /// only safe action is to crash so the supervisor restart re-runs
+    /// boot-takeover from persistent state — see [`crate::aspect`] module
+    /// doc).
+    ///
+    /// Why not collapse with `insert`: tests in `mod tests` build
+    /// [`SpecPushHandle`]s without a watermark sink (they don't exercise
+    /// the queue-flush path), so they'd trip
+    /// [`crate::aspect::WatermarkSinkInstalledAspect`]. `park` is the
+    /// production entry point; `insert` is the bare-insert escape hatch
+    /// tests keep using.
+    ///
+    /// The `aspects: &AspectRegistry` arg is the explicit framework wiring
+    /// the design landed on (see #322 instructions): the registry has
+    /// no opinion on aspect dispatch, the caller passes the aspect
+    /// registry it already holds on [`crate::state::AppState`]. Approach A
+    /// from the issue body — simpler than embedding the aspect registry
+    /// into `SpecPushRegistry` because (a) `SpecPushRegistry::new` is
+    /// called from `Default::default()` chains the aspect registry isn't
+    /// available in, and (b) keeping the registries orthogonal lets the
+    /// aspect framework grow without churning `SpecPushRegistry`'s
+    /// construction sites.
+    pub async fn park(
+        &self,
+        wave_id: WaveId,
+        handle: SpecPushHandle,
+        aspects: &crate::aspect::AspectRegistry,
+    ) -> Option<SpecPushHandle> {
+        // Run BeforeHandleParkInRegistry aspects. The aspect dispatcher
+        // panics on the first failure (see `AspectRegistry::run_before_handle_park`).
+        // Scope the context so its borrows of `handle` / `wave_id` are
+        // released before the `insert` move below.
+        {
+            let ctx = crate::aspect::HandleContext {
+                handle: &handle,
+                wave_id: &wave_id,
+            };
+            aspects.run_before_handle_park(&ctx).await;
+        }
         self.0.insert(wave_id, handle)
     }
 
@@ -1747,6 +1801,84 @@ mod tests {
             .expect("prior handle returned on replace");
         drop(prior);
         assert_eq!(reg.len(), 1);
+        let _ = reg.remove(&wave);
+    }
+
+    /// #322 — `park` is the production registration path; it runs the
+    /// aspect framework's `BeforeHandleParkInRegistry` checks before
+    /// inserting. With the production aspect set (INV-6's
+    /// `WatermarkSinkInstalledAspect` is registered by
+    /// `state::build_aspect_registry`), parking a handle that's missing
+    /// its watermark sink MUST panic — the `fake_handle` helper builds
+    /// exactly this shape (no sink installed) so this test pins the
+    /// "park without sink panics" contract on the production aspect set.
+    ///
+    /// Without this enforcement, a future refactor that splits the
+    /// `install_watermark_sink` call from the park site would silently
+    /// drop queued-then-flushed envelopes from the durable watermark —
+    /// the original #313 bug class, now caught at park time in release
+    /// builds too (not just under `debug_assert!`).
+    #[tokio::test]
+    #[should_panic(expected = "watermark-sink-installed")]
+    async fn park_panics_when_aspect_fails() {
+        use crate::aspect::{AspectRegistry, WatermarkSinkInstalledAspect};
+
+        let reg = SpecPushRegistry::new();
+        let wave = WaveId::from("wave-no-sink");
+        let (handle, _server) = fake_handle().await;
+        // `fake_handle` builds a handle with `watermark_sink = None`;
+        // INV-6's aspect must trip.
+        let mut aspects = AspectRegistry::new();
+        aspects.register_before_handle_park(Arc::new(WatermarkSinkInstalledAspect));
+        // Panics inside the aspect dispatcher; the `expected` substring
+        // pins the aspect name in the panic message so a rename is a
+        // visible diff.
+        let _ = reg.park(wave, handle, &aspects).await;
+    }
+
+    /// Sibling positive case: with the watermark sink installed, the
+    /// aspect passes and `park` behaves like a bare `insert`. Pins the
+    /// "park is a transparent wrapper around insert on the happy path"
+    /// contract so a future aspect refactor can't break the production
+    /// register sequence.
+    #[tokio::test]
+    async fn park_succeeds_when_invariant_holds() {
+        use crate::aspect::{AspectRegistry, WatermarkSinkInstalledAspect};
+
+        let reg = SpecPushRegistry::new();
+        let wave = WaveId::from("wave-with-sink");
+        let (handle, _server) = fake_handle().await;
+
+        // Install a no-op sink so INV-6 passes. The sink itself is
+        // never invoked here — the aspect only probes presence via
+        // `has_watermark_sink`.
+        let sink: WatermarkSink = Arc::new(|_id| Box::pin(async move {}));
+        handle.install_watermark_sink(sink).await;
+
+        let mut aspects = AspectRegistry::new();
+        aspects.register_before_handle_park(Arc::new(WatermarkSinkInstalledAspect));
+
+        // First park: no prior handle.
+        assert!(reg.park(wave.clone(), handle, &aspects).await.is_none());
+        assert!(reg.contains(&wave));
+        let _ = reg.remove(&wave);
+    }
+
+    /// `park` with an empty aspect registry is a noop dispatcher around
+    /// `insert` — proves the aspect framework's zero-aspect case stays
+    /// cheap (and exists so tests that don't care about aspects can
+    /// still exercise the production code path without registering
+    /// every aspect every time).
+    #[tokio::test]
+    async fn park_with_empty_aspect_registry_just_inserts() {
+        use crate::aspect::AspectRegistry;
+
+        let reg = SpecPushRegistry::new();
+        let wave = WaveId::from("wave-empty-aspects");
+        let (handle, _server) = fake_handle().await;
+        let aspects = AspectRegistry::new();
+        assert!(reg.park(wave.clone(), handle, &aspects).await.is_none());
+        assert!(reg.contains(&wave));
         let _ = reg.remove(&wave);
     }
 

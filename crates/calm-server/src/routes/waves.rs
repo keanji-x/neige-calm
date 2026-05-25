@@ -991,7 +991,17 @@ async fn spawn_push_appserver(
     // Park the handle so PR3b's dispatcher can resolve the wave's
     // app-server client + thread, and so wave-delete / sweeper teardown
     // kills the child via `kill_on_drop`.
-    s.spec_push.insert(wave.id.clone(), handle);
+    //
+    // #322 — `park` (not the bare `insert`) runs the aspect framework's
+    // `BeforeHandleParkInRegistry` checks first; INV-6
+    // (`WatermarkSinkInstalledAspect`) panics in release if a future
+    // refactor drops the `install_watermark_sink` call above. The
+    // `debug_assert!` above is the local fast-fail at the install site;
+    // the aspect is the framework-level enforcement at the park site
+    // (belt + suspenders, both pointing at INV-6).
+    s.spec_push
+        .park(wave.id.clone(), handle, s.aspects.as_ref())
+        .await;
 
     tracing::info!(
         card_id = %spec_card_id,
