@@ -1138,6 +1138,7 @@ async fn dispatcher_codex_card_added_after_daemon_handle_set_issue_310() {
         codex.clone(),
         daemon,
         None,
+        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
@@ -1244,6 +1245,7 @@ async fn dispatcher_terminal_card_added_after_daemon_handle_set_issue_310() {
         codex.clone(),
         daemon,
         None,
+        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
@@ -1362,6 +1364,7 @@ async fn dispatcher_rolls_back_card_on_codex_daemon_spawn_failure_issue_310() {
         codex.clone(),
         stub_daemon(), // session_daemon_bin = /nonexistent-daemon-bin
         None,
+        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
@@ -1470,6 +1473,7 @@ async fn dispatcher_rolls_back_card_on_codex_daemon_spawn_failure_issue_310() {
         codex.clone(),
         daemon_ok,
         None,
+        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
@@ -1543,6 +1547,7 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
         codex.clone(),
         stub_daemon(),
         None,
+        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
@@ -1627,6 +1632,7 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
         codex.clone(),
         daemon_ok,
         None,
+        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
@@ -1722,6 +1728,7 @@ async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
         codex.clone(),
         daemon,
         None,
+        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
@@ -1940,6 +1947,7 @@ async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
         codex.clone(),
         daemon,
         None,
+        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
