@@ -371,6 +371,32 @@ pub fn decide(phase: SpecPushPhase) -> PushAction {
     }
 }
 
+/// The initial [`SpecPushStatus`] planted by the **boot-takeover resume
+/// path** ([`build_handle_after_spawn_resume`]) right after a successful
+/// `thread/resume`. Extracted into a named fn (rather than inlined as a
+/// struct literal at the callsite) so the value the resume path uses is
+/// observable from tests without exposing the private builder.
+///
+/// `thread_id` is the resumed thread's id — recorded on the status as
+/// `last_thread_id` so downstream consumers can correlate. The `phase`
+/// field falls through to [`SpecPushPhase::default()`] (today: `Idle`).
+///
+/// **Observability seam (#318, INV-4)**: tests assert
+/// `decide(initial_status_for_resume(…).phase) == PushAction::Enqueue`
+/// to pin the invariant that a freshly-resumed handle must defer the
+/// first push to the consumer task's `turn/completed` flush (because
+/// `thread/resume` cannot prove the server is between turns). This fn
+/// performs **no logic** — it returns the literal value the resume path
+/// would build inline. A correct INV-4 fix changes what this fn returns
+/// (e.g. plants a new `Resumed`/`Unknown` phase variant, or flips the
+/// `Default` so the test's `decide(...)` assertion holds).
+pub fn initial_status_for_resume(thread_id: &str) -> SpecPushStatus {
+    SpecPushStatus {
+        last_thread_id: Some(thread_id.to_string()),
+        ..Default::default()
+    }
+}
+
 /// Shared, cloneable handle onto the consumer-tracked status.
 type SharedStatus = Arc<Mutex<SpecPushStatus>>;
 
@@ -1413,6 +1439,42 @@ impl SpecPushRegistry {
     /// True when no push channels are registered.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    /// **Observability seam (#318, INV-6)**: probe whether the
+    /// [`WatermarkSink`] has been installed on the parked handle for
+    /// `wave_id`. Returns:
+    ///   * `Some(true)`  — handle registered AND the sink slot is filled
+    ///     (the correct post-init state for both init paths today),
+    ///   * `Some(false)` — handle registered but no sink installed (the
+    ///     bug-shape this seam catches: a future entry point that parks
+    ///     a handle without `install_watermark_sink` — flushed queue
+    ///     items would silently fail to persist their watermark),
+    ///   * `None`        — no handle registered for this wave.
+    ///
+    /// Mirrors [`SpecPushHandle::has_watermark_sink`] (already `pub`) but
+    /// reachable without first extracting the handle out of the registry
+    /// (the registry stores `SpecPushHandle` by value; a `get(&self) ->
+    /// Option<&SpecPushHandle>` would require leaking the `DashMap` ref
+    /// guard, which the rest of this surface deliberately avoids).
+    /// Holds the shard guard for a single cheap `Arc` clone of the sink
+    /// slot before releasing the guard and awaiting on the slot's mutex,
+    /// so callers never hold the registry lock across the `.await`.
+    ///
+    /// No production caller branches on this — `install_watermark_sink`
+    /// is colocated with the two parking sites and verified by
+    /// `debug_assert!`. The seam exists so integration tests can prove
+    /// the symmetry contract holds without depending on the
+    /// release-elided `debug_assert!`.
+    pub async fn has_watermark_sink(&self, wave_id: &WaveId) -> Option<bool> {
+        // Clone the cheap `SpecPusher` (shared `Arc`s) under the guard,
+        // drop the guard, then read the sink — never hold the shard
+        // guard across the `.await`. The pusher carries the same
+        // `watermark_sink: WatermarkSinkSlot` Arc as the parent handle,
+        // so a Some/None probe via the pusher is equivalent to probing
+        // via the handle.
+        let pusher = self.0.get(wave_id).map(|h| h.pusher())?;
+        Some(pusher.watermark_sink.lock().await.is_some())
     }
 }
 
