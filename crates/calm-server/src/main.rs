@@ -45,12 +45,20 @@ async fn main() -> anyhow::Result<()> {
     // race the sweep.
     calm_server::revive_orphans_on_boot(&state).await;
 
-    // #293 PR3a (B1) — boot-time reap of any leaked `codex app-server`
-    // process group from a previous kernel hard-crash. Reads the
-    // persisted `appserver_pgid` off spec-card payloads and kills any
-    // group still bound to its (now-orphaned) per-card socket. Runs once
-    // at boot, before the registry holds any live handle.
-    calm_server::reap_orphan_appserver_groups_on_boot(&state).await;
+    // #313 problem #1 — boot-time **takeover** of in-flight spec waves.
+    // Replaces the previous "kill-on-boot" sweep
+    // (`reap_orphan_appserver_groups_on_boot`). For every spec card whose
+    // payload carries a `codex_thread_id` AND whose wave is not in a
+    // terminal lifecycle state: re-attach (reuse the persisted live
+    // app-server if its socket+pgid are still alive, else respawn fresh),
+    // `initialize` + `thread/resume(<thread_id>)`, register a fresh
+    // `SpecPushHandle`, then replay every persisted event with
+    // `id > push_watermark` through the dispatcher's push path so the
+    // spec thread catches up on what happened while the kernel was down.
+    // Failures are non-fatal per wave; the kernel boot proceeds regardless.
+    // Runs before the listener binds so a request landing mid-takeover
+    // can't race a half-registered handle.
+    calm_server::takeover_spec_appservers_on_boot(&state).await;
 
     // Optional session-recording — when `RECORD_SESSION=<path>` is set,
     // every event broadcast on the bus is appended to that file as

@@ -317,16 +317,16 @@ pub async fn reap_terminal_artifacts(term: &Terminal) {
 ///   4. drop the handle (the [`SpecPushHandle::drop`] safety-net group
 ///      SIGTERM is a no-op by now, plus consumer/reader task aborts).
 ///
-/// ## Hard-crash orphan gap → closed by pgid persistence
+/// ## Hard-crash orphan gap → closed by pgid persistence + boot takeover
 ///
 /// If the kernel is `SIGKILL`ed (or the box loses power) the in-process
-/// reap never runs. To close that gap the pgid is **persisted** on the
-/// spec-card payload (`appserver_pgid`, written alongside `codex_thread_id`
-/// / `appserver_sock` on the create-wave hot path); the boot-time recovery
-/// sweep [`crate::reap_orphan_appserver_groups_on_boot`] reads it back and
-/// `kill(-pgid, …)`s any orphaned group whose owning terminal is gone —
-/// the same shape the PTY sweeper uses (`terminal_set_pid` + SIGTERM),
-/// extended to the process group.
+/// reap never runs. The pgid is **persisted** on the spec-card payload
+/// (`appserver_pgid`, written alongside `codex_thread_id` / `appserver_sock`
+/// on the create-wave hot path); the boot-time recovery sweep
+/// [`crate::takeover_spec_appservers_on_boot`] reads it back and EITHER
+/// adopts the still-alive group (re-attaching via `thread/resume`) OR
+/// respawns a fresh app-server and kills the stale group as part of the
+/// fallback — see #313 problem #1.
 pub async fn reap_spec_push(state: &AppState, wave_id: &WaveId) {
     let Some(handle) = state.spec_push.remove(wave_id) else {
         return;

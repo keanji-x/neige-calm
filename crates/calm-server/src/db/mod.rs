@@ -300,14 +300,25 @@ pub trait RepoRead: Send + Sync + 'static {
     /// were still running and their sockets are stale on disk).
     async fn terminals_with_daemon_handle(&self) -> Result<Vec<Terminal>>;
 
-    /// #293 PR3a (B1 crash recovery) — return every card whose payload
-    /// carries a spec-push `appserver_pgid`, as
-    /// `(card_id, appserver_pgid, appserver_sock)`. Rows missing a numeric
-    /// pgid or a string sock are skipped. Used exclusively by
-    /// [`crate::reap_orphan_appserver_groups_on_boot`] during startup to
-    /// `kill(-pgid, …)` any leaked `codex app-server` process group left by
-    /// a kernel hard-crash (the in-process `SpecPushHandle` reap never ran).
-    async fn spec_cards_with_appserver_pgid(&self) -> Result<Vec<(String, i32, String)>>;
+    /// #313 problem #1 (boot takeover) — return every spec card whose
+    /// payload carries a `codex_thread_id` whose parent wave is not in a
+    /// terminal lifecycle state (`done` / `canceled` / `failed`), as
+    /// `(card_id, wave_id, codex_thread_id, appserver_pgid, appserver_sock,
+    /// push_watermark)`.
+    ///
+    /// `appserver_pgid` and `appserver_sock` may be missing if a prior boot
+    /// only persisted the thread id (defensive — every code path that writes
+    /// `codex_thread_id` today also writes both); `push_watermark` defaults
+    /// to 0 when absent (waves persisted before #313 didn't have the field,
+    /// and 0 means "replay every event for this wave on recovery" — which is
+    /// the correct conservative default).
+    ///
+    /// Used exclusively by [`crate::takeover_spec_appservers_on_boot`] during
+    /// startup to re-establish the push channel for in-flight waves (boot
+    /// takeover replaces today's boot kill).
+    async fn spec_cards_for_boot_takeover(
+        &self,
+    ) -> Result<Vec<(String, String, String, Option<i32>, Option<String>, i64)>>;
 
     // ---- plugins (read-only)
     async fn plugins_list(&self) -> Result<Vec<Plugin>>;
@@ -644,6 +655,47 @@ pub trait RepoOutOfDomain: RepoRead {
     /// can call it from inside its `write_with_event` closure via the
     /// `_tx`-suffixed helper.
     async fn terminal_delete(&self, id: &str) -> Result<()>;
+
+    /// #313 problem #1 (boot takeover) — persist a spec card's push
+    /// watermark (`payload.push_watermark`) as a single-field merge,
+    /// without emitting a `CardUpdated` event.
+    ///
+    /// The dispatcher's push path calls this on every push, right after
+    /// bumping the in-memory [`crate::event_cursor::EventCursorCache`].
+    /// Going through `write_with_event` would emit one `CardUpdated` per
+    /// push — pure noise nothing subscribes to (the dispatcher's filter
+    /// doesn't watch `CardUpdated`, and the field is server-private
+    /// bookkeeping). Treating it like the terminal PID / handle /exit
+    /// sidecars (which use this same trait for the same reason) keeps the
+    /// hot path narrow.
+    ///
+    /// The write is a JSON merge so it never clobbers `codex_thread_id` /
+    /// `appserver_sock` / `appserver_pgid` / other payload fields. A
+    /// missing card row is a no-op (the wave was deleted between the bump
+    /// and the persist).
+    async fn spec_card_set_push_watermark(&self, card_id: &str, watermark: i64) -> Result<()>;
+
+    /// #313 problem #1 — clear a spec card's `codex_thread_id` (and the
+    /// related push fields) when boot takeover finds the persisted thread
+    /// can no longer be resumed (`-32600 "no rollout found"` from
+    /// `thread/resume`). Leaves the rest of the payload intact. The wave
+    /// stays in its current lifecycle (matches today's "inert wave"
+    /// posture — issue #313 problem #2 covers re-running these; not in
+    /// this PR).
+    async fn spec_card_clear_push_state(&self, card_id: &str) -> Result<()>;
+
+    /// #313 problem #1 — after boot takeover RESPAWNS a fresh codex
+    /// app-server for a spec card, persist the new launcher pgid + sock
+    /// so the NEXT boot cycle (or a graceful teardown) targets the
+    /// right process. Single-statement JSON-merge; touches only
+    /// `appserver_pgid` + `appserver_sock`. Does NOT touch
+    /// `codex_thread_id` or `push_watermark`.
+    async fn spec_card_set_appserver_after_takeover(
+        &self,
+        card_id: &str,
+        pgid: i32,
+        sock: &str,
+    ) -> Result<()>;
 
     // ---- plugins (writes)
     //

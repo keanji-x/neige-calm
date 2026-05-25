@@ -874,7 +874,7 @@ async fn spawn_push_appserver(
     // read-modify-write). `codex_thread_id` is also the
     // `codex_auto_submit` skip signal: the kernel already drove turn #1,
     // so no `\r` is injected into the resumed TUI. `appserver_pgid` is the
-    // crash-recovery reap target — `reap_orphan_appserver_groups_on_boot`
+    // crash-recovery reuse target — `takeover_spec_appservers_on_boot`
     // reads it to `kill(-pgid, …)` a leaked group after a hard crash.
     //
     // NOTE: this persists AFTER the handle is built but BEFORE it is parked
@@ -927,6 +927,21 @@ async fn spawn_push_appserver(
                 map.insert(
                     "appserver_pgid".into(),
                     serde_json::Value::Number(pgid.into()),
+                );
+                // #313 problem #1 — initialize the persisted push watermark
+                // to 0 (the "no events pushed yet" sentinel). The dispatcher
+                // bumps this field atomically alongside `push_cursor.bump`
+                // every time it pushes (see `dispatcher::push_to_spec`); on
+                // boot recovery, [`crate::takeover_spec_appservers_on_boot`]
+                // seeds the in-memory `EventCursorCache` from this field and
+                // replays every event with `id > watermark` so a kernel
+                // restart can't silently drop already-acked-by-codex catch-up
+                // events. 0 is correct on first persist because no push has
+                // happened yet — the very first push will bump it to the
+                // envelope's id.
+                map.insert(
+                    "push_watermark".into(),
+                    serde_json::Value::Number(0i64.into()),
                 );
                 let card = card_update_tx(
                     tx,

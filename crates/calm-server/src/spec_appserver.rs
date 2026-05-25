@@ -752,6 +752,188 @@ pub async fn spawn_spec_appserver(
     Ok(handle)
 }
 
+/// #313 problem #1 — boot-time variant of [`spawn_spec_appserver`] for
+/// **takeover after a kernel restart**: respawn a fresh `codex app-server`
+/// for a spec card whose `codex_thread_id` is already persisted, then
+/// `initialize` + `thread/resume(<thread_id>)` against it (no `turn/start`).
+///
+/// Same shape as [`spawn_spec_appserver`]: spawn the child in its OWN
+/// process group ([`Command::process_group`]`(0)` → `pgid == launcher pid`),
+/// arm a [`SpawnRollback`] guard so any `?`/timeout reaps the launcher's
+/// whole group, and wrap the post-spawn sequence under
+/// [`OVERALL_BOOT_BUDGET`]. The only differences from the create-wave
+/// happy path are:
+///   * the post-spawn sequence calls
+///     [`build_handle_after_spawn_resume`] instead of
+///     [`build_handle_after_spawn`] — `thread/resume(thread_id)` in place of
+///     `thread/start` + `turn/start` + await `turn/started`, and
+///   * a `-32600 "no rollout found"` from `thread/resume` (the wave never
+///     ran turn #1 last boot — the "inert wave" case) surfaces here as a
+///     [`CalmError::CodexAppServer`]; the caller treats it as non-fatal
+///     and leaves the wave inert (matches the create-wave error posture).
+///
+/// Resume only — does NOT issue `turn/start`. The dispatcher's catch-up
+/// replay will push any `id > push_watermark` events through the normal
+/// push path right after this returns; the first such push issues the
+/// first new turn (just like in steady state). If there are no catch-up
+/// events the wave sits idle until the next live event lands.
+pub async fn resume_spec_appserver(
+    codex_bin: &str,
+    env_map: &Value,
+    thread_id: &str,
+    sock: &Path,
+) -> Result<SpecPushHandle> {
+    if let Some(parent) = sock.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            CalmError::Internal(format!(
+                "mkdir appserver sock parent {}: {e}",
+                parent.display()
+            ))
+        })?;
+    }
+    if sock.exists() {
+        let _ = std::fs::remove_file(sock);
+    }
+    let listen = format!("unix://{}", sock.display());
+
+    let mut cmd = Command::new(codex_bin);
+    cmd.arg("app-server")
+        .arg("--listen")
+        .arg(&listen)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .process_group(0)
+        .kill_on_drop(true);
+    if let Some(map) = env_map.as_object() {
+        for (k, v) in map {
+            if let Some(val) = v.as_str() {
+                cmd.env(k, val);
+            }
+        }
+    }
+    let child = cmd
+        .spawn()
+        .map_err(|e| CalmError::CodexAppServer(format!("spawn codex app-server (resume): {e}")))?;
+    let pgid: i32 = match child.id() {
+        Some(pid) => i32::try_from(pid).map_err(|_| {
+            CalmError::CodexAppServer(format!("app-server pid {pid} out of i32 range"))
+        })?,
+        None => {
+            return Err(CalmError::CodexAppServer(
+                "codex app-server exited immediately after spawn (no pid) on resume".to_string(),
+            ));
+        }
+    };
+    tracing::info!(
+        pid = pgid, pgid, sock = %sock.display(), %thread_id,
+        "spec push (resume): spawned codex app-server (own process group)",
+    );
+
+    let mut rollback = SpawnRollback::new(pgid, sock);
+    let handle = match tokio::time::timeout(
+        OVERALL_BOOT_BUDGET,
+        build_handle_after_spawn_resume(child, pgid, thread_id, sock),
+    )
+    .await
+    {
+        Ok(res) => res?,
+        Err(_elapsed) => {
+            return Err(CalmError::CodexAppServer(format!(
+                "codex app-server resume did not complete within {}s overall",
+                OVERALL_BOOT_BUDGET.as_secs()
+            )));
+        }
+    };
+    rollback.disarm();
+    Ok(handle)
+}
+
+/// #313 problem #1 — connect to an **already-live** `codex app-server`
+/// (the kernel was restarted, but the launcher + native child are still
+/// bound to the per-card socket because they were reparented under
+/// `systemd --user` when the kernel `SIGKILL`ed) and `initialize` +
+/// `thread/resume(<thread_id>)` against it. No respawn, no new child,
+/// no kill — pure takeover.
+///
+/// `pgid` is the persisted launcher pgid that was found alive at boot.
+/// We do NOT own/spawn the child here — we adopt the existing process by
+/// recording its pgid on the resulting [`SpecPushHandle`] so the normal
+/// teardown path (handle Drop → `kill(-pgid, SIGTERM)`) reaps it on
+/// shutdown, exactly as if `create_wave` had spawned it. The handle's
+/// `child` field is set to a dummy long-running `sleep` process owned by
+/// this handle so the `Child` type's API contract is satisfied
+/// (`kill_on_drop` belt-and-suspenders), but the load-bearing reap is
+/// the group kill — which targets the **adopted** native server, not the
+/// dummy.
+///
+/// Failure modes (all surface as [`CalmError`] so the caller can warn +
+/// leave inert):
+///   * socket connect/handshake fails → log warn at the call site,
+///   * `initialize` or `thread/resume` errors (including `-32600 "no rollout
+///     found"`) → same — clear `codex_thread_id` from the card payload so the
+///     next boot doesn't re-try the dead resume.
+pub async fn adopt_live_appserver(
+    pgid: i32,
+    thread_id: &str,
+    sock: &Path,
+) -> Result<SpecPushHandle> {
+    // Connect to the existing socket. No spawn — the server is already
+    // bound there (the boot caller probed connectability before calling us).
+    let (client, notifs) = CodexAppServer::connect(sock).await?;
+    let client = Arc::new(client);
+    client
+        .initialize(ClientInfo {
+            name: "neige-calm-spec-push".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+        })
+        .await?;
+    let resumed = client.thread_resume(thread_id).await?;
+    if let Some(echoed) = resumed.thread_id()
+        && echoed != thread_id
+    {
+        tracing::warn!(
+            persisted = %thread_id,
+            echoed = %echoed,
+            "spec push (adopt): server echoed a different thread id than persisted; using persisted",
+        );
+    }
+    tracing::info!(
+        pgid, %thread_id, sock = %sock.display(),
+        "spec push (adopt): re-attached to live codex app-server",
+    );
+
+    // Dummy child so the `SpecPushHandle.child` invariant (an owned
+    // `Child`) is satisfied without us having spawned the real server.
+    // `kill_on_drop(true)` reaps the dummy; the load-bearing reap of the
+    // **real** server is the group kill on `pgid` in `Drop`. The dummy
+    // lives in its own process group too so a `kill(-pgid)` to its dummy
+    // group never accidentally hits the adopted real server.
+    let dummy = Command::new("sleep")
+        .arg("3650d")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| CalmError::Internal(format!("spawn dummy child for adopt: {e}")))?;
+
+    let status: SharedStatus = Arc::new(Mutex::new(SpecPushStatus {
+        last_thread_id: Some(thread_id.to_string()),
+        ..Default::default()
+    }));
+    Ok(park_handle(
+        dummy,
+        pgid,
+        client,
+        thread_id.to_string(),
+        sock,
+        notifs,
+        status,
+    ))
+}
+
 /// Best-effort rollback guard for the post-spawn fallible sequence
 /// (S2/B1). While *armed*, dropping it sends `SIGTERM` to the child's
 /// process group and clears the per-card socket dir, so any `?` early
@@ -857,12 +1039,96 @@ async fn build_handle_after_spawn(
     }));
     await_turn_started(&mut notifs, &thread_id, &status).await?;
 
-    // 6. Spawn the consumer task to track the rest of the stream. It takes
-    //    ownership of the same receiver `await_turn_started` was reading;
-    //    items that arrived after `turn/started` are still queued on the
-    //    unbounded mpsc and drain in order. PR3b: the consumer also owns the
-    //    flush side of the push queue — on each `turn/completed` it drains
-    //    the queue into one coalesced `turn/start`.
+    // 6. Spawn the consumer task and park the live handle (see
+    //    [`park_handle`] for the shared tail).
+    Ok(park_handle(
+        child, pgid, client, thread_id, sock, notifs, status,
+    ))
+}
+
+/// #313 problem #1 — boot-time takeover variant of [`build_handle_after_spawn`].
+///
+/// Same shape (poll-connect → initialize → spawn consumer → park-handle)
+/// but **swaps `thread/start` + `turn/start` + await `turn/started`** for a
+/// single `thread/resume(thread_id)`. No turn is issued on resume: the wave
+/// may be mid-turn from the prior boot, or simply between turns; either way
+/// the kernel's role here is to **re-attach** so the dispatcher can push
+/// catch-up events onto the live thread again, not to drive a fresh turn.
+///
+/// A `thread/resume` failure (`-32600 "no rollout found"` on a thread that
+/// never ran turn #1 in the prior boot, or any transport error) propagates
+/// as [`CalmError::CodexAppServer`]; the caller treats it as non-fatal and
+/// leaves the wave inert (matches the create-wave error posture).
+async fn build_handle_after_spawn_resume(
+    mut child: Child,
+    pgid: i32,
+    thread_id: &str,
+    sock: &Path,
+) -> Result<SpecPushHandle> {
+    // 2. Poll the socket for readiness (same as the spawn path).
+    let (client, notifs) = poll_connect(&mut child, sock).await?;
+    let client = Arc::new(client);
+
+    // 3. initialize + thread/resume. No `turn/start`, no `await turn/started`
+    //    — resume rejoins the persisted thread by id; if a turn is mid-flight
+    //    we'll observe its `turn/completed` on the notification stream and
+    //    reconcile the consumer-tracked phase.
+    client
+        .initialize(ClientInfo {
+            name: "neige-calm-spec-push".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+        })
+        .await?;
+    let resumed = client.thread_resume(thread_id).await?;
+    // Defensive: the server should echo back the same id on a successful
+    // resume; if it doesn't, log and prefer the persisted id (we keyed
+    // everything off it).
+    if let Some(echoed) = resumed.thread_id()
+        && echoed != thread_id
+    {
+        tracing::warn!(
+            persisted = %thread_id,
+            echoed = %echoed,
+            "spec push (resume): server echoed a different thread id than persisted; using persisted",
+        );
+    }
+    tracing::info!(thread_id = %thread_id, "spec push (resume): thread resumed");
+
+    // Seed the consumer-tracked status with the resumed thread id. Phase
+    // stays `Idle` until the notification stream tells us otherwise — the
+    // next observation will start a turn if no turn is in flight; if one
+    // is, the server's `turn/started`/`turn/completed` will reconcile the
+    // phase before any push tries to issue.
+    let status: SharedStatus = Arc::new(Mutex::new(SpecPushStatus {
+        last_thread_id: Some(thread_id.to_string()),
+        ..Default::default()
+    }));
+
+    Ok(park_handle(
+        child,
+        pgid,
+        client,
+        thread_id.to_string(),
+        sock,
+        notifs,
+        status,
+    ))
+}
+
+/// Shared tail of both build paths (spawn + resume): spawn the consumer
+/// task that drains the notification stream, then park everything into a
+/// live [`SpecPushHandle`]. Kept intentionally minimal — the only thing
+/// that differs across paths is whether a turn was driven before this
+/// runs.
+fn park_handle(
+    child: Child,
+    pgid: i32,
+    client: Arc<CodexAppServer>,
+    thread_id: String,
+    sock: &Path,
+    notifs: NotificationStream,
+    status: SharedStatus,
+) -> SpecPushHandle {
     let queue: PushQueue = Arc::new(Mutex::new(VecDeque::new()));
     let consumer_status = status.clone();
     let consumer_thread = thread_id.clone();
@@ -873,8 +1139,7 @@ async fn build_handle_after_spawn(
         client.clone(),
         queue.clone(),
     ));
-
-    Ok(SpecPushHandle {
+    SpecPushHandle {
         child,
         pgid,
         client,
@@ -883,7 +1148,7 @@ async fn build_handle_after_spawn(
         consumer,
         status,
         queue,
-    })
+    }
 }
 
 /// Poll `UnixStream::connect(sock)` until it succeeds (the app-server has
