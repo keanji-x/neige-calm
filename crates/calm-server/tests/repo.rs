@@ -1462,12 +1462,17 @@ async fn spec_cards_for_boot_takeover_filters_to_spec_role() {
         rows.len(),
         rows,
     );
-    let (card_id, wave_id, thread_id, pgid, sock, watermark) = &rows[0];
+    let (card_id, wave_id, thread_id, pgid, sock, start_time, watermark) = &rows[0];
     assert_eq!(card_id.as_str(), spec.id.as_str());
     assert_eq!(wave_id.as_str(), w.id.as_str());
     assert_eq!(thread_id, "thread-real-spec");
     assert_eq!(*pgid, Some(99_991));
     assert_eq!(sock.as_deref(), Some("/tmp/calm-spec-real.sock"));
+    // #318 INV-5 — fixture above never set `appserver_start_time`, so the
+    // tuple's start_time slot must come back as `None` (the boot-recovery
+    // path treats `None` as "skip the kill", which is correct for a
+    // hand-crafted fixture that doesn't represent a real spawned process).
+    assert_eq!(*start_time, None);
     assert_eq!(*watermark, 17);
 
     // Sanity: the plain card still exists in the DB — the filter is on

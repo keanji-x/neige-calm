@@ -867,6 +867,13 @@ async fn spawn_push_appserver(
     let thread_id = handle.thread_id.clone();
     let sock_for_args = handle.sock.clone();
     let pgid = handle.pgid;
+    // #318 INV-5 (R3-B1) — identity stamp captured by
+    // `spawn_spec_appserver` from `/proc/<pgid>/stat` at spawn. Persisted
+    // alongside `appserver_pgid` so boot-recovery can verify the pid
+    // hasn't been recycled before signaling it. `None` on non-Linux /
+    // ENOENT-at-spawn → field is JSON null below; boot-recovery treats
+    // an absent stamp as "skip the kill" (conservative).
+    let start_time = handle.start_time;
 
     // Persist `codex_thread_id` + `appserver_sock` + `appserver_pgid` on
     // the spec card payload (merge into the existing payload —
@@ -927,6 +934,20 @@ async fn spawn_push_appserver(
                 map.insert(
                     "appserver_pgid".into(),
                     serde_json::Value::Number(pgid.into()),
+                );
+                // #318 INV-5 (R3-B1) — pid identity stamp. Persist as a
+                // JSON number when available; on non-Linux / `/proc`
+                // read failure (`start_time == None`) we EXPLICITLY
+                // write JSON null so a future boot reads it as absent
+                // and conservatively skips the kill rather than
+                // matching against a missing key with undefined
+                // semantics. `serde_json::Number::from(u64)` is
+                // infallible for u64 (JSON numbers losslessly hold u64).
+                map.insert(
+                    "appserver_start_time".into(),
+                    start_time
+                        .map(|v| serde_json::Value::Number(serde_json::Number::from(v)))
+                        .unwrap_or(serde_json::Value::Null),
                 );
                 // #313 problem #1 — initialize the persisted push watermark
                 // to 0 (the "no events pushed yet" sentinel). The dispatcher

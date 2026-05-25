@@ -456,6 +456,19 @@ pub struct SpecPushHandle {
     /// `codex app-server` child it forks. Persisted on the spec-card
     /// payload (`appserver_pgid`) for boot-time crash recovery.
     pub pgid: i32,
+    /// #318 INV-5 (R3-B1) — `starttime` (clock-ticks since boot) of the
+    /// launcher pid captured at spawn from `/proc/<pid>/stat`. Persisted
+    /// on the spec-card payload as `appserver_start_time` alongside
+    /// `appserver_pgid`. The boot-recovery path calls
+    /// [`verify_owned_pid`] with `(pgid, this stamp)` BEFORE
+    /// `signal_process_group(pgid, …)` so a recycled pid (post-reboot)
+    /// cannot route the SIGTERM/SIGKILL to an unrelated process.
+    ///
+    /// `None` only on non-Linux targets / a `/proc` read failure at
+    /// spawn time (test fixtures on macOS, transient ENOENT) — the
+    /// boot-recovery path conservatively skips the kill when the
+    /// persisted stamp is absent, same as today's mismatch behavior.
+    pub start_time: Option<u64>,
     /// Programmatic client connected to `child` over WS-over-UDS. PR3b
     /// will call `turn_start`/`turn_steer`/`inject_items` on this.
     pub client: Arc<CodexAppServer>,
@@ -729,6 +742,90 @@ impl Drop for SpecPushHandle {
     }
 }
 
+/// #318 INV-5 (R3-B1) — read the `starttime` field (clock-ticks since
+/// boot) for `pid` from `/proc/<pid>/stat`. Returns `None` if the entry
+/// doesn't exist (the process is gone), the file can't be parsed, or
+/// we are running on a non-Linux target.
+///
+/// **Why it matters.** `(pid, start_time)` is the canonical Linux
+/// identity token for a live process: pids are recycled aggressively
+/// (especially across a host reboot), but `start_time` is jiffies
+/// **since-boot** for the *creation* of THAT pid. After a reboot every
+/// pid was created post-boot, so a captured `start_time` from before
+/// the reboot strictly differs from any live pid's `start_time` — the
+/// (pid, start_time) pair survives recycling where pid alone does not.
+/// We capture this stamp at spawn and persist it alongside the pgid,
+/// then verify it before signaling the persisted pgid on boot
+/// recovery — see [`verify_owned_pid`].
+///
+/// `/proc/<pid>/stat` layout (proc(5)): space-separated fields after the
+/// `comm` blob (which can contain spaces/parens and is always wrapped in
+/// `(…)` — split on the **last** `)` to skip it safely). `starttime` is
+/// field 22 (1-indexed); after the comm-wrap split, that's index 19 of
+/// the remaining tokens (we drop the first three fields `state ppid
+/// pgrp` … `state` is index 0 of the post-comm split). Concretely: pid,
+/// `(comm)`, state, ppid, pgrp, session, tty_nr, tpgid, flags, minflt,
+/// cminflt, majflt, cmajflt, utime, stime, cutime, cstime, priority,
+/// nice, num_threads, itrealvalue, **starttime** — that's index 19 in
+/// the post-comm split.
+#[cfg(target_os = "linux")]
+pub fn read_proc_start_time(pid: i32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // `comm` may contain `)` — strip everything up to and including the
+    // LAST `)`. The remainder starts with the `state` field.
+    let after = stat.rsplit_once(')')?.1;
+    let mut fields = after.split_whitespace();
+    // Skip state(0) ppid(1) pgrp(2) session(3) tty_nr(4) tpgid(5)
+    // flags(6) minflt(7) cminflt(8) majflt(9) cmajflt(10) utime(11)
+    // stime(12) cutime(13) cstime(14) priority(15) nice(16)
+    // num_threads(17) itrealvalue(18) → starttime is index 19.
+    let starttime = fields.nth(19)?;
+    starttime.parse::<u64>().ok()
+}
+
+/// Non-Linux stub. Identity verification via `/proc` is Linux-specific;
+/// on macOS / BSD the file does not exist. The kernel only spawns
+/// `codex app-server` on Linux production hosts (the boot-recovery path
+/// is Linux-only by design), but cross-platform builds still need this
+/// to compile.
+#[cfg(not(target_os = "linux"))]
+pub fn read_proc_start_time(_pid: i32) -> Option<u64> {
+    None
+}
+
+/// #318 INV-5 (R3-B1) — verify that the live process at `pid` is the
+/// SAME process whose `start_time` we captured at spawn (and persisted
+/// alongside `appserver_pgid` on the spec card payload).
+///
+/// Returns `true` iff `/proc/<pid>/stat` exists AND its `starttime`
+/// field matches `expected_start_time`. Returns `false` when the
+/// process is gone, the entry can't be parsed, or the stamp differs
+/// (which is the post-reboot pid-recycle case the call site guards
+/// against).
+///
+/// **Why we need this on top of [`socket_owned_by_appserver`].** The
+/// socket probe (`UnixStream::connect` succeeds → trust the pgid) is a
+/// good cheap proxy but suffers a TOCTOU window between the probe and
+/// the subsequent `signal_process_group(pgid, …)`. Between those two
+/// syscalls the kernel can reap the listener, recycle its pid/pgid to
+/// an unrelated user process, and our SIGTERM/SIGKILL then lands on
+/// that innocent process. `(pid, start_time)` is racey-free identity:
+/// even if the pgid is recycled within the window, the recycled
+/// process has a strictly later `start_time` (it started *after* our
+/// stamp), so this check still returns `false` and the kill is
+/// skipped.
+///
+/// On a non-Linux target (no `/proc`) this returns `false`
+/// unconditionally — the caller's existing fallback (skip the kill,
+/// cleanup the stale socket, let the respawn rebind) is correct in
+/// that environment.
+pub fn verify_owned_pid(pid: i32, expected_start_time: u64) -> bool {
+    let Some(live) = read_proc_start_time(pid) else {
+        return false;
+    };
+    live == expected_start_time
+}
+
 /// Send `signal` to the process **group** `pgid` (`kill(-pgid, signal)`).
 ///
 /// This is the load-bearing reap for the spec-push child. The `node`
@@ -986,7 +1083,19 @@ pub async fn spawn_spec_appserver(
             ));
         }
     };
-    tracing::info!(pid = pgid, pgid, sock = %sock.display(), "spec push: spawned codex app-server (own process group)");
+    // #318 INV-5 (R3-B1) — capture the launcher's `starttime` IMMEDIATELY
+    // after spawn (before the child has any chance to exit). Together
+    // with the pgid this is the boot-recovery identity token: a recycled
+    // pid post-reboot will read a strictly different stamp, so
+    // `verify_owned_pid` rejects it and we skip the kill. `None` here
+    // (e.g. test fixtures on a non-Linux target, or a transient ENOENT
+    // race) is persisted as missing and the recovery path conservatively
+    // skips the kill — same posture as a stamp mismatch.
+    let start_time = read_proc_start_time(pgid);
+    tracing::info!(
+        pid = pgid, pgid, start_time, sock = %sock.display(),
+        "spec push: spawned codex app-server (own process group)",
+    );
 
     // From here on, any early return drops `child` (→ kill_on_drop on the
     // launcher) but we must also reap the native child's GROUP. Wrap the
@@ -1004,7 +1113,7 @@ pub async fn spawn_spec_appserver(
     // no parked registry entry, and `create_wave` gets a clean error.
     let handle = match tokio::time::timeout(
         OVERALL_BOOT_BUDGET,
-        build_handle_after_spawn(child, pgid, goal_text, sock),
+        build_handle_after_spawn(child, pgid, start_time, goal_text, sock),
     )
     .await
     {
@@ -1097,15 +1206,21 @@ pub async fn resume_spec_appserver(
             ));
         }
     };
+    // #318 INV-5 (R3-B1) — same identity-stamp capture as the spawn path
+    // (see `spawn_spec_appserver`). The fresh respawn after takeover gets
+    // its own stamp; we persist it into the spec card payload below via
+    // `spec_card_set_appserver_after_takeover` so the NEXT boot-recovery
+    // cycle has a current identity token.
+    let start_time = read_proc_start_time(pgid);
     tracing::info!(
-        pid = pgid, pgid, sock = %sock.display(), %thread_id,
+        pid = pgid, pgid, start_time, sock = %sock.display(), %thread_id,
         "spec push (resume): spawned codex app-server (own process group)",
     );
 
     let mut rollback = SpawnRollback::new(pgid, sock);
     let handle = match tokio::time::timeout(
         OVERALL_BOOT_BUDGET,
-        build_handle_after_spawn_resume(child, pgid, thread_id, sock),
+        build_handle_after_spawn_resume(child, pgid, start_time, thread_id, sock),
     )
     .await
     {
@@ -1305,6 +1420,7 @@ pub async fn socket_owned_by_appserver(sock: &Path) -> bool {
 async fn build_handle_after_spawn(
     mut child: Child,
     pgid: i32,
+    start_time: Option<u64>,
     goal_text: &str,
     sock: &Path,
 ) -> Result<SpecPushHandle> {
@@ -1354,7 +1470,7 @@ async fn build_handle_after_spawn(
     // 6. Spawn the consumer task and park the live handle (see
     //    [`park_handle`] for the shared tail).
     Ok(park_handle(
-        child, pgid, client, thread_id, sock, notifs, status,
+        child, pgid, start_time, client, thread_id, sock, notifs, status,
     ))
 }
 
@@ -1374,6 +1490,7 @@ async fn build_handle_after_spawn(
 async fn build_handle_after_spawn_resume(
     mut child: Child,
     pgid: i32,
+    start_time: Option<u64>,
     thread_id: &str,
     sock: &Path,
 ) -> Result<SpecPushHandle> {
@@ -1422,6 +1539,7 @@ async fn build_handle_after_spawn_resume(
     let mut handle = park_handle(
         child,
         pgid,
+        start_time,
         client.clone(),
         thread_id.to_string(),
         sock,
@@ -1507,9 +1625,11 @@ async fn resume_reconcile_task(
 /// live [`SpecPushHandle`]. Kept intentionally minimal — the only thing
 /// that differs across paths is whether a turn was driven before this
 /// runs.
+#[allow(clippy::too_many_arguments)]
 fn park_handle(
     child: Child,
     pgid: i32,
+    start_time: Option<u64>,
     client: Arc<CodexAppServer>,
     thread_id: String,
     sock: &Path,
@@ -1534,6 +1654,7 @@ fn park_handle(
     SpecPushHandle {
         child,
         pgid,
+        start_time,
         client,
         thread_id,
         sock: sock.to_path_buf(),
@@ -1910,6 +2031,7 @@ mod tests {
         let handle = SpecPushHandle {
             child,
             pgid,
+            start_time: read_proc_start_time(pgid),
             client,
             thread_id: "thread-test".into(),
             sock: PathBuf::from("/tmp/test/app.sock"),
