@@ -69,8 +69,8 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
 use crate::card_role_cache::CardRoleCache;
-use crate::db::sqlite::card_with_codex_create_tx;
-use crate::db::write_with_event_typed;
+use crate::db::sqlite::{card_with_codex_create_tx, card_with_terminal_rollback_tx};
+use crate::db::write_in_tx_typed;
 use crate::db::{Repo, RouteRepo};
 use crate::error::CalmError;
 use crate::event::{
@@ -85,7 +85,9 @@ use crate::routes::terminal::spawn_daemon_with_parts;
 use crate::spec_appserver::SpecPushRegistry;
 use crate::spec_card::{SeededCardRole, build_codex_env_map, seed_codex_home_with_parts};
 use crate::state::{CodexClient, DaemonClient};
+use crate::terminal_sweeper::{reap_terminal_artifacts, reap_terminal_pid_only};
 use crate::wave_cove_cache::WaveCoveCache;
+use crate::ws::terminal::exit_sidecar_path;
 
 /// Default number of permits when `NEIGE_DISPATCHER_PERMITS` is unset /
 /// invalid / `0`. Mirrors the v2 spec for issue #136.
@@ -893,27 +895,33 @@ impl Inner {
         let env_for_tx = env.clone();
         let bookkeeping_for_tx = bookkeeping_value.clone();
 
-        // Single tx: idempotency check + worker card + terminal row +
-        // bookkeeping merge + CardAdded event. Closure returns
-        // `Conflict` on duplicate, which rolls everything back
-        // (matches the issue v2 invariant: no spurious event when the
-        // request is a duplicate).
+        // Issue #310 — two-stage spawn. Stage 1: a tx that mints the
+        // worker card + terminal row (`daemon_handle = NULL`).
+        // **Does NOT emit `CardAdded` here.** Stage 2 (post-commit,
+        // below): `seed_codex_home_with_parts` + `spawn_daemon_with_parts`
+        // (writes `daemon_handle`, spawns daemon, probes readiness).
+        // Stage 3 (post-spawn-success): broadcast `CardAdded` via
+        // `log_pure_event` so subscribers see the card only after the
+        // backing terminal has a live daemon. Without this split, a
+        // spec card hot-subscribed to the wave's event stream sees
+        // `CardAdded` immediately, mounts its `XtermView`, attempts a
+        // WS attach, and hits `resolve_live_sock`'s "no daemon_handle
+        // = clean child exit" branch (#304) — producing a spurious
+        // `Close(1000, "child-exited")` for a daemon that's in fact
+        // ~670ms away from being alive.
         //
-        // PR7a.1 (#136 followup) — the closure returns `(card_id,
+        // PR7a.1 (#136 followup) — the closure returns `(card,
         // mcp_token)` so the post-commit env-assembly path below can
         // fold `NEIGE_MCP_TOKEN` into the daemon env (mirroring
         // `routes::waves::create_wave`). The token is `Some` for every
         // worker card (the helper mints one unconditionally for the
         // `Worker` role), but we keep the `Option` shape to stay in
-        // step with the helper's return contract.
-        let card_id_result = write_with_event_typed::<(CardId, Option<String>), _>(
+        // step with the helper's return contract. We also carry the
+        // *whole* card row out of the tx so the post-spawn broadcast
+        // can hand it to `Event::CardAdded(card)` without an extra
+        // post-commit fetch.
+        let card_id_result = write_in_tx_typed::<(crate::model::Card, Option<String>), _>(
             self.repo.as_ref(),
-            ActorId::KernelDispatcher,
-            scope.clone(),
-            None,
-            &self.events,
-            &self.card_role_cache,
-            &self.wave_cove_cache,
             move |tx| {
                 Box::pin(async move {
                     // SELECT-inside-tx idempotency check. SQLite's
@@ -1000,15 +1008,14 @@ impl Inner {
                         .await?;
                     }
 
-                    let id = card.id.clone();
-                    Ok(((id, mcp_token), Event::CardAdded(card)))
+                    Ok((card, mcp_token))
                 })
             },
         )
         .await;
 
-        let (card_id, mcp_token) = match card_id_result {
-            Ok(((id, mcp_token), _event_id)) => (id, mcp_token),
+        let (card, mcp_token) = match card_id_result {
+            Ok((card, mcp_token)) => (card, mcp_token),
             Err(CalmError::IdempotencyCollision(msg)) => {
                 tracing::info!(
                     idempotency_key = %idempotency_key,
@@ -1019,6 +1026,7 @@ impl Inner {
             }
             Err(e) => return Err(e),
         };
+        let card_id = card.id.clone();
 
         // Post-commit: seed CODEX_HOME and spawn the daemon. Failure
         // here returns an error to the caller, which emits
@@ -1055,25 +1063,30 @@ impl Inner {
             (Some(s), Some(t)) => Some((s, t)),
             _ => None,
         };
-        if let Err(e) = seed_codex_home_with_parts(
-            codex.as_ref(),
-            card_id.as_str(),
-            &cwd,
-            wave_id.as_str(),
-            SeededCardRole::Worker,
-            mcp_block,
-        ) {
-            tracing::error!(
-                card_id = %card_id,
-                wave_id = %wave_id,
-                error = %e,
-                "worker codex CODEX_HOME seed failed; card persisted; sweeper will reap terminal",
-            );
-            return Err(e);
-        }
-
         // Fetch the terminal row the helper just minted. Guaranteed
-        // to exist post-commit.
+        // to exist post-commit. Pulled up BEFORE the seed step so the
+        // failure-rollback below has a `term.id` to delete by — keeping
+        // the orphan cleanup path symmetric with `spawn_daemon_with_parts`'s
+        // failure arm.
+        //
+        // NOTE (#310 followup, accepted scope): an error from this
+        // `?` does NOT trigger `rollback_orphan_worker` — we can't
+        // call it without a `terminal_id` and we don't have one. In
+        // theory the card row could leak as an orphan that the next
+        // retry idempotency-collides with. In practice this branch
+        // requires either (a) a SQLite read failure on the terminal
+        // table immediately after a successful write in the same
+        // connection (extremely unlikely; would be a hardware fault
+        // or a connection-pool bug), or (b) `terminal_get_by_card`
+        // returning `Ok(None)` for a terminal we just minted in the
+        // same tx (impossible barring a sweeper race, which the 60s
+        // grace window in `terminals_orphaned` prevents on freshly-
+        // committed rows). Wrapping this in rollback would require
+        // first extracting `terminal_id` from `card.payload` (the
+        // helper stamps it before commit) — cheap-ish, but the read
+        // path is the same one we just failed on, so the rollback
+        // helper would also have to fall back to deleting by card_id
+        // alone. Not worth the complexity for a path this cold.
         let term = self
             .repo
             .terminal_get_by_card(card_id.as_str())
@@ -1083,6 +1096,48 @@ impl Inner {
                     "worker terminal vanished after commit for card {card_id}",
                 ))
             })?;
+
+        if let Err(e) = seed_codex_home_with_parts(
+            codex.as_ref(),
+            card_id.as_str(),
+            &cwd,
+            wave_id.as_str(),
+            SeededCardRole::Worker,
+            mcp_block,
+        ) {
+            // Issue #310 followup — the row-creation tx already
+            // committed (event-less); seeding the per-card CODEX_HOME
+            // failed post-commit. Without rollback, the card+terminal
+            // are orphans whose `idempotency_key` blocks a retry. Drop
+            // both rows so `run_one`'s outer retry loop / a user
+            // re-dispatch with the same key isn't short-circuited on
+            // the abandoned row.
+            //
+            // No fast-exit-preserve case can land on this branch: the
+            // CODEX_HOME seed is a synchronous in-process filesystem
+            // op that runs BEFORE any daemon is spawned, so the
+            // terminal row never has a `daemon_handle` here. The
+            // helper still returns `RollbackOutcome::Deleted` and we
+            // surface the original Err — but we drop the explicit
+            // pattern match below since `_ =` is enough; clippy's
+            // `must_use` flags an unused outcome and we want the
+            // explicit ack.
+            let _ = rollback_orphan_worker(
+                self.repo.as_ref(),
+                &self.card_role_cache,
+                card_id.as_str(),
+                term.id.as_str(),
+            )
+            .await;
+            tracing::error!(
+                card_id = %card_id,
+                wave_id = %wave_id,
+                terminal_id = %term.id,
+                error = %e,
+                "worker codex CODEX_HOME seed failed; rolled back card + terminal",
+            );
+            return Err(e);
+        }
 
         // PR7a.1 — augment env with MCP token/socket before spawn.
         // Soft-fail: if either side is missing we still spawn the
@@ -1120,14 +1175,96 @@ impl Inner {
         )
         .await
         {
+            // Issue #310 followup — daemon spawn failed after the
+            // row-creation tx committed. The helper discriminates:
+            //
+            //   * `Deleted` (case 1 / 3) — real spawn failure (bad
+            //     binary, hung daemon, etc.). Surface the original
+            //     Err so `run_one` emits `task.failed` (matches the
+            //     pre-#310-followup behavior). Rollback unblocks the
+            //     idempotency_key for a retry.
+            //
+            //   * `Preserved` (case 2) — fast-exit: the daemon DID
+            //     spawn, ran codex (which exited cleanly e.g. on a
+            //     missing API key / instant abort), wrote `.exit`,
+            //     and exited before the readiness probe. Rows stay,
+            //     exit_code is now persisted on the row, and we
+            //     broadcast `CardAdded` + return Ok(()) so the user
+            //     sees the card with its exit badge — NOT a spurious
+            //     `task.failed` for a worker that completed.
+            match rollback_orphan_worker(
+                self.repo.as_ref(),
+                &self.card_role_cache,
+                card_id.as_str(),
+                term.id.as_str(),
+            )
+            .await
+            {
+                RollbackOutcome::Deleted => {
+                    tracing::error!(
+                        card_id = %card_id,
+                        wave_id = %wave_id,
+                        terminal_id = %term.id,
+                        error = %e,
+                        "worker codex daemon spawn failed; rolled back card + terminal",
+                    );
+                    return Err(e);
+                }
+                RollbackOutcome::Preserved => {
+                    tracing::info!(
+                        card_id = %card_id,
+                        wave_id = %wave_id,
+                        terminal_id = %term.id,
+                        spawn_err = %e,
+                        "worker codex fast-exit (sidecar present); preserving card + terminal",
+                    );
+                    // Fall through to the post-spawn-success
+                    // CardAdded broadcast below, which now fires for
+                    // the fast-exit success path too. Without this
+                    // broadcast, a preserved row would be event-less
+                    // — exactly the codex P2 #2 shape we're explicitly
+                    // avoiding for the fast-exit case.
+                }
+            }
+        }
+
+        // Issue #310 — Stage 3: broadcast `CardAdded` only after
+        // `spawn_daemon_with_parts` has written `daemon_handle` and
+        // probed daemon readiness. Subscribers (the spec card on the
+        // requesting wave page) now see the new worker card with a
+        // populated `daemon_handle`; the WS attach in
+        // `ws::terminal::resolve_live_sock` resolves to `Alive` (or,
+        // for a genuine fast-exit, the existing `ChildExited` branch)
+        // — never the spurious "no daemon_handle = clean child exit"
+        // path that #304 introduced for actual zero-handle rows. See
+        // module-level doc comment for the cross-PR rationale.
+        if let Err(e) = self
+            .repo
+            .log_pure_event(
+                ActorId::KernelDispatcher,
+                scope,
+                None,
+                &self.events,
+                &self.card_role_cache,
+                &self.wave_cove_cache,
+                Event::CardAdded(card),
+            )
+            .await
+        {
+            // Card row + terminal + daemon are all live; the only
+            // thing this branch loses is the broadcast. Subscribers
+            // will discover the card on next REST refresh / page
+            // reload. Log loudly so an operator notices a regression
+            // in the event-bus write path; do NOT return Err — that
+            // would emit `TaskFailed` for a worker that is in fact
+            // running.
             tracing::error!(
                 card_id = %card_id,
                 wave_id = %wave_id,
                 terminal_id = %term.id,
                 error = %e,
-                "worker codex daemon spawn failed; card + terminal orphaned for sweeper",
+                "worker codex card.added broadcast failed; card + daemon live, subscribers stale",
             );
-            return Err(e);
         }
 
         tracing::info!(
@@ -1225,15 +1362,13 @@ impl Inner {
         let cmd_for_tx = cmd.clone();
         let bookkeeping_for_tx = bookkeeping_value.clone();
 
-        let card_id_result = write_with_event_typed::<CardId, _>(
-            self.repo.as_ref(),
-            ActorId::KernelDispatcher,
-            scope.clone(),
-            None,
-            &self.events,
-            &self.card_role_cache,
-            &self.wave_cove_cache,
-            move |tx| {
+        // Issue #310 — two-stage spawn (see `spawn_codex_worker`
+        // module-level doc for the full rationale). The tx mints the
+        // worker card + terminal row but does NOT emit `CardAdded`;
+        // the broadcast is deferred until after `spawn_daemon_with_parts`
+        // populates `daemon_handle`, mirroring the codex path.
+        let card_id_result =
+            write_in_tx_typed::<crate::model::Card, _>(self.repo.as_ref(), move |tx| {
                 Box::pin(async move {
                     if let Some(existing) =
                         find_card_by_idempotency_key_tx(tx, &idem_for_tx).await?
@@ -1291,15 +1426,13 @@ impl Inner {
                         )
                         .await?;
                     }
-                    let id = card.id.clone();
-                    Ok((id, Event::CardAdded(card)))
+                    Ok(card)
                 })
-            },
-        )
-        .await;
+            })
+            .await;
 
-        let card_id = match card_id_result {
-            Ok((id, _event_id)) => id,
+        let card = match card_id_result {
+            Ok(card) => card,
             Err(CalmError::IdempotencyCollision(msg)) => {
                 tracing::info!(
                     idempotency_key = %idempotency_key,
@@ -1310,10 +1443,16 @@ impl Inner {
             }
             Err(e) => return Err(e),
         };
+        let card_id = card.id.clone();
 
         // Post-commit: spawn the terminal daemon. No CODEX_HOME
         // seeding for the terminal worker — it's a plain shell
         // session, not a codex one.
+        //
+        // NOTE (#310 followup, accepted scope): see the matching note
+        // in `spawn_codex_worker` for why an error from this `?` is
+        // not wrapped in `rollback_orphan_worker`. Same cold-path
+        // argument applies here.
         let term = self
             .repo
             .terminal_get_by_card(card_id.as_str())
@@ -1334,14 +1473,75 @@ impl Inner {
         )
         .await
         {
+            // Issue #310 followup — daemon spawn failed after the
+            // row-creation tx committed. The helper discriminates;
+            // see `spawn_codex_worker` for the full case rationale.
+            //
+            // For dispatcher terminals this is the user-visible
+            // regression that motivated this fix: a `printf done` /
+            // `make build` worker exits cleanly + writes `.exit`
+            // before the readiness probe observes the socket. Pre-
+            // fix this code path deleted the card and emitted
+            // `task.failed`, making the worker's output disappear
+            // entirely. With the discriminator, `Preserved` keeps
+            // the card alive so the user sees its output + exit
+            // badge (v1 #309 UX).
+            match rollback_orphan_worker(
+                self.repo.as_ref(),
+                &self.card_role_cache,
+                card_id.as_str(),
+                term.id.as_str(),
+            )
+            .await
+            {
+                RollbackOutcome::Deleted => {
+                    tracing::error!(
+                        card_id = %card_id,
+                        wave_id = %wave_id,
+                        terminal_id = %term.id,
+                        error = %e,
+                        "worker terminal daemon spawn failed; rolled back card + terminal",
+                    );
+                    return Err(e);
+                }
+                RollbackOutcome::Preserved => {
+                    tracing::info!(
+                        card_id = %card_id,
+                        wave_id = %wave_id,
+                        terminal_id = %term.id,
+                        spawn_err = %e,
+                        "worker terminal fast-exit (sidecar present); preserving card + terminal",
+                    );
+                    // Fall through to the CardAdded broadcast below
+                    // so subscribers learn about the preserved card.
+                }
+            }
+        }
+
+        // Issue #310 — broadcast `CardAdded` post-spawn-success so the
+        // emitted snapshot's backing terminal row has a populated
+        // `daemon_handle`. See `spawn_codex_worker` for the full
+        // rationale + cross-PR pointers.
+        if let Err(e) = self
+            .repo
+            .log_pure_event(
+                ActorId::KernelDispatcher,
+                scope,
+                None,
+                &self.events,
+                &self.card_role_cache,
+                &self.wave_cove_cache,
+                Event::CardAdded(card),
+            )
+            .await
+        {
             tracing::error!(
                 card_id = %card_id,
                 wave_id = %wave_id,
                 terminal_id = %term.id,
                 error = %e,
-                "worker terminal daemon spawn failed; card + terminal orphaned for sweeper",
+                "worker terminal card.added broadcast failed; card + daemon live, subscribers stale",
             );
-            return Err(e);
         }
 
         tracing::info!(
@@ -1396,6 +1596,281 @@ fn build_observation(event: &Event) -> String {
             )
         }
     }
+}
+
+/// Outcome of [`rollback_orphan_worker`]. The caller dispatches on the
+/// variant: a `Deleted` outcome means the row is gone and the original
+/// spawn error should propagate (→ `TaskFailed`); a `Preserved` outcome
+/// means `spawn_daemon_with_parts` returned `Err` for a daemon that
+/// actually finished cleanly via the `.exit` sidecar — the row stays
+/// alive so the WS attach fast path can render the exit badge, and the
+/// caller must NOT surface this as a task failure.
+///
+/// See [`rollback_orphan_worker`] for the case discriminator.
+#[must_use]
+enum RollbackOutcome {
+    /// Rows were deleted (or attempted to be deleted — failures inside
+    /// the rollback tx are logged but still reported as `Deleted` so the
+    /// caller surfaces the spawn error to `task.failed`; the orphan
+    /// sweeper is the fallback for tx failures).
+    Deleted,
+    /// The terminal row had `daemon_handle = Some(...)` AND the
+    /// daemon's `.exit` sidecar was present on disk. The daemon
+    /// spawned, executed its command, wrote the exit info, and exited
+    /// before `spawn_daemon_with_parts`'s readiness probe could
+    /// observe the socket. We preserved both rows (and persisted the
+    /// sidecar's `exit_code` / `signal_killed` onto the terminal row)
+    /// so the WS attach fast path resolves to `ChildExited` and the
+    /// card shows an exit badge — the worker's output / exit code are
+    /// real product output, not a failure. The caller must broadcast
+    /// `CardAdded` and return `Ok(())` instead of the spawn `Err`.
+    Preserved,
+}
+
+/// Issue #310 followup — discriminate between three post-spawn-error
+/// shapes, then either roll back the worker card + backing terminal
+/// row OR preserve them for the WS attach fast path. Logs (best-effort)
+/// and swallows DB errors in the rollback case so the caller can still
+/// surface the original spawn error (which is what `run_one`'s retry
+/// loop emits as `task.failed`).
+///
+/// **Why this exists.** The dispatcher's two-stage spawn pipeline
+/// commits the row-creation tx *before* the daemon spawn runs (the
+/// daemon binary is OS-side; no way to make it transactional with the
+/// row). When the post-commit step returns Err — bad cmd path, missing
+/// daemon binary, fd exhaustion, readiness timeout — the worker card
+/// and its terminal row would be orphans without intervention: the card
+/// payload references the terminal so the orphan-row sweeper passes
+/// them over, and the `idempotency_key` on the card makes a retry with
+/// the same key short-circuit on the abandoned row. The user can't
+/// re-dispatch.
+///
+/// **The three cases (after re-fetching the terminal row):**
+///
+///   * **case 1: `daemon_handle = None`** — spawn never wrote a handle.
+///     This splits on `pid`:
+///
+///       * **case 1a: `pid = None`** — `cmd.spawn()` itself failed (or
+///         the pid persistence write lost the race before we even got
+///         to fork return), so there is no daemon process to reap.
+///         Just delete the rows.
+///
+///       * **case 1b: `pid = Some(...)`** — `cmd.spawn()` succeeded
+///         and `terminal_set_pid` persisted the pid, but the
+///         subsequent `terminal_set_handle` failed (rare: a
+///         `SQLITE_BUSY` at the exact wrong moment, disk full, etc.).
+///         The daemon process is alive but `reap_terminal_artifacts`
+///         would no-op because it keys off `daemon_handle`. We must
+///         SIGTERM the pid directly via
+///         [`reap_terminal_pid_only`] BEFORE the row delete —
+///         otherwise the sweeper can't see it once the row is gone and
+///         the daemon leaks until reboot.
+///
+///   * **case 2: `daemon_handle = Some(...)` AND `<handle>.exit`
+///     exists** — the daemon DID spawn, ran its command (e.g.
+///     `printf done`), wrote the canonical `.exit` sidecar via its
+///     normal-exit path, then exited. `spawn_daemon_with_parts`'s
+///     readiness probe saw the socket gone faster than its 40ms
+///     polling interval and surfaced a "did not become ready" error —
+///     but that's spurious: the worker actually completed. **Preserve
+///     the rows.** Persist the sidecar's exit info onto the terminal
+///     row now (so REST callers see `exit_code` immediately, and so
+///     the WS attach fast path can `child-exited` directly off the
+///     row). DO NOT delete the rows; DO NOT propagate the spawn Err.
+///     The caller broadcasts `CardAdded` and returns Ok(()) — see
+///     [`RollbackOutcome::Preserved`].
+///
+///   * **case 3: `daemon_handle = Some(...)` AND no sidecar** — the
+///     daemon spawned but hung / crashed / never wrote `.exit`. This
+///     is the original P1 leak: SIGTERM the pid + unlink the socket
+///     via [`reap_terminal_artifacts`] BEFORE the row delete, then
+///     delete both rows. Without the reap, the daemon would leak
+///     forever (the sweeper can't see it once the row is gone).
+///
+/// **Why discriminate inside the helper (not the caller).** The helper
+/// already re-fetches the terminal row to pick up the latest
+/// `daemon_handle`/`pid`. Adding a sidecar-existence check at the same
+/// site keeps the case-detection logic in one place, and lets the two
+/// call sites (`spawn_codex_worker` / `spawn_terminal_worker`) stay
+/// thin — they just match on the returned variant. Pushing the
+/// discriminator into the caller would duplicate the re-fetch and the
+/// sidecar probe across both paths.
+///
+/// **Best-effort.** A failure inside the reap step (case 3) is
+/// swallowed by `reap_terminal_artifacts` itself — it's idempotent
+/// against missing artifacts. A failure inside the rollback tx (cases
+/// 1 and 3) is logged at `error` level but swallowed: surfacing the
+/// rollback error would mask the original spawn error in the
+/// `task.failed` event, which is the more actionable signal for the
+/// user. The orphan sweeper is the fallback for rollback failures
+/// (same role it plays for crash-time orphans).
+async fn rollback_orphan_worker(
+    repo: &dyn Repo,
+    card_role_cache: &CardRoleCache,
+    card_id: &str,
+    terminal_id: &str,
+) -> RollbackOutcome {
+    // 1. Re-fetch the terminal row. `spawn_daemon_with_parts` may have
+    //    written `pid` + `daemon_handle` between the row-creation tx
+    //    commit and its eventual error return (e.g. readiness probe
+    //    timeout, post-spawn IO error). The `term` snapshot the caller
+    //    passes in was taken pre-spawn and would miss those columns.
+    //
+    //    A NotFound here (the orphan sweeper raced us; the user just
+    //    nuked the row via REST; …) is fine — we skip the reap entirely
+    //    and fall through to the rollback tx, which is itself NotFound-
+    //    tolerant. A Db error gets logged and we still attempt the
+    //    rollback tx since row-deletion-blocks-retry is the more
+    //    important guarantee here.
+    let latest = match repo.terminal_get(terminal_id).await {
+        Ok(opt) => opt,
+        Err(e) => {
+            tracing::error!(
+                card_id = %card_id,
+                terminal_id = %terminal_id,
+                error = %e,
+                "rollback_orphan_worker: terminal re-fetch failed; \
+                 skipping reap (daemon may leak until sweeper next tick)",
+            );
+            None
+        }
+    };
+
+    // 2. Case discriminator. Inspect the re-fetched row to decide
+    //    between the three post-spawn-error shapes documented above.
+    if let Some(term) = latest.as_ref() {
+        if let Some(handle) = term.daemon_handle.as_deref() {
+            // `daemon_handle` is set — either case 2 (fast-exit with
+            // sidecar) or case 3 (partial spawn with no sidecar).
+            let sidecar = exit_sidecar_path(std::path::Path::new(handle));
+            if let Ok(raw) = std::fs::read_to_string(&sidecar) {
+                // case 2 — fast-exit success. Parse and persist the
+                // exit info onto the row so REST callers (and the WS
+                // attach fast path) see `exit_code` / `signal_killed`
+                // immediately, then return `Preserved` without
+                // touching the rows. We preserve the sidecar file too
+                // — the WS attach path's `persist_exit_sidecar` is
+                // idempotent against re-parsing a row that's already
+                // populated, and `reap_terminal_artifacts` is the only
+                // path that unlinks it; preservation skips that.
+                match serde_json::from_str::<PreservedExitSidecar>(&raw) {
+                    Ok(parsed) => {
+                        if let Err(e) = repo
+                            .terminal_set_exit(terminal_id, parsed.code, parsed.signal_killed)
+                            .await
+                        {
+                            // Best-effort: the WS upgrade path will
+                            // re-read the sidecar and try again. Log
+                            // loudly so an operator notices the write
+                            // failure, but DO NOT fall back to
+                            // deletion — the worker really did
+                            // complete and the row reflects reality.
+                            tracing::warn!(
+                                card_id = %card_id,
+                                terminal_id = %terminal_id,
+                                error = %e,
+                                "rollback_orphan_worker: persisting fast-exit \
+                                 sidecar to row failed; WS attach will retry",
+                            );
+                        } else {
+                            tracing::info!(
+                                card_id = %card_id,
+                                terminal_id = %terminal_id,
+                                exit_code = ?parsed.code,
+                                signal_killed = parsed.signal_killed,
+                                "rollback_orphan_worker: preserving fast-exit worker card \
+                                 (sidecar persisted to row)",
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        // Sidecar exists but is malformed — treat as
+                        // case 2 anyway: the daemon got far enough to
+                        // write SOMETHING to its exit path, which is
+                        // a stronger signal than "no sidecar = case
+                        // 3". Falling back to row-delete here would
+                        // erase real user output (the daemon's stdout
+                        // is still on its PTY scrollback / log). The
+                        // row stays; `exit_code` stays NULL and the
+                        // WS attach falls through to its existing
+                        // `DaemonLost`-shape path.
+                        tracing::warn!(
+                            card_id = %card_id,
+                            terminal_id = %terminal_id,
+                            error = %e,
+                            "rollback_orphan_worker: fast-exit sidecar present but malformed; \
+                             preserving row anyway (WS attach will surface as DaemonLost)",
+                        );
+                    }
+                }
+                return RollbackOutcome::Preserved;
+            }
+            // case 3 — daemon_handle set but no sidecar. Reap +
+            // delete. This is the original P1 leak fix.
+            reap_terminal_artifacts(term).await;
+        } else if let Some(pid) = term.pid {
+            // case 1b — handle = None but pid = Some. The daemon
+            // process is alive (cmd.spawn() succeeded and
+            // terminal_set_pid persisted the pid before
+            // terminal_set_handle was attempted), but the handle
+            // write failed mid-spawn. We can't go through
+            // `reap_terminal_artifacts` because its graceful-Kill +
+            // socket-unlink steps both key off `daemon_handle`.
+            // Send SIGTERM directly via the pid before the row
+            // delete; the sweeper would otherwise never find this
+            // pid (the row is about to be deleted).
+            reap_terminal_pid_only(&term.id, pid);
+        }
+        // case 1a (term present, daemon_handle = None, pid = None)
+        // falls through to the row delete below — `cmd.spawn()`
+        // either failed outright or never made it to pid persistence,
+        // so there is no daemon process. We skip the reap to avoid a
+        // SIGTERM at a pid that isn't ours / never existed.
+    } else {
+        // Row vanished — sweeper raced us, or some other path already
+        // cleaned up. Nothing to reap; fall through to rollback tx
+        // (the card row may still be live).
+        tracing::debug!(
+            card_id = %card_id,
+            terminal_id = %terminal_id,
+            "rollback_orphan_worker: terminal row vanished pre-reap; skipping reap step",
+        );
+    }
+
+    // 3. Delete both rows (cases 1 and 3). This is the step that
+    //    actually unblocks the retry — without it, the orphan card's
+    //    idempotency_key short-circuits future dispatches with the
+    //    same key.
+    let card_id_for_tx = card_id.to_string();
+    let term_id_for_tx = terminal_id.to_string();
+    let cache_for_tx = card_role_cache.clone();
+    let rollback = repo
+        .write_in_tx(Box::new(move |tx| {
+            Box::pin(async move {
+                card_with_terminal_rollback_tx(tx, &card_id_for_tx, &term_id_for_tx, &cache_for_tx)
+                    .await
+            })
+        }))
+        .await;
+    if let Err(e) = rollback {
+        tracing::error!(
+            card_id = %card_id,
+            terminal_id = %terminal_id,
+            error = %e,
+            "dispatcher: orphan-worker rollback failed; sweeper will reap on next tick",
+        );
+    }
+    RollbackOutcome::Deleted
+}
+
+/// Payload shape the daemon writes to `<sock>.exit` on clean child
+/// exit. Local copy of `crate::ws::terminal::ExitSidecar` (which is
+/// module-private) — same field set, same defaulting.
+#[derive(serde::Deserialize)]
+struct PreservedExitSidecar {
+    code: Option<i32>,
+    #[serde(default)]
+    signal_killed: bool,
 }
 
 /// SELECT a card by its `payload.idempotency_key` inside a tx. Returns

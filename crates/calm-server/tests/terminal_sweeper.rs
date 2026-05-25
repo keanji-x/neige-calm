@@ -360,3 +360,73 @@ async fn linked_pair_survives_multiple_sweeps() {
         "live linked pair must not be reaped"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 6. `reap_terminal_pid_only` (issue #310 followup): pid-only partial-spawn
+//    SIGTERM helper. The dispatcher's `rollback_orphan_worker` case-1b path
+//    invokes this when `terminal_set_pid` succeeded but the subsequent
+//    `terminal_set_handle` failed — the daemon process is alive but the row
+//    has `daemon_handle = None`, so the usual `reap_terminal_artifacts`
+//    graceful path no-ops. Without this direct kill, the daemon would leak
+//    once the row is deleted.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn reap_terminal_pid_only_sigterms_live_pid() {
+    // Spawn a long-lived child that ignores nothing — default SIGTERM
+    // handling terminates `sleep` immediately. `sleep 300` gives the test
+    // plenty of slack before we'd need to fall back to SIGKILL on a leak.
+    let mut child = tokio::process::Command::new("sleep")
+        .arg("300")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn sleep");
+    let pid: i32 = child.id().expect("child pid available") as i32;
+
+    // Sanity check: child is alive before the reap. `try_wait()` is None
+    // for a still-running child.
+    assert!(
+        child.try_wait().expect("try_wait ok").is_none(),
+        "fixture child must be alive before reap"
+    );
+
+    // Drive the helper. It's best-effort and returns nothing — success is
+    // observed by the child exiting.
+    terminal_sweeper::reap_terminal_pid_only("test-terminal-id", pid as i64);
+
+    // Poll `try_wait()` (rather than `kill(pid, 0)`) — the parent hasn't
+    // reaped the zombie yet, so a `kill(pid, 0)` probe would keep
+    // returning 0 even after the child exited. `try_wait()` is the
+    // canonical "did my child terminate?" check and reaps in the same
+    // call when it has.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut exit_status = None;
+    while std::time::Instant::now() < deadline {
+        if let Some(status) = child.try_wait().expect("try_wait ok") {
+            exit_status = Some(status);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let status = exit_status.unwrap_or_else(|| {
+        panic!("reap_terminal_pid_only must SIGTERM the supplied pid; child {pid} survived")
+    });
+    // SIGTERM-killed children report signal-termination, not a clean exit
+    // code. `ExitStatus::code()` returns None for signal exits on unix.
+    assert!(
+        status.code().is_none(),
+        "child exited but not via signal; expected SIGTERM termination, got {status:?}",
+    );
+}
+
+#[tokio::test]
+async fn reap_terminal_pid_only_tolerates_dead_pid() {
+    // Idempotent against pids that already vanished (the common case when
+    // the daemon races us and exits between the row read and the helper
+    // call). Pick a pid that's almost certainly unallocated and assert the
+    // helper doesn't panic / propagate.
+    terminal_sweeper::reap_terminal_pid_only("test-terminal-id", 2_000_000_000);
+}
