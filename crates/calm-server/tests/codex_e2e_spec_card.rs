@@ -60,7 +60,6 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::event_cursor::EventCursorCache;
 use calm_server::mcp_server::{McpServer, build_default_registry};
 use calm_server::model::NewCove;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
@@ -276,13 +275,11 @@ async fn spec_card_codex_daemon_env_contains_mcp_vars() {
     // explicitly calls out test-fixture mutation as the documented seam.
     let mcp_socket_path = tmp.path().join("mcp").join("kernel.sock");
     let wave_cove_cache = WaveCoveCache::new();
-    let event_cursor_cache = EventCursorCache::new();
     let mcp_server = McpServer::spawn(
         repo.clone(),
         EventBus::new(),
         card_role_cache.clone(),
         wave_cove_cache.clone(),
-        event_cursor_cache.clone(),
         mcp_socket_path.clone(),
         locate_shim_bin(),
         build_default_registry(),

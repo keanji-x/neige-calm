@@ -122,7 +122,6 @@ async fn boot() -> Boot {
         events.clone(),
         card_role_cache,
         wave_cove_cache,
-        calm_server::event_cursor::EventCursorCache::new(),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"), // not used in handshake tests
         registry,
@@ -398,7 +397,6 @@ async fn spawn_refuses_to_steal_live_co_tenant_socket() {
         events,
         card_role_cache,
         wave_cove_cache,
-        calm_server::event_cursor::EventCursorCache::new(),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         registry,

@@ -1,6 +1,6 @@
 # Sync Engine — Design Document
 
-**Status:** Phases 1–3 shipped; #136 PR1–PR7b shipped (PR1 #141, PR2 #146, PR3 #162, PR4 #173, PR5 #179, PR6 #182, PR7a #202, PR7b #206). #136 PR8 (`wait_for_events` long-poll) is the remaining slice.
+**Status:** Phases 1–3 shipped; #136 PR1–PR7b shipped (PR1 #141, PR2 #146, PR3 #162, PR4 #173, PR5 #179, PR6 #182, PR7a #202, PR7b #206). The originally-planned #136 PR8 (`wait_for_events` long-poll / pull) was superseded by the #293 push cutover: spec agents are driven by observations the kernel pushes onto their codex thread as turn inputs, and the pull machinery (`wait_for_events`, `/internal/codex/pending_events`, the Stop-hook long-poll) was deleted.
 **Author:** Codex agent, on behalf of @keanji-x.
 **Scope:** Backend-authoritative event-sourced sync engine layered on top of the existing axum + React stack. Decision against Electric / LiveStore / Zero is final; this doc covers only the in-house build.
 
@@ -42,7 +42,7 @@ Justifications:
 - **`at`** vs `id` — wall-clock for humans (debug, audit), `id` for ordering and cursors. Never mix.
 - **`correlation`** — optional; threads multi-step mutations (e.g. the 3-step terminal-card create) for replay tooling.
 - **`event_version`** — sync envelope schema stamp (0006). Mirrored by the Rust constant `SYNC_EVENT_VERSION` in `event.rs`; bumped together on envelope-shape changes so replicas can refuse incompatible logs.
-- **`scope_*`** — per-row "home scope" (0007). Lets PR3 filter authorization decisions by card scope, PR5's `SubscribeFilter` / `Dispatcher` route queues by wave scope, and PR8's `wait_for_events` long-poll seek against a scoped cursor. Old rows backfill to `scope_kind = 'system'` with NULL ancestor cols; the WS-replay path treats NULL `scope_*` as `EventScope::System`.
+- **`scope_*`** — per-row "home scope" (0007). Lets PR3 filter authorization decisions by card scope and PR5's `SubscribeFilter` / `Dispatcher` route queues by wave scope (the #293 dispatcher push path reuses that same wave-scoped filter to deliver task/report events to a wave's spec card). Old rows backfill to `scope_kind = 'system'` with NULL ancestor cols; the WS-replay path treats NULL `scope_*` as `EventScope::System`.
 - **No FK to entity tables.** Events outlive the rows they describe. Replay must handle "this card was deleted in event #5,300" gracefully.
 
 **Actor is a declared field, not an authenticated identity.** The `actor` column records who the producer of an event claims to be. In the single-user local-host deployment, this is trust-based — the calling subsystem populates the typed `ActorId` correctly. If neige-calm ever opens an externally-reachable API or accepts remote AI agents, **a separate auth design must precede that exposure** — `actor` becomes a security boundary at that point, not just a debug field. Today it is the latter.
@@ -529,7 +529,7 @@ The follow-on Wave-as-Actor series (#136) refined the typed write path on top of
 - **PR7a** (#202) — kernel-as-MCP-server infrastructure + 3 emit tools.
 - **PR7b** (#206) — MCP `wave_state` tools.
 
-**PR8** (`wait_for_events` long-poll) is the remaining slice and is pending.
+The originally-planned **PR8** (`wait_for_events` long-poll / pull) was cancelled. The #293 push cutover replaced it: the kernel owns a `codex app-server` per spec card and the dispatcher pushes task/report observations onto the spec's thread as turn inputs — there is no pull tool, no `/internal/codex/pending_events`, and no Stop-hook long-poll.
 
 ### Phase 4+ — New persistent view state defaults to `useOverlayState`
 

@@ -21,9 +21,9 @@
 //! `accept` loop runs in a background tokio task held alive by the
 //! `Arc<McpServer>` field on [`crate::state::AppState`]. Dropping the
 //! `AppState` doesn't immediately abort the listener — closure happens
-//! when the task's stop-channel fires (today: process exit). PR8 may
-//! add a graceful-shutdown signal once `wait_for_events` introduces
-//! long-poll handlers that need cooperative cancellation.
+//! when the task's stop-channel fires (today: process exit). A future
+//! graceful-shutdown signal could be added here if a long-running handler
+//! ever needs cooperative cancellation.
 //!
 //! ## Why not axum / hyper
 //!
@@ -33,7 +33,6 @@
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::RouteRepo;
-use crate::event_cursor::EventCursorCache;
 use crate::mcp_server::framing::{
     Frame, RequestId, RpcError, build_error_response_frame, build_ok_response_frame, parse_frame,
 };
@@ -114,7 +113,6 @@ impl McpServer {
         events: crate::event::EventBus,
         card_role_cache: CardRoleCache,
         wave_cove_cache: WaveCoveCache,
-        event_cursor_cache: EventCursorCache,
         socket_path: PathBuf,
         shim_bin: PathBuf,
         registry: Arc<ToolRegistry>,
@@ -167,7 +165,6 @@ impl McpServer {
             events,
             card_role_cache,
             wave_cove_cache,
-            event_cursor_cache,
         });
 
         let socket_for_handle = socket_path.clone();

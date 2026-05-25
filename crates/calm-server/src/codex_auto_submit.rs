@@ -134,6 +134,26 @@ impl Inner {
             }
         };
 
+        // PR3a (#293) — push-path skip. When the card payload carries a
+        // non-empty `codex_thread_id`, the spec card is running in
+        // app-server *push* mode: the kernel already booted the
+        // `codex app-server`, ran `turn/start` with the goal, and the
+        // browser TUI is a `codex resume <tid> --remote …` that *rejoins*
+        // that thread. Turn #1 is already in flight; there is no
+        // composer-pre-filled prompt to "Enter", and injecting a `\r`
+        // into a resumed TUI would be a spurious empty submission. Bail
+        // (the card is already dedup-marked above, so we never retry).
+        if let Some(tid) = card.payload.get("codex_thread_id").and_then(|v| v.as_str())
+            && !tid.trim().is_empty()
+        {
+            tracing::debug!(
+                card_id,
+                codex_thread_id = tid,
+                "auto_submit: card has codex_thread_id (push mode); skip \\r injection"
+            );
+            return;
+        }
+
         // Pull `prompt` + `terminal_id` off the payload. Empty / missing
         // `prompt` is the "user spawned codex without auto-submit" path —
         // do nothing, keep TUI behavior identical to today.

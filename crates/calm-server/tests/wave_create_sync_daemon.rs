@@ -54,11 +54,13 @@ use calm_server::event::EventBus;
 use calm_server::model::NewCove;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
-use calm_server::state::{AppState, CodexClient, DaemonClient};
+use calm_server::state::{AppState, DaemonClient};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
+
+mod common;
 
 /// Same daemon-locator as `codex_card_endpoint.rs` /
 /// `codex_hands_free.rs` — workspace bins live one dir up from the
@@ -128,7 +130,11 @@ async fn boot() -> Boot {
             card_role_cache.clone(),
             wave_cove_cache.clone(),
         )),
-        Arc::new(CodexClient::new_stub()),
+        // #293 cutover — `POST /api/waves` now boots a kernel-owned codex
+        // app-server before returning 201. Point `codex_bin` at the
+        // `osc-probe-child` fake app-server fixture so the boot succeeds
+        // without a real codex on PATH (see `tests/common/mod.rs`).
+        Arc::new(common::fake_codex_client()),
         Some(card_role_cache.clone()),
         Some(wave_cove_cache.clone()),
     );

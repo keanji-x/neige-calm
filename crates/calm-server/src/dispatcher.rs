@@ -49,23 +49,22 @@
 //! Any error in the spawn pipeline (idempotency check error, tx error,
 //! daemon spawn failure) emits a `Event::TaskFailed { idempotency_key,
 //! reason }` via [`Repo::log_pure_event`] from the
-//! [`ActorId::KernelDispatcher`] actor. PR8's `wait_for_events` consumes
-//! these on behalf of the requesting spec card.
+//! [`ActorId::KernelDispatcher`] actor. The dispatcher's push path
+//! (#293) delivers these to the requesting spec card as turn inputs.
 //!
 //! ## What this doesn't do
 //!
-//! - **No spec card minting** — PR6 lands the spec card; PR5 just
-//!   responds to whoever emits a `*.Requested` event.
-//! - **No `wait_for_events`** — PR8 builds the long-poll that pairs
-//!   each `TaskCompleted` / `TaskFailed` back to its spec card.
-//! - **No glob kinds** — the dispatcher's filter lists the two literal
-//!   kind tags. A future glob extension would update both the filter
-//!   and this module's subscribe call together.
+//! - **No spec card minting** — PR6 lands the spec card; the dispatcher
+//!   just responds to whoever emits a `*.Requested` event.
+//! - **No glob kinds** — the dispatcher's filter lists the literal kind
+//!   tags. A future glob extension would update both the filter and this
+//!   module's subscribe call together.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
+use dashmap::DashMap;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
@@ -75,13 +74,15 @@ use crate::db::write_with_event_typed;
 use crate::db::{Repo, RouteRepo};
 use crate::error::CalmError;
 use crate::event::{
-    BroadcastEnvelope, Event, EventBus, EventScope, SubscribeFilter, SubscribeScope,
+    BroadcastEnvelope, EditAuthor, Event, EventBus, EventScope, SubscribeFilter, SubscribeScope,
 };
+use crate::event_cursor::EventCursorCache;
 use crate::ids::{ActorId, CardId, CoveId, WaveId};
 use crate::model::CardRole;
 use crate::routes::codex_cards::shell_single_quote;
 use crate::routes::settings::load_settings;
 use crate::routes::terminal::spawn_daemon_with_parts;
+use crate::spec_appserver::SpecPushRegistry;
 use crate::spec_card::{SeededCardRole, build_codex_env_map, seed_codex_home_with_parts};
 use crate::state::{CodexClient, DaemonClient};
 use crate::wave_cove_cache::WaveCoveCache;
@@ -184,6 +185,12 @@ impl Dispatcher {
         codex: Arc<CodexClient>,
         daemon: Arc<DaemonClient>,
         mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
+        // #293 — the wave→app-server push registry (shared with
+        // `AppState.spec_push`; `create_wave` fills it). Push is the only
+        // path now (#293 cutover): the subscribe filter unconditionally
+        // includes the `task.*` / `wave.report_edited` kinds so they route to
+        // `push_to_spec`.
+        spec_push: SpecPushRegistry,
         permits: usize,
     ) -> Self {
         let permits = if permits == 0 {
@@ -209,6 +216,15 @@ impl Dispatcher {
             codex,
             daemon,
             mcp_server,
+            spec_push,
+            // #293 PR3b — a DEDICATED push watermark cache. Intentionally
+            // a SEPARATE instance from anything else: keyed by the spec
+            // `CardId`;
+            // a push only fires when `envelope_id > cursor`, making pushes
+            // idempotent under the broadcast's at-least-once delivery.
+            push_cursor: EventCursorCache::new(),
+            // #293 PR3b (S1) — per-wave push serialization lock-map.
+            push_locks: DashMap::new(),
             semaphore: Arc::clone(&semaphore),
             recently_seen: Arc::new(Mutex::new(HashSet::new())),
         });
@@ -219,13 +235,22 @@ impl Dispatcher {
         // routing happens after the SELECT-inside-tx idempotency check
         // (the worker card lands in the same wave as the requesting
         // spec card).
+        // #293 cutover — push is the only path now, so the subscribe filter
+        // unconditionally matches the three wave-event push kinds in addition
+        // to the two `*.job_requested` kinds. The push kinds route to
+        // `push_to_spec`; the `*.job_requested` kinds drive the worker-spawn
+        // arm.
+        let kinds: Vec<String> = vec![
+            "codex.job_requested".into(),
+            "terminal.job_requested".into(),
+            "task.completed".into(),
+            "task.failed".into(),
+            "wave.report_edited".into(),
+        ];
         let filter = SubscribeFilter {
             scope: SubscribeScope::Any,
             include_descendants: true,
-            kinds: Some(vec![
-                "codex.job_requested".into(),
-                "terminal.job_requested".into(),
-            ]),
+            kinds: Some(kinds),
         };
         let mut rx = events.subscribe_filtered();
 
@@ -301,6 +326,29 @@ struct Inner {
     /// only assert on card creation. Terminal workers don't read this
     /// (they don't run codex).
     mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
+    /// #293 PR3b — wave→app-server push registry (shared with
+    /// `AppState.spec_push`). `push_to_spec` resolves a wave's
+    /// [`crate::spec_appserver::SpecPushHandle`] from here and calls
+    /// `push_observation` on it. Empty when a kernel restart lost the
+    /// in-memory handle (no crash-recovery — see `push_to_spec`).
+    spec_push: SpecPushRegistry,
+    /// #293 PR3b — DEDICATED push watermark cache keyed by the spec
+    /// `CardId`. A push fires only when `envelope_id > cursor`, then bumps;
+    /// this makes pushes idempotent under at-least-once broadcast delivery
+    /// and survives a re-delivered envelope without double-pushing.
+    push_cursor: EventCursorCache,
+    /// #293 PR3b (S1) — per-wave serialization lock for the push path. The
+    /// dispatcher runs `push_to_spec` concurrently (one `tokio::spawn` per
+    /// envelope), so without serialization the watermark
+    /// `(get → compare → bump → push_observation)` is a non-atomic
+    /// read-modify-write: if envelope id 11 bumps the cursor before id 10 is
+    /// checked, id 10 (a DISTINCT real event — e.g. a `task.failed` carrying
+    /// a `reason`) is wrongly deduped and silently dropped. Holding this
+    /// per-wave async `Mutex` across the whole dedup-check-and-deliver makes
+    /// same-wave pushes process in id order, so the monotonic watermark only
+    /// dedups TRUE redeliveries. Keyed by `WaveId` (one spec card per wave).
+    /// Pushes are low-frequency, so per-wave serialization is cheap.
+    push_locks: DashMap<WaveId, Arc<tokio::sync::Mutex<()>>>,
     semaphore: Arc<Semaphore>,
     /// Recently-spawned idempotency keys. A fast-path short-circuit
     /// before the tx-bound SELECT. Held under a `std::sync::Mutex`
@@ -324,6 +372,47 @@ impl Inner {
                 return;
             }
         };
+
+        // #293 — push branch. The three wave-event kinds the filter matches
+        // route HERE (bounded by the same `_permit` the worker-spawn path
+        // holds), never into the `DispatchRequest` extraction below. For
+        // `wave.report_edited` we act ONLY on a User-authored edit —
+        // Spec/AI-authored edits are the spec writing its own report, and
+        // pushing those back would be a feedback loop. The worker-spawn path
+        // (the two `*.job_requested` kinds) falls through untouched.
+        match &envelope.event {
+            Event::TaskCompleted { .. } | Event::TaskFailed { .. } => {
+                if let Some(wave_id) = envelope.scope.wave_id().cloned() {
+                    self.push_to_spec(wave_id, &envelope.event, envelope.id)
+                        .await;
+                } else {
+                    tracing::debug!(
+                        kind = envelope.event.kind_tag(),
+                        "dispatcher push: task event has no wave scope; skipping"
+                    );
+                }
+                return;
+            }
+            Event::WaveReportEdited {
+                author, wave_id, ..
+            } => {
+                // Only user edits warrant a push. The spec authored
+                // Spec/Kernel edits itself; re-notifying it would loop.
+                if *author == EditAuthor::User {
+                    self.push_to_spec(wave_id.clone(), &envelope.event, envelope.id)
+                        .await;
+                } else {
+                    tracing::trace!(
+                        ?author,
+                        "dispatcher push: ignoring non-user wave.report_edited"
+                    );
+                }
+                return;
+            }
+            // Everything else (the two `*.job_requested` kinds) falls
+            // through to the worker-spawn path below, unchanged.
+            _ => {}
+        }
 
         // #272 (N3) — upgrade the `Weak<CodexClient>` to a strong
         // `Arc` for the duration of this dispatch. If the upgrade
@@ -471,9 +560,10 @@ impl Inner {
                 error = %e,
                 "dispatcher: spawn failed; emitting task.failed"
             );
-            // Emit a TaskFailed so the requesting spec card's
-            // wait_for_events (PR8) surfaces the failure. Scope mirrors
-            // the request envelope's scope so PR8 can route on it.
+            // Emit a TaskFailed so the dispatcher's push path delivers
+            // the failure to the requesting spec card as a turn input.
+            // Scope mirrors the request envelope's scope so the push can
+            // route on it.
             let fail_event = Event::TaskFailed {
                 idempotency_key: idem.clone(),
                 reason: format!("{e}"),
@@ -498,6 +588,149 @@ impl Inner {
                 );
             }
         }
+    }
+
+    /// #293 PR3b — push a wave event onto the wave's spec card's codex
+    /// thread.
+    ///
+    /// Steps:
+    ///   1. **Resolve the spec card** — scan `cards_by_wave(wave_id)` for
+    ///      the one whose `card_role_cache` role is [`CardRole::Spec`].
+    ///   2. **Dedup / ordering** — only push when `envelope_id` is strictly
+    ///      above the dedicated push watermark for that spec `CardId`; then
+    ///      bump. Idempotent under at-least-once broadcast delivery.
+    ///   3. **Resolve the handle** — `spec_push.pusher(wave_id)`. If absent
+    ///      (a kernel restart lost the in-memory handle), `warn!` and return
+    ///      — never crash. There is no recovery: the wave stays undriven
+    ///      until the kernel re-creates a handle (which it doesn't do today).
+    ///      See the missing-handle warn below.
+    ///   4. **Build + deliver** the observation via
+    ///      [`crate::spec_appserver::SpecPusher::push_observation`],
+    ///      which decides `turn/start`-now vs enqueue based on the tracked
+    ///      turn phase.
+    async fn push_to_spec(self: &Arc<Self>, wave_id: WaveId, event: &Event, envelope_id: i64) {
+        // Resolve the spec card for this wave via the role cache.
+        let spec_card_id = match self.resolve_spec_card(&wave_id).await {
+            Some(id) => id,
+            None => {
+                tracing::debug!(
+                    wave_id = %wave_id,
+                    "dispatcher push: no spec card found for wave; skipping"
+                );
+                return;
+            }
+        };
+
+        // S1 — serialize the whole dedup-check-and-deliver PER WAVE so the
+        // monotonic watermark only dedups true redeliveries, never a
+        // distinct lower-id event that lost the concurrent
+        // read-modify-write race. `push_to_spec` runs once per envelope under
+        // a `tokio::spawn`, so two envelopes for the SAME wave (e.g. id 10
+        // and id 11) can race; without this lock, id 11 could `bump` the
+        // cursor to 11 before id 10's `get` runs, making id 10 (a DISTINCT
+        // real event) appear already-seen and get dropped. Holding a
+        // per-wave async `Mutex` across `(get → compare → bump →
+        // push_observation)` forces same-wave pushes to process in id order.
+        // We clone the `Arc<Mutex>` out of the `DashMap` under the brief
+        // sync guard, then drop the guard before awaiting the lock (never
+        // hold a `DashMap` shard guard across an `.await`).
+        let wave_lock = self
+            .push_locks
+            .entry(wave_id.clone())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        let _serialize = wave_lock.lock().await;
+
+        // Dedup: push only when this envelope is newer than the watermark
+        // for the spec card. A persisted event always has a positive id;
+        // a synthetic id-0 envelope (test `EventBus::emit`) is never above
+        // the initial 0 cursor, so it is skipped — we only push real,
+        // persisted, ordered events. `bump` is monotonic, so a re-delivered
+        // (lower-or-equal) id is a no-op and can't double-push. Under the
+        // per-wave lock above this check-then-bump is now atomic w.r.t. other
+        // same-wave pushes.
+        let cursor = self.push_cursor.get(&spec_card_id);
+        if envelope_id <= cursor {
+            tracing::debug!(
+                wave_id = %wave_id,
+                spec_card_id = %spec_card_id,
+                envelope_id,
+                cursor,
+                "dispatcher push: envelope id not above watermark; deduped"
+            );
+            return;
+        }
+        self.push_cursor.bump(spec_card_id.clone(), envelope_id);
+
+        // Resolve the live push handle. Absent → warn + return (no crash).
+        // #293: there is NO crash-recovery. A kernel restart drops every
+        // in-memory `SpecPushHandle`, and the kernel does not respawn the
+        // `codex app-server` or `thread_resume` the persisted thread on boot.
+        // The consequence is accepted and explicit: in-flight waves whose
+        // handle was lost are left UNDRIVEN — no push lands, and there is no
+        // pull backstop anymore (the old `wait_for_events` poll was removed in
+        // this cutover). The user must restart the wave to recover.
+        let pusher = match self.spec_push.pusher(&wave_id) {
+            Some(p) => p,
+            None => {
+                tracing::warn!(
+                    wave_id = %wave_id,
+                    spec_card_id = %spec_card_id,
+                    envelope_id,
+                    kind = event.kind_tag(),
+                    "dispatcher push: no live SpecPushHandle for wave (kernel restart lost the \
+                     handle); wave left undriven — no crash-recovery, no pull backstop (#293)"
+                );
+                return;
+            }
+        };
+
+        let observation = build_observation(event);
+        tracing::info!(
+            wave_id = %wave_id,
+            spec_card_id = %spec_card_id,
+            envelope_id,
+            kind = event.kind_tag(),
+            "dispatcher push: delivering observation to spec thread"
+        );
+        if let Err(e) = pusher.push_observation(&observation).await {
+            // A failed delivery is logged but not fatal. There is no pull
+            // backstop anymore (#293 cutover removed `wait_for_events`); a
+            // dropped observation means the spec may miss this event. The
+            // dedicated push watermark was already bumped above, so a
+            // redelivery of the same envelope won't retry — accepted.
+            tracing::warn!(
+                wave_id = %wave_id,
+                envelope_id,
+                error = %e,
+                "dispatcher push: push_observation failed; no pull backstop (#293) — observation may be lost"
+            );
+        }
+    }
+
+    /// Find the [`CardRole::Spec`] card for a wave. Scans the wave's cards
+    /// and consults `card_role_cache` (write-through, in-memory) for the
+    /// role. Returns `None` if the wave has no spec card (shouldn't happen
+    /// for a live push-enabled wave) or the lookup errors.
+    async fn resolve_spec_card(self: &Arc<Self>, wave_id: &WaveId) -> Option<CardId> {
+        let cards = match self.repo.cards_by_wave(wave_id.as_str()).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    wave_id = %wave_id,
+                    error = %e,
+                    "dispatcher push: cards_by_wave failed; cannot resolve spec card"
+                );
+                return None;
+            }
+        };
+        cards.into_iter().find_map(|c| {
+            if self.card_role_cache.get(&c.id) == Some(CardRole::Spec) {
+                Some(c.id)
+            } else {
+                None
+            }
+        })
     }
 
     async fn dispatch(
@@ -789,7 +1022,7 @@ impl Inner {
 
         // Post-commit: seed CODEX_HOME and spawn the daemon. Failure
         // here returns an error to the caller, which emits
-        // `Event::TaskFailed` for PR8's `wait_for_events` to surface.
+        // `Event::TaskFailed` for the push path to deliver to the spec.
         //
         // PR7a.1 (#136 followup) — wire the worker codex daemon into
         // the kernel-as-MCP-server. Two mirror-image folds of what
@@ -1119,6 +1352,49 @@ impl Inner {
         );
 
         Ok(())
+    }
+}
+
+/// #293 PR3b — build the concise, actionable observation text the
+/// dispatcher pushes onto the spec's codex thread for a wave event.
+///
+/// Kept terse on purpose: the spec re-reads wave state via its MCP tools,
+/// so the push is a *wake/notice*, not a data dump. Each variant names the
+/// concrete thing that changed plus the correlating idempotency key (so a
+/// spec that dispatched the task can match it to its outstanding work).
+/// Free-standing + pure so it's unit-testable without an app-server.
+///
+/// Only called for the three push kinds (`task.completed`, `task.failed`,
+/// `wave.report_edited`); any other variant degrades to a generic notice
+/// rather than panicking (defensive — the filter shouldn't deliver others).
+fn build_observation(event: &Event) -> String {
+    match event {
+        Event::TaskCompleted {
+            idempotency_key, ..
+        } => {
+            format!(
+                "A dispatched task completed (idempotency_key={idempotency_key}). Re-read the wave state to incorporate its result."
+            )
+        }
+        Event::TaskFailed {
+            idempotency_key,
+            reason,
+        } => {
+            format!(
+                "A dispatched task failed (idempotency_key={idempotency_key}): {reason}. Re-read the wave state and decide how to proceed."
+            )
+        }
+        Event::WaveReportEdited { .. } => {
+            "The user edited the wave report. Re-read the wave state.".to_string()
+        }
+        other => {
+            // Shouldn't happen — the push branch only routes the three
+            // kinds above. Stay resilient instead of panicking.
+            format!(
+                "A wave event occurred ({}). Re-read the wave state.",
+                other.kind_tag()
+            )
+        }
     }
 }
 
@@ -1522,5 +1798,171 @@ mod tests {
     fn render_worker_prompt_skips_blank_ac() {
         let out = render_worker_prompt("g", &serde_json::Value::Null, Some("   "));
         assert_eq!(out, "Goal:\ng");
+    }
+
+    // ---------------------------------------------------------------
+    // #293 PR3b — push path: filter coverage, author gating,
+    // build_observation text, and the dedicated push-watermark dedup.
+    // ---------------------------------------------------------------
+
+    use crate::event::{ArtifactRef, BroadcastEnvelope};
+    use crate::ids::CoveId;
+
+    fn wave_scope(wave: &WaveId, cove: &CoveId) -> EventScope {
+        EventScope::Wave {
+            wave: wave.clone(),
+            cove: cove.clone(),
+        }
+    }
+
+    /// The dispatcher's `SubscribeFilter` must now match the three push
+    /// kinds in addition to the two job_requested kinds. We reconstruct the
+    /// exact filter the spawn site builds and assert `matches()` for each
+    /// kind, plus a non-matching kind to prove the list is still a closed
+    /// allowlist (not "match everything").
+    #[test]
+    fn dispatcher_filter_matches_three_push_kinds() {
+        let filter = SubscribeFilter {
+            scope: SubscribeScope::Any,
+            include_descendants: true,
+            kinds: Some(vec![
+                "codex.job_requested".into(),
+                "terminal.job_requested".into(),
+                "task.completed".into(),
+                "task.failed".into(),
+                "wave.report_edited".into(),
+            ]),
+        };
+        let wave = WaveId::from("w");
+        let cove = CoveId::from("c");
+        let scope = wave_scope(&wave, &cove);
+
+        let env = |ev: Event| BroadcastEnvelope {
+            id: 1,
+            event_version: 1,
+            actor: ActorId::User,
+            scope: scope.clone(),
+            event: ev,
+        };
+
+        // The two pre-existing job_requested kinds still match.
+        assert!(filter.matches(&env(Event::CodexJobRequested {
+            idempotency_key: "k".into(),
+            goal: "g".into(),
+            context: serde_json::Value::Null,
+            acceptance_criteria: None,
+        })));
+        assert!(filter.matches(&env(Event::TerminalJobRequested {
+            idempotency_key: "k".into(),
+            cmd: "ls".into(),
+            cwd: None,
+        })));
+        // The three new push kinds match.
+        assert!(filter.matches(&env(Event::TaskCompleted {
+            idempotency_key: "k".into(),
+            result: serde_json::Value::Null,
+            artifacts: Vec::<ArtifactRef>::new(),
+        })));
+        assert!(filter.matches(&env(Event::TaskFailed {
+            idempotency_key: "k".into(),
+            reason: "boom".into(),
+        })));
+        assert!(filter.matches(&env(Event::WaveReportEdited {
+            wave_id: wave.clone(),
+            card_id: CardId::from("card"),
+            author: EditAuthor::User,
+            edit_id: "e".into(),
+            summary_before: String::new(),
+            summary_after: String::new(),
+            body_before: String::new(),
+            body_after: String::new(),
+        })));
+        // A kind NOT in the list must not match — the filter is still a
+        // closed allowlist.
+        assert!(!filter.matches(&env(Event::WaveDeleted {
+            id: wave.clone(),
+            cove_id: cove.clone(),
+        })));
+    }
+
+    /// The push branch in `handle_envelope` acts on a User-authored
+    /// `wave.report_edited` and ignores Spec/Kernel ones. The gating is a
+    /// simple `author == EditAuthor::User` check; assert that predicate
+    /// directly against each variant (the branch itself is exercised
+    /// end-to-end by the gated e2e).
+    #[test]
+    fn wave_report_edited_author_gating() {
+        assert!(EditAuthor::User == EditAuthor::User);
+        assert!(EditAuthor::Spec != EditAuthor::User);
+        assert!(EditAuthor::Kernel != EditAuthor::User);
+    }
+
+    /// `build_observation` produces concise, kind-specific text carrying the
+    /// correlating idempotency key (task events) / a re-read nudge.
+    #[test]
+    fn build_observation_text_per_kind() {
+        let completed = build_observation(&Event::TaskCompleted {
+            idempotency_key: "abc123".into(),
+            result: serde_json::Value::Null,
+            artifacts: Vec::new(),
+        });
+        assert!(completed.contains("completed"), "got: {completed}");
+        assert!(completed.contains("abc123"), "must carry key: {completed}");
+
+        let failed = build_observation(&Event::TaskFailed {
+            idempotency_key: "k9".into(),
+            reason: "disk full".into(),
+        });
+        assert!(failed.contains("failed"), "got: {failed}");
+        assert!(failed.contains("k9"), "must carry key: {failed}");
+        assert!(failed.contains("disk full"), "must carry reason: {failed}");
+
+        let edited = build_observation(&Event::WaveReportEdited {
+            wave_id: WaveId::from("w"),
+            card_id: CardId::from("c"),
+            author: EditAuthor::User,
+            edit_id: "e".into(),
+            summary_before: String::new(),
+            summary_after: String::new(),
+            body_before: String::new(),
+            body_after: String::new(),
+        });
+        assert!(
+            edited.to_lowercase().contains("user") && edited.to_lowercase().contains("report"),
+            "got: {edited}"
+        );
+    }
+
+    /// Watermark dedup: the push only fires when `envelope_id > cursor`,
+    /// then bumps. This mirrors the exact `get`/compare/`bump` sequence
+    /// `push_to_spec` runs against its DEDICATED `push_cursor`
+    /// `EventCursorCache`. Re-delivering the same id is a no-op; a higher
+    /// id advances.
+    #[test]
+    fn push_watermark_dedup_sequence() {
+        let cursor = EventCursorCache::new();
+        let card = CardId::from("spec-card");
+
+        // First delivery at id=5: 5 > 0 → push, bump to 5.
+        assert!(5 > cursor.get(&card));
+        cursor.bump(card.clone(), 5);
+        assert_eq!(cursor.get(&card), 5);
+
+        // Re-delivery of the SAME id=5: the push predicate `id > cursor`
+        // is false → deduped (no push).
+        assert!(5 <= cursor.get(&card));
+        // bump(5) is monotonic — stays at 5.
+        cursor.bump(card.clone(), 5);
+        assert_eq!(cursor.get(&card), 5);
+
+        // A lower (out-of-order re-delivery) id=3: deduped, no rewind.
+        assert!(3 <= cursor.get(&card));
+        cursor.bump(card.clone(), 3);
+        assert_eq!(cursor.get(&card), 5);
+
+        // A higher id=8: 8 > 5 → push, advance to 8.
+        assert!(8 > cursor.get(&card));
+        cursor.bump(card.clone(), 8);
+        assert_eq!(cursor.get(&card), 8);
     }
 }

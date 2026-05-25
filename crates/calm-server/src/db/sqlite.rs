@@ -1680,6 +1680,35 @@ impl RepoRead for SqlxRepo {
         Ok(rows)
     }
 
+    async fn spec_cards_with_appserver_pgid(&self) -> Result<Vec<(String, i32, String)>> {
+        // #293 PR3a (B1) — boot-time leaked-group recovery input. Cards
+        // whose payload carries a spec-push `appserver_pgid` (persisted on
+        // the create-wave hot path alongside `codex_thread_id` /
+        // `appserver_sock`). `json_extract` returns NULL when the key is
+        // absent or the payload isn't an object, so the WHERE filters to
+        // exactly the spec-push cards. We pull the sock too so the boot
+        // sweep can confirm the group is genuinely a live (leaked)
+        // app-server (socket still connectable) before signaling it —
+        // guarding against pid-recycling false positives.
+        let rows: Vec<(String, i64, Option<String>)> = sqlx::query_as(
+            r#"SELECT id,
+                      json_extract(payload, '$.appserver_pgid'),
+                      json_extract(payload, '$.appserver_sock')
+               FROM cards
+               WHERE json_extract(payload, '$.appserver_pgid') IS NOT NULL"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(id, pgid, sock)| {
+                let pgid = i32::try_from(pgid).ok()?;
+                let sock = sock?;
+                Some((id, pgid, sock))
+            })
+            .collect())
+    }
+
     // --------------------------------------------------------------- plugins
     async fn plugins_list(&self) -> Result<Vec<Plugin>> {
         self.plugins_list_all().await

@@ -18,9 +18,9 @@ export type ActorId = { "kind": "User" } | { "kind": "Kernel" } | { "kind": "Ker
  * hash / content-type / storage-uri fields.
  *
  * Today the variant is referenced only by `Event::TaskCompleted.artifacts`,
- * which carries a list of these so the (future) `wait_for_events` MCP tool
- * can hand a spec card a manifest of what its worker produced. Keep this
- * minimal — #129 territory expands the shape, not PR4.
+ * which carries a list of these so the dispatcher's push path can hand a
+ * spec card a manifest of what its worker produced. Keep this minimal —
+ * #129 territory expands the shape, not PR4.
  *
  * Wire shape is a bare string via `#[serde(transparent)]`, matching the
  * typed-id pattern in [`crate::ids`]. ts-rs emits `export type ArtifactRef
@@ -251,8 +251,8 @@ payload: unknown, } } | { "ev": "codex.job_requested", "data": { idempotency_key
  *
  *   * PR3 (`enforce_role`) gates writes per card scope.
  *   * PR5 (`SubscribeFilter` + `Dispatcher`) routes notifications + work
- *     queues by wave scope.
- *   * PR8 (`wait_for_events`) long-polls a scoped cursor for MCP tools.
+ *     queues by wave scope, and the dispatcher's push path (#293) resolves
+ *     a wave's spec card to deliver task/report events as turn inputs.
  *
  * `EventScope::System` is the catch-all for events that genuinely don't
  * belong to a single cove/wave/card (`Event::PluginState`, the

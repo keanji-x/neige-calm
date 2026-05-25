@@ -27,18 +27,15 @@
 //! This file keeps only the loopback ingest.
 
 use crate::actor::Actor;
-use crate::error::{CalmError, Result};
+use crate::error::Result;
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, CardId};
-use crate::mcp_server::tools::wait::{
-    DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS, render_response, wait_for_events_for_card,
-};
 use crate::state::AppState;
 use axum::{
     Json, Router,
     extract::{Query, State},
     http::StatusCode,
-    routing::{get, post},
+    routing::post,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -48,19 +45,11 @@ pub fn router() -> Router<AppState> {
         // Loopback-only ingest. The bridge subprocess is spawned by codex
         // itself with env vars pointing here. Not exposed under `/api/*`
         // because the frontend never calls it directly.
-        .route("/internal/codex/hook", post(ingest_hook))
-        // PR8 (#136) — long-poll fallback consumed by the codex bridge's
-        // Stop hook handler. The bridge is short-lived (per hook process)
-        // and has no JSON-RPC client of its own, so an HTTP endpoint with
-        // the same semantics as `calm.wait_for_events` lets the Stop hook
-        // surface pending events as a codex `{decision:"block", reason:...}`
-        // observation without going through MCP.
         //
-        // GET (not POST) because semantically the call is "fetch events
-        // since X"; the long-poll wait is a server-side decision, not a
-        // mutation. Plays nicer with existing telemetry / cache stacks
-        // that distinguish read endpoints.
-        .route("/internal/codex/pending_events", get(pending_events))
+        // #293 cutover removed `/internal/codex/pending_events` — the old
+        // Stop-hook long-poll fallback. Spec agents are now driven by pushed
+        // turn inputs, so there's no pull endpoint to back.
+        .route("/internal/codex/hook", post(ingest_hook))
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,91 +137,6 @@ pub(crate) async fn ingest_hook(
         )
         .await?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-// ---------------------------------------------------------------------------
-// PR8 (#136) — `/internal/codex/pending_events` long-poll fallback.
-// ---------------------------------------------------------------------------
-
-/// Query string for `/internal/codex/pending_events`.
-///
-/// `card_id` is required — the bridge knows it from the `NEIGE_CARD_ID`
-/// env that the per-card codex daemon was spawned with. `timeout_ms`
-/// is clamped at 30s server-side (same ceiling as the MCP tool);
-/// omitting it defaults to the ceiling. `since` is optional — omit it
-/// to use the per-card cursor cache the kernel maintains.
-#[derive(Debug, Deserialize)]
-pub struct PendingEventsQuery {
-    pub card_id: String,
-    #[serde(default)]
-    pub timeout_ms: Option<u64>,
-    #[serde(default)]
-    pub since: Option<i64>,
-}
-
-/// GET `/internal/codex/pending_events?card_id=<id>&timeout_ms=<ms>&since=<id>`
-///
-/// Returns `{events: [...], since: <max_id>}` — identical wire shape to
-/// `calm.wait_for_events`'s `structuredContent`. The bridge's Stop hook
-/// reads `events` and, when non-empty, prints
-/// `{"decision":"block", "reason":<JSON of events>}` to stdout so codex
-/// re-prompts the agent with the new observations as a turn input.
-///
-/// Errors:
-///   * 400 Bad Request — missing / empty `card_id`, or negative `since`
-///   * 404 Not Found — `card_id` doesn't resolve to a known card
-///   * 500 Internal — DB / bus error
-pub(crate) async fn pending_events(
-    State(s): State<AppState>,
-    Query(q): Query<PendingEventsQuery>,
-) -> Result<Json<Value>> {
-    let card_id_str = q.card_id.trim().to_string();
-    if card_id_str.is_empty() {
-        return Err(CalmError::BadRequest(
-            "pending_events: `card_id` query param required".into(),
-        ));
-    }
-    if let Some(s) = q.since
-        && s < 0
-    {
-        return Err(CalmError::BadRequest(
-            "pending_events: `since` must be non-negative".into(),
-        ));
-    }
-
-    // Resolve the card to confirm it exists and to pick up its wave for
-    // the long-poll's scope filter. 404 on miss (vs 500) gives the bridge
-    // a clear signal "this card_id is stale; codex daemon spec/worker
-    // pairing has drifted" so the operator can rebuild the per-card
-    // CODEX_HOME (hooks come from the managed requirements.toml).
-    let card_id_typed = CardId::from(card_id_str);
-    let card = s
-        .repo
-        .card_get(card_id_typed.as_str())
-        .await?
-        .ok_or_else(|| {
-            CalmError::NotFound(format!("pending_events: card {}", card_id_typed.as_str()))
-        })?;
-    let wave_id = card.wave_id;
-
-    let timeout_ms = q
-        .timeout_ms
-        .unwrap_or(DEFAULT_TIMEOUT_MS)
-        .min(MAX_TIMEOUT_MS);
-
-    let (envelopes, max_id) = wait_for_events_for_card(
-        s.repo.as_ref(),
-        &s.events,
-        &s.event_cursor_cache,
-        &card_id_typed,
-        &wave_id,
-        q.since,
-        timeout_ms,
-    )
-    .await
-    .map_err(|e| CalmError::Internal(format!("pending_events: {e}")))?;
-
-    Ok(Json(render_response(envelopes, max_id)))
 }
 
 /// Convert codex's `PascalCase` event names (`PreToolUse`) to snake.

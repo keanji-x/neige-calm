@@ -249,6 +249,7 @@ async fn dispatcher_happy_path_mints_worker_card() {
         codex.clone(),
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
+        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,    // permits
     );
 
@@ -316,6 +317,7 @@ async fn dispatcher_role_is_worker_via_role_cache() {
         codex.clone(),
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
+        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
@@ -376,6 +378,7 @@ async fn dispatcher_dedup_does_not_double_emit_task_failed() {
         codex.clone(),
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
+        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
@@ -446,6 +449,7 @@ async fn dispatcher_dedupes_same_idempotency_key() {
         codex.clone(),
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
+        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
@@ -505,6 +509,7 @@ async fn dispatcher_semaphore_caps_concurrent_spawns() {
         codex.clone(),
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
+        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         2,
     ));
     assert_eq!(dispatcher.permits(), 2);
@@ -585,6 +590,7 @@ async fn dispatcher_emits_task_failed_on_bad_scope() {
         codex.clone(),
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
+        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
@@ -662,6 +668,7 @@ async fn dispatcher_card_added_emit_passes_role_gate() {
         codex.clone(),
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
+        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
@@ -713,6 +720,7 @@ async fn dispatcher_dedupes_under_real_concurrent_race() {
         codex.clone(),
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
+        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
@@ -880,6 +888,7 @@ async fn dispatcher_codex_worker_spawns_with_dark_theme_default() {
         codex.clone(),
         daemon,
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
+        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,    // permits
     );
 
@@ -953,6 +962,7 @@ async fn dispatcher_codex_worker_spawn_carries_prompt_argv() {
         codex.clone(),
         daemon,
         None,
+        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 

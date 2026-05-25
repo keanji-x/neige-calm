@@ -4,9 +4,10 @@
 //!
 //! The codex daemons spawned for Spec / Worker cards need a write path
 //! back into the kernel for `dispatch_request`, `task_completed`,
-//! `task_failed` (PR7a) — and, in later PRs, `wave_state.{update,get}`
-//! (PR7b) and `wait_for_events` (PR8). The chosen transport is **MCP
-//! over a Unix domain socket** so the per-card identity binding is
+//! `task_failed` (PR7a), `wave_state.{update,get}` (PR7b), and the
+//! `report.*` tools (#229). (The old `wait_for_events` pull tool was
+//! removed in the #293 cutover.) The chosen transport is **MCP over a
+//! Unix domain socket** so the per-card identity binding is
 //! cryptographic (per-card token in `card_mcp_tokens`) and the wire
 //! shape is the same JSON-RPC the plugin host already speaks.
 //!
@@ -54,9 +55,8 @@ pub use transport::{McpServer, McpShimConfig};
 
 use std::sync::Arc;
 
-/// Build the default `ToolRegistry` populated with PR7a's three emit
-/// tools. PR7b / PR8 will mutate the registry further by calling their
-/// own `register_into` helpers after this function returns.
+/// Build the default `ToolRegistry` populated with the emit, wave-state,
+/// and wave-report tools (see [`tools::register_default_tools`]).
 pub fn build_default_registry() -> Arc<ToolRegistry> {
     let mut r = ToolRegistry::new();
     tools::register_default_tools(&mut r);

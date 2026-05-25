@@ -36,11 +36,13 @@ use calm_server::event::EventBus;
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
-use calm_server::state::{AppState, CodexClient, DaemonClient};
+use calm_server::state::{AppState, DaemonClient};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
+
+mod common;
 
 // ---------------------------------------------------------------------------
 // Boot — same shape as `tests/spec_card.rs`, kept minimal here.
@@ -50,9 +52,16 @@ use tower::ServiceExt;
 // at the real `calm-session-daemon` binary built into the workspace
 // `target/` dir. The daemon binds its socket before exec'ing the
 // inner program, so `spawn_daemon_for`'s wait-for-socket loop
-// completes even when the inner `/bin/sh -c codex` (no codex in CI)
-// fails immediately. Same locator pattern as
-// `tests/wave_create_sync_daemon.rs` and `tests/codex_card_endpoint.rs`.
+// completes even when the inner program fails immediately. Same locator
+// pattern as `tests/wave_create_sync_daemon.rs` and
+// `tests/codex_card_endpoint.rs`.
+//
+// #293 cutover — `POST /api/waves` now ALSO boots a kernel-owned `codex
+// app-server` before returning 201 (`spec_appserver::spawn_spec_appserver`,
+// invoked via `s.codex.codex_bin`). With no real codex on PATH that spawn
+// 500s. So we use `common::fake_codex_client()`, whose `codex_bin` points
+// at the `osc-probe-child` fixture's fake app-server (see
+// `tests/common/mod.rs`), instead of the bare `CodexClient::new_stub()`.
 // ---------------------------------------------------------------------------
 
 /// Same daemon-locator as `wave_create_sync_daemon.rs` /
@@ -117,7 +126,7 @@ async fn boot() -> Boot {
             card_role_cache.clone(),
             wave_cove_cache.clone(),
         )),
-        Arc::new(CodexClient::new_stub()),
+        Arc::new(common::fake_codex_client()),
         Some(card_role_cache.clone()),
         Some(wave_cove_cache.clone()),
     );

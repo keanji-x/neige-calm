@@ -130,7 +130,6 @@ async fn boot_with_role(role: CardRole) -> CardBoot {
         events.clone(),
         card_role_cache,
         wave_cove_cache,
-        calm_server::event_cursor::EventCursorCache::new(),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         registry,
@@ -435,6 +434,7 @@ async fn dispatch_request_drives_dispatcher_to_mint_worker_card() {
             session_daemon_bin: PathBuf::from("/nonexistent-daemon-bin"),
         }),
         None,
+        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         2,
     );
 
