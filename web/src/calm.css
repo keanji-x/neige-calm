@@ -214,6 +214,9 @@
   --space-11: 28px;
   --space-12: 32px;
 
+  /* Width of the .side-coves scroll-gutter; .side-section uses it as right padding to keep its content right-edge aligned with .cove-row. */
+  --rail-scrollbar-gutter: var(--space-4);
+
   /* Motion duration scale (slice 5 of #165). Six-tier vocabulary that
      consolidates ad-hoc transition / animation durations scattered across
      the file. The migration is intentionally lossy — pre-consolidation we
@@ -454,12 +457,11 @@ input, textarea { font: inherit; color: inherit; }
   gap: var(--space-1);
   min-width: 0;
 }
-/* .side-coves uses scrollbar-gutter: stable which reserves 8px of right
-   gutter (matching the --space-4 / 8px scrollbar width). Match that on
-   .side-section so the pin button x-aligns with the cove-row × and the
-   Coves header + button. */
+/* .side-coves uses scrollbar-gutter: stable which reserves --rail-scrollbar-gutter
+   of right gutter. Match that on .side-section so the pin button x-aligns with
+   the cove-row × and the Coves header + button. */
 .side .side-section {
-  padding-right: var(--space-4);
+  padding-right: var(--rail-scrollbar-gutter);
 }
 /* The Coves nav grows to fill the column between the Today nav (or the
    "Waiting on you" section) and the user menu, then scrolls internally
@@ -472,7 +474,7 @@ input, textarea { font: inherit; color: inherit; }
   overflow-y: auto;
   scrollbar-gutter: stable;
 }
-.side .side-coves::-webkit-scrollbar { width: 8px; }
+.side .side-coves::-webkit-scrollbar { width: var(--rail-scrollbar-gutter); }
 .side .side-coves::-webkit-scrollbar-thumb {
   background: var(--hairline-strong);
   border-radius: var(--radius-pill);
@@ -616,6 +618,7 @@ input, textarea { font: inherit; color: inherit; }
   color: var(--text-3);
   margin-left: var(--space-3);
   flex-shrink: 0;
+  /* 60px chosen empirically to fit ~6 chars of cove name on the 200px sidebar without crowding the wave title. */
   max-width: 60px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -646,6 +649,8 @@ input, textarea { font: inherit; color: inherit; }
   background: transparent;
   border: none;
   border-radius: var(--radius-sm);
+  /* 12px not --text-xs (11px): the SVG icon needs 12px to land at the same optical
+     weight as the +/× controls which render at 18px (--text-lg). */
   font-size: 12px;
   line-height: var(--leading-none);
   color: var(--text-3);
@@ -1102,7 +1107,7 @@ input, textarea { font: inherit; color: inherit; }
   border-radius: var(--radius-md);
   color: var(--text-3);
   font: inherit;
-  font-size: 18px;
+  font-size: var(--text-lg);
   line-height: var(--leading-none);
   cursor: pointer;
   opacity: 0;
@@ -1133,7 +1138,7 @@ input, textarea { font: inherit; color: inherit; }
   border-radius: var(--radius-md);
   color: var(--text-3);
   font: inherit;
-  font-size: 18px;
+  font-size: var(--text-lg);
   line-height: var(--leading-none);
   cursor: pointer;
   opacity: 0;
@@ -1351,7 +1356,7 @@ input, textarea { font: inherit; color: inherit; }
   border: none;
   border-radius: var(--radius-md);
   color: var(--text-3);
-  font-size: 18px;
+  font-size: var(--text-lg);
   line-height: var(--leading-none);
   cursor: pointer;
   transition: background var(--motion-quick), color var(--motion-quick);
