@@ -224,6 +224,18 @@ pub enum SpecPushPhase {
     TurnRunning,
     /// The last lifecycle signal was `turn/completed`.
     TurnCompleted,
+    /// #318 INV-4 (R2-B2) — the connection was `thread/resume`-d during a
+    /// boot takeover and no lifecycle notification has yet arrived to
+    /// reconcile it. `thread/resume` does **not** tell us whether a turn
+    /// is mid-flight on the server, so we must NOT treat the thread as
+    /// between turns: issuing a `turn/start` here while codex is still
+    /// running the prior boot's turn would be silently dropped (verified;
+    /// see [`decide`] / [`PushAction::Enqueue`]). The first `turn/started`
+    /// reconciles us to `TurnRunning`; the first `turn/completed`
+    /// reconciles us to `TurnCompleted` (at which point the consumer
+    /// task's [`flush_push_queue`] will drain anything that piled up in
+    /// the meantime).
+    Resumed,
 }
 
 /// What [`SpecPushHandle::push_observation`] should do with a single
@@ -312,6 +324,18 @@ pub fn decide(phase: SpecPushPhase) -> PushAction {
         // silently dropped (verified) / would lose the single-winner race,
         // so buffer and let the winner / next `turn/completed` flush it.
         SpecPushPhase::TurnRunning | SpecPushPhase::Issuing => PushAction::Enqueue,
+        // #318 INV-4 (R2-B2) — `thread/resume` does NOT prove the server is
+        // between turns; a prior-boot turn could still be running on the
+        // resumed thread. Issuing a `turn/start` now would be silently
+        // dropped by codex (the same B1-style hazard), losing the catch-up
+        // observation. Enqueue and let the consumer task's
+        // `flush_push_queue` issue once the next `turn/completed` proves
+        // we are between turns. If instead the server is already between
+        // turns, the first push's `turn/started` reconciles `Resumed` →
+        // `TurnRunning`, and the matching `turn/completed` flips us to
+        // `TurnCompleted` and flushes — same delivery, one extra
+        // notification round-trip.
+        SpecPushPhase::Resumed => PushAction::Enqueue,
     }
 }
 
@@ -1279,14 +1303,17 @@ async fn build_handle_after_spawn_resume(
     }
     tracing::info!(thread_id = %thread_id, "spec push (resume): thread resumed");
 
-    // Seed the consumer-tracked status with the resumed thread id. Phase
-    // stays `Idle` until the notification stream tells us otherwise — the
-    // next observation will start a turn if no turn is in flight; if one
-    // is, the server's `turn/started`/`turn/completed` will reconcile the
-    // phase before any push tries to issue.
+    // #318 INV-4 (R2-B2) — seed the consumer-tracked phase as `Resumed`,
+    // NOT `Idle`. `thread/resume` does not prove the server is between
+    // turns: a prior-boot turn could still be running on the resumed
+    // thread. `decide(Resumed) == Enqueue` so a catch-up push buffers
+    // instead of firing a (silently-dropped) `turn/start` mid-turn; the
+    // server's first `turn/started` / `turn/completed` then reconciles
+    // the phase (via `record()`) before any issue actually runs.
     let status: SharedStatus = Arc::new(Mutex::new(SpecPushStatus {
+        phase: SpecPushPhase::Resumed,
         last_thread_id: Some(thread_id.to_string()),
-        ..Default::default()
+        last_turn_id: None,
     }));
 
     Ok(park_handle(
@@ -1494,6 +1521,21 @@ async fn flush_push_queue(
                 tracing::debug!(
                     thread_id,
                     "spec push: flush no-op — another issuer owns this cycle"
+                );
+                return;
+            }
+            SpecPushPhase::Resumed => {
+                // #318 INV-4 (R2-B2) — defensive: this branch is only
+                // reachable if `flush_push_queue` runs before any
+                // lifecycle notification has arrived (the consumer task
+                // only invokes flush on `TurnCompleted`, which itself
+                // reconciles phase → `TurnCompleted` via `record()` first,
+                // so in practice we won't see `Resumed` here). Stay
+                // conservative: don't issue while the resume state is
+                // unproven.
+                tracing::debug!(
+                    thread_id,
+                    "spec push: flush no-op — phase is Resumed (waiting for lifecycle signal)"
                 );
                 return;
             }
@@ -1784,6 +1826,12 @@ mod tests {
         // B1: a caller observing `Issuing` must enqueue, never issue a second
         // (silently-dropped) turn/start.
         assert_eq!(decide(SpecPushPhase::Issuing), PushAction::Enqueue);
+        // #318 INV-4 (R2-B2): a caller observing `Resumed` (boot-takeover
+        // path right after `thread/resume`, before any lifecycle
+        // notification has reconciled the phase) must enqueue — the
+        // server may still be running the prior boot's turn and a
+        // `turn/start` would be silently dropped.
+        assert_eq!(decide(SpecPushPhase::Resumed), PushAction::Enqueue);
     }
 
     /// `push_observation` on an idle handle issues a `turn/start` the fake
