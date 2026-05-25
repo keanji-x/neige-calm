@@ -1,6 +1,7 @@
 # Rust
 /target
 plugins/*/target
+plugins/*/bin/
 
 # Node
 web/node_modules
