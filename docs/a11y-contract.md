@@ -249,7 +249,7 @@ Helpers live in `web/e2e/helpers/trace.ts`:
 
 Two projects share `playwright.config.ts`:
 
-- **`chromium`** — points at the developer's `make dev` stack (`http://localhost:4040/calm/`). Used for `golden-path.spec.ts`, `wave-create.spec.ts`. No replay binary needed.
+- **`chromium`** — points at the developer's `make dev` stack (`http://localhost:4041/calm/`). Used for `golden-path.spec.ts`, `wave-create.spec.ts`. No replay binary needed.
 - **`a11y`** — boots `cargo run --bin replay --serve` (Slice 5, see `web/e2e/_setup/replay-server.ts`) preloaded with a curated event-trace fixture. Use this project for any spec that needs the event trace ring buffer. Reference impl: `web/e2e/a11y-trace-smoke.spec.ts`.
 
 The replay binary is spawned exclusively by the `replay-setup` setup project, which only runs as a dependency of `a11y`. Running `--project=chromium` alone never needs cargo on PATH.

@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use axum::{response::Redirect, routing::get};
 use calm_server::actor::actor_middleware;
 use calm_server::auth::{self, AuthConfig, AuthState};
 use calm_server::config::Config;
@@ -12,6 +13,7 @@ use calm_server::state::AppState;
 use calm_server::ws;
 use clap::Parser;
 use tower_http::cors::CorsLayer;
+use tower_http::services::{ServeDir, ServeFile};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -135,13 +137,27 @@ async fn main() -> anyhow::Result<()> {
     // `AppState`.
     let auth_router = auth::router().with_state(auth_state.clone());
 
-    let app = axum::Router::new()
+    let mut app = axum::Router::new()
         .merge(protected_rest)
         .merge(protected_ws)
         .merge(public_rest)
         .with_state(state)
         .merge(auth_router)
         .layer(cors);
+
+    if let Some(web_dist) = &cfg.web_dist {
+        let index = web_dist.join("index.html");
+        tracing::info!(
+            web_dist = %web_dist.display(),
+            "serving built web bundle under /calm/"
+        );
+        app = app
+            .route("/", get(|| async { Redirect::temporary("/calm/") }))
+            .nest_service(
+                "/calm",
+                ServeDir::new(web_dist).fallback(ServeFile::new(index)),
+            );
+    }
 
     let listener = tokio::net::TcpListener::bind(&cfg.listen).await?;
     tracing::info!(addr = %cfg.listen, "calm-server listening");

@@ -19,7 +19,7 @@ export const DEFAULT_FIXTURE =
   'crates/calm-server/tests/fixtures/events/wave-grid-layout-trace.events.json';
 
 /** Port the replay server binds. Hard-coded to a non-standard value so it
- *  doesn't collide with a developer's `make dev` (which owns 4040). */
+ *  doesn't collide with a developer's `make dev` (which owns 4041). */
 export const REPLAY_PORT = 4141;
 
 /** Substring of the readiness banner printed by `bin/replay.rs` once

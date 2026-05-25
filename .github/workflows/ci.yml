@@ -225,6 +225,7 @@ jobs:
           cat > .env <<'EOF'
           CALM_CODEX_HOST_BIN=/bin/true
           CALM_EXTRA_MOUNT=/tmp
+          CALM_PORT=4041
           CALM_DEV_AUTOLOGIN=true
           HTTP_PROXY=
           HTTPS_PROXY=
@@ -244,7 +245,7 @@ jobs:
       - name: wait for stack
         run: |
           for i in {1..30}; do
-            if curl -sf http://localhost:4040/api/version > /dev/null; then
+            if curl -sf http://localhost:4041/api/version > /dev/null; then
               echo "Stack is up after ${i} attempts"
               exit 0
             fi

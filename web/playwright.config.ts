@@ -9,7 +9,8 @@
 // Two Playwright projects share this config:
 //
 //   * `chromium` — pre-existing project. Targets the developer's
-//     `make dev` stack at http://localhost:4040/calm/. We deliberately
+//     `make dev` stack at PLAYWRIGHT_BASE_URL, defaulting to
+//     http://localhost:4041/calm/. We deliberately
 //     don't set `webServer` here either; booting the full kernel +
 //     sqlite seed from playwright would be slower than the human dev
 //     loop and would race with `make dev` if already running. Specs:
@@ -32,16 +33,19 @@
 
 import { defineConfig, devices } from '@playwright/test';
 
-const REPLAY_PORT = 4141;
+const REPLAY_PORT = Number(process.env.REPLAY_PORT ?? 4141);
 // The `a11y` project needs a Vite dev server in front of the replay binary
 // so the SPA bundle is served *with* `import.meta.env.DEV` truthy — that
 // gate is what unlocks the `?trace=1` ring buffer at
-// `window.__neigeEvents__`. The built nginx-served bundle on :4040 has
+// `window.__neigeEvents__`. The built nginx-served bundle has
 // that branch tree-shaken away, so neither it nor the bare replay binary
 // (REST + WS only) work here. We point Vite at a custom port so it
 // doesn't collide with the developer's `make dev` Vite (5175 by default).
-const A11Y_VITE_PORT = 5176;
+const A11Y_VITE_PORT = Number(process.env.A11Y_VITE_PORT ?? 5176);
 const REPLAY_BASE_URL = `http://127.0.0.1:${A11Y_VITE_PORT}/calm/`;
+const DEV_BASE_URL =
+  process.env.PLAYWRIGHT_BASE_URL ??
+  `http://localhost:${process.env.CALM_PORT ?? 4041}/calm/`;
 
 export default defineConfig({
   testDir: './e2e',
@@ -66,7 +70,7 @@ export default defineConfig({
     timeout: 60_000,
     env: {
       // Re-point Vite's /api proxy at the replay binary on REPLAY_PORT
-      // instead of the default 4040 (which is `make dev`). The dev
+      // instead of the default docker dev stack. The dev
       // server reads this in `vite.config.ts` via `process.env`.
       VITE_API_PROXY_TARGET: `http://127.0.0.1:${REPLAY_PORT}`,
     },
@@ -104,7 +108,7 @@ export default defineConfig({
       testIgnore: ['**/a11y-*.spec.ts', '**/_setup/**'],
       use: {
         ...devices['Desktop Chrome'],
-        baseURL: 'http://localhost:4040/calm/',
+        baseURL: DEV_BASE_URL,
       },
     },
     {

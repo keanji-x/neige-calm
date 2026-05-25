@@ -299,7 +299,7 @@ impl AppState {
         // time and use it for worker codex daemon spawn (mirrors the
         // spec card path in `routes::waves::create_wave`).
         let mcp_socket_path = cfg.data_dir_resolved().join("mcp").join("kernel.sock");
-        let mcp_shim_bin = resolve_mcp_stdio_shim_bin();
+        let mcp_shim_bin = resolve_mcp_stdio_shim_bin(cfg);
         let mcp_registry = crate::mcp_server::build_default_registry();
         let mcp_server = crate::mcp_server::McpServer::spawn(
             repo.clone(),
@@ -800,11 +800,14 @@ fn resolve_codex_bridge_bin() -> PathBuf {
 }
 
 /// PR7a (#136) — resolve the path to `neige-mcp-stdio-shim`. Same
-/// "sibling of running exe, else bare-name PATH lookup" pattern as the
-/// codex-bridge resolver. The codex daemon will spawn this binary
-/// from the path baked into each per-card `$CODEX_HOME/config.toml`'s
+/// "explicit override, sibling of running exe, else bare-name PATH lookup"
+/// pattern as the codex-bridge resolver. The codex daemon will spawn this
+/// binary from the path baked into each per-card `$CODEX_HOME/config.toml`'s
 /// `[mcp_servers.calm].command` entry.
-fn resolve_mcp_stdio_shim_bin() -> PathBuf {
+fn resolve_mcp_stdio_shim_bin(cfg: &Config) -> PathBuf {
+    if let Some(path) = &cfg.mcp_stdio_shim_bin {
+        return path.clone();
+    }
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
     {

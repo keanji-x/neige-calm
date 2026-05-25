@@ -119,7 +119,7 @@ axum = { version = "0.8", features = ["ws", "macros"] }
 # only feature we use; matches neige-server's existing pin.
 axum-extra = { version = "0.10", features = ["cookie"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
 
 # Async
 tokio = { version = "1", features = ["full"] }

@@ -5,7 +5,7 @@
 //     mocked transports. Lives next to source under `src/**/*.test.{ts,tsx}`
 //     and in the top-level `tests/` dir for setup-style files.
 //   - playwright (`playwright.config.ts`): end-to-end tests against the
-//     running docker stack at http://localhost:4040/calm/. Slower, requires
+//     running docker stack at http://localhost:4041/calm/. Slower, requires
 //     `make dev` first.
 //
 // Keep the surfaces non-overlapping: unit tests should never reach for the

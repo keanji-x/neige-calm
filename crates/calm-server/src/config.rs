@@ -29,6 +29,12 @@ pub struct Config {
     )]
     pub allowed_origin: String,
 
+    /// Optional built web bundle to serve under `/calm/`.
+    /// Docker dev usually lets nginx serve this. Host prod sets this to
+    /// `web/dist` so a single local calm-server process serves both SPA and API.
+    #[arg(long, env = "CALM_WEB_DIST")]
+    pub web_dist: Option<PathBuf>,
+
     /// Plugin install root (read-only code). Defaults to
     /// `<XDG_CONFIG_HOME>/neige-calm/plugins` or `~/.config/neige-calm/plugins`.
     #[arg(long, env = "CALM_PLUGINS_DIR")]
@@ -55,6 +61,14 @@ pub struct Config {
     /// See `state::resolve_codex_bridge_bin`.
     #[arg(long, env = "CALM_CODEX_BRIDGE_BIN")]
     pub codex_bridge_bin: Option<PathBuf>,
+
+    /// Override path for the `neige-mcp-stdio-shim` binary that codex MCP
+    /// clients spawn from each card's generated config.toml. Defaults to
+    /// looking next to `calm-server`, then PATH. Host prod sets this to a
+    /// stable ~/.local/bin symlink so old docker paths do not leak into
+    /// local codex homes.
+    #[arg(long, env = "CALM_MCP_STDIO_SHIM_BIN")]
+    pub mcp_stdio_shim_bin: Option<PathBuf>,
 
     /// Base URL the codex hook bridge uses to POST back to calm-server.
     /// Defaults to `http://<listen>` — when `listen` binds `0.0.0.0`, we

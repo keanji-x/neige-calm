@@ -2,12 +2,16 @@
 #
 # The docker stack runs the *host-built* binary (no rust toolchain in the
 # image), bind-mounts $HOME at the same path inside the container, and
-# publishes a single host port (CALM_PORT, default 4040) via nginx.
+# publishes a single host port (CALM_PORT, default 4041) via nginx. The
+# backend lives on the compose bridge network; nginx is the only host-facing
+# entrypoint.
 #
-#   make dev     # build + bring stack up in background
-#   make stop    # tear stack down
-#   make logs    # tail logs
-#   make help    # everything
+#   make dev                  # build + bring stack up in background
+#   make dev-fresh            # wipe this DEV_ID's /tmp state, then start
+#   make prod                 # run host production process (no docker)
+#   make stop                 # tear stack down
+#   make logs                 # tail logs
+#   make help                 # everything
 
 SHELL          := bash
 .SHELLFLAGS    := -eu -o pipefail -c
@@ -23,8 +27,50 @@ export GID  := $(HOST_GID)
 export HOME
 export USER
 
-CALM_PORT ?= 4040
+# By default, start from PORT_BASE and pick the first currently-free host
+# port. 4040 is reserved for host prod. Explicit CALM_PORT still wins:
+#
+#   make dev-fresh                 # auto, usually 4041 or next free
+#   CALM_PORT=4315 make dev-fresh  # fixed
+PORT_BASE ?= 4041
+CALM_PORT ?= $(shell p=$(PORT_BASE); while ss -H -ltn "sport = :$$p" 2>/dev/null | grep -q .; do p=$$((p+1)); done; echo $$p)
+export PORT_BASE
 export CALM_PORT
+
+# Isolate compose resources per dev instance. Override DEV_ID when running
+# multiple worktrees or PRs side-by-side:
+#
+#   make dev-fresh DEV_ID=pr315 CALM_PORT=4315
+#
+# Runtime state lives inside the server container on a tmpfs. `make dev`
+# keeps it for the lifetime of that compose container; `make dev-fresh`
+# runs `docker compose down -v` first, so the next boot is clean.
+DEV_ID ?= $(notdir $(CURDIR))
+COMPOSE_PROJECT_NAME ?= neige-calm-$(DEV_ID)
+export DEV_ID
+export COMPOSE_PROJECT_NAME
+
+CALM_CONTAINER_STATE_DIR ?= /var/lib/neige-calm
+CALM_DATA_DIR ?= $(CALM_CONTAINER_STATE_DIR)/data
+CALM_DB_URL ?= sqlite://$(CALM_CONTAINER_STATE_DIR)/calm.db?mode=rwc
+CALM_PLUGINS_DATA_DIR ?= $(CALM_CONTAINER_STATE_DIR)/plugins-data
+export CALM_CONTAINER_STATE_DIR
+export CALM_DATA_DIR
+export CALM_DB_URL
+export CALM_PLUGINS_DATA_DIR
+
+# Host production mode: no docker, no nginx. 4040 is reserved for prod by
+# default. calm-server serves web/dist itself and uses the host's HOME,
+# ~/.codex, PATH, and login shell.
+LOCAL_SHELL ?= $(shell command -v zsh 2>/dev/null || getent passwd $(USER) | cut -d: -f7 2>/dev/null || echo /bin/sh)
+PROD_PORT ?= 4040
+PROD_LISTEN ?= 127.0.0.1:$(PROD_PORT)
+PROD_DATA_DIR ?= $(HOME)/.local/share/neige-calm
+PROD_DB_URL ?= sqlite://$(PROD_DATA_DIR)/calm.db?mode=rwc
+PROD_PLUGINS_DATA_DIR ?= $(PROD_DATA_DIR)/plugins
+PROD_AUTH_USERNAME ?= owner
+PROD_AUTH_PASSWORD ?= dev
+PROD_DEV_AUTOLOGIN ?= false
 
 # Compose wrapper so every recipe picks up the same project name + file.
 COMPOSE := docker compose
@@ -49,10 +95,9 @@ XDG_DIRS := \
 # are exported pointing at $(WORKTREE)'s target/release + web/dist so
 # the container picks up the right binaries.
 #
-# Caveat: the docker stack uses fixed container names
-# (neige-calm-server-1 etc.) and the host port CALM_PORT — running two
-# worktrees' stacks simultaneously will collide. Stop one before starting
-# the other, or override CALM_PORT + COMPOSE_PROJECT_NAME.
+# Caveat: two stacks can run side-by-side only when both DEV_ID and CALM_PORT
+# differ. DEV_ID isolates compose resources + /tmp state; CALM_PORT isolates
+# the single host-facing nginx port.
 WORKTREE ?= $(CURDIR)
 WORKTREE_INPUT := $(WORKTREE)
 # `override` is required because command-line `WORKTREE=...` assignments
@@ -75,6 +120,8 @@ BRIDGE   := $(WORKTREE)/target/release/neige-codex-bridge
 # /usr/local/bin/.
 MCP_SHIM := $(WORKTREE)/target/release/neige-mcp-stdio-shim
 DIST     := $(WORKTREE)/web/dist
+LOCAL_BIN_DIR ?= $(HOME)/.local/bin
+LOCAL_MCP_STDIO_SHIM ?= $(LOCAL_BIN_DIR)/neige-mcp-stdio-shim
 
 # Plumb the same paths into docker-compose so the container bind-mounts
 # the right binaries + web bundle. The `${VAR:-default}` form in
@@ -109,8 +156,11 @@ help: ## Show this help.
 	@awk 'BEGIN {FS = ":.*##"; printf "Targets:\n"} \
 	  /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 	@echo ""
-	@echo "Host port: $(CALM_PORT) (override: CALM_PORT=18080 make dev)"
+	@echo "Dev port:  $(CALM_PORT) (auto from PORT_BASE=$(PORT_BASE); override: CALM_PORT=18080 make dev)"
 	@echo "Worktree:  $(WORKTREE) (override: WORKTREE=/path/to/other-worktree make dev)"
+	@echo "Dev ID:    $(DEV_ID) (override: DEV_ID=pr315 make dev-fresh)"
+	@echo "Dev state: container $(CALM_CONTAINER_STATE_DIR) tmpfs"
+	@echo "Prod:      make prod (host process, port $(PROD_PORT), local shell: $(LOCAL_SHELL))"
 
 # ---- build (on host, not in docker) -------------------------------------
 
@@ -132,9 +182,13 @@ $(DIST): $(shell find $(WORKTREE)/web/src -type f 2>/dev/null) $(WORKTREE)/web/p
 # ---- docker lifecycle ---------------------------------------------------
 
 .PHONY: dev
-dev: build dirs ## Build, then bring the stack up in the background (RESET_DB=1 wipes db first).
+dev: build dirs ## Build, then bring the stack up in the background (FRESH=1 wipes this DEV_ID first).
+ifeq ($(FRESH),1)
+	@echo "  FRESH=1 — stopping stack, removing container state, then bringing up"
+	-$(COMPOSE) down -v --remove-orphans
+endif
 ifeq ($(RESET_DB),1)
-	@echo "  RESET_DB=1 — stopping stack, wiping DB, then bringing up"
+	@echo "  RESET_DB=1 — legacy reset of the shared XDG DB; prefer make dev-fresh"
 	-$(COMPOSE) down --remove-orphans
 	$(MAKE) reset-db
 endif
@@ -142,7 +196,23 @@ endif
 	@echo ""
 	@echo "  → http://localhost:$(CALM_PORT)/"
 	@echo "  → API: http://localhost:$(CALM_PORT)/api/coves"
-	@echo "  logs: make logs"
+	@echo "  dev id: $(DEV_ID)"
+	@echo "  state:  container $(CALM_CONTAINER_STATE_DIR) tmpfs"
+	@echo "  logs: make logs DEV_ID=$(DEV_ID)"
+	@echo "  health: make health DEV_ID=$(DEV_ID) CALM_PORT=$(CALM_PORT)"
+
+.PHONY: dev-fresh
+dev-fresh: build ## Remove this DEV_ID's containers/state, then start a fresh stack.
+	-$(COMPOSE) down -v --remove-orphans
+	$(MAKE) dirs
+	$(COMPOSE) up -d
+	@echo ""
+	@echo "  → http://localhost:$(CALM_PORT)/"
+	@echo "  → API: http://localhost:$(CALM_PORT)/api/coves"
+	@echo "  dev id: $(DEV_ID)"
+	@echo "  state:  container $(CALM_CONTAINER_STATE_DIR) tmpfs"
+	@echo "  logs: make logs DEV_ID=$(DEV_ID)"
+	@echo "  health: make health DEV_ID=$(DEV_ID) CALM_PORT=$(CALM_PORT)"
 
 .PHONY: up
 up: dirs ## Bring the stack up without rebuilding.
@@ -173,11 +243,50 @@ health: ## Smoke-test the API end-to-end through nginx.
 	@curl -fsS -w "  HTTP %{http_code}\n" http://localhost:$(CALM_PORT)/api/coves \
 	  && echo "ok" || (echo "down — try: make logs"; exit 1)
 
+# ---- host production lifecycle -----------------------------------------
+
+.PHONY: prod-local-bin
+prod-local-bin: $(MCP_SHIM) ## Link host prod MCP shim into ~/.local/bin.
+	@mkdir -p "$(LOCAL_BIN_DIR)"
+	@ln -sfn "$(MCP_SHIM)" "$(LOCAL_MCP_STDIO_SHIM)"
+	@echo "  mcp shim: $(LOCAL_MCP_STDIO_SHIM) -> $(MCP_SHIM)"
+
+.PHONY: prod-repair-codex-homes
+prod-repair-codex-homes: prod-local-bin ## Rewrite stale docker shim paths in existing prod codex homes.
+	@if [ -d "$(PROD_DATA_DIR)/codex-homes" ]; then \
+	  find "$(PROD_DATA_DIR)/codex-homes" -name config.toml -exec sed -i 's|/usr/local/bin/neige-mcp-stdio-shim|$(LOCAL_MCP_STDIO_SHIM)|g' {} +; \
+	  echo "  repaired stale MCP shim paths under $(PROD_DATA_DIR)/codex-homes"; \
+	fi
+
+.PHONY: prod
+prod: build prod-dirs prod-repair-codex-homes ## Run production locally without docker (uses host ~/.codex and local shell).
+	@echo "  → http://localhost:$(PROD_PORT)/"
+	@echo "  → API: http://localhost:$(PROD_PORT)/api/coves"
+	@echo "  data:  $(PROD_DATA_DIR)"
+	@echo "  shell: $(LOCAL_SHELL)"
+	env \
+	  CALM_LISTEN="$(PROD_LISTEN)" \
+	  CALM_ALLOWED_ORIGIN="http://localhost:$(PROD_PORT)" \
+	  CALM_DB_URL="$(PROD_DB_URL)" \
+	  CALM_DATA_DIR="$(PROD_DATA_DIR)" \
+	  CALM_PLUGINS_DATA_DIR="$(PROD_PLUGINS_DATA_DIR)" \
+	  CALM_WEB_DIST="$(DIST)" \
+	  CALM_MCP_STDIO_SHIM_BIN="$(LOCAL_MCP_STDIO_SHIM)" \
+	  CALM_AUTH_USERNAME="$(PROD_AUTH_USERNAME)" \
+	  CALM_AUTH_PASSWORD="$(PROD_AUTH_PASSWORD)" \
+	  CALM_DEV_AUTOLOGIN="$(PROD_DEV_AUTOLOGIN)" \
+	  SHELL="$(LOCAL_SHELL)" \
+	  "$(BIN)"
+
 # ---- housekeeping ------------------------------------------------------
 
 .PHONY: dirs
 dirs:
 	@mkdir -p $(XDG_DIRS)
+
+.PHONY: prod-dirs
+prod-dirs:
+	@mkdir -p "$(PROD_DATA_DIR)" "$(PROD_PLUGINS_DATA_DIR)"
 
 .PHONY: clean
 clean: ## Remove build artifacts (target/, web/dist).

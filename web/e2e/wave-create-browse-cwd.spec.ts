@@ -11,7 +11,7 @@
 // `wave-create-auto-match.spec.ts` own that); the goal is just the
 // picker → input wiring.
 //
-// Prereq: `make dev` serving http://localhost:4040 with the default
+// Prereq: `make dev` serving http://localhost:4041 with the default
 // seed. The server's `listdir` endpoint walks the kernel container's
 // filesystem; the docker-compose mounts `$HOME` at the same path
 // inside the container (see docker-compose.yml ~L133), so a directory
