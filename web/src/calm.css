@@ -580,13 +580,6 @@ input, textarea { font: inherit; color: inherit; }
   font-weight: 500;
 }
 [data-theme="dark"] .side .side-wave.active { background: var(--overlay-active); }
-.side .side-wave-dot {
-  width: 7px; height: 7px;
-  border-radius: var(--radius-pill);
-  background: var(--warn);
-  flex-shrink: 0;
-  box-shadow: 0 0 0 3px var(--warn-soft);
-}
 .side .side-wave-title {
   flex: 1; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -603,6 +596,21 @@ input, textarea { font: inherit; color: inherit; }
 .side .side-wave-row .side-wave {
   flex: 1;
   border-radius: var(--radius-md);
+  /* Reserve space on the right so the title never ellipsizes under the
+     absolutely-positioned pin button. */
+  padding-right: calc(var(--space-5) + 20px + var(--space-3));
+}
+/* Swatch inside a wave row — mirrors .cove-nav .swatch-wrap / .swatch
+   so pinned/waiting wave rows share the same [swatch] [title] pattern. */
+.side .side-wave .swatch-wrap {
+  position: relative;
+  width: 12px; height: 12px;
+  flex-shrink: 0;
+}
+.side .side-wave .swatch {
+  width: 10px; height: 10px;
+  border-radius: var(--radius-sm);
+  display: block;
 }
 .side .side-wave-row:hover .side-wave { background: var(--overlay-hover-faint); color: var(--text); }
 [data-theme="dark"] .side .side-wave-row:hover .side-wave { background: var(--overlay-hover); }
@@ -615,15 +623,20 @@ input, textarea { font: inherit; color: inherit; }
 /* Override the direct .side-wave hover rules so they don't double-apply
    when the row wrapper already handles hover. */
 .side .side-wave-row .side-wave:hover { background: transparent; }
-/* Pin button: hidden by default; revealed on row hover or when pinned. */
+/* Pin button: hidden by default; revealed on row hover or when pinned.
+   Sits absolutely at the same x column as .cove-row-delete and the
+   Coves-header `+` so all three right-edge slots line up vertically. */
 .side .side-wave-pin {
+  position: absolute;
+  right: var(--space-5);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px; height: 20px;
   display: grid; place-items: center;
-  width: 24px;
-  flex-shrink: 0;
   padding: var(--space-0);
   background: transparent;
   border: none;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   font-size: 12px;
   line-height: var(--leading-none);
   color: var(--text-3);

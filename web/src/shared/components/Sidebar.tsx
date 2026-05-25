@@ -117,7 +117,7 @@ export function Sidebar({
                 key={w.id}
                 wave={w}
                 active={active}
-                showDot={false}
+                coveColor={cove?.color ?? null}
                 title={(cove?.name ?? '') + ' · ' + w.title}
                 onGo={() => onGo({ name: 'wave', id: w.id })}
                 onPinWave={onPinWave}
@@ -138,7 +138,7 @@ export function Sidebar({
                 key={w.id}
                 wave={w}
                 active={active}
-                showDot={true}
+                coveColor={cove?.color ?? null}
                 title={(cove?.name ?? '') + ' · ' + w.title}
                 onGo={() => onGo({ name: 'wave', id: w.id })}
                 onPinWave={onPinWave}
@@ -380,14 +380,14 @@ function CovesHeader({
 function WaveRow({
   wave,
   active,
-  showDot,
+  coveColor,
   title,
   onGo,
   onPinWave,
 }: {
   wave: Wave;
   active: boolean;
-  showDot: boolean;
+  coveColor: string | null;
   title: string;
   onGo: () => void;
   onPinWave?: (waveId: string, pin: boolean) => void | Promise<void>;
@@ -400,7 +400,9 @@ function WaveRow({
         onClick={onGo}
         title={title}
       >
-        {showDot && <span className="side-wave-dot" />}
+        <span className="swatch-wrap">
+          <span className="swatch" style={{ background: coveColor ?? 'transparent' }} />
+        </span>
         <span className="side-wave-title">{wave.title}</span>
       </button>
       {onPinWave && (
