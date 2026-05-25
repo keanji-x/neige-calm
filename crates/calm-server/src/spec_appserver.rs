@@ -459,16 +459,28 @@ pub struct SpecPushHandle {
     /// #318 INV-5 (R3-B1) — `starttime` (clock-ticks since boot) of the
     /// launcher pid captured at spawn from `/proc/<pid>/stat`. Persisted
     /// on the spec-card payload as `appserver_start_time` alongside
-    /// `appserver_pgid`. The boot-recovery path calls
-    /// [`verify_owned_pid`] with `(pgid, this stamp)` BEFORE
-    /// `signal_process_group(pgid, …)` so a recycled pid (post-reboot)
-    /// cannot route the SIGTERM/SIGKILL to an unrelated process.
+    /// `appserver_pgid` + `appserver_boot_id`. The boot-recovery path
+    /// calls [`verify_owned_pid`] with `(pgid, this stamp, boot_id)`
+    /// BEFORE `signal_process_group(pgid, …)` so a recycled pid (post-
+    /// reboot OR mid-boot recycle) cannot route the SIGTERM/SIGKILL to
+    /// an unrelated process.
     ///
     /// `None` only on non-Linux targets / a `/proc` read failure at
     /// spawn time (test fixtures on macOS, transient ENOENT) — the
     /// boot-recovery path conservatively skips the kill when the
     /// persisted stamp is absent, same as today's mismatch behavior.
     pub start_time: Option<u64>,
+    /// #318 INV-5 (R3-B1) — kernel boot UUID captured at spawn from
+    /// `/proc/sys/kernel/random/boot_id`. Persisted alongside
+    /// `appserver_start_time` so the boot-recovery path can distinguish
+    /// "same kernel boot, just a kernel restart" from "host rebooted —
+    /// every pid from the prior boot is dead". A `boot_id` mismatch
+    /// short-circuits [`verify_owned_pid`] to `false` regardless of
+    /// `start_time` (the prior boot's process namespace is gone).
+    ///
+    /// `None` only on non-Linux / a `/proc` read failure — same
+    /// conservative-skip-the-kill posture as a missing stamp.
+    pub boot_id: Option<String>,
     /// Programmatic client connected to `child` over WS-over-UDS. PR3b
     /// will call `turn_start`/`turn_steer`/`inject_items` on this.
     pub client: Arc<CodexAppServer>,
@@ -747,16 +759,20 @@ impl Drop for SpecPushHandle {
 /// doesn't exist (the process is gone), the file can't be parsed, or
 /// we are running on a non-Linux target.
 ///
-/// **Why it matters.** `(pid, start_time)` is the canonical Linux
-/// identity token for a live process: pids are recycled aggressively
-/// (especially across a host reboot), but `start_time` is jiffies
-/// **since-boot** for the *creation* of THAT pid. After a reboot every
-/// pid was created post-boot, so a captured `start_time` from before
-/// the reboot strictly differs from any live pid's `start_time` — the
-/// (pid, start_time) pair survives recycling where pid alone does not.
-/// We capture this stamp at spawn and persist it alongside the pgid,
-/// then verify it before signaling the persisted pgid on boot
-/// recovery — see [`verify_owned_pid`].
+/// **Why it matters.** `(pid, start_time, boot_id)` is the canonical
+/// Linux identity token for a live process across reboots:
+/// `start_time` is jiffies-since-boot for the creation of THAT pid
+/// (invariant within a boot), and `boot_id` (a per-boot UUID from
+/// `/proc/sys/kernel/random/boot_id`) distinguishes "same boot, pid
+/// recycled" from "different boot entirely". After a reboot ALL
+/// `start_time` values restart from 0, so the captured stamp alone
+/// could in principle coincide with a fresh post-reboot pid's stamp
+/// (probability is small but nonzero, especially right after boot
+/// when starttime is small). The `boot_id` companion check makes the
+/// triple race-free across reboots — a different boot ⇒ skip the
+/// kill regardless of pid/start_time. The triple is read at spawn,
+/// persisted alongside the pgid, and verified before signaling on
+/// boot recovery — see [`verify_owned_pid`].
 ///
 /// `/proc/<pid>/stat` layout (proc(5)): space-separated fields after the
 /// `comm` blob (which can contain spaces/parens and is always wrapped in
@@ -793,15 +809,50 @@ pub fn read_proc_start_time(_pid: i32) -> Option<u64> {
     None
 }
 
-/// #318 INV-5 (R3-B1) — verify that the live process at `pid` is the
-/// SAME process whose `start_time` we captured at spawn (and persisted
-/// alongside `appserver_pgid` on the spec card payload).
+/// #318 INV-5 (R3-B1) — read the kernel's per-boot UUID
+/// (`/proc/sys/kernel/random/boot_id`). The kernel generates this once
+/// at boot and it survives in `/proc` for the lifetime of the running
+/// kernel; every reboot rerolls it. Returns `None` on a non-Linux
+/// target or a read failure (treated by [`verify_owned_pid`] as
+/// "can't prove identity → skip the kill").
 ///
-/// Returns `true` iff `/proc/<pid>/stat` exists AND its `starttime`
-/// field matches `expected_start_time`. Returns `false` when the
-/// process is gone, the entry can't be parsed, or the stamp differs
-/// (which is the post-reboot pid-recycle case the call site guards
-/// against).
+/// The value is a 36-char canonical UUID + trailing newline; we strip
+/// the newline and store the canonical form on the spec card payload.
+/// Equality is byte-for-byte (no UUID parsing required — both writer
+/// and reader are this same fn, and the kernel never changes the
+/// format mid-boot).
+#[cfg(target_os = "linux")]
+pub fn read_boot_id() -> Option<String> {
+    let raw = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+/// Non-Linux stub for [`read_boot_id`].
+#[cfg(not(target_os = "linux"))]
+pub fn read_boot_id() -> Option<String> {
+    None
+}
+
+/// #318 INV-5 (R3-B1) — verify that the live process at `pid` is the
+/// SAME process whose `(start_time, boot_id)` triple we captured at
+/// spawn (and persisted alongside `appserver_pgid` on the spec card
+/// payload).
+///
+/// Returns `true` iff ALL of:
+///   * the current `/proc/sys/kernel/random/boot_id` matches
+///     `expected_boot_id` (i.e. no reboot since spawn — without this,
+///     a coincidentally-equal cross-boot `start_time` would slip
+///     through),
+///   * `/proc/<pid>/stat` exists,
+///   * its `starttime` (field 22) matches `expected_start_time`.
+///
+/// Returns `false` otherwise. The cross-reboot case is short-circuited
+/// before the `/proc/<pid>/stat` read — a `boot_id` mismatch means
+/// every pid in the prior boot is gone, regardless of stamp.
 ///
 /// **Why we need this on top of [`socket_owned_by_appserver`].** The
 /// socket probe (`UnixStream::connect` succeeds → trust the pgid) is a
@@ -809,17 +860,30 @@ pub fn read_proc_start_time(_pid: i32) -> Option<u64> {
 /// the subsequent `signal_process_group(pgid, …)`. Between those two
 /// syscalls the kernel can reap the listener, recycle its pid/pgid to
 /// an unrelated user process, and our SIGTERM/SIGKILL then lands on
-/// that innocent process. `(pid, start_time)` is racey-free identity:
-/// even if the pgid is recycled within the window, the recycled
-/// process has a strictly later `start_time` (it started *after* our
-/// stamp), so this check still returns `false` and the kill is
-/// skipped.
+/// that innocent process. `(pid, start_time, boot_id)` is race-free
+/// identity:
+///
+///   * Cross-reboot pid recycle: `boot_id` mismatch ⇒ reject.
+///   * Same-boot pid recycle: the recycled process has a strictly
+///     later `start_time` (it started AFTER our stamp), so the
+///     stamp comparison rejects.
+///   * Liveness-only mismatch (we crashed before persisting →
+///     `/proc/<pid>` is gone): the `read_proc_start_time` ENOENT
+///     short-circuits to `None` ⇒ reject.
 ///
 /// On a non-Linux target (no `/proc`) this returns `false`
-/// unconditionally — the caller's existing fallback (skip the kill,
-/// cleanup the stale socket, let the respawn rebind) is correct in
-/// that environment.
-pub fn verify_owned_pid(pid: i32, expected_start_time: u64) -> bool {
+/// unconditionally — the caller's fallback (skip the kill, cleanup the
+/// stale socket, let the respawn rebind) is correct in that environment.
+pub fn verify_owned_pid(pid: i32, expected_start_time: u64, expected_boot_id: &str) -> bool {
+    // Reboot check FIRST — cheapest, and short-circuits the post-reboot
+    // case (the entire prior boot's pid namespace is dead, regardless
+    // of any individual pid's stamp).
+    let Some(live_boot) = read_boot_id() else {
+        return false;
+    };
+    if live_boot != expected_boot_id {
+        return false;
+    }
     let Some(live) = read_proc_start_time(pid) else {
         return false;
     };
@@ -1083,17 +1147,20 @@ pub async fn spawn_spec_appserver(
             ));
         }
     };
-    // #318 INV-5 (R3-B1) — capture the launcher's `starttime` IMMEDIATELY
-    // after spawn (before the child has any chance to exit). Together
-    // with the pgid this is the boot-recovery identity token: a recycled
-    // pid post-reboot will read a strictly different stamp, so
-    // `verify_owned_pid` rejects it and we skip the kill. `None` here
-    // (e.g. test fixtures on a non-Linux target, or a transient ENOENT
-    // race) is persisted as missing and the recovery path conservatively
-    // skips the kill — same posture as a stamp mismatch.
+    // #318 INV-5 (R3-B1) — capture the launcher's `(starttime, boot_id)`
+    // IMMEDIATELY after spawn (before the child has any chance to exit).
+    // Together with the pgid this is the boot-recovery identity token:
+    //   * mid-boot pid recycle → recycled process has a later starttime
+    //     → `verify_owned_pid` rejects.
+    //   * post-reboot pid recycle → `boot_id` differs → `verify_owned_pid`
+    //     rejects regardless of starttime.
+    // `None` for either (test fixtures on a non-Linux target, transient
+    // ENOENT race) is persisted as missing and the recovery path
+    // conservatively skips the kill — same posture as a mismatch.
     let start_time = read_proc_start_time(pgid);
+    let boot_id = read_boot_id();
     tracing::info!(
-        pid = pgid, pgid, start_time, sock = %sock.display(),
+        pid = pgid, pgid, start_time, ?boot_id, sock = %sock.display(),
         "spec push: spawned codex app-server (own process group)",
     );
 
@@ -1113,7 +1180,7 @@ pub async fn spawn_spec_appserver(
     // no parked registry entry, and `create_wave` gets a clean error.
     let handle = match tokio::time::timeout(
         OVERALL_BOOT_BUDGET,
-        build_handle_after_spawn(child, pgid, start_time, goal_text, sock),
+        build_handle_after_spawn(child, pgid, start_time, boot_id, goal_text, sock),
     )
     .await
     {
@@ -1208,19 +1275,20 @@ pub async fn resume_spec_appserver(
     };
     // #318 INV-5 (R3-B1) — same identity-stamp capture as the spawn path
     // (see `spawn_spec_appserver`). The fresh respawn after takeover gets
-    // its own stamp; we persist it into the spec card payload below via
-    // `spec_card_set_appserver_after_takeover` so the NEXT boot-recovery
-    // cycle has a current identity token.
+    // its own (start_time, boot_id); we persist them into the spec card
+    // payload below via `spec_card_set_appserver_after_takeover` so the
+    // NEXT boot-recovery cycle has a current identity token.
     let start_time = read_proc_start_time(pgid);
+    let boot_id = read_boot_id();
     tracing::info!(
-        pid = pgid, pgid, start_time, sock = %sock.display(), %thread_id,
+        pid = pgid, pgid, start_time, ?boot_id, sock = %sock.display(), %thread_id,
         "spec push (resume): spawned codex app-server (own process group)",
     );
 
     let mut rollback = SpawnRollback::new(pgid, sock);
     let handle = match tokio::time::timeout(
         OVERALL_BOOT_BUDGET,
-        build_handle_after_spawn_resume(child, pgid, start_time, thread_id, sock),
+        build_handle_after_spawn_resume(child, pgid, start_time, boot_id, thread_id, sock),
     )
     .await
     {
@@ -1417,10 +1485,12 @@ pub async fn socket_owned_by_appserver(sock: &Path) -> bool {
 /// The fallible post-spawn sequence (connect → initialize → thread/start →
 /// turn/start → await turn/started → spawn consumer). Split out so the
 /// [`SpawnRollback`] guard in [`spawn_spec_appserver`] wraps every `?`.
+#[allow(clippy::too_many_arguments)]
 async fn build_handle_after_spawn(
     mut child: Child,
     pgid: i32,
     start_time: Option<u64>,
+    boot_id: Option<String>,
     goal_text: &str,
     sock: &Path,
 ) -> Result<SpecPushHandle> {
@@ -1470,7 +1540,7 @@ async fn build_handle_after_spawn(
     // 6. Spawn the consumer task and park the live handle (see
     //    [`park_handle`] for the shared tail).
     Ok(park_handle(
-        child, pgid, start_time, client, thread_id, sock, notifs, status,
+        child, pgid, start_time, boot_id, client, thread_id, sock, notifs, status,
     ))
 }
 
@@ -1487,10 +1557,12 @@ async fn build_handle_after_spawn(
 /// never ran turn #1 in the prior boot, or any transport error) propagates
 /// as [`CalmError::CodexAppServer`]; the caller treats it as non-fatal and
 /// leaves the wave inert (matches the create-wave error posture).
+#[allow(clippy::too_many_arguments)]
 async fn build_handle_after_spawn_resume(
     mut child: Child,
     pgid: i32,
     start_time: Option<u64>,
+    boot_id: Option<String>,
     thread_id: &str,
     sock: &Path,
 ) -> Result<SpecPushHandle> {
@@ -1540,6 +1612,7 @@ async fn build_handle_after_spawn_resume(
         child,
         pgid,
         start_time,
+        boot_id,
         client.clone(),
         thread_id.to_string(),
         sock,
@@ -1630,6 +1703,7 @@ fn park_handle(
     child: Child,
     pgid: i32,
     start_time: Option<u64>,
+    boot_id: Option<String>,
     client: Arc<CodexAppServer>,
     thread_id: String,
     sock: &Path,
@@ -1655,6 +1729,7 @@ fn park_handle(
         child,
         pgid,
         start_time,
+        boot_id,
         client,
         thread_id,
         sock: sock.to_path_buf(),
@@ -2032,6 +2107,7 @@ mod tests {
             child,
             pgid,
             start_time: read_proc_start_time(pgid),
+            boot_id: read_boot_id(),
             client,
             thread_id: "thread-test".into(),
             sock: PathBuf::from("/tmp/test/app.sock"),

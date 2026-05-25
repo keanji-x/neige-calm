@@ -1462,17 +1462,19 @@ async fn spec_cards_for_boot_takeover_filters_to_spec_role() {
         rows.len(),
         rows,
     );
-    let (card_id, wave_id, thread_id, pgid, sock, start_time, watermark) = &rows[0];
+    let (card_id, wave_id, thread_id, pgid, sock, start_time, boot_id, watermark) = &rows[0];
     assert_eq!(card_id.as_str(), spec.id.as_str());
     assert_eq!(wave_id.as_str(), w.id.as_str());
     assert_eq!(thread_id, "thread-real-spec");
     assert_eq!(*pgid, Some(99_991));
     assert_eq!(sock.as_deref(), Some("/tmp/calm-spec-real.sock"));
-    // #318 INV-5 — fixture above never set `appserver_start_time`, so the
-    // tuple's start_time slot must come back as `None` (the boot-recovery
-    // path treats `None` as "skip the kill", which is correct for a
-    // hand-crafted fixture that doesn't represent a real spawned process).
+    // #318 INV-5 — fixture above never set `appserver_start_time` /
+    // `appserver_boot_id`, so the tuple slots must come back as `None`
+    // (the boot-recovery path treats `None` as "skip the kill", which is
+    // correct for a hand-crafted fixture that doesn't represent a real
+    // spawned process).
     assert_eq!(*start_time, None);
+    assert_eq!(*boot_id, None);
     assert_eq!(*watermark, 17);
 
     // Sanity: the plain card still exists in the DB — the filter is on
@@ -1481,5 +1483,138 @@ async fn spec_cards_for_boot_takeover_filters_to_spec_role() {
     assert!(
         got_plain.is_some(),
         "plain card must still exist; takeover query is read-only"
+    );
+}
+
+/// #318 INV-5 (R3-B1) — positive round-trip for the identity stamp
+/// (`appserver_start_time` + `appserver_boot_id`) on the spec card
+/// payload. Verifies the write side
+/// (`spec_card_set_appserver_after_takeover`) emits both fields and
+/// the read side (`spec_cards_for_boot_takeover`) returns them as
+/// `Some(_)` in the tuple slots the boot-recovery path uses for
+/// `verify_owned_pid`.
+///
+/// Sister assertions to the negative case in
+/// `spec_cards_for_boot_takeover_filters_to_spec_role`, which covers
+/// the legacy / pre-#318 row shape (no stamp → `None`). Together they
+/// pin both halves of the persistence contract so a future refactor
+/// that, say, drops the SELECT column or the json_set bind silently
+/// can't degrade boot-recovery to a stamp-less fall-through.
+#[tokio::test]
+async fn spec_cards_for_boot_takeover_round_trips_identity_stamp() {
+    use calm_server::card_role_cache::CardRoleCache;
+    use calm_server::model::{CardRole, NewCard};
+
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "id-rt").await;
+    let w = make_wave(&repo, c.id.as_str(), "id-rt").await;
+
+    let cache = CardRoleCache::new();
+
+    // Seed a spec card with the takeover-shaped payload — codex_thread_id
+    // is the SQL WHERE; pgid + sock are typical of a row JUST AFTER a
+    // create-wave persist (pre-takeover). The identity stamp slots are
+    // initially absent (None).
+    let mut tx = repo.pool().begin().await.unwrap();
+    let spec = calm_server::db::sqlite::card_create_with_id_tx(
+        &mut tx,
+        calm_server::model::new_id(),
+        NewCard {
+            wave_id: w.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({
+                "codex_thread_id": "thread-id-rt",
+                "appserver_pgid": 12345,
+                "appserver_sock": "/tmp/calm-rt.sock",
+                "push_watermark": 0,
+            }),
+        },
+        CardRole::Spec,
+        false,
+        &cache,
+    )
+    .await
+    .expect("create spec card");
+    tx.commit().await.unwrap();
+
+    // Sanity: the initial row reads back with None for the identity
+    // slots (legacy-row posture).
+    let rows = repo
+        .spec_cards_for_boot_takeover()
+        .await
+        .expect("takeover query, initial");
+    assert_eq!(rows.len(), 1);
+    let (_, _, _, _, _, st0, bi0, _) = &rows[0];
+    assert_eq!(*st0, None, "pre-takeover-persist start_time must be None");
+    assert_eq!(*bi0, None, "pre-takeover-persist boot_id must be None");
+
+    // Simulate the post-respawn persist that the boot-recovery path
+    // fires (`lib.rs::persist_post_respawn_fields`). The values are
+    // representative: a 64-bit jiffies count and a canonical UUID.
+    let new_pgid: i32 = 67890;
+    let new_sock = "/tmp/calm-rt-new.sock";
+    let new_start_time: u64 = 1_234_567_890;
+    let new_boot_id = "abcd1234-5678-9abc-def0-123456789abc";
+    repo.spec_card_set_appserver_after_takeover(
+        spec.id.as_str(),
+        new_pgid,
+        new_sock,
+        Some(new_start_time),
+        Some(new_boot_id),
+    )
+    .await
+    .expect("post-takeover persist");
+
+    // Read-back: every field of the identity stamp must be present and
+    // exact.
+    let rows = repo
+        .spec_cards_for_boot_takeover()
+        .await
+        .expect("takeover query, post-persist");
+    assert_eq!(rows.len(), 1);
+    let (_card_id, _wave_id, thread_id, pgid, sock, st, bi, _watermark) = &rows[0];
+    assert_eq!(thread_id, "thread-id-rt", "thread_id must round-trip");
+    assert_eq!(*pgid, Some(new_pgid), "post-takeover pgid must round-trip");
+    assert_eq!(
+        sock.as_deref(),
+        Some(new_sock),
+        "post-takeover sock must round-trip"
+    );
+    assert_eq!(
+        *st,
+        Some(new_start_time),
+        "post-takeover start_time must round-trip exactly (boot-recovery's \
+         verify_owned_pid does a byte-equal compare against the live /proc \
+         stamp; any lossy conversion breaks identity confirmation)"
+    );
+    assert_eq!(
+        bi.as_deref(),
+        Some(new_boot_id),
+        "post-takeover boot_id must round-trip byte-for-byte (boot-recovery's \
+         verify_owned_pid does a string compare against the live kernel UUID)"
+    );
+
+    // Also exercise the `None` overwrite path — a takeover that ran on
+    // a non-Linux target (or with a transient /proc ENOENT race) would
+    // persist None. The previous (Some) value MUST be cleared, not
+    // silently retained, so a stale stamp can't fool the next boot.
+    repo.spec_card_set_appserver_after_takeover(spec.id.as_str(), new_pgid, new_sock, None, None)
+        .await
+        .expect("post-takeover persist, None overwrite");
+    let rows = repo
+        .spec_cards_for_boot_takeover()
+        .await
+        .expect("takeover query, post-None");
+    let (_, _, _, _, _, st_n, bi_n, _) = &rows[0];
+    assert_eq!(
+        *st_n, None,
+        "None overwrite must clear start_time, not retain the prior Some(…) — \
+         otherwise a non-Linux / ENOENT respawn would leave a stale stamp that \
+         the next Linux boot might accidentally accept as identity-confirmed"
+    );
+    assert_eq!(
+        *bi_n, None,
+        "None overwrite must clear boot_id symmetrically"
     );
 }
