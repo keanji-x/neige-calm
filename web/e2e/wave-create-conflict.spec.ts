@@ -15,7 +15,7 @@
 // regardless of cache state — this spec specifically locks in the
 // cove-name lookup path.
 //
-// Prereq: `make dev` serving http://localhost:4040 with the default
+// Prereq: `make dev` serving http://localhost:4041 with the default
 // seed.
 
 import { test, expect } from '@playwright/test';

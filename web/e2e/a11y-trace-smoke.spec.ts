@@ -5,7 +5,7 @@
 // the wave-grid-layout fixture preloaded — see `playwright.config.ts`).
 // Running this spec from the default `chromium` project will fail with a
 // connection-refused error because that project still targets the
-// developer `make dev` stack on :4040.
+// developer `make dev` stack on :4041.
 //
 // What we're proving end-to-end:
 //   1. The dev build + `?trace=1` URL param installs `window.__neigeEvents__`.

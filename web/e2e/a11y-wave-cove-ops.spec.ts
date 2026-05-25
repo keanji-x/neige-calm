@@ -19,7 +19,7 @@
 //
 // Why a11y project (not chromium):
 //   The chromium project targets the developer's `make dev` stack
-//   at :4040 and is not a hermetic CI gate. a11y boots a fresh
+//   at :4041 and is not a hermetic CI gate. a11y boots a fresh
 //   in-memory replay binary per run (`_setup/replay-server.setup.ts`)
 //   and exposes `POST /dev/reset` for per-test isolation. Putting
 //   all five specs on a11y keeps the gate green deterministically.

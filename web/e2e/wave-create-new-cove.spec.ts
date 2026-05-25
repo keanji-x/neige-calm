@@ -15,7 +15,7 @@
 // the just-minted cove, and the new cove's folders list contains the
 // cwd we typed.
 //
-// Prereq: `make dev` serving http://localhost:4040 with the default
+// Prereq: `make dev` serving http://localhost:4041 with the default
 // seed. Each run uses unique titles + a unique cwd namespace so
 // concurrent / repeated runs don't collide on
 // cove_folders.UNIQUE(path).

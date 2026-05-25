@@ -14,7 +14,7 @@
 // no escape hatch when they want to mint a fresh cove for a path
 // that happens to fall under an existing claim.
 //
-// Prereq: `make dev` serving http://localhost:4040 with the default
+// Prereq: `make dev` serving http://localhost:4041 with the default
 // seed.
 
 import { test, expect } from '@playwright/test';

@@ -47,7 +47,7 @@
 // Project / prereqs
 // -----------------
 // Runs in the `chromium` Playwright project, which targets the
-// developer's `make dev` stack at http://localhost:4040/calm/. This
+// developer's `make dev` stack at http://localhost:4041/calm/. This
 // spec needs a REAL PTY-backed terminal running the host's `$SHELL` to
 // reproduce the echo, and the replay binary used by the `a11y` project
 // stubs the daemon out (`DaemonClient::new_stub()`), so the chromium /

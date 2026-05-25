@@ -10,7 +10,7 @@
 // Issue #175 — the kernel hides the system cove that hosts the default
 // Today terminal, so we mint our own user cove + wave to test in.
 //
-// Prereq: `make dev` serving http://localhost:4040 with the default seed.
+// Prereq: `make dev` serving http://localhost:4041 with the default seed.
 
 import { test, expect } from '@playwright/test';
 
@@ -49,7 +49,7 @@ test('newly created terminal card appears without a reload', async ({ page }) =>
   // the REST-direct route is faster and decouples this assertion from
   // the form's UI evolution. `page.request` resolves the relative URL
   // against this project's baseURL (set in playwright.config.ts →
-  // 'chromium': http://localhost:4040/calm/). The helpers/reset.ts
+  // 'chromium': http://localhost:4041/calm/). The helpers/reset.ts
   // variant is replay-port-pinned and only safe for the a11y project.
   const coveId = new URL(page.url()).pathname.split('/').pop()!;
   const waveTitle = `E2E new-terminal ${Date.now()}`;
