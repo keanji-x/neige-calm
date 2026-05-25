@@ -398,22 +398,40 @@ async fn smuggled_card_id_in_args_is_ignored() {
 }
 
 // ---------------------------------------------------------------------------
-// End-to-end: dispatch_request → dispatcher mints worker card.
+// End-to-end: dispatch_request → dispatcher → spawn failure → rollback.
 // ---------------------------------------------------------------------------
+//
+// History: this test originally asserted the buggy pre-#310 behavior —
+// that the dispatcher's `card_with_codex_create_tx` committed a worker
+// card row BEFORE the daemon spawn was attempted, so even with a bogus
+// `/nonexistent-daemon-bin` the orphan card would land in `cards_by_wave`
+// and be observable. PR #312 (which fixes #310) flips that ordering:
+// the two-stage spawn defers `CardAdded` emission until after the daemon
+// handle is in hand, AND `rollback_orphan_worker` actively DELETEs the
+// pre-committed card row when the spawn errors out at the OS level.
+//
+// Under the new semantics, driving `calm.dispatch_request[codex]` against
+// a stub daemon binary must:
+//   (a) return success from the MCP tool (the spec just enqueued a
+//       `codex.job_requested` event — the failure is downstream),
+//   (b) emit a `TaskFailed` event with the dispatch's `idempotency_key`
+//       on the bus once the dispatcher drains the request and the spawn
+//       fails, and
+//   (c) leave NO worker card with that idempotency_key in the cards
+//       table — proof the rollback fired.
+//
+// This is the MCP-driven mirror of
+// `dispatcher_rolls_back_card_on_codex_daemon_spawn_failure_issue_310`
+// in `tests/dispatcher.rs`, which already pins the dispatcher-level
+// contract. This one asserts the same contract end-to-end through the
+// real MCP transport.
 
 #[tokio::test]
-async fn dispatch_request_drives_dispatcher_to_mint_worker_card() {
-    // Boot the MCP server + a Spec card, then also spawn the
-    // dispatcher against the same repo/events. Calling
-    // `calm.dispatch_request[codex]` should make a worker card land in
-    // the DB via the dispatcher's subscription on `*.job_requested`.
+async fn dispatch_request_drives_dispatcher_rollback_on_stub_daemon() {
     let b = boot_with_role(CardRole::Spec).await;
 
-    // Stand up the dispatcher on the same bus + repo. We don't need
-    // the MCP server handle for the dispatcher in this test; passing
-    // `None` keeps the post-commit codex daemon spawn from trying to
-    // wire MCP into a worker whose daemon binary will fail to launch
-    // anyway (the stub paths point to /nonexistent).
+    // Stand up the dispatcher on the same bus + repo with a bogus
+    // daemon binary so every spawn attempt fails at the OS level.
     let cache = CardRoleCache::new();
     b.repo.seed_card_role_cache(&cache).await.unwrap();
     let wcc = calm_server::wave_cove_cache::WaveCoveCache::new();
@@ -438,6 +456,10 @@ async fn dispatch_request_drives_dispatcher_to_mint_worker_card() {
         2,
     );
 
+    // Subscribe BEFORE dispatch so we don't miss the TaskFailed emit.
+    let mut rx = b.events.subscribe();
+
+    let idem = "e2e-rollback-1";
     let (mut rd, mut wr) = connect(&b.socket_path).await;
     handshake(&mut rd, &mut wr, &b.raw_token).await;
     send_frame(
@@ -447,39 +469,57 @@ async fn dispatch_request_drives_dispatcher_to_mint_worker_card() {
             "calm.dispatch_request",
             json!({
                 "kind": "codex",
-                "idempotency_key": "e2e-1",
+                "idempotency_key": idem,
                 "goal": "e2e worker spawn"
             }),
         ),
     )
     .await;
     let resp = recv_frame(&mut rd).await;
+    // (a) MCP tool itself succeeds — it merely enqueued the request.
     assert!(resp.get("error").is_none(), "tool errored: {resp:#?}");
 
-    // Poll for the worker card landing in the cards table — the
-    // dispatcher's daemon spawn errors out (stub bin) but the card
-    // row commits first, which is what we assert.
+    // (b) Wait for the dispatcher to drain, fail the spawn, run
+    // `rollback_orphan_worker`, and emit `TaskFailed` for our key.
+    let deadline = tokio::time::Instant::now() + TEST_BUDGET;
+    let mut saw_failed = false;
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match timeout(remaining, rx.recv()).await {
+            Ok(Ok(env)) => {
+                if let Event::TaskFailed {
+                    idempotency_key, ..
+                } = &env.event
+                    && idempotency_key == idem
+                {
+                    saw_failed = true;
+                    break;
+                }
+            }
+            Ok(Err(_)) => break,
+            Err(_) => break,
+        }
+    }
+    assert!(
+        saw_failed,
+        "expected dispatcher to emit task.failed for {idem} after stub-daemon spawn failure"
+    );
+
+    // (c) No worker card with our idempotency_key remains — the
+    // rollback deleted the pre-committed row.
     let spec = b.repo.card_get(b.card_id.as_str()).await.unwrap().unwrap();
     let wave_id_str = spec.wave_id.as_str().to_string();
-    let deadline = tokio::time::Instant::now() + TEST_BUDGET;
-    let worker = loop {
-        let cards = b.repo.cards_by_wave(&wave_id_str).await.unwrap();
-        if let Some(w) = cards
-            .into_iter()
-            .find(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some("e2e-1"))
-        {
-            break w;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            panic!("dispatcher did not mint worker card within budget");
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    };
-    assert_eq!(worker.kind, "codex");
-    assert_eq!(
-        worker.payload.get("role_request").and_then(|v| v.as_str()),
-        Some("codex")
+    let cards = b.repo.cards_by_wave(&wave_id_str).await.unwrap();
+    let leftover: Vec<_> = cards
+        .iter()
+        .filter(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem))
+        .collect();
+    assert!(
+        leftover.is_empty(),
+        "expected worker card to be rolled back after spawn failure; \
+         found {} leftover card(s): {:?}",
+        leftover.len(),
+        leftover.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
     );
-    assert_eq!(cache.get(&worker.id), Some(CardRole::Worker));
     let _ = &b.server;
 }
