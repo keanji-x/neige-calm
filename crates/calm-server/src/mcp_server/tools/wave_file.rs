@@ -12,7 +12,7 @@ use crate::mcp_server::registry::{
 };
 use crate::mcp_server::tools::wave_report;
 use crate::model::{Card, CardRole, Wave};
-use crate::{db::WaveEvent, event::Event};
+use crate::{db::WaveEvent, event::Event, event::EventScope};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -334,13 +334,17 @@ async fn runs_for_wave(ctx: &Arc<AppContext>, wave: &Wave) -> Result<Vec<RunProj
     let runs = project_runs(cards, events);
     for run in &runs {
         if RESERVED_RUN_KEYS.contains(&run.idempotency_key.as_str()) {
-            panic!(
-                "neige wave-file runs projection: idempotency_key `{}` collides with reserved path \
-                 `runs/{}.json`. wave_id={}",
-                run.idempotency_key,
-                run.idempotency_key,
-                wave.id.as_str()
+            tracing::error!(
+                target: "wave_file",
+                idempotency_key = %run.idempotency_key,
+                wave_id = %wave.id,
+                "runs projection: idempotency_key collides with reserved path `runs/<key>.json`"
             );
+            return Err(RpcError::internal(format!(
+                "runs projection unavailable: idempotency_key `{}` collides with reserved path. \
+                 Remediation: stop submitting jobs with this key, or update RESERVED_RUN_KEYS.",
+                run.idempotency_key
+            )));
         }
     }
     Ok(runs)
@@ -397,12 +401,10 @@ fn project_runs(cards: Vec<Card>, events: Vec<WaveEvent>) -> Vec<RunProjection> 
                 );
             }
             Event::TaskCompleted {
-                idempotency_key,
-                result,
-                ..
+                idempotency_key, ..
             } => {
                 let event = run_event(row.id, row.at, "task.completed", row.event.payload_value());
-                if is_spec_accepted_verdict(result) {
+                if is_spec_verdict_event(&row.scope) {
                     record_latest(&mut verdict, idempotency_key, event);
                 } else {
                     record_earliest(&mut completed, idempotency_key, event);
@@ -524,8 +526,8 @@ fn latest_final_event<'a>(
     }
 }
 
-fn is_spec_accepted_verdict(result: &Value) -> bool {
-    result.get("status").and_then(Value::as_str) == Some("accepted")
+fn is_spec_verdict_event(scope: &EventScope) -> bool {
+    matches!(scope, EventScope::Wave { .. })
 }
 
 fn verdict_from_event(event: &RunEventProjection) -> Option<RunVerdictProjection> {

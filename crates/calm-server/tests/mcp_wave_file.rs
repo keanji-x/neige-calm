@@ -231,6 +231,25 @@ async fn log_wave_event(boot: &Boot, wave_id: &WaveId, cove_id: &CoveId, event: 
         .expect("log event");
 }
 
+async fn log_worker_card_event(boot: &Boot, event: Event) {
+    boot.repo
+        .log_pure_event(
+            ActorId::AiCodex(boot.worker_card_id.clone()),
+            EventScope::Card {
+                card: boot.worker_card_id.clone(),
+                wave: boot.wave_id.clone(),
+                cove: boot.cove_id.clone(),
+            },
+            None,
+            &boot.ctx.events,
+            &boot.ctx.card_role_cache,
+            &boot.ctx.wave_cove_cache,
+            event,
+        )
+        .await
+        .expect("log worker card event");
+}
+
 async fn request_codex(boot: &Boot, key: &str) {
     log_wave_event(
         boot,
@@ -247,13 +266,15 @@ async fn request_codex(boot: &Boot, key: &str) {
 }
 
 async fn complete_run(boot: &Boot, key: &str, summary: &str) {
-    log_wave_event(
+    complete_run_with_result(boot, key, json!({ "summary": summary })).await;
+}
+
+async fn complete_run_with_result(boot: &Boot, key: &str, result: Value) {
+    log_worker_card_event(
         boot,
-        &boot.wave_id,
-        &boot.cove_id,
         Event::TaskCompleted {
             idempotency_key: key.into(),
-            result: json!({ "summary": summary }),
+            result,
             artifacts: vec![],
         },
     )
@@ -513,6 +534,36 @@ async fn completed_run_json_returns_structured_projection() {
 }
 
 #[tokio::test]
+async fn worker_completion_result_status_accepted_is_not_spec_verdict() {
+    let boot = boot().await;
+    request_codex(&boot, "worker-accepted-payload").await;
+    materialize_worker(&boot, "worker-accepted-payload").await;
+    complete_run_with_result(
+        &boot,
+        "worker-accepted-payload",
+        json!({ "status": "accepted", "summary": "yay" }),
+    )
+    .await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/worker-accepted-payload.json" }),
+    )
+    .await
+    .expect("spec can read run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("completed"));
+    assert_eq!(
+        run["events"]["completed"]["payload"]["result"],
+        json!({ "status": "accepted", "summary": "yay" })
+    );
+    assert!(run["verdict"].is_null(), "run = {run:?}");
+    assert!(run["events"]["verdict"].is_null(), "run = {run:?}");
+}
+
+#[tokio::test]
 async fn accepted_verdict_does_not_overwrite_worker_completion() {
     let boot = boot().await;
     request_codex(&boot, "accepted-run").await;
@@ -617,18 +668,28 @@ async fn verdict_before_worker_completion_still_preserves_worker_output() {
 }
 
 #[tokio::test]
-#[should_panic(expected = "reserved path")]
-async fn reserved_run_key_panics() {
+async fn reserved_run_key_returns_structured_error() {
     let boot = boot().await;
     request_codex(&boot, "index").await;
 
-    let _ = call_tool(
+    let err = call_tool(
         &boot,
         TOOL_WAVE_CAT,
         spec_identity(&boot),
         json!({ "path": "runs/index.json" }),
     )
-    .await;
+    .await
+    .expect_err("reserved run key must return a structured error");
+    assert_eq!(err.code, RpcError::INTERNAL_ERROR);
+    assert!(
+        err.message
+            .contains("idempotency_key `index` collides with reserved path"),
+        "err = {err:?}"
+    );
+    assert!(
+        err.message.contains("Remediation: stop submitting jobs"),
+        "err = {err:?}"
+    );
 }
 
 #[tokio::test]
