@@ -9,7 +9,7 @@
  * `X-Calm-Actor` value through the request stack and remains the
  * audit-log truth until PR3 swaps it.
  */
-export type ActorId = { "kind": "User" } | { "kind": "Kernel" } | { "kind": "KernelDispatcher" } | { "kind": "Plugin", "id": string } | { "kind": "AiSpec", "id": CardId } | { "kind": "AiCodex", "id": CardId };
+export type ActorId = { "kind": "User" } | { "kind": "Kernel" } | { "kind": "KernelDispatcher" } | { "kind": "Plugin", "id": string } | { "kind": "AiSpec", "id": CardId } | { "kind": "AiCodex", "id": CardId } | { "kind": "AiClaude", "id": CardId };
 
 /**
  * Opaque identifier for a worker-produced artifact (file write, structured
@@ -240,6 +240,18 @@ card_id: CardId,
 kind: string, 
 /**
  * Original codex hook JSON, verbatim.
+ */
+payload: unknown, } } | { "ev": "claude.hook", "data": { 
+/**
+ * Owning card id — topic key `card:<card_id>`.
+ */
+card_id: CardId, 
+/**
+ * Hook discriminator supplied by the future Claude hook route.
+ */
+kind: string, 
+/**
+ * Original Claude hook JSON, verbatim.
  */
 payload: unknown, } } | { "ev": "codex.job_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, } } | { "ev": "terminal.job_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, } } | { "ev": "task.completed", "data": { idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, } } | { "ev": "task.failed", "data": { idempotency_key: string, reason: string, } } | { "ev": "spec_push.abandoned", "data": { wave_id: WaveId, cove_id: CoveId, last_envelope_id: number, } };
 

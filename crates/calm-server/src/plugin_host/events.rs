@@ -120,6 +120,7 @@ fn event_plugin_id(ev: &Event) -> Option<String> {
         | Event::WaveReportEdited { .. }
         | Event::TerminalDeleted { .. }
         | Event::CodexHook { .. }
+        | Event::ClaudeHook { .. }
         | Event::CodexJobRequested { .. }
         | Event::TerminalJobRequested { .. }
         | Event::TaskCompleted { .. }
@@ -159,7 +160,7 @@ fn event_entity_kind(ev: &Event) -> Option<String> {
         Event::WaveReportEdited { .. } => Some("card".into()),
         Event::OverlaySet(o) => Some(o.entity_kind.clone()),
         Event::OverlayDeleted { entity_kind, .. } => Some(entity_kind.clone()),
-        Event::CodexHook { .. } => Some("card".into()),
+        Event::CodexHook { .. } | Event::ClaudeHook { .. } => Some("card".into()),
 
         // No entity-kind surface — explicit-arm so future variants force a
         // deliberate decision (cove updates don't surface "cove" because
@@ -196,7 +197,9 @@ fn event_entity_id(ev: &Event) -> Option<String> {
         Event::OverlayDeleted { entity_id, .. } => Some(entity_id.clone()),
         Event::PluginState { id, .. } => Some(id.clone()),
         // Codex hooks are scoped to a card_id, mirroring card.* events.
-        Event::CodexHook { card_id, .. } => Some(card_id.to_string()),
+        Event::CodexHook { card_id, .. } | Event::ClaudeHook { card_id, .. } => {
+            Some(card_id.to_string())
+        }
         // Terminal-deleted: id IS the terminal id; we don't expose a
         // "terminal" entity_kind on the filter API, so this only matches
         // filters that omit `entity_kind` / `entity_id` or set them via
@@ -271,6 +274,13 @@ mod tests {
             kind: kind.into(),
             payload: json!({}),
             updated_at: 0,
+        }
+    }
+    fn claude_hook(card_id: &str) -> Event {
+        Event::ClaudeHook {
+            card_id: card_id.into(),
+            kind: "hook.claude.stop".into(),
+            payload: json!({}),
         }
     }
 
@@ -354,5 +364,29 @@ mod tests {
         assert!(!f.matches(&Event::OverlaySet(overlay(
             "p", "card", "w-target", "status"
         ))));
+    }
+
+    #[test]
+    fn claude_hook_maps_to_card_entity_without_plugin() {
+        let ev = claude_hook("card-claude");
+
+        let by_event = SubscriptionFilter {
+            events: vec!["claude.hook".into()],
+            ..Default::default()
+        };
+        assert!(by_event.matches(&ev));
+
+        let by_card = SubscriptionFilter {
+            entity_kind: Some("card".into()),
+            entity_id: Some("card-claude".into()),
+            ..Default::default()
+        };
+        assert!(by_card.matches(&ev));
+
+        let by_plugin = SubscriptionFilter {
+            plugin_id: Some("p".into()),
+            ..Default::default()
+        };
+        assert!(!by_plugin.matches(&ev));
     }
 }

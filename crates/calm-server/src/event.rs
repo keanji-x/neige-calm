@@ -457,6 +457,20 @@ pub enum Event {
         payload: Value,
     },
 
+    /// Claude CLI hook passthrough. Same shape as [`Event::CodexHook`];
+    /// PR-A only introduces the event identity and plumbing. Ingest and
+    /// lifecycle interpretation land in later PRs.
+    #[serde(rename = "claude.hook")]
+    ClaudeHook {
+        /// Owning card id — topic key `card:<card_id>`.
+        card_id: CardId,
+        /// Hook discriminator supplied by the future Claude hook route.
+        kind: String,
+        /// Original Claude hook JSON, verbatim.
+        #[ts(type = "unknown")]
+        payload: Value,
+    },
+
     /// Spec/worker card asks the kernel dispatcher to spawn a codex worker
     /// card. PR4 of #136 introduced this **schema-only**. PR5's `Dispatcher`
     /// subscribes to `kinds=["*.requested"]` on the event bus and reacts by
@@ -595,6 +609,7 @@ impl Event {
             Event::TerminalDeleted { .. } => "terminal.deleted",
             Event::PluginState { .. } => "plugin.state",
             Event::CodexHook { .. } => "codex.hook",
+            Event::ClaudeHook { .. } => "claude.hook",
             Event::CodexJobRequested { .. } => "codex.job_requested",
             Event::TerminalJobRequested { .. } => "terminal.job_requested",
             Event::TaskCompleted { .. } => "task.completed",
@@ -715,7 +730,7 @@ pub fn topics(ev: &Event) -> Vec<String> {
             vec![format!("plugin:{}", id), "plugin:*".into(), "*".into()]
         }
 
-        Event::CodexHook { card_id, .. } => {
+        Event::CodexHook { card_id, .. } | Event::ClaudeHook { card_id, .. } => {
             vec![format!("card:{}", card_id), "*".into()]
         }
 
@@ -1232,6 +1247,59 @@ mod scope_tests {
             reason: "boom".into(),
         };
         assert_eq!(failed.kind_tag(), "task.failed");
+
+        let claude_hook = Event::ClaudeHook {
+            card_id: CardId::from("card-1"),
+            kind: "hook.claude.stop".into(),
+            payload: serde_json::Value::Null,
+        };
+        assert_eq!(claude_hook.kind_tag(), "claude.hook");
+    }
+
+    #[test]
+    fn claude_hook_serde_round_trip_kind_and_topics() {
+        let ev = Event::ClaudeHook {
+            card_id: CardId::from("card-claude"),
+            kind: "hook.claude.pre_tool_use".into(),
+            payload: serde_json::json!({
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Bash",
+            }),
+        };
+        let json = serde_json::to_value(&ev).unwrap();
+        assert_eq!(json["ev"], "claude.hook");
+        assert_eq!(json["data"]["card_id"], "card-claude");
+        assert_eq!(json["data"]["kind"], "hook.claude.pre_tool_use");
+        assert_eq!(json["data"]["payload"]["tool_name"], "Bash");
+
+        let back: Event = serde_json::from_value(json).unwrap();
+        match back {
+            Event::ClaudeHook {
+                card_id,
+                kind,
+                payload,
+            } => {
+                assert_eq!(card_id.as_str(), "card-claude");
+                assert_eq!(kind, "hook.claude.pre_tool_use");
+                assert_eq!(payload["hook_event_name"], "PreToolUse");
+            }
+            other => panic!("expected ClaudeHook after round-trip, got {other:?}"),
+        }
+
+        let replay = Event::from_kind_and_payload(
+            "claude.hook",
+            serde_json::json!({
+                "card_id": "card-claude",
+                "kind": "hook.claude.stop",
+                "payload": { "hook_event_name": "Stop" },
+            }),
+        )
+        .expect("replay decode ClaudeHook");
+        assert_eq!(replay.kind_tag(), "claude.hook");
+
+        let t = topics(&replay);
+        assert!(t.iter().any(|s| s == "card:card-claude"), "topics={t:?}");
+        assert!(t.iter().any(|s| s == "*"), "topics={t:?}");
     }
 
     #[test]
@@ -1567,6 +1635,14 @@ mod scope_tests {
         // PR4 variants survive this path so the eventual sync-engine
         // replay doesn't strand them.
         for (kind, payload) in [
+            (
+                "claude.hook",
+                serde_json::json!({
+                    "card_id": "card-1",
+                    "kind": "hook.claude.stop",
+                    "payload": {},
+                }),
+            ),
             (
                 "codex.job_requested",
                 serde_json::json!({

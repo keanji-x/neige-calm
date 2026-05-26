@@ -70,6 +70,7 @@ pub enum ActorId {
     Plugin(String),
     AiSpec(CardId),
     AiCodex(CardId),
+    AiClaude(CardId),
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +154,12 @@ mod tests {
         let a = ActorId::AiCodex(CardId::from("card-7"));
         let s = serde_json::to_string(&a).unwrap();
         assert_eq!(s, r#"{"kind":"AiCodex","id":"card-7"}"#);
+
+        let claude = ActorId::AiClaude(CardId::from("card-8"));
+        let s = serde_json::to_string(&claude).unwrap();
+        assert_eq!(s, r#"{"kind":"AiClaude","id":"card-8"}"#);
+        let back: ActorId = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, claude);
 
         // Unit-variant round-trip: serde adjacently-tagged enums encode
         // unit variants with just the `kind` discriminator (no `id`

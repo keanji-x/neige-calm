@@ -301,6 +301,19 @@ export const codexHookSchema = z.object({
   }),
 });
 
+/**
+ * `Event::ClaudeHook` — passthrough of one Claude hook firing.
+ * Mirrors `codexHookSchema`; `payload` stays opaque to the web layer.
+ */
+export const claudeHookSchema = z.object({
+  ev: z.literal('claude.hook'),
+  data: z.object({
+    card_id: z.string(),
+    kind: z.string(),
+    payload: z.unknown(),
+  }),
+});
+
 // ---------------- PR4 of #136: dispatcher + task-lifecycle variants ----
 //
 // Schema-only PR — no kernel emitters today. PR5 (Dispatcher) and PR8
@@ -452,6 +465,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   terminalDeletedSchema,
   pluginStateSchema,
   codexHookSchema,
+  claudeHookSchema,
   codexJobRequestedSchema,
   terminalJobRequestedSchema,
   taskCompletedSchema,
@@ -483,6 +497,7 @@ export type OverlayDeletedEvent = z.infer<typeof overlayDeletedSchema>;
 export type TerminalDeletedEvent = z.infer<typeof terminalDeletedSchema>;
 export type PluginStateEvent = z.infer<typeof pluginStateSchema>;
 export type CodexHookEvent = z.infer<typeof codexHookSchema>;
+export type ClaudeHookEvent = z.infer<typeof claudeHookSchema>;
 export type CodexJobRequestedEvent = z.infer<typeof codexJobRequestedSchema>;
 export type TerminalJobRequestedEvent = z.infer<typeof terminalJobRequestedSchema>;
 export type TaskCompletedEvent = z.infer<typeof taskCompletedSchema>;
