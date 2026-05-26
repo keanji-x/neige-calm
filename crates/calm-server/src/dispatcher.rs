@@ -164,6 +164,14 @@ impl Dispatcher {
         self.inner.push_cursor.bump(spec_card_id, watermark);
     }
 
+    /// Runtime app-server recovery reuses this dispatcher in the same
+    /// process, so its soft push cursor may be ahead of the durable
+    /// `push_watermark`. Force it back before event-log catch-up so fallback
+    /// replay cannot dedup undelivered rows.
+    pub fn reset_push_cursor_to_watermark(&self, spec_card_id: CardId, watermark: i64) {
+        self.inner.push_cursor.set(spec_card_id, watermark);
+    }
+
     /// Test-only — clear the in-memory push cursor for a card so the next
     /// access falls back to the default `0`. Used by the boot-recovery
     /// e2e to simulate a cold-boot cache (no in-process state surviving
@@ -1005,19 +1013,6 @@ impl Inner {
             }
         };
 
-        // #293 PR3b — bump the in-process dedup cursor before we attempt
-        // delivery (handle is in scope now, so we WILL deliver). This is a
-        // per-process hint only, not a correctness fence: if delivery
-        // fails, a same-process redelivery of this envelope id would
-        // dedup here anyway (we already decided to act on it once).
-        // Cross-restart durability is the DURABLE watermark below — which
-        // we only advance after a SUCCESSFUL delivery (see B1 below).
-        //
-        // #315 round-2 (B3) — moved AFTER the handle lookup so we never
-        // poison the dedup cursor for an event we didn't actually try to
-        // send. See the no-handle arm above.
-        self.push_cursor.bump(spec_card_id.clone(), envelope_id);
-
         let observation = build_observation(event);
         tracing::info!(
             wave_id = %wave_id,
@@ -1077,6 +1072,12 @@ impl Inner {
         // (same treatment terminal PIDs/handles get).
         match outcome {
             crate::spec_appserver::PushOutcome::Issued { max_envelope_id } => {
+                // #347: bump the in-process cursor only after the handle
+                // accepted the observation. A Wedged handle now returns an
+                // error so runtime recovery can replay from the durable
+                // watermark without being deduped by a speculative
+                // same-process cursor bump.
+                self.push_cursor.bump(spec_card_id.clone(), max_envelope_id);
                 if let Err(e) = self
                     .repo
                     .spec_card_set_push_watermark(spec_card_id.as_str(), max_envelope_id)
@@ -1093,14 +1094,9 @@ impl Inner {
                          not dedup re-pushed observations)",
                     );
                 }
-                // Keep the in-memory cache in sync with the durable
-                // watermark for the queue-drained items too — same
-                // `bump` semantics the WatermarkSink uses on flush.
-                if max_envelope_id > envelope_id {
-                    self.push_cursor.bump(spec_card_id.clone(), max_envelope_id);
-                }
             }
             crate::spec_appserver::PushOutcome::Enqueued => {
+                self.push_cursor.bump(spec_card_id.clone(), envelope_id);
                 tracing::debug!(
                     wave_id = %wave_id,
                     spec_card_id = %spec_card_id,

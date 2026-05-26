@@ -72,8 +72,10 @@ use crate::model::{
     NewWave, Wave, WaveDetail, WavePatch, new_id,
 };
 use crate::routes::cove_folders::{is_descendant_of, normalize_path};
-use crate::routes::settings::load_settings;
-use crate::spec_appserver::spawn_spec_appserver;
+use crate::routes::settings::{Settings, load_settings};
+use crate::spec_appserver::{
+    TurnWatchdogConfig, spawn_spec_appserver_with_watchdog_config_and_recovery,
+};
 use crate::spec_card::{SpecPushDaemonArgs, build_codex_env_map, seed_and_spawn_spec_daemon};
 use crate::state::AppState;
 use crate::terminal_sweeper::{reap_spec_push, reap_terminal_artifacts};
@@ -741,6 +743,7 @@ pub(crate) async fn create_wave(
         &spec_card_id,
         &wave,
         &env_for_spawn,
+        &settings,
         mcp_token.as_deref(),
     )
     .await
@@ -827,6 +830,7 @@ async fn spawn_push_appserver(
     spec_card_id: &str,
     wave: &Wave,
     env_for_spawn: &serde_json::Value,
+    settings: &Settings,
     mcp_token: Option<&str>,
 ) -> Result<SpecPushDaemonArgs> {
     // Seed the spec card's `$CODEX_HOME` FIRST. The kernel-owned
@@ -864,8 +868,17 @@ async fn spawn_push_appserver(
     // thread/start → turn/start(goal) → await initial lifecycle). The wave
     // title is the agent's goal — the same value the legacy path passes
     // as codex's positional `[PROMPT]`.
-    let handle =
-        spawn_spec_appserver(&s.codex.codex_bin, env_for_spawn, &wave.title, &sock).await?;
+    let recovery_signal =
+        crate::wire_spec_push_recovery_supervisor(s, settings, spec_card_id, wave.id.clone());
+    let handle = spawn_spec_appserver_with_watchdog_config_and_recovery(
+        &s.codex.codex_bin,
+        env_for_spawn,
+        &wave.title,
+        &sock,
+        TurnWatchdogConfig::default(),
+        Some(recovery_signal),
+    )
+    .await?;
     let thread_id = handle.thread_id.clone();
     let sock_for_args = handle.sock.clone();
     let pgid = handle.pgid;

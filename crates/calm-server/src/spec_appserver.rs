@@ -126,7 +126,7 @@ use std::time::Duration;
 use dashmap::DashMap;
 use serde_json::Value;
 use tokio::process::{Child, Command};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::Instant as TokioInstant;
 
@@ -297,6 +297,17 @@ pub enum SpecPushPhase {
     /// [`flush_push_queue`] will drain anything that piled up in the
     /// meantime).
     Resumed,
+    /// The runtime watchdog proved the active turn is not recoverable over
+    /// the existing app-server connection: `turn/interrupt` failed, the
+    /// stream closed while awaiting interrupted completion, or codex acked
+    /// the interrupt but never emitted `turn/completed(status=interrupted)`.
+    ///
+    /// This is deliberately outside the running/enqueue states. The queue
+    /// attached to this handle has no trustworthy consumer anymore; new
+    /// observations must leave the durable watermark untouched so the
+    /// process-level recovery supervisor can replay them through
+    /// `register_and_catch_up` after reaping and resuming a fresh process.
+    Wedged,
 }
 
 /// What [`SpecPushHandle::push_observation`] should do with a single
@@ -326,6 +337,9 @@ pub enum PushAction {
     /// TurnRunning — queue the observation; the consumer flushes it on the
     /// next `turn/completed`.
     Enqueue,
+    /// Wedged — do not enqueue into this handle. The process-level recovery
+    /// supervisor owns replay from the durable event log.
+    RejectWedged,
 }
 
 /// #313 problem #1 (B1) — outcome reported back to the dispatcher so the
@@ -364,6 +378,55 @@ pub enum PushOutcome {
     Enqueued,
 }
 
+/// Bounded channel depth for "this process is wedged; supervisor must reap
+/// and resume" signals. One request per handle is enough: once a handle is in
+/// [`SpecPushPhase::Wedged`], additional pushes are rejected rather than
+/// producing more recovery work.
+const RECOVERY_SIGNAL_CHANNEL_DEPTH: usize = 1;
+
+/// Reason the watchdog gave up on in-process interrupt recovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpecRecoveryReason {
+    /// JSON-RPC `turn/interrupt` itself failed.
+    InterruptFailed,
+    /// The notification stream closed while waiting for the interrupted
+    /// `turn/completed`.
+    StreamClosedAwaitingInterruptedCompletion,
+    /// `turn/interrupt` was acked but the interrupted completion never
+    /// arrived within `INTERRUPT_COMPLETION_BUDGET`.
+    InterruptedCompletionTimedOut,
+}
+
+/// Request sent by the notification consumer to the runtime recovery
+/// supervisor. The consumer intentionally carries no `AppState`; it only
+/// reports the wave/thread/turn that wedged.
+#[derive(Debug, Clone)]
+pub struct SpecRecoveryRequest {
+    pub wave_id: WaveId,
+    pub thread_id: String,
+    pub turn_id: String,
+    pub reason: SpecRecoveryReason,
+}
+
+/// Sender half held by a [`NotificationConsumer`]. The receiver is owned by
+/// the app-server registry supervisor, which has the `AppState`, card id,
+/// env/settings, and per-wave locking context needed to reuse the boot
+/// recovery path without bypassing invariants.
+#[derive(Debug, Clone)]
+pub struct SpecRecoverySignal {
+    wave_id: WaveId,
+    tx: mpsc::Sender<SpecRecoveryRequest>,
+}
+
+/// Create the consumer→supervisor recovery channel for one parked
+/// app-server handle.
+pub fn recovery_signal_channel(
+    wave_id: WaveId,
+) -> (SpecRecoverySignal, mpsc::Receiver<SpecRecoveryRequest>) {
+    let (tx, rx) = mpsc::channel(RECOVERY_SIGNAL_CHANNEL_DEPTH);
+    (SpecRecoverySignal { wave_id, tx }, rx)
+}
+
 /// Pure decision: given the connection's coarse [`SpecPushPhase`], should
 /// a push observation start a turn immediately or be enqueued for the
 /// next `turn/completed` flush? See [`PushAction`] for the rationale.
@@ -397,6 +460,10 @@ pub fn decide(phase: SpecPushPhase) -> PushAction {
         // `TurnCompleted` and flushes — same delivery, one extra
         // notification round-trip.
         SpecPushPhase::Resumed => PushAction::Enqueue,
+        // Layer B (#347): do NOT enqueue into a handle whose consumer has
+        // already declared the app-server process wedged. Runtime recovery
+        // replays from the durable watermark after reaping/resuming.
+        SpecPushPhase::Wedged => PushAction::RejectWedged,
     }
 }
 
@@ -726,6 +793,12 @@ impl SpecPusher {
             }
             action
         };
+        if action == PushAction::RejectWedged {
+            return Err(CalmError::CodexAppServer(format!(
+                "spec app-server thread {} is wedged; runtime recovery will replay from durable watermark",
+                self.thread_id
+            )));
+        }
 
         // #318 INV-3 — persist-first. The durable `spec_push_queue` row goes
         // in BEFORE we either issue or enqueue, so a crash anywhere between
@@ -880,6 +953,7 @@ impl SpecPusher {
                 }
                 Ok(PushOutcome::Enqueued)
             }
+            PushAction::RejectWedged => unreachable!("handled before persistence"),
         }
     }
 
@@ -1548,6 +1622,23 @@ pub async fn spawn_spec_appserver_with_watchdog_config(
     sock: &Path,
     watchdog: TurnWatchdogConfig,
 ) -> Result<SpecPushHandle> {
+    spawn_spec_appserver_with_watchdog_config_and_recovery(
+        codex_bin, env_map, goal_text, sock, watchdog, None,
+    )
+    .await
+}
+
+/// Production variant of [`spawn_spec_appserver_with_watchdog_config`] that
+/// wires the notification consumer to the runtime process-level recovery
+/// supervisor for this wave.
+pub async fn spawn_spec_appserver_with_watchdog_config_and_recovery(
+    codex_bin: &str,
+    env_map: &Value,
+    goal_text: &str,
+    sock: &Path,
+    watchdog: TurnWatchdogConfig,
+    recovery_signal: Option<SpecRecoverySignal>,
+) -> Result<SpecPushHandle> {
     // The server `chmod 0700`s the socket's PARENT dir, so the parent must
     // be a user-owned dir (not bare sticky /tmp). The caller creates the
     // per-card subdir under the user-owned data dir; we only ensure it
@@ -1642,7 +1733,16 @@ pub async fn spawn_spec_appserver_with_watchdog_config(
     // the socket dir. PR3 will refine this into interrupt / daemon-restart.
     let handle = match tokio::time::timeout(
         OVERALL_BOOT_BUDGET,
-        build_handle_after_spawn(child, pgid, start_time, boot_id, goal_text, sock, watchdog),
+        build_handle_after_spawn(
+            child,
+            pgid,
+            start_time,
+            boot_id,
+            goal_text,
+            sock,
+            watchdog,
+            recovery_signal,
+        ),
     )
     .await
     {
@@ -1708,6 +1808,23 @@ pub async fn resume_spec_appserver_with_watchdog_config(
     sock: &Path,
     watchdog: TurnWatchdogConfig,
 ) -> Result<SpecPushHandle> {
+    resume_spec_appserver_with_watchdog_config_and_recovery(
+        codex_bin, env_map, thread_id, sock, watchdog, None,
+    )
+    .await
+}
+
+/// Production variant of [`resume_spec_appserver_with_watchdog_config`] that
+/// wires the notification consumer to the runtime process-level recovery
+/// supervisor for this wave.
+pub async fn resume_spec_appserver_with_watchdog_config_and_recovery(
+    codex_bin: &str,
+    env_map: &Value,
+    thread_id: &str,
+    sock: &Path,
+    watchdog: TurnWatchdogConfig,
+    recovery_signal: Option<SpecRecoverySignal>,
+) -> Result<SpecPushHandle> {
     if let Some(parent) = sock.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             CalmError::Internal(format!(
@@ -1771,7 +1888,14 @@ pub async fn resume_spec_appserver_with_watchdog_config(
     let handle = match tokio::time::timeout(
         OVERALL_BOOT_BUDGET,
         build_handle_after_spawn_resume(
-            child, pgid, start_time, boot_id, thread_id, sock, watchdog,
+            child,
+            pgid,
+            start_time,
+            boot_id,
+            thread_id,
+            sock,
+            watchdog,
+            recovery_signal,
         ),
     )
     .await
@@ -1993,6 +2117,7 @@ async fn build_handle_after_spawn(
     goal_text: &str,
     sock: &Path,
     watchdog: TurnWatchdogConfig,
+    recovery_signal: Option<SpecRecoverySignal>,
 ) -> Result<SpecPushHandle> {
     // 2. Poll the socket for readiness, bailing early if the child dies
     //    during boot (the common no-auth / bad-env failure mode).
@@ -2043,7 +2168,17 @@ async fn build_handle_after_spawn(
     // 6. Spawn the consumer task and park the live handle (see
     //    [`park_handle`] for the shared tail).
     Ok(park_handle(
-        child, pgid, start_time, boot_id, client, thread_id, sock, notifs, status, watchdog,
+        child,
+        pgid,
+        start_time,
+        boot_id,
+        client,
+        thread_id,
+        sock,
+        notifs,
+        status,
+        watchdog,
+        recovery_signal,
     ))
 }
 
@@ -2069,6 +2204,7 @@ async fn build_handle_after_spawn_resume(
     thread_id: &str,
     sock: &Path,
     watchdog: TurnWatchdogConfig,
+    recovery_signal: Option<SpecRecoverySignal>,
 ) -> Result<SpecPushHandle> {
     // 2. Poll the socket for readiness (same as the spawn path).
     let (client, notifs) = poll_connect(&mut child, sock).await?;
@@ -2125,6 +2261,7 @@ async fn build_handle_after_spawn_resume(
         notifs,
         status.clone(),
         watchdog,
+        recovery_signal,
     );
 
     // #318 INV-4 (codex P1) — spawn the idle-resume reconcile timer. See
@@ -2227,6 +2364,7 @@ fn park_handle(
     notifs: NotificationStream,
     status: SharedStatus,
     watchdog: TurnWatchdogConfig,
+    recovery_signal: Option<SpecRecoverySignal>,
 ) -> SpecPushHandle {
     let queue: PushQueue = Arc::new(Mutex::new(VecDeque::new()));
     // #313 B1 — sink slot is empty here; the dispatcher installs the real
@@ -2248,6 +2386,7 @@ fn park_handle(
         consumer_sink,
         consumer_persist,
         watchdog,
+        recovery_signal,
     ));
     SpecPushHandle {
         child,
@@ -2380,6 +2519,7 @@ async fn consume_notifications(
     watermark_sink: WatermarkSinkSlot,
     queue_persist: QueuePersistSlot,
     watchdog: TurnWatchdogConfig,
+    recovery_signal: Option<SpecRecoverySignal>,
 ) {
     let mut state = NotificationConsumer {
         notifs,
@@ -2390,6 +2530,7 @@ async fn consume_notifications(
         watermark_sink,
         queue_persist,
         watchdog,
+        recovery_signal,
         active_turn: None,
     };
     state.seed_watchdog_from_status().await;
@@ -2405,6 +2546,7 @@ struct NotificationConsumer {
     watermark_sink: WatermarkSinkSlot,
     queue_persist: QueuePersistSlot,
     watchdog: TurnWatchdogConfig,
+    recovery_signal: Option<SpecRecoverySignal>,
     active_turn: Option<ActiveTurnWatchdog>,
 }
 
@@ -2480,6 +2622,8 @@ impl NotificationConsumer {
                 error = %e,
                 "spec push watchdog: turn/interrupt failed; process-level restart is required"
             );
+            self.signal_process_recovery(turn_id, SpecRecoveryReason::InterruptFailed)
+                .await;
             return;
         }
 
@@ -2497,11 +2641,25 @@ impl NotificationConsumer {
                                 error = %e,
                                 "spec push watchdog: stream closed while waiting for interrupted turn/completed"
                             );
+                            self.signal_process_recovery(
+                                turn_id,
+                                SpecRecoveryReason::StreamClosedAwaitingInterruptedCompletion,
+                            )
+                            .await;
                             return;
                         }
                     };
+                    let completed = is_completion_for_turn(&n, &turn_id);
                     let interrupted = is_interrupted_completion_for_turn(&n, &turn_id);
                     self.process_notification(n).await;
+                    if completed && !interrupted {
+                        tracing::info!(
+                            thread_id = %self.thread_id,
+                            turn_id = %turn_id,
+                            "spec push watchdog: turn completed naturally after interrupt ack"
+                        );
+                        return;
+                    }
                     if interrupted {
                         tracing::info!(
                             thread_id = %self.thread_id,
@@ -2512,6 +2670,18 @@ impl NotificationConsumer {
                     }
                 }
                 _ = tokio::time::sleep_until(deadline) => {
+                    let still_current = matches!(
+                        &self.active_turn,
+                        Some(active) if active.turn_id == turn_id
+                    );
+                    if !still_current {
+                        tracing::info!(
+                            thread_id = %self.thread_id,
+                            turn_id = %turn_id,
+                            "spec push watchdog: interrupt wait elapsed after watched turn completed"
+                        );
+                        return;
+                    }
                     self.active_turn = None;
                     tracing::error!(
                         thread_id = %self.thread_id,
@@ -2519,8 +2689,62 @@ impl NotificationConsumer {
                         interrupt_completion_secs = self.watchdog.interrupt_completion_budget.as_secs(),
                         "spec push watchdog: interrupt acked but no interrupted turn/completed arrived; process-level restart is required"
                     );
+                    self.signal_process_recovery(
+                        turn_id,
+                        SpecRecoveryReason::InterruptedCompletionTimedOut,
+                    )
+                    .await;
                     return;
                 }
+            }
+        }
+    }
+
+    async fn signal_process_recovery(&mut self, turn_id: String, reason: SpecRecoveryReason) {
+        {
+            let mut g = self.status.lock().await;
+            g.phase = SpecPushPhase::Wedged;
+            g.last_turn_id = Some(turn_id.clone());
+        }
+        let Some(signal) = &self.recovery_signal else {
+            tracing::error!(
+                thread_id = %self.thread_id,
+                turn_id = %turn_id,
+                ?reason,
+                "spec push watchdog: process-level recovery required but no recovery supervisor is wired"
+            );
+            return;
+        };
+        let request = SpecRecoveryRequest {
+            wave_id: signal.wave_id.clone(),
+            thread_id: self.thread_id.clone(),
+            turn_id,
+            reason,
+        };
+        match signal.tx.try_send(request) {
+            Ok(()) => {
+                tracing::warn!(
+                    thread_id = %self.thread_id,
+                    wave_id = %signal.wave_id,
+                    ?reason,
+                    "spec push watchdog: signaled process-level recovery supervisor"
+                );
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                tracing::warn!(
+                    thread_id = %self.thread_id,
+                    wave_id = %signal.wave_id,
+                    ?reason,
+                    "spec push watchdog: recovery supervisor already has a pending request"
+                );
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                tracing::error!(
+                    thread_id = %self.thread_id,
+                    wave_id = %signal.wave_id,
+                    ?reason,
+                    "spec push watchdog: recovery supervisor channel is closed"
+                );
             }
         }
     }
@@ -2590,6 +2814,13 @@ fn turn_status(turn: &Value) -> Option<&str> {
     turn.get("status").and_then(Value::as_str)
 }
 
+fn is_completion_for_turn(n: &Notification, expected_turn_id: &str) -> bool {
+    let Notification::TurnCompleted { turn, .. } = n else {
+        return false;
+    };
+    turn_id(turn) == Some(expected_turn_id)
+}
+
 fn is_interrupted_completion_for_turn(n: &Notification, expected_turn_id: &str) -> bool {
     let Notification::TurnCompleted { turn, .. } = n else {
         return false;
@@ -2656,6 +2887,13 @@ async fn flush_push_queue(
                 tracing::debug!(
                     thread_id,
                     "spec push: flush no-op — phase is Resumed (waiting for lifecycle signal)"
+                );
+                return;
+            }
+            SpecPushPhase::Wedged => {
+                tracing::debug!(
+                    thread_id,
+                    "spec push: flush no-op — phase is Wedged (runtime recovery owns replay)"
                 );
                 return;
             }
@@ -2799,7 +3037,9 @@ async fn record(status: &SharedStatus, n: &Notification) {
             }
             // Reconciles the B1 `Issuing` claim → `TurnRunning` once the
             // server confirms the winner's `turn/start` actually started.
-            g.phase = SpecPushPhase::TurnRunning;
+            if g.phase != SpecPushPhase::Wedged {
+                g.phase = SpecPushPhase::TurnRunning;
+            }
         }
         Notification::TurnCompleted { thread_id, turn } => {
             if !thread_id.is_empty() {
@@ -2808,7 +3048,9 @@ async fn record(status: &SharedStatus, n: &Notification) {
             if let Some(id) = turn.get("id").and_then(Value::as_str) {
                 g.last_turn_id = Some(id.to_string());
             }
-            g.phase = SpecPushPhase::TurnCompleted;
+            if g.phase != SpecPushPhase::Wedged {
+                g.phase = SpecPushPhase::TurnCompleted;
+            }
         }
         Notification::Item { .. } | Notification::Other { .. } => {}
     }
@@ -2872,6 +3114,7 @@ mod tests {
             watermark_sink.clone(),
             queue_persist.clone(),
             TurnWatchdogConfig::default(),
+            None,
         ));
         let handle = SpecPushHandle {
             child,
@@ -3215,6 +3458,29 @@ mod tests {
         // server may still be running the prior boot's turn and a
         // `turn/start` would be silently dropped.
         assert_eq!(decide(SpecPushPhase::Resumed), PushAction::Enqueue);
+        // #347 layer B: a watchdog-bailed handle must not keep accepting
+        // observations into a queue whose consumer no longer has a reliable
+        // process behind it. Runtime recovery replays from durable events.
+        assert_eq!(decide(SpecPushPhase::Wedged), PushAction::RejectWedged);
+    }
+
+    #[tokio::test]
+    async fn push_observation_rejects_wedged_without_queueing() {
+        let (handle, _server) = fake_handle().await;
+        {
+            let mut g = handle.status.lock().await;
+            g.phase = SpecPushPhase::Wedged;
+        }
+
+        let err = handle
+            .push_observation(123, "must not enter dead queue")
+            .await
+            .expect_err("wedged handle rejects pushes");
+        assert!(
+            err.to_string().contains("wedged"),
+            "error should explain wedged phase: {err}"
+        );
+        assert!(handle.queue.lock().await.is_empty());
     }
 
     /// `push_observation` on an idle handle issues a `turn/start` the fake
@@ -4309,6 +4575,153 @@ mod tests {
             let g = status.lock().await;
             assert_eq!(g.phase, SpecPushPhase::TurnCompleted);
         }
+    }
+
+    #[tokio::test]
+    async fn record_does_not_reopen_wedged_phase() {
+        let status: SharedStatus = Arc::new(Mutex::new(SpecPushStatus {
+            phase: SpecPushPhase::Wedged,
+            last_thread_id: Some("t1".into()),
+            last_turn_id: Some("u1".into()),
+        }));
+
+        record(
+            &status,
+            &Notification::TurnCompleted {
+                thread_id: "t1".into(),
+                turn: serde_json::json!({ "id": "u1", "status": "completed" }),
+            },
+        )
+        .await;
+
+        let g = status.lock().await;
+        assert_eq!(g.phase, SpecPushPhase::Wedged);
+        assert_eq!(g.last_turn_id.as_deref(), Some("u1"));
+    }
+
+    #[tokio::test]
+    async fn watchdog_bail_marks_wedged_and_signals_recovery() {
+        let (client, notifs, _server) = CodexAppServer::connect_pair_for_test().await;
+        let status: SharedStatus = Arc::new(Mutex::new(SpecPushStatus {
+            phase: SpecPushPhase::TurnRunning,
+            last_thread_id: Some("thread-test".into()),
+            last_turn_id: Some("turn-wedged".into()),
+        }));
+        let (signal, mut rx) = recovery_signal_channel(WaveId::from("wave-test".to_string()));
+        let mut consumer = NotificationConsumer {
+            notifs,
+            thread_id: "thread-test".to_string(),
+            status: status.clone(),
+            client: Arc::new(client),
+            queue: Arc::new(Mutex::new(VecDeque::new())),
+            watermark_sink: Arc::new(Mutex::new(None)),
+            queue_persist: Arc::new(Mutex::new(None)),
+            watchdog: TurnWatchdogConfig::default(),
+            recovery_signal: Some(signal),
+            active_turn: Some(ActiveTurnWatchdog {
+                turn_id: "turn-wedged".to_string(),
+                deadline: TokioInstant::now(),
+            }),
+        };
+
+        consumer
+            .signal_process_recovery(
+                "turn-wedged".to_string(),
+                SpecRecoveryReason::InterruptedCompletionTimedOut,
+            )
+            .await;
+
+        let req = rx.recv().await.expect("recovery request");
+        assert_eq!(req.wave_id, WaveId::from("wave-test".to_string()));
+        assert_eq!(req.thread_id, "thread-test");
+        assert_eq!(req.turn_id, "turn-wedged");
+        assert_eq!(
+            req.reason,
+            SpecRecoveryReason::InterruptedCompletionTimedOut
+        );
+        assert_eq!(status.lock().await.phase, SpecPushPhase::Wedged);
+    }
+
+    #[tokio::test]
+    async fn watchdog_interrupt_race_accepts_natural_completion_without_recovery() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let (client, notifs, mut server) = CodexAppServer::connect_pair_for_test().await;
+        let status: SharedStatus = Arc::new(Mutex::new(SpecPushStatus {
+            phase: SpecPushPhase::TurnRunning,
+            last_thread_id: Some("thread-test".into()),
+            last_turn_id: Some("turn-race".into()),
+        }));
+        let (signal, mut rx) = recovery_signal_channel(WaveId::from("wave-test".to_string()));
+        let mut consumer = NotificationConsumer {
+            notifs,
+            thread_id: "thread-test".to_string(),
+            status: status.clone(),
+            client: Arc::new(client),
+            queue: Arc::new(Mutex::new(VecDeque::new())),
+            watermark_sink: Arc::new(Mutex::new(None)),
+            queue_persist: Arc::new(Mutex::new(None)),
+            watchdog: TurnWatchdogConfig {
+                max_turn_duration: Duration::from_secs(30),
+                interrupt_completion_budget: Duration::from_secs(5),
+            },
+            recovery_signal: Some(signal),
+            active_turn: Some(ActiveTurnWatchdog {
+                turn_id: "turn-race".to_string(),
+                deadline: TokioInstant::now() + Duration::from_secs(30),
+            }),
+        };
+
+        let server_task = tokio::spawn(async move {
+            let frame = server
+                .next()
+                .await
+                .expect("turn/interrupt frame")
+                .expect("ws frame");
+            let Message::Text(text) = frame else {
+                panic!("expected text frame");
+            };
+            let req: Value = serde_json::from_str(&text).expect("interrupt json");
+            assert_eq!(
+                req.get("method").and_then(Value::as_str),
+                Some("turn/interrupt")
+            );
+            let id = req.get("id").cloned().expect("request id");
+            server
+                .send(Message::Text(
+                    serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": {} }).to_string(),
+                ))
+                .await
+                .expect("send interrupt ack");
+            server
+                .send(Message::Text(
+                    serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": "thread-test",
+                            "turn": { "id": "turn-race", "status": "completed" }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .await
+                .expect("send natural completion");
+        });
+
+        consumer
+            .handle_watchdog_deadline("turn-race".to_string())
+            .await;
+        server_task.await.expect("server task");
+
+        assert_eq!(status.lock().await.phase, SpecPushPhase::TurnCompleted);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), rx.recv())
+                .await
+                .is_err(),
+            "natural completion after interrupt ack must not signal process recovery"
+        );
     }
 
     #[test]
