@@ -57,6 +57,7 @@ const claudePayloadSchema = z.object({
   prompt: z.string().optional(),
   cwd: z.string().optional(),
   settings_path: z.string().optional(),
+  claude_session_id: z.string().optional(),
 });
 
 function UnsupportedCodexCard({
@@ -398,6 +399,7 @@ export const ClaudeEntry: CardEntry<ClaudeCardData> = {
       id: k.id,
       terminalId: parsed.data.terminal_id,
       cwd: parsed.data.cwd,
+      claudeSessionId: parsed.data.claude_session_id,
     };
   },
   addPanel: {

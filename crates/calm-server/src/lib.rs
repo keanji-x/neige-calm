@@ -58,10 +58,14 @@ pub mod auth;
 ///
 /// The sweep walks `terminals` rows whose `daemon_handle IS NOT NULL`,
 /// probes the socket, and on connect-failure clears the handle and
-/// calls `spawn_daemon_with_parts` with the row's existing program /
-/// cwd / env. The row's `theme_fg / _bg` (NOT NULL post-migration
-/// 0017) flow through to the new daemon argv automatically — every
-/// spawn reads theme from the row.
+/// calls `spawn_daemon_with_parts` with the row's existing cwd / env.
+/// Most rows also reuse the persisted program verbatim; Claude worker
+/// rows that carry `payload.claude_session_id` rebuild the child command
+/// as `claude --settings <path> --resume <id>` so a boot revive resumes
+/// the same Claude conversation instead of replaying the first launch.
+/// The row's `theme_fg / _bg` (NOT NULL post-migration 0017) flow
+/// through to the new daemon argv automatically — every spawn reads
+/// theme from the row.
 pub async fn revive_orphans_on_boot(state: &state::AppState) {
     let rows = match state.repo.terminals_with_daemon_handle().await {
         Ok(rs) => rs,
@@ -94,11 +98,25 @@ pub async fn revive_orphans_on_boot(state: &state::AppState) {
         // fresh one on success.
         let _ = db::RepoOutOfDomain::terminal_set_handle(state.repo.as_ref(), &term.id, None).await;
         let env = term.env.clone();
+        let card = match state.repo.card_get(term.card_id.as_ref()).await {
+            Ok(card) => card,
+            Err(e) => {
+                tracing::warn!(
+                    terminal_id = %term.id,
+                    card_id = %term.card_id,
+                    error = %e,
+                    "revive_orphans_on_boot: card lookup failed; replaying persisted terminal program"
+                );
+                None
+            }
+        };
+        let program =
+            boot_revive_program_for_terminal(&term, card.as_ref(), &state.codex.claude_bin);
         if let Err(e) = routes::terminal::spawn_daemon_with_parts(
             state.daemon.as_ref(),
             state.repo.as_ref(),
             &term,
-            &term.program,
+            &program,
             &term.cwd,
             &env,
         )
@@ -114,6 +132,130 @@ pub async fn revive_orphans_on_boot(state: &state::AppState) {
         }
     }
     tracing::info!(respawned, alive, "revive_orphans_on_boot: complete",);
+}
+
+fn boot_revive_program_for_terminal(
+    term: &model::Terminal,
+    card: Option<&model::Card>,
+    claude_bin: &str,
+) -> String {
+    let Some(card) = card else {
+        return term.program.clone();
+    };
+    if card.kind != "claude" {
+        return term.program.clone();
+    }
+    let payload = &card.payload;
+    let Some(claude_session_id) = payload
+        .get("claude_session_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return term.program.clone();
+    };
+    let Some(settings_path) = payload
+        .get("settings_path")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return term.program.clone();
+    };
+
+    format!(
+        "{} --settings {} --resume {}",
+        routes::codex_cards::shell_single_quote(claude_bin),
+        routes::codex_cards::shell_single_quote(settings_path),
+        routes::codex_cards::shell_single_quote(claude_session_id),
+    )
+}
+
+#[cfg(test)]
+mod claude_boot_revive_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn terminal(program: &str, cwd: &str) -> model::Terminal {
+        model::Terminal {
+            id: "term-1".into(),
+            card_id: "card-1".into(),
+            program: program.into(),
+            cwd: cwd.into(),
+            env: json!({"NEIGE_HOOK_PROVIDER": "claude"}),
+            daemon_handle: Some("/tmp/stale.sock".into()),
+            pid: None,
+            theme_fg: "216,219,226".into(),
+            theme_bg: "15,20,24".into(),
+            exit_code: None,
+            signal_killed: false,
+            created_at: 0,
+        }
+    }
+
+    fn card(kind: &str, payload: serde_json::Value) -> model::Card {
+        model::Card {
+            id: "card-1".into(),
+            wave_id: "wave-1".into(),
+            kind: kind.into(),
+            sort: 0.0,
+            payload,
+            deletable: true,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn claude_boot_revive_rebuilds_resume_command_from_payload() {
+        let term = terminal(
+            "'/opt/claude' --settings '/tmp/settings.json' --session-id '11111111-1111-4111-8111-111111111111' -- 'first prompt'",
+            "/workspace",
+        );
+        let claude = card(
+            "claude",
+            json!({
+                "schemaVersion": 1,
+                "terminal_id": "term-1",
+                "settings_path": "/tmp/settings.json",
+                "cwd": "/workspace",
+                "prompt": "first prompt",
+                "claude_session_id": "22222222-2222-4222-8222-222222222222"
+            }),
+        );
+
+        let program = boot_revive_program_for_terminal(&term, Some(&claude), "/opt/claude");
+
+        assert_eq!(
+            program,
+            "'/opt/claude' --settings '/tmp/settings.json' --resume '22222222-2222-4222-8222-222222222222'"
+        );
+        assert!(!program.contains("--session-id"));
+        assert!(!program.contains("--fork-session"));
+        assert!(!program.contains("first prompt"));
+        assert_eq!(term.cwd, "/workspace");
+    }
+
+    #[test]
+    fn claude_boot_revive_without_session_id_keeps_legacy_fresh_spawn_program() {
+        let original = "'/opt/claude' --settings '/tmp/settings.json' -- 'first prompt'";
+        let term = terminal(original, "/workspace");
+        let legacy = card(
+            "claude",
+            json!({
+                "schemaVersion": 1,
+                "terminal_id": "term-1",
+                "settings_path": "/tmp/settings.json",
+                "cwd": "/workspace",
+                "prompt": "first prompt"
+            }),
+        );
+
+        let program = boot_revive_program_for_terminal(&term, Some(&legacy), "/opt/claude");
+
+        assert_eq!(program, original);
+        assert!(!program.contains("--resume"));
+    }
 }
 
 /// #313 problem #1 — boot-time **takeover** of in-flight spec waves.
