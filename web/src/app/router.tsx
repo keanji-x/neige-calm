@@ -77,6 +77,11 @@ const WavePage = lazy(() =>
 const SettingsPage = lazy(() =>
   import('../pages/Settings').then((m) => ({ default: m.SettingsPage })),
 );
+const EditorSpikePage = lazy(() =>
+  import('../editor/spike/EditorSpikePage').then((m) => ({
+    default: m.EditorSpikePage,
+  })),
+);
 
 // ---------- Route tree ----------
 
@@ -121,11 +126,18 @@ const settingsRoute = createRoute({
   component: SettingsComponent,
 });
 
+const editorSpikeRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/editor-spike',
+  component: EditorSpikeComponent,
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   coveRoute,
   waveRoute,
   settingsRoute,
+  editorSpikeRoute,
 ]);
 
 // `basepath` mirrors Vite's `base: '/calm/'` (see vite.config.ts) so URLs
@@ -274,6 +286,10 @@ function CoveComponent() {
 function SettingsComponent() {
   const go = useGo();
   return <SettingsPage onGo={go} />;
+}
+
+function EditorSpikeComponent() {
+  return <EditorSpikePage />;
 }
 
 function WaveComponent() {
