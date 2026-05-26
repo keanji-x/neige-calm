@@ -16,6 +16,7 @@ use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::wave_file::{TOOL_WAVE_CAT, TOOL_WAVE_LS};
 use calm_server::mcp_server::tools::wave_report::TOOL_REPORT_READ;
+use calm_server::mcp_server::tools::wave_state::TOOL_UPDATE_TASK_META;
 use calm_server::mcp_server::{CardIdentity, ToolRegistry};
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
 use calm_server::plugin_host::mcp::RpcError;
@@ -259,6 +260,21 @@ async fn complete_run(boot: &Boot, key: &str, summary: &str) {
     .await;
 }
 
+async fn accept_run(boot: &Boot, key: &str, reason: &str) {
+    call_tool(
+        boot,
+        TOOL_UPDATE_TASK_META,
+        spec_identity(boot),
+        json!({
+            "idempotency_key": key,
+            "status": "accepted",
+            "reason": reason,
+        }),
+    )
+    .await
+    .expect("spec can accept run");
+}
+
 async fn fail_run(boot: &Boot, key: &str, reason: &str) {
     log_wave_event(
         boot,
@@ -491,7 +507,128 @@ async fn completed_run_json_returns_structured_projection() {
         run["events"]["completed"]["payload"]["result"]["summary"],
         json!("json complete")
     );
+    assert!(run["verdict"].is_null(), "run = {run:?}");
+    assert!(run["events"]["verdict"].is_null(), "run = {run:?}");
     assert!(run["events"]["failed"].is_null(), "run = {run:?}");
+}
+
+#[tokio::test]
+async fn accepted_verdict_does_not_overwrite_worker_completion() {
+    let boot = boot().await;
+    request_codex(&boot, "accepted-run").await;
+    materialize_worker(&boot, "accepted-run").await;
+    complete_run(&boot, "accepted-run", "did the thing").await;
+    accept_run(&boot, "accepted-run", "LGTM").await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/accepted-run.json" }),
+    )
+    .await
+    .expect("spec can read accepted run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("completed"));
+    assert_eq!(
+        run["events"]["completed"]["payload"]["result"],
+        json!({ "summary": "did the thing" })
+    );
+    assert_eq!(run["verdict"]["status"], json!("accepted"));
+    assert_eq!(run["verdict"]["reason"], json!("LGTM"));
+    assert_eq!(
+        run["events"]["verdict"]["payload"]["result"],
+        json!({ "status": "accepted", "reason": "LGTM" })
+    );
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/index.json" }),
+    )
+    .await
+    .expect("spec can read runs index");
+    let runs = content_json(&out);
+    let entry = runs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|run| run["idempotency_key"] == "accepted-run")
+        .unwrap_or_else(|| panic!("missing accepted-run: {runs:?}"));
+    assert_eq!(entry["status"], json!("completed"));
+    assert_eq!(entry["verdict"]["status"], json!("accepted"));
+    assert!(
+        entry["verdict"].get("reason").is_none(),
+        "entry = {entry:?}"
+    );
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/accepted-run.md" }),
+    )
+    .await
+    .expect("spec can read accepted run markdown");
+    let md = out["content"].as_str().expect("markdown content");
+    assert!(md.contains("## Verdict"), "md = {md}");
+    assert!(
+        md.contains("accepted by spec at") && md.contains(": LGTM"),
+        "md = {md}"
+    );
+    assert!(md.contains("did the thing"), "md = {md}");
+}
+
+#[tokio::test]
+async fn verdict_before_worker_completion_still_preserves_worker_output() {
+    let boot = boot().await;
+    request_codex(&boot, "out-of-order").await;
+    materialize_worker(&boot, "out-of-order").await;
+    log_wave_event(
+        &boot,
+        &boot.wave_id,
+        &boot.cove_id,
+        Event::TaskCompleted {
+            idempotency_key: "out-of-order".into(),
+            result: json!({ "status": "accepted", "reason": "early LGTM" }),
+            artifacts: vec![],
+        },
+    )
+    .await;
+    complete_run(&boot, "out-of-order", "worker arrived later").await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/out-of-order.json" }),
+    )
+    .await
+    .expect("spec can read out-of-order run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("completed"));
+    assert_eq!(
+        run["events"]["completed"]["payload"]["result"],
+        json!({ "summary": "worker arrived later" })
+    );
+    assert_eq!(run["verdict"]["status"], json!("accepted"));
+    assert_eq!(run["verdict"]["reason"], json!("early LGTM"));
+}
+
+#[tokio::test]
+#[should_panic(expected = "reserved path")]
+async fn reserved_run_key_panics() {
+    let boot = boot().await;
+    request_codex(&boot, "index").await;
+
+    let _ = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/index.json" }),
+    )
+    .await;
 }
 
 #[tokio::test]

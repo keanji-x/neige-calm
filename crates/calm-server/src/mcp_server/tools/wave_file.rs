@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 pub const TOOL_WAVE_LS: &str = "calm.wave.ls";
 pub const TOOL_WAVE_CAT: &str = "calm.wave.cat";
+const RESERVED_RUN_KEYS: &[&str] = &["index"];
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(ls_descriptor(), wrap(wave_ls));
@@ -293,6 +294,13 @@ struct RunEventProjection {
 }
 
 #[derive(Clone, Debug)]
+struct RunVerdictProjection {
+    status: String,
+    reason: Option<String>,
+    at: i64,
+}
+
+#[derive(Clone, Debug)]
 struct RunProjection {
     idempotency_key: String,
     status: &'static str,
@@ -303,6 +311,8 @@ struct RunProjection {
     requested_event: Option<RunEventProjection>,
     completed_event: Option<RunEventProjection>,
     failed_event: Option<RunEventProjection>,
+    verdict: Option<RunVerdictProjection>,
+    verdict_event: Option<RunEventProjection>,
 }
 
 async fn runs_for_wave(ctx: &Arc<AppContext>, wave: &Wave) -> Result<Vec<RunProjection>, RpcError> {
@@ -321,7 +331,19 @@ async fn runs_for_wave(ctx: &Arc<AppContext>, wave: &Wave) -> Result<Vec<RunProj
         .await
         .map_err(|e| RpcError::internal(format!("wave_file: events_for_wave: {e}")))?;
 
-    Ok(project_runs(cards, events))
+    let runs = project_runs(cards, events);
+    for run in &runs {
+        if RESERVED_RUN_KEYS.contains(&run.idempotency_key.as_str()) {
+            panic!(
+                "neige wave-file runs projection: idempotency_key `{}` collides with reserved path \
+                 `runs/{}.json`. wave_id={}",
+                run.idempotency_key,
+                run.idempotency_key,
+                wave.id.as_str()
+            );
+        }
+    }
+    Ok(runs)
 }
 
 fn project_runs(cards: Vec<Card>, events: Vec<WaveEvent>) -> Vec<RunProjection> {
@@ -338,6 +360,7 @@ fn project_runs(cards: Vec<Card>, events: Vec<WaveEvent>) -> Vec<RunProjection> 
     let mut requested_kind = BTreeMap::<String, &'static str>::new();
     let mut completed = BTreeMap::<String, RunEventProjection>::new();
     let mut failed = BTreeMap::<String, RunEventProjection>::new();
+    let mut verdict = BTreeMap::<String, RunEventProjection>::new();
 
     for row in events {
         match &row.event {
@@ -374,13 +397,16 @@ fn project_runs(cards: Vec<Card>, events: Vec<WaveEvent>) -> Vec<RunProjection> 
                 );
             }
             Event::TaskCompleted {
-                idempotency_key, ..
+                idempotency_key,
+                result,
+                ..
             } => {
-                record_latest(
-                    &mut completed,
-                    idempotency_key,
-                    run_event(row.id, row.at, "task.completed", row.event.payload_value()),
-                );
+                let event = run_event(row.id, row.at, "task.completed", row.event.payload_value());
+                if is_spec_accepted_verdict(result) {
+                    record_latest(&mut verdict, idempotency_key, event);
+                } else {
+                    record_earliest(&mut completed, idempotency_key, event);
+                }
             }
             Event::TaskFailed {
                 idempotency_key, ..
@@ -401,6 +427,8 @@ fn project_runs(cards: Vec<Card>, events: Vec<WaveEvent>) -> Vec<RunProjection> 
             let requested_event = requested.remove(&key);
             let completed_event = completed.remove(&key);
             let failed_event = failed.remove(&key);
+            let verdict_event = verdict.remove(&key);
+            let verdict = verdict_event.as_ref().and_then(verdict_from_event);
 
             // Status is a read-only projection from event/card facts:
             // final events win by latest row only after a request exists;
@@ -436,6 +464,8 @@ fn project_runs(cards: Vec<Card>, events: Vec<WaveEvent>) -> Vec<RunProjection> 
                 requested_event,
                 completed_event,
                 failed_event,
+                verdict,
+                verdict_event,
             }
         })
         .collect()
@@ -494,6 +524,23 @@ fn latest_final_event<'a>(
     }
 }
 
+fn is_spec_accepted_verdict(result: &Value) -> bool {
+    result.get("status").and_then(Value::as_str) == Some("accepted")
+}
+
+fn verdict_from_event(event: &RunEventProjection) -> Option<RunVerdictProjection> {
+    let result = event.payload.get("result")?;
+    let status = result.get("status")?.as_str()?;
+    Some(RunVerdictProjection {
+        status: status.to_string(),
+        reason: result
+            .get("reason")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        at: event.at,
+    })
+}
+
 fn idempotency_key_from_payload(payload: &Value) -> Option<&str> {
     payload.get("idempotency_key").and_then(Value::as_str)
 }
@@ -521,6 +568,7 @@ fn runs_updated_at(wave: &Wave, runs: &[RunProjection]) -> Option<i64> {
                 [
                     run.requested_at,
                     run.finished_at,
+                    run.verdict.as_ref().map(|verdict| verdict.at),
                     run.worker_card.as_ref().map(|card| card.updated_at),
                 ]
                 .into_iter()
@@ -564,6 +612,7 @@ fn run_listing_entry(run: &RunProjection) -> Value {
     );
     obj.insert("status".into(), Value::String(run.status.into()));
     obj.insert("run_kind".into(), Value::String(run.kind.clone()));
+    obj.insert("verdict".into(), run_verdict_index_json(run));
     obj.insert("requested_at".into(), option_i64(run.requested_at));
     obj.insert("finished_at".into(), option_i64(run.finished_at));
     obj.insert(
@@ -575,6 +624,7 @@ fn run_listing_entry(run: &RunProjection) -> Value {
     );
     if let Some(updated_at) = run
         .finished_at
+        .or_else(|| run.verdict.as_ref().map(|verdict| verdict.at))
         .or_else(|| run.worker_card.as_ref().map(|card| card.updated_at))
         .or(run.requested_at)
     {
@@ -588,6 +638,7 @@ fn run_index_entry(run: &RunProjection) -> Value {
         "idempotency_key": run.idempotency_key,
         "status": run.status,
         "kind": run.kind,
+        "verdict": run_verdict_index_json(run),
         "requested_at": run.requested_at,
         "finished_at": run.finished_at,
         "worker_card_id": run.worker_card.as_ref().map(|card| card.id.as_str()),
@@ -599,6 +650,7 @@ fn run_json(run: &RunProjection) -> Value {
         "idempotency_key": run.idempotency_key,
         "status": run.status,
         "kind": run.kind,
+        "verdict": run_verdict_full_json(run),
         "requested_at": run.requested_at,
         "finished_at": run.finished_at,
         "worker_card_id": run.worker_card.as_ref().map(|card| card.id.as_str()),
@@ -607,8 +659,34 @@ fn run_json(run: &RunProjection) -> Value {
             "requested": run.requested_event.as_ref().map(event_json),
             "completed": run.completed_event.as_ref().map(event_json),
             "failed": run.failed_event.as_ref().map(event_json),
+            "verdict": run.verdict_event.as_ref().map(event_json),
         },
     })
+}
+
+fn run_verdict_index_json(run: &RunProjection) -> Value {
+    run.verdict
+        .as_ref()
+        .map(|verdict| {
+            json!({
+                "status": verdict.status,
+                "at": verdict.at,
+            })
+        })
+        .unwrap_or(Value::Null)
+}
+
+fn run_verdict_full_json(run: &RunProjection) -> Value {
+    run.verdict
+        .as_ref()
+        .map(|verdict| {
+            json!({
+                "status": verdict.status,
+                "reason": verdict.reason,
+                "at": verdict.at,
+            })
+        })
+        .unwrap_or(Value::Null)
 }
 
 fn event_json(event: &RunEventProjection) -> Value {
@@ -649,6 +727,14 @@ fn run_markdown(run: &RunProjection) -> String {
         "- Finished at: {}\n",
         format_optional_i64(run.finished_at)
     ));
+
+    if let Some(verdict) = run.verdict.as_ref() {
+        let reason = verdict.reason.as_deref().unwrap_or("");
+        out.push_str(&format!(
+            "\n## Verdict\n\naccepted by spec at {}: {}\n",
+            verdict.at, reason
+        ));
+    }
 
     if let Some(card) = run.worker_card.as_ref() {
         append_payload_field(&mut out, &card.payload, "goal", "Goal");
