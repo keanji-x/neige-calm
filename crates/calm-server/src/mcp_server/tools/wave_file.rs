@@ -413,11 +413,12 @@ fn project_runs(cards: Vec<Card>, events: Vec<WaveEvent>) -> Vec<RunProjection> 
             Event::TaskFailed {
                 idempotency_key, ..
             } => {
-                record_latest(
-                    &mut failed,
-                    idempotency_key,
-                    run_event(row.id, row.at, "task.failed", row.event.payload_value()),
-                );
+                let event = run_event(row.id, row.at, "task.failed", row.event.payload_value());
+                if is_spec_verdict_event(&row.scope) {
+                    record_latest(&mut verdict, idempotency_key, event);
+                } else {
+                    record_latest(&mut failed, idempotency_key, event);
+                }
             }
             _ => {}
         }
@@ -432,21 +433,16 @@ fn project_runs(cards: Vec<Card>, events: Vec<WaveEvent>) -> Vec<RunProjection> 
             let verdict_event = verdict.remove(&key);
             let verdict = verdict_event.as_ref().and_then(verdict_from_event);
 
-            // Status is a read-only projection from event/card facts:
-            // final events win by latest row only after a request exists;
-            // otherwise a materialized worker card means the dispatcher has
-            // started the run; otherwise the request is still only an
-            // audit-log row. Worker-card-only rows are unexpected and
-            // intentionally labeled `unknown`.
-            let (status, finished_at) = match (
-                requested_event.is_some(),
-                latest_final_event(completed_event.as_ref(), failed_event.as_ref()),
-            ) {
-                (true, Some(event)) if event.kind == "task.failed" => ("failed", Some(event.at)),
-                (true, Some(event)) => ("completed", Some(event.at)),
-                (true, None) if worker_card.is_some() => ("running", None),
-                (true, None) => ("requested", None),
-                (false, _) => ("unknown", None),
+            let (status, finished_at) = if let Some(event) = failed_event.as_ref() {
+                ("failed", Some(event.at))
+            } else if let Some(event) = completed_event.as_ref() {
+                ("completed", Some(event.at))
+            } else if requested_event.is_some() && worker_card.is_some() {
+                ("running", None)
+            } else if requested_event.is_some() {
+                ("requested", None)
+            } else {
+                ("unknown", None)
             };
 
             let kind = worker_card
@@ -531,14 +527,31 @@ fn is_spec_verdict_event(scope: &EventScope) -> bool {
 }
 
 fn verdict_from_event(event: &RunEventProjection) -> Option<RunVerdictProjection> {
-    let result = event.payload.get("result")?;
-    let status = result.get("status")?.as_str()?;
+    let (status, reason) = match event.kind {
+        "task.completed" => {
+            let result = event.payload.get("result")?;
+            let status = result.get("status")?.as_str()?;
+            (
+                status,
+                result
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            )
+        }
+        "task.failed" => (
+            "rejected",
+            event
+                .payload
+                .get("reason")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        ),
+        _ => return None,
+    };
     Some(RunVerdictProjection {
         status: status.to_string(),
-        reason: result
-            .get("reason")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        reason,
         at: event.at,
     })
 }
@@ -733,8 +746,8 @@ fn run_markdown(run: &RunProjection) -> String {
     if let Some(verdict) = run.verdict.as_ref() {
         let reason = verdict.reason.as_deref().unwrap_or("");
         out.push_str(&format!(
-            "\n## Verdict\n\naccepted by spec at {}: {}\n",
-            verdict.at, reason
+            "\n## Verdict\n\nVerdict: {} by spec at {}: {}\n",
+            verdict.status, verdict.at, reason
         ));
     }
 

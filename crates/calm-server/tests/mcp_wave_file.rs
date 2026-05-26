@@ -296,11 +296,24 @@ async fn accept_run(boot: &Boot, key: &str, reason: &str) {
     .expect("spec can accept run");
 }
 
-async fn fail_run(boot: &Boot, key: &str, reason: &str) {
-    log_wave_event(
+async fn reject_run(boot: &Boot, key: &str, reason: &str) {
+    call_tool(
         boot,
-        &boot.wave_id,
-        &boot.cove_id,
+        TOOL_UPDATE_TASK_META,
+        spec_identity(boot),
+        json!({
+            "idempotency_key": key,
+            "status": "rejected",
+            "reason": reason,
+        }),
+    )
+    .await
+    .expect("spec can reject run");
+}
+
+async fn worker_fail_run(boot: &Boot, key: &str, reason: &str) {
+    log_worker_card_event(
+        boot,
         Event::TaskFailed {
             idempotency_key: key.into(),
             reason: reason.into(),
@@ -632,6 +645,124 @@ async fn accepted_verdict_does_not_overwrite_worker_completion() {
 }
 
 #[tokio::test]
+async fn rejected_verdict_does_not_overwrite_worker_completion() {
+    let boot = boot().await;
+    request_codex(&boot, "rejected-run").await;
+    materialize_worker(&boot, "rejected-run").await;
+    complete_run(&boot, "rejected-run", "did stuff").await;
+    reject_run(&boot, "rejected-run", "not enough detail").await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/rejected-run.json" }),
+    )
+    .await
+    .expect("spec can read rejected run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("completed"));
+    assert_eq!(
+        run["events"]["completed"]["payload"]["result"],
+        json!({ "summary": "did stuff" })
+    );
+    assert!(run["events"]["failed"].is_null(), "run = {run:?}");
+    assert_eq!(run["verdict"]["status"], json!("rejected"));
+    assert_eq!(run["verdict"]["reason"], json!("not enough detail"));
+    assert_eq!(
+        run["events"]["verdict"]["payload"]["reason"],
+        json!("not enough detail")
+    );
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/rejected-run.md" }),
+    )
+    .await
+    .expect("spec can read rejected run markdown");
+    let md = out["content"].as_str().expect("markdown content");
+    assert!(
+        md.contains("Verdict: rejected by spec at") && md.contains(": not enough detail"),
+        "md = {md}"
+    );
+}
+
+#[tokio::test]
+async fn worker_failure_without_spec_verdict_stays_failed() {
+    let boot = boot().await;
+    request_codex(&boot, "worker-failed").await;
+    materialize_worker(&boot, "worker-failed").await;
+    worker_fail_run(&boot, "worker-failed", "stub failure").await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/worker-failed.json" }),
+    )
+    .await
+    .expect("spec can read worker-failed run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("failed"));
+    assert_eq!(
+        run["events"]["failed"]["payload"]["reason"],
+        json!("stub failure")
+    );
+    assert!(run["verdict"].is_null(), "run = {run:?}");
+    assert!(run["events"]["verdict"].is_null(), "run = {run:?}");
+}
+
+#[tokio::test]
+async fn spec_rejection_without_worker_failure_stays_out_of_failed_pool() {
+    let boot = boot().await;
+    request_codex(&boot, "reject-only").await;
+    reject_run(&boot, "reject-only", "not started").await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/reject-only.json" }),
+    )
+    .await
+    .expect("spec can read reject-only run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("requested"));
+    assert!(run["events"]["failed"].is_null(), "run = {run:?}");
+    assert_eq!(run["verdict"]["status"], json!("rejected"));
+    assert_eq!(run["verdict"]["reason"], json!("not started"));
+}
+
+#[tokio::test]
+async fn rejected_verdict_before_worker_completion_preserves_worker_output() {
+    let boot = boot().await;
+    request_codex(&boot, "reject-out-of-order").await;
+    materialize_worker(&boot, "reject-out-of-order").await;
+    reject_run(&boot, "reject-out-of-order", "early rejection").await;
+    complete_run(&boot, "reject-out-of-order", "worker arrived later").await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/reject-out-of-order.json" }),
+    )
+    .await
+    .expect("spec can read reject-out-of-order run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("completed"));
+    assert_eq!(
+        run["events"]["completed"]["payload"]["result"],
+        json!({ "summary": "worker arrived later" })
+    );
+    assert!(run["events"]["failed"].is_null(), "run = {run:?}");
+    assert_eq!(run["verdict"]["status"], json!("rejected"));
+    assert_eq!(run["verdict"]["reason"], json!("early rejection"));
+}
+
+#[tokio::test]
 async fn verdict_before_worker_completion_still_preserves_worker_output() {
     let boot = boot().await;
     request_codex(&boot, "out-of-order").await;
@@ -667,29 +798,43 @@ async fn verdict_before_worker_completion_still_preserves_worker_output() {
     assert_eq!(run["verdict"]["reason"], json!("early LGTM"));
 }
 
-#[tokio::test]
-async fn reserved_run_key_returns_structured_error() {
+async fn assert_reserved_run_key_error(tool: &str, path: &str, expect: &str) {
     let boot = boot().await;
     request_codex(&boot, "index").await;
 
-    let err = call_tool(
-        &boot,
-        TOOL_WAVE_CAT,
-        spec_identity(&boot),
-        json!({ "path": "runs/index.json" }),
-    )
-    .await
-    .expect_err("reserved run key must return a structured error");
+    let err = call_tool(&boot, tool, spec_identity(&boot), json!({ "path": path }))
+        .await
+        .unwrap_err();
     assert_eq!(err.code, RpcError::INTERNAL_ERROR);
     assert!(
         err.message
             .contains("idempotency_key `index` collides with reserved path"),
-        "err = {err:?}"
+        "{expect}: err = {err:?}"
     );
     assert!(
         err.message.contains("Remediation: stop submitting jobs"),
-        "err = {err:?}"
+        "{expect}: err = {err:?}"
     );
+}
+
+#[tokio::test]
+async fn reserved_run_key_returns_structured_error_for_runs_index_json() {
+    assert_reserved_run_key_error(TOOL_WAVE_CAT, "runs/index.json", "cat runs/index.json").await;
+}
+
+#[tokio::test]
+async fn reserved_run_key_returns_structured_error_for_ls_root() {
+    assert_reserved_run_key_error(TOOL_WAVE_LS, "/", "ls /").await;
+}
+
+#[tokio::test]
+async fn reserved_run_key_returns_structured_error_for_ls_runs() {
+    assert_reserved_run_key_error(TOOL_WAVE_LS, "runs/", "ls runs/").await;
+}
+
+#[tokio::test]
+async fn reserved_run_key_returns_structured_error_for_run_markdown() {
+    assert_reserved_run_key_error(TOOL_WAVE_CAT, "runs/index.md", "cat runs/index.md").await;
 }
 
 #[tokio::test]
@@ -746,7 +891,7 @@ async fn run_status_derivation_follows_projection_rules() {
     request_codex(&boot, "completed-run").await;
     complete_run(&boot, "completed-run", "done").await;
     request_codex(&boot, "failed-run").await;
-    fail_run(&boot, "failed-run", "bad exit").await;
+    worker_fail_run(&boot, "failed-run", "bad exit").await;
 
     let out = call_tool(
         &boot,
