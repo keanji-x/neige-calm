@@ -85,6 +85,7 @@ pub(crate) async fn create_claude_card(
     }
 
     let card_id = new_id();
+    let claude_session_id = uuid::Uuid::new_v4().to_string();
     let cwd = p
         .cwd
         .as_deref()
@@ -138,9 +139,10 @@ pub(crate) async fn create_claude_card(
     let settings_path = settings_dir.join("settings.json");
     let settings_path_string = settings_path.to_string_lossy().to_string();
     let mut command_line = format!(
-        "{} --settings {}",
+        "{} --settings {} --session-id {}",
         shell_single_quote(&s.codex.claude_bin),
         shell_single_quote(&settings_path_string),
+        shell_single_quote(&claude_session_id),
     );
     if let Some(p) = prompt.as_deref() {
         command_line.push_str(" -- ");
@@ -154,6 +156,7 @@ pub(crate) async fn create_claude_card(
     let env_for_tx = env.clone();
     let prompt_for_tx = prompt.clone();
     let settings_path_for_tx = settings_path_string.clone();
+    let claude_session_id_for_tx = claude_session_id.clone();
     let theme_for_tx = p.theme;
     let scope = card_scope(
         s.repo.as_ref(),
@@ -183,6 +186,7 @@ pub(crate) async fn create_claude_card(
                     env_for_tx,
                     prompt_for_tx,
                     settings_path_for_tx,
+                    claude_session_id_for_tx,
                     CardRole::Worker,
                     true,
                     &cache_for_tx,
@@ -228,6 +232,7 @@ pub(crate) async fn create_claude_card(
         terminal_id = %term.id,
         cwd = %cwd,
         settings = %settings_path_string,
+        claude_session_id = %claude_session_id,
         has_prompt = prompt.is_some(),
         "spawned interactive claude worker"
     );

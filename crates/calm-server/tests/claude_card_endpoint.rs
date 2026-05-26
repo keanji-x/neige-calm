@@ -143,6 +143,12 @@ async fn post_claude_card_creates_worker_terminal_and_hook_settings_without_mcp(
     assert_eq!(boot.role_cache.get(&card_id.into()), Some(CardRole::Worker));
 
     let terminal_id = card["payload"]["terminal_id"].as_str().unwrap();
+    let claude_session_id = card["payload"]["claude_session_id"].as_str().unwrap();
+    assert_eq!(claude_session_id.len(), 36);
+    assert!(
+        uuid::Uuid::parse_str(claude_session_id).is_ok(),
+        "claude_session_id must be a hyphenated UUID: {claude_session_id}"
+    );
     let term = boot
         .repo
         .terminal_get(terminal_id)
@@ -152,8 +158,21 @@ async fn post_claude_card_creates_worker_terminal_and_hook_settings_without_mcp(
     assert_eq!(term.card_id.as_str(), card_id);
     assert!(term.program.contains("'/bin/true' --settings"));
     assert!(
+        term.program
+            .contains(&format!(" --session-id '{claude_session_id}'")),
+        "first launch must assign Claude's durable session id: {}",
+        term.program
+    );
+    assert!(
         term.program.contains(" -- '--help'"),
         "prompt must be protected by argv separator: {}",
+        term.program
+    );
+    assert!(
+        term.program
+            .find(&format!("--session-id '{claude_session_id}'"))
+            < term.program.find(" -- '--help'"),
+        "--session-id must be before the prompt separator: {}",
         term.program
     );
     assert_eq!(term.cwd, "/workspace");

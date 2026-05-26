@@ -129,6 +129,7 @@ export interface ClaudeCardData {
   id?: string;
   terminalId?: string;
   cwd?: string;
+  claudeSessionId?: string;
   unsupportedVersion?: number;
 }
 

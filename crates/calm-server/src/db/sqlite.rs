@@ -1351,6 +1351,7 @@ pub async fn card_with_claude_create_tx(
     env: serde_json::Value,
     prompt: Option<String>,
     settings_path: String,
+    claude_session_id: String,
     role: CardRole,
     deletable: bool,
     card_role_cache: &CardRoleCache,
@@ -1395,6 +1396,10 @@ pub async fn card_with_claude_create_tx(
     payload.insert(
         "settings_path".into(),
         serde_json::Value::String(settings_path),
+    );
+    payload.insert(
+        "claude_session_id".into(),
+        serde_json::Value::String(claude_session_id),
     );
     if !cwd.is_empty() {
         payload.insert("cwd".into(), serde_json::Value::String(cwd));
