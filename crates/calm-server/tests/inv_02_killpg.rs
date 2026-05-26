@@ -79,7 +79,8 @@
 //! line ~1057, `terminal_sweeper::reap_spec_push` line ~330,
 //! `lib::try_takeover_one_wave` line ~321).
 
-#![cfg(unix)]
+// `/proc/<pid>/stat` is Linux-only — same convention as inv_05.
+#![cfg(target_os = "linux")]
 
 use std::process::Stdio;
 use std::time::Duration;

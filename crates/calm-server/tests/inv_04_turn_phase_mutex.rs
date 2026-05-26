@@ -63,15 +63,16 @@ use calm_server::spec_appserver::{PushAction, SpecPushPhase, decide};
 /// INV-4 regression guard: the full `decide` decision table, including
 /// the `Resumed` arm added by #323.
 ///
-/// **`Resumed → Enqueue`** is the load-bearing arm for INV-4: the
-/// boot-takeover resume path (`build_handle_after_spawn_resume`) plants
-/// `SpecPushPhase::Resumed` directly into the SharedStatus mutex right
-/// after a successful `thread/resume`, and the dispatcher's first
-/// catch-up push then enqueues (instead of firing `turn/start`, which
-/// codex silently drops against a mid-turn thread). A future refactor
-/// that either (a) drops the `Resumed` variant or (b) flips
-/// `decide(Resumed)` to `StartTurnNow` regresses INV-4 and trips this
-/// assertion.
+/// **What this test pins (and what it doesn't)**: it asserts the
+/// **decision-table** half of the #323 R2-B2 fix — `decide(Resumed) ==
+/// Enqueue` — so a future change that either (a) drops the `Resumed`
+/// variant (compile error here) or (b) flips `decide(Resumed)` to
+/// `StartTurnNow` (assertion fails) regresses INV-4. It does NOT verify
+/// that `build_handle_after_spawn_resume` actually plants `Resumed`
+/// post-`thread/resume`; that side of the fix is covered by the
+/// in-module unit tests in `spec_appserver.rs` (`resume_reconcile_*`)
+/// added by #323 itself. The two together pin both halves; this file
+/// is the external regression guard for the decision table only.
 ///
 /// The other arms pin the create-wave-path decision table so a fix to
 /// the resume initial phase doesn't accidentally regress them:
