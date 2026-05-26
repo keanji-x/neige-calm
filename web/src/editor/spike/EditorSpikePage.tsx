@@ -1,7 +1,6 @@
 import { useCallback, useMemo, useRef, type CSSProperties } from 'react';
 import { BaseAIPlugin } from '@platejs/ai';
 import { AIChatPlugin, AIPlugin, streamInsertChunk } from '@platejs/ai/react';
-import { AutoformatPlugin } from '@platejs/autoformat';
 import {
   BlockquoteRules,
   BoldRules,
@@ -67,7 +66,6 @@ export function EditorSpikePage() {
   const plugins = useMemo(
     () => [
       ParagraphPlugin,
-      AutoformatPlugin,
       H1Plugin.configure({
         inputRules: [HeadingRules.markdown()],
       }),
