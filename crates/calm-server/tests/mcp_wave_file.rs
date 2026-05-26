@@ -762,6 +762,49 @@ async fn retry_recovery_uses_later_worker_completion_as_status() {
 }
 
 #[tokio::test]
+async fn dispatcher_retry_completion_overrides_earlier_completion() {
+    let boot = boot().await;
+    request_codex(&boot, "dispatcher-retry-recovered").await;
+    materialize_worker(&boot, "dispatcher-retry-recovered").await;
+    let first_completed_id = complete_run_with_result(
+        &boot,
+        "dispatcher-retry-recovered",
+        json!({ "summary": "first attempt" }),
+    )
+    .await;
+    let failed_id = worker_fail_run(
+        &boot,
+        "dispatcher-retry-recovered",
+        "spawn failed mid-stream",
+    )
+    .await;
+    let retry_completed_id = complete_run_with_result(
+        &boot,
+        "dispatcher-retry-recovered",
+        json!({ "summary": "retry worked" }),
+    )
+    .await;
+    set_event_at(&boot, first_completed_id, 100).await;
+    set_event_at(&boot, failed_id, 200).await;
+    set_event_at(&boot, retry_completed_id, 300).await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/dispatcher-retry-recovered.json" }),
+    )
+    .await
+    .expect("spec can read dispatcher-retry-recovered run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("completed"));
+    assert_eq!(
+        run["events"]["completed"]["payload"]["result"],
+        json!({ "summary": "retry worked" })
+    );
+}
+
+#[tokio::test]
 async fn retry_regression_uses_later_worker_failure_as_status() {
     let boot = boot().await;
     request_codex(&boot, "retry-regressed").await;

@@ -407,7 +407,11 @@ fn project_runs(cards: Vec<Card>, events: Vec<WaveEvent>) -> Vec<RunProjection> 
                 if is_spec_verdict_event(&row.scope) {
                     record_latest(&mut verdict, idempotency_key, event);
                 } else {
-                    record_earliest(&mut completed, idempotency_key, event);
+                    // Wave-scoped verdicts are routed to `verdict`, not `completed`.
+                    // The remaining competition here is between worker self-reports
+                    // for the same run, such as a dispatcher retry after spawn
+                    // failure, so the latest completion is the most informative one.
+                    record_latest(&mut completed, idempotency_key, event);
                 }
             }
             Event::TaskFailed {
@@ -521,6 +525,12 @@ fn latest_final_event<'a>(
     }
 }
 
+/// WARNING: This discriminator relies on the current emit topology:
+/// spec verdicts are Wave-scoped through `wave_state.rs:214`, while worker
+/// reports are Card-scoped through `emit.rs:301`. If a future path emits
+/// non-verdict task events at Wave scope, extend this check instead of treating
+/// every Wave-scoped task event as a verdict; for example, include the event
+/// actor on `WaveEvent` and require `actor != ActorId::KernelDispatcher`.
 fn is_spec_verdict_event(scope: &EventScope) -> bool {
     matches!(scope, EventScope::Wave { .. })
 }
