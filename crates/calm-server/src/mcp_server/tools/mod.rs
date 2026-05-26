@@ -10,6 +10,7 @@
 use crate::mcp_server::registry::ToolRegistry;
 
 pub mod emit;
+pub mod wave_file;
 pub mod wave_report;
 pub mod wave_state;
 
@@ -32,4 +33,5 @@ pub fn register_default_tools(registry: &mut ToolRegistry) {
     emit::register_into(registry);
     wave_state::register_into(registry);
     wave_report::register_into(registry);
+    wave_file::register_into(registry);
 }

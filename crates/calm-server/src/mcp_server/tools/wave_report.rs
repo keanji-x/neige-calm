@@ -102,7 +102,7 @@ fn read_descriptor() -> ToolDescriptor {
     }
 }
 
-async fn report_read(
+pub(crate) async fn report_read(
     ctx: Arc<AppContext>,
     identity: CardIdentity,
     _args: Value,
