@@ -3280,6 +3280,202 @@ mod tests {
         let _server = server;
     }
 
+    /// #327 regression — same shape as the #325 round-2 P1 test above, but
+    /// the racing promoter is `resume_reconcile_task` walking
+    /// `Resumed → TurnCompleted` instead of the consumer task's
+    /// `turn/completed`-driven `Issuing → TurnCompleted` walk. PR #323
+    /// introduced this second promoter (a 5s budget timer that recovers the
+    /// idle-resume case where `thread/resume` lands on a server with no
+    /// in-flight turn), and #327 flagged that it opens a structurally
+    /// identical race window against `push_observation`'s status/queue lock
+    /// gap:
+    ///
+    /// 1. `push_observation` locks status, sees `Resumed`, picks `Enqueue`,
+    ///    releases status (no claim flip — `Resumed` is a "wait" phase).
+    /// 2. `persist_one` awaits the DB insert.
+    /// 3. The reconciler timer fires: locks status, CAS-promotes
+    ///    `Resumed → TurnCompleted`, releases, calls `flush_push_queue`
+    ///    against an empty queue (our row isn't appended yet), no-ops.
+    /// 4. `persist_one` returns; we `push_back` the row into the queue —
+    ///    but the only future flush trigger was the reconciler that just
+    ///    walked past, and no `turn/completed` is coming on an idle thread.
+    ///    Pre-#325-post-enqueue-recheck, the row would sit stranded.
+    ///
+    /// The #325 P1 fix (`!matches!(phase, Issuing | TurnRunning)` recheck +
+    /// idempotent `flush_pending`) closes this branch incidentally because
+    /// `TurnCompleted ∉ {Issuing, TurnRunning}` — the same recheck that
+    /// catches the consumer-task race also catches the reconciler race.
+    /// This test pins that coverage so a future refactor of the recheck
+    /// predicate (e.g. narrowing it to "only on `TurnCompleted`" or
+    /// excluding `Resumed` itself in some way) cannot silently re-open the
+    /// #327 window.
+    ///
+    /// Difference from the #325 P1 test: initial phase is `Resumed`
+    /// (boot-takeover plant from PR #323), and the racing promoter is the
+    /// reconciler walking `Resumed → TurnCompleted` rather than a
+    /// `turn/completed`-driven flush walking `Issuing → TurnCompleted`.
+    /// Both end at `TurnCompleted`, both leave the queue empty at the time
+    /// of the walk, and both rely on the post-enqueue recheck to catch the
+    /// just-appended row.
+    #[tokio::test]
+    async fn enqueue_arm_flushes_when_resume_reconciler_races_past_persist_await() {
+        use futures_util::{SinkExt, StreamExt};
+        use std::sync::Mutex as StdMutex;
+        use tokio::sync::oneshot;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let (handle, mut server) = fake_handle().await;
+        let handle = Arc::new(handle);
+        // Boot-takeover post-`thread/resume` posture: phase = Resumed. A
+        // push observed in this phase routes to `Enqueue` (see
+        // `decide(Resumed)`), so this exercises the racy arm.
+        {
+            let mut g = handle.status.lock().await;
+            g.phase = SpecPushPhase::Resumed;
+        }
+
+        // Slow persist: block on a oneshot so we control exactly when
+        // `persist_one` returns, simulating the DB-insert window during
+        // which the reconciler can walk past us.
+        let (release_tx, release_rx) = oneshot::channel::<()>();
+        let release_rx = Arc::new(StdMutex::new(Some(release_rx)));
+        let next_db_id = Arc::new(std::sync::atomic::AtomicI64::new(0));
+        let next_db_id_e = Arc::clone(&next_db_id);
+        let release_rx_e = Arc::clone(&release_rx);
+        let persist = QueuePersist {
+            enqueue: Arc::new(move |_envelope_id, _text| {
+                let next_db_id = Arc::clone(&next_db_id_e);
+                let release_rx = Arc::clone(&release_rx_e);
+                Box::pin(async move {
+                    let rx_opt = release_rx.lock().unwrap().take();
+                    if let Some(rx) = rx_opt {
+                        let _ = rx.await;
+                    }
+                    Some(next_db_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1)
+                })
+            }),
+            dequeue: Arc::new(|_| Box::pin(async {})),
+            list: Arc::new(|| Box::pin(async { Vec::new() })),
+        };
+        handle.install_queue_persist(persist).await;
+
+        // Step 1+2: start the push; it blocks inside `persist_one`.
+        let push_handle = Arc::clone(&handle);
+        let push = tokio::spawn(async move {
+            push_handle
+                .push_observation(77, "resume-race-observation")
+                .await
+        });
+
+        // Give `push_observation` time to: lock status, observe `Resumed`,
+        // pick `Enqueue`, release status, and enter `persist_one`'s await.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            handle.status.lock().await.phase,
+            SpecPushPhase::Resumed,
+            "preconditions: phase must still be Resumed (push is stuck in persist_one's await)"
+        );
+        assert!(
+            handle.queue.lock().await.is_empty(),
+            "preconditions: queue must still be empty (the push hasn't appended yet)"
+        );
+
+        // Step 3: simulate the reconciler timer firing. It locks status,
+        // CAS-promotes `Resumed → TurnCompleted`, releases, and calls
+        // `flush_push_queue` against the (still-empty) queue — which
+        // claims `Issuing`, finds nothing to drain, and walks back to
+        // `TurnCompleted`. We invoke `flush_push_queue` directly with the
+        // handle's slots so the test is deterministic (no need to wait
+        // out the 5s budget under `start_paused`); this matches the
+        // reconciler's effective behavior on the status/queue from the
+        // push's perspective.
+        {
+            let mut g = handle.status.lock().await;
+            assert_eq!(g.phase, SpecPushPhase::Resumed);
+            g.phase = SpecPushPhase::TurnCompleted;
+        }
+        flush_push_queue(
+            &handle.thread_id,
+            &handle.status,
+            &handle.client,
+            &handle.queue,
+            &handle.watermark_sink,
+            &handle.queue_persist,
+        )
+        .await;
+        // After the reconciler's flush-against-empty, phase walked back to
+        // `TurnCompleted` (the no-drain release path).
+        assert_eq!(
+            handle.status.lock().await.phase,
+            SpecPushPhase::TurnCompleted
+        );
+
+        // Step 4: release `persist_one`. `push_observation` now appends
+        // to the queue, re-acquires status, sees `TurnCompleted` (NOT in
+        // {Issuing, TurnRunning}), and drives `flush_pending` →
+        // `flush_push_queue` → coalesced `turn/start`. Without the
+        // post-enqueue recheck, the row would sit stranded with no future
+        // lifecycle notification to trigger a flush.
+        let _ = release_tx.send(());
+
+        // Server side: expect ONE `turn/start` with our observation text.
+        let req = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                match server.next().await.expect("frame").expect("ws ok") {
+                    Message::Text(t) => {
+                        let v: Value = serde_json::from_str(&t).unwrap();
+                        if v.get("method").and_then(Value::as_str) == Some("turn/start") {
+                            break v;
+                        }
+                    }
+                    _ => continue,
+                }
+            }
+        })
+        .await
+        .expect(
+            "#327: stranded row must be flushed via post-enqueue recheck — \
+             no `turn/start` arrived within 3s, meaning the row is sitting \
+             stranded in the queue after the reconciler walked past",
+        );
+
+        let text = req
+            .pointer("/params/input/0/text")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert_eq!(
+            text, "resume-race-observation",
+            "#327: the forced flush must carry the just-appended observation"
+        );
+
+        let id = req.get("id").cloned().unwrap();
+        server
+            .send(Message::Text(
+                serde_json::to_string(&serde_json::json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "result": { "turn": { "id": "t-327-race-close" } }
+                }))
+                .unwrap(),
+            ))
+            .await
+            .unwrap();
+
+        let outcome = push.await.unwrap().unwrap();
+        assert_eq!(
+            outcome,
+            PushOutcome::Enqueued,
+            "#327: outcome is still Enqueued (the post-enqueue recheck is a \
+             best-effort safety net; the public contract is unchanged)"
+        );
+
+        assert!(
+            handle.queue.lock().await.is_empty(),
+            "#327: queue must drain after the forced flush"
+        );
+
+        let _server = server;
+    }
+
     /// #325 round-2 P2 — `rehydrate_queue_from_persist` must drop rows
     /// whose `envelope_id <= watermark` (the prior process's flush
     /// succeeded and bumped the watermark, but the `dequeue` write didn't
