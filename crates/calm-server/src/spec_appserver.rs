@@ -371,32 +371,6 @@ pub fn decide(phase: SpecPushPhase) -> PushAction {
     }
 }
 
-/// The initial [`SpecPushStatus`] planted by the **boot-takeover resume
-/// path** ([`build_handle_after_spawn_resume`]) right after a successful
-/// `thread/resume`. Extracted into a named fn (rather than inlined as a
-/// struct literal at the callsite) so the value the resume path uses is
-/// observable from tests without exposing the private builder.
-///
-/// `thread_id` is the resumed thread's id — recorded on the status as
-/// `last_thread_id` so downstream consumers can correlate. The `phase`
-/// field falls through to [`SpecPushPhase::default()`] (today: `Idle`).
-///
-/// **Observability seam (#318, INV-4)**: tests assert
-/// `decide(initial_status_for_resume(…).phase) == PushAction::Enqueue`
-/// to pin the invariant that a freshly-resumed handle must defer the
-/// first push to the consumer task's `turn/completed` flush (because
-/// `thread/resume` cannot prove the server is between turns). This fn
-/// performs **no logic** — it returns the literal value the resume path
-/// would build inline. A correct INV-4 fix changes what this fn returns
-/// (e.g. plants a new `Resumed`/`Unknown` phase variant, or flips the
-/// `Default` so the test's `decide(...)` assertion holds).
-pub fn initial_status_for_resume(thread_id: &str) -> SpecPushStatus {
-    SpecPushStatus {
-        last_thread_id: Some(thread_id.to_string()),
-        ..Default::default()
-    }
-}
-
 /// Shared, cloneable handle onto the consumer-tracked status.
 type SharedStatus = Arc<Mutex<SpecPushStatus>>;
 

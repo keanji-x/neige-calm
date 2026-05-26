@@ -14,121 +14,97 @@
 //! `turn/completed` flush deliver), NEVER `StartTurnNow` (which against
 //! a mid-turn thread is silently dropped by codex).
 //!
-//! ## v3 encoding via observability seam
+//! ## Status: regression guard (passes on current main)
 //!
-//! v1 of this test asserted `decide(SpecPushPhase::Idle) != StartTurnNow`.
-//! That was wrong — `Idle → StartTurnNow` is correct on the create-wave
-//! path where the freshly-spawned thread really is idle by construction.
-//! v2 asserted `decide(SpecPushStatus::default().phase) == Enqueue`,
-//! using `Default` as a proxy for the resume-path planted phase. Codex
-//! flagged that as testing the wrong surface — `Default` is shared
-//! across construction sites; a fix changing the resume path doesn't
-//! need to change `Default`.
+//! INV-4 was the **only** invariant test FAILING on the v3 PR. PR #323
+//! closed R2-B2 by:
 //!
-//! v3 pins the **exact value the resume path plants** via a narrow
-//! observability seam: [`spec_appserver::initial_status_for_resume`]
-//! is a `pub fn` that returns the literal status used by
-//! `build_handle_after_spawn_resume`'s post-`thread/resume` mutex
-//! init. The fn performs **no logic** — it's the extracted struct
-//! literal — but exposing it lets the test capture the planted phase
-//! without holding any handle / running any I/O.
+//! 1. Adding a new [`SpecPushPhase::Resumed`] variant.
+//! 2. Wiring [`build_handle_after_spawn_resume`] to plant `Resumed`
+//!    directly (inline struct literal) right after `thread/resume`,
+//!    instead of falling through to `SpecPushPhase::Idle` via
+//!    `Default`.
+//! 3. Extending [`decide`] so `decide(Resumed) == PushAction::Enqueue`.
+//! 4. Reconciling `Resumed → TurnCompleted` from the consumer task's
+//!    next observed `turn/started` / `turn/completed`, plus a reconcile
+//!    timer fallback for servers that are genuinely idle.
 //!
-//! On origin/main, `initial_status_for_resume("thread-test").phase ==
-//! SpecPushPhase::Idle` and `decide(Idle) == PushAction::StartTurnNow`
-//! — composed, the resume path's first catch-up push fires `turn/start`
-//! against a thread that may already be mid-turn (codex silently drops
-//! the second `turn/start`, losing the catch-up payload).
+//! With (1) + (3) composed, the resume path's first catch-up push now
+//! buffers and rides a coalesced `turn/start`, regardless of whether
+//! the resumed server is mid-turn or idle. INV-4 is satisfied.
 //!
-//! ## What a correct fix looks like
+//! This test file is now a **pure regression guard**: it pins both
+//! halves of #323's contract so a future refactor that either
 //!
-//! The fix changes what `initial_status_for_resume` returns so its
-//! `phase` decides `Enqueue`. Two shapes both satisfy the test:
+//! * drops the `Resumed` variant (collapsing it back into `Idle`), OR
+//! * flips `decide(Resumed)` to `StartTurnNow`,
 //!
-//! 1. **Add a `Resumed`/`Unknown` `SpecPushPhase` variant** that decides
-//!    `Enqueue`, and have `initial_status_for_resume` plant it. The
-//!    consumer task's first observed `turn/completed` (or, on a server
-//!    actually-idle, a synthetic reconcile after a status probe) flips
-//!    it to `TurnCompleted` so the next push fires the turn normally.
-//! 2. **Flip the decision** for the planted phase by reshaping `decide` +
-//!    adding a "confirmed idle" phase set only by the consumer task's
-//!    `turn/completed`. The freshly-resumed default is then a phase that
-//!    enqueues.
+//! regresses INV-4 and trips this file. Both halves live in the same
+//! decision-table guard for compactness — the old v3
+//! `initial_status_for_resume` observability seam (a no-logic helper
+//! that returned the planted struct literal) was deleted alongside
+//! this rewrite because `SpecPushPhase::Resumed` is a public enum
+//! variant the test can name directly, making the seam unnecessary.
 //!
-//! Either makes `decide(initial_status_for_resume(…).phase) == Enqueue`.
+//! ### Pre-rebase history (for the curious)
 //!
-//! ## What this file ships
+//! Pre-#323, the seam-based test in this file failed for the right
+//! reason: `decide(initial_status_for_resume(…).phase) == StartTurnNow`
+//! because the planted phase was `Default::default() == Idle`. Post-#323
+//! the seam was unnecessary and the test was rewritten to name
+//! `SpecPushPhase::Resumed` directly.
 //!
-//! 1. **`inv4_initial_resume_status_must_decide_enqueue` (active,
-//!    fails on main)**: asserts via the new seam.
-//! 2. **`inv4_decision_table_regression_guard` (active, passes on
-//!    main)**: pins the non-resume decision table (`Idle → StartTurnNow`,
-//!    `TurnRunning → Enqueue`, etc.) so a fix to the resume initial
-//!    phase doesn't accidentally regress the create-wave path where
-//!    `Idle → StartTurnNow` is the desired behavior.
-//!
-//! See: `src/spec_appserver.rs::initial_status_for_resume` (the new
-//! seam, called from `build_handle_after_spawn_resume`), `decide`
-//! (decision table).
+//! See: `src/spec_appserver.rs::build_handle_after_spawn_resume` (plants
+//! `Resumed`), `SpecPushPhase::Resumed` (the new variant), `decide` (the
+//! decision table). PR #323 for R2-B2.
 
-use calm_server::spec_appserver::{PushAction, SpecPushPhase, decide, initial_status_for_resume};
+use calm_server::spec_appserver::{PushAction, SpecPushPhase, decide};
 
-/// INV-4 strict: the phase planted by the boot-takeover resume path
-/// (`build_handle_after_spawn_resume`, observable via the new
-/// `initial_status_for_resume` seam) MUST decide `Enqueue`, not
-/// `StartTurnNow`. `thread/resume` cannot prove the server is between
-/// turns, so the only sound behavior for the first catch-up push is
-/// to defer to the consumer task's `turn/completed`-triggered flush.
+/// INV-4 regression guard: the full `decide` decision table, including
+/// the `Resumed` arm added by #323.
 ///
-/// Today `initial_status_for_resume(_).phase == SpecPushPhase::Idle`
-/// and `decide(Idle) == StartTurnNow` — composed, this is the bug.
-#[test]
-fn inv4_initial_resume_status_must_decide_enqueue() {
-    // The exact value `build_handle_after_spawn_resume` plants into the
-    // SharedStatus mutex right after a successful `thread/resume`. The
-    // `thread_id` arg matches the resume-echoed id; tests use a stub
-    // value because the phase field — the load-bearing part — doesn't
-    // depend on it.
-    let planted = initial_status_for_resume("thread-test");
-    let action = decide(planted.phase);
-
-    assert_eq!(
-        action,
-        PushAction::Enqueue,
-        "INV-4 violated (R2-B2): `initial_status_for_resume(...).phase = {:?}` \
-         and `decide({:?}) = {:?}`. Composed, this means the boot-takeover \
-         resume path (build_handle_after_spawn_resume → initial_status_for_resume, \
-         spec_appserver.rs) plants a phase that tells the first catch-up push \
-         to fire `turn/start`. But `thread/resume` cannot prove the server is \
-         between turns (codex has no thread/status probe), so the server may \
-         be mid-turn — and codex silently drops a second `turn/start` on a busy \
-         thread (verified, see spec_appserver.rs module doc). A correct fix \
-         changes what `initial_status_for_resume` returns (e.g. introduces a \
-         `Resumed`/`Unknown` phase that decides Enqueue, planted here instead \
-         of the `Default` Idle), OR reshapes `decide` so the planted phase \
-         enqueues. Either flips this assertion to pass.",
-        planted.phase,
-        planted.phase,
-        action,
-    );
-}
-
-/// INV-4 (b): pin the documented-correct decision table for non-resume
-/// phases so a fix to the resume initial phase doesn't accidentally
-/// regress them. This PASSES on main — it's the regression-guard half.
+/// **`Resumed → Enqueue`** is the load-bearing arm for INV-4: the
+/// boot-takeover resume path (`build_handle_after_spawn_resume`) plants
+/// `SpecPushPhase::Resumed` directly into the SharedStatus mutex right
+/// after a successful `thread/resume`, and the dispatcher's first
+/// catch-up push then enqueues (instead of firing `turn/start`, which
+/// codex silently drops against a mid-turn thread). A future refactor
+/// that either (a) drops the `Resumed` variant or (b) flips
+/// `decide(Resumed)` to `StartTurnNow` regresses INV-4 and trips this
+/// assertion.
 ///
-/// * Idle / TurnCompleted on the **create-wave path** (where the server
+/// The other arms pin the create-wave-path decision table so a fix to
+/// the resume initial phase doesn't accidentally regress them:
+///
+/// * `Idle` / `TurnCompleted` on the create-wave path (where the server
 ///   really is between turns, by construction — we just sent
 ///   `thread/start`) must decide `StartTurnNow`.
-/// * TurnRunning / Issuing must decide `Enqueue`.
+/// * `TurnRunning` / `Issuing` must decide `Enqueue`.
 #[test]
 fn inv4_decision_table_regression_guard() {
-    // Genuinely between turns — fresh spawn or after a confirmed
-    // turn/completed: a turn/start is safe.
+    // INV-4 load-bearing arm: #323 R2-B2 fix. `build_handle_after_spawn_resume`
+    // plants `Resumed` (not `Idle`) after a successful `thread/resume`,
+    // and `decide(Resumed) == Enqueue`. This pins both halves of the fix
+    // — a refactor that drops the variant or flips its decision regresses
+    // INV-4.
+    assert_eq!(
+        decide(SpecPushPhase::Resumed),
+        PushAction::Enqueue,
+        "INV-4 regression: decide(Resumed) MUST be Enqueue. The boot-takeover \
+         resume path plants Resumed right after thread/resume because we cannot \
+         prove the server is between turns; firing turn/start there risks codex \
+         silently dropping it against a mid-turn thread. Restore decide(Resumed) \
+         == Enqueue."
+    );
+
+    // Create-wave / post-turn-completed: genuinely between turns by
+    // construction, so turn/start is safe.
     assert_eq!(decide(SpecPushPhase::Idle), PushAction::StartTurnNow);
     assert_eq!(
         decide(SpecPushPhase::TurnCompleted),
         PushAction::StartTurnNow
     );
+
     // A turn is in flight (or being issued): enqueue.
     assert_eq!(decide(SpecPushPhase::TurnRunning), PushAction::Enqueue);
     assert_eq!(decide(SpecPushPhase::Issuing), PushAction::Enqueue);
