@@ -109,6 +109,13 @@ services:
       # narrow #236 sync-spawn fix doesn't surface that because it only
       # awaits the daemon socket, not the codex MCP handshake.
       - ${CALM_MCP_SHIM_BIN:-./target/release/neige-mcp-stdio-shim}:/usr/local/bin/neige-mcp-stdio-shim:ro
+      # Issue #339 PR B — the `neige` CLI, invoked by spec/worker agents
+      # from their terminals to read current-wave file views over the
+      # per-card MCP socket. Mounting it at /usr/local/bin keeps it on
+      # PATH for the agent shell; without this mount `neige ls`/`cat`
+      # fails with `command not found` even though `make build`
+      # produced the binary on the host.
+      - ${CALM_NEIGE_CLI_BIN:-./target/release/neige}:/usr/local/bin/neige:ro
       # Codex CLI. The host npm install drops a musl static binary at
       # ${CALM_CODEX_HOST_BIN}; we mount it inside as a bare `codex` so
       # `Command::new("codex")` resolves via PATH. Set CALM_CODEX_HOST_BIN
