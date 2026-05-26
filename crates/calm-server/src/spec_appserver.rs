@@ -128,6 +128,7 @@ use serde_json::Value;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+use tokio::time::Instant as TokioInstant;
 
 use crate::codex_appserver::{
     ClientInfo, CodexAppServer, InputItem, Notification, NotificationStream,
@@ -193,6 +194,39 @@ const OVERALL_BOOT_BUDGET: Duration = Duration::from_secs(45);
 /// "mid-long-turn at crash" intersection. Consuming the `thread.status`
 /// value from `thread/resume` would remove this trade-off.
 const RESUMED_RECONCILE_BUDGET: Duration = Duration::from_secs(5);
+
+/// Maximum wall-clock duration a single accepted spec turn may run before
+/// the kernel treats the app-server notification stream as wedged and asks
+/// codex to interrupt that turn. This is an absolute per-turn budget:
+/// intermediate notifications and deltas deliberately do not reset it, so a
+/// long but silent legitimate tool call is not penalized by an idle timer.
+pub const MAX_TURN_DURATION: Duration = Duration::from_secs(30 * 60);
+
+/// After the runtime watchdog sends `turn/interrupt`, the bounded time spent
+/// draining notifications for the matching `turn/completed` with
+/// `turn.status == "interrupted"`. If this budget elapses (or the interrupt
+/// request itself fails), the remaining recovery is process-level respawn
+/// via the registry/takeover path; that supervision hook is intentionally not
+/// embedded in the per-wave consumer task.
+pub const INTERRUPT_COMPLETION_BUDGET: Duration = Duration::from_secs(30);
+
+/// Runtime watchdog timing used by the notification consumer. Production
+/// uses [`MAX_TURN_DURATION`] and [`INTERRUPT_COMPLETION_BUDGET`]; tests can
+/// pass short values through the `_with_watchdog_config` constructors.
+#[derive(Debug, Clone, Copy)]
+pub struct TurnWatchdogConfig {
+    pub max_turn_duration: Duration,
+    pub interrupt_completion_budget: Duration,
+}
+
+impl Default for TurnWatchdogConfig {
+    fn default() -> Self {
+        Self {
+            max_turn_duration: MAX_TURN_DURATION,
+            interrupt_completion_budget: INTERRUPT_COMPLETION_BUDGET,
+        }
+    }
+}
 
 /// Last-seen thread/turn lifecycle status the consumer task tracks for
 /// PR3b to read. PR3a only *records* it; the dispatcher push path (PR3b)
@@ -1495,6 +1529,25 @@ pub async fn spawn_spec_appserver(
     goal_text: &str,
     sock: &Path,
 ) -> Result<SpecPushHandle> {
+    spawn_spec_appserver_with_watchdog_config(
+        codex_bin,
+        env_map,
+        goal_text,
+        sock,
+        TurnWatchdogConfig::default(),
+    )
+    .await
+}
+
+/// Test/fixture variant of [`spawn_spec_appserver`] that lets callers shorten
+/// runtime watchdog budgets without changing production constants.
+pub async fn spawn_spec_appserver_with_watchdog_config(
+    codex_bin: &str,
+    env_map: &Value,
+    goal_text: &str,
+    sock: &Path,
+    watchdog: TurnWatchdogConfig,
+) -> Result<SpecPushHandle> {
     // The server `chmod 0700`s the socket's PARENT dir, so the parent must
     // be a user-owned dir (not bare sticky /tmp). The caller creates the
     // per-card subdir under the user-owned data dir; we only ensure it
@@ -1589,7 +1642,7 @@ pub async fn spawn_spec_appserver(
     // the socket dir. PR3 will refine this into interrupt / daemon-restart.
     let handle = match tokio::time::timeout(
         OVERALL_BOOT_BUDGET,
-        build_handle_after_spawn(child, pgid, start_time, boot_id, goal_text, sock),
+        build_handle_after_spawn(child, pgid, start_time, boot_id, goal_text, sock, watchdog),
     )
     .await
     {
@@ -1635,6 +1688,25 @@ pub async fn resume_spec_appserver(
     env_map: &Value,
     thread_id: &str,
     sock: &Path,
+) -> Result<SpecPushHandle> {
+    resume_spec_appserver_with_watchdog_config(
+        codex_bin,
+        env_map,
+        thread_id,
+        sock,
+        TurnWatchdogConfig::default(),
+    )
+    .await
+}
+
+/// Test/fixture variant of [`resume_spec_appserver`] that lets callers
+/// shorten runtime watchdog budgets without changing production constants.
+pub async fn resume_spec_appserver_with_watchdog_config(
+    codex_bin: &str,
+    env_map: &Value,
+    thread_id: &str,
+    sock: &Path,
+    watchdog: TurnWatchdogConfig,
 ) -> Result<SpecPushHandle> {
     if let Some(parent) = sock.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
@@ -1698,7 +1770,9 @@ pub async fn resume_spec_appserver(
     // handle is fully parked.
     let handle = match tokio::time::timeout(
         OVERALL_BOOT_BUDGET,
-        build_handle_after_spawn_resume(child, pgid, start_time, boot_id, thread_id, sock),
+        build_handle_after_spawn_resume(
+            child, pgid, start_time, boot_id, thread_id, sock, watchdog,
+        ),
     )
     .await
     {
@@ -1918,6 +1992,7 @@ async fn build_handle_after_spawn(
     boot_id: Option<String>,
     goal_text: &str,
     sock: &Path,
+    watchdog: TurnWatchdogConfig,
 ) -> Result<SpecPushHandle> {
     // 2. Poll the socket for readiness, bailing early if the child dies
     //    during boot (the common no-auth / bad-env failure mode).
@@ -1968,7 +2043,7 @@ async fn build_handle_after_spawn(
     // 6. Spawn the consumer task and park the live handle (see
     //    [`park_handle`] for the shared tail).
     Ok(park_handle(
-        child, pgid, start_time, boot_id, client, thread_id, sock, notifs, status,
+        child, pgid, start_time, boot_id, client, thread_id, sock, notifs, status, watchdog,
     ))
 }
 
@@ -1993,6 +2068,7 @@ async fn build_handle_after_spawn_resume(
     boot_id: Option<String>,
     thread_id: &str,
     sock: &Path,
+    watchdog: TurnWatchdogConfig,
 ) -> Result<SpecPushHandle> {
     // 2. Poll the socket for readiness (same as the spawn path).
     let (client, notifs) = poll_connect(&mut child, sock).await?;
@@ -2048,6 +2124,7 @@ async fn build_handle_after_spawn_resume(
         sock,
         notifs,
         status.clone(),
+        watchdog,
     );
 
     // #318 INV-4 (codex P1) — spawn the idle-resume reconcile timer. See
@@ -2149,6 +2226,7 @@ fn park_handle(
     sock: &Path,
     notifs: NotificationStream,
     status: SharedStatus,
+    watchdog: TurnWatchdogConfig,
 ) -> SpecPushHandle {
     let queue: PushQueue = Arc::new(Mutex::new(VecDeque::new()));
     // #313 B1 — sink slot is empty here; the dispatcher installs the real
@@ -2169,6 +2247,7 @@ fn park_handle(
         queue.clone(),
         consumer_sink,
         consumer_persist,
+        watchdog,
     ));
     SpecPushHandle {
         child,
@@ -2285,38 +2364,237 @@ async fn await_initial_turn_lifecycle(
 ///
 /// Exits when the connection closes (`recv` → `None`); aborted on
 /// [`SpecPushHandle`] drop otherwise.
+#[derive(Debug, Clone)]
+struct ActiveTurnWatchdog {
+    turn_id: String,
+    deadline: TokioInstant,
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn consume_notifications(
-    mut notifs: NotificationStream,
+    notifs: NotificationStream,
     thread_id: String,
     status: SharedStatus,
     client: Arc<CodexAppServer>,
     queue: PushQueue,
     watermark_sink: WatermarkSinkSlot,
     queue_persist: QueuePersistSlot,
+    watchdog: TurnWatchdogConfig,
 ) {
-    while let Some(n) = notifs.recv().await {
+    let mut state = NotificationConsumer {
+        notifs,
+        thread_id,
+        status,
+        client,
+        queue,
+        watermark_sink,
+        queue_persist,
+        watchdog,
+        active_turn: None,
+    };
+    state.seed_watchdog_from_status().await;
+    state.run().await;
+}
+
+struct NotificationConsumer {
+    notifs: NotificationStream,
+    thread_id: String,
+    status: SharedStatus,
+    client: Arc<CodexAppServer>,
+    queue: PushQueue,
+    watermark_sink: WatermarkSinkSlot,
+    queue_persist: QueuePersistSlot,
+    watchdog: TurnWatchdogConfig,
+    active_turn: Option<ActiveTurnWatchdog>,
+}
+
+impl NotificationConsumer {
+    async fn seed_watchdog_from_status(&mut self) {
+        let snapshot = self.status.lock().await.clone();
+        if snapshot.phase != SpecPushPhase::TurnRunning {
+            return;
+        }
+        let Some(turn_id) = snapshot.last_turn_id else {
+            tracing::warn!(
+                thread_id = %self.thread_id,
+                "spec push watchdog: consumer started during TurnRunning but no turn id was recorded; watchdog cannot arm until the next turn/started"
+            );
+            return;
+        };
+        self.arm_watchdog(turn_id, "initial-status").await;
+    }
+
+    async fn run(&mut self) {
+        loop {
+            if let Some(active) = self.active_turn.clone() {
+                tokio::select! {
+                    notification = self.notifs.recv_result() => {
+                        let n = match notification {
+                            Ok(n) => n,
+                            Err(e) => {
+                                tracing::debug!(
+                                    thread_id = %self.thread_id,
+                                    error = %e,
+                                    "spec push: notification stream closed; consumer exiting"
+                                );
+                                break;
+                            }
+                        };
+                        self.process_notification(n).await;
+                    }
+                    _ = tokio::time::sleep_until(active.deadline) => {
+                        let still_current = match &self.active_turn {
+                            Some(current) => current.turn_id == active.turn_id,
+                            None => false,
+                        };
+                        if still_current {
+                            self.handle_watchdog_deadline(active.turn_id).await;
+                        }
+                }
+                }
+            } else {
+                let Some(n) = self.notifs.recv().await else {
+                    tracing::debug!(
+                        thread_id = %self.thread_id,
+                        "spec push: notification stream closed; consumer exiting"
+                    );
+                    break;
+                };
+                self.process_notification(n).await;
+            }
+        }
+    }
+
+    async fn handle_watchdog_deadline(&mut self, turn_id: String) {
+        tracing::warn!(
+            thread_id = %self.thread_id,
+            turn_id = %turn_id,
+            max_turn_secs = self.watchdog.max_turn_duration.as_secs(),
+            "spec push watchdog: max turn duration elapsed; sending turn/interrupt"
+        );
+        if let Err(e) = self.client.turn_interrupt(&self.thread_id, &turn_id).await {
+            self.active_turn = None;
+            tracing::error!(
+                thread_id = %self.thread_id,
+                turn_id = %turn_id,
+                error = %e,
+                "spec push watchdog: turn/interrupt failed; process-level restart is required"
+            );
+            return;
+        }
+
+        let deadline = TokioInstant::now() + self.watchdog.interrupt_completion_budget;
+        loop {
+            tokio::select! {
+                notification = self.notifs.recv_result() => {
+                    let n = match notification {
+                        Ok(n) => n,
+                        Err(e) => {
+                            self.active_turn = None;
+                            tracing::error!(
+                                thread_id = %self.thread_id,
+                                turn_id = %turn_id,
+                                error = %e,
+                                "spec push watchdog: stream closed while waiting for interrupted turn/completed"
+                            );
+                            return;
+                        }
+                    };
+                    let interrupted = is_interrupted_completion_for_turn(&n, &turn_id);
+                    self.process_notification(n).await;
+                    if interrupted {
+                        tracing::info!(
+                            thread_id = %self.thread_id,
+                            turn_id = %turn_id,
+                            "spec push watchdog: interrupted turn completed"
+                        );
+                        return;
+                    }
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    self.active_turn = None;
+                    tracing::error!(
+                        thread_id = %self.thread_id,
+                        turn_id = %turn_id,
+                        interrupt_completion_secs = self.watchdog.interrupt_completion_budget.as_secs(),
+                        "spec push watchdog: interrupt acked but no interrupted turn/completed arrived; process-level restart is required"
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
+    async fn process_notification(&mut self, n: Notification) {
         warn_on_approval(&n);
-        record(&status, &n).await;
+        record(&self.status, &n).await;
+        match &n {
+            Notification::TurnStarted { thread_id, turn }
+                if thread_id.is_empty() || thread_id == &self.thread_id =>
+            {
+                if let Some(turn_id) = turn_id(turn) {
+                    self.arm_watchdog(turn_id.to_string(), "turn-started").await;
+                }
+            }
+            Notification::TurnCompleted { thread_id, turn }
+                if thread_id.is_empty() || thread_id == &self.thread_id =>
+            {
+                if let Some(active) = &self.active_turn {
+                    let completed_turn = turn_id(turn);
+                    if match completed_turn {
+                        Some(id) => id == active.turn_id,
+                        None => true,
+                    } {
+                        self.active_turn = None;
+                    }
+                }
+            }
+            _ => {}
+        }
+
         // PR3b flush: a turn just finished — if observations piled up while
         // it ran, deliver them now as ONE coalesced turn so the spec sees
         // them between turns (codex silently drops a turn/start issued while
         // a turn is active, so we can only start one here, between turns).
         if matches!(n, Notification::TurnCompleted { .. }) {
             flush_push_queue(
-                &thread_id,
-                &status,
-                &client,
-                &queue,
-                &watermark_sink,
-                &queue_persist,
+                &self.thread_id,
+                &self.status,
+                &self.client,
+                &self.queue,
+                &self.watermark_sink,
+                &self.queue_persist,
             )
             .await;
         }
     }
-    tracing::debug!(
-        thread_id,
-        "spec push: notification stream closed; consumer exiting"
-    );
+
+    async fn arm_watchdog(&mut self, turn_id: String, source: &'static str) {
+        let deadline = TokioInstant::now() + self.watchdog.max_turn_duration;
+        tracing::debug!(
+            thread_id = %self.thread_id,
+            turn_id = %turn_id,
+            source,
+            max_turn_secs = self.watchdog.max_turn_duration.as_secs(),
+            "spec push watchdog: armed runtime max-turn watchdog"
+        );
+        self.active_turn = Some(ActiveTurnWatchdog { turn_id, deadline });
+    }
+}
+
+fn turn_id(turn: &Value) -> Option<&str> {
+    turn.get("id").and_then(Value::as_str)
+}
+
+fn turn_status(turn: &Value) -> Option<&str> {
+    turn.get("status").and_then(Value::as_str)
+}
+
+fn is_interrupted_completion_for_turn(n: &Notification, expected_turn_id: &str) -> bool {
+    let Notification::TurnCompleted { turn, .. } = n else {
+        return false;
+    };
+    turn_id(turn) == Some(expected_turn_id) && turn_status(turn) == Some("interrupted")
 }
 
 /// Flush the push queue on `turn/completed` (B1 — single-winner issuance).
@@ -2593,6 +2871,7 @@ mod tests {
             queue.clone(),
             watermark_sink.clone(),
             queue_persist.clone(),
+            TurnWatchdogConfig::default(),
         ));
         let handle = SpecPushHandle {
             child,
