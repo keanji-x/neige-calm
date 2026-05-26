@@ -1,16 +1,29 @@
 import { useCallback, useMemo, useRef, type CSSProperties } from 'react';
 import { BaseAIPlugin } from '@platejs/ai';
 import { AIChatPlugin, AIPlugin, streamInsertChunk } from '@platejs/ai/react';
+import { AutoformatPlugin } from '@platejs/autoformat';
 import {
+  BlockquoteRules,
+  BoldRules,
+  CodeRules,
+  HeadingRules,
+  ItalicRules,
+  StrikethroughRules,
+} from '@platejs/basic-nodes';
+import {
+  BlockquotePlugin,
   BoldPlugin,
   CodePlugin,
   H1Plugin,
   H2Plugin,
   H3Plugin,
   ItalicPlugin,
+  StrikethroughPlugin,
 } from '@platejs/basic-nodes/react';
+import { CodeBlockRules } from '@platejs/code-block';
 import { CodeBlockPlugin } from '@platejs/code-block/react';
 import { LinkPlugin } from '@platejs/link/react';
+import { BulletedListRules, OrderedListRules } from '@platejs/list';
 import { ListPlugin } from '@platejs/list/react';
 import { MarkdownPlugin } from '@platejs/markdown';
 import { getPluginType, KEYS, type Value } from 'platejs';
@@ -54,15 +67,45 @@ export function EditorSpikePage() {
   const plugins = useMemo(
     () => [
       ParagraphPlugin,
-      H1Plugin,
-      H2Plugin,
-      H3Plugin,
-      BoldPlugin,
-      ItalicPlugin,
-      CodePlugin,
-      CodeBlockPlugin,
+      AutoformatPlugin,
+      H1Plugin.configure({
+        inputRules: [HeadingRules.markdown()],
+      }),
+      H2Plugin.configure({
+        inputRules: [HeadingRules.markdown()],
+      }),
+      H3Plugin.configure({
+        inputRules: [HeadingRules.markdown()],
+      }),
+      BlockquotePlugin.configure({
+        inputRules: [BlockquoteRules.markdown()],
+      }),
+      BoldPlugin.configure({
+        inputRules: [BoldRules.markdown({ variant: '*' })],
+      }),
+      ItalicPlugin.configure({
+        inputRules: [
+          ItalicRules.markdown({ variant: '*' }),
+          ItalicRules.markdown({ variant: '_' }),
+        ],
+      }),
+      CodePlugin.configure({
+        inputRules: [CodeRules.markdown()],
+      }),
+      StrikethroughPlugin.configure({
+        inputRules: [StrikethroughRules.markdown()],
+      }),
+      CodeBlockPlugin.configure({
+        inputRules: [CodeBlockRules.markdown({ on: 'match' })],
+      }),
       LinkPlugin,
-      ListPlugin,
+      ListPlugin.configure({
+        inputRules: [
+          BulletedListRules.markdown({ variant: '-' }),
+          BulletedListRules.markdown({ variant: '*' }),
+          OrderedListRules.markdown({ variant: '.' }),
+        ],
+      }),
       MarkdownPlugin,
       AIPlugin,
       AIChatPlugin,
@@ -167,7 +210,8 @@ export function EditorSpikePage() {
         <div>
           <h1 style={styles.title}>Plate AI-first editor spike</h1>
           <p style={styles.subtitle}>
-            Canned AI streaming, preview accept/reject, and human editing on one Plate value.
+            Canned AI streaming, preview accept/reject, markdown shortcuts active, and human
+            editing on one Plate value.
           </p>
         </div>
         <div style={styles.status}>{status}</div>

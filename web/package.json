@@ -24,6 +24,7 @@
     "@modelcontextprotocol/ext-apps": "^1.7.2",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@platejs/ai": "^53.0.4",
+    "@platejs/autoformat": "^53.0.0",
     "@platejs/basic-nodes": "^53.0.0",
     "@platejs/code-block": "^53.0.0",
     "@platejs/link": "^53.0.3",
