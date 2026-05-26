@@ -1588,8 +1588,8 @@ impl Inner {
             //   * `Preserved` (case 2) — fast-exit: the daemon DID
             //     spawn, ran codex (which exited cleanly e.g. on a
             //     missing API key / instant abort), wrote `.exit`,
-            //     and exited before the readiness probe. Rows stay,
-            //     exit_code is now persisted on the row, and we
+            //     and exited before the ready-fd/child-exit race resolved.
+            //     Rows stay, exit_code is now persisted on the row, and we
             //     broadcast `CardAdded` + return Ok(()) so the user
             //     sees the card with its exit badge — NOT a spurious
             //     `task.failed` for a worker that completed.
@@ -1881,7 +1881,7 @@ impl Inner {
             // For dispatcher terminals this is the user-visible
             // regression that motivated this fix: a `printf done` /
             // `make build` worker exits cleanly + writes `.exit`
-            // before the readiness probe observes the socket. Pre-
+            // before the ready-fd/child-exit race resolves. Pre-
             // fix this code path deleted the card and emitted
             // `task.failed`, making the worker's output disappear
             // entirely. With the discriminator, `Preserved` keeps
@@ -2018,8 +2018,8 @@ enum RollbackOutcome {
     /// The terminal row had `daemon_handle = Some(...)` AND the
     /// daemon's `.exit` sidecar was present on disk. The daemon
     /// spawned, executed its command, wrote the exit info, and exited
-    /// before `spawn_daemon_with_parts`'s readiness probe could
-    /// observe the socket. We preserved both rows (and persisted the
+    /// before `spawn_daemon_with_parts`'s ready-fd/child-exit race
+    /// resolved. We preserved both rows (and persisted the
     /// sidecar's `exit_code` / `signal_killed` onto the terminal row)
     /// so the WS attach fast path resolves to `ChildExited` and the
     /// card shows an exit badge — the worker's output / exit code are
@@ -2070,11 +2070,12 @@ enum RollbackOutcome {
 ///   * **case 2: `daemon_handle = Some(...)` AND `<handle>.exit`
 ///     exists** — the daemon DID spawn, ran its command (e.g.
 ///     `printf done`), wrote the canonical `.exit` sidecar via its
-///     normal-exit path, then exited. `spawn_daemon_with_parts`'s
-///     readiness probe saw the socket gone faster than its 40ms
-///     polling interval and surfaced a "did not become ready" error —
-///     but that's spurious: the worker actually completed. **Preserve
-///     the rows.** Persist the sidecar's exit info onto the terminal
+///     normal-exit path, then exited before writing `ready\n`.
+///     `spawn_daemon_with_parts` drains the ready fd after observing
+///     child exit; with no ready signal it surfaces a "did not become
+///     ready" error — but that's spurious for this rollback path: the
+///     worker actually completed. **Preserve the rows.** Persist the
+///     sidecar's exit info onto the terminal
 ///     row now (so REST callers see `exit_code` immediately, and so
 ///     the WS attach fast path can `child-exited` directly off the
 ///     row). DO NOT delete the rows; DO NOT propagate the spawn Err.
@@ -2113,8 +2114,8 @@ async fn rollback_orphan_worker(
 ) -> RollbackOutcome {
     // 1. Re-fetch the terminal row. `spawn_daemon_with_parts` may have
     //    written `pid` + `daemon_handle` between the row-creation tx
-    //    commit and its eventual error return (e.g. readiness probe
-    //    timeout, post-spawn IO error). The `term` snapshot the caller
+    //    commit and its eventual error return (e.g. ready-fd backstop,
+    //    post-spawn IO error). The `term` snapshot the caller
     //    passes in was taken pre-spawn and would miss those columns.
     //
     //    A NotFound here (the orphan sweeper raced us; the user just

@@ -245,15 +245,14 @@ async fn post_api_waves_spec_terminal_has_daemon_handle_before_response() {
         )
     });
 
-    // Socket file must exist on disk: `spawn_daemon_for`'s wait loop
-    // requires `UnixStream::connect(sock)` to succeed before writing
-    // the handle, so absence here would mean the row was set without
-    // the underlying socket.
+    // Socket file must exist on disk: the recorder fixture only writes
+    // `ready\n` after binding, so absence here would mean the row was set
+    // without the underlying socket.
     let sock_path = std::path::Path::new(handle);
     assert!(
         sock_path.exists(),
-        "daemon socket file must exist on disk at {sock_path:?} (per spawn_daemon_for's \
-         wait-for-socket contract); row handle={handle}",
+        "daemon socket file must exist on disk at {sock_path:?} (per the ready-fd \
+         after-bind contract); row handle={handle}",
     );
 
     // PID also persisted (`spawn_daemon_for` set it before the

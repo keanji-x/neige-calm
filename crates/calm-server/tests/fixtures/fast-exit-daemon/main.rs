@@ -9,9 +9,8 @@
 //! exit sidecar only after binding the socket and running its child to
 //! completion. The codex/printf-done scenario the dispatcher cares
 //! about (daemon spawns, runs `printf done`, exits before kernel's
-//! 40ms readiness probe sees the socket) is hard to reproduce
-//! deterministically with the real daemon — the probe interval is
-//! short enough that wall-clock races make the test flake. This
+//! ready signal) is hard to reproduce deterministically with the real
+//! daemon without instrumenting the child timing. This
 //! fixture short-circuits the timing: it writes the sidecar directly,
 //! skips the socket bind, and exits — guaranteed to land in case 2
 //! every run.
@@ -21,10 +20,10 @@
 //!   * Writes `<sock>.exit` with `{"code": 0, "signal_killed": false}`
 //!     (the same JSON shape `crate::ws::terminal::ExitSidecar`
 //!     deserializes).
-//!   * Does NOT bind `<sock>` — so the kernel's readiness probe in
-//!     `spawn_daemon_with_parts` exhausts its 75×40ms loop and returns
-//!     `CalmError::Internal("daemon … did not become ready")`. This is
-//!     exactly the spurious error the discriminator is supposed to
+//!   * Does NOT bind `<sock>` and ignores `--ready-fd` — so the kernel's
+//!     child-exit readiness arm returns
+//!     `CalmError::Internal("daemon … did not become ready ...")`. This
+//!     is exactly the spurious error the discriminator is supposed to
 //!     swallow when `<sock>.exit` is on disk.
 //!   * Exits 0 immediately after writing the sidecar.
 //!
@@ -75,9 +74,9 @@ fn main() {
         f.sync_all().expect("sync .exit sidecar");
     }
 
-    // CRITICAL: do NOT bind the socket. The kernel's readiness probe
-    // must time out so `spawn_daemon_with_parts` returns Err — that's
-    // the spurious error the discriminator is supposed to swallow.
+    // CRITICAL: do NOT bind the socket or write to `--ready-fd`. The
+    // kernel's child-exit arm must return Err — that's the spurious
+    // error the discriminator is supposed to swallow.
     //
     // Exit 0 right away. The kernel's `tokio::spawn(async { let _ =
     // child.wait().await; })` reaps us cleanly.

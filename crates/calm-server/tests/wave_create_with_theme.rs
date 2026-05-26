@@ -11,8 +11,8 @@
 //! missed the spec-card spawn — this test is the regression guard.
 //!
 //! Strategy: point `DaemonClient::session_daemon_bin` at the
-//! `argv-recorder-daemon` fixture which records its argv to a sidecar
-//! file + binds the unix socket the kernel polls. Fire the wave-create
+//! `argv-recorder-daemon` fixture which records its argv to a sidecar,
+//! binds the unix socket, and writes `ready\n`. Fire the wave-create
 //! POST with a `theme` body, wait for the argv file to land
 //! (background `seed_and_spawn_spec_daemon` task is fire-and-forget),
 //! and assert `--terminal-fg` / `--terminal-bg` are present with the
@@ -150,9 +150,10 @@ async fn wait_for_argv_file(data_dir: &PathBuf, timeout: Duration) -> Vec<String
             for entry in read.flatten() {
                 let p = entry.path();
                 if p.extension().and_then(|s| s.to_str()) == Some("argv") {
-                    // Give the recorder a moment to finish writing (it
-                    // writes argv before binding the socket, so by the
-                    // time the kernel sees ready the file is complete).
+                    // Give the recorder a moment to finish writing. It
+                    // writes argv before binding the socket and emitting
+                    // `ready\n`, so by the time the kernel sees ready the
+                    // file is complete.
                     let content = std::fs::read_to_string(&p).expect("read argv file");
                     return content.lines().map(String::from).collect();
                 }
@@ -198,8 +199,8 @@ async fn wave_create_with_theme_stamps_terminal_fg_bg_args() {
     // Background task: wait for the daemon's argv sidecar to appear.
     let argv = wait_for_argv_file(&boot.daemon_data_dir, Duration::from_secs(5)).await;
 
-    // The kernel passes `--terminal-fg` / `--terminal-bg` as two args
-    // each (the flag, then the value) — the recorder logs them
+    // The kernel passes `--terminal-fg` / `--terminal-bg` / `--ready-fd`
+    // as two args each (the flag, then the value) — the recorder logs them
     // line-per-arg.
     let pairs: Vec<(String, String)> = argv
         .windows(2)
@@ -216,6 +217,12 @@ async fn wave_create_with_theme_stamps_terminal_fg_bg_args() {
             .iter()
             .any(|(k, v)| k == "--terminal-bg" && v == "15,20,24"),
         "daemon argv must contain `--terminal-bg 15,20,24`; got: {argv:?}"
+    );
+    assert!(
+        pairs
+            .iter()
+            .any(|(k, v)| k == "--ready-fd" && v.parse::<i32>().is_ok()),
+        "daemon argv must contain `--ready-fd <fd>`; got: {argv:?}"
     );
 
     // #177 root-cause refactor — theme is written onto the terminal

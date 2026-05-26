@@ -27,7 +27,7 @@
 //! Both modes survive all client disconnects; both exit when the child does.
 
 use std::collections::{HashMap, VecDeque};
-use std::io::Write as _;
+use std::io::{self, Write as _};
 use std::os::unix::io::FromRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -333,6 +333,13 @@ async fn main() -> anyhow::Result<()> {
     let parent_death_signals = install_parent_death_watcher();
 
     let cli = Cli::parse();
+    if let Some(fd) = cli.ready_fd {
+        // The parent deliberately clears CLOEXEC so this daemon receives
+        // `--ready-fd` across exec. Re-enable it before spawning any PTY or
+        // chat child so daemon death still closes the last write end and the
+        // parent can observe EOF if we exit before `notify_ready`.
+        set_fd_cloexec(fd, true)?;
+    }
     tracing::info!(
         id = %cli.id,
         mode = ?cli.mode,
@@ -356,6 +363,25 @@ async fn main() -> anyhow::Result<()> {
             run_chat(cli, parent_death_signals).await
         }
     }
+}
+
+fn set_fd_cloexec(fd: i32, cloexec: bool) -> io::Result<()> {
+    // SAFETY: fcntl is called with a live file descriptor and commands
+    // that do not require pointer arguments.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    let next = if cloexec {
+        flags | libc::FD_CLOEXEC
+    } else {
+        flags & !libc::FD_CLOEXEC
+    };
+    // SAFETY: see F_GETFD call above.
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, next) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// #272 (R3) — bundle of tokio signal receivers installed by

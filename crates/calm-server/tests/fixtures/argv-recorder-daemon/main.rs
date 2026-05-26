@@ -1,24 +1,26 @@
 //! Test fixture (#177): a fake `calm-session-daemon` that records its
-//! argv to a sidecar file and binds the unix socket the kernel polls
-//! for readiness, then idles waiting for connections so the spawn
-//! helper's wait-until-socket-ready loop succeeds.
+//! argv to a sidecar file, binds the unix socket, then writes the
+//! daemon's deterministic `ready\n` signal to `--ready-fd`.
 //!
 //! Used by the spawn integration tests to assert that
 //! `--terminal-fg=r,g,b --terminal-bg=r,g,b` made it onto the daemon
 //! argv from each spawn site. The real daemon binds the same socket
 //! and handles `ClientMsg`; this stub just needs to convince the
-//! kernel's poll loop that the daemon is alive.
+//! kernel's ready-fd race that the daemon is alive.
 //!
 //! Argv recording protocol:
 //!   * The kernel passes `--sock <path>` like to the real daemon; the
 //!     stub reads `<path>` and writes its full argv (one per line) to
 //!     `<path>.argv`.
+//!   * The kernel passes `--ready-fd <fd>` like to the real daemon; the
+//!     stub writes `ready\n` after binding `<path>`.
 //!
 //! Located via `env!("CARGO_BIN_EXE_argv-recorder-daemon")` from the
 //! test crates (see the `[[bin]]` entry in `Cargo.toml`).
 
 use std::fs::File;
 use std::io::Write;
+use std::os::fd::FromRawFd;
 use std::os::unix::net::UnixListener;
 use std::time::Duration;
 
@@ -40,17 +42,26 @@ fn main() {
 
     let argv: Vec<String> = std::env::args().collect();
     // Find `--sock <path>` so we know where to bind and where to write
-    // the sidecar argv file.
+    // the sidecar argv file. Find `--ready-fd <fd>` so we can emit the
+    // same readiness signal as the real daemon.
     let mut sock_path: Option<String> = None;
+    let mut ready_fd: Option<i32> = None;
     let mut i = 1;
     while i < argv.len() {
         if argv[i] == "--sock" && i + 1 < argv.len() {
             sock_path = Some(argv[i + 1].clone());
-            break;
+            i += 2;
+            continue;
+        }
+        if argv[i] == "--ready-fd" && i + 1 < argv.len() {
+            ready_fd = Some(argv[i + 1].parse().expect("parse --ready-fd"));
+            i += 2;
+            continue;
         }
         i += 1;
     }
     let sock = sock_path.expect("--sock arg required");
+    let ready_fd = ready_fd.expect("--ready-fd arg required");
 
     // Write argv to sidecar file. One arg per line so the test can
     // assert exact `--terminal-fg=r,g,b` presence without parsing.
@@ -62,13 +73,19 @@ fn main() {
         }
     }
 
-    // Bind the socket the kernel is polling for readiness. The kernel's
-    // `spawn_daemon_with_parts` calls `UnixStream::connect(&sock)` in a
-    // 75-iter / 40ms loop — once we bind here it will succeed and the
-    // spawn returns.
+    // Bind before writing `ready\n`, matching the real daemon's contract.
     let listener = UnixListener::bind(&sock).expect("bind unix socket");
-    // Park forever accepting + dropping connections — the kernel's poll
-    // loop only needs `connect()` to succeed.
+    {
+        // SAFETY: `--ready-fd` is an inherited pipe write end owned by
+        // this process. Converting it to `File` closes it after the signal.
+        let mut ready = unsafe { File::from_raw_fd(ready_fd) };
+        let _ = ready.write_all(b"ready\n");
+        let _ = ready.flush();
+    }
+
+    // Park forever accepting + dropping connections. The spawn helper no
+    // longer connects during readiness, but other tests may still probe
+    // the socket.
     listener
         .set_nonblocking(false)
         .expect("set blocking accept");
@@ -79,10 +96,8 @@ fn main() {
     while std::time::Instant::now() < deadline {
         match listener.accept() {
             Ok((_stream, _addr)) => {
-                // Immediately drop. The kernel's readiness poll is
-                // satisfied by `connect()` returning Ok — it never
-                // sends a message. The real `ClientMsg` exchange is
-                // out of scope for this stub.
+                // Immediately drop. The real `ClientMsg` exchange is out
+                // of scope for this stub.
             }
             Err(_) => break,
         }
