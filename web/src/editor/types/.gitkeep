@@ -1,0 +1,2 @@
+# ts-rs export target — generated files (e.g. `EditorDoc.ts`) live here.
+# Produced by `npm run gen:api` via `cargo test -p calm-editor export_bindings_`.
