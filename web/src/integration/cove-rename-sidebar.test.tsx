@@ -153,6 +153,23 @@ afterEach(() => {
   cleanup();
 });
 
+function querySidebarCoveNavButton(name: RegExp | string): HTMLButtonElement | null {
+  const sidebar = screen.getByRole('navigation', { name: 'Coves' });
+  const buttons = Array.from(
+    sidebar.querySelectorAll<HTMLButtonElement>('button.cove-nav'),
+  );
+  return buttons.find((button) => {
+    const text = button.textContent ?? '';
+    return typeof name === 'string' ? text === name : name.test(text);
+  }) ?? null;
+}
+
+function getSidebarCoveNavButton(name: RegExp | string): HTMLButtonElement {
+  const button = querySidebarCoveNavButton(name);
+  if (!button) throw new Error(`Could not find sidebar cove-nav button: ${name}`);
+  return button;
+}
+
 describe('Issue #288 — cove rename propagates to sidebar', () => {
   it('optimistically renames the sidebar cove-nav entry mid-flight', async () => {
     const client = makeClient();
@@ -188,7 +205,7 @@ describe('Issue #288 — cove rename propagates to sidebar', () => {
 
     // Wait for the initial cove list to land in the sidebar.
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /OriginalName/ })).toBeInTheDocument();
+      expect(getSidebarCoveNavButton(/OriginalName/)).toBeInTheDocument();
     });
     expect(triggerRename).not.toBeNull();
 
@@ -215,12 +232,12 @@ describe('Issue #288 — cove rename propagates to sidebar', () => {
     // stops re-subscribing on cache change), this assertion fires.
     await waitFor(() => {
       expect(
-        screen.getByRole('button', { name: /NewName/ }),
+        getSidebarCoveNavButton(/NewName/),
         'sidebar must show the new cove name after rename mid-flight',
       ).toBeInTheDocument();
     });
     expect(
-      screen.queryByRole('button', { name: /OriginalName/ }),
+      querySidebarCoveNavButton(/OriginalName/),
       'old cove name must disappear from sidebar after rename mid-flight',
     ).toBeNull();
 
@@ -422,7 +439,7 @@ describe('Issue #288 — cove rename propagates to sidebar', () => {
 
       // Wait for the initial cove list to land in the sidebar.
       await waitFor(() => {
-        expect(screen.getByRole('button', { name: /StaleAtlas/ })).toBeInTheDocument();
+        expect(getSidebarCoveNavButton(/StaleAtlas/)).toBeInTheDocument();
       });
 
       // Fire the WS event. The write-through must repaint the
@@ -446,11 +463,11 @@ describe('Issue #288 — cove rename propagates to sidebar', () => {
 
       await waitFor(() => {
         expect(
-          screen.getByRole('button', { name: /FreshAtlas/ }),
+          getSidebarCoveNavButton(/FreshAtlas/),
           'sidebar must reflect new name from WS write-through',
         ).toBeInTheDocument();
       });
-      expect(screen.queryByRole('button', { name: /StaleAtlas/ })).toBeNull();
+      expect(querySidebarCoveNavButton(/StaleAtlas/)).toBeNull();
     } finally {
       Object.assign(stream, orig);
     }
@@ -487,7 +504,7 @@ describe('Issue #288 — cove rename propagates to sidebar', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /BeforeRename/ })).toBeInTheDocument();
+      expect(getSidebarCoveNavButton(/BeforeRename/)).toBeInTheDocument();
     });
 
     await act(async () => {
@@ -498,8 +515,8 @@ describe('Issue #288 — cove rename propagates to sidebar', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /AfterRename/ })).toBeInTheDocument();
+      expect(getSidebarCoveNavButton(/AfterRename/)).toBeInTheDocument();
     });
-    expect(screen.queryByRole('button', { name: /BeforeRename/ })).toBeNull();
+    expect(querySidebarCoveNavButton(/BeforeRename/)).toBeNull();
   });
 });

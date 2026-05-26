@@ -23,6 +23,15 @@ export const isWaitingForUser = (l: WaveLifecycle): boolean =>
 export const isRunning = (l: WaveLifecycle): boolean =>
   l === 'planning' || l === 'dispatching' || l === 'working';
 
+export const lifecycleRank = (w: Wave): number => {
+  if (isWaitingForUser(w.lifecycle)) return 0;
+  if (isRunning(w.lifecycle)) return 1;
+  return 2;
+};
+
+export const sortByLifecycleRank = (waves: readonly Wave[]): Wave[] =>
+  [...waves].sort((a, b) => lifecycleRank(a) - lifecycleRank(b));
+
 /**
  * UI grouping predicate for "Waiting on you" surfaces (sidebar section,
  * Today header counter, calendar event highlight). ORs the

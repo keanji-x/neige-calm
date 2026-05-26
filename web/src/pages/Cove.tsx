@@ -4,7 +4,7 @@ import { WaveRow } from '../shared/components/WaveRow';
 import { NewTaskForm } from '../shared/components/NewTaskForm';
 import type { NewTaskFormResult } from '../shared/components/NewTaskForm';
 import { PlusIcon } from '../shared/components/PlusIcon';
-import { isRunning, isWaitingForUser } from '../shared/lifecycle';
+import { sortByLifecycleRank } from '../shared/lifecycle';
 import type { Cove, Route, Wave } from '../types';
 import { ConfirmDialog } from '../ui/ConfirmDialog/ConfirmDialog';
 import { Dialog } from '../ui/Dialog/Dialog';
@@ -94,14 +94,7 @@ export function CovePage({
   // the layout into separate sections. Bucket rank is derived from the
   // wave's `WaveLifecycle` (the single source of truth for wave-level
   // state — see `shared/lifecycle.ts`).
-  const sortedWaves = useMemo(() => {
-    const rankOf = (w: Wave): number => {
-      if (isWaitingForUser(w.lifecycle)) return 0;
-      if (isRunning(w.lifecycle)) return 1;
-      return 2;
-    };
-    return [...waves].sort((a, b) => rankOf(a) - rankOf(b));
-  }, [waves]);
+  const sortedWaves = useMemo(() => sortByLifecycleRank(waves), [waves]);
 
   return (
     <div className="col wide">
