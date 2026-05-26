@@ -280,6 +280,221 @@ enum TakeoverOutcome {
     Inert,
 }
 
+const RUNTIME_RECOVERY_MAX_RESTARTS: u32 = 3;
+const RUNTIME_RECOVERY_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
+
+#[derive(Clone, Copy)]
+struct RuntimeRecoveryBudget {
+    restart_count: u32,
+    window_started: std::time::Instant,
+}
+
+impl Default for RuntimeRecoveryBudget {
+    fn default() -> Self {
+        Self {
+            restart_count: 0,
+            window_started: std::time::Instant::now(),
+        }
+    }
+}
+
+/// Wire one app-server handle's notification consumer to a runtime recovery
+/// supervisor. The returned sender is passed into `spawn/resume_spec_appserver`;
+/// the spawned task owns the receiver plus the `AppState`/card/wave/settings
+/// context required to reuse the same rehydrate + catch-up path as boot
+/// takeover.
+pub(crate) fn wire_spec_push_recovery_supervisor(
+    state: &state::AppState,
+    settings: &crate::routes::settings::Settings,
+    card_id: &str,
+    wave_id: crate::ids::WaveId,
+) -> spec_appserver::SpecRecoverySignal {
+    wire_spec_push_recovery_supervisor_with_budget(
+        state,
+        settings,
+        card_id,
+        wave_id,
+        RuntimeRecoveryBudget::default(),
+        spec_appserver::TurnWatchdogConfig::default(),
+    )
+}
+
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn wire_spec_push_recovery_supervisor_for_test(
+    state: &state::AppState,
+    settings: &crate::routes::settings::Settings,
+    card_id: &str,
+    wave_id: crate::ids::WaveId,
+) -> spec_appserver::SpecRecoverySignal {
+    wire_spec_push_recovery_supervisor(state, settings, card_id, wave_id)
+}
+
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn wire_spec_push_recovery_supervisor_with_watchdog_for_test(
+    state: &state::AppState,
+    settings: &crate::routes::settings::Settings,
+    card_id: &str,
+    wave_id: crate::ids::WaveId,
+    watchdog: spec_appserver::TurnWatchdogConfig,
+) -> spec_appserver::SpecRecoverySignal {
+    wire_spec_push_recovery_supervisor_with_budget(
+        state,
+        settings,
+        card_id,
+        wave_id,
+        RuntimeRecoveryBudget::default(),
+        watchdog,
+    )
+}
+
+fn wire_spec_push_recovery_supervisor_with_budget(
+    state: &state::AppState,
+    settings: &crate::routes::settings::Settings,
+    card_id: &str,
+    wave_id: crate::ids::WaveId,
+    budget: RuntimeRecoveryBudget,
+    watchdog: spec_appserver::TurnWatchdogConfig,
+) -> spec_appserver::SpecRecoverySignal {
+    let (signal, rx) = spec_appserver::recovery_signal_channel(wave_id.clone());
+    let ctx = RuntimeRecoveryContext {
+        state: state.clone(),
+        settings: settings.clone(),
+        card_id: card_id.to_string(),
+        wave_id,
+        budget,
+        watchdog,
+    };
+    tokio::spawn(runtime_spec_push_recovery_supervisor(ctx, rx));
+    signal
+}
+
+struct RuntimeRecoveryContext {
+    state: state::AppState,
+    settings: crate::routes::settings::Settings,
+    card_id: String,
+    wave_id: crate::ids::WaveId,
+    budget: RuntimeRecoveryBudget,
+    watchdog: spec_appserver::TurnWatchdogConfig,
+}
+
+async fn runtime_spec_push_recovery_supervisor(
+    ctx: RuntimeRecoveryContext,
+    mut rx: tokio::sync::mpsc::Receiver<spec_appserver::SpecRecoveryRequest>,
+) {
+    let Some(request) = rx.recv().await else {
+        return;
+    };
+    if request.wave_id != ctx.wave_id {
+        tracing::warn!(
+            expected_wave = %ctx.wave_id,
+            request_wave = %request.wave_id,
+            "spec push runtime recovery: ignoring request for unexpected wave"
+        );
+        return;
+    }
+
+    let now = std::time::Instant::now();
+    let mut budget = ctx.budget;
+    if now.duration_since(budget.window_started) > RUNTIME_RECOVERY_WINDOW {
+        budget.restart_count = 0;
+        budget.window_started = now;
+    }
+    if budget.restart_count >= RUNTIME_RECOVERY_MAX_RESTARTS {
+        tracing::error!(
+            card_id = %ctx.card_id,
+            wave_id = %ctx.wave_id,
+            thread_id = %request.thread_id,
+            turn_id = %request.turn_id,
+            ?request.reason,
+            restart_count = budget.restart_count,
+            window_secs = RUNTIME_RECOVERY_WINDOW.as_secs(),
+            "spec push runtime recovery: restart budget exhausted; leaving wave wedged/abandoned"
+        );
+        emit_spec_push_abandoned(&ctx.state, &ctx.wave_id).await;
+        return;
+    }
+
+    let watermark = match current_spec_push_watermark(&ctx.state, &ctx.card_id, &ctx.wave_id).await
+    {
+        Some(watermark) => watermark,
+        None => {
+            tracing::warn!(
+                card_id = %ctx.card_id,
+                wave_id = %ctx.wave_id,
+                "spec push runtime recovery: wave is no longer an in-flight spec takeover candidate; abandoning recovery"
+            );
+            emit_spec_push_abandoned(&ctx.state, &ctx.wave_id).await;
+            return;
+        }
+    };
+
+    tracing::warn!(
+        card_id = %ctx.card_id,
+        wave_id = %ctx.wave_id,
+        thread_id = %request.thread_id,
+        turn_id = %request.turn_id,
+        ?request.reason,
+        next_restart_count = budget.restart_count + 1,
+        "spec push runtime recovery: reaping wedged app-server and resuming fresh process"
+    );
+    crate::terminal_sweeper::reap_spec_push(&ctx.state, &ctx.wave_id).await;
+
+    let next_budget = RuntimeRecoveryBudget {
+        restart_count: budget.restart_count + 1,
+        window_started: budget.window_started,
+    };
+    let outcome = resume_and_register_spec_appserver(
+        &ctx.state,
+        &ctx.settings,
+        &ctx.card_id,
+        &ctx.wave_id,
+        &request.thread_id,
+        watermark,
+        Some(next_budget),
+        true,
+        ctx.watchdog,
+        "runtime recovery",
+    )
+    .await;
+    if matches!(outcome, TakeoverOutcome::Inert) {
+        tracing::warn!(
+            card_id = %ctx.card_id,
+            wave_id = %ctx.wave_id,
+            "spec push runtime recovery: resume/register failed; wave left inert"
+        );
+    }
+}
+
+async fn current_spec_push_watermark(
+    state: &state::AppState,
+    card_id: &str,
+    wave_id: &crate::ids::WaveId,
+) -> Option<i64> {
+    let rows = match state.repo.spec_cards_for_boot_takeover().await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(
+                card_id,
+                wave_id = %wave_id,
+                error = %e,
+                "spec push runtime recovery: failed to read current push watermark"
+            );
+            return None;
+        }
+    };
+    rows.into_iter().find_map(
+        |(row_card, row_wave, _thread, _pgid, _sock, _start, _boot, watermark)| {
+            if row_card == card_id && row_wave == wave_id.as_str() {
+                Some(watermark)
+            } else {
+                None
+            }
+        },
+    )
+}
+
 /// #328 P2 (log split) — distinct reasons we skip the kill of a persisted
 /// app-server pgid at boot takeover. The pre-#328 path emitted a single
 /// `warn!` whose message lumped three causes together; structured fields
@@ -548,10 +763,39 @@ async fn try_takeover_one_wave(
         spec_appserver::cleanup_sock_dir(sock_path);
     }
 
-    // 2. Respawn path: build the env the way `create_wave` does, point at
-    //    the per-card socket path (same resolver as the route), and run
-    //    `resume_spec_appserver` (the create-wave shape, swapping
-    //    thread/start + turn/start + initial lifecycle wait for thread/resume).
+    // 2. Respawn/register path shared with runtime wedge recovery.
+    resume_and_register_spec_appserver(
+        state,
+        settings,
+        card_id,
+        wave_id,
+        thread_id,
+        watermark,
+        Some(RuntimeRecoveryBudget::default()),
+        false,
+        spec_appserver::TurnWatchdogConfig::default(),
+        "takeover",
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn resume_and_register_spec_appserver(
+    state: &state::AppState,
+    settings: &crate::routes::settings::Settings,
+    card_id: &str,
+    wave_id: &crate::ids::WaveId,
+    thread_id: &str,
+    watermark: i64,
+    recovery_budget: Option<RuntimeRecoveryBudget>,
+    reset_cursor_to_watermark: bool,
+    watchdog: spec_appserver::TurnWatchdogConfig,
+    log_prefix: &'static str,
+) -> TakeoverOutcome {
+    // Build the env the way `create_wave` does, point at the per-card
+    // socket path (same resolver as the route), and run
+    // `resume_spec_appserver` (the create-wave shape, swapping
+    // thread/start + turn/start + initial lifecycle wait for thread/resume).
     let env_map = crate::spec_card::build_codex_env_map(
         state.codex.as_ref(),
         card_id,
@@ -571,7 +815,7 @@ async fn try_takeover_one_wave(
     if let Err(e) = std::fs::create_dir_all(&sock_dir) {
         tracing::warn!(
             card_id, wave_id = %wave_id, error = %e,
-            "takeover: mkdir appserver sock dir failed; leaving wave inert",
+            "{log_prefix}: mkdir appserver sock dir failed; leaving wave inert",
         );
         // #318 INV-1 (b) — abandonment signal for the no-skip review gap
         // from #315. Mkdir failure means we never even attempted resume,
@@ -581,13 +825,30 @@ async fn try_takeover_one_wave(
         emit_spec_push_abandoned(state, wave_id).await;
         return TakeoverOutcome::Inert;
     }
-    match spec_appserver::resume_spec_appserver(&state.codex.codex_bin, &env_map, thread_id, &sock)
-        .await
+    let recovery_signal = recovery_budget.map(|budget| {
+        wire_spec_push_recovery_supervisor_with_budget(
+            state,
+            settings,
+            card_id,
+            wave_id.clone(),
+            budget,
+            watchdog,
+        )
+    });
+    match spec_appserver::resume_spec_appserver_with_watchdog_config_and_recovery(
+        &state.codex.codex_bin,
+        &env_map,
+        thread_id,
+        &sock,
+        watchdog,
+        recovery_signal,
+    )
+    .await
     {
         Ok(handle) => {
             tracing::info!(
                 card_id, wave_id = %wave_id, thread_id,
-                "takeover: respawned codex app-server + thread/resume succeeded",
+                "{log_prefix}: respawned codex app-server + thread/resume succeeded",
             );
             // Persist the fresh pgid + sock + (start_time, boot_id) for
             // the NEXT boot cycle so a hard-crash between this point and
@@ -604,7 +865,15 @@ async fn try_takeover_one_wave(
                 handle.boot_id.as_deref(),
             )
             .await;
-            register_and_catch_up(state, card_id, wave_id, watermark, handle).await;
+            register_and_catch_up(
+                state,
+                card_id,
+                wave_id,
+                watermark,
+                handle,
+                reset_cursor_to_watermark,
+            )
+            .await;
             TakeoverOutcome::Respawned
         }
         Err(e) => {
@@ -627,7 +896,7 @@ async fn try_takeover_one_wave(
             if no_rollout {
                 tracing::warn!(
                     card_id, wave_id = %wave_id, thread_id, error = %msg,
-                    "takeover: thread/resume returned -32600 no rollout; clearing stale push state — wave inert until manual restart (#313 problem #2)",
+                    "{log_prefix}: thread/resume returned -32600 no rollout; clearing stale push state — wave inert until manual restart (#313 problem #2)",
                 );
                 if let Err(e2) = state.repo.spec_card_clear_push_state(card_id).await {
                     tracing::warn!(
@@ -638,7 +907,7 @@ async fn try_takeover_one_wave(
             } else {
                 tracing::warn!(
                     card_id, wave_id = %wave_id, thread_id, error = %msg,
-                    "takeover: respawn app-server / resume failed; leaving wave inert (next boot retries)",
+                    "{log_prefix}: respawn app-server / resume failed; leaving wave inert (next boot retries)",
                 );
             }
             // #318 INV-1 (b) — abandonment signal. Both inert sub-paths
@@ -817,6 +1086,7 @@ async fn register_and_catch_up(
     wave_id: &crate::ids::WaveId,
     watermark: i64,
     handle: spec_appserver::SpecPushHandle,
+    reset_cursor_to_watermark: bool,
 ) {
     let card_key: crate::ids::CardId = card_id.to_string().into();
 
@@ -947,9 +1217,20 @@ async fn register_and_catch_up(
     state
         .dispatcher
         .with_push_lock(wave_id, async move {
-            // Seed the in-memory push cursor from the persisted watermark.
-            // Monotonic bump: a re-seed can never lower the floor.
-            state.dispatcher.seed_push_cursor(card_key, watermark);
+            if reset_cursor_to_watermark {
+                // Runtime recovery reuses the same dispatcher process. Its
+                // soft cursor can be ahead of the durable watermark after
+                // enqueue/list persistence failures; force it down before
+                // event-log catch-up so undelivered rows are not deduped.
+                state
+                    .dispatcher
+                    .reset_push_cursor_to_watermark(card_key, watermark);
+            } else {
+                // Boot takeover starts with a fresh in-memory cursor. Keep
+                // the existing monotonic seed so boot cannot lower a cursor
+                // that a serialized live push already advanced.
+                state.dispatcher.seed_push_cursor(card_key, watermark);
+            }
 
             // Register the handle — `Inner::push_to_spec` resolves on this.
             // Still under the per-wave lock, so any concurrent live event

@@ -77,10 +77,11 @@ impl EventCursorCache {
         *entry
     }
 
-    /// Force-set the cursor (test helper). Production code uses [`bump`]
-    /// so concurrent waits never rewind each other.
-    #[cfg(test)]
-    pub(crate) fn set(&self, card: CardId, id: i64) {
+    /// Force-set the cursor. Most production paths use [`bump`] so
+    /// concurrent pushes never rewind each other; runtime app-server
+    /// recovery deliberately rewinds this in-process cache to the durable
+    /// watermark before replaying catch-up rows.
+    pub fn set(&self, card: CardId, id: i64) {
         self.inner.insert(card, id);
     }
 

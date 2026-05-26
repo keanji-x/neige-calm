@@ -231,10 +231,12 @@ async fn runtime_watchdog_bails_when_interrupt_has_no_completed() {
             < max_turn_duration + interrupt_completion_budget + Duration::from_secs(1),
         "watchdog no-completed path exceeded the bounded test budget"
     );
-    // PR3a only bounds the watchdog bail path. It clears the internal
-    // active-turn watchdog, but the public phase remains TurnRunning because
-    // the layer-B full-wedge recovery is a follow-up.
-    assert_eq!(handle.status().await.phase, SpecPushPhase::TurnRunning);
+    // Layer B (#347): watchdog bail now marks the public phase Wedged so
+    // later observations do not enqueue into a dead queue. Production
+    // handles also signal the runtime recovery supervisor; this direct
+    // handle test has no supervisor wired, so it only asserts the phase
+    // transition.
+    assert_eq!(handle.status().await.phase, SpecPushPhase::Wedged);
     drop(handle);
 }
 

@@ -58,6 +58,7 @@ pub fn run_fake_app_server() {
         .build()
         .expect("fake app-server: build tokio runtime");
     rt.block_on(async move {
+        let control = WedgeControl::for_sock(&sock);
         let listener = UnixListener::bind(&sock)
             .unwrap_or_else(|e| panic!("fake app-server: bind {}: {e}", sock.display()));
         // Serve connections forever; the kernel opens one, and the test
@@ -65,7 +66,7 @@ pub fn run_fake_app_server() {
         loop {
             match listener.accept().await {
                 Ok((stream, _)) => {
-                    if let Err(e) = serve_conn(stream).await {
+                    if let Err(e) = serve_conn(stream, control.clone()).await {
                         eprintln!("fake app-server: connection ended: {e}");
                     }
                 }
@@ -78,7 +79,47 @@ pub fn run_fake_app_server() {
     });
 }
 
-async fn serve_conn(stream: tokio::net::UnixStream) -> Result<(), String> {
+#[derive(Clone)]
+struct WedgeControl {
+    active: bool,
+    wedge_this_process: bool,
+}
+
+impl WedgeControl {
+    fn for_sock(sock: &std::path::Path) -> Self {
+        let path = sock.with_extension("wedge-count");
+        if let Ok(raw) = std::env::var("FAKE_CODEX_WEDGE_PROCESS_COUNT")
+            && !path.exists()
+        {
+            let _ = std::fs::write(&path, raw);
+        }
+
+        let active = path.exists();
+        let mut remaining = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u32>().ok())
+            .unwrap_or(0);
+        let wedge_this_process = remaining > 0;
+        if wedge_this_process {
+            remaining -= 1;
+            let _ = std::fs::write(&path, remaining.to_string());
+        }
+
+        Self {
+            active,
+            wedge_this_process,
+        }
+    }
+
+    fn turn_completion_delay(&self) -> Option<std::time::Duration> {
+        env_delay("FAKE_CODEX_TURN_COMPLETED_DELAY_MS").or_else(|| {
+            (self.active && !self.wedge_this_process)
+                .then_some(std::time::Duration::from_millis(25))
+        })
+    }
+}
+
+async fn serve_conn(stream: tokio::net::UnixStream, control: WedgeControl) -> Result<(), String> {
     let ws = tokio_tungstenite::accept_async(stream)
         .await
         .map_err(|e| format!("ws accept: {e}"))?;
@@ -161,7 +202,7 @@ async fn serve_conn(stream: tokio::net::UnixStream) -> Result<(), String> {
                     )
                     .await?;
                 }
-                if let Some(delay) = env_delay("FAKE_CODEX_TURN_COMPLETED_DELAY_MS") {
+                if let Some(delay) = control.turn_completion_delay() {
                     tokio::time::sleep(delay).await;
                     send_notification(
                         &mut write,
@@ -174,6 +215,10 @@ async fn serve_conn(stream: tokio::net::UnixStream) -> Result<(), String> {
             "turn/interrupt" => {
                 if let Ok(path) = std::env::var("FAKE_CODEX_INTERRUPT_MARKER") {
                     let _ = std::fs::write(path, "1");
+                }
+                if control.wedge_this_process {
+                    send_result(&mut write, &id, json!({})).await?;
+                    continue;
                 }
                 if env_flag("FAKE_CODEX_IGNORE_TURN_INTERRUPT") {
                     continue;
