@@ -27,6 +27,7 @@ use calm_server::db::sqlite::{SqlxRepo, card_with_codex_create_tx};
 use calm_server::event::EventBus;
 use calm_server::mcp_server::{McpServer, build_default_registry};
 use calm_server::model::{CardRole, NewCove, NewWave};
+use calm_server::plugin_host::mcp::RpcError;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -188,6 +189,20 @@ fn initialize_frame(id: i64, token: &str) -> Value {
     })
 }
 
+fn initialize_frame_without_token(id: i64) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": { "name": "mcp-test-client", "version": "0.1" },
+            "_meta": {}
+        }
+    })
+}
+
 fn tools_call_frame(id: i64, name: &str, args: Value) -> Value {
     json!({
         "jsonrpc": "2.0",
@@ -217,6 +232,32 @@ async fn initialize_with_valid_token_succeeds() {
     );
     assert_eq!(result["serverInfo"]["name"], json!("neige-calm-kernel"));
     // Keep `b` and `_server` alive until the end.
+    let _ = &b.server;
+}
+
+#[tokio::test]
+async fn initialize_without_token_returns_invalid_params_and_closes() {
+    let b = boot().await;
+    let (mut rd, mut wr) = connect(&b.socket_path).await;
+    send_frame(&mut wr, initialize_frame_without_token(6)).await;
+    let resp = recv_frame(&mut rd).await;
+    assert_eq!(resp["id"], json!(6));
+    let err = resp.get("error").expect("must carry error object");
+    assert_eq!(err["code"], json!(RpcError::INVALID_PARAMS));
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("per-card MCP token required"),
+        "unexpected missing-token error: {err:#?}"
+    );
+
+    let mut line = String::new();
+    let n = timeout(TEST_BUDGET, rd.read_line(&mut line))
+        .await
+        .expect("EOF within budget")
+        .expect("read_line ok");
+    assert_eq!(n, 0, "server must close after failed initialize");
     let _ = &b.server;
 }
 
@@ -344,6 +385,57 @@ async fn two_tools_calls_on_one_connection_share_identity() {
         seen += 1;
     }
     let _ = (&b.server, &b.repo);
+}
+
+#[tokio::test]
+async fn wave_file_tools_support_two_calls_on_one_connection() {
+    let b = boot().await;
+    let (mut rd, mut wr) = connect(&b.socket_path).await;
+    send_frame(&mut wr, initialize_frame(1, &b.raw_token)).await;
+    let init_resp = recv_frame(&mut rd).await;
+    assert!(
+        init_resp.get("error").is_none(),
+        "init failed: {init_resp:#?}"
+    );
+
+    send_frame(
+        &mut wr,
+        tools_call_frame(20, "calm.wave.ls", json!({"path": "/"})),
+    )
+    .await;
+    let r1 = recv_frame(&mut rd).await;
+    assert!(
+        r1.get("error").is_none(),
+        "first wave file tools/call errored: {r1:#?}"
+    );
+    let entries = r1["result"]["structuredContent"]
+        .as_array()
+        .expect("ls structuredContent is array");
+    assert!(
+        entries.iter().any(|entry| entry["name"] == "index.md"),
+        "root listing should contain index.md: {entries:#?}"
+    );
+
+    send_frame(
+        &mut wr,
+        tools_call_frame(21, "calm.wave.cat", json!({"path": "index.md"})),
+    )
+    .await;
+    let r2 = recv_frame(&mut rd).await;
+    assert!(
+        r2.get("error").is_none(),
+        "second wave file tools/call errored: {r2:#?}"
+    );
+    let structured = &r2["result"]["structuredContent"];
+    assert_eq!(structured["content_type"], json!("text/markdown"));
+    assert!(
+        structured["content"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Report: [report.md](report.md)"),
+        "index.md should expose the current wave summary: {structured:#?}"
+    );
+    let _ = &b.server;
 }
 
 /// Regression: a co-tenant `calm-server` against the same XDG-shared
