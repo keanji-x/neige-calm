@@ -720,11 +720,13 @@ pub(crate) async fn create_wave(
     // we boot the app-server here. The app-server boot must therefore be
     // NON-FATAL: if it fails — a missing/broken codex binary (every
     // codex-free environment: CI's web a11y job, the chromium docker stack),
-    // a transient model/auth hiccup, or the S1 `OVERALL_BOOT_BUDGET`
-    // deadline elapsing — we DO NOT return 500. `spawn_push_appserver`'s
-    // internal `SpawnRollback` guard has already torn down the failed
-    // app-server process group + socket dir (no orphan), so on the error
-    // arm we simply `warn!` that the spec agent couldn't start, SKIP the
+    // a transient model/auth hiccup, or the S1 layer-3 init/boot wedge
+    // backstop firing across socket connect, WS handshake, initialize,
+    // turn setup, or the initial lifecycle wait — we DO NOT return 500.
+    // `spawn_push_appserver`'s internal `SpawnRollback` guard has already
+    // torn down the failed app-server process group + socket dir (no
+    // orphan), so on the error arm we simply `warn!` that the spec agent
+    // couldn't start, SKIP the
     // `codex_thread_id` persist + registry insert + `--remote` TUI spawn
     // (all of which live in `spawn_push_appserver` / the
     // `seed_and_spawn_spec_daemon` call below), and return **201 with the

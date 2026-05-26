@@ -78,8 +78,10 @@
 //! on disk* (the spike's hard constraint) so the `--remote` TUI's
 //! `thread/resume` can rejoin the same thread. `turn/started` is the
 //! normal signal; `turn/completed` is also accepted if it arrives first.
-//! There is no lifecycle timeout: EOF/reader exit, JSON-RPC errors, and
-//! child exit are the deterministic failure signals.
+//! There is no per-notification lifecycle budget: EOF/reader exit,
+//! JSON-RPC errors, and child exit are the deterministic failure signals.
+//! The generous overall boot backstop only catches an alive child that
+//! silently wedges during layer-3 init/boot.
 //!
 //! ## Supervision (2a + B1 process-group fix)
 //!
@@ -144,14 +146,17 @@ const SOCKET_READY_POLL: Duration = Duration::from_millis(150);
 /// Total wall-clock budget for the socket-ready poll.
 const SOCKET_READY_BUDGET: Duration = Duration::from_secs(20);
 
-/// S1 — a wall-clock backstop for the pre-lifecycle boot sequence
-/// (poll-connect → initialize → thread/start → turn/start ack). It is
-/// deliberately NOT applied to the post-`turn/start` lifecycle wait:
-/// once the server accepted the turn, `turn/started` / `turn/completed`
-/// notifications, reader EOF, JSON-RPC errors, and child exit are the
-/// deterministic sources of truth. A slow-but-live turn must not fail
-/// because a lifecycle budget elapsed. The socket-ready portion remains
-/// a wedge backstop for "process stayed alive but never bound".
+/// S1 — layer-3 init/boot wedge backstop for the whole post-spawn boot
+/// sequence: socket connect + WebSocket upgrade/handshake, initialize,
+/// thread start/resume, turn start, and the initial lifecycle wait. The
+/// primary readiness/failure signals remain event-driven (`turn/started`,
+/// `turn/completed`, reader EOF / JSON-RPC error, and child exit); this
+/// generous budget only catches the pathological "process stayed alive but
+/// boot silently stopped making progress" case so rollback can reap the
+/// app-server process group. PR3 will refine this into interrupt /
+/// daemon-restart handling. Healthy slow starts are not expected to trip
+/// this because codex emits `turn/started` inline as soon as the turn is
+/// accepted.
 const OVERALL_BOOT_BUDGET: Duration = Duration::from_secs(45);
 
 /// #318 INV-4 (codex P1 follow-up) — how long [`build_handle_after_spawn_resume`]
@@ -171,11 +176,13 @@ const OVERALL_BOOT_BUDGET: Duration = Duration::from_secs(45);
 /// future external turn completes).
 ///
 /// The timer is the synthetic "the server is idle, go ahead and flush"
-/// reconcile we'd otherwise get from a `thread/status` probe (no such
-/// codex JSON-RPC exists). 5 s is generous for a healthy mid-turn server
-/// to emit its in-flight turn's `turn/completed` if it's about to land,
-/// while still being short enough that the user-visible delay for a
-/// boot-takeover catch-up push on a truly-idle thread is bounded.
+/// reconcile until we consume the raw `thread.status` already present on
+/// `thread/resume` responses. A later PR can turn that into a deterministic
+/// split (`idle` → immediately flush; `active` → stay event-driven and wait
+/// for `turn/completed`). 5 s is generous for a healthy mid-turn server to
+/// emit its in-flight turn's `turn/completed` if it's about to land, while
+/// still being short enough that the user-visible delay for a boot-takeover
+/// catch-up push on a truly-idle thread is bounded.
 ///
 /// **Trade-off**: if a prior-boot turn is genuinely mid-flight and
 /// running longer than this budget, the timer fires first and the
@@ -183,9 +190,8 @@ const OVERALL_BOOT_BUDGET: Duration = Duration::from_secs(45);
 /// hazard `Resumed` was meant to prevent). Accepted as the lesser of
 /// two evils: the alternative (no timer) loses the observation 100% of
 /// the time on idle resumes; the timer loses it only on the rare
-/// "mid-long-turn at crash" intersection. A future codex `thread/status`
-/// API (or an idle-detect heuristic over the notification stream) would
-/// remove this trade-off.
+/// "mid-long-turn at crash" intersection. Consuming the `thread.status`
+/// value from `thread/resume` would remove this trade-off.
 const RESUMED_RECONCILE_BUDGET: Duration = Duration::from_secs(5);
 
 /// Last-seen thread/turn lifecycle status the consumer task tracks for
@@ -245,15 +251,17 @@ pub enum SpecPushPhase {
     TurnCompleted,
     /// #318 INV-4 (R2-B2) — the connection was `thread/resume`-d during a
     /// boot takeover and no lifecycle notification has yet arrived to
-    /// reconcile it. `thread/resume` does **not** tell us whether a turn
-    /// is mid-flight on the server, so we must NOT treat the thread as
-    /// between turns: issuing a `turn/start` here while codex is still
-    /// running the prior boot's turn would be silently dropped (verified;
-    /// see [`decide`] / [`PushAction::Enqueue`]). The first `turn/started`
-    /// reconciles us to `TurnRunning`; the first `turn/completed`
-    /// reconciles us to `TurnCompleted` (at which point the consumer
-    /// task's [`flush_push_queue`] will drain anything that piled up in
-    /// the meantime).
+    /// reconcile it. We do not yet consume the raw `thread.status` returned
+    /// by `thread/resume`, so this PR keeps the conservative event-driven
+    /// posture: issuing a `turn/start` here while codex is still running the
+    /// prior boot's turn would be silently dropped (verified; see [`decide`]
+    /// / [`PushAction::Enqueue`]). PR3 can refine this by using
+    /// `thread.status` (`idle` → immediately advance/flush, `active` → keep
+    /// waiting for lifecycle). The first `turn/started` reconciles us to
+    /// `TurnRunning`; the first `turn/completed` reconciles us to
+    /// `TurnCompleted` (at which point the consumer task's
+    /// [`flush_push_queue`] will drain anything that piled up in the
+    /// meantime).
     Resumed,
 }
 
@@ -1555,11 +1563,28 @@ pub async fn spawn_spec_appserver(
     // socket-dir cleanup before propagating (S2 rollback). A `Drop`-based
     // guard keeps this DRY across the half-dozen `?` sites below.
     let mut rollback = SpawnRollback::new(pgid, sock);
-    // The fallible build sequence owns the pre-lifecycle overall backstop
-    // internally. Its final turn-lifecycle wait is intentionally
-    // event-driven only; any `?` still drops through this armed rollback.
-    let handle =
-        build_handle_after_spawn(child, pgid, start_time, boot_id, goal_text, sock).await?;
+    // Layer-3 init/boot wedge backstop: the whole post-spawn sequence is
+    // normally decided by concrete events (socket readiness, WS/JSON-RPC
+    // responses, `turn/started`/`turn/completed`, EOF, child exit). This
+    // generous outer timeout exists only for the "child is alive, but the
+    // boot handshake/lifecycle silently stops making progress" class; if
+    // it fires, the armed rollback below reaps the process group and clears
+    // the socket dir. PR3 will refine this into interrupt / daemon-restart.
+    let handle = match tokio::time::timeout(
+        OVERALL_BOOT_BUDGET,
+        build_handle_after_spawn(child, pgid, start_time, boot_id, goal_text, sock),
+    )
+    .await
+    {
+        Ok(res) => res?,
+        Err(_) => {
+            return Err(CalmError::CodexAppServer(format!(
+                "codex app-server boot did not complete within {}s overall \
+                 (layer-3 init/boot wedge backstop fired)",
+                OVERALL_BOOT_BUDGET.as_secs()
+            )));
+        }
+    };
     rollback.disarm();
     Ok(handle)
 }
@@ -1649,8 +1674,26 @@ pub async fn resume_spec_appserver(
     );
 
     let mut rollback = SpawnRollback::new(pgid, sock);
-    let handle =
-        build_handle_after_spawn_resume(child, pgid, start_time, boot_id, thread_id, sock).await?;
+    // Same layer-3 init/boot wedge backstop as the create path: resume is
+    // expected to complete via socket/WS/JSON-RPC progress or fail via
+    // child exit / transport errors. The timeout is only for an alive child
+    // that wedges silently during boot; rollback remains armed until the
+    // handle is fully parked.
+    let handle = match tokio::time::timeout(
+        OVERALL_BOOT_BUDGET,
+        build_handle_after_spawn_resume(child, pgid, start_time, boot_id, thread_id, sock),
+    )
+    .await
+    {
+        Ok(res) => res?,
+        Err(_) => {
+            return Err(CalmError::CodexAppServer(format!(
+                "codex app-server resume did not complete within {}s overall \
+                 (layer-3 init/boot wedge backstop fired)",
+                OVERALL_BOOT_BUDGET.as_secs()
+            )));
+        }
+    };
     rollback.disarm();
     Ok(handle)
 }
@@ -1859,56 +1902,40 @@ async fn build_handle_after_spawn(
     goal_text: &str,
     sock: &Path,
 ) -> Result<SpecPushHandle> {
-    let boot_deadline = tokio::time::Instant::now() + OVERALL_BOOT_BUDGET;
-
     // 2. Poll the socket for readiness, bailing early if the child dies
     //    during boot (the common no-auth / bad-env failure mode).
     let connected = poll_connect(&mut child, sock).await?;
     let (client, mut notifs) = connected;
     let client = Arc::new(client);
 
-    // 3. initialize + thread/start + turn/start ack. This pre-lifecycle
-    //    sequence keeps the overall boot backstop. The lifecycle wait
-    //    below does not: once the turn is accepted, notifications/EOF/exit
-    //    are the source of truth.
-    let thread_id = match tokio::time::timeout_at(boot_deadline, async {
-        client
-            .initialize(ClientInfo {
-                name: "neige-calm-spec-push".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
-            })
-            .await?;
-        let thread = client.thread_start().await?;
-        let thread_id = thread
-            .thread_id()
-            .ok_or_else(|| {
-                CalmError::CodexAppServer("thread/start result missing thread.id".to_string())
-            })?
-            .to_string();
-        tracing::info!(thread_id = %thread_id, "spec push: thread started");
+    // 3. initialize + thread/start + turn/start ack. The caller wraps this
+    //    whole build future in `OVERALL_BOOT_BUDGET`; individual progress is
+    //    still determined by JSON-RPC success/error and child/stream liveness.
+    client
+        .initialize(ClientInfo {
+            name: "neige-calm-spec-push".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+        })
+        .await?;
+    let thread = client.thread_start().await?;
+    let thread_id = thread
+        .thread_id()
+        .ok_or_else(|| {
+            CalmError::CodexAppServer("thread/start result missing thread.id".to_string())
+        })?
+        .to_string();
+    tracing::info!(thread_id = %thread_id, "spec push: thread started");
 
-        let turn = client
-            .turn_start(&thread_id, vec![InputItem::text(goal_text)])
-            .await?;
-        tracing::info!(thread_id = %thread_id, turn_id = ?turn.turn_id(), "spec push: turn #1 started (ack)");
-        Ok::<String, CalmError>(thread_id)
-    })
-    .await
-    {
-        Ok(res) => res?,
-        Err(_) => {
-            return Err(CalmError::CodexAppServer(format!(
-                "codex app-server boot did not complete pre-lifecycle setup within {}s overall \
-                 (spec/wave could not start)",
-                OVERALL_BOOT_BUDGET.as_secs()
-            )));
-        }
-    };
+    let turn = client
+        .turn_start(&thread_id, vec![InputItem::text(goal_text)])
+        .await?;
+    tracing::info!(thread_id = %thread_id, turn_id = ?turn.turn_id(), "spec push: turn #1 started (ack)");
 
     // 5. Await `turn/started` (or `turn/completed`, which also proves the
     //    rollout exists) before the `--remote` TUI tries to resume.
     //    This waits on deterministic lifecycle/EOF/child-exit signals, not
-    //    a "started within N seconds" budget.
+    //    a "started within N seconds" budget. The caller's overall boot
+    //    backstop only handles a fully silent boot wedge.
     //    `await_initial_turn_lifecycle` reads notifications off the SAME
     //    `notifs` receiver the consumer task takes over below; it records
     //    the matched lifecycle signal into `status`.
@@ -1950,8 +1977,6 @@ async fn build_handle_after_spawn_resume(
     thread_id: &str,
     sock: &Path,
 ) -> Result<SpecPushHandle> {
-    let boot_deadline = tokio::time::Instant::now() + OVERALL_BOOT_BUDGET;
-
     // 2. Poll the socket for readiness (same as the spawn path).
     let (client, notifs) = poll_connect(&mut child, sock).await?;
     let client = Arc::new(client);
@@ -1960,24 +1985,14 @@ async fn build_handle_after_spawn_resume(
     //    — resume rejoins the persisted thread by id; if a turn is mid-flight
     //    we'll observe its `turn/completed` on the notification stream and
     //    reconcile the consumer-tracked phase.
-    let resumed = match tokio::time::timeout_at(boot_deadline, async {
+    let resumed = {
         client
             .initialize(ClientInfo {
                 name: "neige-calm-spec-push".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
             })
             .await?;
-        client.thread_resume(thread_id).await
-    })
-    .await
-    {
-        Ok(res) => res?,
-        Err(_) => {
-            return Err(CalmError::CodexAppServer(format!(
-                "codex app-server resume did not complete pre-lifecycle setup within {}s overall",
-                OVERALL_BOOT_BUDGET.as_secs()
-            )));
-        }
+        client.thread_resume(thread_id).await?
     };
     // Defensive: the server should echo back the same id on a successful
     // resume; if it doesn't, log and prefer the persisted id (we keyed
@@ -2198,7 +2213,8 @@ async fn poll_connect(
 ///
 /// This is event-driven: success is the matching notification, failure is
 /// deterministic stream closure/reader exit or child exit. There is no
-/// "started within N seconds" failure path here.
+/// per-notification "started within N seconds" failure path here; the
+/// caller's overall boot backstop only handles a fully silent boot wedge.
 async fn await_initial_turn_lifecycle(
     child: &mut Child,
     notifs: &mut NotificationStream,
@@ -4086,7 +4102,7 @@ mod tests {
     }
 
     /// S1 — the rollback every fallible boot path relies on. When the boot
-    /// sequence is aborted (a `?` early return OR a pre-lifecycle backstop
+    /// sequence is aborted (a `?` early return OR the boot wedge backstop
     /// firing), the still-armed [`SpawnRollback`] guard must (a) reap the
     /// child's whole process GROUP via `kill(-pgid)` — so no orphan
     /// `codex app-server` is leaked — and (b) clean the per-card socket dir.

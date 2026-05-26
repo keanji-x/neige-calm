@@ -77,6 +77,36 @@ async fn initial_turn_started_then_completed_updates_status() {
 }
 
 #[tokio::test]
+async fn slow_initial_turn_started_does_not_false_fail() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let sock = tmp
+        .path()
+        .join("appserver")
+        .join("card-slow-start")
+        .join("sock");
+    let env = json!({
+        "FAKE_CODEX_TURN_STARTED_DELAY_MS": "3500"
+    });
+
+    let started = Instant::now();
+    let handle = spawn_spec_appserver(&fake_codex_bin(), &env, "goal", &sock)
+        .await
+        .expect("slow but progressing turn/started should satisfy boot");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed >= Duration::from_millis(3200),
+        "boot returned before the fake turn/started delay elapsed: {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "slow turn/started should not wait for a boot budget to elapse: {elapsed:?}"
+    );
+    assert_eq!(handle.status().await.phase, SpecPushPhase::TurnRunning);
+    drop(handle);
+}
+
+#[tokio::test]
 async fn initial_turn_child_exit_fails_promptly() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let sock = tmp.path().join("appserver").join("card-exit").join("sock");
