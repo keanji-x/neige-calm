@@ -320,4 +320,4 @@ jobs:
 
       - name: fail if committed spec / types are stale
         run: |
-          git diff --exit-code -- web/src/api/openapi.json web/src/api/generated.ts web/src/api/generated-terminal.ts web/src/api/generated-events.ts
+          git diff --exit-code -- web/src/api/openapi.json web/src/api/generated.ts web/src/api/generated-terminal.ts web/src/api/generated-events.ts web/src/editor/types/

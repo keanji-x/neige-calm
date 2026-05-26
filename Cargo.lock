@@ -343,6 +343,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "calm-editor"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "ts-rs",
+]
+
+[[package]]
 name = "calm-server"
 version = "0.1.0"
 dependencies = [
