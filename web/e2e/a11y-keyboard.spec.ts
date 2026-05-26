@@ -200,7 +200,7 @@ test.describe('a11y · keyboard-only navigation', () => {
     // Tab forward from the document start until focus lands on the
     // Atlas cove button in the sidebar. Its accessible name is just
     // the cove name (see Sidebar.tsx).
-    await tabUntil(page, (info) => info.name?.toLowerCase().includes('atlas') === true);
+    await tabUntil(page, (info) => info.name?.toLowerCase() === 'atlas');
     // Activate the cove. The Sidebar's cove rows are real <button>s, so
     // Enter is the canonical activation key — Space would also work, but
     // Enter is what a screen reader announces ("Activate").
@@ -232,7 +232,7 @@ test.describe('a11y · keyboard-only navigation', () => {
   //   - Successful submit navigates to /calm/wave/<id>.
   test('Cove → New wave via keyboard creates a wave', async ({ page }) => {
     // First land on the cove page via keyboard (same path as above).
-    await tabUntil(page, (info) => info.name?.toLowerCase().includes('atlas') === true);
+    await tabUntil(page, (info) => info.name?.toLowerCase() === 'atlas');
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
 
@@ -290,7 +290,7 @@ test.describe('a11y · keyboard-only navigation', () => {
     // Navigate to a wave page via keyboard so the AddPanel trigger
     // exists in the DOM. We use the auto-created "Today" wave under the
     // Atlas cove — it's the only wave that exists at this point.
-    await tabUntil(page, (info) => info.name?.toLowerCase().includes('atlas') === true);
+    await tabUntil(page, (info) => info.name?.toLowerCase() === 'atlas');
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
     // From the cove page, the "Today" wave row is a real <button> with
@@ -335,7 +335,7 @@ test.describe('a11y · keyboard-only navigation', () => {
     // Navigate to a wave page via keyboard. We use the auto-created
     // "Today" wave under the Atlas cove — the only one that exists at
     // bootstrap time on the replay fixture.
-    await tabUntil(page, (info) => info.name?.toLowerCase().includes('atlas') === true);
+    await tabUntil(page, (info) => info.name?.toLowerCase() === 'atlas');
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
     // WaveRow is a real <button>; filter on `wave-row` className to
@@ -441,7 +441,7 @@ test.describe('a11y · keyboard-only navigation', () => {
     page,
   }) => {
     // Navigate to the wave page via keyboard.
-    await tabUntil(page, (info) => info.name?.toLowerCase().includes('atlas') === true);
+    await tabUntil(page, (info) => info.name?.toLowerCase() === 'atlas');
     await page.keyboard.press('Enter');
     // WaveRow is a real <button>; filter on `wave-row` className to
     // disambiguate from the sidebar Today nav button (both real
@@ -534,7 +534,7 @@ test.describe('a11y · keyboard-only navigation', () => {
     page,
   }) => {
     // Land on the wave page via keyboard.
-    await tabUntil(page, (info) => info.name?.toLowerCase().includes('atlas') === true);
+    await tabUntil(page, (info) => info.name?.toLowerCase() === 'atlas');
     await page.keyboard.press('Enter');
     // WaveRow is a real <button>; filter on `wave-row` className to
     // disambiguate from the sidebar Today nav button (both real
