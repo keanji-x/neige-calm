@@ -163,6 +163,42 @@ fn codex_kind_to_state(kind: &str) -> Option<State> {
 }
 
 // ---------------------------------------------------------------------------
+// Claude hook → State projection
+// ---------------------------------------------------------------------------
+
+/// Project a Claude hook `kind` (e.g. `hook.claude.pre_tool_use`) onto the
+/// worker-card FSM. This intentionally stays separate from
+/// `codex_kind_to_state`: Codex `stop` means "the user can submit the next
+/// turn", while Claude worker `stop` means the worker has gone idle.
+///
+/// Claude Code hook names verified against https://code.claude.com/docs/en/hooks.
+fn claude_kind_to_state(kind: &str, _payload: &serde_json::Value) -> Option<State> {
+    let bare = kind.strip_prefix("hook.claude.")?;
+    match bare {
+        "session_start" => Some(State::Starting),
+        "user_prompt_submit"
+        | "pre_tool_use"
+        | "post_tool_use"
+        | "post_tool_use_failure"
+        | "subagent_start"
+        | "subagent_stop"
+        | "task_created"
+        | "task_completed" => Some(State::Working),
+        "permission_request" | "permission_denied" | "notification" | "elicitation" => {
+            Some(State::AwaitingInput)
+        }
+        "stop" => Some(State::Idle),
+        "stop_failure" => Some(State::Errored),
+        // Documented `SessionEnd.reason` values are `clear`, `resume`,
+        // `logout`, `prompt_input_exit`, `bypass_permissions_disabled`,
+        // and `other`; none indicates an error. Verified against:
+        // https://code.claude.com/docs/en/hooks.
+        "session_end" => Some(State::Done),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Background task entry point
 // ---------------------------------------------------------------------------
 
@@ -254,12 +290,24 @@ impl Inner {
     }
 
     async fn handle(self: &Arc<Self>, ev: Event) {
-        // Only codex hooks drive FSM in phase 1.
-        if let Event::CodexHook { card_id, kind, .. } = ev {
-            let Some(target) = codex_kind_to_state(&kind) else {
-                return;
-            };
-            self.observe(card_id, target).await;
+        match ev {
+            Event::CodexHook { card_id, kind, .. } => {
+                let Some(target) = codex_kind_to_state(&kind) else {
+                    return;
+                };
+                self.observe(card_id, target).await;
+            }
+            Event::ClaudeHook {
+                card_id,
+                kind,
+                payload,
+            } => {
+                let Some(target) = claude_kind_to_state(&kind, &payload) else {
+                    return;
+                };
+                self.observe(card_id, target).await;
+            }
+            _ => {}
         }
     }
 
@@ -565,6 +613,75 @@ mod tests {
             Some(State::AwaitingInput)
         );
         assert_eq!(codex_kind_to_state("hook.codex.something_else"), None);
+    }
+
+    #[test]
+    fn claude_kind_mapping_is_worker_specific() {
+        assert_eq!(
+            claude_kind_to_state("hook.claude.session_start", &Value::Null),
+            Some(State::Starting)
+        );
+        assert_eq!(
+            claude_kind_to_state("hook.claude.pre_tool_use", &Value::Null),
+            Some(State::Working)
+        );
+        assert_eq!(
+            claude_kind_to_state("hook.claude.subagent_start", &Value::Null),
+            Some(State::Working)
+        );
+        assert_eq!(
+            claude_kind_to_state("hook.claude.permission_request", &Value::Null),
+            Some(State::AwaitingInput)
+        );
+        assert_eq!(
+            claude_kind_to_state("hook.claude.notification", &Value::Null),
+            Some(State::AwaitingInput)
+        );
+        assert_eq!(
+            claude_kind_to_state("hook.claude.permission_denied", &Value::Null),
+            Some(State::AwaitingInput)
+        );
+        assert_eq!(
+            claude_kind_to_state("hook.claude.elicitation", &Value::Null),
+            Some(State::AwaitingInput)
+        );
+        assert_eq!(
+            claude_kind_to_state("hook.claude.teammate_idle", &Value::Null),
+            None
+        );
+        assert_eq!(
+            claude_kind_to_state("hook.claude.stop", &Value::Null),
+            Some(State::Idle)
+        );
+        assert_eq!(
+            codex_kind_to_state("hook.codex.stop"),
+            Some(State::AwaitingInput)
+        );
+        assert_eq!(
+            claude_kind_to_state("hook.claude.stop_failure", &Value::Null),
+            Some(State::Errored)
+        );
+        assert_eq!(
+            claude_kind_to_state(
+                "hook.claude.session_end",
+                &json!({ "reason": "prompt_input_exit" })
+            ),
+            Some(State::Done)
+        );
+        assert_eq!(
+            claude_kind_to_state("hook.claude.session_end", &json!({ "reason": "fatal" })),
+            Some(State::Done)
+        );
+        assert_eq!(
+            claude_kind_to_state("hook.claude.pre_compact", &Value::Null),
+            None,
+            "real but unmapped Claude hooks are no-ops"
+        );
+        assert_eq!(
+            claude_kind_to_state("hook.codex.stop", &Value::Null),
+            None,
+            "Claude mapping only strips the Claude prefix"
+        );
     }
 
     #[test]

@@ -7,6 +7,7 @@ use axum::{Json, Router, routing::get};
 use utoipa::OpenApi;
 
 pub mod cards;
+pub mod claude;
 pub mod codex;
 pub mod codex_cards;
 pub mod cove_folders;
@@ -53,6 +54,7 @@ pub fn protected_router() -> Router<AppState> {
         .merge(plugins::router())
         .merge(terminal::router())
         .merge(terminal_cards::router())
+        .merge(claude::router())
         .merge(codex::router())
         .merge(codex_cards::router())
         .merge(fs::router())
