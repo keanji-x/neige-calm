@@ -165,6 +165,22 @@ pub async fn revive_orphans_on_boot(state: &state::AppState) {
 /// resumed handles (the `SpecPushHandle` produced by resume goes through
 /// the same `consume_notifications` task as one produced by spawn).
 pub async fn takeover_spec_appservers_on_boot(state: &state::AppState) {
+    // #328 P2 (non-Linux warn) — `spec_appserver::verify_owned_pid` is a
+    // `/proc`-backed Linux-only identity check; on macOS / BSD the stub
+    // returns `false` unconditionally and every kill on this path is
+    // silently skipped. Production hosts are Linux, but a dev box on
+    // macOS would never see the kill path exercise, and the silence
+    // hides that. Emit a one-shot warn at boot so the operator at least
+    // sees in the log that the reap is degraded to "rely on the
+    // respawn's `bind(2)` to fail loudly if the old socket is still
+    // bound".
+    #[cfg(not(target_os = "linux"))]
+    tracing::warn!(
+        "takeover_spec_appservers_on_boot: non-linux target — \
+         verify_owned_pid stub returns false; persisted app-server \
+         process groups will NOT be reaped, falling back to bind(2) \
+         conflict surfaced by the respawn"
+    );
     let cards = match state.repo.spec_cards_for_boot_takeover().await {
         Ok(c) => c,
         Err(e) => {
@@ -262,6 +278,110 @@ enum TakeoverOutcome {
     /// spawn/connect/handshake errored. The dispatcher's missing-handle
     /// path will warn on the next live event and move on.
     Inert,
+}
+
+/// #328 P2 (log split) — distinct reasons we skip the kill of a persisted
+/// app-server pgid at boot takeover. The pre-#328 path emitted a single
+/// `warn!` whose message lumped three causes together; structured fields
+/// still distinguished them but a human reading the message saw one
+/// blurry warning. SRE triage now reads the message and gets the cause
+/// in plain English, with the structured fields preserved for the
+/// field-readers (alerts, log queries).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkipKillCause {
+    /// Pre-#318 spec card row — `start_time` and/or `boot_id` were
+    /// never persisted, so identity can't be proven. Conservative
+    /// posture (matches pre-#318 behavior for legacy rows): skip the
+    /// kill, clean the socket, respawn. Will not recur for cards
+    /// created post-#318.
+    MissingStamp,
+    /// Stamps present but `verify_owned_pid` rejected: either the host
+    /// rebooted (`boot_id` differs), the pid is gone (`/proc/<pid>`
+    /// ENOENT), or a same-boot pid recycle landed (`starttime`
+    /// mismatch). In every case the persisted pgid is NOT our
+    /// app-server.
+    IdentityMismatch,
+    /// Identity proved but the socket probe failed — the persisted pid
+    /// is still alive and ours, but isn't listening on the per-card
+    /// socket path. Likely a crash mid-accept leaving a stale socket
+    /// dirent; SIGKILLing a zombie that wasn't going to interfere with
+    /// `bind(2)` anyway is strictly worse than just respawning.
+    StaleSocketDirent,
+}
+
+impl SkipKillCause {
+    fn classify(
+        persisted_start_time: Option<u64>,
+        persisted_boot_id: Option<&str>,
+        identity_ok: bool,
+        socket_live: bool,
+    ) -> Self {
+        if persisted_start_time.is_none() || persisted_boot_id.is_none() {
+            Self::MissingStamp
+        } else if !identity_ok {
+            Self::IdentityMismatch
+        } else {
+            // identity_ok = true here; the only remaining skip reason is
+            // !socket_live (otherwise we'd be on the kill path).
+            debug_assert!(
+                !socket_live,
+                "SkipKillCause::classify reached the stale-dirent arm with \
+                 socket_live=true — caller should have fired the kill"
+            );
+            Self::StaleSocketDirent
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit(
+        self,
+        card_id: &str,
+        wave_id: &crate::ids::WaveId,
+        pgid: i32,
+        sock: &str,
+        identity_ok: bool,
+        socket_live: bool,
+        persisted_start_time: Option<u64>,
+        persisted_boot_id: Option<&str>,
+    ) {
+        match self {
+            Self::MissingStamp => {
+                tracing::info!(
+                    card_id, wave_id = %wave_id, pgid, sock,
+                    identity_ok, socket_live,
+                    start_time = ?persisted_start_time,
+                    boot_id = ?persisted_boot_id,
+                    "takeover: skipping kill of persisted pgid — \
+                     pre-#318 spec card row lacks start_time/boot_id stamp; \
+                     can't prove identity, cleaning stale socket and respawning"
+                );
+            }
+            Self::IdentityMismatch => {
+                tracing::info!(
+                    card_id, wave_id = %wave_id, pgid, sock,
+                    identity_ok, socket_live,
+                    start_time = ?persisted_start_time,
+                    boot_id = ?persisted_boot_id,
+                    "takeover: skipping kill of persisted pgid — \
+                     identity check failed (host reboot, pid recycle, or \
+                     process gone); cleaning stale socket and respawning"
+                );
+            }
+            Self::StaleSocketDirent => {
+                tracing::info!(
+                    card_id, wave_id = %wave_id, pgid, sock,
+                    identity_ok, socket_live,
+                    start_time = ?persisted_start_time,
+                    boot_id = ?persisted_boot_id,
+                    "takeover: skipping kill of persisted pgid — \
+                     identity ok but socket probe failed (stale dirent / \
+                     frozen accept loop); SIGKILLing a non-listening own \
+                     process wouldn't help bind(2), cleaning stale socket \
+                     and respawning"
+                );
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -371,17 +491,58 @@ async fn try_takeover_one_wave(
             spec_appserver::signal_process_group(pgid, libc::SIGTERM);
             // Brief grace so the launcher can flush before SIGKILL.
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            spec_appserver::signal_process_group(pgid, libc::SIGKILL);
+            // #328 P2 (re-verify identity before SIGKILL escalation) —
+            // TOCTOU defense. The first `verify_owned_pid` above was 200 ms
+            // ago; between SIGTERM landing and SIGKILL firing, the group
+            // can exit and the kernel can recycle its pgid to an unrelated
+            // user process. If that happened, our SIGKILL would land on
+            // that innocent process. Re-run the `(pid, start_time,
+            // boot_id)` triple check; skip SIGKILL if the live process at
+            // `pgid` is no longer ours (either reaped + recycled, or
+            // simply reaped — `verify_owned_pid` also returns false on
+            // ENOENT, which is the common case after a successful
+            // SIGTERM).
+            //
+            // We keep both stamps in scope here (already unwrapped on the
+            // outer match), so the re-verify is a single proc-stat read
+            // + boot-id read — cheap relative to the syscall it gates.
+            let still_ours = match (persisted_start_time, persisted_boot_id) {
+                (Some(st), Some(boot)) => spec_appserver::verify_owned_pid(pgid, st, boot),
+                _ => false,
+            };
+            if still_ours {
+                spec_appserver::signal_process_group(pgid, libc::SIGKILL);
+            } else {
+                tracing::debug!(
+                    card_id, wave_id = %wave_id, pgid, sock,
+                    start_time = ?persisted_start_time,
+                    boot_id = ?persisted_boot_id,
+                    "takeover: skipping SIGKILL escalation — identity no \
+                     longer matches after SIGTERM grace (process exited or \
+                     pgid was recycled); SIGTERM already did the job or \
+                     the recycled target is not ours to kill"
+                );
+            }
         } else if pgid > 1 {
-            tracing::info!(
-                card_id, wave_id = %wave_id, pgid, sock,
-                identity_ok, socket_live,
-                start_time = ?persisted_start_time,
-                boot_id = ?persisted_boot_id,
-                "takeover: skipping kill of persisted pgid — \
-                 identity check or socket probe failed (likely host-reboot pid \
-                 recycle, missing pre-#318 stamp, or stale dirent); cleaning \
-                 stale socket and respawning"
+            // #328 P2 (log split) — one warn covering three distinct causes
+            // makes SRE triage harder than it needs to be. Classify into a
+            // small enum and emit a cause-specific message; structured
+            // fields stay on every variant for the field-readers.
+            let cause = SkipKillCause::classify(
+                persisted_start_time,
+                persisted_boot_id,
+                identity_ok,
+                socket_live,
+            );
+            cause.emit(
+                card_id,
+                wave_id,
+                pgid,
+                sock,
+                identity_ok,
+                socket_live,
+                persisted_start_time,
+                persisted_boot_id,
             );
         }
         spec_appserver::cleanup_sock_dir(sock_path);

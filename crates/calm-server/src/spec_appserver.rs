@@ -1149,9 +1149,26 @@ impl Drop for SpecPushHandle {
 #[cfg(target_os = "linux")]
 pub fn read_proc_start_time(pid: i32) -> Option<u64> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    parse_starttime_from_stat(&stat)
+}
+
+/// Pure parser for `/proc/<pid>/stat` field 22 (`starttime`).
+///
+/// Split out from [`read_proc_start_time`] so the load-bearing
+/// `rsplit_once(')')` — needed because `comm` can contain `)` (e.g.
+/// `(name with paren)`, `(weird)name)`, etc.) — is exercised by unit
+/// tests using synthetic stat content. Production callers go through
+/// [`read_proc_start_time`] which reads the file + delegates here;
+/// tests can feed arbitrary strings without spawning processes whose
+/// `comm` they don't control.
+///
+/// The cross-platform stub above this in non-Linux builds doesn't need
+/// this helper (it returns `None` unconditionally), but the parser is
+/// cfg-gate-free so unit tests run on every host.
+pub fn parse_starttime_from_stat(content: &str) -> Option<u64> {
     // `comm` may contain `)` — strip everything up to and including the
     // LAST `)`. The remainder starts with the `state` field.
-    let after = stat.rsplit_once(')')?.1;
+    let after = content.rsplit_once(')')?.1;
     let mut fields = after.split_whitespace();
     // Skip state(0) ppid(1) pgrp(2) session(3) tty_nr(4) tpgid(5)
     // flags(6) minflt(7) cminflt(8) majflt(9) cmajflt(10) utime(11)
@@ -2712,6 +2729,60 @@ mod tests {
         assert_eq!(st.phase, SpecPushPhase::Idle);
         assert!(st.last_thread_id.is_none());
         assert!(st.last_turn_id.is_none());
+    }
+
+    /// #328 P2 (parser comm-paren test) — load-bearing `rsplit_once(')')`
+    /// in [`parse_starttime_from_stat`] must survive `comm` blobs that
+    /// contain literal `)` characters (the kernel allows arbitrary bytes
+    /// inside the parens). Before the extraction this branch was never
+    /// covered: production callers fed `sleep` / `true` with paren-free
+    /// `comm`, and a regression that switched to `split_once(')')` would
+    /// silently misalign field 22 against the wrong token.
+    ///
+    /// Synthesized stat content follows proc(5) layout: pid `(comm)` state
+    /// ppid pgrp session tty_nr tpgid flags minflt cminflt majflt cmajflt
+    /// utime stime cutime cstime priority nice num_threads itrealvalue
+    /// **starttime** …
+    #[test]
+    fn parse_starttime_handles_normal_comm() {
+        // pid=1234, comm="bash", starttime=98765 at field 22.
+        // Indices after the LAST ')': state(0) ppid(1) pgrp(2) session(3)
+        // tty(4) tpgid(5) flags(6) minflt(7) cminflt(8) majflt(9)
+        // cmajflt(10) utime(11) stime(12) cutime(13) cstime(14)
+        // priority(15) nice(16) num_threads(17) itrealvalue(18)
+        // starttime(19).
+        let stat = "1234 (bash) S 1 1234 1234 0 -1 4194304 100 0 0 0 5 3 0 0 20 0 1 0 98765 5242880 100 18446744073709551615";
+        assert_eq!(parse_starttime_from_stat(stat), Some(98765));
+    }
+
+    #[test]
+    fn parse_starttime_handles_comm_with_paren() {
+        // comm = "name with paren)" — note the LITERAL ')' inside the comm
+        // blob. A naive `split_once(')')` would terminate at the inner
+        // paren and read `with` (field offset 0 of the wrong tail) as
+        // state, misaligning every subsequent index and parsing the wrong
+        // u64. `rsplit_once(')')` finds the closing paren of the comm
+        // wrap and the parse is correct.
+        let stat = "9999 (name) with paren)) S 1 9999 9999 0 -1 4194304 100 0 0 0 5 3 0 0 20 0 1 0 424242 5242880 100 0";
+        assert_eq!(parse_starttime_from_stat(stat), Some(424242));
+    }
+
+    #[test]
+    fn parse_starttime_handles_comm_with_spaces_and_parens() {
+        // comm = "weird (name)" — embedded space + paren. Same defense.
+        let stat = "42 (weird (name)) S 1 42 42 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 7777 0 0 0";
+        assert_eq!(parse_starttime_from_stat(stat), Some(7777));
+    }
+
+    #[test]
+    fn parse_starttime_returns_none_on_malformed() {
+        // No closing paren at all → rsplit fails.
+        assert_eq!(parse_starttime_from_stat("1 bash S 1 1"), None);
+        // Closing paren but not enough fields after it for index 19.
+        assert_eq!(parse_starttime_from_stat("1 (bash) S 1 1 1"), None);
+        // Field 22 is non-numeric.
+        let bad = "1 (bash) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 NOT_A_NUMBER 0";
+        assert_eq!(parse_starttime_from_stat(bad), None);
     }
 
     /// PR3b delivery-decision table. The whole policy lives in the pure
