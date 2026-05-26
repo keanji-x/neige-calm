@@ -119,6 +119,24 @@ describe('wireEventSchema', () => {
     const result = wireEventSchema.safeParse(bad);
     expect(result.success).toBe(false);
   });
+
+  it('parses a valid claude.hook event', () => {
+    const payload = { hook_event_name: 'PreToolUse', tool_name: 'Bash' };
+    const parsed = wireEventSchema.parse({
+      ev: 'claude.hook',
+      data: {
+        card_id: 'card_claude_1',
+        kind: 'hook.claude.pre_tool_use',
+        payload,
+      },
+    });
+    expect(parsed.ev).toBe('claude.hook');
+    if (parsed.ev === 'claude.hook') {
+      expect(parsed.data.card_id).toBe('card_claude_1');
+      expect(parsed.data.kind).toBe('hook.claude.pre_tool_use');
+      expect(parsed.data.payload).toEqual(payload);
+    }
+  });
 });
 
 // ---------------- ts-rs ↔ zod conformance (D7 / issue #5) ----------------

@@ -42,9 +42,10 @@
 //! idempotency only applies once the actor itself is permitted.
 //!
 //! Anything not on this table is rejected. Worker cards (the
-//! `ActorId::AiCodex` whose `CardRole` is `Worker`) **never** drive a
-//! lifecycle transition — they emit task-level events only and the
-//! Spec Agent reacts. The Dispatcher (`ActorId::KernelDispatcher`) is
+//! `ActorId::AiCodex` / `ActorId::AiClaude` whose `CardRole` is `Worker`)
+//! **never** drive a lifecycle transition — they emit task-level events
+//! only and the Spec Agent reacts. The Dispatcher
+//! (`ActorId::KernelDispatcher`) is
 //! likewise out of the lifecycle business; it reports dispatch results
 //! and the Spec Agent decides what state follows.
 //!
@@ -68,7 +69,8 @@ use thiserror::Error;
 ///     Also catches `ActorId::Kernel` and `ActorId::KernelDispatcher`
 ///     as a defense-in-depth — they're server-internal kernel writes
 ///     and can drive any spec-permitted transition.
-///   * `Worker` → an `ActorId::AiCodex(_)`. Always rejected.
+///   * `Worker` → an `ActorId::AiCodex(_)` / `ActorId::AiClaude(_)`.
+///     Always rejected.
 ///   * `Other` → plugins, etc. Rejected; lifecycle is not theirs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ActorKind {
@@ -80,20 +82,21 @@ pub enum ActorKind {
 
 /// Classify an `ActorId` into the lifecycle authority label.
 ///
-/// Notes on the AiSpec / AiCodex split:
+/// Notes on the AiSpec / worker split:
 ///   * `ActorId::AiSpec(_)` is always treated as `SpecAgent`. The
 ///     in-tx `role_gate` already confirms the bound card's role is
 ///     actually `Spec` (a misnamed AiSpec carrying a non-Spec card is
 ///     refused upstream before this function runs).
-///   * `ActorId::AiCodex(_)` is `Worker` regardless of cached role.
-///     Even a hypothetical AiCodex bound to a `Plain`-roled card is
+///   * `ActorId::AiCodex(_)` / `ActorId::AiClaude(_)` is `Worker`
+///     regardless of cached role.
+///     Even a hypothetical worker actor bound to a `Plain`-roled card is
 ///     refused at the lifecycle layer: cards that wear the worker
 ///     wire actor have no lifecycle authority by construction.
 pub fn actor_kind(actor: &ActorId) -> ActorKind {
     match actor {
         ActorId::User => ActorKind::User,
         ActorId::Kernel | ActorId::KernelDispatcher | ActorId::AiSpec(_) => ActorKind::SpecAgent,
-        ActorId::AiCodex(_) => ActorKind::Worker,
+        ActorId::AiCodex(_) | ActorId::AiClaude(_) => ActorKind::Worker,
         ActorId::Plugin(_) => ActorKind::Other,
     }
 }
@@ -299,6 +302,10 @@ mod tests {
         ActorId::AiCodex(CardId::from("worker-1"))
     }
 
+    fn claude_worker() -> ActorId {
+        ActorId::AiClaude(CardId::from("worker-claude-1"))
+    }
+
     fn plugin() -> ActorId {
         ActorId::Plugin("hello-world".into())
     }
@@ -395,6 +402,11 @@ mod tests {
     // ----- Worker prohibition ----------------------------------------------
 
     #[test]
+    fn ai_claude_classifies_as_worker() {
+        assert_eq!(actor_kind(&claude_worker()), ActorKind::Worker);
+    }
+
+    #[test]
     fn worker_cards_can_never_change_lifecycle() {
         // No (from, to) pair is permitted when the actor is a worker —
         // including same-state requests. The idempotent shortcut for
@@ -402,11 +414,13 @@ mod tests {
         // authority, which Worker never does.
         for from in ALL_STATES {
             for to in ALL_STATES {
-                let res = validate_transition(from, to, &worker());
-                assert!(
-                    res.is_err(),
-                    "worker should be forbidden for {from:?} -> {to:?}, got {res:?}"
-                );
+                for actor in [worker(), claude_worker()] {
+                    let res = validate_transition(from, to, &actor);
+                    assert!(
+                        res.is_err(),
+                        "worker should be forbidden for {from:?} -> {to:?} as {actor:?}, got {res:?}"
+                    );
+                }
             }
         }
     }
@@ -501,7 +515,7 @@ mod tests {
         // and silently accepting their no-op write would let bugs
         // (worker mis-emits) hide instead of surfacing.
         for state in ALL_STATES {
-            for actor in [worker(), plugin()] {
+            for actor in [worker(), claude_worker(), plugin()] {
                 let res = validate_transition(state, state, &actor);
                 assert!(
                     matches!(res, Err(TransitionError::NotAuthorized { .. })),

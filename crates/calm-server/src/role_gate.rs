@@ -11,8 +11,9 @@
 //!
 //! ## What the gate enforces
 //!
-//! 1. **Empty-CardId guard.** `ActorId::AiCodex(CardId(""))` and
-//!    `ActorId::AiSpec(CardId(""))` are rejected outright. This catches
+//! 1. **Empty-CardId guard.** `ActorId::AiCodex(CardId(""))`,
+//!    `ActorId::AiClaude(CardId(""))`, and `ActorId::AiSpec(CardId(""))`
+//!    are rejected outright. This catches
 //!    the PR2 stopgap path in `crate::actor::Actor::to_actor_id` where
 //!    the `X-Calm-Actor: ai:codex` header has no card context to attach.
 //!    PR3 reattributes the codex bridge ingest to a real card id (see
@@ -21,11 +22,12 @@
 //!
 //! 2. **`Event::WaveUpdated` is gated to spec cards.** The actor must be
 //!    `User`, `Kernel`, or `AiSpec(card_id)` where the cache confirms
-//!    `CardRole::Spec`. Any `AiCodex` actor — even one bound to a card —
-//!    is rejected: codex worker cards must not edit wave-level state.
+//!    `CardRole::Spec`. Any `AiCodex` / `AiClaude` actor — even one bound
+//!    to a card — is rejected: worker cards must not edit wave-level state.
 //!
-//! 3. **Worker-card scope check.** When an `AiCodex(card_id)` actor's
-//!    cached role is `Worker`, the event's `EventScope` must be the
+//! 3. **Worker-card scope check.** When an `AiCodex(card_id)` or
+//!    `AiClaude(card_id)` actor's cached role is `Worker`, the event's
+//!    `EventScope` must be the
 //!    same card, its `wave` field must match the card's home wave
 //!    (issue #232), *and* its `cove` field must match the card's
 //!    home cove (issue #234). A worker that tries to emit a `Wave`
@@ -56,7 +58,7 @@ use thiserror::Error;
 /// without parsing a free-form string.
 #[derive(Debug, Error)]
 pub enum RoleViolation {
-    #[error("AiCodex/AiSpec actor has empty card id (likely from legacy `ai:codex` header path)")]
+    #[error("AiCodex/AiClaude/AiSpec actor has empty card id (likely from legacy AI header path)")]
     EmptyAiCardId,
 
     #[error("only spec cards (or User/Kernel) may emit wave.updated (actor={actor})")]
@@ -66,7 +68,7 @@ pub enum RoleViolation {
     WorkerOutOfScope { card: CardId, scope: String },
 
     #[error(
-        "AiCodex actor references card {card} that the role cache does not know — \
+        "AI worker actor references card {card} that the role cache does not know — \
          card was likely deleted or never minted; denying by default"
     )]
     UnknownCard { card: CardId },
@@ -96,7 +98,7 @@ pub fn enforce_role(
     // empty CardId against any real card — that would be a
     // gate-bypass. We reject loud and let the call site (the codex
     // bridge ingest in routes/codex.rs) attribute a real card.
-    if let ActorId::AiCodex(c) | ActorId::AiSpec(c) = actor
+    if let ActorId::AiCodex(c) | ActorId::AiClaude(c) | ActorId::AiSpec(c) = actor
         && c.as_str().is_empty()
     {
         return Err(RoleViolation::EmptyAiCardId);
@@ -129,14 +131,14 @@ pub fn enforce_role(
                     });
                 }
             }
-            ActorId::AiCodex(card_id) => {
-                // Even an AiCodex actor whose card happens to be
+            ActorId::AiCodex(card_id) | ActorId::AiClaude(card_id) => {
+                // Even an AI worker actor whose card happens to be
                 // `Spec`-roled (impossible in PR3 — spec cards are
                 // bound to `AiSpec`) is rejected here. The actor
                 // variant is the wire-level claim; the gate sticks
                 // to it rather than re-binding via the cache.
                 return Err(RoleViolation::NotSpecForWave {
-                    actor: format!("AiCodex({card_id})"),
+                    actor: ai_worker_actor_label(actor, card_id),
                 });
             }
         }
@@ -144,7 +146,7 @@ pub fn enforce_role(
 
     // --- (3) Worker-card scope check + (5) unknown-card deny. ---
     //
-    // For `AiCodex` actors: confirm the cache knows the card, and if
+    // For AI worker actors: confirm the cache knows the card, and if
     // the cached role is `Worker`, refuse anything broader than that
     // card's own scope. The check is three-pronged:
     //   * `scope.card == self_card` — the worker only writes into its
@@ -160,10 +162,10 @@ pub fn enforce_role(
     //     one level up). Cove is immutable per wave so the lookup is
     //     stable for the card's lifetime.
     //
-    // Plain-role codex cards (the path users hit today before the
+    // Plain-role worker cards (the path users hit today before the
     // dispatcher introduces Worker cards in earnest) have no extra
     // scope restriction.
-    if let ActorId::AiCodex(card_id) = actor {
+    if let ActorId::AiCodex(card_id) | ActorId::AiClaude(card_id) = actor {
         match cache.get(card_id) {
             None => {
                 return Err(RoleViolation::UnknownCard {
@@ -173,31 +175,31 @@ pub fn enforce_role(
             Some(CardRole::Worker) => {
                 enforce_card_self_scope(card_id, scope, cache, wave_cove_cache)?;
             }
-            // Bug A carveout — the codex bridge runs as a subprocess of
-            // codex regardless of the card's role; it can't easily know
+            // Bug A carveout — hook bridges run as subprocesses of their
+            // worker regardless of the card's role; they can't easily know
             // at fire time whether the card is Spec- or Worker-roled.
-            // For `Event::CodexHook` (a pure lifecycle observation,
-            // *not* a wave-level authority claim) we accept the write
-            // from an `AiCodex(spec_card)` actor as long as the scope
-            // matches the card's own home (card_id + wave + cove cached
-            // values — same shape as the Worker arm). Anything else
-            // from `AiCodex(spec_card)` is still refused; write
-            // authority for spec-roled cards lives with `AiSpec`. Note
-            // that `Event::WaveUpdated` is already gated in section (2)
-            // above and unconditionally refuses any `AiCodex` actor,
-            // so this carveout cannot regress the wave-authority
-            // invariant.
-            Some(CardRole::Spec) if matches!(event, Event::CodexHook { .. }) => {
+            // For the worker's own hook event (a pure lifecycle
+            // observation, *not* a wave-level authority claim) we accept
+            // the write from an AI-worker spec-card actor as long as the
+            // scope matches the card's own home (card_id + wave + cove
+            // cached values — same shape as the Worker arm). Anything
+            // else from that actor is still refused; write authority for
+            // spec-roled cards lives with `AiSpec`. Note that
+            // `Event::WaveUpdated` is already gated in section (2) above
+            // and unconditionally refuses any AI worker actor, so this
+            // carveout cannot regress the wave-authority invariant.
+            Some(CardRole::Spec) if is_own_worker_hook_event(actor, event) => {
                 enforce_card_self_scope(card_id, scope, cache, wave_cove_cache)?;
             }
-            // PR3 invariant: spec cards are bound to AiSpec, not
-            // AiCodex. Anything other than the CodexHook carveout
-            // above (which is a stateless bridge ingest path) from an
-            // `AiCodex(spec_card)` actor is rejected.
+            // PR3 invariant: spec cards are bound to AiSpec, not an AI
+            // worker actor. Anything other than the hook carveout above
+            // (which is a stateless bridge ingest path) from a
+            // worker-variant spec-card actor is rejected.
             Some(CardRole::Spec) => {
                 return Err(RoleViolation::NotSpecForWave {
                     actor: format!(
-                        "AiCodex({card_id}) — card is Spec-roled but actor variant is AiCodex"
+                        "{} — card is Spec-roled but actor variant is not AiSpec",
+                        ai_worker_actor_label(actor, card_id),
                     ),
                 });
             }
@@ -285,6 +287,22 @@ fn enforce_card_self_scope(
         });
     }
     Ok(())
+}
+
+fn ai_worker_actor_label(actor: &ActorId, card_id: &CardId) -> String {
+    match actor {
+        ActorId::AiCodex(_) => format!("AiCodex({card_id})"),
+        ActorId::AiClaude(_) => format!("AiClaude({card_id})"),
+        _ => unreachable!("only AI worker actors call ai_worker_actor_label"),
+    }
+}
+
+fn is_own_worker_hook_event(actor: &ActorId, event: &Event) -> bool {
+    matches!(
+        (actor, event),
+        (ActorId::AiCodex(_), Event::CodexHook { .. })
+            | (ActorId::AiClaude(_), Event::ClaudeHook { .. })
+    )
 }
 
 #[cfg(test)]
@@ -634,6 +652,14 @@ mod tests {
         }
     }
 
+    fn claude_hook(card: &str) -> Event {
+        Event::ClaudeHook {
+            card_id: CardId::from(card),
+            kind: "hook.claude.pre_tool_use".into(),
+            payload: serde_json::json!({}),
+        }
+    }
+
     #[test]
     fn spec_codex_hook_in_own_scope_ok() {
         // Bug A regression unit. The codex bridge runs as a subprocess
@@ -712,6 +738,90 @@ mod tests {
             ),
             "AiCodex(spec) CodexHook with forged scope.wave must be refused: {res:?}",
         );
+    }
+
+    #[test]
+    fn ai_claude_cannot_update_wave_even_with_known_card() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let id = CardId::from("claude-worker-1");
+        cache.insert(id.clone(), CardRole::Worker, WaveId::from("w"));
+        let res = enforce_role(
+            &ActorId::AiClaude(id),
+            &wave_updated(),
+            &wave_scope("w", "c"),
+            &cache,
+            &wcc,
+        );
+        assert!(
+            matches!(res, Err(RoleViolation::NotSpecForWave { .. })),
+            "AiClaude must never emit wave.updated regardless of role: {res:?}",
+        );
+    }
+
+    #[test]
+    fn claude_worker_in_card_scope_ok() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let id = CardId::from("claude-worker-1");
+        cache.insert(id.clone(), CardRole::Worker, WaveId::from("w"));
+        let res = enforce_role(
+            &ActorId::AiClaude(id.clone()),
+            &cove_updated(),
+            &card_scope(id.as_str(), "w", "c"),
+            &cache,
+            &wcc,
+        );
+        assert!(res.is_ok(), "Claude worker in own card scope: {res:?}");
+    }
+
+    #[test]
+    fn claude_worker_out_of_card_scope_rejected() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let id = CardId::from("claude-worker-1");
+        cache.insert(id.clone(), CardRole::Worker, WaveId::from("w"));
+        let res = enforce_role(
+            &ActorId::AiClaude(id),
+            &cove_updated(),
+            &wave_scope("w", "c"),
+            &cache,
+            &wcc,
+        );
+        assert!(matches!(res, Err(RoleViolation::WorkerOutOfScope { .. })));
+    }
+
+    #[test]
+    fn spec_claude_hook_in_own_scope_ok() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let id = CardId::from("spec-claude-1");
+        cache.insert(id.clone(), CardRole::Spec, WaveId::from("w"));
+        let res = enforce_role(
+            &ActorId::AiClaude(id.clone()),
+            &claude_hook(id.as_str()),
+            &card_scope(id.as_str(), "w", "c"),
+            &cache,
+            &wcc,
+        );
+        assert!(
+            res.is_ok(),
+            "AiClaude(spec) ClaudeHook in own card scope should be accepted: {res:?}",
+        );
+    }
+
+    #[test]
+    fn empty_claude_card_id_rejected() {
+        let cache = CardRoleCache::new();
+        let wcc = WaveCoveCache::new();
+        let res = enforce_role(
+            &ActorId::AiClaude(CardId::from("")),
+            &cove_updated(),
+            &EventScope::System,
+            &cache,
+            &wcc,
+        );
+        assert!(matches!(res, Err(RoleViolation::EmptyAiCardId)));
     }
 
     #[test]
