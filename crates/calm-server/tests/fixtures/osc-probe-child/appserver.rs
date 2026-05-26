@@ -171,9 +171,31 @@ async fn serve_conn(stream: tokio::net::UnixStream) -> Result<(), String> {
                     .await?;
                 }
             }
-            // Anything else (turn/steer, turn/interrupt, thread/inject_items,
-            // …) — ack with an empty object so a caller never wedges on a
-            // missing response.
+            "turn/interrupt" => {
+                if let Ok(path) = std::env::var("FAKE_CODEX_INTERRUPT_MARKER") {
+                    let _ = std::fs::write(path, "1");
+                }
+                if env_flag("FAKE_CODEX_IGNORE_TURN_INTERRUPT") {
+                    continue;
+                }
+                send_result(&mut write, &id, json!({})).await?;
+                if !env_flag("FAKE_CODEX_INTERRUPT_NO_COMPLETED") {
+                    if let Some(delay) = env_delay("FAKE_CODEX_INTERRUPT_COMPLETED_DELAY_MS") {
+                        tokio::time::sleep(delay).await;
+                    }
+                    send_notification(
+                        &mut write,
+                        "turn/completed",
+                        json!({
+                            "threadId": thread_id,
+                            "turn": { "id": turn_id, "status": "interrupted" }
+                        }),
+                    )
+                    .await?;
+                }
+            }
+            // Anything else (turn/steer, thread/inject_items, …) — ack with
+            // an empty object so a caller never wedges on a missing response.
             _ => {
                 send_result(&mut write, &id, json!({})).await?;
             }

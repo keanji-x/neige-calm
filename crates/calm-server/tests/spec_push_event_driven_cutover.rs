@@ -9,7 +9,10 @@
 
 use std::time::{Duration, Instant};
 
-use calm_server::spec_appserver::{SpecPushPhase, spawn_spec_appserver};
+use calm_server::spec_appserver::{
+    SpecPushPhase, TurnWatchdogConfig, spawn_spec_appserver,
+    spawn_spec_appserver_with_watchdog_config,
+};
 use serde_json::json;
 
 fn fake_codex_bin() -> String {
@@ -29,6 +32,21 @@ async fn wait_for_phase(
             Instant::now() < deadline,
             "timed out waiting for phase {phase:?}; status={:?}",
             handle.status().await
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn wait_for_path(path: &std::path::Path) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if path.exists() {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {} to exist",
+            path.display()
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -132,4 +150,122 @@ async fn initial_turn_child_exit_fails_promptly() {
             || err.to_string().contains("notification stream closed"),
         "unexpected error: {err}"
     );
+}
+
+#[tokio::test]
+async fn runtime_watchdog_interrupts_silent_running_turn() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let sock = tmp
+        .path()
+        .join("appserver")
+        .join("card-watchdog")
+        .join("sock");
+    let marker = tmp.path().join("interrupt.marker");
+    let env = json!({
+        "FAKE_CODEX_INTERRUPT_MARKER": marker.display().to_string()
+    });
+
+    let handle = spawn_spec_appserver_with_watchdog_config(
+        &fake_codex_bin(),
+        &env,
+        "goal",
+        &sock,
+        TurnWatchdogConfig {
+            max_turn_duration: Duration::from_millis(100),
+            interrupt_completion_budget: Duration::from_secs(2),
+        },
+    )
+    .await
+    .expect("initial turn/started should satisfy boot");
+
+    wait_for_phase(&handle, SpecPushPhase::TurnCompleted).await;
+    assert!(
+        marker.exists(),
+        "fake app-server never received turn/interrupt"
+    );
+    drop(handle);
+}
+
+#[tokio::test]
+async fn runtime_watchdog_bails_when_interrupt_has_no_completed() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let sock = tmp
+        .path()
+        .join("appserver")
+        .join("card-watchdog-no-completed")
+        .join("sock");
+    let marker = tmp.path().join("interrupt.marker");
+    let env = json!({
+        "FAKE_CODEX_INTERRUPT_MARKER": marker.display().to_string(),
+        "FAKE_CODEX_INTERRUPT_NO_COMPLETED": "1"
+    });
+    let max_turn_duration = Duration::from_millis(50);
+    let interrupt_completion_budget = Duration::from_millis(150);
+
+    let handle = spawn_spec_appserver_with_watchdog_config(
+        &fake_codex_bin(),
+        &env,
+        "goal",
+        &sock,
+        TurnWatchdogConfig {
+            max_turn_duration,
+            interrupt_completion_budget,
+        },
+    )
+    .await
+    .expect("initial turn/started should satisfy boot");
+
+    let started = Instant::now();
+    tokio::time::timeout(
+        max_turn_duration + interrupt_completion_budget + Duration::from_secs(1),
+        async {
+            wait_for_path(&marker).await;
+            tokio::time::sleep(interrupt_completion_budget + Duration::from_millis(75)).await;
+        },
+    )
+    .await
+    .expect("watchdog no-completed path should be bounded by the interrupt budget");
+
+    assert!(
+        started.elapsed()
+            < max_turn_duration + interrupt_completion_budget + Duration::from_secs(1),
+        "watchdog no-completed path exceeded the bounded test budget"
+    );
+    // PR3a only bounds the watchdog bail path. It clears the internal
+    // active-turn watchdog, but the public phase remains TurnRunning because
+    // the layer-B full-wedge recovery is a follow-up.
+    assert_eq!(handle.status().await.phase, SpecPushPhase::TurnRunning);
+    drop(handle);
+}
+
+#[tokio::test]
+async fn runtime_watchdog_accepts_delayed_interrupted_completion() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let sock = tmp
+        .path()
+        .join("appserver")
+        .join("card-watchdog-delayed-interrupted")
+        .join("sock");
+    let marker = tmp.path().join("interrupt.marker");
+    let env = json!({
+        "FAKE_CODEX_INTERRUPT_MARKER": marker.display().to_string(),
+        "FAKE_CODEX_INTERRUPT_COMPLETED_DELAY_MS": "120"
+    });
+
+    let handle = spawn_spec_appserver_with_watchdog_config(
+        &fake_codex_bin(),
+        &env,
+        "goal",
+        &sock,
+        TurnWatchdogConfig {
+            max_turn_duration: Duration::from_millis(50),
+            interrupt_completion_budget: Duration::from_millis(500),
+        },
+    )
+    .await
+    .expect("initial turn/started should satisfy boot");
+
+    wait_for_path(&marker).await;
+    wait_for_phase(&handle, SpecPushPhase::TurnCompleted).await;
+    drop(handle);
 }
