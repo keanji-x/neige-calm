@@ -285,6 +285,37 @@ impl NotificationStream {
     pub async fn recv(&mut self) -> Option<Notification> {
         self.rx.recv().await
     }
+
+    /// Await the next notification, returning a deterministic error once
+    /// the stream ends because the server closed the connection, the WS
+    /// reader hit an error, or the reader task exited.
+    pub async fn recv_result(&mut self) -> Result<Notification> {
+        self.rx.recv().await.ok_or_else(notification_stream_closed)
+    }
+
+    /// Await the next notification satisfying `predicate`.
+    ///
+    /// Non-matching notifications are consumed. If the underlying stream
+    /// ends before a match arrives, returns a deterministic error instead
+    /// of silently yielding `None`, so callers can race this future against
+    /// process exit in a `tokio::select!`.
+    pub async fn await_notification(
+        &mut self,
+        mut predicate: impl FnMut(&Notification) -> bool,
+    ) -> Result<Notification> {
+        loop {
+            let notification = self.recv_result().await?;
+            if predicate(&notification) {
+                return Ok(notification);
+            }
+        }
+    }
+}
+
+fn notification_stream_closed() -> CalmError {
+    CalmError::CodexAppServer(
+        "notification stream closed (server EOF, WS read error, or reader task exit)".to_string(),
+    )
 }
 
 // ===========================================================================
@@ -752,6 +783,162 @@ mod tests {
             .send(Message::Text(serde_json::to_string(&v).unwrap()))
             .await
             .expect("server send");
+    }
+
+    #[tokio::test]
+    async fn recv_result_returns_err_when_server_closes() {
+        let (_client, mut notifs, mut server) = CodexAppServer::connect_pair_for_test().await;
+        server.close(None).await.expect("server close");
+
+        let err = tokio::time::timeout(Duration::from_secs(1), notifs.recv_result())
+            .await
+            .expect("recv_result should resolve when the server closes")
+            .expect_err("closed notification stream must be an error");
+        assert!(
+            matches!(err, CalmError::CodexAppServer(msg) if msg.contains("notification stream closed"))
+        );
+    }
+
+    #[tokio::test]
+    async fn recv_result_returns_err_after_reader_task_exits() {
+        let (client, mut notifs, _server) = CodexAppServer::connect_pair_for_test().await;
+        drop(client);
+
+        let err = tokio::time::timeout(Duration::from_secs(1), notifs.recv_result())
+            .await
+            .expect("recv_result should resolve after reader task exit")
+            .expect_err("reader task exit must close the notification stream");
+        assert!(
+            matches!(err, CalmError::CodexAppServer(msg) if msg.contains("notification stream closed"))
+        );
+
+        let err = tokio::time::timeout(Duration::from_secs(1), notifs.recv_result())
+            .await
+            .expect("recv_result should stay resolved after reader task exit")
+            .expect_err("subsequent recv_result calls must also error");
+        assert!(
+            matches!(err, CalmError::CodexAppServer(msg) if msg.contains("notification stream closed"))
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_notification_frame_is_skipped() {
+        let (_client, mut notifs, mut server) = CodexAppServer::connect_pair_for_test().await;
+        server
+            .send(Message::Text("{not valid json".to_string()))
+            .await
+            .expect("server send malformed frame");
+        server_send_json(
+            &mut server,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "item/agentMessage/delta",
+                "params": { "delta": "after-malformed" },
+            }),
+        )
+        .await;
+
+        let notification = tokio::time::timeout(Duration::from_secs(1), notifs.recv_result())
+            .await
+            .expect("recv_result should skip malformed frames and reach the next notification")
+            .expect("valid notification after malformed frame should be delivered");
+        match notification {
+            Notification::Item { method, params } => {
+                assert_eq!(method, "item/agentMessage/delta");
+                assert_eq!(
+                    params.get("delta").and_then(Value::as_str),
+                    Some("after-malformed")
+                );
+            }
+            other => panic!("expected Item notification, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn await_notification_returns_err_when_closed_without_match() {
+        let (_client, mut notifs, mut server) = CodexAppServer::connect_pair_for_test().await;
+        server_send_json(
+            &mut server,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "thread/status/changed",
+                "params": { "threadId": "t1", "status": { "type": "active" } },
+            }),
+        )
+        .await;
+        server.close(None).await.expect("server close");
+
+        let err = tokio::time::timeout(
+            Duration::from_secs(1),
+            notifs.await_notification(|notification| {
+                matches!(notification, Notification::TurnCompleted { .. })
+            }),
+        )
+        .await
+        .expect("await_notification should resolve when the stream closes")
+        .expect_err("closed stream before a predicate match must be an error");
+        assert!(
+            matches!(err, CalmError::CodexAppServer(msg) if msg.contains("notification stream closed"))
+        );
+    }
+
+    #[tokio::test]
+    async fn notification_await_apis_return_matching_notifications() {
+        let (_client, mut notifs, mut server) = CodexAppServer::connect_pair_for_test().await;
+        server_send_json(
+            &mut server,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "turn/completed",
+                "params": { "threadId": "t1", "turn": { "id": "turn-1" } },
+            }),
+        )
+        .await;
+
+        let notification = notifs.recv_result().await.expect("notification");
+        match notification {
+            Notification::TurnCompleted { thread_id, turn } => {
+                assert_eq!(thread_id, "t1");
+                assert_eq!(turn.get("id").and_then(Value::as_str), Some("turn-1"));
+            }
+            other => panic!("expected TurnCompleted, got {other:?}"),
+        }
+
+        server_send_json(
+            &mut server,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "item/agentMessage/delta",
+                "params": { "delta": "ignored" },
+            }),
+        )
+        .await;
+        server_send_json(
+            &mut server,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "turn/completed",
+                "params": { "threadId": "t2", "turn": { "id": "turn-2" } },
+            }),
+        )
+        .await;
+
+        let notification = notifs
+            .await_notification(|notification| {
+                matches!(
+                    notification,
+                    Notification::TurnCompleted { thread_id, .. } if thread_id == "t2"
+                )
+            })
+            .await
+            .expect("matching notification");
+        match notification {
+            Notification::TurnCompleted { thread_id, turn } => {
+                assert_eq!(thread_id, "t2");
+                assert_eq!(turn.get("id").and_then(Value::as_str), Some("turn-2"));
+            }
+            other => panic!("expected TurnCompleted, got {other:?}"),
+        }
     }
 
     #[test]
