@@ -410,31 +410,24 @@ test.describe('a11y · keyboard-only navigation', () => {
     await page.keyboard.press('End');
     await expect(items.nth(itemCount - 1)).toBeFocused();
 
-    // Typeahead: capture each item's first letter and exercise it.
-    // Today's labels start with distinct letters ("terminal" → 'T',
-    // "codex" → 'C'), so pressing the last item's first letter jumps
-    // straight to it. The branch below still handles a shared-first-letter
-    // registry gracefully, so it survives future label changes.
+    // Typeahead: from the first item, pressing a letter moves to the
+    // next item in cyclic order whose accessible name starts with it.
+    // Use the last item's first letter as a deterministic key, then
+    // compute the exact expected target for the current registry.
     await page.keyboard.press('Home');
     await expect(items.nth(0)).toBeFocused();
-    const firstItemText = (await items.nth(0).textContent())?.trim() ?? '';
-    // Pull the first character of the LAST item — its initial letter
-    // gives us a deterministic typeahead target distinct from item 0
-    // when labels differ. If all items share a first letter, single-letter
-    // typeahead cycles past the current focus — that's still a valid
-    // keyboard contract test.
-    const lastItemText = (await items.nth(itemCount - 1).textContent())?.trim() ?? '';
-    if (firstItemText && lastItemText && firstItemText[0] !== lastItemText[0]) {
-      // Distinct first letters: pressing the last item's first letter
-      // should jump straight to it.
-      await page.keyboard.press(lastItemText[0]!.toLowerCase());
-      await expect(items.nth(itemCount - 1)).toBeFocused();
-    } else if (firstItemText) {
-      // Shared first letter ("New X"): one press from item 0 cycles to
-      // item 1 (next match).
-      await page.keyboard.press(firstItemText[0]!.toLowerCase());
-      await expect(items.nth(1)).toBeFocused();
+    const texts = (await items.allTextContents()).map((text) => text.trim());
+    const letter = texts[itemCount - 1][0]!.toLowerCase();
+    let expected = 0;
+    for (let k = 1; k <= itemCount; k++) {
+      const idx = k % itemCount;
+      if ((texts[idx][0] ?? '').toLowerCase() === letter) {
+        expected = idx;
+        break;
+      }
     }
+    await page.keyboard.press(letter);
+    await expect(items.nth(expected)).toBeFocused();
 
     // Escape closes the menu and returns focus to the trigger.
     await page.keyboard.press('Escape');

@@ -56,6 +56,12 @@ pub struct Config {
     #[arg(long, env = "CALM_CODEX_BIN", default_value = "codex")]
     pub codex_bin: String,
 
+    /// Override path for the `claude` CLI binary. Defaults to `claude`
+    /// (PATH lookup). Claude cards use the user's subscription login and
+    /// do not receive ANTHROPIC_API_KEY from calm.
+    #[arg(long, env = "CALM_CLAUDE_BIN", default_value = "claude")]
+    pub claude_bin: String,
+
     /// Override path for the `neige-codex-bridge` binary that codex hooks
     /// shell out to. Defaults to looking next to `calm-server`, then PATH.
     /// See `state::resolve_codex_bridge_bin`.

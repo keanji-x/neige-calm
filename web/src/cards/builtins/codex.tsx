@@ -19,7 +19,7 @@
 import { lazy, Suspense, useEffect } from 'react';
 import { useState } from '../../shared/state';
 import { z } from 'zod';
-import type { CodexCardData, FsmState } from '../../types';
+import type { ClaudeCardData, CodexCardData, FsmState } from '../../types';
 import type { Role } from '../../api/generated-terminal';
 import type { ExitChange } from '../../XtermView';
 import { sharedEventStream } from '../../api/events';
@@ -30,6 +30,7 @@ import { useTheme } from '../../app/theme';
 import { CardHead } from '../CardHead';
 import type { CardEntry } from '../registry';
 import {
+  CLAUDE_PAYLOAD_SCHEMA_VERSION,
   CODEX_PAYLOAD_SCHEMA_VERSION,
   payloadSchemaVersion,
 } from './schemaVersions';
@@ -51,10 +52,19 @@ const codexPayloadSchema = z.object({
   cwd: z.string().optional(),
 });
 
+const claudePayloadSchema = z.object({
+  terminal_id: z.string().optional(),
+  prompt: z.string().optional(),
+  cwd: z.string().optional(),
+  settings_path: z.string().optional(),
+});
+
 function UnsupportedCodexCard({
+  title,
   version,
   onClose,
 }: {
+  title: string;
   version: number;
   onClose?: () => void;
 }) {
@@ -62,7 +72,7 @@ function UnsupportedCodexCard({
     <div className="codex-card codex-card-unsupported-version">
       <CardHead
         className="card-drag-handle"
-        title="Codex"
+        title={title}
         onClose={onClose}
         closeAriaLabel="Remove panel"
       />
@@ -80,7 +90,7 @@ function CodexCard({
   card,
   onClose,
 }: {
-  card: CodexCardData;
+  card: CodexCardData | ClaudeCardData;
   onClose?: () => void;
 }) {
   // Early bail-out for unsupported versions. Split into its own component
@@ -89,6 +99,7 @@ function CodexCard({
   if (card.unsupportedVersion !== undefined) {
     return (
       <UnsupportedCodexCard
+        title={card.type === 'claude' ? 'Claude' : 'Codex'}
         version={card.unsupportedVersion}
         onClose={onClose}
       />
@@ -101,10 +112,12 @@ function CodexCardImpl({
   card,
   onClose,
 }: {
-  card: CodexCardData;
+  card: CodexCardData | ClaudeCardData;
   onClose?: () => void;
 }) {
   const cardId = card.id;
+  const provider = card.type;
+  const title = provider === 'claude' ? 'Claude' : 'Codex';
   const { resolved: theme } = useTheme();
   // FSM state owned by the kernel `card_fsm` task. Defaults to "Starting"
   // until the first overlay.set lands (the kernel writes one on the
@@ -164,8 +177,18 @@ function CodexCardImpl({
     // Second arg is the envelope `EventMeta` ({id, eventVersion}); codex
     // only cares about the payload, so we ignore it.
     const off = stream.on((ev) => {
-      if (ev.ev === 'codex.hook' && ev.data.card_id === cardId) {
-        const payload = (ev.data.payload ?? {}) as Record<string, unknown>;
+      let hookPayload: unknown = null;
+      if (provider === 'codex' && ev.ev === 'codex.hook' && ev.data.card_id === cardId) {
+        hookPayload = ev.data.payload;
+      } else if (
+        provider === 'claude' &&
+        ev.ev === 'claude.hook' &&
+        ev.data.card_id === cardId
+      ) {
+        hookPayload = ev.data.payload;
+      }
+      if (hookPayload !== null) {
+        const payload = (hookPayload ?? {}) as Record<string, unknown>;
         const eventName = String(payload.hook_event_name ?? 'unknown');
         const toolName =
           typeof payload.tool_name === 'string' ? payload.tool_name : '';
@@ -190,13 +213,13 @@ function CodexCardImpl({
       // Topic intentionally NOT removed — see XtermView's terminal flow
       // for the same reasoning (sticky subscriptions on the shared stream).
     };
-  }, [cardId]);
+  }, [cardId, provider]);
 
   return (
     <div className="codex-card">
       <CardHead
         className="card-drag-handle"
-        title="Codex"
+        title={title}
         onClose={onClose}
         closeAriaLabel="Remove panel"
         // Dot-only status (unified with Terminal). The visible label is gone;
@@ -242,7 +265,7 @@ function CodexCardImpl({
           </Suspense>
         ) : (
           <div className="codex-card-empty">
-            Codex is starting… waiting for PTY.
+            {title} is starting… waiting for PTY.
           </div>
         )}
       </div>
@@ -338,6 +361,58 @@ export const CodexEntry: CardEntry<CodexCardData> = {
           key: 'cwd',
           label: 'Working directory',
           type: 'directory',
+        },
+      ],
+    },
+  },
+};
+
+export const ClaudeEntry: CardEntry<ClaudeCardData> = {
+  type: 'claude',
+  Component: CodexCard,
+  defaultSize: { w: 6, h: 12, minW: 4, minH: 8 },
+  fromKernel: (k) => {
+    if (k.kind !== 'claude') return null;
+    const candidate = k.payload ?? {};
+    const version = payloadSchemaVersion(candidate);
+    if (version > CLAUDE_PAYLOAD_SCHEMA_VERSION) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[cards] claude payload schemaVersion=${version} unsupported (frontend supports ${CLAUDE_PAYLOAD_SCHEMA_VERSION}); please refresh`,
+        { id: k.id },
+      );
+      return {
+        type: 'claude',
+        id: k.id,
+        unsupportedVersion: version,
+      };
+    }
+    const parsed = claudePayloadSchema.safeParse(candidate);
+    if (!parsed.success) {
+      // eslint-disable-next-line no-console
+      console.warn(`[cards] claude payload invalid for ${k.id}:`, parsed.error.issues);
+      return null;
+    }
+    return {
+      type: 'claude',
+      id: k.id,
+      terminalId: parsed.data.terminal_id,
+      cwd: parsed.data.cwd,
+    };
+  },
+  addPanel: {
+    label: 'claude',
+    createSchema: {
+      fields: [
+        {
+          key: 'cwd',
+          label: 'Working directory',
+          type: 'directory',
+        },
+        {
+          key: 'prompt',
+          label: 'Prompt',
+          type: 'textarea',
         },
       ],
     },

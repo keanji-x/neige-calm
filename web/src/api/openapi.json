@@ -2178,6 +2178,78 @@
         }
       }
     },
+    "/api/waves/{wave_id}/claude-cards": {
+      "post": {
+        "tags": [
+          "claude"
+        ],
+        "operationId": "create_claude_card",
+        "parameters": [
+          {
+            "name": "wave_id",
+            "in": "path",
+            "description": "Wave id to create the Claude card under",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Body required (theme is mandatory; cwd/prompt optional)",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewClaudeCardBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Worker card + linked terminal created atomically; Claude daemon spawned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Card"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Wave not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Body missing required fields (e.g. theme)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Daemon spawn failed (rows are persisted; sweeper reaps within ~60s)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/waves/{wave_id}/codex-cards": {
       "post": {
         "tags": [
@@ -2720,6 +2792,42 @@
             "description": "Defaulted so the REST handler can override from the `:wave_id` path\nparam without forcing every client body to repeat it. Direct repo\ncallers must still set this — passing \"\" produces a NotFound."
           }
         }
+      },
+      "NewClaudeCardBody": {
+        "type": "object",
+        "description": "Body for `POST /api/waves/:wave_id/claude-cards`.",
+        "required": [
+          "theme"
+        ],
+        "properties": {
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Working directory Claude runs in. Empty string or missing -> `$HOME`\n(then `cwd` of server)."
+          },
+          "prompt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional first prompt passed as Claude's positional prompt argument."
+          },
+          "sort": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Sort order within the wave. `None` defaults to \"append to end\"."
+          },
+          "theme": {
+            "$ref": "#/components/schemas/RequestTheme",
+            "description": "Host browser's current theme RGB. Required so the PTY daemon answers\nClaude's terminal color probes with colors matching the surrounding UI."
+          }
+        },
+        "additionalProperties": false
       },
       "NewCodexCardBody": {
         "type": "object",
@@ -3680,6 +3788,10 @@
     {
       "name": "codex",
       "description": "Codex (OpenAI) agent cards — hook-driven event stream"
+    },
+    {
+      "name": "claude",
+      "description": "Claude worker cards — hook-driven event stream"
     },
     {
       "name": "fs",

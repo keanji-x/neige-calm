@@ -14,6 +14,7 @@ import type {
   KernelWaveDetail,
   ListdirResponse,
   NewCardBody,
+  NewClaudeCardBody,
   NewCodexCardBody,
   NewCoveBody,
   NewOverlayBody,
@@ -285,6 +286,13 @@ export const createCodexCard = (waveId: string, b: NewCodexCardBody) =>
   request<KernelCard>(
     'POST',
     `/api/waves/${encodeURIComponent(waveId)}/codex-cards`,
+    b,
+  );
+
+export const createClaudeCard = (waveId: string, b: NewClaudeCardBody) =>
+  request<KernelCard>(
+    'POST',
+    `/api/waves/${encodeURIComponent(waveId)}/claude-cards`,
     b,
   );
 
