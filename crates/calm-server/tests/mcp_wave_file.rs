@@ -11,8 +11,8 @@ use std::sync::Arc;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
-use calm_server::event::EventBus;
-use calm_server::ids::{CardId, WaveId};
+use calm_server::event::{Event, EventBus, EventScope};
+use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::wave_file::{TOOL_WAVE_CAT, TOOL_WAVE_LS};
 use calm_server::mcp_server::tools::wave_report::TOOL_REPORT_READ;
@@ -26,10 +26,12 @@ struct Boot {
     ctx: Arc<AppContext>,
     registry: Arc<ToolRegistry>,
     repo: Arc<dyn Repo>,
+    cove_id: CoveId,
     wave_id: WaveId,
     spec_card_id: CardId,
     worker_card_id: CardId,
     report_card_id: CardId,
+    other_spec_card_id: CardId,
     other_wave_card_id: CardId,
 }
 
@@ -96,7 +98,7 @@ async fn boot() -> Boot {
         .unwrap();
     let wave2 = repo
         .wave_create(NewWave {
-            cove_id: cove2.id,
+            cove_id: cove2.id.clone(),
             title: "other wave".into(),
             sort: None,
             cwd: String::new(),
@@ -111,6 +113,15 @@ async fn boot() -> Boot {
             kind: "codex".into(),
             sort: None,
             payload: json!({ "task": "other-wave" }),
+        })
+        .await
+        .unwrap();
+    let other_spec_card = repo
+        .card_create(NewCard {
+            wave_id: wave2.id.clone(),
+            kind: "codex".into(),
+            sort: Some(-1.0),
+            payload: json!({ "role": "spec" }),
         })
         .await
         .unwrap();
@@ -129,6 +140,7 @@ async fn boot() -> Boot {
         CardRole::Worker,
         wave2.id.clone(),
     );
+    card_role_cache.insert(other_spec_card.id.clone(), CardRole::Spec, wave2.id.clone());
 
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
@@ -148,10 +160,12 @@ async fn boot() -> Boot {
         ctx,
         registry,
         repo,
+        cove_id: cove.id,
         wave_id: wave.id,
         spec_card_id: spec_card.id,
         worker_card_id: worker_card.id,
         report_card_id: report_card.id,
+        other_spec_card_id: other_spec_card.id,
         other_wave_card_id: other_wave_card.id,
     }
 }
@@ -183,12 +197,103 @@ fn worker_identity(boot: &Boot) -> CardIdentity {
     }
 }
 
+fn other_spec_identity(boot: &Boot) -> CardIdentity {
+    CardIdentity {
+        card_id: boot.other_spec_card_id.clone(),
+        role: CardRole::Spec,
+    }
+}
+
 fn content_json(value: &Value) -> Value {
     let content = value
         .get("content")
         .and_then(Value::as_str)
         .expect("content string");
     serde_json::from_str(content).expect("content is JSON")
+}
+
+async fn log_wave_event(boot: &Boot, wave_id: &WaveId, cove_id: &CoveId, event: Event) {
+    boot.repo
+        .log_pure_event(
+            ActorId::User,
+            EventScope::Wave {
+                wave: wave_id.clone(),
+                cove: cove_id.clone(),
+            },
+            None,
+            &boot.ctx.events,
+            &boot.ctx.card_role_cache,
+            &boot.ctx.wave_cove_cache,
+            event,
+        )
+        .await
+        .expect("log event");
+}
+
+async fn request_codex(boot: &Boot, key: &str) {
+    log_wave_event(
+        boot,
+        &boot.wave_id,
+        &boot.cove_id,
+        Event::CodexJobRequested {
+            idempotency_key: key.into(),
+            goal: format!("goal for {key}"),
+            context: json!({ "key": key }),
+            acceptance_criteria: Some(format!("accept {key}")),
+        },
+    )
+    .await;
+}
+
+async fn complete_run(boot: &Boot, key: &str, summary: &str) {
+    log_wave_event(
+        boot,
+        &boot.wave_id,
+        &boot.cove_id,
+        Event::TaskCompleted {
+            idempotency_key: key.into(),
+            result: json!({ "summary": summary }),
+            artifacts: vec![],
+        },
+    )
+    .await;
+}
+
+async fn fail_run(boot: &Boot, key: &str, reason: &str) {
+    log_wave_event(
+        boot,
+        &boot.wave_id,
+        &boot.cove_id,
+        Event::TaskFailed {
+            idempotency_key: key.into(),
+            reason: reason.into(),
+        },
+    )
+    .await;
+}
+
+async fn materialize_worker(boot: &Boot, key: &str) -> CardId {
+    let card = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: boot.wave_id.clone(),
+            kind: "codex".into(),
+            sort: Some(10.0),
+            payload: json!({
+                "idempotency_key": key,
+                "goal": format!("goal for {key}"),
+                "context": { "key": key },
+                "acceptance_criteria": format!("accept {key}"),
+                "role_request": "codex",
+                "prompt": format!("prompt for {key}")
+            }),
+        })
+        .await
+        .expect("create worker card");
+    boot.ctx
+        .card_role_cache
+        .insert(card.id.clone(), CardRole::Worker, boot.wave_id.clone());
+    card.id
 }
 
 #[tokio::test]
@@ -211,11 +316,17 @@ async fn ls_root_returns_top_level_entries() {
     assert!(names.contains(&"wave.json"), "entries = {entries:?}");
     assert!(names.contains(&"report.md"), "entries = {entries:?}");
     assert!(names.contains(&"cards/"), "entries = {entries:?}");
+    assert!(names.contains(&"runs/"), "entries = {entries:?}");
     let cards = entries
         .iter()
         .find(|entry| entry["name"] == "cards/")
         .expect("cards dir");
     assert_eq!(cards["kind"], json!("dir"));
+    let runs = entries
+        .iter()
+        .find(|entry| entry["name"] == "runs/")
+        .expect("runs dir");
+    assert_eq!(runs["kind"], json!("dir"));
 }
 
 #[tokio::test]
@@ -244,6 +355,248 @@ async fn cards_index_lists_only_bound_wave_cards_without_payload() {
         cards.iter().all(|card| card.get("payload").is_none()),
         "cards/index.json must not include payloads: {cards:?}"
     );
+}
+
+#[tokio::test]
+async fn ls_runs_returns_projected_runs_for_bound_wave() {
+    let boot = boot().await;
+    request_codex(&boot, "run-list").await;
+    let worker_id = materialize_worker(&boot, "run-list").await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_LS,
+        spec_identity(&boot),
+        json!({ "path": "runs/" }),
+    )
+    .await
+    .expect("spec can list runs");
+    let runs = out.as_array().expect("runs ls returns array");
+    assert_eq!(runs.len(), 1, "runs = {runs:?}");
+    assert_eq!(runs[0]["name"], json!("run-list.md"));
+    assert_eq!(runs[0]["kind"], json!("file"));
+    assert_eq!(runs[0]["idempotency_key"], json!("run-list"));
+    assert_eq!(runs[0]["status"], json!("running"));
+    assert_eq!(runs[0]["run_kind"], json!("codex"));
+    assert_eq!(runs[0]["worker_card_id"], json!(worker_id.as_str()));
+}
+
+#[tokio::test]
+async fn runs_index_json_returns_same_run_set_as_ls_with_full_fields() {
+    let boot = boot().await;
+    request_codex(&boot, "run-a").await;
+    request_codex(&boot, "run-b").await;
+    materialize_worker(&boot, "run-b").await;
+
+    let ls = call_tool(
+        &boot,
+        TOOL_WAVE_LS,
+        spec_identity(&boot),
+        json!({ "path": "runs" }),
+    )
+    .await
+    .expect("spec can list runs");
+    let ls_keys: Vec<&str> = ls
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|run| run["idempotency_key"].as_str().unwrap())
+        .collect();
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/index.json" }),
+    )
+    .await
+    .expect("spec can read runs index");
+    assert_eq!(out["content_type"], json!("application/json"));
+    let runs = content_json(&out);
+    let runs = runs.as_array().expect("runs index is array");
+    let index_keys: Vec<&str> = runs
+        .iter()
+        .map(|run| run["idempotency_key"].as_str().unwrap())
+        .collect();
+    assert_eq!(index_keys, ls_keys);
+    for run in runs {
+        assert!(run.get("status").is_some(), "run = {run:?}");
+        assert!(run.get("kind").is_some(), "run = {run:?}");
+        assert!(run.get("requested_at").is_some(), "run = {run:?}");
+        assert!(run.get("finished_at").is_some(), "run = {run:?}");
+        assert!(run.get("worker_card_id").is_some(), "run = {run:?}");
+    }
+}
+
+#[tokio::test]
+async fn completed_run_markdown_includes_read_only_banner_and_worker_fields() {
+    let boot = boot().await;
+    request_codex(&boot, "done-md").await;
+    materialize_worker(&boot, "done-md").await;
+    complete_run(&boot, "done-md", "finished cleanly").await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/done-md.md" }),
+    )
+    .await
+    .expect("spec can read run markdown");
+    assert_eq!(out["content_type"], json!("text/markdown"));
+    let md = out["content"].as_str().expect("markdown content");
+    assert!(md.contains("READ-ONLY PROJECTION"), "md = {md}");
+    assert!(md.contains("- Status: completed"), "md = {md}");
+    assert!(md.contains("## Goal"), "md = {md}");
+    assert!(md.contains("goal for done-md"), "md = {md}");
+    assert!(md.contains("## Context"), "md = {md}");
+    assert!(md.contains("## Acceptance Criteria"), "md = {md}");
+    assert!(md.contains("accept done-md"), "md = {md}");
+    assert!(md.contains("## Prompt"), "md = {md}");
+    assert!(md.contains("prompt for done-md"), "md = {md}");
+    assert!(md.contains("TaskCompleted"), "md = {md}");
+    assert!(md.contains("finished cleanly"), "md = {md}");
+}
+
+#[tokio::test]
+async fn completed_run_json_returns_structured_projection() {
+    let boot = boot().await;
+    request_codex(&boot, "done-json").await;
+    let worker_id = materialize_worker(&boot, "done-json").await;
+    complete_run(&boot, "done-json", "json complete").await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/done-json.json" }),
+    )
+    .await
+    .expect("spec can read run json");
+    assert_eq!(out["content_type"], json!("application/json"));
+    let run = content_json(&out);
+    assert_eq!(run["idempotency_key"], json!("done-json"));
+    assert_eq!(run["status"], json!("completed"));
+    assert_eq!(run["kind"], json!("codex"));
+    assert_eq!(run["worker_card_id"], json!(worker_id.as_str()));
+    assert_eq!(
+        run["worker_card_payload"]["prompt"],
+        json!("prompt for done-json")
+    );
+    assert_eq!(
+        run["events"]["requested"]["payload"]["idempotency_key"],
+        json!("done-json")
+    );
+    assert_eq!(
+        run["events"]["completed"]["payload"]["result"]["summary"],
+        json!("json complete")
+    );
+    assert!(run["events"]["failed"].is_null(), "run = {run:?}");
+}
+
+#[tokio::test]
+async fn runs_do_not_leak_across_waves() {
+    let boot = boot().await;
+    request_codex(&boot, "private-run").await;
+    materialize_worker(&boot, "private-run").await;
+
+    let err = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        other_spec_identity(&boot),
+        json!({ "path": "runs/private-run.md" }),
+    )
+    .await
+    .expect_err("other wave must not see this run");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert!(
+        err.message.contains("path not available in this view"),
+        "err = {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn unknown_run_key_matches_unknown_card_error_shape() {
+    let boot = boot().await;
+    let card_err = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "cards/not-a-card/payload.json" }),
+    )
+    .await
+    .expect_err("unknown card must be unavailable");
+    let run_err = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/not-a-run.md" }),
+    )
+    .await
+    .expect_err("unknown run must be unavailable");
+    assert_eq!(run_err.code, card_err.code);
+    assert_eq!(run_err.code, RpcError::INVALID_PARAMS);
+    assert!(run_err.message.contains("path not available in this view"));
+}
+
+#[tokio::test]
+async fn run_status_derivation_follows_projection_rules() {
+    let boot = boot().await;
+    request_codex(&boot, "request-only").await;
+    request_codex(&boot, "running-run").await;
+    materialize_worker(&boot, "running-run").await;
+    request_codex(&boot, "completed-run").await;
+    complete_run(&boot, "completed-run", "done").await;
+    request_codex(&boot, "failed-run").await;
+    fail_run(&boot, "failed-run", "bad exit").await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/index.json" }),
+    )
+    .await
+    .expect("spec can read runs index");
+    let runs = content_json(&out);
+    let runs = runs.as_array().expect("runs index array");
+    let status = |key: &str| {
+        runs.iter()
+            .find(|run| run["idempotency_key"] == key)
+            .unwrap_or_else(|| panic!("missing {key}: {runs:?}"))["status"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(status("request-only"), "requested");
+    assert_eq!(status("running-run"), "running");
+    assert_eq!(status("completed-run"), "completed");
+    assert_eq!(status("failed-run"), "failed");
+}
+
+#[tokio::test]
+async fn empty_wave_has_empty_runs_projection() {
+    let boot = boot().await;
+
+    let ls = call_tool(
+        &boot,
+        TOOL_WAVE_LS,
+        spec_identity(&boot),
+        json!({ "path": "runs/" }),
+    )
+    .await
+    .expect("spec can list runs");
+    assert_eq!(ls, json!([]));
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/index.json" }),
+    )
+    .await
+    .expect("spec can read empty runs index");
+    assert_eq!(content_json(&out), json!([]));
 }
 
 #[tokio::test]

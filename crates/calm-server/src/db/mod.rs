@@ -194,6 +194,14 @@ pub type WriteInTxFn<'a> = Box<
     dyn for<'tx> FnOnce(&'tx mut Transaction<'_, Sqlite>) -> BoxFuture<'tx, Result<()>> + Send + 'a,
 >;
 
+#[derive(Clone, Debug)]
+pub struct WaveEvent {
+    pub id: i64,
+    pub at: i64,
+    pub scope: EventScope,
+    pub event: Event,
+}
+
 // ---------------------------------------------------------------------------
 // Sub-trait split. See the "Trait capability split" section in the module
 // docs for the rationale. Each sub-trait carries `Send + Sync + 'static` so
@@ -585,6 +593,12 @@ pub trait RepoEventWrite: RepoRead {
         since_id: i64,
         limit: Option<i64>,
     ) -> Result<Vec<(i64, u32, EventScope, Event)>>;
+
+    /// Read only selected event kinds scoped to one wave. This is for
+    /// projection tools that need a bounded audit-log slice, not a replay
+    /// cursor: callers must pass the exact kind tags they need and the query
+    /// filters on `scope_wave = ?`.
+    async fn events_for_wave(&self, wave_id: &str, kinds: &[&str]) -> Result<Vec<WaveEvent>>;
 
     /// Lowest live `events.id`, or `None` if the table is empty.
     ///

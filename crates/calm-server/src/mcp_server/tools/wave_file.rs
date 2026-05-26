@@ -12,7 +12,9 @@ use crate::mcp_server::registry::{
 };
 use crate::mcp_server::tools::wave_report;
 use crate::model::{Card, CardRole, Wave};
+use crate::{db::WaveEvent, event::Event};
 use serde_json::{Value, json};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 pub const TOOL_WAVE_LS: &str = "calm.wave.ls";
@@ -39,7 +41,7 @@ fn ls_descriptor() -> ToolDescriptor {
         name: TOOL_WAVE_LS.into(),
         description: "Spec-only: list file-like read views for the current MCP-bound wave. \
              Accepts optional `{ path }`; `/` lists `index.md`, `wave.json`, \
-             `report.md`, and `cards/`. The wave is derived from the bound \
+             `report.md`, `cards/`, and `runs/`. The wave is derived from the bound \
              card identity, never from arguments."
             .into(),
         input_schema: json!({
@@ -56,7 +58,9 @@ fn cat_descriptor() -> ToolDescriptor {
         name: TOOL_WAVE_CAT.into(),
         description: "Spec-only: read one file-like view from the current MCP-bound wave. \
              Supports `index.md`, `wave.json`, `report.md`, `cards/index.json`, \
-             `cards/<card_id>/meta.json`, and `cards/<card_id>/payload.json`."
+             `cards/<card_id>/meta.json`, `cards/<card_id>/payload.json`, \
+             `runs/index.json`, `runs/<idempotency_key>.md`, and \
+             `runs/<idempotency_key>.json`."
             .into(),
         input_schema: json!({
             "type": "object",
@@ -80,11 +84,13 @@ async fn wave_ls(
     match path.as_str() {
         "" => {
             let cards = cards_for_wave(&ctx, &wave).await?;
+            let runs = runs_for_wave(&ctx, &wave).await?;
             Ok(json!([
                 entry_file("index.md", None, Some(wave.updated_at)),
                 entry_file("wave.json", None, Some(wave.updated_at)),
                 entry_file("report.md", None, Some(wave.updated_at)),
                 entry_dir("cards/", Some(cards.len()), None),
+                entry_dir("runs/", Some(runs.len()), runs_updated_at(&wave, &runs)),
             ]))
         }
         "cards" => {
@@ -100,6 +106,12 @@ async fn wave_ls(
                 )
             }));
             Ok(Value::Array(entries))
+        }
+        "runs" => {
+            let runs = runs_for_wave(&ctx, &wave).await?;
+            Ok(Value::Array(
+                runs.iter().map(run_listing_entry).collect::<Vec<_>>(),
+            ))
         }
         path if path.starts_with("cards/") => {
             let parts: Vec<&str> = path.split('/').collect();
@@ -144,6 +156,11 @@ async fn wave_cat(
             let metas: Vec<Value> = cards.iter().map(|card| card_meta(&ctx, card)).collect();
             content_json(&metas)
         }
+        "runs/index.json" => {
+            let runs = runs_for_wave(&ctx, &wave).await?;
+            let summaries: Vec<Value> = runs.iter().map(run_index_entry).collect();
+            content_json(&summaries)
+        }
         path if path.starts_with("cards/") => {
             let parts: Vec<&str> = path.split('/').collect();
             if parts.len() != 3 {
@@ -154,6 +171,19 @@ async fn wave_cat(
                 "meta.json" => content_json(&card_meta(&ctx, &card)),
                 "payload.json" => content_json(&card.payload),
                 _ => Err(path_not_available(path)),
+            }
+        }
+        path if path.starts_with("runs/") => {
+            let runs = runs_for_wave(&ctx, &wave).await?;
+            let run_path = path.trim_start_matches("runs/");
+            if let Some(key) = run_path.strip_suffix(".md") {
+                let run = run_by_key(&runs, key)?;
+                Ok(content_markdown(run_markdown(run)))
+            } else if let Some(key) = run_path.strip_suffix(".json") {
+                let run = run_by_key(&runs, key)?;
+                content_json(&run_json(run))
+            } else {
+                Err(path_not_available(path))
             }
         }
         other => Err(path_not_available(other)),
@@ -254,6 +284,260 @@ async fn card_in_wave(ctx: &Arc<AppContext>, wave: &Wave, card_id: &str) -> Resu
     Ok(card)
 }
 
+#[derive(Clone, Debug)]
+struct RunEventProjection {
+    event_id: i64,
+    at: i64,
+    kind: &'static str,
+    payload: Value,
+}
+
+#[derive(Clone, Debug)]
+struct RunProjection {
+    idempotency_key: String,
+    status: &'static str,
+    kind: String,
+    requested_at: Option<i64>,
+    finished_at: Option<i64>,
+    worker_card: Option<Card>,
+    requested_event: Option<RunEventProjection>,
+    completed_event: Option<RunEventProjection>,
+    failed_event: Option<RunEventProjection>,
+}
+
+async fn runs_for_wave(ctx: &Arc<AppContext>, wave: &Wave) -> Result<Vec<RunProjection>, RpcError> {
+    let cards = cards_for_wave(ctx, wave).await?;
+    let events = ctx
+        .repo
+        .events_for_wave(
+            wave.id.as_str(),
+            &[
+                "codex.job_requested",
+                "terminal.job_requested",
+                "task.completed",
+                "task.failed",
+            ],
+        )
+        .await
+        .map_err(|e| RpcError::internal(format!("wave_file: events_for_wave: {e}")))?;
+
+    Ok(project_runs(cards, events))
+}
+
+fn project_runs(cards: Vec<Card>, events: Vec<WaveEvent>) -> Vec<RunProjection> {
+    let mut keys = BTreeSet::new();
+    let mut worker_cards = BTreeMap::new();
+    for card in cards {
+        if let Some(key) = idempotency_key_from_payload(&card.payload) {
+            keys.insert(key.to_string());
+            worker_cards.entry(key.to_string()).or_insert(card);
+        }
+    }
+
+    let mut requested = BTreeMap::<String, RunEventProjection>::new();
+    let mut requested_kind = BTreeMap::<String, &'static str>::new();
+    let mut completed = BTreeMap::<String, RunEventProjection>::new();
+    let mut failed = BTreeMap::<String, RunEventProjection>::new();
+
+    for row in events {
+        match &row.event {
+            Event::CodexJobRequested {
+                idempotency_key, ..
+            } => {
+                keys.insert(idempotency_key.clone());
+                requested_kind.insert(idempotency_key.clone(), "codex");
+                record_earliest(
+                    &mut requested,
+                    idempotency_key,
+                    run_event(
+                        row.id,
+                        row.at,
+                        "codex.job_requested",
+                        row.event.payload_value(),
+                    ),
+                );
+            }
+            Event::TerminalJobRequested {
+                idempotency_key, ..
+            } => {
+                keys.insert(idempotency_key.clone());
+                requested_kind.insert(idempotency_key.clone(), "terminal");
+                record_earliest(
+                    &mut requested,
+                    idempotency_key,
+                    run_event(
+                        row.id,
+                        row.at,
+                        "terminal.job_requested",
+                        row.event.payload_value(),
+                    ),
+                );
+            }
+            Event::TaskCompleted {
+                idempotency_key, ..
+            } => {
+                record_latest(
+                    &mut completed,
+                    idempotency_key,
+                    run_event(row.id, row.at, "task.completed", row.event.payload_value()),
+                );
+            }
+            Event::TaskFailed {
+                idempotency_key, ..
+            } => {
+                record_latest(
+                    &mut failed,
+                    idempotency_key,
+                    run_event(row.id, row.at, "task.failed", row.event.payload_value()),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    keys.into_iter()
+        .map(|key| {
+            let worker_card = worker_cards.remove(&key);
+            let requested_event = requested.remove(&key);
+            let completed_event = completed.remove(&key);
+            let failed_event = failed.remove(&key);
+
+            // Status is a read-only projection from event/card facts:
+            // final events win by latest row only after a request exists;
+            // otherwise a materialized worker card means the dispatcher has
+            // started the run; otherwise the request is still only an
+            // audit-log row. Worker-card-only rows are unexpected and
+            // intentionally labeled `unknown`.
+            let (status, finished_at) = match (
+                requested_event.is_some(),
+                latest_final_event(completed_event.as_ref(), failed_event.as_ref()),
+            ) {
+                (true, Some(event)) if event.kind == "task.failed" => ("failed", Some(event.at)),
+                (true, Some(event)) => ("completed", Some(event.at)),
+                (true, None) if worker_card.is_some() => ("running", None),
+                (true, None) => ("requested", None),
+                (false, _) => ("unknown", None),
+            };
+
+            let kind = worker_card
+                .as_ref()
+                .and_then(|card| run_kind_from_card(card))
+                .or_else(|| requested_kind.get(&key).copied())
+                .unwrap_or("unknown")
+                .to_string();
+
+            RunProjection {
+                idempotency_key: key,
+                status,
+                kind,
+                requested_at: requested_event.as_ref().map(|event| event.at),
+                finished_at,
+                worker_card,
+                requested_event,
+                completed_event,
+                failed_event,
+            }
+        })
+        .collect()
+}
+
+fn run_event(event_id: i64, at: i64, kind: &'static str, payload: Value) -> RunEventProjection {
+    RunEventProjection {
+        event_id,
+        at,
+        kind,
+        payload,
+    }
+}
+
+fn record_earliest(
+    map: &mut BTreeMap<String, RunEventProjection>,
+    key: &str,
+    event: RunEventProjection,
+) {
+    match map.get(key) {
+        Some(existing) if (existing.at, existing.event_id) <= (event.at, event.event_id) => {}
+        _ => {
+            map.insert(key.to_string(), event);
+        }
+    }
+}
+
+fn record_latest(
+    map: &mut BTreeMap<String, RunEventProjection>,
+    key: &str,
+    event: RunEventProjection,
+) {
+    match map.get(key) {
+        Some(existing) if (existing.at, existing.event_id) >= (event.at, event.event_id) => {}
+        _ => {
+            map.insert(key.to_string(), event);
+        }
+    }
+}
+
+fn latest_final_event<'a>(
+    completed: Option<&'a RunEventProjection>,
+    failed: Option<&'a RunEventProjection>,
+) -> Option<&'a RunEventProjection> {
+    match (completed, failed) {
+        (Some(done), Some(fail)) => {
+            if (fail.at, fail.event_id) >= (done.at, done.event_id) {
+                Some(fail)
+            } else {
+                Some(done)
+            }
+        }
+        (Some(done), None) => Some(done),
+        (None, Some(fail)) => Some(fail),
+        (None, None) => None,
+    }
+}
+
+fn idempotency_key_from_payload(payload: &Value) -> Option<&str> {
+    payload.get("idempotency_key").and_then(Value::as_str)
+}
+
+fn run_kind_from_card(card: &Card) -> Option<&'static str> {
+    match card.kind.as_str() {
+        "codex" => Some("codex"),
+        "terminal" => Some("terminal"),
+        _ => card
+            .payload
+            .get("role_request")
+            .and_then(Value::as_str)
+            .and_then(|kind| match kind {
+                "codex" => Some("codex"),
+                "terminal" => Some("terminal"),
+                _ => None,
+            }),
+    }
+}
+
+fn runs_updated_at(wave: &Wave, runs: &[RunProjection]) -> Option<i64> {
+    Some(
+        runs.iter()
+            .filter_map(|run| {
+                [
+                    run.requested_at,
+                    run.finished_at,
+                    run.worker_card.as_ref().map(|card| card.updated_at),
+                ]
+                .into_iter()
+                .flatten()
+                .max()
+            })
+            .max()
+            .unwrap_or(wave.updated_at),
+    )
+}
+
+fn run_by_key<'a>(runs: &'a [RunProjection], key: &str) -> Result<&'a RunProjection, RpcError> {
+    runs.iter()
+        .find(|run| run.idempotency_key == key)
+        .ok_or_else(|| path_not_available(&format!("runs/{key}")))
+}
+
 fn card_meta(ctx: &Arc<AppContext>, card: &Card) -> Value {
     let role = ctx.card_role_cache.get(&card.id).unwrap_or_default();
     json!({
@@ -265,6 +549,173 @@ fn card_meta(ctx: &Arc<AppContext>, card: &Card) -> Value {
         "created_at": card.created_at,
         "updated_at": card.updated_at,
     })
+}
+
+fn run_listing_entry(run: &RunProjection) -> Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert(
+        "name".into(),
+        Value::String(format!("{}.md", run.idempotency_key)),
+    );
+    obj.insert("kind".into(), Value::String("file".into()));
+    obj.insert(
+        "idempotency_key".into(),
+        Value::String(run.idempotency_key.clone()),
+    );
+    obj.insert("status".into(), Value::String(run.status.into()));
+    obj.insert("run_kind".into(), Value::String(run.kind.clone()));
+    obj.insert("requested_at".into(), option_i64(run.requested_at));
+    obj.insert("finished_at".into(), option_i64(run.finished_at));
+    obj.insert(
+        "worker_card_id".into(),
+        run.worker_card
+            .as_ref()
+            .map(|card| Value::String(card.id.as_str().to_string()))
+            .unwrap_or(Value::Null),
+    );
+    if let Some(updated_at) = run
+        .finished_at
+        .or_else(|| run.worker_card.as_ref().map(|card| card.updated_at))
+        .or(run.requested_at)
+    {
+        obj.insert("updated_at".into(), json!(updated_at));
+    }
+    Value::Object(obj)
+}
+
+fn run_index_entry(run: &RunProjection) -> Value {
+    json!({
+        "idempotency_key": run.idempotency_key,
+        "status": run.status,
+        "kind": run.kind,
+        "requested_at": run.requested_at,
+        "finished_at": run.finished_at,
+        "worker_card_id": run.worker_card.as_ref().map(|card| card.id.as_str()),
+    })
+}
+
+fn run_json(run: &RunProjection) -> Value {
+    json!({
+        "idempotency_key": run.idempotency_key,
+        "status": run.status,
+        "kind": run.kind,
+        "requested_at": run.requested_at,
+        "finished_at": run.finished_at,
+        "worker_card_id": run.worker_card.as_ref().map(|card| card.id.as_str()),
+        "worker_card_payload": run.worker_card.as_ref().map(|card| card.payload.clone()),
+        "events": {
+            "requested": run.requested_event.as_ref().map(event_json),
+            "completed": run.completed_event.as_ref().map(event_json),
+            "failed": run.failed_event.as_ref().map(event_json),
+        },
+    })
+}
+
+fn event_json(event: &RunEventProjection) -> Value {
+    json!({
+        "event_id": event.event_id,
+        "kind": event.kind,
+        "created_at": event.at,
+        "payload": event.payload,
+    })
+}
+
+fn option_i64(value: Option<i64>) -> Value {
+    value.map(Value::from).unwrap_or(Value::Null)
+}
+
+fn run_markdown(run: &RunProjection) -> String {
+    let mut out = String::new();
+    out.push_str("> READ-ONLY PROJECTION: derived from wave events and worker card payloads. This is not the source of truth.\n\n");
+    out.push_str(&format!("# Run `{}`\n\n", run.idempotency_key));
+    out.push_str(&format!("- Status: {}\n", run.status));
+    out.push_str(&format!("- Kind: {}\n", run.kind));
+    out.push_str(&format!(
+        "- Worker card: {}\n",
+        run.worker_card
+            .as_ref()
+            .map(|card| format!(
+                "[{}](../cards/{}/payload.json)",
+                card.id.as_str(),
+                card.id.as_str()
+            ))
+            .unwrap_or_else(|| "not materialized".into())
+    ));
+    out.push_str(&format!(
+        "- Requested at: {}\n",
+        format_optional_i64(run.requested_at)
+    ));
+    out.push_str(&format!(
+        "- Finished at: {}\n",
+        format_optional_i64(run.finished_at)
+    ));
+
+    if let Some(card) = run.worker_card.as_ref() {
+        append_payload_field(&mut out, &card.payload, "goal", "Goal");
+        append_payload_json_field(&mut out, &card.payload, "context", "Context");
+        append_payload_field(
+            &mut out,
+            &card.payload,
+            "acceptance_criteria",
+            "Acceptance Criteria",
+        );
+        append_payload_field(&mut out, &card.payload, "prompt", "Prompt");
+    }
+
+    out.push_str("\n## Final Event\n\n");
+    match latest_final_event(run.completed_event.as_ref(), run.failed_event.as_ref()) {
+        Some(event) if event.kind == "task.failed" => {
+            let reason = event
+                .payload
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown failure");
+            out.push_str(&format!("- TaskFailed: {}\n", reason));
+        }
+        Some(event) => {
+            out.push_str("- TaskCompleted:\n\n");
+            out.push_str("```json\n");
+            out.push_str(&final_result_summary(event));
+            out.push_str("\n```\n");
+        }
+        None => out.push_str("- No TaskCompleted or TaskFailed event has been recorded.\n"),
+    }
+    out
+}
+
+fn append_payload_field(out: &mut String, payload: &Value, key: &str, label: &str) {
+    if let Some(value) = payload.get(key).and_then(Value::as_str) {
+        out.push_str(&format!("\n## {label}\n\n{value}\n"));
+    }
+}
+
+fn append_payload_json_field(out: &mut String, payload: &Value, key: &str, label: &str) {
+    if let Some(value) = payload.get(key) {
+        out.push_str(&format!("\n## {label}\n\n```json\n"));
+        out.push_str(&pretty_json(value));
+        out.push_str("\n```\n");
+    }
+}
+
+fn final_result_summary(event: &RunEventProjection) -> String {
+    let result = event.payload.get("result").unwrap_or(&Value::Null);
+    if let Some(summary) = result.get("summary").and_then(Value::as_str) {
+        return summary.to_string();
+    }
+    if let Some(summary) = result.as_str() {
+        return summary.to_string();
+    }
+    pretty_json(result)
+}
+
+fn pretty_json(value: &Value) -> String {
+    serde_json::to_string_pretty(value).unwrap_or_else(|_| "null".into())
+}
+
+fn format_optional_i64(value: Option<i64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".into())
 }
 
 fn index_markdown(wave: &Wave, card_count: usize) -> String {
