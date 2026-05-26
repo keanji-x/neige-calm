@@ -157,10 +157,9 @@ mod tests {
     }
 
     #[test]
-    fn set_test_helper_overrides() {
-        // The test-only `set` helper does NOT check monotonicity — it's
-        // for fixture setup, where tests explicitly want to plant a
-        // specific value.
+    fn set_overrides_cursor_value() {
+        // `set` does NOT check monotonicity; production recovery uses it
+        // to rewind the in-process cursor to the durable watermark.
         let c = EventCursorCache::new();
         c.bump(cid("a"), 100);
         c.set(cid("a"), 5);

@@ -412,6 +412,7 @@ async fn runtime_spec_push_recovery_supervisor(
             window_secs = RUNTIME_RECOVERY_WINDOW.as_secs(),
             "spec push runtime recovery: restart budget exhausted; leaving wave wedged/abandoned"
         );
+        // Runtime recovery exhausted its restart budget; mark the wave abandoned.
         emit_spec_push_abandoned(&ctx.state, &ctx.wave_id).await;
         return;
     }
@@ -425,6 +426,7 @@ async fn runtime_spec_push_recovery_supervisor(
                 wave_id = %ctx.wave_id,
                 "spec push runtime recovery: wave is no longer an in-flight spec takeover candidate; abandoning recovery"
             );
+            // Durable lookup returned no takeover candidate; the wave is gone/terminal.
             emit_spec_push_abandoned(&ctx.state, &ctx.wave_id).await;
             return;
         }
