@@ -1,4 +1,4 @@
-import { Fragment, useRef } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useState } from '../state';
 import { Menu, type MenuItem } from '../../ui/Menu/Menu';
 import { useSession } from '../../app/SessionProvider';
@@ -55,11 +55,15 @@ function writeExpandedCoves(expanded: ExpandedCoves) {
   }
 }
 
-function useExpandedCoves(): [ExpandedCoves, (coveId: string) => void] {
+function useExpandedCoves(): [
+  ExpandedCoves,
+  (coveId: string) => void,
+  (coveId: string) => void,
+] {
   const [expandedCoves, setExpandedCoves] = useState<ExpandedCoves>(
     () => readExpandedCoves(),
   );
-  const toggleCoveExpanded = (coveId: string) => {
+  const toggleCoveExpanded = useCallback((coveId: string) => {
     setExpandedCoves((current) => {
       const next: ExpandedCoves = { ...current };
       if (next[coveId]) {
@@ -70,8 +74,16 @@ function useExpandedCoves(): [ExpandedCoves, (coveId: string) => void] {
       writeExpandedCoves(next);
       return next;
     });
-  };
-  return [expandedCoves, toggleCoveExpanded];
+  }, [setExpandedCoves]);
+  const expandCove = useCallback((coveId: string) => {
+    setExpandedCoves((current) => {
+      if (current[coveId]) return current;
+      const next: ExpandedCoves = { ...current, [coveId]: true };
+      writeExpandedCoves(next);
+      return next;
+    });
+  }, [setExpandedCoves]);
+  return [expandedCoves, toggleCoveExpanded, expandCove];
 }
 
 function coveWavesListId(coveId: string): string {
@@ -119,7 +131,35 @@ export function Sidebar({
   // carries the cove being confirmed so the dialog text reflects the
   // actual cove name. Mirrors Cove.tsx's `pendingDeleteWave` pattern.
   const [pendingDelete, setPendingDelete] = useState<Cove | null>(null);
-  const [expandedCoves, toggleCoveExpanded] = useExpandedCoves();
+  const [activeWaveRowEl, setActiveWaveRowEl] = useState<HTMLDivElement | null>(
+    null,
+  );
+  const [expandedCoves, toggleCoveExpanded, expandCove] = useExpandedCoves();
+  const activeWaveId = route.name === 'wave' ? route.id : null;
+  const activeCoveId = useMemo(
+    () => (
+      activeWaveId
+        ? waves.find((w) => w.id === activeWaveId)?.coveId ?? null
+        : null
+    ),
+    [activeWaveId, waves],
+  );
+  const setActiveWaveRowRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      setActiveWaveRowEl(node);
+    },
+    [setActiveWaveRowEl],
+  );
+  useEffect(() => {
+    if (activeCoveId == null) return;
+    expandCove(activeCoveId);
+  }, [activeWaveId, activeCoveId, expandCove]);
+  useEffect(() => {
+    activeWaveRowEl?.scrollIntoView?.({
+      block: 'nearest',
+      behavior: 'smooth',
+    });
+  }, [activeWaveId, activeWaveRowEl]);
   const cancelDelete = () => setPendingDelete(null);
   const confirmDelete = async () => {
     const c = pendingDelete;
@@ -181,6 +221,7 @@ export function Sidebar({
                 title={(cove?.name ?? '') + ' · ' + w.title}
                 onGo={() => onGo({ name: 'wave', id: w.id })}
                 onPinWave={onPinWave}
+                rowRef={active ? setActiveWaveRowRef : undefined}
               />
             );
           })}
@@ -202,6 +243,7 @@ export function Sidebar({
                 title={(cove?.name ?? '') + ' · ' + w.title}
                 onGo={() => onGo({ name: 'wave', id: w.id })}
                 onPinWave={onPinWave}
+                rowRef={active ? setActiveWaveRowRef : undefined}
               />
             );
           })}
@@ -302,6 +344,7 @@ export function Sidebar({
                         title={w.title}
                         onGo={() => onGo({ name: 'wave', id: w.id })}
                         onPinWave={onPinWave}
+                        rowRef={waveActive ? setActiveWaveRowRef : undefined}
                       />
                     );
                   })}
@@ -488,6 +531,7 @@ function WaveRow({
   title,
   onGo,
   onPinWave,
+  rowRef,
 }: {
   wave: Wave;
   active: boolean;
@@ -495,10 +539,15 @@ function WaveRow({
   title: string;
   onGo: () => void;
   onPinWave?: (waveId: string, pin: boolean) => void | Promise<void>;
+  rowRef?: (node: HTMLDivElement | null) => void;
 }) {
   const pinned = wave.pinnedAt != null;
   return (
-    <div className={'side-wave-row' + (active ? ' active' : '')} role="group">
+    <div
+      ref={rowRef}
+      className={'side-wave-row' + (active ? ' active' : '')}
+      role="group"
+    >
       <button
         className={'side-wave' + (active ? ' active' : '')}
         onClick={onGo}
