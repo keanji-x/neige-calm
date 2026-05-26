@@ -159,7 +159,7 @@ describe('Sidebar cove expansion', () => {
     expect(onGo).not.toHaveBeenCalled();
   });
 
-  it('filters pinned waves from the expanded inline list', () => {
+  it('shows pinned waves in both the pinned section and expanded inline list', () => {
     renderSidebar({
       waves: [
         makeWave({ id: 'w-pin', title: 'Pinned wave', pinnedAt: 1000 }),
@@ -175,7 +175,8 @@ describe('Sidebar cove expansion', () => {
     const inline = screen.getByRole('group', { name: 'Waves in Atlas' });
 
     expect(within(inline).getByText('Open wave')).toBeTruthy();
-    expect(within(inline).queryByText('Pinned wave')).toBeNull();
+    // Pinning is a shortcut, not relocation: the wave remains in its cove.
+    expect(within(inline).getByText('Pinned wave')).toBeTruthy();
   });
 
   it('persists expanded coves in localStorage across remounts', () => {

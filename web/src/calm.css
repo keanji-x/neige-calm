@@ -878,7 +878,11 @@ input, textarea { font: inherit; color: inherit; }
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  padding-left: calc(var(--space-5) + var(--space-7));
+  /* Align wave-title text with the cove name column above:
+     cove-nav padding-left (--space-5 + --space-10) + swatch (12px)
+     + gap (--space-5) = side-coves-waves padding-left
+     + side-wave padding-left (--space-5). */
+  padding-left: calc(var(--space-5) + var(--space-10) + 12px);
 }
 
 /* Inline-edit state — same row geometry as `.cove-nav` but with a text

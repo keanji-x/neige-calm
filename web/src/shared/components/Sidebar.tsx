@@ -177,7 +177,8 @@ export function Sidebar({
   // hit an AwaitingInput/Errored hook before Spec Agent could drive
   // lifecycle". The latter is the regression hole #248's deletion of
   // the wave-level FSM union left open.
-  // Pinned waves are excluded to avoid double-rendering across sections.
+  // Waiting excludes pinned waves so the warning badge and top-section
+  // row count stay in parity.
   const waitingWaves = waves.filter(isUnpinnedAndWaiting);
   // Sub-landmarks inside the outer <aside aria-label="Navigation">:
   //   <nav aria-label="Sidebar navigation">  → Today button
@@ -254,9 +255,10 @@ export function Sidebar({
         <CovesHeader onCreate={onCreateCove} />
         {coves.map((cove) => {
           const cw = waves.filter((w) => w.coveId === cove.id);
-          const inlineWaves = sortByLifecycleRank(
-            cw.filter((w) => w.pinnedAt == null),
-          );
+          // Pinned waves intentionally appear in both the quick-access
+          // Pinned section and their cove's inline list; pinning is not
+          // relocation, and the wave still belongs to this cove.
+          const inlineWaves = sortByLifecycleRank(cw);
           const running = cw.filter((w) => isRunning(w.lifecycle)).length;
           // Match the top-of-sidebar "Waiting on you" predicate so the
           // per-cove waiting count and the top-section row count agree.
@@ -518,7 +520,7 @@ function CovesHeader({
 
 // ---------------- WaveRow ----------------
 //
-// A single wave entry in the Pinned or Waiting-on-you section.
+// A single wave entry in the Pinned, Waiting-on-you, or inline cove list.
 // Rendered as `<div role="group">` containing two sibling `<button>`s
 // to avoid nested-button a11y violations: one for navigation, one for
 // pin/unpin. The pin button is hover-revealed but always visible when
