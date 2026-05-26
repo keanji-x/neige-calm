@@ -26,6 +26,7 @@ use serde_json::{Value, json};
 struct Boot {
     ctx: Arc<AppContext>,
     registry: Arc<ToolRegistry>,
+    sqlx_repo: Arc<SqlxRepo>,
     repo: Arc<dyn Repo>,
     cove_id: CoveId,
     wave_id: WaveId,
@@ -37,11 +38,12 @@ struct Boot {
 }
 
 async fn boot() -> Boot {
-    let repo: Arc<dyn Repo> = Arc::new(
+    let sqlx_repo = Arc::new(
         SqlxRepo::open("sqlite::memory:")
             .await
             .expect("open in-memory sqlite"),
     );
+    let repo: Arc<dyn Repo> = sqlx_repo.clone();
     let cove = repo
         .cove_create(NewCove {
             name: "wave-file-test".into(),
@@ -160,6 +162,7 @@ async fn boot() -> Boot {
     Boot {
         ctx,
         registry,
+        sqlx_repo,
         repo,
         cove_id: cove.id,
         wave_id: wave.id,
@@ -213,7 +216,7 @@ fn content_json(value: &Value) -> Value {
     serde_json::from_str(content).expect("content is JSON")
 }
 
-async fn log_wave_event(boot: &Boot, wave_id: &WaveId, cove_id: &CoveId, event: Event) {
+async fn log_wave_event(boot: &Boot, wave_id: &WaveId, cove_id: &CoveId, event: Event) -> i64 {
     boot.repo
         .log_pure_event(
             ActorId::User,
@@ -228,10 +231,10 @@ async fn log_wave_event(boot: &Boot, wave_id: &WaveId, cove_id: &CoveId, event: 
             event,
         )
         .await
-        .expect("log event");
+        .expect("log event")
 }
 
-async fn log_worker_card_event(boot: &Boot, event: Event) {
+async fn log_worker_card_event(boot: &Boot, event: Event) -> i64 {
     boot.repo
         .log_pure_event(
             ActorId::AiCodex(boot.worker_card_id.clone()),
@@ -247,7 +250,16 @@ async fn log_worker_card_event(boot: &Boot, event: Event) {
             event,
         )
         .await
-        .expect("log worker card event");
+        .expect("log worker card event")
+}
+
+async fn set_event_at(boot: &Boot, event_id: i64, at: i64) {
+    sqlx::query("UPDATE events SET at = ?1 WHERE id = ?2")
+        .bind(at)
+        .bind(event_id)
+        .execute(boot.sqlx_repo.pool())
+        .await
+        .expect("set event timestamp");
 }
 
 async fn request_codex(boot: &Boot, key: &str) {
@@ -265,11 +277,11 @@ async fn request_codex(boot: &Boot, key: &str) {
     .await;
 }
 
-async fn complete_run(boot: &Boot, key: &str, summary: &str) {
-    complete_run_with_result(boot, key, json!({ "summary": summary })).await;
+async fn complete_run(boot: &Boot, key: &str, summary: &str) -> i64 {
+    complete_run_with_result(boot, key, json!({ "summary": summary })).await
 }
 
-async fn complete_run_with_result(boot: &Boot, key: &str, result: Value) {
+async fn complete_run_with_result(boot: &Boot, key: &str, result: Value) -> i64 {
     log_worker_card_event(
         boot,
         Event::TaskCompleted {
@@ -278,7 +290,7 @@ async fn complete_run_with_result(boot: &Boot, key: &str, result: Value) {
             artifacts: vec![],
         },
     )
-    .await;
+    .await
 }
 
 async fn accept_run(boot: &Boot, key: &str, reason: &str) {
@@ -311,7 +323,7 @@ async fn reject_run(boot: &Boot, key: &str, reason: &str) {
     .expect("spec can reject run");
 }
 
-async fn worker_fail_run(boot: &Boot, key: &str, reason: &str) {
+async fn worker_fail_run(boot: &Boot, key: &str, reason: &str) -> i64 {
     log_worker_card_event(
         boot,
         Event::TaskFailed {
@@ -319,7 +331,7 @@ async fn worker_fail_run(boot: &Boot, key: &str, reason: &str) {
             reason: reason.into(),
         },
     )
-    .await;
+    .await
 }
 
 async fn materialize_worker(boot: &Boot, key: &str) -> CardId {
@@ -712,6 +724,120 @@ async fn worker_failure_without_spec_verdict_stays_failed() {
     );
     assert!(run["verdict"].is_null(), "run = {run:?}");
     assert!(run["events"]["verdict"].is_null(), "run = {run:?}");
+}
+
+#[tokio::test]
+async fn retry_recovery_uses_later_worker_completion_as_status() {
+    let boot = boot().await;
+    request_codex(&boot, "retry-recovered").await;
+    materialize_worker(&boot, "retry-recovered").await;
+    let failed_id = worker_fail_run(&boot, "retry-recovered", "spawn failed").await;
+    let completed_id = complete_run_with_result(
+        &boot,
+        "retry-recovered",
+        json!({ "summary": "second attempt worked" }),
+    )
+    .await;
+    set_event_at(&boot, failed_id, 100).await;
+    set_event_at(&boot, completed_id, 200).await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/retry-recovered.json" }),
+    )
+    .await
+    .expect("spec can read retry-recovered run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("completed"));
+    assert_eq!(
+        run["events"]["failed"]["payload"]["reason"],
+        json!("spawn failed")
+    );
+    assert_eq!(
+        run["events"]["completed"]["payload"]["result"],
+        json!({ "summary": "second attempt worked" })
+    );
+}
+
+#[tokio::test]
+async fn retry_regression_uses_later_worker_failure_as_status() {
+    let boot = boot().await;
+    request_codex(&boot, "retry-regressed").await;
+    materialize_worker(&boot, "retry-regressed").await;
+    let completed_id = complete_run(&boot, "retry-regressed", "first attempt worked").await;
+    let failed_id = worker_fail_run(&boot, "retry-regressed", "retry failed").await;
+    set_event_at(&boot, completed_id, 100).await;
+    set_event_at(&boot, failed_id, 200).await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/retry-regressed.json" }),
+    )
+    .await
+    .expect("spec can read retry-regressed run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("failed"));
+    assert_eq!(
+        run["events"]["completed"]["payload"]["result"],
+        json!({ "summary": "first attempt worked" })
+    );
+    assert_eq!(
+        run["events"]["failed"]["payload"]["reason"],
+        json!("retry failed")
+    );
+}
+
+#[tokio::test]
+async fn final_event_timestamp_tie_prefers_worker_failure() {
+    let boot = boot().await;
+    request_codex(&boot, "retry-tie").await;
+    materialize_worker(&boot, "retry-tie").await;
+    let failed_id = worker_fail_run(&boot, "retry-tie", "same millisecond failure").await;
+    let completed_id = complete_run(&boot, "retry-tie", "same millisecond success").await;
+    set_event_at(&boot, failed_id, 100).await;
+    set_event_at(&boot, completed_id, 100).await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/retry-tie.json" }),
+    )
+    .await
+    .expect("spec can read retry-tie run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("failed"));
+    assert_eq!(
+        run["events"]["completed"]["payload"]["result"],
+        json!({ "summary": "same millisecond success" })
+    );
+    assert_eq!(
+        run["events"]["failed"]["payload"]["reason"],
+        json!("same millisecond failure")
+    );
+}
+
+#[tokio::test]
+async fn worker_card_without_request_is_unknown_even_when_materialized() {
+    let boot = boot().await;
+    let worker_id = materialize_worker(&boot, "orphan-worker").await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/orphan-worker.json" }),
+    )
+    .await
+    .expect("spec can read orphan-worker run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("unknown"));
+    assert_eq!(run["worker_card_id"], json!(worker_id.as_str()));
+    assert!(run["events"]["requested"].is_null(), "run = {run:?}");
 }
 
 #[tokio::test]

@@ -433,16 +433,20 @@ fn project_runs(cards: Vec<Card>, events: Vec<WaveEvent>) -> Vec<RunProjection> 
             let verdict_event = verdict.remove(&key);
             let verdict = verdict_event.as_ref().and_then(verdict_from_event);
 
-            let (status, finished_at) = if let Some(event) = failed_event.as_ref() {
-                ("failed", Some(event.at))
-            } else if let Some(event) = completed_event.as_ref() {
-                ("completed", Some(event.at))
-            } else if requested_event.is_some() && worker_card.is_some() {
-                ("running", None)
-            } else if requested_event.is_some() {
-                ("requested", None)
-            } else {
-                ("unknown", None)
+            let final_event = match (failed_event.as_ref(), completed_event.as_ref()) {
+                (Some(failed), Some(completed)) if completed.at > failed.at => {
+                    Some(("completed", completed))
+                }
+                (Some(failed), _) => Some(("failed", failed)),
+                (None, Some(completed)) => Some(("completed", completed)),
+                (None, None) => None,
+            };
+
+            let (status, finished_at) = match (requested_event.as_ref(), final_event) {
+                (Some(_), Some((kind, event))) => (kind, Some(event.at)),
+                (Some(_), None) if worker_card.is_some() => ("running", None),
+                (Some(_), None) => ("requested", None),
+                (None, _) => ("unknown", None),
             };
 
             let kind = worker_card
@@ -509,13 +513,8 @@ fn latest_final_event<'a>(
     failed: Option<&'a RunEventProjection>,
 ) -> Option<&'a RunEventProjection> {
     match (completed, failed) {
-        (Some(done), Some(fail)) => {
-            if (fail.at, fail.event_id) >= (done.at, done.event_id) {
-                Some(fail)
-            } else {
-                Some(done)
-            }
-        }
+        (Some(done), Some(fail)) if done.at > fail.at => Some(done),
+        (Some(_), Some(fail)) => Some(fail),
         (Some(done), None) => Some(done),
         (None, Some(fail)) => Some(fail),
         (None, None) => None,
