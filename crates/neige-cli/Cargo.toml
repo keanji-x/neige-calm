@@ -1,0 +1,29 @@
+[package]
+name = "neige-cli"
+version = "0.1.0"
+edition = "2024"
+
+# Thin terminal CLI over the kernel's existing per-card MCP UDS. This stays
+# dependency-light like `neige-mcp-stdio-shim`: manual argv parsing, one
+# tokio current-thread runtime, and serde_json for the JSON-RPC frames.
+
+[[bin]]
+name = "neige"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt", "macros", "io-util", "net"] }
+serde_json = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "io-util",
+    "net",
+    "process",
+    "time",
+    "sync",
+] }
+tempfile = "3"
+serde_json = "1"

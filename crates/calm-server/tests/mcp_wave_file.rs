@@ -249,15 +249,29 @@ async fn cards_index_lists_only_bound_wave_cards_without_payload() {
 #[tokio::test]
 async fn card_payload_from_other_wave_is_forbidden() {
     let boot = boot().await;
-    let path = format!("cards/{}/payload.json", boot.other_wave_card_id.as_str());
+    for leaf in ["payload.json", "meta.json"] {
+        let path = format!("cards/{}/{leaf}", boot.other_wave_card_id.as_str());
+        let err = call_tool(
+            &boot,
+            TOOL_WAVE_CAT,
+            spec_identity(&boot),
+            json!({ "path": path }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, -32403);
+        assert!(err.message.contains("forbidden"), "err = {err:?}");
+    }
+
+    let path = format!("cards/{}", boot.other_wave_card_id.as_str());
     let err = call_tool(
         &boot,
-        TOOL_WAVE_CAT,
+        TOOL_WAVE_LS,
         spec_identity(&boot),
         json!({ "path": path }),
     )
     .await
-    .expect_err("cross-wave card payload must be denied");
+    .expect_err("cross-wave card directory listing must be denied");
     assert_eq!(err.code, -32403);
     assert!(err.message.contains("forbidden"), "err = {err:?}");
 }

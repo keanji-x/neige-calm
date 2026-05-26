@@ -5,5 +5,6 @@ members = [
     "crates/calm-session",
     "crates/calm-codex-bridge",
     "crates/calm-editor",
+    "crates/neige-cli",
     "crates/neige-mcp-stdio-shim",
 ]

@@ -31,6 +31,9 @@ where
     Arc::new(move |ctx, identity, args| -> ToolHandlerFuture { Box::pin(f(ctx, identity, args)) })
 }
 
+/// Return-shape contract consumed by `neige`: `calm.wave.ls` returns a bare
+/// JSON array of `{ name, kind, ... }` entries; `calm.wave.cat` returns an
+/// object `{ content, content_type }`.
 fn ls_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_WAVE_LS.into(),
@@ -86,8 +89,9 @@ async fn wave_ls(
         }
         "cards" => {
             let cards = cards_for_wave(&ctx, &wave).await?;
+            let cards_updated_at = cards_updated_at(&wave, &cards);
             let mut entries = Vec::with_capacity(cards.len() + 1);
-            entries.push(entry_file("index.json", None, Some(wave.updated_at)));
+            entries.push(entry_file("index.json", None, Some(cards_updated_at)));
             entries.extend(cards.iter().map(|card| {
                 entry_dir(
                     &format!("{}/", card.id.as_str()),
@@ -220,6 +224,14 @@ async fn cards_for_wave(ctx: &Arc<AppContext>, wave: &Wave) -> Result<Vec<Card>,
         .cards_by_wave(wave.id.as_str())
         .await
         .map_err(|e| RpcError::internal(format!("wave_file: cards_by_wave: {e}")))
+}
+
+fn cards_updated_at(wave: &Wave, cards: &[Card]) -> i64 {
+    cards
+        .iter()
+        .map(|card| card.updated_at)
+        .max()
+        .unwrap_or(wave.updated_at)
 }
 
 async fn card_in_wave(ctx: &Arc<AppContext>, wave: &Wave, card_id: &str) -> Result<Card, RpcError> {

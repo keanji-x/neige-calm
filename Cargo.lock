@@ -1605,6 +1605,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "neige-cli"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "neige-mcp-stdio-shim"
 version = "0.1.0"
 dependencies = [

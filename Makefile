@@ -119,9 +119,11 @@ BRIDGE   := $(WORKTREE)/target/release/neige-codex-bridge
 # `os error 2`. docker-compose.yml bind-mounts the built binary into
 # /usr/local/bin/.
 MCP_SHIM := $(WORKTREE)/target/release/neige-mcp-stdio-shim
+NEIGE_CLI := $(WORKTREE)/target/release/neige
 DIST     := $(WORKTREE)/web/dist
 LOCAL_BIN_DIR ?= $(HOME)/.local/bin
 LOCAL_MCP_STDIO_SHIM ?= $(LOCAL_BIN_DIR)/neige-mcp-stdio-shim
+LOCAL_NEIGE_CLI ?= $(LOCAL_BIN_DIR)/neige
 
 # Plumb the same paths into docker-compose so the container bind-mounts
 # the right binaries + web bundle. The `${VAR:-default}` form in
@@ -165,15 +167,15 @@ help: ## Show this help.
 # ---- build (on host, not in docker) -------------------------------------
 
 .PHONY: build
-build: $(BIN) $(DAEMON) $(BRIDGE) $(MCP_SHIM) $(DIST) ## Build server, daemon, codex bridge, mcp-stdio shim, web bundle.
+build: $(BIN) $(DAEMON) $(BRIDGE) $(MCP_SHIM) $(NEIGE_CLI) $(DIST) ## Build server, daemon, codex bridge, mcp-stdio shim, neige CLI, web bundle.
 
 # Single cargo invocation builds all four binaries — cheaper than four
 # separate calls because deps overlap. Touch every output so the rule
 # re-fires only when sources change. Issue #236 followup added the
 # `neige-mcp-stdio-shim` binary to the list; the docker-compose stack
 # bind-mounts it into /usr/local/bin so codex can spawn it per-card.
-$(BIN) $(DAEMON) $(BRIDGE) $(MCP_SHIM) &: $(shell find $(WORKTREE)/crates -name '*.rs' -o -name 'Cargo.toml' 2>/dev/null) $(WORKTREE)/Cargo.toml $(WORKTREE)/Cargo.lock
-	cargo build --manifest-path $(WORKTREE)/Cargo.toml --release -p calm-server -p calm-session -p calm-codex-bridge -p neige-mcp-stdio-shim --bin calm-server --bin calm-session-daemon --bin neige-codex-bridge --bin neige-mcp-stdio-shim
+$(BIN) $(DAEMON) $(BRIDGE) $(MCP_SHIM) $(NEIGE_CLI) &: $(shell find $(WORKTREE)/crates -name '*.rs' -o -name 'Cargo.toml' 2>/dev/null) $(WORKTREE)/Cargo.toml $(WORKTREE)/Cargo.lock
+	cargo build --manifest-path $(WORKTREE)/Cargo.toml --release -p calm-server -p calm-session -p calm-codex-bridge -p neige-mcp-stdio-shim -p neige-cli --bin calm-server --bin calm-session-daemon --bin neige-codex-bridge --bin neige-mcp-stdio-shim --bin neige
 
 $(DIST): $(shell find $(WORKTREE)/web/src -type f 2>/dev/null) $(WORKTREE)/web/package.json $(WORKTREE)/web/vite.config.ts $(WORKTREE)/web/index.html
 	@if [ ! -d $(WORKTREE)/web/node_modules ]; then (cd $(WORKTREE)/web && npm install); fi
@@ -246,10 +248,12 @@ health: ## Smoke-test the API end-to-end through nginx.
 # ---- host production lifecycle -----------------------------------------
 
 .PHONY: prod-local-bin
-prod-local-bin: $(MCP_SHIM) ## Link host prod MCP shim into ~/.local/bin.
+prod-local-bin: $(MCP_SHIM) $(NEIGE_CLI) ## Link host prod MCP shim and neige CLI into ~/.local/bin.
 	@mkdir -p "$(LOCAL_BIN_DIR)"
 	@ln -sfn "$(MCP_SHIM)" "$(LOCAL_MCP_STDIO_SHIM)"
+	@ln -sfn "$(NEIGE_CLI)" "$(LOCAL_NEIGE_CLI)"
 	@echo "  mcp shim: $(LOCAL_MCP_STDIO_SHIM) -> $(MCP_SHIM)"
+	@echo "  neige cli: $(LOCAL_NEIGE_CLI) -> $(NEIGE_CLI)"
 
 .PHONY: prod-repair-codex-homes
 prod-repair-codex-homes: prod-local-bin ## Rewrite stale docker shim paths in existing prod codex homes.
