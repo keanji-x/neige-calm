@@ -38,15 +38,14 @@
 //! the orphan-terminal sweeper reaps the dangling terminal row (~60 s
 //! grace) if no daemon is attached.
 //!
-//! The earlier rationale for the `tokio::spawn` form was the
-//! `spawn_daemon_for` busy-poll wait-until-socket-ready loop (~3 s
-//! worst case when the daemon binary is missing). That latency
-//! affected one specific test path (`web/e2e/a11y-keyboard.spec.ts`'s
-//! 5 s navigation budget when running without a real codex). The
-//! tradeoff was wrong: the WS race is a correctness bug for every
-//! production user, the a11y timeout is a CI-only ergonomic concern.
-//! The a11y test stack is expected to bump its navigation budget to
-//! accommodate.
+//! The earlier rationale for the `tokio::spawn` form was the old
+//! readiness wait in `spawn_daemon_for`. That latency affected one
+//! specific test path (`web/e2e/a11y-keyboard.spec.ts`'s 5 s navigation
+//! budget when running without a real codex). The tradeoff was wrong:
+//! the WS race is a correctness bug for every production user, the
+//! a11y timeout is a CI-only ergonomic concern. The a11y test stack is
+//! expected to carry a navigation budget that accommodates synchronous
+//! daemon spawn failure.
 //!
 //! ## Wave-delete teardown (issue #197)
 //!

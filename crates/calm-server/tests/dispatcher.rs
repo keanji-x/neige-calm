@@ -921,7 +921,7 @@ fn locate_recorder_bin() -> PathBuf {
 /// Locate the never-ready fake daemon (#310 followup). Spawns
 /// successfully, persists its pid to `<sock>.partial-pid`, then
 /// sleeps without binding the socket — guaranteed to trip the
-/// kernel's `~3s` readiness probe timeout and surface the partial-
+/// kernel's hung-daemon readiness backstop and surface the partial-
 /// spawn state the rollback reap path is supposed to clean up.
 fn locate_never_ready_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_never-ready-daemon"))
@@ -1205,9 +1205,9 @@ async fn dispatcher_codex_card_added_after_daemon_handle_set_issue_310() {
     // Belt-and-braces: the socket the handle points at must actually
     // accept a connect — confirms the daemon is up, not just that the
     // handle was written ahead of a still-unbound socket. The recorder
-    // fixture binds the socket before exiting its setup phase, so this
-    // succeeds whenever the dispatcher's spawn-helper readiness probe
-    // also succeeded.
+    // fixture binds the socket before writing `ready\n`, so this
+    // succeeds whenever the dispatcher's spawn-helper readiness race
+    // succeeded.
     let _ = tokio::net::UnixStream::connect(&handle)
         .await
         .expect("daemon socket must accept a connect by the time CardAdded fires");
@@ -1323,7 +1323,7 @@ async fn dispatcher_terminal_card_added_after_daemon_handle_set_issue_310() {
 //
 //     Pre-fix: when `spawn_daemon_with_parts` returned Err after the
 //     row-creation tx committed (real failure modes: missing daemon
-//     binary, fd exhaustion, permission denied, readiness timeout), the
+//     binary, fd exhaustion, permission denied, readiness failure), the
 //     dispatcher returned the error WITHOUT cleaning up the card +
 //     terminal row. The orphan row carried the `idempotency_key`, so a
 //     retry with the same key short-circuited on the abandoned row —
@@ -1680,9 +1680,9 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
 //
 //     Pre-fix: when `spawn_daemon_with_parts` returned Err AFTER it had
 //     already spawned the daemon child + persisted `pid` + persisted
-//     `daemon_handle` but before the readiness probe succeeded (real
-//     failure mode: readiness timeout because the daemon hangs during
-//     setup), `rollback_orphan_worker` deleted the rows but left the
+//     `daemon_handle` but before readiness succeeded (real failure mode:
+//     the daemon hangs during setup until the backstop fires),
+//     `rollback_orphan_worker` deleted the rows but left the
 //     daemon process + unix socket leaking — the sweeper's SQL excludes
 //     terminals still referenced by a card row, but we just deleted the
 //     card, so the sweeper *also* never sees the orphan. Result: a
@@ -1694,8 +1694,8 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
 //     before the row delete. This test pins that ordering by:
 //        a) Pointing the dispatcher at `never-ready-daemon` — spawns
 //           OK, persists pid via a `.partial-pid` sidecar, then sleeps
-//           without binding the socket. The kernel's readiness probe
-//           times out (~3s) and returns Err.
+//           without binding the socket or writing ready. The kernel's
+//           hung-daemon backstop returns Err.
 //        b) Waiting for `task.failed` (proves the rollback path ran
 //           to its end).
 //        c) Asserting the recorded pid is no longer alive
@@ -1749,8 +1749,8 @@ async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
         .await
         .unwrap();
 
-    // Wait for task.failed — the dispatcher's readiness probe in
-    // `spawn_daemon_with_parts` waits up to 75 * 40ms ≈ 3s before
+    // Wait for task.failed — the dispatcher's readiness race in
+    // `spawn_daemon_with_parts` reaches its hung-daemon backstop before
     // returning the timeout error. The rollback then runs synchronously
     // before `run_one` emits `task.failed`. Allow a generous deadline.
     let mut saw_failed = false;
@@ -1773,7 +1773,7 @@ async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
     }
     assert!(
         saw_failed,
-        "expected dispatcher to emit task.failed after readiness timeout"
+        "expected dispatcher to emit task.failed after hung-daemon readiness backstop"
     );
 
     // Locate the partial-pid sidecar written by the fixture. Sockets
@@ -1875,8 +1875,8 @@ async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
 
 /// Locate the fast-exit fake daemon (#310 fix-loop round 4). Writes
 /// `<sock>.exit` with `{"code":0,"signal_killed":false}` then exits
-/// 0 without binding the socket — drives the kernel's readiness probe
-/// to timeout, then the dispatcher's rollback discriminator into the
+/// 0 without binding the socket or writing ready — drives the kernel's
+/// child-exit readiness arm, then the dispatcher's rollback discriminator into the
 /// `Preserved` branch (case 2 of `rollback_orphan_worker`).
 fn locate_fast_exit_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_fast-exit-daemon"))
@@ -1886,7 +1886,7 @@ fn locate_fast_exit_bin() -> PathBuf {
 // 12. Issue #310 fix-loop round 4 — codex caught a regression in the round-3
 //     rollback patch: a fast-exit terminal worker (e.g. `printf done`,
 //     `/bin/true`, `make build`) writes the daemon's `.exit` sidecar AND
-//     exits before the kernel's 40ms readiness probe sees the socket.
+//     exits before the kernel sees `ready\n`.
 //     `spawn_daemon_with_parts` returned Err for this case, and round 3's
 //     unconditional rollback would then DELETE the card + terminal row —
 //     turning a completed worker into `task.failed` with no card/output
@@ -1903,8 +1903,8 @@ fn locate_fast_exit_bin() -> PathBuf {
 //
 //        a) Point the dispatcher at `fast-exit-daemon` — spawns OK,
 //           writes `<sock>.exit` with `{"code":0,"signal_killed":false}`,
-//           exits 0 without binding the socket. The kernel's readiness
-//           probe (75 * 40ms = ~3s) exhausts and returns Err.
+//           exits 0 without binding the socket or writing ready. The
+//           kernel's child-exit readiness arm returns Err.
 //
 //        b) Subscribe to the bus BEFORE emitting so we capture both
 //           the (would-be) `task.failed` AND the `CardAdded` envelope.
@@ -1954,7 +1954,7 @@ async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
     let idem = "fast-exit-preserve-1";
     // Subscribe BEFORE emitting so we capture every envelope, in
     // particular the discriminator's `CardAdded` broadcast that lands
-    // AFTER the readiness probe times out.
+    // AFTER the child-exit readiness arm returns Err.
     let mut rx = events.subscribe();
 
     let req = Event::TerminalJobRequested {
@@ -1969,9 +1969,10 @@ async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
         .await
         .unwrap();
 
-    // Drain the bus. The dispatcher's readiness probe takes ~3s; the
-    // discriminator's sidecar pickup + CardAdded broadcast happens
-    // after. Allow a generous deadline.
+    // Drain the bus. The dispatcher's child-exit readiness arm should
+    // fire quickly; the discriminator's sidecar pickup + CardAdded
+    // broadcast happens after. Allow a generous deadline so the
+    // negative TaskFailed assertion still observes late failures.
     let mut saw_card_added: Option<calm_server::ids::CardId> = None;
     let mut saw_task_failed = false;
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -2004,14 +2005,14 @@ async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
     let card_id = saw_card_added.expect(
         "dispatcher must broadcast CardAdded for the fast-exit worker — \
          pre-fix this would never fire because the rollback path deleted \
-         the row + propagated the spurious readiness-timeout Err as \
+         the row + propagated the spurious readiness Err as \
          task.failed",
     );
     assert!(
         !saw_task_failed,
         "task.failed must NOT be emitted for a fast-exit success — the worker \
          actually completed (exit_code = 0 in `.exit` sidecar); pre-fix this \
-         fired because spawn_daemon_with_parts's readiness timeout error \
+         fired because spawn_daemon_with_parts's readiness error \
          propagated unconditionally to `run_one`",
     );
 

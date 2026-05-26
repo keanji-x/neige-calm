@@ -84,6 +84,14 @@ path = "tests/fixtures/never-ready-daemon/main.rs"
 name = "fast-exit-daemon"
 path = "tests/fixtures/fast-exit-daemon/main.rs"
 
+# #349 review followup — fake daemon that writes `ready\n` to
+# `--ready-fd` then exits immediately without binding. Pins that the
+# kernel prefers an already-buffered ready signal over a simultaneous
+# child exit.
+[[bin]]
+name = "ready-exit-daemon"
+path = "tests/fixtures/ready-exit-daemon/main.rs"
+
 # #177 PR3 — e2e OSC roundtrip child: runs inside a real calm-session-daemon
 # PTY, performs the OSC 11 (default background) startup probe codex does,
 # and writes "OK" / "FAIL" to a sidecar result file the test driver polls.

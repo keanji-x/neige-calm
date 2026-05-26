@@ -159,8 +159,9 @@ pub type WriteWithEventsFn<'a> = Box<
 ///
 /// **Caveat — crash-window orphan.** The window between the row-creation
 /// tx commit and the post-spawn `log_pure_event(CardAdded)` is on the
-/// order of microseconds (the daemon spawn + readiness probe sit
-/// inside it, so it's actually closer to ~700ms in the codex case),
+/// order of microseconds (the daemon spawn + ready-fd/child-exit
+/// readiness race sits inside it, so it's actually closer to ~700ms
+/// in the codex case),
 /// but it's real. If the kernel process dies mid-window (SIGKILL,
 /// OOM, panic that escapes the tokio task supervisor), the durable
 /// state on next boot is:

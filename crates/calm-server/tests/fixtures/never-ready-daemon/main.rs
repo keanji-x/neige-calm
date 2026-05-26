@@ -1,6 +1,6 @@
 //! Test fixture (#310 followup): a fake `calm-session-daemon` that
-//! deliberately FAILS the kernel's readiness probe — it never binds
-//! the unix socket the kernel polls for. Used to provoke a partial
+//! deliberately FAILS the kernel's readiness race — it never binds
+//! the unix socket and never writes `ready\n`. Used to provoke a partial
 //! spawn (process is alive + pid persisted + daemon_handle written,
 //! but probe times out) so the dispatcher's rollback path has to reap
 //! the daemon process before deleting the row.
@@ -9,10 +9,10 @@
 //!   * Writes its pid to `<sock>.partial-pid` BEFORE entering the
 //!     sleep loop, so the test driver can probe whether the rollback
 //!     reap actually killed it.
-//!   * Does NOT bind `<sock>` — the kernel's `UnixStream::connect`
-//!     loop in `spawn_daemon_with_parts` will never succeed and the
-//!     spawn helper returns `CalmError::Internal("daemon … did not
-//!     become ready")` after ~3s.
+//!   * Does NOT bind `<sock>` and ignores `--ready-fd` — the child stays
+//!     alive, the ready fd never produces bytes or EOF, and the spawn
+//!     helper returns `CalmError::Internal("daemon … did not become
+//!     ready ...")` only when its hung-daemon backstop fires.
 //!   * Sleeps forever (well, 5 minutes — generous bound so a leak in
 //!     test infra doesn't linger past the suite). The kernel's reap
 //!     path is expected to SIGTERM us via the pid in
@@ -57,10 +57,11 @@ fn main() {
         writeln!(f, "{}", std::process::id()).expect("write pid");
     }
 
-    // CRITICAL: do NOT bind the socket. That's the whole point of this
-    // fixture — the kernel's readiness probe must time out, leaving us
-    // in the "process alive + handle persisted + probe failed" state
-    // that the rollback reap path is supposed to clean up.
+    // CRITICAL: do NOT bind the socket or write to `--ready-fd`. That's
+    // the whole point of this fixture — only the kernel's hung-daemon
+    // backstop can fire, leaving us in the "process alive + handle
+    // persisted + readiness failed" state that the rollback reap path is
+    // supposed to clean up.
 
     // Sleep with a 5-minute hard cap. The dispatcher's rollback path
     // sends SIGTERM via `reap_terminal_artifacts` → `send_sigterm`,

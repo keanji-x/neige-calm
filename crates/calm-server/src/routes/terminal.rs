@@ -20,9 +20,212 @@ use axum::{
     extract::{Path, State},
     routing::get,
 };
+use std::io;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::process::Stdio;
+use std::sync::Mutex;
 use std::time::Duration;
-use tokio::net::UnixStream;
+use tokio::io::unix::AsyncFd;
+
+const DAEMON_READY_BACKSTOP: Duration = Duration::from_secs(10);
+const DAEMON_READY_SIGNAL: &[u8] = b"ready\n";
+const DAEMON_READY_MAX_BYTES: usize = 64;
+
+enum DaemonReadiness {
+    Ready,
+    Failed {
+        error: CalmError,
+        child_already_reaped: bool,
+    },
+}
+
+fn daemon_not_ready(terminal_id: &str, reason: impl std::fmt::Display) -> CalmError {
+    CalmError::Internal(format!(
+        "daemon for terminal {terminal_id} did not become ready ({reason})"
+    ))
+}
+
+fn set_fd_nonblocking(fd: i32) -> io::Result<()> {
+    // SAFETY: fcntl is called with a live file descriptor and commands
+    // that do not require pointer arguments.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: see F_GETFL call above.
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn set_fd_cloexec(fd: i32, cloexec: bool) -> io::Result<()> {
+    // SAFETY: fcntl is called with a live file descriptor and commands
+    // that do not require pointer arguments.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    let next = if cloexec {
+        flags | libc::FD_CLOEXEC
+    } else {
+        flags & !libc::FD_CLOEXEC
+    };
+    // SAFETY: see F_GETFD call above.
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, next) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn create_cloexec_pipe() -> io::Result<[OwnedFd; 2]> {
+    let mut fds = [0; 2];
+
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: `fds` points at two valid i32 slots for pipe2(2) to fill.
+        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        // SAFETY: `fds` points at two valid i32 slots for pipe(2) to fill.
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+
+    // SAFETY: pipe(2)/pipe2(2) returned two owned descriptors on success.
+    let read_fd = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+    // SAFETY: pipe(2)/pipe2(2) returned two owned descriptors on success.
+    let write_fd = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        set_fd_cloexec(read_fd.as_raw_fd(), true)?;
+        set_fd_cloexec(write_fd.as_raw_fd(), true)?;
+    }
+
+    Ok([read_fd, write_fd])
+}
+
+fn ready_pipe() -> io::Result<(AsyncFd<OwnedFd>, OwnedFd)> {
+    let [read_fd, write_fd] = create_cloexec_pipe()?;
+
+    // Linux uses atomic pipe2(O_CLOEXEC); other Unix targets use
+    // pipe(2)+fcntl(FD_CLOEXEC) on both ends as the portable fallback.
+    // Both branches make the descriptors CLOEXEC before spawn setup
+    // continues, keeping the cross-spawn inheritance window closed on
+    // Linux and as narrow as possible elsewhere. Only the intended child
+    // clears CLOEXEC on the write end in `pre_exec`, immediately before exec.
+    set_fd_nonblocking(read_fd.as_raw_fd())?;
+
+    Ok((AsyncFd::new(read_fd)?, write_fd))
+}
+
+struct ReadySignalScanner {
+    buf: Vec<u8>,
+}
+
+impl ReadySignalScanner {
+    fn new() -> Self {
+        Self {
+            buf: Vec::with_capacity(16),
+        }
+    }
+
+    fn push(&mut self, bytes: &[u8]) -> io::Result<bool> {
+        let scan_from = self
+            .buf
+            .len()
+            .saturating_sub(DAEMON_READY_SIGNAL.len().saturating_sub(1));
+        self.buf.extend_from_slice(bytes);
+        if self.buf[scan_from..]
+            .windows(DAEMON_READY_SIGNAL.len())
+            .any(|w| w == DAEMON_READY_SIGNAL)
+        {
+            return Ok(true);
+        }
+        if self.buf.len() > DAEMON_READY_MAX_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ready fd did not contain ready signal",
+            ));
+        }
+        Ok(false)
+    }
+}
+
+fn with_ready_scanner<T>(
+    scanner: &Mutex<ReadySignalScanner>,
+    f: impl FnOnce(&mut ReadySignalScanner) -> io::Result<T>,
+) -> io::Result<T> {
+    let mut scanner = scanner
+        .lock()
+        .map_err(|_| io::Error::other("ready scanner mutex poisoned"))?;
+    f(&mut scanner)
+}
+
+fn read_ready_chunk(fd: i32, chunk: &mut [u8]) -> io::Result<usize> {
+    loop {
+        // SAFETY: `chunk` is a valid writable byte slice and `fd` is a
+        // nonblocking pipe read end owned by the AsyncFd wrapper.
+        let n = unsafe { libc::read(fd, chunk.as_mut_ptr().cast(), chunk.len()) };
+        if n >= 0 {
+            return Ok(n as usize);
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() != io::ErrorKind::Interrupted {
+            return Err(err);
+        }
+    }
+}
+
+async fn read_ready_signal(
+    reader: &AsyncFd<OwnedFd>,
+    scanner: &Mutex<ReadySignalScanner>,
+) -> io::Result<()> {
+    let mut chunk = [0_u8; 16];
+    loop {
+        let mut guard = reader.readable().await?;
+        let n =
+            match guard.try_io(|inner| read_ready_chunk(inner.get_ref().as_raw_fd(), &mut chunk)) {
+                Ok(result) => result?,
+                Err(_would_block) => continue,
+            };
+        if n == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "ready fd closed before ready signal",
+            ));
+        }
+        if with_ready_scanner(scanner, |scanner| scanner.push(&chunk[..n]))? {
+            return Ok(());
+        }
+    }
+}
+
+fn drain_ready_signal_now(
+    reader: &AsyncFd<OwnedFd>,
+    scanner: &Mutex<ReadySignalScanner>,
+) -> io::Result<bool> {
+    let mut chunk = [0_u8; 16];
+    loop {
+        match read_ready_chunk(reader.get_ref().as_raw_fd(), &mut chunk) {
+            Ok(0) => return Ok(false),
+            Ok(n) => {
+                if with_ready_scanner(scanner, |scanner| scanner.push(&chunk[..n]))? {
+                    return Ok(true);
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(false),
+            Err(e) => return Err(e),
+        }
+    }
+}
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/api/cards/{card_id}/terminal", get(get_terminal_for_card))
@@ -55,8 +258,8 @@ pub(crate) async fn get_terminal_for_card(
 }
 
 /// Spawn a `calm-session-daemon` for the given terminal row, wait for its
-/// unix socket to accept connections, and persist the socket path as the
-/// row's `daemon_handle`. Used by `routes::terminal_cards::create_terminal_card`
+/// deterministic ready signal, and persist the socket path as the row's
+/// `daemon_handle`. Used by `routes::terminal_cards::create_terminal_card`
 /// (the atomic-create endpoint), the codex route's PTY spawn, and (when a
 /// previously-spawned daemon has died) by the WS handler's auto-revive path.
 pub(crate) async fn spawn_daemon_for(
@@ -101,6 +304,10 @@ pub(crate) async fn spawn_daemon_with_parts(
     // common case (no prior daemon for this row).
     let _ = std::fs::remove_file(crate::ws::terminal::exit_sidecar_path(&sock));
     let sock_str = sock.to_string_lossy().to_string();
+    let (ready_reader, ready_writer) =
+        ready_pipe().map_err(|e| CalmError::Internal(format!("create daemon ready pipe: {e}")))?;
+    let ready_fd = ready_writer.as_raw_fd();
+    let ready_fd_arg = ready_fd.to_string();
 
     // #177 PR2 — `term.theme_fg/_bg` are the single source of truth
     // for daemon OSC 10/11 reply colors (write-once at row create,
@@ -117,6 +324,7 @@ pub(crate) async fn spawn_daemon_with_parts(
         .args(["--terminal-fg", &term.theme_fg])
         .args(["--terminal-bg", &term.theme_bg])
         .args(["--cwd", cwd])
+        .args(["--ready-fd", &ready_fd_arg])
         .arg("--")
         .args(["/bin/sh", "-c", program]);
     cmd.env("TERM", "xterm-256color");
@@ -128,6 +336,21 @@ pub(crate) async fn spawn_daemon_with_parts(
             }
         }
     }
+    // SAFETY: this closure runs after fork and before exec in the child.
+    // It only calls async-signal-safe `fcntl(2)` operations on the
+    // inherited ready pipe fd, so it does not allocate or touch locks.
+    unsafe {
+        cmd.pre_exec(move || {
+            let flags = libc::fcntl(ready_fd, libc::F_GETFD);
+            if flags == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            if libc::fcntl(ready_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
     cmd.stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -136,6 +359,10 @@ pub(crate) async fn spawn_daemon_with_parts(
     let mut child = cmd
         .spawn()
         .map_err(|e| CalmError::Internal(format!("spawn calm-session-daemon: {e}")))?;
+    // Parent must not keep a write end open: if the daemon exits or closes
+    // its inherited ready fd without writing `ready\n`, the read end's EOF is
+    // the deterministic "never ready" signal.
+    drop(ready_writer);
     let pid = child.id();
     tracing::info!(pid = ?pid, terminal_id = %term.id, "spawned calm-session-daemon");
     // Persist the pid so the orphan-terminal sweeper has a SIGTERM fallback
@@ -151,38 +378,96 @@ pub(crate) async fn spawn_daemon_with_parts(
             "failed to persist terminal pid; sweeper will fall back to socket-Kill only"
         );
     }
-    // Persist the daemon_handle eagerly — BEFORE the readiness probe.
+    // Persist the daemon_handle eagerly — BEFORE awaiting readiness.
     // A one-shot child (e.g. `printf done`) can exit + the daemon can
-    // unlink its socket faster than the 40ms probe interval, so a
-    // probe-first persist would leave the row's handle permanently
-    // None and the next WS attach would see "no daemon_handle" and
-    // 500. With the handle written here, `resolve_live_sock` sees
-    // `Some(sock)`, probes, fails (socket gone), and falls into the
-    // existing `LiveSock::ChildExited` branch → Close(1000,
-    // "child-exited"). The handle stays set on the readiness-timeout
-    // error path too: it matches reality (a daemon WAS spawned), and
-    // a stuck-daemon hang still surfaces as ChildExited on the next
+    // unlink its socket before any attach observes it, so a ready-first
+    // persist would leave the row's handle permanently None and the next
+    // WS attach would see "no daemon_handle" and 500. With the handle
+    // written here, `resolve_live_sock` sees `Some(sock)`, probes, fails
+    // (socket gone), and falls into the existing `LiveSock::ChildExited`
+    // branch → Close(1000, "child-exited"). The handle stays set on the
+    // readiness-error path too: it matches reality (a daemon WAS spawned),
+    // and a stuck-daemon hang still surfaces as ChildExited on the next
     // attach, giving the user a Restart button.
     repo.terminal_set_handle(&term.id, Some(&sock_str)).await?;
+
+    let readiness = {
+        let ready_scanner = Mutex::new(ReadySignalScanner::new());
+        let wait = child.wait();
+        let ready = read_ready_signal(&ready_reader, &ready_scanner);
+        tokio::pin!(wait);
+        tokio::pin!(ready);
+        tokio::select! {
+            ready_res = &mut ready => {
+                match ready_res {
+                    Ok(()) => DaemonReadiness::Ready,
+                    Err(e) => DaemonReadiness::Failed {
+                        error: daemon_not_ready(&term.id, e),
+                        child_already_reaped: false,
+                    },
+                }
+            }
+            wait_res = &mut wait => {
+                match drain_ready_signal_now(&ready_reader, &ready_scanner) {
+                    Ok(true) => DaemonReadiness::Ready,
+                    Ok(false) => match wait_res {
+                        Ok(status) => DaemonReadiness::Failed {
+                            error: daemon_not_ready(
+                                &term.id,
+                                format_args!("exited before ready: {status}"),
+                            ),
+                            child_already_reaped: true,
+                        },
+                        Err(e) => DaemonReadiness::Failed {
+                            error: daemon_not_ready(
+                                &term.id,
+                                format_args!("failed to observe child exit: {e}"),
+                            ),
+                            child_already_reaped: true,
+                        },
+                    },
+                    Err(e) => DaemonReadiness::Failed {
+                        error: daemon_not_ready(
+                            &term.id,
+                            format_args!("read ready fd after child exit: {e}"),
+                        ),
+                        child_already_reaped: true,
+                    },
+                }
+            }
+            _ = tokio::time::sleep(DAEMON_READY_BACKSTOP) => {
+                // This is deliberately a backstop, not the readiness judge:
+                // normal success is `ready\n`, normal failure is child exit or
+                // ready-fd EOF. Only a pathological alive process that never
+                // writes ready and never exits reaches this branch. Ten seconds
+                // keeps rollback/reap tests and real requests bounded without
+                // acting as the normal readiness decision.
+                DaemonReadiness::Failed {
+                    error: daemon_not_ready(
+                        &term.id,
+                        format_args!("ready-fd backstop after {DAEMON_READY_BACKSTOP:?}"),
+                    ),
+                    child_already_reaped: false,
+                }
+            }
+        }
+    };
+    if let DaemonReadiness::Failed {
+        error,
+        child_already_reaped,
+    } = readiness
+    {
+        if !child_already_reaped {
+            tokio::spawn(async move {
+                let _ = child.wait().await;
+            });
+        }
+        return Err(error);
+    }
+
     tokio::spawn(async move {
         let _ = child.wait().await;
     });
-
-    // Poll until the daemon accepts connections (or give up after ~3s).
-    let mut ready = false;
-    for _ in 0..75 {
-        if UnixStream::connect(&sock).await.is_ok() {
-            ready = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(40)).await;
-    }
-    if !ready {
-        return Err(CalmError::Internal(format!(
-            "daemon for terminal {} did not become ready",
-            term.id
-        )));
-    }
     Ok(())
 }
 
@@ -195,21 +480,22 @@ mod tests {
     //! module here. The `argv-recorder-daemon` fixture (see
     //! `crates/calm-server/tests/fixtures/argv-recorder-daemon/main.rs`)
     //! stands in for the real `calm-session-daemon`: writes the full
-    //! argv it received to `<sock>.argv` then binds the socket the
-    //! kernel polls for readiness. Asserts the bytes that leave the
+    //! argv it received to `<sock>.argv`, binds the socket, then writes
+    //! `ready\n` to the inherited ready fd. Asserts the bytes that leave the
     //! spawn site without paying the cost of a real daemon.
     //!
     //! Recorder protocol:
     //!   * Kernel passes `--sock <path>` like the real daemon.
-    //!   * Recorder writes `<path>.argv` (one line per argv element)
-    //!     then binds the unix socket so the kernel's readiness poll
-    //!     succeeds and `spawn_daemon_with_parts` returns Ok.
+    //!   * Recorder writes `<path>.argv` (one line per argv element),
+    //!     binds the unix socket, then writes `ready\n` to `--ready-fd`
+    //!     so `spawn_daemon_with_parts` returns Ok.
 
     use super::*;
     use crate::db::prelude::*;
     use crate::db::sqlite::SqlxRepo;
     use crate::model::{Card, NewCard, NewCove, NewTerminal, NewWave};
     use crate::state::DaemonClient;
+    use std::io::Write;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -223,7 +509,16 @@ mod tests {
     /// `target/<profile>/deps/<name>-<hash>`; the recorder binary
     /// lives at `target/<profile>/argv-recorder-daemon`.
     fn locate_recorder_bin() -> PathBuf {
-        if let Ok(p) = std::env::var("CARGO_BIN_EXE_argv-recorder-daemon") {
+        locate_fixture_bin("argv-recorder-daemon")
+    }
+
+    fn locate_ready_exit_bin() -> PathBuf {
+        locate_fixture_bin("ready-exit-daemon")
+    }
+
+    fn locate_fixture_bin(name: &str) -> PathBuf {
+        let env_key = format!("CARGO_BIN_EXE_{name}");
+        if let Ok(p) = std::env::var(env_key) {
             return PathBuf::from(p);
         }
         let me = std::env::current_exe().expect("current_exe");
@@ -231,12 +526,12 @@ mod tests {
             .parent()
             .and_then(|p| p.parent())
             .expect("test bin parent");
-        let candidate = target_profile.join("argv-recorder-daemon");
+        let candidate = target_profile.join(name);
         if candidate.exists() {
             return candidate;
         }
         panic!(
-            "argv-recorder-daemon binary not found at {candidate:?}; \
+            "{name} binary not found at {candidate:?}; \
              build the workspace first (`cargo build --tests -p calm-server`)"
         );
     }
@@ -364,10 +659,75 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn read_ready_signal_finds_ready_split_across_chunks() {
+        let (reader, writer) = ready_pipe().expect("ready pipe");
+        {
+            let mut writer = std::fs::File::from(writer);
+            writer
+                .write_all(b"0123456789abcrea")
+                .expect("write first chunk");
+            writer.write_all(b"dy\n").expect("write second chunk");
+        }
+
+        let scanner = Mutex::new(ReadySignalScanner::new());
+        read_ready_signal(&reader, &scanner)
+            .await
+            .expect("split ready signal must be detected");
+    }
+
+    #[tokio::test]
+    async fn read_ready_signal_rejects_over_64_bytes_without_ready() {
+        let (reader, writer) = ready_pipe().expect("ready pipe");
+        {
+            let mut writer = std::fs::File::from(writer);
+            writer.write_all(&[b'x'; 65]).expect("write garbage");
+        }
+
+        let scanner = Mutex::new(ReadySignalScanner::new());
+        let err = read_ready_signal(&reader, &scanner)
+            .await
+            .expect_err("oversized non-ready payload must fail");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[tokio::test]
+    async fn read_ready_signal_reports_eof_before_ready() {
+        let (reader, writer) = ready_pipe().expect("ready pipe");
+        drop(writer);
+
+        let scanner = Mutex::new(ReadySignalScanner::new());
+        let err = read_ready_signal(&reader, &scanner)
+            .await
+            .expect_err("EOF before ready must fail");
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[tokio::test]
+    async fn spawn_treats_ready_then_fast_exit_as_ready() {
+        let (repo, daemon, _tmp, term_id) = boot().await;
+        let daemon = DaemonClient {
+            data_dir: daemon.data_dir.clone(),
+            session_daemon_bin: locate_ready_exit_bin(),
+        };
+        let term = repo.terminal_get(&term_id).await.unwrap().expect("row");
+
+        spawn_daemon_with_parts(
+            &daemon,
+            repo.as_ref(),
+            &term,
+            "true",
+            "/",
+            &serde_json::json!({}),
+        )
+        .await
+        .expect("ready signal must win over immediate child exit");
+    }
+
     /// Fast-exit race regression: when the spawned binary exits
     /// immediately without binding its socket (the user-visible
     /// `printf 'done\n'` reproducer in #267's followup), the readiness
-    /// poll inside `spawn_daemon_with_parts` returns Err — but the row's
+    /// race inside `spawn_daemon_with_parts` returns Err — but the row's
     /// `daemon_handle` MUST already be set so that a subsequent WS
     /// attach can resolve to `LiveSock::ChildExited` and emit
     /// `Close(1000, "child-exited")` instead of falling into the
@@ -375,8 +735,8 @@ mod tests {
     ///
     /// Drives the helper with `/bin/true` as `session_daemon_bin`:
     /// `cmd.spawn()` succeeds, the binary ignores all args + exits 0
-    /// without binding the socket, so the 75×40ms readiness poll
-    /// exhausts and returns the "did not become ready" error. The
+    /// without binding the socket or writing ready, so the child-exit
+    /// arm returns the "did not become ready" error. The
     /// invariant under test is that **the handle is persisted before
     /// the readiness check** — verifying it directly from the row
     /// after the failure returns.
@@ -429,7 +789,7 @@ mod tests {
             .await
             .unwrap();
         // `/bin/true` (or `/usr/bin/true`) — accepts any args, exits 0,
-        // never binds. Drives the readiness-timeout path.
+        // never binds or writes ready. Drives the child-exit path.
         let true_bin = if std::path::Path::new("/bin/true").exists() {
             PathBuf::from("/bin/true")
         } else {
@@ -440,7 +800,7 @@ mod tests {
             session_daemon_bin: true_bin,
         });
 
-        // Drive the spawn — must return Err (readiness timeout).
+        // Drive the spawn — must return Err (child exit before ready).
         let res = spawn_daemon_with_parts(
             daemon.as_ref(),
             repo.as_ref(),
@@ -455,7 +815,7 @@ mod tests {
             "expected spawn to fail readiness, but got {res:?}",
         );
 
-        // Invariant: handle was persisted before the poll, so even
+        // Invariant: handle was persisted before the readiness race, so even
         // after the error path the row carries it. Without this the
         // next attach falls into the "no daemon_handle" branch and
         // surfaces 1006 to the browser.
@@ -464,7 +824,7 @@ mod tests {
         assert_eq!(
             row.daemon_handle.as_deref(),
             Some(expected_sock.as_str()),
-            "spawn must persist daemon_handle before the readiness poll, \
+            "spawn must persist daemon_handle before the readiness race, \
              so a fast-exit daemon still leaves the row resolvable as \
              ChildExited (not as 'no handle' 1006). row.daemon_handle: \
              {:?}",
@@ -472,7 +832,8 @@ mod tests {
         );
     }
 
-    /// Sanity: `--id`, `--sock`, the theme flags, and `--cwd` all
+    /// Sanity: `--id`, `--sock`, the theme flags, `--cwd`, and
+    /// `--ready-fd` all
     /// appear on the same argv. Catches a `.args(...)` call that
     /// accidentally lands in a `cmd.env(...)` block.
     #[tokio::test]
@@ -493,7 +854,14 @@ mod tests {
 
         let sock_path = daemon.sock_path(&term_id);
         let argv = read_argv_lines(&sock_path.to_string_lossy());
-        for expected in &["--id", "--sock", "--terminal-fg", "--terminal-bg", "--cwd"] {
+        for expected in &[
+            "--id",
+            "--sock",
+            "--terminal-fg",
+            "--terminal-bg",
+            "--cwd",
+            "--ready-fd",
+        ] {
             assert!(
                 argv.iter().any(|a| a == expected),
                 "argv must carry {expected}; got argv: {argv:?}",

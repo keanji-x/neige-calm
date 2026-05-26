@@ -686,9 +686,9 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
     //    `[PROMPT]` arg and `codex_auto_submit` is skipped on the
     //    `codex_thread_id` payload (no `\r` is injected into the resumed TUI).
     //
-    //    `spawn_daemon_for` includes a busy-poll wait-until-socket-ready loop
-    //    (up to ~3 s). Since #236, this is on the response hot path; #236
-    //    considered that an acceptable cost vs. the correctness bug it closes.
+    //    `spawn_daemon_for` waits for deterministic daemon readiness on the
+    //    response hot path. Since #236, that synchronous wait is intentional:
+    //    it is the acceptable cost vs. the correctness bug it closes.
     let command_line = push.command_line();
     if let Err(e) = spawn_daemon_for(&state, &term, &command_line, &cwd, &env).await {
         tracing::warn!(
