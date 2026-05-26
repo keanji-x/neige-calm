@@ -388,6 +388,7 @@ fn build_codex_config_toml_with_prompt_and_provider(
     let stream_idle_timeout_ms = provider_overrides
         .stream_idle_timeout_ms
         .unwrap_or(SPEC_STREAM_IDLE_TIMEOUT_MS);
+    let codex_client_version = env!("CARGO_PKG_VERSION");
     // We use a TOML basic string (one line). Newlines in the prompt are
     // escaped to `\n` so the file stays well-formed without resorting
     // to multiline literals (which would require a different escape
@@ -405,12 +406,16 @@ fn build_codex_config_toml_with_prompt_and_provider(
          [model_providers.{SPEC_MODEL_PROVIDER_ID}]\n\
          name = \"OpenAI\"\n\
          base_url = \"{escaped_provider_base_url}\"\n\
-         env_key = \"OPENAI_API_KEY\"\n\
          wire_api = \"responses\"\n\
-         requires_openai_auth = false\n\
+         requires_openai_auth = true\n\
+         # Mirror OpenAI: both Responses WebSocket and HTTP/SSE paths honor stream_idle_timeout_ms.\n\
+         supports_websockets = true\n\
          request_max_retries = 0\n\
          stream_max_retries = 0\n\
          stream_idle_timeout_ms = {stream_idle_timeout_ms}\n\
+         \n\
+         [model_providers.{SPEC_MODEL_PROVIDER_ID}.http_headers]\n\
+         version = \"{codex_client_version}\"\n\
          \n\
          [model_providers.{SPEC_MODEL_PROVIDER_ID}.env_http_headers]\n\
          OpenAI-Organization = \"OPENAI_ORGANIZATION\"\n\
@@ -975,12 +980,18 @@ mod tests {
         );
         assert!(s.contains("name = \"OpenAI\""));
         assert!(s.contains("base_url = \"https://api.openai.com/v1\""));
-        assert!(s.contains("env_key = \"OPENAI_API_KEY\""));
+        assert!(
+            !s.contains("env_key"),
+            "neige-openai must use Codex login auth.json, not OPENAI_API_KEY; got:\n{s}"
+        );
         assert!(s.contains("wire_api = \"responses\""));
-        assert!(s.contains("requires_openai_auth = false"));
+        assert!(s.contains("requires_openai_auth = true"));
+        assert!(s.contains("supports_websockets = true"));
         assert!(s.contains("request_max_retries = 0"));
         assert!(s.contains("stream_max_retries = 0"));
         assert!(s.contains("stream_idle_timeout_ms = 120000"));
+        assert!(s.contains("[model_providers.neige-openai.http_headers]"));
+        assert!(s.contains(&format!("version = \"{}\"", env!("CARGO_PKG_VERSION"))));
         assert!(s.contains("[model_providers.neige-openai.env_http_headers]"));
         assert!(s.contains("OpenAI-Organization = \"OPENAI_ORGANIZATION\""));
         assert!(s.contains("OpenAI-Project = \"OPENAI_PROJECT\""));
@@ -1037,10 +1048,12 @@ mod codex_idle_e2e {
     use std::process::Stdio;
     use std::time::{Duration, Instant};
 
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use serde_json::Value;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::process::{Child, Command};
+    use tokio::sync::oneshot;
 
     use super::*;
     use crate::codex_appserver::{ClientInfo, CodexAppServer, InputItem, Notification};
@@ -1048,6 +1061,7 @@ mod codex_idle_e2e {
 
     const DEFAULT_CODEX_BIN: &str = "~/.nvm/versions/node/v24.4.1/bin/codex";
     const E2E_STREAM_IDLE_TIMEOUT_MS: u64 = 500;
+    const E2E_CHATGPT_ACCESS_TOKEN: &str = "sk-neige-chatgpt-access";
 
     fn resolve_codex_bin() -> Option<PathBuf> {
         let raw =
@@ -1082,42 +1096,150 @@ mod codex_idle_e2e {
         }
     }
 
-    async fn start_idle_sse_server() -> (String, tokio::task::JoinHandle<()>) {
+    fn fake_chatgpt_auth_json() -> serde_json::Value {
+        let header = serde_json::json!({ "alg": "none", "typ": "JWT" });
+        let payload = serde_json::json!({
+            "email": "neige-e2e@example.com",
+            "https://api.openai.com/auth": {
+                "chatgpt_plan_type": "plus",
+                "chatgpt_user_id": "user-neige-e2e",
+                "user_id": "user-neige-e2e",
+                "chatgpt_account_id": "acct-neige-e2e"
+            }
+        });
+        let header_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).expect("jwt header"));
+        let payload_b64 =
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).expect("jwt payload"));
+        let signature_b64 = URL_SAFE_NO_PAD.encode(b"sig");
+        let fake_jwt = format!("{header_b64}.{payload_b64}.{signature_b64}");
+
+        serde_json::json!({
+            "auth_mode": "chatgpt",
+            "OPENAI_API_KEY": null,
+            "tokens": {
+                "id_token": fake_jwt,
+                "access_token": E2E_CHATGPT_ACCESS_TOKEN,
+                "refresh_token": "refresh-neige-e2e",
+                "account_id": "acct-neige-e2e"
+            },
+            "last_refresh": "2099-01-01T00:00:00Z"
+        })
+    }
+
+    async fn start_idle_sse_server() -> (
+        String,
+        oneshot::Receiver<String>,
+        tokio::task::JoinHandle<()>,
+    ) {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind fake OpenAI SSE server");
         let addr = listener.local_addr().expect("fake server local addr");
+        let (tx_request, rx_request) = oneshot::channel();
         let task = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.expect("accept fake SSE request");
-            let mut buf = Vec::new();
-            let mut chunk = [0_u8; 1024];
+            let mut tx_request = Some(tx_request);
             loop {
-                let n = stream
-                    .read(&mut chunk)
+                let (mut stream, _) = listener.accept().await.expect("accept fake OpenAI request");
+                let mut buf = Vec::new();
+                let mut chunk = [0_u8; 1024];
+                loop {
+                    let n = stream
+                        .read(&mut chunk)
+                        .await
+                        .expect("read fake OpenAI request");
+                    if n == 0 {
+                        return;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&buf).to_string();
+                let first_line = request.lines().next().unwrap_or_default();
+                if !first_line.contains(" /v1/responses") {
+                    let body = serde_json::json!({
+                        "models": [{
+                            "slug": "gpt-5.2",
+                            "display_name": "GPT-5.2",
+                            "description": null,
+                            "default_reasoning_level": null,
+                            "supported_reasoning_levels": [],
+                            "shell_type": "default",
+                            "visibility": "list",
+                            "supported_in_api": true,
+                            "priority": 0,
+                            "additional_speed_tiers": [],
+                            "service_tiers": [],
+                            "availability_nux": null,
+                            "upgrade": null,
+                            "base_instructions": "",
+                            "model_messages": null,
+                            "supports_reasoning_summaries": false,
+                            "default_reasoning_summary": "auto",
+                            "support_verbosity": false,
+                            "default_verbosity": null,
+                            "apply_patch_tool_type": null,
+                            "web_search_tool_type": "text",
+                            "truncation_policy": { "mode": "bytes", "limit": 10000 },
+                            "supports_parallel_tool_calls": false,
+                            "supports_image_detail_original": false,
+                            "context_window": 272000,
+                            "max_context_window": null,
+                            "auto_compact_token_limit": null,
+                            "effective_context_window_percent": 95,
+                            "experimental_supported_tools": [],
+                            "input_modalities": ["text"],
+                            "supports_search_tool": false
+                        }]
+                    })
+                    .to_string();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\n\
+                         content-type: application/json\r\n\
+                         content-length: {}\r\n\
+                         connection: close\r\n\
+                         \r\n\
+                         {body}",
+                        body.len()
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .await
+                        .expect("write fake JSON response");
+                    continue;
+                }
+                if request.to_ascii_lowercase().contains("upgrade: websocket") {
+                    let response = concat!(
+                        "HTTP/1.1 426 Upgrade Required\r\n",
+                        "content-length: 0\r\n",
+                        "connection: close\r\n",
+                        "\r\n"
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .await
+                        .expect("write fake websocket fallback response");
+                    continue;
+                }
+                if let Some(tx_request) = tx_request.take() {
+                    let _ = tx_request.send(request);
+                }
+                let response = concat!(
+                    "HTTP/1.1 200 OK\r\n",
+                    "content-type: text/event-stream\r\n",
+                    "cache-control: no-cache\r\n",
+                    "connection: keep-alive\r\n",
+                    "\r\n"
+                );
+                stream
+                    .write_all(response.as_bytes())
                     .await
-                    .expect("read fake SSE request");
-                if n == 0 {
-                    return;
-                }
-                buf.extend_from_slice(&chunk[..n]);
-                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                    break;
-                }
+                    .expect("write fake SSE headers");
+                std::future::pending::<()>().await;
             }
-            let response = concat!(
-                "HTTP/1.1 200 OK\r\n",
-                "content-type: text/event-stream\r\n",
-                "cache-control: no-cache\r\n",
-                "connection: keep-alive\r\n",
-                "\r\n"
-            );
-            stream
-                .write_all(response.as_bytes())
-                .await
-                .expect("write fake SSE headers");
-            std::future::pending::<()>().await;
         });
-        (format!("http://{addr}/v1"), task)
+        (format!("http://{addr}/v1"), rx_request, task)
     }
 
     async fn connect_when_ready(
@@ -1148,7 +1270,7 @@ mod codex_idle_e2e {
             return;
         };
 
-        let (base_url, fake_server) = start_idle_sse_server().await;
+        let (base_url, request_rx, fake_server) = start_idle_sse_server().await;
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let codex_home = tmp.path().join("codex-home");
         std::fs::create_dir_all(&codex_home).expect("mkdir CODEX_HOME");
@@ -1160,8 +1282,33 @@ mod codex_idle_e2e {
                 base_url: Some(base_url),
                 stream_idle_timeout_ms: Some(E2E_STREAM_IDLE_TIMEOUT_MS),
             },
+        )
+        .replacen(
+            "model_provider = \"neige-openai\"",
+            "model = \"gpt-5.2\"\nmodel_provider = \"neige-openai\"",
+            1,
+        )
+        // This fixture is an SSE-only hung upstream so it exercises
+        // codex-api/src/sse/responses.rs idle detection deterministically.
+        .replacen(
+            "supports_websockets = true",
+            "supports_websockets = false",
+            1,
+        )
+        .replacen(
+            &format!("stream_idle_timeout_ms = {E2E_STREAM_IDLE_TIMEOUT_MS}"),
+            &format!(
+                "stream_idle_timeout_ms = {E2E_STREAM_IDLE_TIMEOUT_MS}\nwebsocket_connect_timeout_ms = 1000"
+            ),
+            1,
         );
+        let cfg = format!("{cfg}\n[features]\nplugins = false\nplugin_sharing = false\n");
         std::fs::write(codex_home.join("config.toml"), cfg).expect("write config.toml");
+        std::fs::write(
+            codex_home.join("auth.json"),
+            serde_json::to_vec_pretty(&fake_chatgpt_auth_json()).expect("serialize auth.json"),
+        )
+        .expect("write fake ChatGPT auth.json");
 
         let sock_dir = tmp.path().join("appserver");
         std::fs::create_dir_all(&sock_dir).expect("mkdir appserver dir");
@@ -1177,8 +1324,10 @@ mod codex_idle_e2e {
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
             .env("CODEX_HOME", &codex_home)
-            .env("OPENAI_API_KEY", "sk-neige-fake")
             .env("NO_PROXY", "127.0.0.1,localhost")
+            .env_remove("OPENAI_API_KEY")
+            .env_remove("CODEX_API_KEY")
+            .env_remove("CODEX_ACCESS_TOKEN")
             .env_remove("HTTP_PROXY")
             .env_remove("HTTPS_PROXY")
             .env_remove("http_proxy")
@@ -1220,8 +1369,19 @@ mod codex_idle_e2e {
         .expect("turn/started timeout")
         .expect("turn/started notification");
 
+        let request = tokio::time::timeout(Duration::from_secs(30), request_rx)
+            .await
+            .expect("fake /responses request timeout")
+            .expect("fake /responses request captured");
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains(&format!("authorization: bearer {E2E_CHATGPT_ACCESS_TOKEN}")),
+            "request must use ChatGPT auth.json bearer token, not OPENAI_API_KEY env auth; request:\n{request}"
+        );
+
         let completed = tokio::time::timeout(
-            Duration::from_secs(5),
+            Duration::from_secs(10),
             notifs.await_notification(|n| {
                 matches!(n, Notification::TurnCompleted { thread_id: t, .. } if t == &thread_id)
             }),
