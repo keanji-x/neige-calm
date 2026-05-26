@@ -72,14 +72,14 @@
 //!   [`initialize`](CodexAppServer::initialize) →
 //!   [`thread_start`](CodexAppServer::thread_start) →
 //!   [`turn_start`](CodexAppServer::turn_start)`([text(goal)])` →
-//!   **await the `turn/started` notification**
+//!   **await the initial `turn/started` or `turn/completed` notification**
 //!
-//! Awaiting `turn/started` guarantees a *rollout exists on disk* (the
-//! spike's hard constraint) so the `--remote` TUI's `thread/resume` can
-//! rejoin the same thread. We deliberately do **not** wait for
-//! `turn/completed` (that can be tens of seconds); the turn keeps running
-//! while the 201 is returned and the TUI mounts. This is synchronous on
-//! the create hot path by design.
+//! Awaiting the first lifecycle notification guarantees a *rollout exists
+//! on disk* (the spike's hard constraint) so the `--remote` TUI's
+//! `thread/resume` can rejoin the same thread. `turn/started` is the
+//! normal signal; `turn/completed` is also accepted if it arrives first.
+//! There is no lifecycle timeout: EOF/reader exit, JSON-RPC errors, and
+//! child exit are the deterministic failure signals.
 //!
 //! ## Supervision (2a + B1 process-group fix)
 //!
@@ -144,35 +144,22 @@ const SOCKET_READY_POLL: Duration = Duration::from_millis(150);
 /// Total wall-clock budget for the socket-ready poll.
 const SOCKET_READY_BUDGET: Duration = Duration::from_secs(20);
 
-/// How long DECISION A waits for the `turn/started` notification after
-/// `turn/start` returns its ack. `turn/started` is the signal a rollout
-/// now exists on disk; it arrives promptly (it precedes any model work).
-/// We bound it so a misbehaving server can't wedge the create hot path.
-const TURN_STARTED_BUDGET: Duration = Duration::from_secs(30);
-
-/// S1 — the **single overall wall-clock cap** on DECISION A's whole boot
-/// sequence (poll-connect → initialize → thread/start → turn/start →
-/// await `turn/started`). The per-step budgets above
-/// (`SOCKET_READY_BUDGET` + the per-request codex_appserver
-/// `DEFAULT_REQUEST_TIMEOUT` (30 s) x 3 +
-/// `TURN_STARTED_BUDGET`) stack independently, so a degraded
-/// codex/model that limps through each step just under its own budget
-/// could otherwise block `POST /api/waves` for **well over a minute**.
-/// This deadline wraps the entire post-spawn sequence so the create
-/// hot path is bounded regardless of where the slowness lands; the
-/// inner per-step budgets remain as finer-grained safety nets. On
-/// overall timeout the [`SpawnRollback`] guard still fires (group
-/// SIGTERM + socket-dir cleanup) so no orphan child / parked registry
-/// entry is left behind, and `create_wave` returns a clean
-/// [`CalmError`]. 45 s is comfortably above a healthy local boot
-/// (socket up in <1 s, `turn/started` in a few hundred ms) while still
-/// being a hard ceiling a sick model can't blow past.
+/// S1 — a wall-clock backstop for the pre-lifecycle boot sequence
+/// (poll-connect → initialize → thread/start → turn/start ack). It is
+/// deliberately NOT applied to the post-`turn/start` lifecycle wait:
+/// once the server accepted the turn, `turn/started` / `turn/completed`
+/// notifications, reader EOF, JSON-RPC errors, and child exit are the
+/// deterministic sources of truth. A slow-but-live turn must not fail
+/// because a lifecycle budget elapsed. The socket-ready portion remains
+/// a wedge backstop for "process stayed alive but never bound".
 const OVERALL_BOOT_BUDGET: Duration = Duration::from_secs(45);
 
 /// #318 INV-4 (codex P1 follow-up) — how long [`build_handle_after_spawn_resume`]
 /// waits for a lifecycle notification (`turn/started` or `turn/completed`)
 /// to arrive on a `thread/resume`-d connection before assuming the server
 /// is idle and promoting [`SpecPushPhase::Resumed`] → [`SpecPushPhase::TurnCompleted`].
+/// This is a resume-phase reconciliation shim, not an app-server readiness
+/// budget.
 ///
 /// Why a timer is needed: `thread/resume` does NOT replay prior-boot
 /// lifecycle notifications. If the server was *idle* between turns when
@@ -1468,8 +1455,8 @@ impl SpecPushRegistry {
 ///      [`initialize`](CodexAppServer::initialize) +
 ///      [`thread_start`](CodexAppServer::thread_start),
 ///   4. [`turn_start`](CodexAppServer::turn_start) with the goal text,
-///   5. **await `turn/started`** on the notification stream (rollout now
-///      on disk),
+///   5. **await `turn/started` or `turn/completed`** on the notification
+///      stream (rollout now on disk),
 ///   6. spawn the status-tracking consumer task over the rest of the
 ///      stream and return everything as [`SpecPushHandle`].
 ///
@@ -1568,32 +1555,11 @@ pub async fn spawn_spec_appserver(
     // socket-dir cleanup before propagating (S2 rollback). A `Drop`-based
     // guard keeps this DRY across the half-dozen `?` sites below.
     let mut rollback = SpawnRollback::new(pgid, sock);
-    // S1 — bound the WHOLE post-spawn boot sequence under ONE overall
-    // wall-clock deadline (the per-step budgets inside
-    // `build_handle_after_spawn` remain as inner safety nets). On
-    // timeout the future is dropped: `child` inside it drops too
-    // (`kill_on_drop` reaps the launcher), and then the still-armed
-    // `rollback` guard below fires the group SIGTERM + socket-dir
-    // cleanup — so a wedged/degraded codex leaves no orphan group and
-    // no parked registry entry, and `create_wave` gets a clean error.
-    let handle = match tokio::time::timeout(
-        OVERALL_BOOT_BUDGET,
-        build_handle_after_spawn(child, pgid, start_time, boot_id, goal_text, sock),
-    )
-    .await
-    {
-        Ok(res) => res?,
-        Err(_elapsed) => {
-            // `rollback` is still armed → its Drop reaps the group and
-            // clears the socket dir as we return. (The `?` arm relies on
-            // the same guard.)
-            return Err(CalmError::CodexAppServer(format!(
-                "codex app-server boot did not complete within {}s overall \
-                 (spec/wave could not start)",
-                OVERALL_BOOT_BUDGET.as_secs()
-            )));
-        }
-    };
+    // The fallible build sequence owns the pre-lifecycle overall backstop
+    // internally. Its final turn-lifecycle wait is intentionally
+    // event-driven only; any `?` still drops through this armed rollback.
+    let handle =
+        build_handle_after_spawn(child, pgid, start_time, boot_id, goal_text, sock).await?;
     rollback.disarm();
     Ok(handle)
 }
@@ -1605,14 +1571,13 @@ pub async fn spawn_spec_appserver(
 ///
 /// Same shape as [`spawn_spec_appserver`]: spawn the child in its OWN
 /// process group ([`Command::process_group`]`(0)` → `pgid == launcher pid`),
-/// arm a [`SpawnRollback`] guard so any `?`/timeout reaps the launcher's
-/// whole group, and wrap the post-spawn sequence under
-/// [`OVERALL_BOOT_BUDGET`]. The only differences from the create-wave
-/// happy path are:
+/// arm a [`SpawnRollback`] guard so any `?`/backstop timeout reaps the
+/// launcher's whole group. The only differences from the create-wave happy
+/// path are:
 ///   * the post-spawn sequence calls
 ///     [`build_handle_after_spawn_resume`] instead of
 ///     [`build_handle_after_spawn`] — `thread/resume(thread_id)` in place of
-///     `thread/start` + `turn/start` + await `turn/started`, and
+///     `thread/start` + `turn/start` + initial lifecycle wait, and
 ///   * a `-32600 "no rollout found"` from `thread/resume` (the wave never
 ///     ran turn #1 last boot — the "inert wave" case) surfaces here as a
 ///     [`CalmError::CodexAppServer`]; the caller treats it as non-fatal
@@ -1684,20 +1649,8 @@ pub async fn resume_spec_appserver(
     );
 
     let mut rollback = SpawnRollback::new(pgid, sock);
-    let handle = match tokio::time::timeout(
-        OVERALL_BOOT_BUDGET,
-        build_handle_after_spawn_resume(child, pgid, start_time, boot_id, thread_id, sock),
-    )
-    .await
-    {
-        Ok(res) => res?,
-        Err(_elapsed) => {
-            return Err(CalmError::CodexAppServer(format!(
-                "codex app-server resume did not complete within {}s overall",
-                OVERALL_BOOT_BUDGET.as_secs()
-            )));
-        }
-    };
+    let handle =
+        build_handle_after_spawn_resume(child, pgid, start_time, boot_id, thread_id, sock).await?;
     rollback.disarm();
     Ok(handle)
 }
@@ -1780,108 +1733,122 @@ pub fn cleanup_sock_dir(sock: &Path) {
     }
 }
 
-/// #313 problem #1 round-3 (B1) — verify that the per-card socket at
-/// `sock` has a live listener BEFORE the caller signals the persisted
-/// `pgid`.
+/// #313 problem #1 round-3 (B1) + #335 PR2 — verify that the per-card
+/// socket at `sock` has a live codex app-server listener BEFORE the caller
+/// signals the persisted `pgid`.
 ///
 /// **Why this exists.** After a host reboot the persisted `appserver_pgid`
 /// almost certainly belongs to an unrelated process (PIDs/PGIDs are
 /// recycled), so a `kill(-pgid, SIGTERM/SIGKILL)` could nuke arbitrary
 /// user processes. The per-card socket path is UUID-scoped
-/// (`<data_dir>/appserver/<card_id>/sock`), so a live listener on that
-/// exact path is overwhelmingly likely to be our codex app-server (the
-/// only thing that ever binds it). We use that as a cheap ownership
-/// proxy: if the socket accepts a `connect(2)`, we trust the persisted
-/// pgid points at the listener; if it doesn't, we skip the kill entirely
-/// and just clean the dead socket file.
+/// (`<data_dir>/appserver/<card_id>/sock`), but connect alone is not enough:
+/// a different listener on a stale path could otherwise authorize a kill.
+/// We require both WebSocket connect and a JSON-RPC `initialize` round-trip.
 ///
-/// Returns `true` when the kill is **safe** (socket connect succeeded —
-/// caller should proceed with `signal_process_group`), `false` when the
-/// caller should **skip** the kill (socket missing or refused — caller
-/// should still `cleanup_sock_dir` to wipe the stale path before
-/// respawn).
+/// Returns `true` when the kill is **safe** (initialize succeeded — caller
+/// should proceed with `signal_process_group`), `false` when the caller
+/// should **skip** the kill (socket missing/refused, non-WS listener,
+/// initialize failure/timeout — caller should still `cleanup_sock_dir` to
+/// wipe the stale path before respawn).
 ///
-/// We classify errors strictly: only `NotFound` (`ENOENT`) and
-/// `ConnectionRefused` (`ECONNREFUSED`) are treated as "stale → safe to
-/// skip". Any other error (e.g. `PermissionDenied`) is logged and treated
-/// the same as a refused connection (skip the kill — we can't prove
-/// ownership). This is the conservative default: a false-negative (we
-/// skip a kill we could have done) is harmless because boot recovery's
-/// `cleanup_sock_dir` plus respawn still works (the `bind(2)` succeeds
-/// when the listener really is gone), while a false-positive (we kill
-/// the wrong process) is the bug we're guarding against.
-///
-/// Optionally, callers could layer a JSON-RPC `initialize` probe on top
-/// for belt-and-suspenders ownership confirmation. We don't here — the
-/// UUID-scoped path is sufficient on its own and the extra round-trip
-/// would delay boot. If a future regression introduces socket-path reuse
-/// across non-codex daemons, fold an `initialize` probe in here.
+/// Any probe failure is conservative-skip. A false-negative (we skip a kill
+/// we could have done) is harmless because boot recovery's `cleanup_sock_dir`
+/// plus respawn still works; a false-positive (we kill the wrong process) is
+/// the bug we're guarding against.
 pub async fn socket_owned_by_appserver(sock: &Path) -> bool {
-    match tokio::net::UnixStream::connect(sock).await {
-        Ok(_stream) => {
-            // Connect succeeded → a listener is accepting on this exact
-            // per-card path. Trust it as ours and proceed with the kill.
-            // We drop `_stream` immediately; the listener saw an empty
-            // connection but that's harmless (no `initialize` was sent).
-            tracing::debug!(
+    match tokio::time::timeout(Duration::from_secs(3), CodexAppServer::connect(sock)).await {
+        Err(_) => {
+            tracing::warn!(
                 sock = %sock.display(),
-                "takeover ownership probe: socket connect OK — persisted pgid presumed ours"
+                "takeover ownership probe: websocket connect timed out — skipping kill"
             );
-            true
+            false
         }
-        Err(e) => {
-            let kind = e.kind();
-            match kind {
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => {
-                    // ENOENT — socket file gone (graceful teardown / host
-                    // wipe) → no listener exists, nothing to kill.
-                    // ECONNREFUSED — socket path exists, no listener bound
-                    // (stale dirent from a crashed process) → likewise
-                    // nothing of ours to kill.
-                    tracing::info!(
+        Ok(Ok((client, _notifs))) => {
+            // Connect + WebSocket upgrade succeeded. Finish the ownership
+            // probe with a JSON-RPC initialize round-trip so a random
+            // non-codex listener on the same stale path cannot authorize a
+            // process-group kill.
+            let client = client.with_request_timeout(Duration::from_secs(2));
+            match tokio::time::timeout(
+                Duration::from_secs(3),
+                client.initialize(ClientInfo {
+                    name: "neige-calm-takeover-probe".into(),
+                    version: env!("CARGO_PKG_VERSION").into(),
+                }),
+            )
+            .await
+            {
+                Ok(Ok(_)) => {
+                    tracing::debug!(
                         sock = %sock.display(),
-                        error = %e,
-                        "takeover ownership probe: socket has no live listener — \
-                         skipping kill of persisted pgid (post-reboot PID may be unrelated); \
-                         caller should still cleanup_sock_dir before respawn"
+                        "takeover ownership probe: initialize OK — socket is a codex app-server"
                     );
-                    false
+                    true
                 }
-                _ => {
-                    // Any other error (EACCES, EAGAIN, …): we can't prove
-                    // ownership. Default to skipping the kill — safety
-                    // over reaping a leaked group (the respawn path can
-                    // retry, but reviving a SIGKILLed user process can't).
-                    //
-                    // #315 round-4 (N3) — the conservative-skip-kill on
-                    // unrecognized errors trades a worst-case "stale
-                    // socket file leaks forever" (no listener, but we
-                    // also don't clean up its dirent on every boot) for
-                    // the worst-case "we SIGTERM/SIGKILL an unrelated
-                    // process group whose pid was recycled into our
-                    // persisted pgid slot post-reboot". The leak is
-                    // benign — the next boot's takeover sees the same
-                    // probe outcome and respawn still works (bind(2)
-                    // succeeds on the path once the OS frees it via
-                    // socket-file unlink in `cleanup_sock_dir`); nuking
-                    // an unrelated process group is unrecoverable.
+                Ok(Err(e)) => {
                     tracing::warn!(
                         sock = %sock.display(),
                         error = %e,
-                        error_kind = ?kind,
-                        "takeover ownership probe: socket connect failed with \
-                         non-NotFound/ConnectionRefused error — skipping kill \
-                         to avoid signaling unrelated process group"
+                        "takeover ownership probe: initialize failed — skipping kill"
                     );
                     false
                 }
+                Err(_) => {
+                    tracing::warn!(
+                        sock = %sock.display(),
+                        "takeover ownership probe: initialize timed out — skipping kill"
+                    );
+                    false
+                }
+            }
+        }
+        Ok(Err(e)) => {
+            let msg = e.to_string();
+            if msg.contains("No such file")
+                || msg.contains("os error 2")
+                || msg.contains("Connection refused")
+                || msg.contains("os error 111")
+            {
+                // ENOENT — socket file gone (graceful teardown / host
+                // wipe) → no listener exists, nothing to kill.
+                // ECONNREFUSED — socket path exists, no listener bound
+                // (stale dirent from a crashed process) → likewise
+                // nothing of ours to kill.
+                tracing::info!(
+                    sock = %sock.display(),
+                    error = %e,
+                    "takeover ownership probe: socket has no live listener — \
+                     skipping kill of persisted pgid (post-reboot PID may be unrelated); \
+                     caller should still cleanup_sock_dir before respawn"
+                );
+                false
+            } else {
+                // Any other error (EACCES, EAGAIN, WS handshake failure,
+                // non-JSON-RPC listener, …): we can't prove ownership.
+                // Default to skipping the kill — safety over reaping a
+                // leaked group (the respawn path can retry, but reviving a
+                // SIGKILLed user process can't).
+                //
+                // #315 round-4 (N3) — the conservative-skip-kill on
+                // unrecognized errors trades a worst-case "stale socket
+                // file leaks forever" for the worst-case "we SIGTERM/
+                // SIGKILL an unrelated process group whose pid was
+                // recycled into our persisted pgid slot post-reboot".
+                tracing::warn!(
+                    sock = %sock.display(),
+                    error = %e,
+                    "takeover ownership probe: app-server probe failed — skipping kill \
+                     to avoid signaling unrelated process group"
+                );
+                false
             }
         }
     }
 }
 
 /// The fallible post-spawn sequence (connect → initialize → thread/start →
-/// turn/start → await turn/started → spawn consumer). Split out so the
+/// turn/start → await initial lifecycle → spawn consumer). Split out so the
 /// [`SpawnRollback`] guard in [`spawn_spec_appserver`] wraps every `?`.
 #[allow(clippy::too_many_arguments)]
 async fn build_handle_after_spawn(
@@ -1892,40 +1859,59 @@ async fn build_handle_after_spawn(
     goal_text: &str,
     sock: &Path,
 ) -> Result<SpecPushHandle> {
+    let boot_deadline = tokio::time::Instant::now() + OVERALL_BOOT_BUDGET;
+
     // 2. Poll the socket for readiness, bailing early if the child dies
     //    during boot (the common no-auth / bad-env failure mode).
     let connected = poll_connect(&mut child, sock).await?;
     let (client, mut notifs) = connected;
     let client = Arc::new(client);
 
-    // 3. initialize + thread/start.
-    client
-        .initialize(ClientInfo {
-            name: "neige-calm-spec-push".into(),
-            version: env!("CARGO_PKG_VERSION").into(),
-        })
-        .await?;
-    let thread = client.thread_start().await?;
-    let thread_id = thread
-        .thread_id()
-        .ok_or_else(|| {
-            CalmError::CodexAppServer("thread/start result missing thread.id".to_string())
-        })?
-        .to_string();
-    tracing::info!(thread_id = %thread_id, "spec push: thread started");
+    // 3. initialize + thread/start + turn/start ack. This pre-lifecycle
+    //    sequence keeps the overall boot backstop. The lifecycle wait
+    //    below does not: once the turn is accepted, notifications/EOF/exit
+    //    are the source of truth.
+    let thread_id = match tokio::time::timeout_at(boot_deadline, async {
+        client
+            .initialize(ClientInfo {
+                name: "neige-calm-spec-push".into(),
+                version: env!("CARGO_PKG_VERSION").into(),
+            })
+            .await?;
+        let thread = client.thread_start().await?;
+        let thread_id = thread
+            .thread_id()
+            .ok_or_else(|| {
+                CalmError::CodexAppServer("thread/start result missing thread.id".to_string())
+            })?
+            .to_string();
+        tracing::info!(thread_id = %thread_id, "spec push: thread started");
 
-    // 4. turn/start with the goal. This returns the turn *ack*; the actual
-    //    work streams as notifications. We do NOT wait for completion.
-    let turn = client
-        .turn_start(&thread_id, vec![InputItem::text(goal_text)])
-        .await?;
-    tracing::info!(thread_id = %thread_id, turn_id = ?turn.turn_id(), "spec push: turn #1 started (ack)");
+        let turn = client
+            .turn_start(&thread_id, vec![InputItem::text(goal_text)])
+            .await?;
+        tracing::info!(thread_id = %thread_id, turn_id = ?turn.turn_id(), "spec push: turn #1 started (ack)");
+        Ok::<String, CalmError>(thread_id)
+    })
+    .await
+    {
+        Ok(res) => res?,
+        Err(_) => {
+            return Err(CalmError::CodexAppServer(format!(
+                "codex app-server boot did not complete pre-lifecycle setup within {}s overall \
+                 (spec/wave could not start)",
+                OVERALL_BOOT_BUDGET.as_secs()
+            )));
+        }
+    };
 
-    // 5. Await `turn/started` so a rollout exists on disk before the
-    //    `--remote` TUI tries to resume. DECISION A's load-bearing step.
-    //    `await_turn_started` reads notifications off the SAME `notifs`
-    //    receiver the consumer task takes over below; it folds each one it
-    //    pulls (including the `turn/started`) into `status` as it goes.
+    // 5. Await `turn/started` (or `turn/completed`, which also proves the
+    //    rollout exists) before the `--remote` TUI tries to resume.
+    //    This waits on deterministic lifecycle/EOF/child-exit signals, not
+    //    a "started within N seconds" budget.
+    //    `await_initial_turn_lifecycle` reads notifications off the SAME
+    //    `notifs` receiver the consumer task takes over below; it records
+    //    the matched lifecycle signal into `status`.
     //    Nothing is buffered or replayed — we simply hand the still-open
     //    receiver to the consumer task afterwards, so no notification is
     //    lost (anything not yet consumed is still queued on the mpsc).
@@ -1933,7 +1919,7 @@ async fn build_handle_after_spawn(
         last_thread_id: Some(thread_id.clone()),
         ..Default::default()
     }));
-    await_turn_started(&mut notifs, &thread_id, &status).await?;
+    await_initial_turn_lifecycle(&mut child, &mut notifs, &thread_id, &status).await?;
 
     // 6. Spawn the consumer task and park the live handle (see
     //    [`park_handle`] for the shared tail).
@@ -1945,7 +1931,7 @@ async fn build_handle_after_spawn(
 /// #313 problem #1 — boot-time takeover variant of [`build_handle_after_spawn`].
 ///
 /// Same shape (poll-connect → initialize → spawn consumer → park-handle)
-/// but **swaps `thread/start` + `turn/start` + await `turn/started`** for a
+/// but **swaps `thread/start` + `turn/start` + initial lifecycle wait** for a
 /// single `thread/resume(thread_id)`. No turn is issued on resume: the wave
 /// may be mid-turn from the prior boot, or simply between turns; either way
 /// the kernel's role here is to **re-attach** so the dispatcher can push
@@ -1964,21 +1950,35 @@ async fn build_handle_after_spawn_resume(
     thread_id: &str,
     sock: &Path,
 ) -> Result<SpecPushHandle> {
+    let boot_deadline = tokio::time::Instant::now() + OVERALL_BOOT_BUDGET;
+
     // 2. Poll the socket for readiness (same as the spawn path).
     let (client, notifs) = poll_connect(&mut child, sock).await?;
     let client = Arc::new(client);
 
-    // 3. initialize + thread/resume. No `turn/start`, no `await turn/started`
+    // 3. initialize + thread/resume. No `turn/start`, no initial lifecycle wait
     //    — resume rejoins the persisted thread by id; if a turn is mid-flight
     //    we'll observe its `turn/completed` on the notification stream and
     //    reconcile the consumer-tracked phase.
-    client
-        .initialize(ClientInfo {
-            name: "neige-calm-spec-push".into(),
-            version: env!("CARGO_PKG_VERSION").into(),
-        })
-        .await?;
-    let resumed = client.thread_resume(thread_id).await?;
+    let resumed = match tokio::time::timeout_at(boot_deadline, async {
+        client
+            .initialize(ClientInfo {
+                name: "neige-calm-spec-push".into(),
+                version: env!("CARGO_PKG_VERSION").into(),
+            })
+            .await?;
+        client.thread_resume(thread_id).await
+    })
+    .await
+    {
+        Ok(res) => res?,
+        Err(_) => {
+            return Err(CalmError::CodexAppServer(format!(
+                "codex app-server resume did not complete pre-lifecycle setup within {}s overall",
+                OVERALL_BOOT_BUDGET.as_secs()
+            )));
+        }
+    };
     // Defensive: the server should echo back the same id on a successful
     // resume; if it doesn't, log and prefer the persisted id (we keyed
     // everything off it).
@@ -2161,6 +2161,10 @@ fn park_handle(
 /// Poll `UnixStream::connect(sock)` until it succeeds (the app-server has
 /// bound), bailing out as a skip-able error if the child exits during
 /// boot. Mirrors the readiness loop in `spawn_daemon_with_parts`.
+///
+/// The socket budgets are wedge backstops for "process stayed alive but
+/// never bound"; readiness itself is still connect-ok, and failure is still
+/// child-exit or exhausted wedge backstop.
 async fn poll_connect(
     child: &mut Child,
     sock: &Path,
@@ -2187,46 +2191,52 @@ async fn poll_connect(
     )))
 }
 
-/// Drain the stream until a `turn/started` for `thread_id` arrives,
-/// recording lifecycle status as we go. Errors (skip-able) if the stream
-/// closes first or the budget elapses.
-async fn await_turn_started(
+/// Drain the stream until an initial lifecycle signal for `thread_id`
+/// arrives. `turn/started` is the normal proof that a rollout exists;
+/// `turn/completed` is accepted too because it is an even stronger proof
+/// that the accepted turn ran to a lifecycle boundary.
+///
+/// This is event-driven: success is the matching notification, failure is
+/// deterministic stream closure/reader exit or child exit. There is no
+/// "started within N seconds" failure path here.
+async fn await_initial_turn_lifecycle(
+    child: &mut Child,
     notifs: &mut NotificationStream,
     thread_id: &str,
     status: &SharedStatus,
 ) -> Result<()> {
-    let deadline = tokio::time::Instant::now() + TURN_STARTED_BUDGET;
-    loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return Err(CalmError::CodexAppServer(format!(
-                "no turn/started for thread {thread_id} within {}s",
-                TURN_STARTED_BUDGET.as_secs()
-            )));
-        }
-        match tokio::time::timeout(remaining, notifs.recv()).await {
-            Ok(Some(n)) => {
-                if let Notification::TurnStarted { thread_id: t, turn } = &n {
+    tokio::select! {
+        notification = notifs.await_notification(|n| {
+            matches!(
+                n,
+                Notification::TurnStarted { thread_id: t, .. }
+                    | Notification::TurnCompleted { thread_id: t, .. }
+                    if t == thread_id
+            )
+        }) => {
+            let notification = notification?;
+            record(status, &notification).await;
+            match &notification {
+                Notification::TurnStarted { turn, .. } => {
                     let turn_id = turn.get("id").and_then(Value::as_str).map(str::to_string);
-                    record(status, &n).await;
-                    if t == thread_id {
-                        tracing::debug!(thread_id, ?turn_id, "spec push: observed turn/started");
-                        return Ok(());
-                    }
-                } else {
-                    record(status, &n).await;
+                    tracing::debug!(thread_id, ?turn_id, "spec push: observed initial turn/started");
                 }
+                Notification::TurnCompleted { turn, .. } => {
+                    let turn_id = turn.get("id").and_then(Value::as_str).map(str::to_string);
+                    tracing::debug!(thread_id, ?turn_id, "spec push: observed initial turn/completed");
+                }
+                _ => {}
             }
-            Ok(None) => {
-                return Err(CalmError::CodexAppServer(
-                    "app-server connection closed before turn/started".to_string(),
-                ));
-            }
-            Err(_) => {
-                return Err(CalmError::CodexAppServer(format!(
-                    "no turn/started for thread {thread_id} within {}s",
-                    TURN_STARTED_BUDGET.as_secs()
-                )));
+            Ok(())
+        }
+        child_status = child.wait() => {
+            match child_status {
+                Ok(exit) => Err(CalmError::CodexAppServer(format!(
+                    "codex app-server exited before initial turn lifecycle notification (status {exit})"
+                ))),
+                Err(e) => Err(CalmError::CodexAppServer(format!(
+                    "wait for codex app-server while awaiting initial turn lifecycle notification: {e}"
+                ))),
             }
         }
     }
@@ -2567,6 +2577,108 @@ mod tests {
             queue_persist,
         };
         (handle, server)
+    }
+
+    fn fake_child() -> Child {
+        Command::new("sleep")
+            .arg("60")
+            .process_group(0)
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn dummy child")
+    }
+
+    #[tokio::test]
+    async fn initial_turn_lifecycle_accepts_started_without_budget() {
+        use futures_util::SinkExt;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let (_client, mut notifs, mut server) = CodexAppServer::connect_pair_for_test().await;
+        let mut child = fake_child();
+        let status: SharedStatus = Arc::new(Mutex::new(SpecPushStatus {
+            last_thread_id: Some("thread-test".into()),
+            ..Default::default()
+        }));
+
+        server
+            .send(Message::Text(
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "turn/started",
+                    "params": { "threadId": "thread-test", "turn": { "id": "turn-1" } }
+                })
+                .to_string(),
+            ))
+            .await
+            .expect("send turn/started");
+
+        await_initial_turn_lifecycle(&mut child, &mut notifs, "thread-test", &status)
+            .await
+            .expect("started lifecycle");
+        let g = status.lock().await;
+        assert_eq!(g.phase, SpecPushPhase::TurnRunning);
+        assert_eq!(g.last_turn_id.as_deref(), Some("turn-1"));
+        let _ = child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn initial_turn_lifecycle_accepts_completed_without_started() {
+        use futures_util::SinkExt;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let (_client, mut notifs, mut server) = CodexAppServer::connect_pair_for_test().await;
+        let mut child = fake_child();
+        let status: SharedStatus = Arc::new(Mutex::new(SpecPushStatus {
+            last_thread_id: Some("thread-test".into()),
+            ..Default::default()
+        }));
+
+        server
+            .send(Message::Text(
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "turn/completed",
+                    "params": { "threadId": "thread-test", "turn": { "id": "turn-1" } }
+                })
+                .to_string(),
+            ))
+            .await
+            .expect("send turn/completed");
+
+        await_initial_turn_lifecycle(&mut child, &mut notifs, "thread-test", &status)
+            .await
+            .expect("completed lifecycle");
+        let g = status.lock().await;
+        assert_eq!(g.phase, SpecPushPhase::TurnCompleted);
+        assert_eq!(g.last_turn_id.as_deref(), Some("turn-1"));
+        let _ = child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn initial_turn_lifecycle_fails_on_child_exit_without_budget() {
+        let (_client, mut notifs, _server) = CodexAppServer::connect_pair_for_test().await;
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn exiting child");
+        let status: SharedStatus = Arc::new(Mutex::new(SpecPushStatus {
+            last_thread_id: Some("thread-test".into()),
+            ..Default::default()
+        }));
+
+        let err = tokio::time::timeout(
+            Duration::from_secs(1),
+            await_initial_turn_lifecycle(&mut child, &mut notifs, "thread-test", &status),
+        )
+        .await
+        .expect("child exit should win promptly")
+        .expect_err("child exit is a lifecycle failure");
+        assert!(
+            err.to_string()
+                .contains("exited before initial turn lifecycle"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]
@@ -3970,21 +4082,17 @@ mod tests {
         // the largest single step (so a healthy step never trips the
         // overall deadline before its own budget).
         assert!(OVERALL_BOOT_BUDGET >= SOCKET_READY_BUDGET);
-        assert!(OVERALL_BOOT_BUDGET >= TURN_STARTED_BUDGET);
         assert_eq!(OVERALL_BOOT_BUDGET, Duration::from_secs(45));
     }
 
-    /// S1 — the rollback the overall-timeout path relies on. When the boot
-    /// sequence is aborted (a `?` early return OR the
-    /// `OVERALL_BOOT_BUDGET` timeout dropping the in-flight future), the
-    /// still-armed [`SpawnRollback`] guard must (a) reap the child's whole
-    /// process GROUP via `kill(-pgid)` — so no orphan `codex app-server`
-    /// is leaked — and (b) clean the per-card socket dir. This test models
-    /// the timeout/early-return teardown directly: spawn a group-leader
-    /// child, drop an armed `SpawnRollback` pointed at its pgid + a socket
-    /// inside a tempdir, and assert the child is gone and the socket dir
-    /// removed. (The 45 s overall path can't be wall-clock-tested cheaply;
-    /// this exercises the load-bearing cleanup it triggers.)
+    /// S1 — the rollback every fallible boot path relies on. When the boot
+    /// sequence is aborted (a `?` early return OR a pre-lifecycle backstop
+    /// firing), the still-armed [`SpawnRollback`] guard must (a) reap the
+    /// child's whole process GROUP via `kill(-pgid)` — so no orphan
+    /// `codex app-server` is leaked — and (b) clean the per-card socket dir.
+    /// This test models the teardown directly: spawn a group-leader child,
+    /// drop an armed `SpawnRollback` pointed at its pgid + a socket inside a
+    /// tempdir, and assert the child is gone and the socket dir removed.
     #[tokio::test]
     async fn spawn_rollback_reaps_group_and_cleans_socket_dir_on_drop() {
         // A real group-leader child (mirrors the production spawn shape:
@@ -4140,31 +4248,67 @@ mod tests {
         );
     }
 
-    /// #313 problem #1 round-3 (B1) — `socket_owned_by_appserver` returns
-    /// `true` when a real listener is bound to the path. This is the
-    /// "our app-server is still running" case: caller proceeds with the
-    /// SIGTERM → grace → SIGKILL → cleanup_sock_dir sequence. We model
-    /// the listener with a bare `tokio::net::UnixListener` — the probe
-    /// only does `connect(2)`, not a codex JSON-RPC handshake, so any
-    /// accept-loop is sufficient evidence of a bound listener.
+    /// #335 PR2 — a bare listener is not enough ownership evidence:
+    /// takeover must complete a codex JSON-RPC `initialize` probe before
+    /// it is allowed to kill the persisted process group.
     #[tokio::test]
-    async fn socket_ownership_probe_live_listener_returns_true() {
+    async fn socket_ownership_probe_non_jsonrpc_listener_returns_false() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let sock_dir = tmp.path().join("appserver").join("card-live");
         std::fs::create_dir_all(&sock_dir).expect("mkdir sock dir");
         let sock = sock_dir.join("sock");
         let listener = tokio::net::UnixListener::bind(&sock).expect("bind listener");
-        // Drive a single accept in the background so the probe's
-        // connect resolves cleanly. We don't read or write — the probe
-        // just needs to confirm a listener exists.
         let accept_task = tokio::spawn(async move {
-            let _ = listener.accept().await;
+            if let Ok((stream, _)) = listener.accept().await {
+                drop(stream);
+            }
+        });
+        let ok = socket_owned_by_appserver(&sock).await;
+        assert!(
+            !ok,
+            "socket_owned_by_appserver must return false for a listener that \
+             cannot complete the codex initialize probe"
+        );
+        let _ = tokio::time::timeout(Duration::from_secs(1), accept_task).await;
+    }
+
+    /// #335 PR2 — positive takeover probe: a listener must accept the WS
+    /// upgrade and answer JSON-RPC `initialize`.
+    #[tokio::test]
+    async fn socket_ownership_probe_initialize_listener_returns_true() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let sock_dir = tmp.path().join("appserver").join("card-jsonrpc");
+        std::fs::create_dir_all(&sock_dir).expect("mkdir sock dir");
+        let sock = sock_dir.join("sock");
+        let listener = tokio::net::UnixListener::bind(&sock).expect("bind listener");
+        let accept_task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let ws = tokio_tungstenite::accept_async(stream)
+                .await
+                .expect("ws accept");
+            let (mut write, mut read) = futures_util::StreamExt::split(ws);
+            if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) =
+                futures_util::StreamExt::next(&mut read).await
+            {
+                let req: Value = serde_json::from_str(&text).expect("initialize json");
+                let id = req.get("id").cloned().expect("id");
+                let reply = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "userAgent": "fake-codex-app-server/0" }
+                });
+                futures_util::SinkExt::send(
+                    &mut write,
+                    tokio_tungstenite::tungstenite::Message::Text(reply.to_string()),
+                )
+                .await
+                .expect("send initialize result");
+            }
         });
         let ok = socket_owned_by_appserver(&sock).await;
         assert!(
             ok,
-            "socket_owned_by_appserver must return true when a listener is bound \
-             (the per-card path is UUID-scoped; a live listener is almost certainly ours)"
+            "socket_owned_by_appserver must return true after initialize succeeds"
         );
         let _ = tokio::time::timeout(Duration::from_secs(1), accept_task).await;
     }

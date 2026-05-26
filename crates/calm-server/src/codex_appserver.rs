@@ -348,9 +348,9 @@ pub struct CodexAppServer {
     sink: WsSink,
     pending: Pending,
     next_id: AtomicU64,
-    /// Per-request response timeout. A request whose response never arrives
-    /// within this bound resolves with a `timed out` error and its
-    /// pending-map entry is removed (no leak). Configurable via
+    /// Per-request response timeout. This is a leak/wedge backstop for a
+    /// request whose response never arrives; lifecycle state is driven by
+    /// notifications / EOF / child exit, not by this timer. Configurable via
     /// [`CodexAppServer::set_request_timeout`]; defaults to
     /// [`DEFAULT_REQUEST_TIMEOUT`].
     request_timeout: Duration,
@@ -586,13 +586,13 @@ impl CodexAppServer {
 
         tracing::trace!(id, method, "codex app-server: request sent");
 
-        // Bound the await: a server that never answers (or an event we'll
-        // never get a response for) must not hang the caller forever. On
-        // elapse we remove our own pending entry so the map doesn't leak the
-        // never-fired oneshot. NOTE: `turn/start` returns only the turn
-        // *ack* (turn id); completion arrives later via the `turn/completed`
-        // notification, so this per-request bound never truncates a long
-        // turn.
+        // Backstop the await: a server that never answers (or an event
+        // we'll never get a response for) must not hang the caller forever.
+        // On elapse we remove our own pending entry so the map doesn't leak
+        // the never-fired oneshot. NOTE: `turn/start` returns only the turn
+        // *ack* (turn id); turn lifecycle is decided later by
+        // notifications/EOF/child-exit, so this timer is not a turn
+        // lifecycle criterion.
         let outcome = match tokio::time::timeout(self.request_timeout, rx).await {
             Ok(received) => received,
             Err(_elapsed) => {

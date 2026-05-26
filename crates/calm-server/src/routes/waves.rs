@@ -708,10 +708,11 @@ pub(crate) async fn create_wave(
     //
     // #293 cutover — push is the ONLY path. Every wave drives DECISION A's
     // blocking sequence: boot the kernel-owned `codex app-server`, run turn
-    // #1, await `turn/started`, persist `codex_thread_id` + `appserver_sock`
-    // on the spec card payload, park the handle in `state.spec_push`, then
-    // spawn the PTY daemon in **resume mode** (`codex resume <tid> --remote
-    // unix://<sock>`). There is no legacy bare-`codex '<title>'` path anymore.
+    // #1, await its initial lifecycle notification, persist
+    // `codex_thread_id` + `appserver_sock` on the spec card payload, park
+    // the handle in `state.spec_push`, then spawn the PTY daemon in
+    // **resume mode** (`codex resume <tid> --remote unix://<sock>`). There
+    // is no legacy bare-`codex '<title>'` path anymore.
     //
     // S2 (#293, #311) — SPEC BOOT IS NON-FATAL TO WAVE CREATION.
     // The wave + spec card + report card rows are already committed (and
@@ -859,9 +860,9 @@ async fn spawn_push_appserver(
     })?;
 
     // DECISION A's blocking sequence (boot → connect → initialize →
-    // thread/start → turn/start(goal) → await turn/started). The wave
+    // thread/start → turn/start(goal) → await initial lifecycle). The wave
     // title is the agent's goal — the same value the legacy path passes
-    // as codex's positional `[PROMPT]`. We do NOT await `turn/completed`.
+    // as codex's positional `[PROMPT]`.
     let handle =
         spawn_spec_appserver(&s.codex.codex_bin, env_for_spawn, &wave.title, &sock).await?;
     let thread_id = handle.thread_id.clone();

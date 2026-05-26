@@ -145,14 +145,31 @@ async fn serve_conn(stream: tokio::net::UnixStream) -> Result<(), String> {
             "turn/start" => {
                 // Ack with the turn object first…
                 send_result(&mut write, &id, json!({ "turn": { "id": turn_id } })).await?;
+                if env_flag("FAKE_CODEX_EXIT_AFTER_TURN_ACK") {
+                    std::process::exit(0);
+                }
                 // …then emit the `turn/started` notification the kernel's
                 // DECISION-A sequence awaits (proves a rollout exists).
-                send_notification(
-                    &mut write,
-                    "turn/started",
-                    json!({ "threadId": thread_id, "turn": { "id": turn_id } }),
-                )
-                .await?;
+                if !env_flag("FAKE_CODEX_SKIP_TURN_STARTED") {
+                    if let Some(delay) = env_delay("FAKE_CODEX_TURN_STARTED_DELAY_MS") {
+                        tokio::time::sleep(delay).await;
+                    }
+                    send_notification(
+                        &mut write,
+                        "turn/started",
+                        json!({ "threadId": thread_id, "turn": { "id": turn_id } }),
+                    )
+                    .await?;
+                }
+                if let Some(delay) = env_delay("FAKE_CODEX_TURN_COMPLETED_DELAY_MS") {
+                    tokio::time::sleep(delay).await;
+                    send_notification(
+                        &mut write,
+                        "turn/completed",
+                        json!({ "threadId": thread_id, "turn": { "id": turn_id } }),
+                    )
+                    .await?;
+                }
             }
             // Anything else (turn/steer, turn/interrupt, thread/inject_items,
             // …) — ack with an empty object so a caller never wedges on a
@@ -163,6 +180,19 @@ async fn serve_conn(stream: tokio::net::UnixStream) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn env_flag(name: &str) -> bool {
+    matches!(
+        std::env::var(name).as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+    )
+}
+
+fn env_delay(name: &str) -> Option<std::time::Duration> {
+    let raw = std::env::var(name).ok()?;
+    let ms = raw.parse::<u64>().ok()?;
+    Some(std::time::Duration::from_millis(ms))
 }
 
 async fn send_result<S>(write: &mut S, id: &Value, result: Value) -> Result<(), String>
