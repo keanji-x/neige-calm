@@ -2945,6 +2945,7 @@ impl RepoEventWrite for SqlxRepo {
             i64,            // id
             String,         // kind
             String,         // payload
+            String,         // actor
             i64,            // at
             Option<String>, // scope_kind
             Option<String>, // scope_cove
@@ -2953,7 +2954,7 @@ impl RepoEventWrite for SqlxRepo {
         );
 
         let mut query = QueryBuilder::<Sqlite>::new(
-            r#"SELECT id, kind, payload, at,
+            r#"SELECT id, kind, payload, actor, at,
                       scope_kind, scope_cove, scope_wave, scope_card
                FROM events
                WHERE scope_wave = "#,
@@ -2969,13 +2970,23 @@ impl RepoEventWrite for SqlxRepo {
         let rows: Vec<ScopeRow> = query.build_query_as().fetch_all(&self.pool).await?;
 
         let mut out = Vec::with_capacity(rows.len());
-        for (id, kind, payload_text, at, sk, sc, sw, scard) in rows {
+        for (id, kind, payload_text, actor_text, at, sk, sc, sw, scard) in rows {
             let payload: serde_json::Value = match serde_json::from_str(&payload_text) {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::error!(
                         id, kind = %kind, error = %e,
                         "events_for_wave: skipping row with malformed payload JSON",
+                    );
+                    continue;
+                }
+            };
+            let actor: ActorId = match serde_json::from_str(&actor_text) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!(
+                        id, kind = %kind, error = %e,
+                        "events_for_wave: skipping row with malformed actor JSON",
                     );
                     continue;
                 }
@@ -2990,6 +3001,7 @@ impl RepoEventWrite for SqlxRepo {
                 Ok(event) => out.push(WaveEvent {
                     id,
                     at,
+                    actor,
                     scope,
                     event,
                 }),

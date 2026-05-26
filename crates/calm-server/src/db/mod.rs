@@ -198,6 +198,7 @@ pub type WriteInTxFn<'a> = Box<
 pub struct WaveEvent {
     pub id: i64,
     pub at: i64,
+    pub actor: ActorId,
     pub scope: EventScope,
     pub event: Event,
 }

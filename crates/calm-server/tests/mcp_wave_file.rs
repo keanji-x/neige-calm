@@ -217,9 +217,19 @@ fn content_json(value: &Value) -> Value {
 }
 
 async fn log_wave_event(boot: &Boot, wave_id: &WaveId, cove_id: &CoveId, event: Event) -> i64 {
+    log_wave_event_as(boot, ActorId::User, wave_id, cove_id, event).await
+}
+
+async fn log_wave_event_as(
+    boot: &Boot,
+    actor: ActorId,
+    wave_id: &WaveId,
+    cove_id: &CoveId,
+    event: Event,
+) -> i64 {
     boot.repo
         .log_pure_event(
-            ActorId::User,
+            actor,
             EventScope::Wave {
                 wave: wave_id.clone(),
                 cove: cove_id.clone(),
@@ -721,6 +731,52 @@ async fn worker_failure_without_spec_verdict_stays_failed() {
     assert_eq!(
         run["events"]["failed"]["payload"]["reason"],
         json!("stub failure")
+    );
+    assert!(run["verdict"].is_null(), "run = {run:?}");
+    assert!(run["events"]["verdict"].is_null(), "run = {run:?}");
+}
+
+#[tokio::test]
+async fn wave_scoped_dispatcher_failure_is_not_spec_verdict() {
+    let boot = boot().await;
+    log_wave_event_as(
+        &boot,
+        ActorId::KernelDispatcher,
+        &boot.wave_id,
+        &boot.cove_id,
+        Event::CodexJobRequested {
+            idempotency_key: "dispatcher-wave-failed".into(),
+            goal: "wave-scoped dispatcher request".into(),
+            context: json!({}),
+            acceptance_criteria: None,
+        },
+    )
+    .await;
+    log_wave_event_as(
+        &boot,
+        ActorId::KernelDispatcher,
+        &boot.wave_id,
+        &boot.cove_id,
+        Event::TaskFailed {
+            idempotency_key: "dispatcher-wave-failed".into(),
+            reason: "spawn failed".into(),
+        },
+    )
+    .await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/dispatcher-wave-failed.json" }),
+    )
+    .await
+    .expect("spec can read dispatcher-wave-failed run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("failed"));
+    assert_eq!(
+        run["events"]["failed"]["payload"]["reason"],
+        json!("spawn failed")
     );
     assert!(run["verdict"].is_null(), "run = {run:?}");
     assert!(run["events"]["verdict"].is_null(), "run = {run:?}");
