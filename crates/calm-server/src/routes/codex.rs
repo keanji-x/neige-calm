@@ -57,6 +57,43 @@ pub struct IngestQuery {
     pub card_id: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum HookProvider {
+    Codex,
+    Claude,
+}
+
+impl HookProvider {
+    fn kind_prefix(self) -> &'static str {
+        match self {
+            Self::Codex => "hook.codex",
+            Self::Claude => "hook.claude",
+        }
+    }
+
+    fn actor(self, card_id: CardId) -> ActorId {
+        match self {
+            Self::Codex => ActorId::AiCodex(card_id),
+            Self::Claude => ActorId::AiClaude(card_id),
+        }
+    }
+
+    fn event(self, card_id: CardId, kind: String, payload: Value) -> Event {
+        match self {
+            Self::Codex => Event::CodexHook {
+                card_id,
+                kind,
+                payload,
+            },
+            Self::Claude => Event::ClaudeHook {
+                card_id,
+                kind,
+                payload,
+            },
+        }
+    }
+}
+
 /// Loopback-only ingest. The bridge subprocess POSTs the raw codex hook
 /// payload here; we extract `hook_event_name`, tag it, and emit on the
 /// bus.
@@ -87,11 +124,21 @@ pub(crate) async fn ingest_hook(
     Query(q): Query<IngestQuery>,
     Json(payload): Json<Value>,
 ) -> Result<StatusCode> {
+    ingest_provider_hook(&s, q.card_id, payload, HookProvider::Codex).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn ingest_provider_hook(
+    s: &AppState,
+    card_id_str: String,
+    payload: Value,
+    provider: HookProvider,
+) -> Result<()> {
     let event_name = payload
         .get("hook_event_name")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
-    let kind = format!("hook.codex.{}", to_snake_case(event_name));
+    let kind = format!("{}.{}", provider.kind_prefix(), to_snake_case(event_name));
 
     // PR3 (#136) — reattribute the hook to the codex card that produced
     // it. PR2's stopgap stamped `ActorId::Kernel` because there was no
@@ -107,7 +154,6 @@ pub(crate) async fn ingest_hook(
     // deleted. The gate's unknown-card branch then refuses the write,
     // which is what we want: a hook for a deleted card is an audit
     // smell.
-    let card_id_str = q.card_id.clone();
     let card_id_typed = CardId::from(card_id_str.clone());
     let scope = match s.repo.card_get(&card_id_str).await? {
         Some(c) => match s.repo.wave_get(c.wave_id.as_str()).await? {
@@ -123,20 +169,16 @@ pub(crate) async fn ingest_hook(
 
     s.repo
         .log_pure_event(
-            ActorId::AiCodex(card_id_typed.clone()),
+            provider.actor(card_id_typed.clone()),
             scope,
             None,
             &s.events,
             &s.card_role_cache,
             &s.wave_cove_cache,
-            Event::CodexHook {
-                card_id: card_id_typed,
-                kind,
-                payload,
-            },
+            provider.event(card_id_typed, kind, payload),
         )
         .await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(())
 }
 
 /// Convert codex's `PascalCase` event names (`PreToolUse`) to snake.
