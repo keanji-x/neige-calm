@@ -728,6 +728,9 @@ fn resolve_session_daemon_bin() -> PathBuf {
 pub struct CodexClient {
     /// `codex` CLI to spawn. Defaults to `codex` (PATH lookup).
     pub codex_bin: String,
+    /// `claude` CLI to spawn for manually-created Claude worker cards.
+    /// Defaults to `claude` (PATH lookup).
+    pub claude_bin: String,
     /// `neige-codex-bridge` binary path. The actual command codex invokes
     /// is `/usr/local/bin/neige-codex-bridge` (declared in
     /// `docker/codex-requirements.toml` as a policy-managed hook); this
@@ -744,6 +747,9 @@ pub struct CodexClient {
     /// restarts. (The old `/tmp/`-based location was wiped on every
     /// container recreate, leaving the daemon stuck in a respawn loop.)
     pub codex_homes_dir: PathBuf,
+    /// Parent directory for generated per-Claude-card `settings.json`
+    /// files. This is only a hook settings sidecar, not a Claude home.
+    pub claude_settings_dir: PathBuf,
     /// Test-only handle. When `new_stub()` constructs the client it stows
     /// a `tempfile::TempDir` here whose path equals `codex_homes_dir`.
     /// Holding the handle for the lifetime of the `CodexClient` (which
@@ -764,12 +770,14 @@ impl CodexClient {
     pub fn new(cfg: &Config) -> Self {
         Self {
             codex_bin: cfg.codex_bin.clone(),
+            claude_bin: cfg.claude_bin.clone(),
             bridge_bin: cfg
                 .codex_bridge_bin
                 .clone()
                 .unwrap_or_else(resolve_codex_bridge_bin),
             ingest_url: cfg.codex_ingest_url_resolved(),
             codex_homes_dir: cfg.data_dir_resolved().join("codex-homes"),
+            claude_settings_dir: cfg.data_dir_resolved().join("claude-settings"),
             _codex_homes_tempdir: None,
         }
     }
@@ -814,8 +822,10 @@ impl CodexClient {
         };
         Self {
             codex_bin: "codex".into(),
+            claude_bin: "claude".into(),
             bridge_bin: PathBuf::from("neige-codex-bridge"),
             ingest_url: "http://127.0.0.1:0".into(),
+            claude_settings_dir: codex_homes_dir.join("claude-settings"),
             codex_homes_dir,
             _codex_homes_tempdir: tmp,
         }

@@ -39,7 +39,8 @@ use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VE
 use crate::ids::{ActorId, WaveId};
 use crate::model::*;
 use crate::validation::{
-    CODEX_PAYLOAD_SCHEMA_VERSION, TERMINAL_PAYLOAD_SCHEMA_VERSION, validate_card_payload,
+    CLAUDE_PAYLOAD_SCHEMA_VERSION, CODEX_PAYLOAD_SCHEMA_VERSION, TERMINAL_PAYLOAD_SCHEMA_VERSION,
+    validate_card_payload,
 };
 use crate::wave_cove_cache::WaveCoveCache;
 
@@ -1333,6 +1334,90 @@ pub async fn card_with_codex_create_tx(
     };
 
     Ok((card, term, mcp_token))
+}
+
+/// Atomically create a `claude`-kind worker card AND its associated terminal
+/// row. Claude cards are PTY-backed like codex cards, but intentionally have
+/// no MCP token/config path; completion observability comes solely from
+/// Claude hook events ingested through `/internal/claude/hook`.
+#[allow(clippy::too_many_arguments)]
+pub async fn card_with_claude_create_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card_id: String,
+    wave_id: WaveId,
+    sort: Option<f64>,
+    program: String,
+    cwd: String,
+    env: serde_json::Value,
+    prompt: Option<String>,
+    settings_path: String,
+    role: CardRole,
+    deletable: bool,
+    card_role_cache: &CardRoleCache,
+    theme: crate::routes::theme::RequestTheme,
+) -> Result<(Card, Terminal)> {
+    let card = card_create_with_id_tx(
+        tx,
+        card_id,
+        NewCard {
+            wave_id,
+            kind: "claude".into(),
+            sort,
+            payload: serde_json::Value::Null,
+        },
+        role,
+        deletable,
+        card_role_cache,
+    )
+    .await?;
+
+    let term = terminal_create_tx(
+        tx,
+        NewTerminal {
+            card_id: card.id.clone(),
+            program,
+            cwd: cwd.clone(),
+            env,
+            theme,
+        },
+    )
+    .await?;
+
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "schemaVersion".into(),
+        serde_json::Value::from(CLAUDE_PAYLOAD_SCHEMA_VERSION),
+    );
+    payload.insert(
+        "terminal_id".into(),
+        serde_json::Value::String(term.id.clone()),
+    );
+    payload.insert(
+        "settings_path".into(),
+        serde_json::Value::String(settings_path),
+    );
+    if !cwd.is_empty() {
+        payload.insert("cwd".into(), serde_json::Value::String(cwd));
+    }
+    if let Some(p) = prompt.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        payload.insert("prompt".into(), serde_json::Value::String(p.to_string()));
+    }
+    let payload = serde_json::Value::Object(payload);
+    validate_card_payload("claude", &payload)?;
+
+    let card = card_update_tx(
+        tx,
+        card.id.as_ref(),
+        CardPatch {
+            kind: None,
+            sort: None,
+            payload: Some(payload),
+            deletable: None,
+        },
+    )
+    .await?;
+
+    Ok((card, term))
 }
 
 /// PR7a (#136) — insert (or replace) a per-card MCP token row in the

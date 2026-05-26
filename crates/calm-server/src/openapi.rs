@@ -18,6 +18,7 @@ use crate::model::{
     Wave, WaveDetail, WavePatch,
 };
 use crate::routes::cards::{CreateCardBody, ViaToolCall};
+use crate::routes::claude_cards::NewClaudeCardBody;
 use crate::routes::codex_cards::NewCodexCardBody;
 use crate::routes::cove_folders::ResolveQuery;
 use crate::routes::fs::{DirEntry, ListdirResponse};
@@ -74,6 +75,8 @@ use utoipa::OpenApi;
         crate::routes::terminal::get_terminal_for_card,
         // ---- codex ----
         crate::routes::codex_cards::create_codex_card,
+        // ---- claude ----
+        crate::routes::claude_cards::create_claude_card,
         // ---- fs ----
         crate::routes::fs::listdir,
         // ---- settings ----
@@ -131,6 +134,7 @@ use utoipa::OpenApi;
         ViaToolCall,
         NewTerminalCardBody,
         NewCodexCardBody,
+        NewClaudeCardBody,
         DirEntry,
         ListdirResponse,
         SettingsBag,
@@ -158,6 +162,7 @@ use utoipa::OpenApi;
         (name = "overlays", description = "Plugin-rendered overlays attached to waves/cards"),
         (name = "terminals", description = "PTY-backed terminal cards"),
         (name = "codex", description = "Codex (OpenAI) agent cards — hook-driven event stream"),
+        (name = "claude", description = "Claude worker cards — hook-driven event stream"),
         (name = "fs", description = "Read-only host filesystem helpers (directory listing for path pickers)"),
         (name = "settings", description = "App-global settings (HTTP proxy override, etc.)"),
         (name = "plugins", description = "Plugin lifecycle, config, MCP fan-out"),

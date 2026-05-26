@@ -121,6 +121,18 @@ export interface CodexCardData {
 }
 
 /**
+ * Claude worker card. PTY-backed like codex, but hooks arrive as
+ * `claude.hook` and the backend does not attach MCP tooling.
+ */
+export interface ClaudeCardData {
+  type: 'claude';
+  id?: string;
+  terminalId?: string;
+  cwd?: string;
+  unsupportedVersion?: number;
+}
+
+/**
  * Wave report card payload — issue #229.
  *
  * Kernel-owned card minted at wave-create time. One per wave. The
@@ -143,6 +155,7 @@ export type WaveCardData =
   | TerminalCardData
   | PluginCardData
   | CodexCardData
+  | ClaudeCardData
   | WaveReportCardData;
 
 /**

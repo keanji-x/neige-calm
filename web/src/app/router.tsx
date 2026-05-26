@@ -411,7 +411,7 @@ function WaveComponent() {
  * Schema-driven card create. The Wave page hands us the kind + the
  * SchemaForm values; we look up the right kernel sequence per kind.
  *
- * Today only `codex` flows through here (multi-field input). Terminal
+ * Today `codex` and `claude` flow through here (multi-field input). Terminal
  * stays on `addCardOfKind` (no schema → default args). Other kinds
  * (`plugin:*` / `ui://*`) come through their own create path via the
  * plugin host; they're not menu-driven from the AddPanel.
@@ -423,14 +423,14 @@ async function addCardWithValues(
   values: Record<string, string>,
   theme: 'light' | 'dark',
 ): Promise<void> {
-  if (type !== 'codex') {
+  if (type !== 'codex' && type !== 'claude') {
     // Falls through to the default "no-config" pathway. The AddPanel
     // shouldn't surface a schema form for kinds without `createSchema`,
     // so this is defensive only.
     return addCardOfKind(qc, waveId, type, theme);
   }
   try {
-    dlog('addCardWithValues', 'codex create START', { waveId, values, theme });
+    dlog('addCardWithValues', `${type} create START`, { waveId, values, theme });
     // Atomic codex-card create (#117). One round-trip writes the card row,
     // the linked terminal row, payload (with `terminal_id` + optional
     // `cwd`), AND spawns the codex daemon. Server emits a single
@@ -444,14 +444,18 @@ async function addCardWithValues(
     // matching colors; without it the composer paints against codex's
     // built-in default and clashes with the surrounding card background.
     const rgb = theme === 'dark' ? DARK_THEME_RGB : LIGHT_THEME_RGB;
-    const card = await api.createCodexCard(waveId, {
+    const body = {
       cwd: values.cwd || undefined,
       prompt: values.prompt || undefined,
       theme: rgb,
-    });
-    dlog('addCardWithValues', 'codex create DONE', { cardId: card.id });
+    };
+    const card =
+      type === 'claude'
+        ? await api.createClaudeCard(waveId, body)
+        : await api.createCodexCard(waveId, body);
+    dlog('addCardWithValues', `${type} create DONE`, { cardId: card.id });
   } catch (err) {
-    console.warn('[Calm] codex create failed:', err);
+    console.warn(`[Calm] ${type} create failed:`, err);
   }
 }
 

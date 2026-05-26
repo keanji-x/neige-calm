@@ -543,6 +543,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/waves/{wave_id}/claude-cards": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_claude_card"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/waves/{wave_id}/codex-cards": {
         parameters: {
             query?: never;
@@ -832,6 +848,26 @@ export interface components {
              *     callers must still set this — passing "" produces a NotFound.
              */
             wave_id?: string;
+        };
+        /** @description Body for `POST /api/waves/:wave_id/claude-cards`. */
+        NewClaudeCardBody: {
+            /**
+             * @description Working directory Claude runs in. Empty string or missing -> `$HOME`
+             *     (then `cwd` of server).
+             */
+            cwd?: string | null;
+            /** @description Optional first prompt passed as Claude's positional prompt argument. */
+            prompt?: string | null;
+            /**
+             * Format: double
+             * @description Sort order within the wave. `None` defaults to "append to end".
+             */
+            sort?: number | null;
+            /**
+             * @description Host browser's current theme RGB. Required so the PTY daemon answers
+             *     Claude's terminal color probes with colors matching the surrounding UI.
+             */
+            theme: components["schemas"]["RequestTheme"];
         };
         /**
          * @description Body for `POST /api/waves/:wave_id/codex-cards`.
@@ -3227,6 +3263,61 @@ export interface operations {
             };
             /** @description Plugin tool call failed */
             502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_claude_card: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Wave id to create the Claude card under */
+                wave_id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Body required (theme is mandatory; cwd/prompt optional) */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewClaudeCardBody"];
+            };
+        };
+        responses: {
+            /** @description Worker card + linked terminal created atomically; Claude daemon spawned */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Card"];
+                };
+            };
+            /** @description Wave not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Body missing required fields (e.g. theme) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Daemon spawn failed (rows are persisted; sweeper reaps within ~60s) */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };

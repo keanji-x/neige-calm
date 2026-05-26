@@ -68,11 +68,19 @@ async fn serve_one_hook(listener: TcpListener, captured: Arc<Mutex<String>>) {
 
 /// Spawn the bridge as a subprocess with a `Stop` hook payload on stdin.
 /// Returns `(stdout_string, exit_status, stderr_string)`.
-fn spawn_bridge_with_stop(base_url: &str) -> (String, std::process::ExitStatus, String) {
+fn spawn_bridge_with_stop(
+    base_url: &str,
+    provider: Option<&str>,
+) -> (String, std::process::ExitStatus, String) {
     let bridge_bin = env!("CARGO_BIN_EXE_neige-codex-bridge");
-    let mut child = std::process::Command::new(bridge_bin)
+    let mut command = std::process::Command::new(bridge_bin);
+    command
         .env("NEIGE_CARD_ID", "test-card-123")
-        .env("NEIGE_CALM_BASE_URL", base_url)
+        .env("NEIGE_CALM_BASE_URL", base_url);
+    if let Some(provider) = provider {
+        command.arg("--provider").arg(provider);
+    }
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -128,7 +136,7 @@ async fn stop_posts_to_hook_and_emits_empty_object() {
 
     let base_clone = base.clone();
     let (stdout, status, _stderr) =
-        tokio::task::spawn_blocking(move || spawn_bridge_with_stop(&base_clone))
+        tokio::task::spawn_blocking(move || spawn_bridge_with_stop(&base_clone, None))
             .await
             .expect("spawn_blocking join");
 
@@ -154,5 +162,36 @@ async fn stop_posts_to_hook_and_emits_empty_object() {
     assert!(
         !req.contains("pending_events"),
         "Stop must NOT hit the removed pending_events endpoint; request was:\n{req}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_provider_posts_to_claude_hook_and_emits_continue_true() {
+    let (listener, base) = bind_stub().await;
+    let captured = Arc::new(Mutex::new(String::new()));
+    let stub_handle = tokio::spawn(serve_one_hook(listener, captured.clone()));
+
+    let base_clone = base.clone();
+    let (stdout, status, _stderr) =
+        tokio::task::spawn_blocking(move || spawn_bridge_with_stop(&base_clone, Some("claude")))
+            .await
+            .expect("spawn_blocking join");
+
+    let _ = tokio::time::timeout(Duration::from_secs(2), stub_handle).await;
+
+    assert!(status.success(), "bridge must exit 0 (got {status:?})");
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|_| panic!("bridge stdout is JSON; got: {stdout}"));
+    assert_eq!(parsed, serde_json::json!({ "continue": true }));
+
+    let req = captured.lock().unwrap().clone();
+    assert!(
+        req.contains("POST /internal/claude/hook"),
+        "Claude mode must POST to /internal/claude/hook; request was:\n{req}"
+    );
+    let req_lower = req.to_ascii_lowercase();
+    assert!(
+        req_lower.contains("x-calm-actor: ai:claude"),
+        "Claude mode must stamp ai:claude actor header; request was:\n{req}"
     );
 }

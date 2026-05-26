@@ -68,6 +68,8 @@ use crate::model::Overlay;
 pub const TERMINAL_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Card.payload` when `kind == "codex"`.
 pub const CODEX_PAYLOAD_SCHEMA_VERSION: u32 = 1;
+/// `schemaVersion` for `Card.payload` when `kind == "claude"`.
+pub const CLAUDE_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Card.payload` when `kind == "wave-report"` (issue
 /// #229 PR B). Mirrors [`crate::wave_report::WaveReportPayload::SCHEMA_VERSION`].
 pub const WAVE_REPORT_PAYLOAD_SCHEMA_VERSION: u32 = 1;
@@ -261,6 +263,21 @@ pub fn validate_card_payload(kind: &str, payload: &Value) -> Result<()> {
                 ));
             }
             check_schema_version(kind, payload, CODEX_PAYLOAD_SCHEMA_VERSION)
+        }
+        "claude" => {
+            // Claude worker cards mirror codex's UI payload contract:
+            // terminal_id + cwd/settings diagnostics live in an opaque
+            // object, with schemaVersion guarding future incompatible
+            // changes.
+            if payload.is_null() {
+                return Ok(());
+            }
+            if !payload.is_object() {
+                return Err(CalmError::BadRequest(
+                    "claude payload must be an object or null".into(),
+                ));
+            }
+            check_schema_version(kind, payload, CLAUDE_PAYLOAD_SCHEMA_VERSION)
         }
         // Issue #229 PR B — wave-report cards carry a structured payload
         // (schemaVersion + summary + body). Unlike codex's opaque blob,
