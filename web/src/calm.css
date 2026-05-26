@@ -786,8 +786,10 @@ input, textarea { font: inherit; color: inherit; }
   outline-offset: -2px;
 }
 .side .cove-nav {
-  display: flex; align-items: center; gap: var(--space-5);
-  padding: var(--space-3) var(--space-5) var(--space-3) calc(var(--space-5) + var(--space-10));
+  display: flex; align-items: center; gap: var(--space-3);
+  /* Keep 2px after the 20px chevron affordance column (right edge at 26px). */
+  padding: var(--space-3) var(--space-5);
+  padding-left: calc(var(--space-3) + 22px);
   width: 100%;
   border-radius: var(--radius-md);
   color: var(--text-2);
@@ -879,10 +881,10 @@ input, textarea { font: inherit; color: inherit; }
   flex-direction: column;
   gap: var(--space-1);
   /* Align wave-title text with the cove name column above:
-     cove-nav padding-left (--space-5 + --space-10) + swatch (12px)
-     + gap (--space-5) = side-coves-waves padding-left
-     + side-wave padding-left (--space-5). */
-  padding-left: calc(var(--space-5) + var(--space-10) + 12px);
+     cove-nav padding-left (--space-3 + 22px) + swatch (12px)
+     + gap (--space-3) = 46px. side-wave padding-left adds
+     var(--space-5), so side-coves-waves starts at 36px. */
+  padding-left: calc(var(--space-3) + 20px + var(--space-5));
 }
 
 /* Inline-edit state — same row geometry as `.cove-nav` but with a text
