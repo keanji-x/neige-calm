@@ -34,7 +34,19 @@ use std::path::PathBuf;
 use crate::error::{CalmError, Result};
 use crate::routes::codex_cards::{copy_dir_recursive, host_codex_dir, shell_single_quote};
 use crate::routes::terminal::spawn_daemon_for;
-use crate::state::{AppState, CodexClient};
+use crate::state::{AppState, CodexClient, CodexProviderConfigOverrides};
+
+/// Spec-card Codex provider stream idle timeout.
+///
+/// Upstream Codex defaults to 300s. For spec agents we want a deterministic
+/// hung-upstream failure in the minute range, while still leaving enough room
+/// for short reasoning-only silences that do not emit SSE deltas. Tests can
+/// override this through [`CodexProviderConfigOverrides`] to exercise the
+/// layer-1 failure path in hundreds of milliseconds.
+pub(crate) const SPEC_STREAM_IDLE_TIMEOUT_MS: u64 = 120_000;
+
+const SPEC_MODEL_PROVIDER_ID: &str = "neige-openai";
+const SPEC_MODEL_PROVIDER_BASE_URL: &str = "https://api.openai.com/v1";
 
 /// Minimal spec-agent system prompt template. PR6 ships a placeholder
 /// that documents the role; PR7a/PR7b will expand this with explicit
@@ -347,12 +359,35 @@ pub(crate) fn build_codex_config_toml_with_prompt(
     system_prompt: &str,
     mcp_block: Option<(&crate::mcp_server::McpShimConfig, &str)>,
 ) -> String {
+    build_codex_config_toml_with_prompt_and_provider(
+        cwd,
+        system_prompt,
+        mcp_block,
+        &CodexProviderConfigOverrides::default(),
+    )
+}
+
+fn build_codex_config_toml_with_prompt_and_provider(
+    cwd: &str,
+    system_prompt: &str,
+    mcp_block: Option<(&crate::mcp_server::McpShimConfig, &str)>,
+    provider_overrides: &CodexProviderConfigOverrides,
+) -> String {
     // Hand-written TOML (no `toml` crate in the workspace). Both `cwd`
     // and `system_prompt` need their `"` / `\` escaped for basic-string
     // safety; codex's TOML parser otherwise rejects the file at boot
     // and the daemon spawn fails opaquely.
-    let escaped_cwd = cwd.replace('\\', "\\\\").replace('"', "\\\"");
-    let escaped_prompt = system_prompt.replace('\\', "\\\\").replace('"', "\\\"");
+    let escaped_cwd = toml_basic_string_escape(cwd);
+    let escaped_prompt = toml_basic_string_escape(system_prompt);
+    let escaped_provider_base_url = toml_basic_string_escape(
+        provider_overrides
+            .base_url
+            .as_deref()
+            .unwrap_or(SPEC_MODEL_PROVIDER_BASE_URL),
+    );
+    let stream_idle_timeout_ms = provider_overrides
+        .stream_idle_timeout_ms
+        .unwrap_or(SPEC_STREAM_IDLE_TIMEOUT_MS);
     // We use a TOML basic string (one line). Newlines in the prompt are
     // escaped to `\n` so the file stays well-formed without resorting
     // to multiline literals (which would require a different escape
@@ -364,7 +399,22 @@ pub(crate) fn build_codex_config_toml_with_prompt(
          # dialogs so an auto-submitted \\r lands on the composer.\n\
          approval_policy = \"never\"\n\
          sandbox_mode = \"workspace-write\"\n\
+         model_provider = \"{SPEC_MODEL_PROVIDER_ID}\"\n\
          instructions = \"{one_line_prompt}\"\n\
+         \n\
+         [model_providers.{SPEC_MODEL_PROVIDER_ID}]\n\
+         name = \"OpenAI\"\n\
+         base_url = \"{escaped_provider_base_url}\"\n\
+         env_key = \"OPENAI_API_KEY\"\n\
+         wire_api = \"responses\"\n\
+         requires_openai_auth = false\n\
+         request_max_retries = 0\n\
+         stream_max_retries = 0\n\
+         stream_idle_timeout_ms = {stream_idle_timeout_ms}\n\
+         \n\
+         [model_providers.{SPEC_MODEL_PROVIDER_ID}.env_http_headers]\n\
+         OpenAI-Organization = \"OPENAI_ORGANIZATION\"\n\
+         OpenAI-Project = \"OPENAI_PROJECT\"\n\
          \n\
          [projects.\"{escaped_cwd}\"]\n\
          trust_level = \"trusted\"\n"
@@ -384,20 +434,12 @@ pub(crate) fn build_codex_config_toml_with_prompt(
         //     `missing NEIGE_MCP_SOCKET` exit was the symptom. Baking
         //     both vars here bypasses the inheritance boundary
         //     entirely.
-        let escaped_shim = shim
-            .shim_bin
-            .to_string_lossy()
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"");
-        let escaped_socket = shim
-            .socket_path
-            .to_string_lossy()
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"");
+        let escaped_shim = toml_basic_string_escape(&shim.shim_bin.to_string_lossy());
+        let escaped_socket = toml_basic_string_escape(&shim.socket_path.to_string_lossy());
         // The token is a base64url-ish opaque string today (see
         // `mcp_server::auth::mint_token`), but escape defensively
         // anyway in case the format ever picks up a `"` or `\`.
-        let escaped_token = token.replace('\\', "\\\\").replace('"', "\\\"");
+        let escaped_token = toml_basic_string_escape(token);
         out.push_str(&format!(
             "\n\
              [mcp_servers.calm]\n\
@@ -411,6 +453,10 @@ pub(crate) fn build_codex_config_toml_with_prompt(
     }
 
     out
+}
+
+fn toml_basic_string_escape(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// Roles that legitimately need a system-prompt-seeded `$CODEX_HOME`.
@@ -540,7 +586,16 @@ pub(crate) fn seed_codex_home_with_parts(
     // launch). Plain cards are unrepresentable at this seam by
     // construction (see [`SeededCardRole`]).
     let system_prompt = render_system_prompt(role.prompt_template(), wave_id);
-    let cfg_text = build_codex_config_toml_with_prompt(cwd, &system_prompt, mcp_block);
+    let cfg_text = if codex.provider_config_overrides == CodexProviderConfigOverrides::default() {
+        build_codex_config_toml_with_prompt(cwd, &system_prompt, mcp_block)
+    } else {
+        build_codex_config_toml_with_prompt_and_provider(
+            cwd,
+            &system_prompt,
+            mcp_block,
+            &codex.provider_config_overrides,
+        )
+    };
     let cfg_path = codex_home.join("config.toml");
     std::fs::write(&cfg_path, cfg_text)
         .map_err(|e| CalmError::Internal(format!("write config.toml: {e}")))?;
@@ -862,6 +917,10 @@ mod tests {
             s.contains("NEIGE_MCP_TOKEN = \"tok-abc123\""),
             "env block must bake per-card token so shim authenticates; got:\n{s}"
         );
+        assert!(
+            s.contains("[model_providers.neige-openai]"),
+            "provider block must remain present when MCP block is appended; got:\n{s}"
+        );
     }
 
     /// #236 followup — the env block must escape `"` and `\` in both
@@ -902,6 +961,52 @@ mod tests {
     }
 
     #[test]
+    fn role_config_toml_sets_neige_openai_provider_without_overriding_openai() {
+        let s = build_codex_config_toml_with_prompt("/workspace", "you are a spec agent.", None);
+
+        assert!(s.contains("approval_policy = \"never\""));
+        assert!(s.contains("sandbox_mode = \"workspace-write\""));
+        assert!(s.contains("instructions = \"you are a spec agent.\""));
+        assert!(s.contains("model_provider = \"neige-openai\""));
+        assert!(s.contains("[model_providers.neige-openai]"));
+        assert!(
+            !s.contains("[model_providers.openai]"),
+            "must not attempt to override Codex's reserved built-in openai provider; got:\n{s}"
+        );
+        assert!(s.contains("name = \"OpenAI\""));
+        assert!(s.contains("base_url = \"https://api.openai.com/v1\""));
+        assert!(s.contains("env_key = \"OPENAI_API_KEY\""));
+        assert!(s.contains("wire_api = \"responses\""));
+        assert!(s.contains("requires_openai_auth = false"));
+        assert!(s.contains("request_max_retries = 0"));
+        assert!(s.contains("stream_max_retries = 0"));
+        assert!(s.contains("stream_idle_timeout_ms = 120000"));
+        assert!(s.contains("[model_providers.neige-openai.env_http_headers]"));
+        assert!(s.contains("OpenAI-Organization = \"OPENAI_ORGANIZATION\""));
+        assert!(s.contains("OpenAI-Project = \"OPENAI_PROJECT\""));
+        assert!(s.contains("[projects.\"/workspace\"]"));
+        assert!(s.contains("trust_level = \"trusted\""));
+    }
+
+    #[test]
+    fn role_config_toml_allows_provider_base_url_and_idle_timeout_override() {
+        let s = build_codex_config_toml_with_prompt_and_provider(
+            "/workspace",
+            "you are a spec agent.",
+            None,
+            &CodexProviderConfigOverrides {
+                base_url: Some("http://127.0.0.1:12345/v1".to_string()),
+                stream_idle_timeout_ms: Some(250),
+            },
+        );
+
+        assert!(s.contains("base_url = \"http://127.0.0.1:12345/v1\""));
+        assert!(s.contains("stream_idle_timeout_ms = 250"));
+        assert!(s.contains("request_max_retries = 0"));
+        assert!(s.contains("stream_max_retries = 0"));
+    }
+
+    #[test]
     fn role_config_toml_escapes_quotes_in_prompt() {
         // A prompt with a `"` would otherwise close the TOML basic string
         // mid-instructions.
@@ -923,5 +1028,223 @@ mod tests {
             s.contains(r#"instructions = "line 1\nline 2""#),
             "newlines should be escaped in the basic string; got:\n{s}"
         );
+    }
+}
+
+#[cfg(all(test, unix, feature = "codex-e2e"))]
+mod codex_idle_e2e {
+    use std::path::{Path, PathBuf};
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    use serde_json::Value;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio::process::{Child, Command};
+
+    use super::*;
+    use crate::codex_appserver::{ClientInfo, CodexAppServer, InputItem, Notification};
+    use crate::spec_appserver::signal_process_group;
+
+    const DEFAULT_CODEX_BIN: &str = "~/.nvm/versions/node/v24.4.1/bin/codex";
+    const E2E_STREAM_IDLE_TIMEOUT_MS: u64 = 500;
+
+    fn resolve_codex_bin() -> Option<PathBuf> {
+        let raw =
+            std::env::var("NEIGE_CODEX_BIN").unwrap_or_else(|_| DEFAULT_CODEX_BIN.to_string());
+        let expanded = if let Some(stripped) = raw.strip_prefix("~/")
+            && let Ok(home) = std::env::var("HOME")
+        {
+            PathBuf::from(home).join(stripped)
+        } else {
+            PathBuf::from(raw)
+        };
+        if !expanded.is_file() {
+            return None;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let meta = std::fs::metadata(&expanded).ok()?;
+        if meta.permissions().mode() & 0o111 == 0 {
+            return None;
+        }
+        Some(expanded)
+    }
+
+    struct AppServerChild {
+        child: Child,
+        pgid: i32,
+    }
+
+    impl Drop for AppServerChild {
+        fn drop(&mut self) {
+            signal_process_group(self.pgid, libc::SIGTERM);
+            let _ = self.child.start_kill();
+        }
+    }
+
+    async fn start_idle_sse_server() -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake OpenAI SSE server");
+        let addr = listener.local_addr().expect("fake server local addr");
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept fake SSE request");
+            let mut buf = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            loop {
+                let n = stream
+                    .read(&mut chunk)
+                    .await
+                    .expect("read fake SSE request");
+                if n == 0 {
+                    return;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let response = concat!(
+                "HTTP/1.1 200 OK\r\n",
+                "content-type: text/event-stream\r\n",
+                "cache-control: no-cache\r\n",
+                "connection: keep-alive\r\n",
+                "\r\n"
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("write fake SSE headers");
+            std::future::pending::<()>().await;
+        });
+        (format!("http://{addr}/v1"), task)
+    }
+
+    async fn connect_when_ready(
+        sock: &Path,
+        child: &mut Child,
+    ) -> (CodexAppServer, crate::codex_appserver::NotificationStream) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if Instant::now() >= deadline {
+                panic!("codex app-server did not accept a connection within 10s");
+            }
+            if sock.exists()
+                && let Ok(pair) = CodexAppServer::connect(sock).await
+            {
+                return pair;
+            }
+            if let Ok(Some(status)) = child.try_wait() {
+                panic!("codex app-server exited during boot: {status}");
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn idle_sse_upstream_completes_turn_as_failed() {
+        let Some(codex_bin) = resolve_codex_bin() else {
+            eprintln!("[codex-idle-e2e] SKIP: codex binary not found (set NEIGE_CODEX_BIN)");
+            return;
+        };
+
+        let (base_url, fake_server) = start_idle_sse_server().await;
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let codex_home = tmp.path().join("codex-home");
+        std::fs::create_dir_all(&codex_home).expect("mkdir CODEX_HOME");
+        let cfg = build_codex_config_toml_with_prompt_and_provider(
+            tmp.path().to_str().expect("temp path utf8"),
+            "you are a spec agent.",
+            None,
+            &CodexProviderConfigOverrides {
+                base_url: Some(base_url),
+                stream_idle_timeout_ms: Some(E2E_STREAM_IDLE_TIMEOUT_MS),
+            },
+        );
+        std::fs::write(codex_home.join("config.toml"), cfg).expect("write config.toml");
+
+        let sock_dir = tmp.path().join("appserver");
+        std::fs::create_dir_all(&sock_dir).expect("mkdir appserver dir");
+        let sock = sock_dir.join("app.sock");
+        let listen = format!("unix://{}", sock.display());
+
+        let mut child = Command::new(&codex_bin);
+        child
+            .arg("app-server")
+            .arg("--listen")
+            .arg(&listen)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .env("CODEX_HOME", &codex_home)
+            .env("OPENAI_API_KEY", "sk-neige-fake")
+            .env("NO_PROXY", "127.0.0.1,localhost")
+            .env_remove("HTTP_PROXY")
+            .env_remove("HTTPS_PROXY")
+            .env_remove("http_proxy")
+            .env_remove("https_proxy")
+            .process_group(0)
+            .kill_on_drop(true);
+        let child = child.spawn().expect("spawn codex app-server");
+        let pgid = child
+            .id()
+            .and_then(|pid| i32::try_from(pid).ok())
+            .expect("child pid fits i32");
+        let mut child_guard = AppServerChild { child, pgid };
+
+        let (client, mut notifs) = connect_when_ready(&sock, &mut child_guard.child).await;
+        client
+            .initialize(ClientInfo {
+                name: "neige-idle-sse-e2e".to_string(),
+                version: "0".to_string(),
+            })
+            .await
+            .expect("initialize app-server");
+        let thread = client.thread_start().await.expect("thread/start");
+        let thread_id = thread.thread_id().expect("thread id").to_string();
+        client
+            .turn_start(
+                &thread_id,
+                vec![InputItem::text("trigger one model request and then stop")],
+            )
+            .await
+            .expect("turn/start");
+
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            notifs.await_notification(
+                |n| matches!(n, Notification::TurnStarted { thread_id: t, .. } if t == &thread_id),
+            ),
+        )
+        .await
+        .expect("turn/started timeout")
+        .expect("turn/started notification");
+
+        let completed = tokio::time::timeout(
+            Duration::from_secs(5),
+            notifs.await_notification(|n| {
+                matches!(n, Notification::TurnCompleted { thread_id: t, .. } if t == &thread_id)
+            }),
+        )
+        .await
+        .expect("turn/completed timeout")
+        .expect("turn/completed notification");
+
+        let Notification::TurnCompleted { turn, .. } = completed else {
+            unreachable!("predicate only matches turn/completed")
+        };
+        assert_eq!(
+            turn.get("status").and_then(Value::as_str),
+            Some("failed"),
+            "idle SSE turn must complete as failed; turn={turn}"
+        );
+        assert!(
+            turn.get("error").is_some(),
+            "failed idle SSE turn should carry error details; turn={turn}"
+        );
+
+        fake_server.abort();
+        signal_process_group(child_guard.pgid, libc::SIGTERM);
+        let _ = tokio::time::timeout(Duration::from_secs(2), child_guard.child.wait()).await;
     }
 }

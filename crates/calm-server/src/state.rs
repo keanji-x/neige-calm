@@ -744,6 +744,9 @@ pub struct CodexClient {
     /// restarts. (The old `/tmp/`-based location was wiped on every
     /// container recreate, leaving the daemon stuck in a respawn loop.)
     pub codex_homes_dir: PathBuf,
+    /// Test/fixture override for the generated custom Codex model provider.
+    /// Production leaves this at [`CodexProviderConfigOverrides::default`].
+    pub provider_config_overrides: CodexProviderConfigOverrides,
     /// Test-only handle. When `new_stub()` constructs the client it stows
     /// a `tempfile::TempDir` here whose path equals `codex_homes_dir`.
     /// Holding the handle for the lifetime of the `CodexClient` (which
@@ -760,6 +763,14 @@ pub struct CodexClient {
     _codex_homes_tempdir: Option<tempfile::TempDir>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CodexProviderConfigOverrides {
+    /// Optional replacement for `[model_providers.neige-openai].base_url`.
+    pub base_url: Option<String>,
+    /// Optional replacement for `stream_idle_timeout_ms`.
+    pub stream_idle_timeout_ms: Option<u64>,
+}
+
 impl CodexClient {
     pub fn new(cfg: &Config) -> Self {
         Self {
@@ -770,6 +781,7 @@ impl CodexClient {
                 .unwrap_or_else(resolve_codex_bridge_bin),
             ingest_url: cfg.codex_ingest_url_resolved(),
             codex_homes_dir: cfg.data_dir_resolved().join("codex-homes"),
+            provider_config_overrides: CodexProviderConfigOverrides::default(),
             _codex_homes_tempdir: None,
         }
     }
@@ -817,6 +829,7 @@ impl CodexClient {
             bridge_bin: PathBuf::from("neige-codex-bridge"),
             ingest_url: "http://127.0.0.1:0".into(),
             codex_homes_dir,
+            provider_config_overrides: CodexProviderConfigOverrides::default(),
             _codex_homes_tempdir: tmp,
         }
     }
