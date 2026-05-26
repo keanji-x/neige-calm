@@ -1414,6 +1414,42 @@ impl SpecPushRegistry {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    /// **Observability seam (#318, INV-6)**: probe whether the
+    /// [`WatermarkSink`] has been installed on the parked handle for
+    /// `wave_id`. Returns:
+    ///   * `Some(true)`  — handle registered AND the sink slot is filled
+    ///     (the correct post-init state for both init paths today),
+    ///   * `Some(false)` — handle registered but no sink installed (the
+    ///     bug-shape this seam catches: a future entry point that parks
+    ///     a handle without `install_watermark_sink` — flushed queue
+    ///     items would silently fail to persist their watermark),
+    ///   * `None`        — no handle registered for this wave.
+    ///
+    /// Mirrors [`SpecPushHandle::has_watermark_sink`] (already `pub`) but
+    /// reachable without first extracting the handle out of the registry
+    /// (the registry stores `SpecPushHandle` by value; a `get(&self) ->
+    /// Option<&SpecPushHandle>` would require leaking the `DashMap` ref
+    /// guard, which the rest of this surface deliberately avoids).
+    /// Holds the shard guard for a single cheap `Arc` clone of the sink
+    /// slot before releasing the guard and awaiting on the slot's mutex,
+    /// so callers never hold the registry lock across the `.await`.
+    ///
+    /// No production caller branches on this — `install_watermark_sink`
+    /// is colocated with the two parking sites and verified by
+    /// `debug_assert!`. The seam exists so integration tests can prove
+    /// the symmetry contract holds without depending on the
+    /// release-elided `debug_assert!`.
+    pub async fn has_watermark_sink(&self, wave_id: &WaveId) -> Option<bool> {
+        // Clone the cheap `SpecPusher` (shared `Arc`s) under the guard,
+        // drop the guard, then read the sink — never hold the shard
+        // guard across the `.await`. The pusher carries the same
+        // `watermark_sink: WatermarkSinkSlot` Arc as the parent handle,
+        // so a Some/None probe via the pusher is equivalent to probing
+        // via the handle.
+        let pusher = self.0.get(wave_id).map(|h| h.pusher())?;
+        Some(pusher.watermark_sink.lock().await.is_some())
+    }
 }
 
 /// Boot a `codex app-server` for a spec card, drive turn #1, and return

@@ -284,3 +284,69 @@ async fn inv1_stranded_envelope_must_be_observable() {
          abandonment signal is orthogonal"
     );
 }
+
+/// INV-1 (b) — **historical pre-#329 sketch**, preserved as an
+/// alternate-angle record.
+///
+/// **Status**: the underlying observability gap this skeleton documented
+/// was closed by **PR #329** (R1-B1 fix), which added
+/// `Event::SpecPushAbandoned { wave_id, cove_id, last_envelope_id }` and
+/// the inert-classifier emit site. The live behavioral test for this
+/// invariant is [`inv1_stranded_envelope_must_be_observable`] above —
+/// that's the one that exercises the real production path end-to-end.
+///
+/// This function is **deliberately kept** as a documented pre-fix
+/// sketch: it captures what the test could look like *before* the
+/// production seam existed, when the only honest encoding was an
+/// `#[ignore]`'d `panic!` with a `blocked-by:` reason narrating the
+/// gap. The multi-angle perspective (live behavioral + frozen
+/// historical) is intentional — the contrast makes the design move
+/// visible to future readers.
+///
+/// It stays `#[ignore]`'d (and asserts nothing) so it does not
+/// duplicate the behavioral coverage above.
+///
+/// Original sketch (verbatim from the v3 attempt):
+///
+/// ```ignore
+/// // 1. Plant a wave + spec card; do NOT install a SpecPushHandle.
+/// // 2. Persist a wave-scoped event(id=N) via the events log.
+/// // 3. Drive the takeover path to its inert classifier (simulate
+/// //    `-32600 no rollout` from thread/resume) so the push state
+/// //    is cleared and the card is excluded from boot takeover.
+/// // 4. Assert one of the new surfaces fires:
+/// //      let stranded = repo.stranded_envelopes(&wave.id).await?;
+/// //      assert!(stranded.contains(&N),
+/// //          "INV-1 (b) violated: event N is in the log, the spec card
+/// //           is no longer takeover-eligible, but no stranding signal
+/// //           exists for operator / replay recovery.");
+/// //    OR (alternative seam):
+/// //      assert!(events_for_wave(&wave.id).await
+/// //          .iter().any(|e| matches!(e, Event::SpecPushAbandoned { last_envelope_id, .. }
+/// //                                  if *last_envelope_id >= N)));
+/// ```
+///
+/// PR #329 picked the second seam (the `Event::SpecPushAbandoned`
+/// variant) — see the live behavioral test above for the exercised
+/// shape.
+#[tokio::test]
+#[ignore = "historical pre-fix sketch: the stranded-envelope observability gap this \
+            skeleton documented was addressed by PR #329, which added \
+            Event::SpecPushAbandoned and the inert-classifier emit site. The live \
+            behavioral test for INV-1 (b) is `inv1_stranded_envelope_must_be_observable` \
+            in this same file (it exercises the production seam end-to-end). This \
+            function is preserved as a documented alternate-angle / historical record \
+            of what the test looked like before the seam existed; it intentionally \
+            asserts nothing and stays `#[ignore]`'d so it does not duplicate the \
+            behavioral coverage above. See: dispatcher.rs::Inner::push_to_spec \
+            (no-handle arm), lib.rs::try_takeover_one_wave (inert classifier), \
+            db/sqlite.rs::spec_cards_for_boot_takeover (filter that excludes cleared \
+            rows). INV-1 (b) in #318; addressed by #329."]
+async fn inv1_stranded_envelope_skeleton_pre_329() {
+    // Body intentionally empty: this is a frozen pre-#329 sketch, not
+    // a live behavioral test. The behavioral coverage lives in
+    // `inv1_stranded_envelope_must_be_observable` above (which exercises
+    // the `Event::SpecPushAbandoned` seam added by #329). Running this
+    // with `--ignored` should be a no-op — there is nothing left to
+    // assert that the live test doesn't already cover.
+}
