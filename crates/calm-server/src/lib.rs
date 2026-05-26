@@ -57,8 +57,9 @@ pub mod auth;
 ///     respawn.
 ///
 /// The sweep walks `terminals` rows whose `daemon_handle IS NOT NULL`,
-/// probes the socket, and on connect-failure clears the handle and
-/// calls `spawn_daemon_with_parts` with the row's existing cwd / env.
+/// probes the socket with the calm-session handshake, and on a
+/// non-`Alive` outcome clears the handle and calls
+/// `spawn_daemon_with_parts` with the row's existing cwd / env.
 /// Most rows also reuse the persisted program verbatim; Claude worker
 /// rows that carry `payload.claude_session_id` rebuild the child command
 /// as `claude --settings <path> --resume <id>` so a boot revive resumes
@@ -83,17 +84,68 @@ pub async fn revive_orphans_on_boot(state: &state::AppState) {
         let Some(handle) = term.daemon_handle.clone() else {
             continue;
         };
-        // Probe — if the socket accepts a connect the daemon is already
+        let probe =
+            terminal_probe::probe_terminal_daemon(std::path::Path::new(&handle), &term.id).await;
+        // Probe — only the protocol handshake proves the daemon is
         // alive (kernel restarted but daemons survived); no action.
-        if tokio::net::UnixStream::connect(&handle).await.is_ok() {
+        if probe == terminal_probe::TerminalProbe::Alive {
             alive += 1;
             continue;
         }
         tracing::info!(
             terminal_id = %term.id,
             sock = %handle,
-            "revive_orphans_on_boot: socket unreachable — respawning",
+            probe = ?probe,
+            "revive_orphans_on_boot: daemon handshake failed — respawning",
         );
+        if probe == terminal_probe::TerminalProbe::AcceptingButStale {
+            // Reap only when a process is actively accepting on this socket
+            // path; persisted PIDs for unreachable sockets may have been
+            // reused after reboot and must not be signaled.
+            crate::terminal_sweeper::reap_terminal_artifacts(&term).await;
+            if let Some(pid) = term.pid {
+                match crate::terminal_sweeper::wait_for_pid_exit(
+                    pid,
+                    std::time::Duration::from_secs(3),
+                )
+                .await
+                {
+                    crate::terminal_sweeper::WaitForPidExit::Exited => {
+                        tracing::debug!(
+                            terminal_id = %term.id,
+                            pid,
+                            "revive_orphans_on_boot: stale daemon exited before respawn"
+                        );
+                    }
+                    crate::terminal_sweeper::WaitForPidExit::InvalidPid => {
+                        tracing::warn!(
+                            terminal_id = %term.id,
+                            pid,
+                            "revive_orphans_on_boot: stale daemon pid is invalid; respawning best-effort"
+                        );
+                    }
+                    crate::terminal_sweeper::WaitForPidExit::StillAliveAfterSigkill => {
+                        tracing::warn!(
+                            terminal_id = %term.id,
+                            pid,
+                            "revive_orphans_on_boot: stale daemon stayed alive after SIGKILL grace; respawning best-effort"
+                        );
+                    }
+                    crate::terminal_sweeper::WaitForPidExit::Unsupported => {
+                        tracing::debug!(
+                            terminal_id = %term.id,
+                            pid,
+                            "revive_orphans_on_boot: pid wait unsupported on this platform; respawning best-effort"
+                        );
+                    }
+                }
+            } else {
+                tracing::debug!(
+                    terminal_id = %term.id,
+                    "revive_orphans_on_boot: no stale daemon pid recorded; respawning best-effort"
+                );
+            }
+        }
         // Clear the stale handle before respawn — the helper writes a
         // fresh one on success.
         let _ = db::RepoOutOfDomain::terminal_set_handle(state.repo.as_ref(), &term.id, None).await;
@@ -1519,6 +1571,7 @@ pub mod routes;
 pub mod spec_appserver;
 pub mod spec_card;
 pub mod state;
+pub(crate) mod terminal_probe;
 pub mod terminal_sweeper;
 pub mod validation;
 pub mod wave_cove_cache;

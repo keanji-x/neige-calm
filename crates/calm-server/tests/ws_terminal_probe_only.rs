@@ -35,9 +35,16 @@ use calm_server::model::{NewCard, NewCove, NewTerminal, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::ws;
+use calm_session::{
+    ClientCapabilities, ClientMsg, DaemonMsg, InitialScrollback, PROTOCOL_VERSION, PtySize,
+    RenderEncoding, RenderSnapshot, Role, read_frame, write_frame,
+};
 use tempfile::TempDir;
-use tokio::net::TcpListener;
+use tokio::io::AsyncWriteExt;
+use tokio::net::{TcpListener, UnixListener, UnixStream};
+use tokio::sync::mpsc;
 use tokio::time::sleep;
+use uuid::Uuid;
 
 /// Locate the workspace-built `calm-session-daemon` binary — used here
 /// only as a sentinel path; the probe-only assertion runs entirely
@@ -141,6 +148,101 @@ async fn boot_with_terminal_row() -> Boot {
         term_id: term.id,
         _tmp: tmp,
     }
+}
+
+fn client_hello(terminal_id: &str) -> ClientMsg {
+    ClientMsg::ClientHello {
+        protocol_version: PROTOCOL_VERSION,
+        terminal_id: terminal_id.to_string(),
+        client_id: Uuid::new_v4(),
+        desired_size: PtySize {
+            cols: 80,
+            rows: 24,
+            pixel_width: None,
+            pixel_height: None,
+        },
+        cell_size: None,
+        initial_scrollback: InitialScrollback::None,
+        resume_from: None,
+        role_hint: None,
+        capabilities: ClientCapabilities {
+            render_encodings: vec![RenderEncoding::Vt],
+            supports_scrollback: false,
+            supports_sixel: false,
+            supports_images: false,
+            kernel_originated_input: false,
+        },
+    }
+}
+
+fn server_hello(terminal_id: &str) -> DaemonMsg {
+    let terminal_id = Uuid::parse_str(terminal_id)
+        .map(|uuid| uuid.to_string())
+        .unwrap_or_else(|_| terminal_id.to_string());
+    DaemonMsg::ServerHello {
+        protocol_version: PROTOCOL_VERSION,
+        terminal_id,
+        session_id: Uuid::new_v4(),
+        client_role: Role::Owner,
+        owner_client_id: Some(Uuid::new_v4()),
+        pty_size: PtySize {
+            cols: 80,
+            rows: 24,
+            pixel_width: None,
+            pixel_height: None,
+        },
+        pty_seq_head: 0,
+        pty_seq_tail: 0,
+        render_rev: 0,
+        snapshot: RenderSnapshot {
+            render_rev: 0,
+            pty_seq: 0,
+            cols: 80,
+            rows: 24,
+            encoding: RenderEncoding::Vt,
+            data: Vec::new(),
+            scrollback: None,
+        },
+        history_gap: None,
+        is_child_ready: false,
+    }
+}
+
+fn spawn_handshake_listener(
+    sock: &std::path::Path,
+    terminal_id: String,
+) -> mpsc::UnboundedReceiver<String> {
+    let listener = UnixListener::bind(sock).expect("bind handshake listener");
+    let (tx, rx) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let terminal_id = terminal_id.clone();
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let Ok(ClientMsg::ClientHello {
+                    terminal_id: observed_terminal_id,
+                    ..
+                }) = read_frame::<ClientMsg, _>(&mut stream).await
+                else {
+                    return;
+                };
+                let _ = tx.send(observed_terminal_id);
+                let _ = write_frame(&mut stream, &server_hello(&terminal_id)).await;
+            });
+        }
+    });
+    rx
+}
+
+fn spawn_garbage_listener(sock: &std::path::Path) {
+    let listener = UnixListener::bind(sock).expect("bind stale protocol listener");
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let _ = stream.write_all(b"not-a-calm-session-frame").await;
+            });
+        }
+    });
 }
 
 /// Regression guard for the probe-only refactor: a terminal row with
@@ -266,6 +368,164 @@ async fn ws_upgrade_with_stale_daemon_handle_emits_child_exited_close_and_does_n
         post.daemon_handle.as_deref(),
         Some(stale_sock_str.as_str()),
         "ws upgrade must NOT rewrite the daemon handle (no auto-respawn)",
+    );
+}
+
+/// #337 — a daemon handle is live only if the socket completes the
+/// calm-session handshake. This mock daemon answers the resolver's probe
+/// with `ServerHello`, then answers the real pump attach the same way; the
+/// browser sees the forwarded `ServerHello` instead of the child-exited
+/// close.
+#[tokio::test]
+async fn ws_upgrade_with_handshake_live_daemon_enters_alive_path() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message as TMessage;
+
+    let boot = boot_with_terminal_row().await;
+
+    let live_sock = boot._tmp.path().join("live-protocol.sock");
+    let mut observed_hellos = spawn_handshake_listener(&live_sock, boot.term_id.clone());
+    let live_sock_str = live_sock.to_string_lossy().to_string();
+    boot.repo
+        .terminal_set_handle(&boot.term_id, Some(&live_sock_str))
+        .await
+        .unwrap();
+
+    let url = format!("ws://{}/api/terminals/{}", boot.addr, boot.term_id);
+    let (mut ws, _resp) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("upgrade must reach 101 for a live daemon");
+    ws.send(TMessage::Text(
+        serde_json::to_string(&client_hello(&boot.term_id)).expect("serialize ClientHello"),
+    ))
+    .await
+    .expect("send ClientHello");
+
+    let first = tokio::time::timeout(Duration::from_secs(2), ws.next())
+        .await
+        .expect("ws recv (ServerHello) timed out")
+        .expect("ws closed before ServerHello")
+        .expect("ws error");
+    match first {
+        TMessage::Text(t) => {
+            let parsed: DaemonMsg =
+                serde_json::from_str(&t).unwrap_or_else(|e| panic!("bad JSON {t}: {e}"));
+            assert!(
+                matches!(parsed, DaemonMsg::ServerHello { .. }),
+                "expected forwarded ServerHello, got {parsed:?}"
+            );
+        }
+        other => panic!("expected Text(ServerHello), got {other:?}"),
+    }
+
+    let expected_hyphenated = Uuid::parse_str(&boot.term_id)
+        .expect("terminal id should be UUID parseable")
+        .to_string();
+    assert!(
+        expected_hyphenated.contains('-'),
+        "regression guard must assert the hyphenated terminal id form"
+    );
+    let observed_probe_id = observed_hellos
+        .recv()
+        .await
+        .expect("mock daemon should observe resolver probe ClientHello");
+    assert_eq!(
+        observed_probe_id, expected_hyphenated,
+        "resolver probe must send the daemon-facing hyphenated terminal_id"
+    );
+
+    let post = boot
+        .repo
+        .terminal_get(&boot.term_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        post.daemon_handle.as_deref(),
+        Some(live_sock_str.as_str()),
+        "live protocol probe must not rewrite daemon handle"
+    );
+}
+
+/// #337 — an accepting socket that does not speak calm-session is stale.
+/// The old bare-connect resolver would have taken the `Alive` path; the
+/// handshake probe returns the existing child-exited close and still reads
+/// the `.exit` sidecar so the browser gets the real code.
+#[tokio::test]
+async fn ws_upgrade_with_stale_protocol_socket_emits_child_exited_close_with_exit_code() {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::Message as TMessage;
+
+    let boot = boot_with_terminal_row().await;
+
+    let stale_sock = boot._tmp.path().join("stale-protocol.sock");
+    spawn_garbage_listener(&stale_sock);
+    let stale_sock_str = stale_sock.to_string_lossy().to_string();
+    boot.repo
+        .terminal_set_handle(&boot.term_id, Some(&stale_sock_str))
+        .await
+        .unwrap();
+    std::fs::write(
+        format!("{stale_sock_str}.exit"),
+        r#"{"code":7,"signal_killed":false}"#,
+    )
+    .expect("write sidecar");
+
+    assert!(
+        UnixStream::connect(&stale_sock).await.is_ok(),
+        "precondition: old bare-connect probe would have misclassified this stale socket as live",
+    );
+
+    let url = format!("ws://{}/api/terminals/{}", boot.addr, boot.term_id);
+    let (mut ws, _resp) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("upgrade must reach 101 — server should emit Close, not 500");
+
+    let first = tokio::time::timeout(Duration::from_secs(2), ws.next())
+        .await
+        .expect("ws recv (TerminalExited) timed out")
+        .expect("ws closed before TerminalExited")
+        .expect("ws error");
+    match first {
+        TMessage::Text(t) => {
+            let parsed: serde_json::Value = serde_json::from_str(&t)
+                .unwrap_or_else(|e| panic!("parsing JSON failed for {t}: {e}"));
+            let exited = parsed
+                .get("TerminalExited")
+                .unwrap_or_else(|| panic!("expected `TerminalExited` envelope, got {parsed}"));
+            assert_eq!(
+                exited.get("code").and_then(|v| v.as_i64()),
+                Some(7),
+                "expected TerminalExited.code == 7, got {parsed}"
+            );
+        }
+        other => panic!("expected Text(TerminalExited), got {other:?}"),
+    }
+
+    let close = tokio::time::timeout(Duration::from_secs(2), ws.next())
+        .await
+        .expect("ws recv (close) timed out")
+        .expect("ws closed without sending Close")
+        .expect("ws error");
+    match close {
+        TMessage::Close(Some(cf)) => {
+            assert_eq!(u16::from(cf.code), 1000);
+            assert_eq!(cf.reason.as_ref(), "child-exited");
+        }
+        other => panic!("expected Close(1000, child-exited), got {other:?}"),
+    }
+
+    let post = boot
+        .repo
+        .terminal_get(&boot.term_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(post.exit_code, Some(7));
+    assert_eq!(
+        post.daemon_handle.as_deref(),
+        Some(stale_sock_str.as_str()),
+        "WS probe-only path must not respawn or rewrite the stale handle"
     );
 }
 

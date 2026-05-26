@@ -372,8 +372,9 @@ impl TerminalSessionState {
     ///    `UnsupportedEncoding`.
     ///
     /// On success: register the client in `registry`, capture the
-    /// returned `Role`, and emit `ResizePty` (so the daemon picks up the
-    /// client's `desired_size`) + `ServerHello` with the current snapshot.
+    /// returned `Role`, and emit `ServerHello` with the current snapshot.
+    /// Owner handshakes also emit `ResizePty` so the daemon picks up the
+    /// owner's `desired_size`.
     ///
     /// Post-handshake routing:
     /// - `Input{ data, input_seq }` → owner / kernel-input observer:
@@ -667,15 +668,18 @@ impl TerminalSessionState {
                     is_child_ready: ctx.is_child_ready,
                 };
 
-                // We also need to push the requested PTY size through to
-                // the master so the child sees the client's actual viewport.
-                vec![
-                    Effect::ResizePty {
+                let mut effects = Vec::new();
+                if role == Role::Owner {
+                    // PTY size is owner-driven, matching ResizeCommit.
+                    // Observers learn the owner's size through ServerHello
+                    // and snapshots; they never reshape the shared PTY.
+                    effects.push(Effect::ResizePty {
                         cols: desired_size.cols,
                         rows: desired_size.rows,
-                    },
-                    Effect::SendToClient(server_hello),
-                ]
+                    });
+                }
+                effects.push(Effect::SendToClient(server_hello));
+                effects
             }
             _ => vec![
                 Effect::SendProtocolError {

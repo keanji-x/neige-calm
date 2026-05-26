@@ -531,10 +531,12 @@ impl DaemonClient {
     ///
     /// The connection is closed (socket dropped) right after the ack
     /// lands — no further frames are sent. The whole call is bounded by
-    /// `timeout` (5s in production); on timeout we log at warn and
-    /// return `Err(...)`, leaving the daemon untouched. Caller is
-    /// expected to degrade (the auto-submit path keeps the codex TUI
-    /// alive — the user can hit Enter manually).
+    /// `timeout` (5s in production) only as a backstop for a wedged PTY
+    /// writer or silent peer; success is still judged by deterministic
+    /// protocol stages (`ServerHello`, optional `ChildReady`, `InputAck`).
+    /// On timeout we log at warn and return `Err(...)`, leaving the daemon
+    /// untouched. Caller is expected to degrade (the auto-submit path keeps
+    /// the codex TUI alive — the user can hit Enter manually).
     ///
     /// `terminal_id` is normalized to its hyphenated UUID form before
     /// being placed on the handshake — `card.payload.terminal_id`

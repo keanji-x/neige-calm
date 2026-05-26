@@ -22,6 +22,7 @@
 #![cfg(unix)]
 
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -33,8 +34,14 @@ use calm_server::model::{CardRole, NewCard, NewCove, NewTerminal, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_session::{
+    ClientMsg, DaemonMsg, PROTOCOL_VERSION, PtySize, RenderEncoding, RenderSnapshot, Role,
+    read_frame, write_frame,
+};
 use tempfile::TempDir;
-use tokio::net::UnixStream;
+use tokio::net::{UnixListener, UnixStream};
+use tokio::process::{Child, Command};
+use uuid::Uuid;
 
 /// Locate the workspace-built `calm-session-daemon` binary (same
 /// trick the codex-card endpoint tests use).
@@ -49,6 +56,10 @@ fn locate_daemon_bin() -> PathBuf {
          `cargo build -p calm-session --bin calm-session-daemon` first",
     );
     p
+}
+
+fn locate_wrong_protocol_daemon_bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_wrong-protocol-daemon"))
 }
 
 struct Fixture {
@@ -144,6 +155,80 @@ async fn seed_terminal_row(repo: &dyn Repo) -> String {
     term.id
 }
 
+fn server_hello(terminal_id: &str) -> DaemonMsg {
+    let terminal_id = Uuid::parse_str(terminal_id)
+        .map(|uuid| uuid.to_string())
+        .unwrap_or_else(|_| terminal_id.to_string());
+    DaemonMsg::ServerHello {
+        protocol_version: PROTOCOL_VERSION,
+        terminal_id,
+        session_id: Uuid::new_v4(),
+        client_role: Role::Owner,
+        owner_client_id: Some(Uuid::new_v4()),
+        pty_size: PtySize {
+            cols: 80,
+            rows: 24,
+            pixel_width: None,
+            pixel_height: None,
+        },
+        pty_seq_head: 0,
+        pty_seq_tail: 0,
+        render_rev: 0,
+        snapshot: RenderSnapshot {
+            render_rev: 0,
+            pty_seq: 0,
+            cols: 80,
+            rows: 24,
+            encoding: RenderEncoding::Vt,
+            data: Vec::new(),
+            scrollback: None,
+        },
+        history_gap: None,
+        is_child_ready: false,
+    }
+}
+
+fn spawn_handshake_listener(sock: &std::path::Path, terminal_id: String) {
+    let listener = UnixListener::bind(sock).expect("bind handshake listener");
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let terminal_id = terminal_id.clone();
+            tokio::spawn(async move {
+                let Ok(ClientMsg::ClientHello { .. }) =
+                    read_frame::<ClientMsg, _>(&mut stream).await
+                else {
+                    return;
+                };
+                let _ = write_frame(&mut stream, &server_hello(&terminal_id)).await;
+            });
+        }
+    });
+}
+
+async fn spawn_garbage_daemon_process(sock: &std::path::Path) -> Child {
+    let mut child = Command::new(locate_wrong_protocol_daemon_bin())
+        .arg("--sock")
+        .arg(sock)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn garbage protocol daemon");
+
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(2) {
+        if UnixStream::connect(sock).await.is_ok() {
+            return child;
+        }
+        if let Some(status) = child.try_wait().expect("poll garbage daemon") {
+            panic!("garbage protocol daemon exited before binding socket: {status}");
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+    panic!("garbage protocol daemon did not bind socket {sock:?}");
+}
+
 /// Regression guard: a terminal row carrying a stale `daemon_handle`
 /// (path that doesn't accept connections — common when calm-server
 /// restarts and the old daemon's socket file is lingering on disk
@@ -164,6 +249,18 @@ async fn revive_orphans_on_boot_respawns_unreachable_daemon() {
         .terminal_set_handle(&term_id, Some(&stale_sock_str))
         .await
         .unwrap();
+    let mut sentinel = Command::new("sleep")
+        .arg("60")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sentinel process");
+    let sentinel_pid = sentinel.id().expect("sentinel pid");
+    fx.repo
+        .terminal_set_pid(&term_id, Some(sentinel_pid))
+        .await
+        .unwrap();
 
     // Confirm the precondition: socket really doesn't accept.
     assert!(
@@ -173,6 +270,12 @@ async fn revive_orphans_on_boot_respawns_unreachable_daemon() {
 
     // Sweep.
     calm_server::revive_orphans_on_boot(&fx.state).await;
+    assert!(
+        sentinel.try_wait().expect("poll sentinel").is_none(),
+        "Unreachable probe path must not signal the persisted pid"
+    );
+    let _ = sentinel.kill().await;
+    let _ = sentinel.wait().await;
 
     // Post-sweep: row has a non-stale handle and the new socket
     // accepts. Poll briefly because the sweep spawns the daemon
@@ -207,11 +310,76 @@ async fn revive_orphans_on_boot_respawns_unreachable_daemon() {
     );
 }
 
-/// A row whose `daemon_handle` is reachable must NOT be respawned —
-/// the sweep should be a no-op for live daemons. We point the row at
-/// a socket file we bind ourselves (so the connect-probe succeeds)
-/// and assert the row's handle is byte-for-byte unchanged after the
-/// sweep.
+/// Regression guard for #337: a socket can accept `connect(2)` and still
+/// fail the calm-session protocol. The old boot sweep would have counted
+/// this row alive; the handshake probe must classify it stale and respawn.
+#[tokio::test]
+async fn revive_orphans_on_boot_respawns_stale_protocol_socket() {
+    let fx = fixture().await;
+    let term_id = seed_terminal_row(fx.repo.as_ref()).await;
+
+    let stale_sock = fx._tmp.path().join("stale-protocol.sock");
+    let mut stale_child = spawn_garbage_daemon_process(&stale_sock).await;
+    let stale_pid = stale_child.id().expect("garbage daemon pid");
+    let stale_sock_str = stale_sock.to_string_lossy().to_string();
+    fx.repo
+        .terminal_set_handle(&term_id, Some(&stale_sock_str))
+        .await
+        .unwrap();
+    fx.repo
+        .terminal_set_pid(&term_id, Some(stale_pid))
+        .await
+        .unwrap();
+
+    assert!(
+        UnixStream::connect(&stale_sock).await.is_ok(),
+        "precondition: old bare-connect probe would have misclassified this stale socket as live",
+    );
+
+    calm_server::revive_orphans_on_boot(&fx.state).await;
+
+    let post = fx
+        .repo
+        .terminal_get(&term_id)
+        .await
+        .unwrap()
+        .expect("row after sweep");
+    let new_handle = post
+        .daemon_handle
+        .expect("daemon_handle must be set after sweep");
+    assert_ne!(
+        new_handle, stale_sock_str,
+        "handshake failure must replace the stale protocol socket"
+    );
+    assert!(
+        UnixStream::connect(&new_handle).await.is_ok(),
+        "post-sweep socket {new_handle:?} should accept connections"
+    );
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    assert!(
+        std::path::Path::new(&new_handle).exists(),
+        "old stale daemon's delayed unlink must not remove fresh socket {new_handle:?}"
+    );
+    assert!(
+        UnixStream::connect(&new_handle).await.is_ok(),
+        "fresh socket {new_handle:?} should remain connectable after old daemon shutdown cleanup"
+    );
+
+    let old_status = tokio::time::timeout(Duration::from_secs(2), stale_child.wait())
+        .await
+        .expect("old stale daemon should be reaped")
+        .expect("wait old stale daemon");
+    assert!(
+        old_status.success(),
+        "handshake-failed accepting daemon pid {stale_pid} should handle SIGTERM and exit cleanly before respawn; got {old_status:?}"
+    );
+}
+
+/// A row whose `daemon_handle` completes the calm-session handshake must
+/// NOT be respawned — the sweep should be a no-op for live daemons. We
+/// point the row at a socket file we bind ourselves and answer
+/// `ClientHello` with `ServerHello`, then assert the row's handle is
+/// byte-for-byte unchanged after the sweep.
 #[tokio::test]
 async fn revive_orphans_on_boot_skips_live_daemons() {
     let fx = fixture().await;
@@ -220,7 +388,7 @@ async fn revive_orphans_on_boot_skips_live_daemons() {
     // Bind a live unix socket on a path of our choosing; this stands
     // in for a still-alive daemon.
     let live_sock = fx._tmp.path().join("live.sock");
-    let _listener = tokio::net::UnixListener::bind(&live_sock).expect("bind decoy live sock");
+    spawn_handshake_listener(&live_sock, term_id.clone());
     let live_sock_str = live_sock.to_string_lossy().to_string();
     fx.repo
         .terminal_set_handle(&term_id, Some(&live_sock_str))

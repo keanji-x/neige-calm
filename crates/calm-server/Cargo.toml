@@ -65,6 +65,13 @@ path = "tests/fixtures/stub-plugin-toolcall/main.rs"
 name = "argv-recorder-daemon"
 path = "tests/fixtures/argv-recorder-daemon/main.rs"
 
+# #337 review followup — accepts calm-session probe connections but
+# deliberately replies with non-protocol bytes. Used by boot revive tests
+# to verify stale accepting daemons are killed before respawn.
+[[bin]]
+name = "wrong-protocol-daemon"
+path = "tests/fixtures/wrong-protocol-daemon/main.rs"
+
 # #310 followup — fake calm-session-daemon that deliberately fails the
 # kernel's readiness probe by never binding the socket. Persists its
 # pid to `<sock>.partial-pid` so the rollback-reap test can verify the
