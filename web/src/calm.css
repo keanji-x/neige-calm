@@ -746,16 +746,50 @@ input, textarea { font: inherit; color: inherit; }
 }
 
 /* nested cove list inside sidebar — each row is a `.cove-row` group
-   wrapping the nav <button> and a sibling delete <button>. Nesting
+   wrapping disclosure, nav, and optional delete sibling buttons. Nesting
    buttons would be invalid HTML and trip axe's `nested-interactive`;
    the wrapper hosts hover/focus-within reveal of the × the same way
    `.wave-row-wrapper` does on the cove page. */
 .side .cove-row {
   position: relative;
 }
+.side .cove-row-chevron {
+  position: absolute;
+  left: var(--space-3);
+  top: 50%;
+  z-index: var(--z-raised);
+  width: 20px; height: 20px;
+  display: grid; place-items: center;
+  padding: var(--space-0);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: var(--leading-none);
+  cursor: pointer;
+  transform: translateY(-50%);
+  transition:
+    transform var(--motion-quick),
+    background var(--motion-quick),
+    color var(--motion-quick);
+}
+.side .cove-row-chevron.expanded {
+  transform: translateY(-50%) rotate(90deg);
+}
+.side .cove-row-chevron:hover {
+  background: var(--overlay-hover);
+  color: var(--text);
+}
+.side .cove-row-chevron:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 .side .cove-nav {
-  display: flex; align-items: center; gap: var(--space-5);
+  display: flex; align-items: center; gap: var(--space-3);
+  /* Keep 2px after the 20px chevron affordance column (right edge at 26px). */
   padding: var(--space-3) var(--space-5);
+  padding-left: calc(var(--space-3) + 22px);
   width: 100%;
   border-radius: var(--radius-md);
   color: var(--text-2);
@@ -841,6 +875,16 @@ input, textarea { font: inherit; color: inherit; }
 .side .cove-row-delete:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
+}
+.side .side-coves-waves {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  /* Align wave-title text with the cove name column above:
+     cove-nav padding-left (--space-3 + 22px) + swatch (12px)
+     + gap (--space-3) = 46px. side-wave padding-left adds
+     var(--space-5), so side-coves-waves starts at 36px. */
+  padding-left: calc(var(--space-3) + 20px + var(--space-5));
 }
 
 /* Inline-edit state — same row geometry as `.cove-nav` but with a text

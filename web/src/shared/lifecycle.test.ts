@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Wave, WaveLifecycle } from '../types';
-import { isRunning, isWaitingForUser, waveNeedsUserAttention } from './lifecycle';
+import {
+  isRunning,
+  isWaitingForUser,
+  sortByLifecycleRank,
+  waveNeedsUserAttention,
+} from './lifecycle';
 
 // Exhaustive mapping pinned to a `Record<WaveLifecycle, ...>` literal:
 // adding a new variant to `WaveLifecycle` without a row here is a type
@@ -107,4 +112,34 @@ describe('waveNeedsUserAttention', () => {
       ).toBe(expected);
     });
   }
+});
+
+describe('sortByLifecycleRank', () => {
+  it('orders waiting, then running, then other while preserving input order within buckets', () => {
+    const waves = [
+      fixture({ id: 'done-1', lifecycle: 'done' }),
+      fixture({ id: 'running-1', lifecycle: 'planning' }),
+      fixture({ id: 'waiting-1', lifecycle: 'blocked' }),
+      fixture({ id: 'other-1', lifecycle: 'draft' }),
+      fixture({ id: 'running-2', lifecycle: 'working' }),
+      fixture({ id: 'waiting-2', lifecycle: 'failed' }),
+    ];
+
+    expect(sortByLifecycleRank(waves).map((w) => w.id)).toEqual([
+      'waiting-1',
+      'waiting-2',
+      'running-1',
+      'running-2',
+      'done-1',
+      'other-1',
+    ]);
+    expect(waves.map((w) => w.id)).toEqual([
+      'done-1',
+      'running-1',
+      'waiting-1',
+      'other-1',
+      'running-2',
+      'waiting-2',
+    ]);
+  });
 });
