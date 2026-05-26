@@ -708,10 +708,11 @@ pub(crate) async fn create_wave(
     //
     // #293 cutover — push is the ONLY path. Every wave drives DECISION A's
     // blocking sequence: boot the kernel-owned `codex app-server`, run turn
-    // #1, await `turn/started`, persist `codex_thread_id` + `appserver_sock`
-    // on the spec card payload, park the handle in `state.spec_push`, then
-    // spawn the PTY daemon in **resume mode** (`codex resume <tid> --remote
-    // unix://<sock>`). There is no legacy bare-`codex '<title>'` path anymore.
+    // #1, await its initial lifecycle notification, persist
+    // `codex_thread_id` + `appserver_sock` on the spec card payload, park
+    // the handle in `state.spec_push`, then spawn the PTY daemon in
+    // **resume mode** (`codex resume <tid> --remote unix://<sock>`). There
+    // is no legacy bare-`codex '<title>'` path anymore.
     //
     // S2 (#293, #311) — SPEC BOOT IS NON-FATAL TO WAVE CREATION.
     // The wave + spec card + report card rows are already committed (and
@@ -719,11 +720,13 @@ pub(crate) async fn create_wave(
     // we boot the app-server here. The app-server boot must therefore be
     // NON-FATAL: if it fails — a missing/broken codex binary (every
     // codex-free environment: CI's web a11y job, the chromium docker stack),
-    // a transient model/auth hiccup, or the S1 `OVERALL_BOOT_BUDGET`
-    // deadline elapsing — we DO NOT return 500. `spawn_push_appserver`'s
-    // internal `SpawnRollback` guard has already torn down the failed
-    // app-server process group + socket dir (no orphan), so on the error
-    // arm we simply `warn!` that the spec agent couldn't start, SKIP the
+    // a transient model/auth hiccup, or the S1 layer-3 init/boot wedge
+    // backstop firing across socket connect, WS handshake, initialize,
+    // turn setup, or the initial lifecycle wait — we DO NOT return 500.
+    // `spawn_push_appserver`'s internal `SpawnRollback` guard has already
+    // torn down the failed app-server process group + socket dir (no
+    // orphan), so on the error arm we simply `warn!` that the spec agent
+    // couldn't start, SKIP the
     // `codex_thread_id` persist + registry insert + `--remote` TUI spawn
     // (all of which live in `spawn_push_appserver` / the
     // `seed_and_spawn_spec_daemon` call below), and return **201 with the
@@ -859,9 +862,9 @@ async fn spawn_push_appserver(
     })?;
 
     // DECISION A's blocking sequence (boot → connect → initialize →
-    // thread/start → turn/start(goal) → await turn/started). The wave
+    // thread/start → turn/start(goal) → await initial lifecycle). The wave
     // title is the agent's goal — the same value the legacy path passes
-    // as codex's positional `[PROMPT]`. We do NOT await `turn/completed`.
+    // as codex's positional `[PROMPT]`.
     let handle =
         spawn_spec_appserver(&s.codex.codex_bin, env_for_spawn, &wave.title, &sock).await?;
     let thread_id = handle.thread_id.clone();

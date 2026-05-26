@@ -390,7 +390,7 @@ async fn try_takeover_one_wave(
     // 2. Respawn path: build the env the way `create_wave` does, point at
     //    the per-card socket path (same resolver as the route), and run
     //    `resume_spec_appserver` (the create-wave shape, swapping
-    //    thread/start + turn/start + await turn/started for thread/resume).
+    //    thread/start + turn/start + initial lifecycle wait for thread/resume).
     let env_map = crate::spec_card::build_codex_env_map(
         state.codex.as_ref(),
         card_id,
