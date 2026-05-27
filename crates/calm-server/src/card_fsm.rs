@@ -168,8 +168,10 @@ fn codex_kind_to_state(kind: &str) -> Option<State> {
 
 /// Project a Claude hook `kind` (e.g. `hook.claude.pre_tool_use`) onto the
 /// worker-card FSM. This intentionally stays separate from
-/// `codex_kind_to_state`: Codex `stop` means "the user can submit the next
-/// turn", while Claude worker `stop` means the worker has gone idle.
+/// `codex_kind_to_state`, but interactive Claude workers follow the same
+/// turn-boundary semantics as codex foreground agents: `stop` means the
+/// worker is waiting for the user's next input, so the UI should surface it
+/// as `AwaitingInput`.
 ///
 /// Claude Code hook names verified against https://code.claude.com/docs/en/hooks.
 fn claude_kind_to_state(kind: &str, _payload: &serde_json::Value) -> Option<State> {
@@ -187,7 +189,7 @@ fn claude_kind_to_state(kind: &str, _payload: &serde_json::Value) -> Option<Stat
         "permission_request" | "permission_denied" | "notification" | "elicitation" => {
             Some(State::AwaitingInput)
         }
-        "stop" => Some(State::Idle),
+        "stop" => Some(State::AwaitingInput),
         "stop_failure" => Some(State::Errored),
         // Documented `SessionEnd.reason` values are `clear`, `resume`,
         // `logout`, `prompt_input_exit`, `bypass_permissions_disabled`,
@@ -651,7 +653,7 @@ mod tests {
         );
         assert_eq!(
             claude_kind_to_state("hook.claude.stop", &Value::Null),
-            Some(State::Idle)
+            Some(State::AwaitingInput)
         );
         assert_eq!(
             codex_kind_to_state("hook.codex.stop"),

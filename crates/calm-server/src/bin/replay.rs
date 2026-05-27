@@ -289,7 +289,11 @@ async fn run_serve(
     );
     println!("  last event: {last_kind} at id={last_id}");
 
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 

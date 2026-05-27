@@ -36,6 +36,7 @@ pub mod waves;
 pub fn router() -> Router<AppState> {
     Router::new()
         .merge(protected_router())
+        .merge(internal_router())
         .merge(public_router())
 }
 
@@ -55,12 +56,22 @@ pub fn protected_router() -> Router<AppState> {
         .merge(plugins::router())
         .merge(terminal::router())
         .merge(terminal_cards::router())
-        .merge(claude::router())
         .merge(claude_cards::router())
-        .merge(codex::router())
         .merge(codex_cards::router())
         .merge(fs::router())
         .merge(settings::router())
+}
+
+/// Internal worker hook surface.
+///
+/// These endpoints are loopback callbacks from worker subprocesses, not
+/// browser/user REST calls, so they must not sit behind the human session
+/// gate. Their identity inputs are the `X-Calm-Actor` header validated by
+/// `actor_middleware` plus the `card_id` query parameter resolved during
+/// ingest; unknown cards are rejected by the role gate instead of being
+/// accepted as anonymous/internal writes.
+pub fn internal_router() -> Router<AppState> {
+    Router::new().merge(claude::router()).merge(codex::router())
 }
 
 /// Public REST surface — endpoints that must remain reachable BEFORE

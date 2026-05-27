@@ -2,9 +2,9 @@
 //! status overlay, end-to-end at the kernel level (no real Claude Code CLI
 //! involved).
 //!
-//! Claude worker `Stop` is deliberately different from codex `Stop`: a
-//! worker that stops has gone `Idle`, while codex's foreground agent is
-//! `AwaitingInput` for the next user prompt.
+//! Claude worker `Stop` matches codex foreground-agent `Stop`: the worker
+//! is waiting for the next user prompt, so the card projects as
+//! `AwaitingInput`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -153,7 +153,7 @@ async fn await_card_state(repo: &Arc<dyn Repo>, card_id: &str, expected_state: &
 }
 
 #[tokio::test]
-async fn claude_stop_sets_worker_card_idle() {
+async fn claude_stop_sets_worker_card_awaiting_input() {
     let (app, repo, card_id) = setup().await;
 
     post_claude_hook(
@@ -165,7 +165,7 @@ async fn claude_stop_sets_worker_card_idle() {
     )
     .await;
 
-    await_card_state(&repo, &card_id, "Idle").await;
+    await_card_state(&repo, &card_id, "AwaitingInput").await;
 }
 
 #[tokio::test]

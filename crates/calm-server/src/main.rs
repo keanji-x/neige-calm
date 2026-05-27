@@ -1,9 +1,10 @@
 //! Calm kernel entry point.
 
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use axum::{response::Redirect, routing::get};
-use calm_server::actor::actor_middleware;
+use calm_server::actor::{actor_middleware, require_loopback_connect_info};
 use calm_server::auth::{self, AuthConfig, AuthState};
 use calm_server::config::Config;
 use calm_server::db::Repo;
@@ -25,6 +26,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cfg = Config::parse();
+    warn_if_worker_hook_callback_is_not_loopback(&cfg);
 
     // Storage. `mock` keeps the in-memory backend for dev — it now resolves to
     // an in-memory `SqlxRepo` (`sqlite::memory:`) so dev parity with the
@@ -126,6 +128,14 @@ async fn main() -> anyhow::Result<()> {
             auth::require_session,
         ));
 
+    // Internal worker hooks — loopback callbacks from codex/Claude worker
+    // subprocesses. They carry `X-Calm-Actor` but no browser session cookie,
+    // so they get actor + loopback validation and stay outside the human
+    // session gate.
+    let internal_rest = routes::internal_router()
+        .layer(axum::middleware::from_fn(actor_middleware))
+        .layer(axum::middleware::from_fn(require_loopback_connect_info));
+
     // WS routes — issue #189 — every upgrade handshake must carry a valid
     // session cookie (cookies are sent automatically with the WS upgrade
     // GET). The `actor_middleware` layer is NOT applied here because the
@@ -147,6 +157,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut app = axum::Router::new()
         .merge(protected_rest)
+        .merge(internal_rest)
         .merge(protected_ws)
         .merge(public_rest)
         .with_state(state)
@@ -169,7 +180,34 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(&cfg.listen).await?;
     tracing::info!(addr = %cfg.listen, "calm-server listening");
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
+}
+
+fn warn_if_worker_hook_callback_is_not_loopback(cfg: &Config) {
+    let url = cfg.codex_ingest_url_resolved();
+    let Ok(uri) = url.parse::<axum::http::Uri>() else {
+        return;
+    };
+    let Some(host) = uri.host() else {
+        return;
+    };
+    let host = host
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(host);
+    let Ok(ip) = host.parse::<IpAddr>() else {
+        return;
+    };
+    if !ip.is_loopback() {
+        tracing::warn!(
+            worker_hook_callback_url = %url,
+            "worker hook callback resolves to a non-loopback address; worker hooks will be rejected by the internal hook loopback boundary. Bind CALM_LISTEN to 0.0.0.0 so the server stays LAN-reachable while workers call back over loopback, bind the server to loopback, or set CALM_CODEX_INGEST_URL to a loopback address the server actually listens on. Tracked by #362."
+        );
+    }
 }
