@@ -422,11 +422,38 @@ pub(crate) fn build_codex_config_toml_with_prompt(
          # dialogs so an auto-submitted \\r lands on the composer.\n\
          approval_policy = \"never\"\n\
          sandbox_mode = \"workspace-write\"\n\
-         instructions = \"{one_line_prompt}\"\n\
-         \n\
+         instructions = \"{one_line_prompt}\"\n"
+    );
+
+    if let Some((shim, _token)) = mcp_block {
+        // Shell `neige` connects to the kernel MCP Unix socket directly.
+        // In Codex workspace-write mode the exec sandbox needs the socket's
+        // parent directory as an explicit writable root, otherwise
+        // UnixStream::connect() fails with EPERM even though NEIGE_MCP_SOCKET
+        // and NEIGE_MCP_TOKEN are present in the shell environment.
+        //
+        // Keep this as a dotted key before any `[table]` headers. If we wrote
+        // a `[sandbox_workspace_write]` table after `[projects.*]` or
+        // `[mcp_servers.*]`, later bare keys could accidentally land in the
+        // wrong TOML scope.
+        let socket_root = shim
+            .socket_path
+            .parent()
+            .unwrap_or_else(|| shim.socket_path.as_path());
+        let escaped_socket_root = socket_root
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+        out.push_str(&format!(
+            "sandbox_workspace_write.writable_roots = [\"{escaped_socket_root}\"]\n"
+        ));
+    }
+
+    out.push_str(&format!(
+        "\n\
          [projects.\"{escaped_cwd}\"]\n\
          trust_level = \"trusted\"\n"
-    );
+    ));
 
     if let Some((shim, token)) = mcp_block {
         // PR7a + #236 followup — emit `[mcp_servers.calm]` plus an
@@ -958,6 +985,10 @@ mod tests {
             !s.contains("shell_environment_policy"),
             "role-typed config.toml must not contain shell env overrides when mcp_shim is None; got:\n{s}"
         );
+        assert!(
+            !s.contains("sandbox_workspace_write.writable_roots"),
+            "role-typed config.toml must not add extra writable roots without a socket-backed MCP shim; got:\n{s}"
+        );
     }
 
     /// PR7a (#136) + #236 followup — `Some((shim, token))` injects a
@@ -998,6 +1029,14 @@ mod tests {
         assert!(
             s.contains("NEIGE_MCP_TOKEN = \"tok-abc123\""),
             "env block must bake per-card token so shim authenticates; got:\n{s}"
+        );
+        assert!(
+            s.contains("sandbox_workspace_write.writable_roots = [\"/var/lib/neige/mcp\"]"),
+            "workspace-write sandbox must allow shell neige to connect to the MCP socket parent dir; got:\n{s}"
+        );
+        assert!(
+            !s.contains("[sandbox_workspace_write]"),
+            "writable_roots must use dotted-key syntax so later TOML tables cannot capture keys; got:\n{s}"
         );
         assert!(
             s.contains("[shell_environment_policy.set]"),
@@ -1041,6 +1080,10 @@ mod tests {
                 .count(),
             2,
             "escaped socket should appear in mcp env and shell env blocks; got:\n{s}"
+        );
+        assert!(
+            s.contains(r#"sandbox_workspace_write.writable_roots = ["/tmp/odd\"path"]"#),
+            "socket parent path with embedded quote must be escaped in writable_roots; got:\n{s}"
         );
         assert_eq!(
             s.matches(r#"NEIGE_MCP_TOKEN = "tok\"with-quote""#).count(),
