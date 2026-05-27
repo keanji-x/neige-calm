@@ -44,7 +44,9 @@ fn ls_descriptor() -> ToolDescriptor {
         name: TOOL_WAVE_LS.into(),
         description: "Spec/Worker: list file-like read views for the current MCP-bound wave. \
              Accepts optional `{ path }`; `/` lists `index.md`, `wave.json`, \
-             `report.md`, `cards/`, and `runs/`. The wave is derived from the bound \
+             `report.md`, `cards/`, and `runs/`; `cards/<card_id>` lists \
+             `meta.json`, `payload.json`, `events.json`, and `conversation.md`. \
+             The wave is derived from the bound \
              card identity, never from arguments."
             .into(),
         input_schema: json!({
@@ -62,6 +64,7 @@ fn cat_descriptor() -> ToolDescriptor {
         description: "Spec/Worker: read one file-like view from the current MCP-bound wave. \
              Supports `index.md`, `wave.json`, `report.md`, `cards/index.json`, \
              `cards/<card_id>/meta.json`, `cards/<card_id>/payload.json`, \
+             `cards/<card_id>/events.json`, `cards/<card_id>/conversation.md`, \
              `runs/index.json`, `runs/<idempotency_key>.md`, and \
              `runs/<idempotency_key>.json`."
             .into(),
@@ -122,9 +125,13 @@ async fn wave_ls(
                 return Err(path_not_available(path));
             }
             let card = card_in_wave(&ctx, &wave, parts[1]).await?;
+            let hook_events = hook_events_for_card(&ctx, &wave, &card.id).await?;
+            let hook_events_updated_at = hook_events_updated_at(&card, &hook_events);
             Ok(json!([
                 entry_file("meta.json", None, Some(card.updated_at)),
                 entry_file("payload.json", None, Some(card.updated_at)),
+                entry_file("events.json", None, Some(hook_events_updated_at)),
+                entry_file("conversation.md", None, Some(hook_events_updated_at)),
             ]))
         }
         other => Err(path_not_available(other)),
@@ -169,6 +176,17 @@ async fn wave_cat(
             match parts[2] {
                 "meta.json" => content_json(&card_meta(&ctx, &card)),
                 "payload.json" => content_json(&card.payload),
+                "events.json" => {
+                    let hook_events = hook_events_for_card(&ctx, &wave, &card.id).await?;
+                    content_json(&hook_events_json(&hook_events))
+                }
+                "conversation.md" => {
+                    let hook_events = hook_events_for_card(&ctx, &wave, &card.id).await?;
+                    Ok(content_markdown(conversation_markdown(
+                        &card.id,
+                        &hook_events,
+                    )))
+                }
                 _ => Err(path_not_available(path)),
             }
         }
@@ -281,6 +299,60 @@ async fn card_in_wave(ctx: &Arc<AppContext>, wave: &Wave, card_id: &str) -> Resu
         ));
     }
     Ok(card)
+}
+
+#[derive(Clone, Debug)]
+struct HookEventProjection {
+    event_id: i64,
+    at: i64,
+    kind: &'static str,
+    hook_kind: String,
+    payload: Value,
+}
+
+async fn hook_events_for_card(
+    ctx: &Arc<AppContext>,
+    wave: &Wave,
+    card_id: &crate::ids::CardId,
+) -> Result<Vec<HookEventProjection>, RpcError> {
+    let events = ctx
+        .repo
+        .events_for_wave(wave.id.as_str(), &["codex.hook", "claude.hook"])
+        .await
+        .map_err(|e| RpcError::internal(format!("wave_file: events_for_wave: {e}")))?;
+
+    let mut hooks = Vec::new();
+    for row in events {
+        if row.scope.card_id() != Some(card_id) {
+            continue;
+        }
+        match row.event {
+            Event::CodexHook { kind, payload, .. } => hooks.push(HookEventProjection {
+                event_id: row.id,
+                at: row.at,
+                kind: "codex.hook",
+                hook_kind: kind,
+                payload,
+            }),
+            Event::ClaudeHook { kind, payload, .. } => hooks.push(HookEventProjection {
+                event_id: row.id,
+                at: row.at,
+                kind: "claude.hook",
+                hook_kind: kind,
+                payload,
+            }),
+            _ => {}
+        }
+    }
+    Ok(hooks)
+}
+
+fn hook_events_updated_at(card: &Card, events: &[HookEventProjection]) -> i64 {
+    events
+        .iter()
+        .map(|event| event.at)
+        .max()
+        .unwrap_or(card.updated_at)
 }
 
 #[derive(Clone, Debug)]
@@ -725,8 +797,92 @@ fn event_json(event: &RunEventProjection) -> Value {
     })
 }
 
+fn hook_events_json(events: &[HookEventProjection]) -> Vec<Value> {
+    events
+        .iter()
+        .map(|event| {
+            json!({
+                "event_id": event.event_id,
+                "kind": event.kind,
+                "hook_kind": event.hook_kind,
+                "created_at": event.at,
+                "payload": event.payload,
+            })
+        })
+        .collect()
+}
+
 fn option_i64(value: Option<i64>) -> Value {
     value.map(Value::from).unwrap_or(Value::Null)
+}
+
+fn conversation_markdown(card_id: &crate::ids::CardId, events: &[HookEventProjection]) -> String {
+    let mut out = String::new();
+    out.push_str("> READ-ONLY PROJECTION: derived from persisted wave hook events. This is not the source of truth.\n\n");
+    out.push_str(&format!("# Conversation — card {}\n\n", card_id.as_str()));
+
+    if events.is_empty() {
+        out.push_str("_No hook events recorded._\n");
+        return out;
+    }
+
+    for event in events {
+        if hook_event_is(event, "user_prompt_submit", "UserPromptSubmit") {
+            if let Some(prompt) = event.payload.get("prompt").and_then(Value::as_str) {
+                out.push_str("## User\n\n");
+                out.push_str(prompt);
+                out.push_str("\n\n");
+            }
+        } else if hook_event_is(event, "stop", "Stop") {
+            if let Some(message) = event
+                .payload
+                .get("last_assistant_message")
+                .and_then(Value::as_str)
+            {
+                out.push_str("## Assistant\n\n");
+                out.push_str(message);
+                out.push_str("\n\n");
+            }
+        } else if hook_event_is_tool_use(event)
+            && let Some(tool_name) = event.payload.get("tool_name").and_then(Value::as_str)
+        {
+            out.push_str(&format!("- tool: {tool_name}\n\n"));
+        }
+    }
+    out
+}
+
+fn hook_event_is(event: &HookEventProjection, snake_suffix: &str, pascal_name: &str) -> bool {
+    event
+        .hook_kind
+        .to_ascii_lowercase()
+        .ends_with(&snake_suffix.to_ascii_lowercase())
+        || event
+            .payload
+            .get("hook_event_name")
+            .and_then(Value::as_str)
+            .is_some_and(|name| {
+                normalize_hook_event_name(name) == normalize_hook_event_name(pascal_name)
+            })
+}
+
+fn hook_event_is_tool_use(event: &HookEventProjection) -> bool {
+    let hook_kind = event.hook_kind.to_ascii_lowercase();
+    if hook_kind.contains("tool_use") {
+        return true;
+    }
+    event
+        .payload
+        .get("hook_event_name")
+        .and_then(Value::as_str)
+        .is_some_and(|name| normalize_hook_event_name(name).contains("tooluse"))
+}
+
+fn normalize_hook_event_name(name: &str) -> String {
+    name.chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 fn run_markdown(run: &RunProjection) -> String {
