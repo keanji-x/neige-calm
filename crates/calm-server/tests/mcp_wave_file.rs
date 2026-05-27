@@ -263,6 +263,30 @@ async fn log_worker_card_event(boot: &Boot, event: Event) -> i64 {
         .expect("log worker card event")
 }
 
+async fn log_card_hook_event(boot: &Boot, card_id: &CardId, event: Event) -> i64 {
+    let actor = match &event {
+        Event::CodexHook { .. } => ActorId::AiCodex(card_id.clone()),
+        Event::ClaudeHook { .. } => ActorId::AiClaude(card_id.clone()),
+        _ => ActorId::User,
+    };
+    boot.repo
+        .log_pure_event(
+            actor,
+            EventScope::Card {
+                card: card_id.clone(),
+                wave: boot.wave_id.clone(),
+                cove: boot.cove_id.clone(),
+            },
+            None,
+            &boot.ctx.events,
+            &boot.ctx.card_role_cache,
+            &boot.ctx.wave_cove_cache,
+            event,
+        )
+        .await
+        .expect("log card hook event")
+}
+
 async fn set_event_at(boot: &Boot, event_id: i64, at: i64) {
     sqlx::query("UPDATE events SET at = ?1 WHERE id = ?2")
         .bind(at)
@@ -435,6 +459,302 @@ async fn cards_index_lists_only_bound_wave_cards_without_payload() {
     assert!(
         cards.iter().all(|card| card.get("payload").is_none()),
         "cards/index.json must not include payloads: {cards:?}"
+    );
+}
+
+#[tokio::test]
+async fn card_events_json_returns_hook_events_in_event_order() {
+    let boot = boot().await;
+    let card_id = boot.worker_card_id.clone();
+    let first_payload = json!({
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "build the reader view",
+        "transcript_path": "/home/kenji/.claude/projects/private/session.jsonl"
+    });
+    let second_payload = json!({
+        "hook_event_name": "Stop",
+        "last_assistant_message": "implemented",
+        "nested": { "kept": true }
+    });
+    let first_id = log_card_hook_event(
+        &boot,
+        &card_id,
+        Event::ClaudeHook {
+            card_id: card_id.clone(),
+            kind: "hook.claude.user_prompt_submit".into(),
+            payload: first_payload.clone(),
+        },
+    )
+    .await;
+    let second_id = log_card_hook_event(
+        &boot,
+        &card_id,
+        Event::CodexHook {
+            card_id: card_id.clone(),
+            kind: "hook.codex.stop".into(),
+            payload: second_payload.clone(),
+        },
+    )
+    .await;
+    set_event_at(&boot, first_id, 200).await;
+    set_event_at(&boot, second_id, 100).await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": format!("cards/{}/events.json", card_id.as_str()) }),
+    )
+    .await
+    .expect("spec can read card hook events");
+    assert_eq!(out["content_type"], json!("application/json"));
+    assert_eq!(
+        content_json(&out),
+        json!([
+            {
+                "event_id": first_id,
+                "kind": "claude.hook",
+                "hook_kind": "hook.claude.user_prompt_submit",
+                "created_at": 200,
+                "payload": first_payload,
+            },
+            {
+                "event_id": second_id,
+                "kind": "codex.hook",
+                "hook_kind": "hook.codex.stop",
+                "created_at": 100,
+                "payload": second_payload,
+            }
+        ])
+    );
+}
+
+#[tokio::test]
+async fn card_conversation_md_renders_prompt_tool_and_assistant_turns() {
+    let boot = boot().await;
+    let card_id = boot.worker_card_id.clone();
+    log_card_hook_event(
+        &boot,
+        &card_id,
+        Event::ClaudeHook {
+            card_id: card_id.clone(),
+            kind: "hook.claude.user_prompt_submit".into(),
+            payload: json!({
+                "hook_event_name": "UserPromptSubmit",
+                "prompt": "Please inspect the hook history."
+            }),
+        },
+    )
+    .await;
+    log_card_hook_event(
+        &boot,
+        &card_id,
+        Event::ClaudeHook {
+            card_id: card_id.clone(),
+            kind: "hook.claude.pre_tool_use".into(),
+            payload: json!({
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Read"
+            }),
+        },
+    )
+    .await;
+    log_card_hook_event(
+        &boot,
+        &card_id,
+        Event::CodexHook {
+            card_id: card_id.clone(),
+            kind: "hook.codex.stop".into(),
+            payload: json!({
+                "last_assistant_message": "The projection is ready."
+            }),
+        },
+    )
+    .await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": format!("cards/{}/conversation.md", card_id.as_str()) }),
+    )
+    .await
+    .expect("spec can read conversation projection");
+    assert_eq!(out["content_type"], json!("text/markdown"));
+    let md = out["content"].as_str().expect("markdown content");
+    assert!(md.starts_with(
+        "> READ-ONLY PROJECTION: derived from persisted wave hook events. This is not the source of truth."
+    ));
+    assert!(md.contains(&format!("# Conversation — card {}", card_id.as_str())));
+    assert!(md.contains("## User\n\nPlease inspect the hook history."));
+    assert!(md.contains("- tool: Read"));
+    assert!(md.contains("## Assistant\n\nThe projection is ready."));
+    let user = md.find("## User").expect("user section");
+    let tool = md.find("- tool: Read").expect("tool summary");
+    let assistant = md.find("## Assistant").expect("assistant section");
+    assert!(user < tool && tool < assistant, "md = {md}");
+}
+
+#[tokio::test]
+async fn card_conversation_md_ignores_subagent_stop_assistant_message() {
+    let boot = boot().await;
+    let card_id = boot.worker_card_id.clone();
+    log_card_hook_event(
+        &boot,
+        &card_id,
+        Event::ClaudeHook {
+            card_id: card_id.clone(),
+            kind: "hook.claude.subagent_stop".into(),
+            payload: json!({
+                "hook_event_name": "SubagentStop",
+                "last_assistant_message": "subagent completion must not leak"
+            }),
+        },
+    )
+    .await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": format!("cards/{}/conversation.md", card_id.as_str()) }),
+    )
+    .await
+    .expect("spec can read conversation projection");
+    assert_eq!(out["content_type"], json!("text/markdown"));
+    let md = out["content"].as_str().expect("markdown content");
+    assert!(!md.contains("## Assistant"), "md = {md}");
+    assert!(
+        !md.contains("subagent completion must not leak"),
+        "md = {md}"
+    );
+}
+
+#[tokio::test]
+async fn card_conversation_md_reports_no_hook_events() {
+    let boot = boot().await;
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": format!("cards/{}/conversation.md", boot.worker_card_id.as_str()) }),
+    )
+    .await
+    .expect("spec can read empty conversation projection");
+    assert_eq!(out["content_type"], json!("text/markdown"));
+    let md = out["content"].as_str().expect("markdown content");
+    assert!(md.contains("_No hook events recorded._"), "md = {md}");
+}
+
+#[tokio::test]
+async fn ls_card_directory_includes_hook_event_views() {
+    let boot = boot().await;
+    let card_id = boot.worker_card_id.clone();
+    set_card_updated_at(&boot, &card_id, 100).await;
+    let event_id = log_card_hook_event(
+        &boot,
+        &card_id,
+        Event::ClaudeHook {
+            card_id: card_id.clone(),
+            kind: "hook.claude.stop".into(),
+            payload: json!({
+                "hook_event_name": "Stop",
+                "last_assistant_message": "done"
+            }),
+        },
+    )
+    .await;
+    set_event_at(&boot, event_id, 900).await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_LS,
+        spec_identity(&boot),
+        json!({ "path": format!("cards/{}", card_id.as_str()) }),
+    )
+    .await
+    .expect("spec can list card directory");
+    let entries = out.as_array().expect("ls returns array");
+    let names: Vec<&str> = entries
+        .iter()
+        .map(|entry| entry["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"meta.json"), "entries = {entries:?}");
+    assert!(names.contains(&"payload.json"), "entries = {entries:?}");
+    assert!(names.contains(&"events.json"), "entries = {entries:?}");
+    assert!(names.contains(&"conversation.md"), "entries = {entries:?}");
+    for leaf in ["events.json", "conversation.md"] {
+        let entry = entries
+            .iter()
+            .find(|entry| entry["name"] == leaf)
+            .unwrap_or_else(|| panic!("missing {leaf}: {entries:?}"));
+        assert_eq!(entry["updated_at"], json!(900));
+    }
+}
+
+#[tokio::test]
+async fn card_hook_events_from_other_wave_are_forbidden() {
+    let boot = boot().await;
+    let path = format!("cards/{}/events.json", boot.worker_card_id.as_str());
+    let err = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        other_spec_identity(&boot),
+        json!({ "path": path }),
+    )
+    .await
+    .expect_err("other wave must not read bound-wave card hook events");
+    assert_eq!(err.code, -32403);
+    assert!(err.message.contains("forbidden"), "err = {err:?}");
+}
+
+#[tokio::test]
+async fn card_events_json_filters_out_sibling_card_hooks() {
+    let boot = boot().await;
+    let target_id = boot.worker_card_id.clone();
+    let sibling_id = materialize_worker(&boot, "sibling-hooks").await;
+    let target_event_id = log_card_hook_event(
+        &boot,
+        &target_id,
+        Event::ClaudeHook {
+            card_id: target_id.clone(),
+            kind: "hook.claude.stop".into(),
+            payload: json!({
+                "hook_event_name": "Stop",
+                "last_assistant_message": "target only"
+            }),
+        },
+    )
+    .await;
+    log_card_hook_event(
+        &boot,
+        &sibling_id,
+        Event::ClaudeHook {
+            card_id: sibling_id.clone(),
+            kind: "hook.claude.stop".into(),
+            payload: json!({
+                "hook_event_name": "Stop",
+                "last_assistant_message": "sibling must not leak"
+            }),
+        },
+    )
+    .await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": format!("cards/{}/events.json", target_id.as_str()) }),
+    )
+    .await
+    .expect("spec can read target events");
+    let events = content_json(&out);
+    let events = events.as_array().expect("events array");
+    assert_eq!(events.len(), 1, "events = {events:?}");
+    assert_eq!(events[0]["event_id"], json!(target_event_id));
+    assert_eq!(
+        events[0]["payload"]["last_assistant_message"],
+        json!("target only")
     );
 }
 
