@@ -593,6 +593,12 @@ input, textarea { font: inherit; color: inherit; }
   flex: 1; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* Issue #369: attention rows reuse the existing --warn token (no new red).
+   This direct color on the title span outranks the inherited hover/active
+   color set on the parent .side-wave button, so it holds in all states. */
+.side .side-wave-row.attention .side-wave-title {
+  color: var(--warn);
+}
 /* Wave row group: wraps the wave-nav button, optional cove-nav button,
    and pin button so none are nested inside the others (avoids nested-button
    a11y violation). The row itself carries hover/active states. Overflow

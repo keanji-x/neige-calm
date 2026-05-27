@@ -10,14 +10,6 @@ import { CloseIcon } from './CloseIcon';
 import { PinIcon } from './PinIcon';
 import { PlusIcon } from './PlusIcon';
 
-// A wave that needs user attention AND is not pinned. Used to keep the
-// top-section "Waiting on you" row count and each cove's red badge count
-// in parity — both exclude pinned waves so no wave shows a warning badge
-// while being invisible from the Waiting section.
-function isUnpinnedAndWaiting(w: Wave): boolean {
-  return waveNeedsUserAttention(w) && w.pinnedAt == null;
-}
-
 // ---------------- Sidebar ----------------
 
 const EXPANDED_COVES_STORAGE_KEY = 'calm:sidebar:expandedCoves';
@@ -177,9 +169,9 @@ export function Sidebar({
   // hit an AwaitingInput/Errored hook before Spec Agent could drive
   // lifecycle". The latter is the regression hole #248's deletion of
   // the wave-level FSM union left open.
-  // Waiting excludes pinned waves so the warning badge and top-section
-  // row count stay in parity.
-  const waitingWaves = waves.filter(isUnpinnedAndWaiting);
+  // Waiting includes pinned attention waves intentionally: a pinned
+  // waiting wave appears in both Pinned and Waiting on you.
+  const waitingWaves = waves.filter(waveNeedsUserAttention);
   // Sub-landmarks inside the outer <aside aria-label="Navigation">:
   //   <nav aria-label="Sidebar navigation">  → Today button
   //   <section aria-label="Pinned">          → pinned wave rows (when any)
@@ -223,6 +215,7 @@ export function Sidebar({
                 onGo={() => onGo({ name: 'wave', id: w.id })}
                 onPinWave={onPinWave}
                 rowRef={active ? setActiveWaveRowRef : undefined}
+                attention={waveNeedsUserAttention(w)}
               />
             );
           })}
@@ -245,6 +238,7 @@ export function Sidebar({
                 onGo={() => onGo({ name: 'wave', id: w.id })}
                 onPinWave={onPinWave}
                 rowRef={active ? setActiveWaveRowRef : undefined}
+                attention={waveNeedsUserAttention(w)}
               />
             );
           })}
@@ -260,11 +254,9 @@ export function Sidebar({
           // relocation, and the wave still belongs to this cove.
           const inlineWaves = sortByLifecycleRank(cw);
           const running = cw.filter((w) => isRunning(w.lifecycle)).length;
-          // Match the top-of-sidebar "Waiting on you" predicate so the
-          // per-cove waiting count and the top-section row count agree.
-          // isUnpinnedAndWaiting mirrors the waitingWaves filter above,
-          // keeping the badge and section counts in parity.
-          const waiting = cw.filter(isUnpinnedAndWaiting).length;
+          // Match the top-of-sidebar "Waiting on you" predicate, including
+          // pinned attention waves, so cove warn badges surface pinned work.
+          const waiting = cw.filter(waveNeedsUserAttention).length;
           const active = route.name === 'cove' && route.coveId === cove.id;
           const expanded = !!expandedCoves[cove.id];
           const listId = coveWavesListId(cove.id);
@@ -534,6 +526,7 @@ function WaveRow({
   onGo,
   onPinWave,
   rowRef,
+  attention = false,
 }: {
   wave: Wave;
   active: boolean;
@@ -542,12 +535,13 @@ function WaveRow({
   onGo: () => void;
   onPinWave?: (waveId: string, pin: boolean) => void | Promise<void>;
   rowRef?: (node: HTMLDivElement | null) => void;
+  attention?: boolean;
 }) {
   const pinned = wave.pinnedAt != null;
   return (
     <div
       ref={rowRef}
-      className={'side-wave-row' + (active ? ' active' : '')}
+      className={'side-wave-row' + (active ? ' active' : '') + (attention ? ' attention' : '')}
       role="group"
     >
       <button
