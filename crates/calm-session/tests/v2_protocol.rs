@@ -1046,6 +1046,90 @@ fn observer_terminal_theme_update_yields_not_owner() {
 }
 
 #[test]
+fn observer_terminal_theme_update_matching_current_colors_is_suppressed() {
+    let mut registry = OwnerRegistry::new();
+    // Pre-register a different owner so this attach defaults to Observer.
+    let _ = registry.on_attach(Uuid::new_v4(), None);
+
+    let broadcaster = PtyBroadcaster::new(1024);
+    let mut state = TerminalSessionState::new();
+    let session_id = Uuid::new_v4();
+    let _ = state.on_client_frame(
+        hello(Uuid::new_v4(), TID),
+        broadcaster.buffer(),
+        &mut registry,
+        &ctx(&broadcaster, session_id),
+    );
+    assert_eq!(state.role(), Some(Role::Observer));
+
+    let fg = (216, 219, 226);
+    let bg = (15, 20, 24);
+    let effects = state.on_client_frame(
+        ClientMsg::TerminalThemeUpdate { fg, bg },
+        broadcaster.buffer(),
+        &mut registry,
+        &ctx_with_colors(&broadcaster, session_id, Some(fg), Some(bg)),
+    );
+
+    // #359: observer mounts can send a benign #177 host-theme re-POST.
+    // If it matches the daemon's known current colors, drop it silently
+    // instead of surfacing NotOwner to the observer.
+    assert!(
+        effects.is_empty(),
+        "matching-color observer TerminalThemeUpdate must produce no effect, got {effects:?}"
+    );
+}
+
+#[test]
+fn observer_terminal_theme_update_differing_colors_still_yields_not_owner() {
+    let mut registry = OwnerRegistry::new();
+    // Pre-register a different owner so this attach defaults to Observer.
+    let _ = registry.on_attach(Uuid::new_v4(), None);
+
+    let broadcaster = PtyBroadcaster::new(1024);
+    let mut state = TerminalSessionState::new();
+    let session_id = Uuid::new_v4();
+    let _ = state.on_client_frame(
+        hello(Uuid::new_v4(), TID),
+        broadcaster.buffer(),
+        &mut registry,
+        &ctx(&broadcaster, session_id),
+    );
+    assert_eq!(state.role(), Some(Role::Observer));
+
+    let current_fg = (216, 219, 226);
+    let current_bg = (15, 20, 24);
+    let requested_fg = (42, 47, 58);
+    let requested_bg = (252, 254, 255);
+    let effects = state.on_client_frame(
+        ClientMsg::TerminalThemeUpdate {
+            fg: requested_fg,
+            bg: requested_bg,
+        },
+        broadcaster.buffer(),
+        &mut registry,
+        &ctx_with_colors(&broadcaster, session_id, Some(current_fg), Some(current_bg)),
+    );
+
+    assert!(
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::SendProtocolError {
+                code: ProtocolErrorCode::NotOwner,
+                ..
+            }
+        )),
+        "expected NotOwner for differing-color observer TerminalThemeUpdate, got {effects:?}"
+    );
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::TerminalThemeUpdate { .. })),
+        "differing-color observer TerminalThemeUpdate must not produce the actual effect, got {effects:?}"
+    );
+}
+
+#[test]
 fn kernel_input_observer_terminal_theme_update_allowed() {
     // Kernel-private clients carry the same trust posture for theme as
     // they do for Input — see the `TerminalThemeUpdate` doc on
