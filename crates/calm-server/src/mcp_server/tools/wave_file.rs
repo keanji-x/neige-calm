@@ -855,8 +855,9 @@ fn conversation_markdown(card_id: &crate::ids::CardId, events: &[HookEventProjec
 fn hook_event_is(event: &HookEventProjection, snake_suffix: &str, pascal_name: &str) -> bool {
     event
         .hook_kind
-        .to_ascii_lowercase()
-        .ends_with(&snake_suffix.to_ascii_lowercase())
+        .rsplit('.')
+        .next()
+        .is_some_and(|segment| segment.eq_ignore_ascii_case(snake_suffix))
         || event
             .payload
             .get("hook_event_name")

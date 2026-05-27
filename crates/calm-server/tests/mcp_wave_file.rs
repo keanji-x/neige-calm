@@ -596,6 +596,41 @@ async fn card_conversation_md_renders_prompt_tool_and_assistant_turns() {
 }
 
 #[tokio::test]
+async fn card_conversation_md_ignores_subagent_stop_assistant_message() {
+    let boot = boot().await;
+    let card_id = boot.worker_card_id.clone();
+    log_card_hook_event(
+        &boot,
+        &card_id,
+        Event::ClaudeHook {
+            card_id: card_id.clone(),
+            kind: "hook.claude.subagent_stop".into(),
+            payload: json!({
+                "hook_event_name": "SubagentStop",
+                "last_assistant_message": "subagent completion must not leak"
+            }),
+        },
+    )
+    .await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": format!("cards/{}/conversation.md", card_id.as_str()) }),
+    )
+    .await
+    .expect("spec can read conversation projection");
+    assert_eq!(out["content_type"], json!("text/markdown"));
+    let md = out["content"].as_str().expect("markdown content");
+    assert!(!md.contains("## Assistant"), "md = {md}");
+    assert!(
+        !md.contains("subagent completion must not leak"),
+        "md = {md}"
+    );
+}
+
+#[tokio::test]
 async fn card_conversation_md_reports_no_hook_events() {
     let boot = boot().await;
     let out = call_tool(
