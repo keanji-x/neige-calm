@@ -405,12 +405,16 @@ pub(crate) fn build_codex_config_toml_with_prompt(
     system_prompt: &str,
     mcp_block: Option<(&crate::mcp_server::McpShimConfig, &str)>,
 ) -> String {
+    fn escape_toml_basic_string(value: &str) -> String {
+        value.replace('\\', "\\\\").replace('"', "\\\"")
+    }
+
     // Hand-written TOML (no `toml` crate in the workspace). Both `cwd`
     // and `system_prompt` need their `"` / `\` escaped for basic-string
     // safety; codex's TOML parser otherwise rejects the file at boot
     // and the daemon spawn fails opaquely.
-    let escaped_cwd = cwd.replace('\\', "\\\\").replace('"', "\\\"");
-    let escaped_prompt = system_prompt.replace('\\', "\\\\").replace('"', "\\\"");
+    let escaped_cwd = escape_toml_basic_string(cwd);
+    let escaped_prompt = escape_toml_basic_string(system_prompt);
     // We use a TOML basic string (one line). Newlines in the prompt are
     // escaped to `\n` so the file stays well-formed without resorting
     // to multiline literals (which would require a different escape
@@ -422,11 +426,30 @@ pub(crate) fn build_codex_config_toml_with_prompt(
          # dialogs so an auto-submitted \\r lands on the composer.\n\
          approval_policy = \"never\"\n\
          sandbox_mode = \"workspace-write\"\n\
-         instructions = \"{one_line_prompt}\"\n\
-         \n\
+         instructions = \"{one_line_prompt}\"\n"
+    );
+
+    if mcp_block.is_some() {
+        // Opening this workspace-write sandbox is deliberately broader
+        // than "allow this one Unix-domain socket": Codex 0.134's
+        // seccomp layer gates SYS_connect through the network policy,
+        // so `network_access = true` grants full outbound network
+        // access as well as UDS connect. The spec/worker shell also
+        // receives NEIGE_MCP_TOKEN below, so a prompt-injected command
+        // could exfiltrate that token once outbound networking is
+        // enabled. We accept that tradeoff only for kernel MCP-backed
+        // cards because their shell `neige` CLI needs to reach the
+        // kernel socket. Codex workspace-write already exposes `/`
+        // read-only in the bwrap filesystem view, so the socket parent
+        // does not need an extra writable_roots entry for visibility.
+        out.push_str("sandbox_workspace_write.network_access = true\n");
+    }
+
+    out.push_str(&format!(
+        "\n\
          [projects.\"{escaped_cwd}\"]\n\
          trust_level = \"trusted\"\n"
-    );
+    ));
 
     if let Some((shim, token)) = mcp_block {
         // PR7a + #236 followup — emit `[mcp_servers.calm]` plus an
@@ -442,20 +465,12 @@ pub(crate) fn build_codex_config_toml_with_prompt(
         //     `missing NEIGE_MCP_SOCKET` exit was the symptom. Baking
         //     both vars here bypasses the inheritance boundary
         //     entirely.
-        let escaped_shim = shim
-            .shim_bin
-            .to_string_lossy()
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"");
-        let escaped_socket = shim
-            .socket_path
-            .to_string_lossy()
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"");
+        let escaped_shim = escape_toml_basic_string(&shim.shim_bin.to_string_lossy());
+        let escaped_socket = escape_toml_basic_string(&shim.socket_path.to_string_lossy());
         // The token is a base64url-ish opaque string today (see
         // `mcp_server::auth::mint_token`), but escape defensively
         // anyway in case the format ever picks up a `"` or `\`.
-        let escaped_token = token.replace('\\', "\\\\").replace('"', "\\\"");
+        let escaped_token = escape_toml_basic_string(token);
         out.push_str(&format!(
             "\n\
              [mcp_servers.calm]\n\
@@ -958,6 +973,10 @@ mod tests {
             !s.contains("shell_environment_policy"),
             "role-typed config.toml must not contain shell env overrides when mcp_shim is None; got:\n{s}"
         );
+        assert!(
+            !s.contains("sandbox_workspace_write"),
+            "role-typed config.toml must not contain sandbox workspace-write overrides when mcp_shim is None; got:\n{s}"
+        );
     }
 
     /// PR7a (#136) + #236 followup — `Some((shim, token))` injects a
@@ -1008,6 +1027,43 @@ mod tests {
                 "[shell_environment_policy.set]\nNEIGE_MCP_SOCKET = \"/var/lib/neige/mcp/kernel.sock\"\nNEIGE_MCP_TOKEN = \"tok-abc123\""
             ),
             "shell env override block must reuse the mcp socket/token values; got:\n{s}"
+        );
+    }
+
+    #[test]
+    fn role_typed_config_toml_emits_network_access_when_mcp_shim_provided() {
+        let shim = crate::mcp_server::McpShimConfig {
+            shim_bin: std::path::PathBuf::from("/usr/local/bin/neige-mcp-stdio-shim"),
+            socket_path: std::path::PathBuf::from("/var/lib/neige/mcp/kernel.sock"),
+        };
+        let s = build_codex_config_toml_with_prompt(
+            "/workspace",
+            "you are a spec agent.",
+            Some((&shim, "tok-abc123")),
+        );
+
+        assert!(
+            s.contains("sandbox_workspace_write.network_access = true"),
+            "role-typed config.toml must open Codex exec network policy for shell neige; got:\n{s}"
+        );
+        assert!(
+            !s.contains("sandbox_workspace_write.writable_roots"),
+            "workspace-write already exposes / read-only; no socket-parent writable root is needed; got:\n{s}"
+        );
+        assert!(
+            s.find("sandbox_workspace_write.network_access = true")
+                < s.find("[projects.\"/workspace\"]"),
+            "sandbox_workspace_write dotted keys must appear before TOML table headers; got:\n{s}"
+        );
+    }
+
+    #[test]
+    fn role_typed_config_toml_omits_network_access_when_no_mcp_shim() {
+        let s = build_codex_config_toml_with_prompt("/workspace", "you are a spec agent.", None);
+
+        assert!(
+            !s.contains("sandbox_workspace_write.network_access"),
+            "role-typed config.toml must not open network access when mcp_block is None; got:\n{s}"
         );
     }
 
