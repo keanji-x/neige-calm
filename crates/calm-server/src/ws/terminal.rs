@@ -18,6 +18,7 @@
 use crate::db::{RepoOutOfDomain, RouteRepo};
 use crate::error::Result;
 use crate::state::AppState;
+use crate::terminal_probe::{TerminalProbe, probe_terminal_daemon};
 use axum::{
     Router,
     extract::{
@@ -119,11 +120,13 @@ enum LiveSock {
 
 /// Resolve the socket path for a terminal row.
 ///   1. Read the terminal row from the repo.
-///   2. If `daemon_handle` is set, probe the socket (`UnixStream::connect`).
-///      If it connects, the daemon is alive — return `Alive(path)`.
-///   3. If `daemon_handle` is set but the probe fails, the daemon spawned
-///      and has since exited; return `ChildExited` so the caller can emit
-///      a `child-exited` close on the WS.
+///   2. If `daemon_handle` is set, probe the socket with the calm-session
+///      handshake. If it returns `ServerHello`, the daemon is alive —
+///      return `Alive(path)`.
+///   3. If `daemon_handle` is set but the handshake fails, the daemon
+///      spawned and has since exited (or the socket is stale / wrong
+///      protocol); return `ChildExited` so the caller can emit a
+///      `child-exited` close on the WS.
 ///   4. If the row has no `daemon_handle` at all, treat it as a clean
 ///      child exit as well: the row exists (we passed `terminal_get`),
 ///      so a caller tried to spawn a daemon — and either the spawn
@@ -231,18 +234,22 @@ async fn resolve_live_sock(s: &AppState, id: &str) -> Result<LiveSock> {
         .ok_or_else(|| crate::error::CalmError::NotFound(format!("terminal {id}")))?;
 
     if let Some(handle) = term.daemon_handle.as_ref() {
-        if let Ok(_probe) = UnixStream::connect(handle).await {
-            // Live daemon — fast path.
-            return Ok(LiveSock::Alive(PathBuf::from(handle)));
+        match probe_terminal_daemon(StdPath::new(handle), &term.id).await {
+            TerminalProbe::Alive => {
+                // Live daemon — fast path.
+                return Ok(LiveSock::Alive(PathBuf::from(handle)));
+            }
+            TerminalProbe::AcceptingButStale | TerminalProbe::Unreachable => {}
         }
         // Handle was stamped (daemon spawned at least once) but its
-        // socket file is gone or no longer accepts — the daemon
-        // unlinked the socket on its way out, which is exactly what a
-        // clean child exit looks like.
+        // socket fails the protocol handshake — the daemon unlinked
+        // the socket on its way out, an old daemon binary is still
+        // bound, or some other stale listener accepted the connect.
+        // Surface all of these as the existing clean child-exit close.
         tracing::info!(
             terminal_id = %term.id,
             sock = %handle,
-            "daemon socket unreachable with handle set — treating as clean child exit",
+            "daemon handshake failed with handle set — treating as clean child exit",
         );
         // #306 — sidecar pickup. The daemon writes
         // `<sock_path>.exit` with `{"code": <i32|null>,

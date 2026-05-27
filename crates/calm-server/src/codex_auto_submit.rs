@@ -57,10 +57,12 @@ use crate::db::RepoRead;
 use crate::event::{Event, EventBus};
 use crate::state::DaemonClient;
 
-/// Wall-clock budget for the whole inject_stdin round-trip (connect →
-/// hello → child-ready → input → ack). PR #110 used a 5s budget for the
-/// post-write grace sleep alone; we keep the same overall budget on the
-/// deterministic-await path so a stuck PTY can't wedge the subscriber.
+/// Backstop budget for the whole inject_stdin round-trip (connect → hello →
+/// child-ready → input → ack). PR #110 used a 5s budget for the post-write
+/// grace sleep alone; we keep the same overall bound on the deterministic
+/// protocol-await path so a stuck PTY can't wedge the subscriber. The
+/// timeout is not the success signal; `DaemonClient::inject_stdin` still
+/// requires the protocol's `ServerHello` / `ChildReady` / `InputAck` stages.
 const INJECT_STDIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Spawn the auto-submit subscriber. Reads the event bus on the same

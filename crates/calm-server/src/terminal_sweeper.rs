@@ -74,11 +74,8 @@ use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, WaveId};
 use crate::model::Terminal;
 use crate::state::AppState;
-use calm_session::{
-    ClientCapabilities, ClientMsg, InitialScrollback, PROTOCOL_VERSION, PtySize, RenderEncoding,
-    write_frame,
-};
-use uuid::Uuid;
+use crate::terminal_probe::probe_client_hello;
+use calm_session::{ClientMsg, write_frame};
 
 /// Actor stamped on every event the sweeper produces. Distinct from
 /// [`ActorId::User`] (REST) and [`ActorId::Plugin`]; matches the convention
@@ -290,6 +287,24 @@ pub async fn reap_terminal_artifacts(term: &Terminal) {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitForPidExit {
+    Exited,
+    InvalidPid,
+    StillAliveAfterSigkill,
+    Unsupported,
+}
+
+/// Wait until a previously-signaled daemon has run its shutdown cleanup.
+///
+/// `reap_terminal_artifacts` sends SIGTERM and unlinks the old socket
+/// path, but a stale daemon may still be alive and may later unlink that
+/// same path during its own shutdown. Boot-time revive calls this before
+/// binding a replacement daemon at the deterministic socket path.
+pub async fn wait_for_pid_exit(pid: i64, timeout: Duration) -> WaitForPidExit {
+    wait_for_pid_exit_with_poll(pid, timeout, Duration::from_millis(50)).await
+}
+
 /// PR3a (#293) — reap a wave's `codex app-server` push channel, if any.
 ///
 /// This is the spec-push parallel to [`reap_terminal_artifacts`] for the
@@ -407,33 +422,9 @@ pub fn reap_terminal_pid_only(terminal_id: &str, pid: i64) {
 async fn graceful_kill_via_socket(sock: &Path, terminal_id: &str) -> std::io::Result<()> {
     let stream = UnixStream::connect(sock).await?;
     let (_rd, mut wr) = stream.into_split();
-    write_frame(
-        &mut wr,
-        &ClientMsg::ClientHello {
-            protocol_version: PROTOCOL_VERSION,
-            terminal_id: terminal_id.to_string(),
-            client_id: Uuid::new_v4(),
-            desired_size: PtySize {
-                cols: 80,
-                rows: 24,
-                pixel_width: None,
-                pixel_height: None,
-            },
-            cell_size: None,
-            initial_scrollback: InitialScrollback::None,
-            resume_from: None,
-            role_hint: None,
-            capabilities: ClientCapabilities {
-                render_encodings: vec![RenderEncoding::Vt],
-                supports_scrollback: false,
-                supports_sixel: false,
-                supports_images: false,
-                kernel_originated_input: false,
-            },
-        },
-    )
-    .await
-    .map_err(std::io::Error::other)?;
+    write_frame(&mut wr, &probe_client_hello(terminal_id, None))
+        .await
+        .map_err(std::io::Error::other)?;
     write_frame(&mut wr, &ClientMsg::Kill)
         .await
         .map_err(std::io::Error::other)?;
@@ -445,13 +436,72 @@ async fn graceful_kill_via_socket(sock: &Path, terminal_id: &str) -> std::io::Re
 }
 
 #[cfg(unix)]
-fn send_sigterm(pid: i64) -> std::io::Result<()> {
+async fn wait_for_pid_exit_with_poll(
+    pid: i64,
+    timeout: Duration,
+    poll_interval: Duration,
+) -> WaitForPidExit {
+    use nix::errno::Errno;
     use nix::sys::signal::{Signal, kill};
     use nix::unistd::Pid;
-    // Stored as i64 in sqlite for INTEGER affinity; on unix `pid_t` is
-    // i32, so a cast is safe within the legal pid range (>0, <2^22 on
-    // Linux). Sentinel values like 0/-1 would target the calling process
-    // group or all processes — guard against persistence corruption.
+    use tokio::time::Instant;
+
+    let Ok(raw) = valid_raw_pid(pid) else {
+        return WaitForPidExit::InvalidPid;
+    };
+    let pid = Pid::from_raw(raw);
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        match kill(pid, None) {
+            Ok(()) => {
+                if pid_has_finished_shutdown(raw) {
+                    return WaitForPidExit::Exited;
+                }
+            }
+            Err(Errno::ESRCH) => return WaitForPidExit::Exited,
+            Err(_) => {}
+        }
+
+        let now = Instant::now();
+        if now >= deadline {
+            break;
+        }
+        tokio::time::sleep(std::cmp::min(poll_interval, deadline - now)).await;
+    }
+
+    let _ = kill(pid, Signal::SIGKILL);
+    let sigkill_deadline = Instant::now() + Duration::from_millis(500);
+    loop {
+        match kill(pid, None) {
+            Ok(()) => {
+                if pid_has_finished_shutdown(raw) {
+                    return WaitForPidExit::Exited;
+                }
+            }
+            Err(Errno::ESRCH) => return WaitForPidExit::Exited,
+            Err(_) => {}
+        }
+
+        let now = Instant::now();
+        if now >= sigkill_deadline {
+            return WaitForPidExit::StillAliveAfterSigkill;
+        }
+        tokio::time::sleep(std::cmp::min(poll_interval, sigkill_deadline - now)).await;
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_for_pid_exit_with_poll(
+    _pid: i64,
+    _timeout: Duration,
+    _poll_interval: Duration,
+) -> WaitForPidExit {
+    WaitForPidExit::Unsupported
+}
+
+#[cfg(unix)]
+fn valid_raw_pid(pid: i64) -> std::io::Result<i32> {
     let raw: i32 = i32::try_from(pid)
         .map_err(|_| std::io::Error::other(format!("pid {pid} out of range for i32")))?;
     if raw <= 0 {
@@ -459,6 +509,35 @@ fn send_sigterm(pid: i64) -> std::io::Result<()> {
             "refusing to signal non-positive pid {raw}"
         )));
     }
+    Ok(raw)
+}
+
+#[cfg(all(unix, target_os = "linux"))]
+fn pid_has_finished_shutdown(pid: i32) -> bool {
+    proc_stat_state(pid).is_some_and(|state| state == 'Z')
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn pid_has_finished_shutdown(_pid: i32) -> bool {
+    false
+}
+
+#[cfg(all(unix, target_os = "linux"))]
+fn proc_stat_state(pid: i32) -> Option<char> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after_comm = stat.rsplit_once(") ")?.1;
+    after_comm.chars().next()
+}
+
+#[cfg(unix)]
+fn send_sigterm(pid: i64) -> std::io::Result<()> {
+    use nix::sys::signal::{Signal, kill};
+    use nix::unistd::Pid;
+    // Stored as i64 in sqlite for INTEGER affinity; on unix `pid_t` is
+    // i32, so a cast is safe within the legal pid range (>0, <2^22 on
+    // Linux). Sentinel values like 0/-1 would target the calling process
+    // group or all processes — guard against persistence corruption.
+    let raw = valid_raw_pid(pid)?;
     kill(Pid::from_raw(raw), Signal::SIGTERM)
         .map_err(|e| std::io::Error::other(format!("kill(SIGTERM, {raw}) failed: {e}")))
 }
@@ -467,4 +546,67 @@ fn send_sigterm(pid: i64) -> std::io::Result<()> {
 fn send_sigterm(_pid: i64) -> std::io::Result<()> {
     // No-op on non-unix; the graceful socket path is our only lever.
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::process::{Command, Stdio};
+
+    #[tokio::test]
+    async fn wait_for_pid_exit_returns_promptly_for_dead_pid() {
+        let mut child = Command::new("true")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn true");
+        let pid = child.id() as i64;
+        child.wait().expect("reap true");
+
+        let start = tokio::time::Instant::now();
+        let outcome =
+            wait_for_pid_exit_with_poll(pid, Duration::from_secs(3), Duration::from_millis(10))
+                .await;
+
+        assert_eq!(outcome, WaitForPidExit::Exited);
+        assert!(
+            start.elapsed() < Duration::from_millis(200),
+            "dead pid wait should return promptly, took {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_for_pid_exit_is_bounded_for_lingering_pid() {
+        let mut child = Command::new("sleep")
+            .arg("5")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn sleep");
+        let pid = child.id() as i64;
+
+        let start = tokio::time::Instant::now();
+        let outcome =
+            wait_for_pid_exit_with_poll(pid, Duration::from_millis(100), Duration::from_millis(10))
+                .await;
+        let elapsed = start.elapsed();
+
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert!(
+            matches!(
+                outcome,
+                WaitForPidExit::Exited | WaitForPidExit::StillAliveAfterSigkill
+            ),
+            "unexpected wait outcome: {outcome:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "lingering pid wait should stay bounded, took {elapsed:?}"
+        );
+    }
 }

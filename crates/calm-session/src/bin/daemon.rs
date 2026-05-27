@@ -1766,10 +1766,10 @@ fn scrollback_request(req: calm_session::InitialScrollback) -> ScrollbackLimit {
 }
 
 /// Replace `ServerHello.snapshot` with a fresh snapshot built by the
-/// render plane at the client's desired geometry. The state machine
-/// produces a raw-byte-transcript snapshot by default (for unit-test
-/// parity); PR-2 swaps it for a server-rendered ANSI stream bound to
-/// `desired_size`.
+/// render plane. The state machine produces a raw-byte-transcript
+/// snapshot by default (for unit-test parity); PR-2 swaps it for a
+/// server-rendered ANSI stream. Owners get their requested geometry;
+/// observers stay bound to the shared PTY geometry.
 ///
 /// `desired_size = None` means the incoming frame isn't a ServerHello —
 /// just pass through.
@@ -1794,9 +1794,16 @@ fn rebuild_server_hello_snapshot(
             history_gap,
             is_child_ready,
         } => {
-            let (cols, rows) = desired_size
-                .map(|s| (s.cols, s.rows))
-                .unwrap_or((pty_size.cols, pty_size.rows));
+            let (cols, rows) = if client_role == calm_session::Role::Owner {
+                desired_size
+                    .map(|s| (s.cols, s.rows))
+                    .unwrap_or((pty_size.cols, pty_size.rows))
+            } else {
+                // Only owners resize the PTY during the handshake, so an
+                // observer's initial snapshot must match the unmodified PTY
+                // size advertised in ServerHello and subsequent patches.
+                (pty_size.cols, pty_size.rows)
+            };
             let limit = scrollback.unwrap_or(ScrollbackLimit::None);
             let snapshot = match render_plane.lock() {
                 Ok(rp) => rp.build_snapshot(cols, rows, limit),
@@ -2042,6 +2049,115 @@ fn _ensure_is_path(_p: &Path) {} // placate some lints on older toolchains
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn server_hello_with_role(client_role: calm_session::Role, pty_size: PtySize) -> DaemonMsg {
+        DaemonMsg::ServerHello {
+            protocol_version: calm_session::PROTOCOL_VERSION,
+            terminal_id: "term-1".to_string(),
+            session_id: Uuid::new_v4(),
+            client_role,
+            owner_client_id: Some(Uuid::new_v4()),
+            pty_size,
+            pty_seq_head: 0,
+            pty_seq_tail: 0,
+            render_rev: 0,
+            snapshot: calm_session::RenderSnapshot {
+                render_rev: 0,
+                pty_seq: 0,
+                cols: 1,
+                rows: 1,
+                encoding: calm_session::RenderEncoding::Vt,
+                data: Vec::new(),
+                scrollback: None,
+            },
+            history_gap: None,
+            is_child_ready: false,
+        }
+    }
+
+    #[test]
+    fn rebuild_server_hello_snapshot_keeps_observer_at_current_pty_size() {
+        let pty_size = PtySize {
+            cols: 100,
+            rows: 40,
+            pixel_width: None,
+            pixel_height: None,
+        };
+        let desired_size = PtySize {
+            cols: 132,
+            rows: 50,
+            pixel_width: None,
+            pixel_height: None,
+        };
+        let render_plane = Arc::new(Mutex::new(RenderPlane::new(
+            pty_size.cols,
+            pty_size.rows,
+            1024,
+            100,
+        )));
+
+        let msg = rebuild_server_hello_snapshot(
+            server_hello_with_role(calm_session::Role::Observer, pty_size),
+            &render_plane,
+            Some(desired_size),
+            None,
+        );
+
+        match msg {
+            DaemonMsg::ServerHello {
+                snapshot, pty_size, ..
+            } => {
+                assert_eq!(
+                    (snapshot.cols, snapshot.rows),
+                    (pty_size.cols, pty_size.rows)
+                );
+                assert_ne!(
+                    (snapshot.cols, snapshot.rows),
+                    (desired_size.cols, desired_size.rows)
+                );
+            }
+            other => panic!("expected ServerHello, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rebuild_server_hello_snapshot_uses_owner_desired_size() {
+        let pty_size = PtySize {
+            cols: 100,
+            rows: 40,
+            pixel_width: None,
+            pixel_height: None,
+        };
+        let desired_size = PtySize {
+            cols: 132,
+            rows: 50,
+            pixel_width: None,
+            pixel_height: None,
+        };
+        let render_plane = Arc::new(Mutex::new(RenderPlane::new(
+            pty_size.cols,
+            pty_size.rows,
+            1024,
+            100,
+        )));
+
+        let msg = rebuild_server_hello_snapshot(
+            server_hello_with_role(calm_session::Role::Owner, pty_size),
+            &render_plane,
+            Some(desired_size),
+            None,
+        );
+
+        match msg {
+            DaemonMsg::ServerHello { snapshot, .. } => {
+                assert_eq!(
+                    (snapshot.cols, snapshot.rows),
+                    (desired_size.cols, desired_size.rows)
+                );
+            }
+            other => panic!("expected ServerHello, got {other:?}"),
+        }
+    }
 
     #[test]
     fn chat_control_user_message_serialization() {

@@ -157,6 +157,53 @@ fn client_hello_returns_server_hello_with_snapshot() {
 }
 
 #[test]
+fn observer_client_hello_does_not_resize_pty() {
+    let broadcaster = PtyBroadcaster::new(1024);
+    let mut registry = OwnerRegistry::new();
+    let mut state = TerminalSessionState::new();
+    let session_id = Uuid::new_v4();
+    let observer_id = Uuid::new_v4();
+
+    let msg = hello_with(observer_id, |m| {
+        if let ClientMsg::ClientHello { role_hint, .. } = m {
+            *role_hint = Some(Role::Observer);
+        }
+    });
+    let effects = state.on_client_frame(
+        msg,
+        broadcaster.buffer(),
+        &mut registry,
+        &ctx(&broadcaster, session_id),
+    );
+
+    assert_eq!(state.role(), Some(Role::Observer));
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::ResizePty { .. })),
+        "observer handshake must not resize the shared PTY, got {effects:?}"
+    );
+    let server_hello_pty_size = effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::SendToClient(DaemonMsg::ServerHello { pty_size, .. }) => Some(*pty_size),
+            _ => None,
+        })
+        .expect("expected SendToClient(ServerHello)");
+    assert_eq!(
+        server_hello_pty_size,
+        PtySize {
+            cols: 80,
+            rows: 24,
+            pixel_width: None,
+            pixel_height: None,
+        },
+        "observers should see the daemon's current PTY size"
+    );
+    assert_eq!(registry.current_owner(), None);
+}
+
+#[test]
 fn first_frame_not_client_hello_yields_protocol_error_bad_handshake() {
     let broadcaster = PtyBroadcaster::new(1024);
     let mut registry = OwnerRegistry::new();
@@ -304,13 +351,19 @@ fn second_client_becomes_observer_by_default() {
 
     let observer_id = Uuid::new_v4();
     let mut observer_state = TerminalSessionState::new();
-    let _ = observer_state.on_client_frame(
+    let observer_effects = observer_state.on_client_frame(
         hello(observer_id, TID),
         broadcaster.buffer(),
         &mut registry,
         &ctx(&broadcaster, session_id),
     );
     assert_eq!(observer_state.role(), Some(Role::Observer));
+    assert!(
+        !observer_effects
+            .iter()
+            .any(|e| matches!(e, Effect::ResizePty { .. })),
+        "second attach observer must not resize the shared PTY, got {observer_effects:?}"
+    );
     // Registry still points at the original owner.
     assert_eq!(registry.current_owner(), Some(owner_id));
 }
