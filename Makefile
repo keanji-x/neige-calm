@@ -121,6 +121,7 @@ BRIDGE   := $(WORKTREE)/target/release/neige-codex-bridge
 MCP_SHIM := $(WORKTREE)/target/release/neige-mcp-stdio-shim
 NEIGE_CLI := $(WORKTREE)/target/release/neige
 DIST     := $(WORKTREE)/web/dist
+NODE_MODULES_STAMP := $(WORKTREE)/web/node_modules/.package-lock.json
 LOCAL_BIN_DIR ?= $(HOME)/.local/bin
 LOCAL_MCP_STDIO_SHIM ?= $(LOCAL_BIN_DIR)/neige-mcp-stdio-shim
 LOCAL_NEIGE_CLI ?= $(LOCAL_BIN_DIR)/neige
@@ -177,8 +178,13 @@ build: $(BIN) $(DAEMON) $(BRIDGE) $(MCP_SHIM) $(NEIGE_CLI) $(DIST) ## Build serv
 $(BIN) $(DAEMON) $(BRIDGE) $(MCP_SHIM) $(NEIGE_CLI) &: $(shell find $(WORKTREE)/crates -name '*.rs' -o -name 'Cargo.toml' 2>/dev/null) $(WORKTREE)/Cargo.toml $(WORKTREE)/Cargo.lock
 	cargo build --manifest-path $(WORKTREE)/Cargo.toml --release -p calm-server -p calm-session -p calm-codex-bridge -p neige-mcp-stdio-shim -p neige-cli --bin calm-server --bin calm-session-daemon --bin neige-codex-bridge --bin neige-mcp-stdio-shim --bin neige
 
-$(DIST): $(shell find $(WORKTREE)/web/src -type f 2>/dev/null) $(WORKTREE)/web/package.json $(WORKTREE)/web/vite.config.ts $(WORKTREE)/web/index.html
-	@if [ ! -d $(WORKTREE)/web/node_modules ]; then (cd $(WORKTREE)/web && npm install); fi
+# npm rewrites node_modules/.package-lock.json after npm ci/install, so use
+# it as the dependency stamp for lockfile-driven web installs. Match CI's
+# --legacy-peer-deps incantation; see ci.yml note / TODO(#2).
+$(NODE_MODULES_STAMP): $(WORKTREE)/web/package-lock.json
+	cd $(WORKTREE)/web && npm ci --legacy-peer-deps
+
+$(DIST): $(shell find $(WORKTREE)/web/src -type f 2>/dev/null) $(WORKTREE)/web/package.json $(WORKTREE)/web/vite.config.ts $(WORKTREE)/web/index.html $(NODE_MODULES_STAMP)
 	cd $(WORKTREE)/web && npm run build
 
 # ---- docker lifecycle ---------------------------------------------------
