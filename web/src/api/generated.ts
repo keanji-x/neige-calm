@@ -172,6 +172,38 @@ export interface paths {
         patch: operations["update_cove"];
         trace?: never;
     };
+    "/api/fs/gitdiff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["gitdiff"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/fs/gitstatus": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["gitstatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/fs/listdir": {
         parameters: {
             query?: never;
@@ -180,6 +212,22 @@ export interface paths {
             cookie?: never;
         };
         get: operations["listdir"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/fs/readfile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["readfile"];
         put?: never;
         post?: never;
         delete?: never;
@@ -815,6 +863,27 @@ export interface components {
          * @enum {string}
          */
         FolderConflictKind: "equal" | "ancestor" | "descendant";
+        GitChangedFile: {
+            /** @description Previous path for renamed files, relative to the repository root. */
+            old_path?: string | null;
+            /** @description Path relative to the repository root. */
+            path: string;
+            /** @description One of: modified, added, deleted, untracked, renamed. */
+            status: string;
+        };
+        GitDiffResponse: {
+            head_text?: string | null;
+            /** @description Path relative to the repository root. */
+            path: string;
+            /** @description One of: modified, added, deleted, renamed. */
+            status: string;
+            truncated: boolean;
+            working_text?: string | null;
+        };
+        GitStatusResponse: {
+            files: components["schemas"]["GitChangedFile"][];
+            repo_root: string;
+        };
         InstallBody: {
             source: components["schemas"]["InstallSource"];
         };
@@ -1110,6 +1179,13 @@ export interface components {
              */
             state: string;
             version: string;
+        };
+        ReadFileResponse: {
+            path: string;
+            /** Format: int64 */
+            size: number;
+            text: string;
+            truncated: boolean;
         };
         /**
          * @description Wire shape of `NewCodexCardBody.theme` / `NewWave.theme`. Matches the
@@ -2065,6 +2141,108 @@ export interface operations {
             };
         };
     };
+    gitdiff: {
+        parameters: {
+            query: {
+                /** @description Absolute path to a file inside a git repository */
+                path: string;
+                /** @description Previous path for renamed files, relative to the repository root or absolute */
+                old_path?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description HEAD and working-tree text for a changed file */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitDiffResponse"];
+                };
+            };
+            /** @description Path is not inside a git repository or file is binary/non-UTF-8 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Read permission denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    gitstatus: {
+        parameters: {
+            query: {
+                /** @description Absolute path to a directory inside a git repository */
+                path: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Working tree status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitStatusResponse"];
+                };
+            };
+            /** @description Path is not a directory or not inside a git repository */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Read permission denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     listdir: {
         parameters: {
             query?: {
@@ -2087,6 +2265,56 @@ export interface operations {
                 };
             };
             /** @description Path doesn't exist or is not a directory */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Read permission denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    readfile: {
+        parameters: {
+            query: {
+                /** @description Absolute path to a text file */
+                path: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Read text file contents */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadFileResponse"];
+                };
+            };
+            /** @description Path doesn't exist, is not a file, or is binary/non-UTF-8 */
             400: {
                 headers: {
                     [name: string]: unknown;

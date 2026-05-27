@@ -194,7 +194,7 @@ ifeq ($(RESET_DB),1)
 	-$(COMPOSE) down --remove-orphans
 	$(MAKE) reset-db
 endif
-	$(COMPOSE) up -d
+	$(COMPOSE) up -d --build
 	@echo ""
 	@echo "  → http://localhost:$(CALM_PORT)/"
 	@echo "  → API: http://localhost:$(CALM_PORT)/api/coves"
@@ -207,7 +207,7 @@ endif
 dev-fresh: build ## Remove this DEV_ID's containers/state, then start a fresh stack.
 	-$(COMPOSE) down -v --remove-orphans
 	$(MAKE) dirs
-	$(COMPOSE) up -d
+	$(COMPOSE) up -d --build
 	@echo ""
 	@echo "  → http://localhost:$(CALM_PORT)/"
 	@echo "  → API: http://localhost:$(CALM_PORT)/api/coves"

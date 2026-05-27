@@ -83,6 +83,37 @@ describe('DirectoryBrowser ARIA shape', () => {
     // Container still present (it's just the layout box now).
     expect(document.querySelector('.dirpicker-browser')).toBeTruthy();
   });
+
+  it('file mode lets file rows select a path without disabling directory navigation', async () => {
+    vi.spyOn(api, 'listDir').mockResolvedValue({
+      path: '/home/u',
+      parent: null,
+      entries: [
+        { name: 'projects', is_dir: true },
+        { name: 'notes.txt', is_dir: false },
+      ],
+    });
+    const onSelect = vi.fn();
+    render(
+      <DirectoryBrowser
+        initialPath={null}
+        onCancel={() => {}}
+        onSelect={onSelect}
+        mode="file"
+      />,
+    );
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+
+    const file = screen.getByRole('option', { name: /notes\.txt/i });
+    expect(file).not.toBeDisabled();
+    await userEvent.click(file);
+    expect(onSelect).toHaveBeenCalledWith('/home/u/notes.txt');
+
+    const dir = screen.getByRole('option', { name: /projects/i });
+    expect(dir).not.toBeDisabled();
+  });
 });
 
 describe('DirectoryPicker + useModalView', () => {

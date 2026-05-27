@@ -12,6 +12,8 @@ import type {
   KernelTerminal,
   KernelWave,
   KernelWaveDetail,
+  GitDiffResponse,
+  GitStatusResponse,
   ListdirResponse,
   NewCardBody,
   NewClaudeCardBody,
@@ -20,6 +22,7 @@ import type {
   NewOverlayBody,
   NewTerminalCardBody,
   NewWaveBody,
+  ReadFileResponse,
   SettingsBag,
   SettingsPutBody,
   WavePatchBody,
@@ -308,6 +311,24 @@ export const listDir = (path?: string) => {
     ? `?path=${encodeURIComponent(path)}`
     : '';
   return request<ListdirResponse>('GET', `/api/fs/listdir${query}`);
+};
+
+export const readFile = (path: string) =>
+  request<ReadFileResponse>(
+    'GET',
+    `/api/fs/readfile?path=${encodeURIComponent(path)}`,
+  );
+
+export const gitStatus = (path: string) =>
+  request<GitStatusResponse>(
+    'GET',
+    `/api/fs/gitstatus?path=${encodeURIComponent(path)}`,
+  );
+
+export const gitDiff = (path: string, oldPath?: string) => {
+  const qs = new URLSearchParams({ path });
+  if (oldPath) qs.set('old_path', oldPath);
+  return request<GitDiffResponse>('GET', `/api/fs/gitdiff?${qs.toString()}`);
 };
 
 // ---------------- settings ----------------

@@ -152,12 +152,19 @@ export interface WaveReportCardData {
   unsupportedVersion?: number;
 }
 
+export interface FileViewerCardData {
+  type: 'file-viewer';
+  id: string;
+  path: string;
+}
+
 export type WaveCardData =
   | TerminalCardData
   | PluginCardData
   | CodexCardData
   | ClaudeCardData
-  | WaveReportCardData;
+  | WaveReportCardData
+  | FileViewerCardData;
 
 /**
  * A position in a Wave's card grid. Either a parsed UI card (the happy

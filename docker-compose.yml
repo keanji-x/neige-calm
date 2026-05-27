@@ -20,10 +20,18 @@
 
 services:
   server:
-    # Host is Debian bookworm + glibc 2.36; the slim image matches, so the
-    # natively-compiled binary just runs. If you cross-compile or upgrade
-    # the host distro, bump this tag accordingly.
-    image: debian:bookworm-slim
+    # Host is Debian bookworm + glibc 2.36; this slim-based image matches so
+    # the natively-compiled binary just runs, and adds git for runtime tools.
+    # If you cross-compile or upgrade the host distro, bump the base tag in
+    # docker/Dockerfile.server accordingly.
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.server
+      args:
+        http_proxy: ${CALM_BUILD_HTTP_PROXY:-}
+        https_proxy: ${CALM_BUILD_HTTPS_PROXY:-}
+        no_proxy: ${CALM_BUILD_NO_PROXY:-}
+    image: neige-calm-server:local
     init: true
     # Let the container and child processes reach host services such as the
     # developer's HTTP proxy via host.docker.internal.

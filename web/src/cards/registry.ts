@@ -42,12 +42,13 @@ export interface CreateField {
   /**
    * Storage type — controls the rendered widget.
    *
-   * `'directory'` swaps the plain text input for `DirectoryPicker`: a
-   * read-only field with a popover that walks the host filesystem via
-   * `GET /api/fs/listdir`. Picked for codex's `cwd` so users don't have
-   * to remember absolute paths.
+   * `'directory'` / `'file'` swap the plain text input for
+   * `DirectoryPicker`: a read-only field with a browser that walks the
+   * host filesystem via `GET /api/fs/listdir`. Picked for codex's `cwd`
+   * and the file-viewer card path so users don't have to remember
+   * absolute paths.
    */
-  type: 'string' | 'textarea' | 'enum' | 'directory';
+  type: 'string' | 'textarea' | 'enum' | 'directory' | 'file';
   /** Required for `type: 'enum'`. */
   options?: string[];
   /** Default value pre-filled on first render. */
