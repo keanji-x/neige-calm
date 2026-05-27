@@ -339,6 +339,18 @@ async fn resolve_report_for_caller(
                 card_id_str
             ))
         })?;
+    let (report_card, payload) = load_report_for_wave(ctx, &wave).await?;
+    Ok((wave, spec_card, report_card, payload))
+}
+
+/// Load the wave-report card and current payload for an already-resolved wave.
+///
+/// This helper is role-agnostic by design: callers must enforce their own MCP
+/// entry gate and wave binding before reaching it.
+pub(crate) async fn load_report_for_wave(
+    ctx: &Arc<AppContext>,
+    wave: &Wave,
+) -> Result<(Card, WaveReportPayload), RpcError> {
     // Find the wave-report card. Migration 0014 + `routes::waves::create_wave`
     // guarantee exactly one per wave; the partial unique index
     // `idx_cards_one_report_per_wave` from migration 0013 backstops it.
@@ -365,7 +377,7 @@ async fn resolve_report_for_caller(
                 report_card.id.as_str()
             ))
         })?;
-    Ok((wave, spec_card, report_card, payload))
+    Ok((report_card, payload))
 }
 
 /// MCP-side thin wrapper around [`crate::wave_report::persist_report`].

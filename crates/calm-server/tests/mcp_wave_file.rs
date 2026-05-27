@@ -1303,6 +1303,18 @@ async fn card_payload_from_other_wave_is_forbidden() {
         assert!(err.message.contains("forbidden"), "err = {err:?}");
     }
 
+    let worker_payload_path = format!("cards/{}/payload.json", boot.other_wave_card_id.as_str());
+    let err = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        worker_identity(&boot),
+        json!({ "path": worker_payload_path }),
+    )
+    .await
+    .expect_err("worker cross-wave card payload read must be denied");
+    assert_eq!(err.code, -32403);
+    assert!(err.message.contains("forbidden"), "err = {err:?}");
+
     let path = format!("cards/{}", boot.other_wave_card_id.as_str());
     let err = call_tool(
         &boot,
@@ -1317,13 +1329,37 @@ async fn card_payload_from_other_wave_is_forbidden() {
 }
 
 #[tokio::test]
-async fn wave_file_tools_refuse_worker() {
+async fn wave_file_tools_allow_worker_bound_wave_reads() {
     let boot = boot().await;
-    let err = call_tool(&boot, TOOL_WAVE_LS, worker_identity(&boot), json!({}))
+
+    let ls = call_tool(&boot, TOOL_WAVE_LS, worker_identity(&boot), json!({}))
         .await
-        .expect_err("worker must be denied");
-    assert_eq!(err.code, RpcError::INVALID_PARAMS);
-    assert!(err.message.contains("Spec"), "err = {err:?}");
+        .expect("worker can list its bound wave");
+    assert!(ls.as_array().is_some(), "ls should return an array: {ls:?}");
+
+    let cat = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        worker_identity(&boot),
+        json!({ "path": "runs/index.json" }),
+    )
+    .await
+    .expect("worker can read its bound wave");
+    assert_eq!(content_json(&cat), json!([]));
+
+    let report = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        worker_identity(&boot),
+        json!({ "path": "report.md" }),
+    )
+    .await
+    .expect("worker can read its bound wave report");
+    assert_eq!(report["content_type"], json!("text/markdown"));
+    assert_eq!(
+        report["content"].as_str(),
+        Some(WaveReportPayload::initial().body.as_str())
+    );
 }
 
 #[tokio::test]

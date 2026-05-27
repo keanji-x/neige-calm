@@ -113,6 +113,21 @@ pub fn require_role(identity: &CardIdentity, required: CardRole) -> Result<(), R
     Ok(())
 }
 
+/// Variant of [`require_role`] for read-only tools shared by a small
+/// fixed set of roles.
+pub fn require_role_any(identity: &CardIdentity, allowed: &[CardRole]) -> Result<(), RpcError> {
+    if allowed.contains(&identity.role) {
+        return Ok(());
+    }
+    Err(RpcError::custom(
+        RpcError::INVALID_PARAMS,
+        format!(
+            "tool requires role in {allowed:?} got={got:?}",
+            got = identity.role
+        ),
+    ))
+}
+
 /// Per-process context every tool handler reads from. Built once at
 /// `McpServer::spawn` and `Arc`-cloned into each per-connection task.
 ///
@@ -200,5 +215,38 @@ impl ToolRegistry {
 impl Default for ToolRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ids::CardId;
+
+    fn identity_with_role(role: CardRole) -> CardIdentity {
+        CardIdentity {
+            card_id: CardId::from("card-1"),
+            role,
+        }
+    }
+
+    #[test]
+    fn require_role_any_accepts_any_allowed_role_and_rejects_others() {
+        let allowed = [CardRole::Spec, CardRole::Worker];
+
+        assert!(require_role_any(&identity_with_role(CardRole::Spec), &allowed).is_ok());
+        assert!(require_role_any(&identity_with_role(CardRole::Worker), &allowed).is_ok());
+
+        let err = require_role_any(&identity_with_role(CardRole::Plain), &allowed)
+            .expect_err("plain must be denied");
+        assert_eq!(err.code, RpcError::INVALID_PARAMS);
+        assert!(
+            err.message.contains("Spec") && err.message.contains("Worker"),
+            "error should mention allowed roles: {err:?}"
+        );
+        assert!(
+            err.message.contains("Plain"),
+            "error should mention actual role: {err:?}"
+        );
     }
 }
