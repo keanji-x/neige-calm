@@ -5,6 +5,7 @@
 //! always derived from [`CardIdentity`]; callers never provide a
 //! `wave_id`.
 
+use crate::card_role_cache::CardRoleCache;
 use crate::ids::ActorId;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
@@ -332,7 +333,7 @@ async fn runs_for_wave(ctx: &Arc<AppContext>, wave: &Wave) -> Result<Vec<RunProj
         .await
         .map_err(|e| RpcError::internal(format!("wave_file: events_for_wave: {e}")))?;
 
-    let runs = project_runs(cards, events);
+    let runs = project_runs(&ctx.card_role_cache, cards, events);
     for run in &runs {
         if RESERVED_RUN_KEYS.contains(&run.idempotency_key.as_str()) {
             tracing::error!(
@@ -351,10 +352,17 @@ async fn runs_for_wave(ctx: &Arc<AppContext>, wave: &Wave) -> Result<Vec<RunProj
     Ok(runs)
 }
 
-fn project_runs(cards: Vec<Card>, events: Vec<WaveEvent>) -> Vec<RunProjection> {
+fn project_runs(
+    card_role_cache: &CardRoleCache,
+    cards: Vec<Card>,
+    events: Vec<WaveEvent>,
+) -> Vec<RunProjection> {
     let mut keys = BTreeSet::new();
     let mut worker_cards = BTreeMap::new();
     for card in cards {
+        if card_role_cache.get(&card.id) != Some(CardRole::Worker) {
+            continue;
+        }
         if let Some(key) = idempotency_key_from_payload(&card.payload) {
             keys.insert(key.to_string());
             worker_cards.entry(key.to_string()).or_insert(card);
@@ -590,20 +598,22 @@ fn run_kind_from_card(card: &Card) -> Option<&'static str> {
 fn runs_updated_at(wave: &Wave, runs: &[RunProjection]) -> Option<i64> {
     Some(
         runs.iter()
-            .filter_map(|run| {
-                [
-                    run.requested_at,
-                    run.finished_at,
-                    run.verdict.as_ref().map(|verdict| verdict.at),
-                    run.worker_card.as_ref().map(|card| card.updated_at),
-                ]
-                .into_iter()
-                .flatten()
-                .max()
-            })
+            .filter_map(run_listing_updated_at)
             .max()
             .unwrap_or(wave.updated_at),
     )
+}
+
+fn run_listing_updated_at(run: &RunProjection) -> Option<i64> {
+    [
+        run.requested_at,
+        run.finished_at,
+        run.verdict.as_ref().map(|verdict| verdict.at),
+        run.worker_card.as_ref().map(|card| card.updated_at),
+    ]
+    .into_iter()
+    .flatten()
+    .max()
 }
 
 fn run_by_key<'a>(runs: &'a [RunProjection], key: &str) -> Result<&'a RunProjection, RpcError> {
@@ -648,12 +658,7 @@ fn run_listing_entry(run: &RunProjection) -> Value {
             .map(|card| Value::String(card.id.as_str().to_string()))
             .unwrap_or(Value::Null),
     );
-    if let Some(updated_at) = run
-        .finished_at
-        .or_else(|| run.verdict.as_ref().map(|verdict| verdict.at))
-        .or_else(|| run.worker_card.as_ref().map(|card| card.updated_at))
-        .or(run.requested_at)
-    {
+    if let Some(updated_at) = run_listing_updated_at(run) {
         obj.insert("updated_at".into(), json!(updated_at));
     }
     Value::Object(obj)

@@ -272,7 +272,16 @@ async fn set_event_at(boot: &Boot, event_id: i64, at: i64) {
         .expect("set event timestamp");
 }
 
-async fn request_codex(boot: &Boot, key: &str) {
+async fn set_card_updated_at(boot: &Boot, card_id: &CardId, updated_at: i64) {
+    sqlx::query("UPDATE cards SET updated_at = ?1 WHERE id = ?2")
+        .bind(updated_at)
+        .bind(card_id.as_str())
+        .execute(boot.sqlx_repo.pool())
+        .await
+        .expect("set card updated_at");
+}
+
+async fn request_codex(boot: &Boot, key: &str) -> i64 {
     log_wave_event(
         boot,
         &boot.wave_id,
@@ -284,7 +293,7 @@ async fn request_codex(boot: &Boot, key: &str) {
             acceptance_criteria: Some(format!("accept {key}")),
         },
     )
-    .await;
+    .await
 }
 
 async fn complete_run(boot: &Boot, key: &str, summary: &str) -> i64 {
@@ -451,6 +460,43 @@ async fn ls_runs_returns_projected_runs_for_bound_wave() {
     assert_eq!(runs[0]["status"], json!("running"));
     assert_eq!(runs[0]["run_kind"], json!("codex"));
     assert_eq!(runs[0]["worker_card_id"], json!(worker_id.as_str()));
+}
+
+#[tokio::test]
+async fn runs_projection_ignores_non_worker_cards_with_idempotency_key_payloads() {
+    let boot = boot().await;
+    let decoy = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: boot.wave_id.clone(),
+            kind: "spec".into(),
+            sort: Some(2.0),
+            payload: json!({ "idempotency_key": "decoy" }),
+        })
+        .await
+        .expect("create decoy card");
+    boot.ctx
+        .card_role_cache
+        .insert(decoy.id, CardRole::Spec, boot.wave_id.clone());
+
+    request_codex(&boot, "real-run").await;
+    materialize_worker(&boot, "real-run").await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/index.json" }),
+    )
+    .await
+    .expect("spec can read runs index");
+    let runs = content_json(&out);
+    let runs = runs.as_array().expect("runs index is array");
+    let keys: Vec<&str> = runs
+        .iter()
+        .map(|run| run["idempotency_key"].as_str().unwrap())
+        .collect();
+    assert_eq!(keys, vec!["real-run"], "runs = {runs:?}");
 }
 
 #[tokio::test]
@@ -664,6 +710,46 @@ async fn accepted_verdict_does_not_overwrite_worker_completion() {
         "md = {md}"
     );
     assert!(md.contains("did the thing"), "md = {md}");
+}
+
+#[tokio::test]
+async fn run_listing_updated_at_uses_latest_verdict_timestamp() {
+    let boot = boot().await;
+    let requested_id = request_codex(&boot, "verdict-mtime").await;
+    let worker_id = materialize_worker(&boot, "verdict-mtime").await;
+    let completed_id = complete_run(&boot, "verdict-mtime", "done before verdict").await;
+    let verdict_id = log_wave_event(
+        &boot,
+        &boot.wave_id,
+        &boot.cove_id,
+        Event::TaskCompleted {
+            idempotency_key: "verdict-mtime".into(),
+            result: json!({ "status": "accepted", "reason": "checked later" }),
+            artifacts: vec![],
+        },
+    )
+    .await;
+    set_event_at(&boot, requested_id, 50).await;
+    set_event_at(&boot, completed_id, 100).await;
+    set_card_updated_at(&boot, &worker_id, 150).await;
+    set_event_at(&boot, verdict_id, 200).await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_LS,
+        spec_identity(&boot),
+        json!({ "path": "runs/" }),
+    )
+    .await
+    .expect("spec can list runs");
+    let runs = out.as_array().expect("runs ls returns array");
+    let entry = runs
+        .iter()
+        .find(|run| run["idempotency_key"] == "verdict-mtime")
+        .unwrap_or_else(|| panic!("missing verdict-mtime: {runs:?}"));
+    assert_eq!(entry["finished_at"], json!(100));
+    assert_eq!(entry["verdict"]["at"], json!(200));
+    assert_eq!(entry["updated_at"], json!(200));
 }
 
 #[tokio::test]
