@@ -1457,33 +1457,22 @@ async fn register_and_catch_up(
                     return;
                 }
             };
-            let kinds_match = |e: &event::Event| {
-                matches!(
-                    e,
-                    event::Event::TaskCompleted { .. }
-                        | event::Event::TaskFailed { .. }
-                        | event::Event::WaveReportEdited { .. }
-                )
-            };
             let mut replayed = 0usize;
             let mut skipped_rehydrated = 0usize;
             for (id, _ver, scope, ev) in rows {
-                // Only events scoped to (or under) this wave count; only the
-                // three push kinds the dispatcher routes; only the user-
-                // authored `wave.report_edited` (matches the dispatcher's
-                // live filter).
+                // Only events scoped to (or under) this wave count; only
+                // events the dispatcher would live-push to the spec are
+                // replayed. That includes task results, user-authored report
+                // edits, and worker stop hooks. The worker-role gate uses the
+                // boot-seeded role cache, populated before spec app-server
+                // takeover starts.
                 let Some(ev_wave) = scope.wave_id() else {
                     continue;
                 };
                 if ev_wave != wave_id {
                     continue;
                 }
-                if !kinds_match(&ev) {
-                    continue;
-                }
-                if let event::Event::WaveReportEdited { author, .. } = &ev
-                    && *author != event::EditAuthor::User
-                {
+                if !dispatcher::event_warrants_spec_push(&ev, &state.card_role_cache) {
                     continue;
                 }
                 // #325 fix — skip envelopes whose row is already sitting in

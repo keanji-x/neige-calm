@@ -101,6 +101,19 @@ const DEFAULT_PERMITS: usize = 8;
 /// short-circuit.
 const RECENT_KEYS_TTL: Duration = Duration::from_secs(60);
 
+pub(crate) fn event_warrants_spec_push(event: &Event, role_cache: &CardRoleCache) -> bool {
+    match event {
+        Event::TaskCompleted { .. } | Event::TaskFailed { .. } => true,
+        Event::WaveReportEdited { author, .. } => *author == EditAuthor::User,
+        Event::CodexHook { card_id, kind, .. } | Event::ClaudeHook { card_id, kind, .. } => {
+            let is_turn_end = kind == "hook.codex.stop" || kind == "hook.claude.stop";
+            let is_worker = role_cache.get(card_id) == Some(CardRole::Worker);
+            is_turn_end && is_worker
+        }
+        _ => false,
+    }
+}
+
 /// Subscribed handle. Holding the [`Dispatcher`] keeps the spawned
 /// task alive; dropping it closes the broadcast receiver's end (the
 /// task exits cleanly on the next `Closed` recv).
@@ -497,16 +510,20 @@ impl Dispatcher {
         // (the worker card lands in the same wave as the requesting
         // spec card).
         // #293 cutover — push is the only path now, so the subscribe filter
-        // unconditionally matches the three wave-event push kinds in addition
-        // to the two `*.job_requested` kinds. The push kinds route to
+        // unconditionally matches the wave-event push kinds in addition to
+        // the two `*.job_requested` kinds. The push kinds route to
         // `push_to_spec`; the `*.job_requested` kinds drive the worker-spawn
-        // arm.
+        // arm. Hook events are coarse-filtered by `kind_tag()` here; the
+        // exact turn-ending hook discriminators are checked synchronously in
+        // the push branch below.
         let kinds: Vec<String> = vec![
             "codex.job_requested".into(),
             "terminal.job_requested".into(),
             "task.completed".into(),
             "task.failed".into(),
             "wave.report_edited".into(),
+            "codex.hook".into(),
+            "claude.hook".into(),
         ];
         let filter = SubscribeFilter {
             scope: SubscribeScope::Any,
@@ -635,23 +652,28 @@ impl Inner {
             }
         };
 
-        // #293 — push branch. The three wave-event kinds the filter matches
-        // route HERE (bounded by the same `_permit` the worker-spawn path
-        // holds), never into the `DispatchRequest` extraction below. For
+        // #293 — push branch. The wave-event kinds the filter matches route
+        // HERE (bounded by the same `_permit` the worker-spawn path holds),
+        // never into the `DispatchRequest` extraction below. For
         // `wave.report_edited` we act ONLY on a User-authored edit —
         // Spec/AI-authored edits are the spec writing its own report, and
-        // pushing those back would be a feedback loop. The worker-spawn path
-        // (the two `*.job_requested` kinds) falls through untouched.
+        // pushing those back would be a feedback loop. Worker hook events
+        // also return from here, even when ignored, because they are
+        // lifecycle notices rather than worker-spawn requests. The
+        // worker-spawn path (the two `*.job_requested` kinds) falls through
+        // untouched.
         match &envelope.event {
             Event::TaskCompleted { .. } | Event::TaskFailed { .. } => {
-                if let Some(wave_id) = envelope.scope.wave_id().cloned() {
-                    self.push_to_spec(wave_id, &envelope.event, envelope.id)
-                        .await;
-                } else {
-                    tracing::debug!(
-                        kind = envelope.event.kind_tag(),
-                        "dispatcher push: task event has no wave scope; skipping"
-                    );
+                if event_warrants_spec_push(&envelope.event, &self.card_role_cache) {
+                    if let Some(wave_id) = envelope.scope.wave_id().cloned() {
+                        self.push_to_spec(wave_id, &envelope.event, envelope.id)
+                            .await;
+                    } else {
+                        tracing::debug!(
+                            kind = envelope.event.kind_tag(),
+                            "dispatcher push: task event has no wave scope; skipping"
+                        );
+                    }
                 }
                 return;
             }
@@ -660,13 +682,45 @@ impl Inner {
             } => {
                 // Only user edits warrant a push. The spec authored
                 // Spec/Kernel edits itself; re-notifying it would loop.
-                if *author == EditAuthor::User {
+                if event_warrants_spec_push(&envelope.event, &self.card_role_cache) {
                     self.push_to_spec(wave_id.clone(), &envelope.event, envelope.id)
                         .await;
                 } else {
                     tracing::trace!(
                         ?author,
                         "dispatcher push: ignoring non-user wave.report_edited"
+                    );
+                }
+                return;
+            }
+            Event::CodexHook { card_id, kind, .. } | Event::ClaudeHook { card_id, kind, .. } => {
+                // Only the precise Stop hooks mean a worker turn truly
+                // ended. Other hooks may project to the same FSM state (for
+                // example `hook.codex.permission_request` -> AwaitingInput)
+                // but are mid-turn pauses, so they must not wake the spec.
+                //
+                // The Worker role gate prevents spec self-push loops: spec
+                // cards can emit their own hook lifecycle events, but only
+                // worker cards should notify the spec. Stop hooks carry no
+                // result/artifacts, so the pushed observation is a light
+                // wake-up that asks the spec to re-read wave state.
+                if event_warrants_spec_push(&envelope.event, &self.card_role_cache) {
+                    if let Some(wave_id) = envelope.scope.wave_id().cloned() {
+                        self.push_to_spec(wave_id, &envelope.event, envelope.id)
+                            .await;
+                    } else {
+                        tracing::debug!(
+                            kind = envelope.event.kind_tag(),
+                            hook_kind = %kind,
+                            card_id = %card_id,
+                            "dispatcher push: worker hook stop has no wave scope; skipping"
+                        );
+                    }
+                } else {
+                    tracing::trace!(
+                        hook_kind = %kind,
+                        card_id = %card_id,
+                        "dispatcher push: ignoring hook event"
                     );
                 }
                 return;
@@ -1961,9 +2015,10 @@ impl Inner {
 /// spec that dispatched the task can match it to its outstanding work).
 /// Free-standing + pure so it's unit-testable without an app-server.
 ///
-/// Only called for the three push kinds (`task.completed`, `task.failed`,
-/// `wave.report_edited`); any other variant degrades to a generic notice
-/// rather than panicking (defensive — the filter shouldn't deliver others).
+/// Only called for the push kinds (`task.completed`, `task.failed`,
+/// `wave.report_edited`, `codex.hook`, `claude.hook`); any other variant
+/// degrades to a generic notice rather than panicking (defensive — the filter
+/// shouldn't deliver others).
 fn build_observation(event: &Event) -> String {
     match event {
         Event::TaskCompleted {
@@ -1984,9 +2039,13 @@ fn build_observation(event: &Event) -> String {
         Event::WaveReportEdited { .. } => {
             "The user edited the wave report. Re-read the wave state.".to_string()
         }
+        Event::CodexHook { .. } | Event::ClaudeHook { .. } => {
+            "A worker card finished a turn. Re-read the wave state to incorporate any changes."
+                .to_string()
+        }
         other => {
-            // Shouldn't happen — the push branch only routes the three
-            // kinds above. Stay resilient instead of panicking.
+            // Shouldn't happen — the push branch only routes the kinds
+            // above. Stay resilient instead of panicking.
             format!(
                 "A wave event occurred ({}). Re-read the wave state.",
                 other.kind_tag()
@@ -2688,13 +2747,13 @@ mod tests {
         }
     }
 
-    /// The dispatcher's `SubscribeFilter` must now match the three push
-    /// kinds in addition to the two job_requested kinds. We reconstruct the
+    /// The dispatcher's `SubscribeFilter` must now match the push kinds in
+    /// addition to the two job_requested kinds. We reconstruct the
     /// exact filter the spawn site builds and assert `matches()` for each
     /// kind, plus a non-matching kind to prove the list is still a closed
     /// allowlist (not "match everything").
     #[test]
-    fn dispatcher_filter_matches_three_push_kinds() {
+    fn dispatcher_filter_matches_push_kinds() {
         let filter = SubscribeFilter {
             scope: SubscribeScope::Any,
             include_descendants: true,
@@ -2704,6 +2763,8 @@ mod tests {
                 "task.completed".into(),
                 "task.failed".into(),
                 "wave.report_edited".into(),
+                "codex.hook".into(),
+                "claude.hook".into(),
             ]),
         };
         let wave = WaveId::from("w");
@@ -2730,7 +2791,7 @@ mod tests {
             cmd: "ls".into(),
             cwd: None,
         })));
-        // The three new push kinds match.
+        // The push kinds match.
         assert!(filter.matches(&env(Event::TaskCompleted {
             idempotency_key: "k".into(),
             result: serde_json::Value::Null,
@@ -2750,6 +2811,16 @@ mod tests {
             body_before: String::new(),
             body_after: String::new(),
         })));
+        assert!(filter.matches(&env(Event::CodexHook {
+            card_id: CardId::from("worker-codex"),
+            kind: "hook.codex.stop".into(),
+            payload: serde_json::Value::Null,
+        })));
+        assert!(filter.matches(&env(Event::ClaudeHook {
+            card_id: CardId::from("worker-claude"),
+            kind: "hook.claude.stop".into(),
+            payload: serde_json::Value::Null,
+        })));
         // A kind NOT in the list must not match — the filter is still a
         // closed allowlist.
         assert!(!filter.matches(&env(Event::WaveDeleted {
@@ -2768,6 +2839,98 @@ mod tests {
         assert!(EditAuthor::User == EditAuthor::User);
         assert!(EditAuthor::Spec != EditAuthor::User);
         assert!(EditAuthor::Kernel != EditAuthor::User);
+    }
+
+    #[test]
+    fn event_warrants_spec_push_covers_push_allowlist() {
+        let cache = CardRoleCache::new();
+        let wave = WaveId::from("w");
+        let cove = CoveId::from("c");
+        let worker = CardId::from("worker");
+        let spec = CardId::from("spec");
+        let unknown = CardId::from("unknown");
+        cache.insert(worker.clone(), CardRole::Worker, wave.clone());
+        cache.insert(spec.clone(), CardRole::Spec, wave.clone());
+
+        let completed = Event::TaskCompleted {
+            idempotency_key: "done".into(),
+            result: serde_json::Value::Null,
+            artifacts: Vec::new(),
+        };
+        assert!(event_warrants_spec_push(&completed, &cache));
+
+        let failed = Event::TaskFailed {
+            idempotency_key: "fail".into(),
+            reason: "boom".into(),
+        };
+        assert!(event_warrants_spec_push(&failed, &cache));
+
+        let report = |author| Event::WaveReportEdited {
+            wave_id: wave.clone(),
+            card_id: spec.clone(),
+            author,
+            edit_id: "edit".into(),
+            summary_before: String::new(),
+            summary_after: String::new(),
+            body_before: String::new(),
+            body_after: String::new(),
+        };
+        assert!(event_warrants_spec_push(&report(EditAuthor::User), &cache));
+        assert!(!event_warrants_spec_push(&report(EditAuthor::Spec), &cache));
+        assert!(!event_warrants_spec_push(
+            &report(EditAuthor::Kernel),
+            &cache
+        ));
+
+        let codex_hook = |card_id: CardId, kind: &str| Event::CodexHook {
+            card_id,
+            kind: kind.into(),
+            payload: serde_json::Value::Null,
+        };
+        let claude_hook = |card_id: CardId, kind: &str| Event::ClaudeHook {
+            card_id,
+            kind: kind.into(),
+            payload: serde_json::Value::Null,
+        };
+        assert!(event_warrants_spec_push(
+            &codex_hook(worker.clone(), "hook.codex.stop"),
+            &cache
+        ));
+        assert!(event_warrants_spec_push(
+            &claude_hook(worker.clone(), "hook.claude.stop"),
+            &cache
+        ));
+        assert!(!event_warrants_spec_push(
+            &codex_hook(spec.clone(), "hook.codex.stop"),
+            &cache
+        ));
+        assert!(!event_warrants_spec_push(
+            &claude_hook(spec.clone(), "hook.claude.stop"),
+            &cache
+        ));
+        assert!(!event_warrants_spec_push(
+            &codex_hook(unknown.clone(), "hook.codex.stop"),
+            &cache
+        ));
+        assert!(!event_warrants_spec_push(
+            &claude_hook(unknown, "hook.claude.stop"),
+            &cache
+        ));
+        assert!(!event_warrants_spec_push(
+            &codex_hook(worker.clone(), "hook.codex.permission_request"),
+            &cache
+        ));
+        assert!(!event_warrants_spec_push(
+            &codex_hook(worker, "hook.codex.post_tool_use"),
+            &cache
+        ));
+        assert!(!event_warrants_spec_push(
+            &Event::WaveDeleted {
+                id: wave,
+                cove_id: cove,
+            },
+            &cache
+        ));
     }
 
     /// `build_observation` produces concise, kind-specific text carrying the
@@ -2803,6 +2966,34 @@ mod tests {
         assert!(
             edited.to_lowercase().contains("user") && edited.to_lowercase().contains("report"),
             "got: {edited}"
+        );
+
+        let codex_stop = build_observation(&Event::CodexHook {
+            card_id: CardId::from("codex-worker"),
+            kind: "hook.codex.stop".into(),
+            payload: serde_json::Value::Null,
+        });
+        assert!(
+            codex_stop.contains("worker card") && codex_stop.contains("finished a turn"),
+            "got: {codex_stop}"
+        );
+        assert!(
+            !codex_stop.contains("idempotency_key"),
+            "hook notice must stay light: {codex_stop}"
+        );
+
+        let claude_stop = build_observation(&Event::ClaudeHook {
+            card_id: CardId::from("claude-worker"),
+            kind: "hook.claude.stop".into(),
+            payload: serde_json::Value::Null,
+        });
+        assert!(
+            claude_stop.contains("worker card") && claude_stop.contains("finished a turn"),
+            "got: {claude_stop}"
+        );
+        assert!(
+            !claude_stop.contains("idempotency_key"),
+            "hook notice must stay light: {claude_stop}"
         );
     }
 
