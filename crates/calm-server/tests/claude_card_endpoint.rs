@@ -207,6 +207,25 @@ async fn post_claude_card_creates_worker_terminal_and_hook_settings_without_mcp(
             .get("matcher")
             .is_none()
     );
+    // #364: the generated settings must register every hook the FSM projects,
+    // including the ones that previously drifted out.
+    for ev in [
+        "SubagentStart",
+        "SubagentStop",
+        "TaskCreated",
+        "TaskCompleted",
+        "Elicitation",
+    ] {
+        assert!(
+            settings_json["hooks"][ev][0].get("matcher").is_none(),
+            "{ev} must be registered without a matcher"
+        );
+    }
+    assert_eq!(
+        settings_json["hooks"]["PermissionDenied"][0]["matcher"],
+        Value::String("*".into()),
+        "PermissionDenied is tool-name-scoped and mirrors PermissionRequest's matcher"
+    );
 
     let mcp_count: (i64,) =
         sqlx::query_as("SELECT COUNT(*) FROM card_mcp_tokens WHERE card_id = ?1")

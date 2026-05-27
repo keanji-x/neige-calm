@@ -256,29 +256,17 @@ fn claude_hook_command(bridge_bin: &str, card_id: &str, base_url: &str) -> Strin
 }
 
 pub(crate) fn build_claude_settings_json(hook_command: &str) -> String {
-    fn group(hook_command: &str, matcher: bool) -> serde_json::Value {
-        let hook = json!({ "type": "command", "command": hook_command });
-        if matcher {
-            json!({ "matcher": "*", "hooks": [hook] })
+    let hook = json!({ "type": "command", "command": hook_command });
+    let mut hooks = serde_json::Map::new();
+    for h in crate::card_fsm::CLAUDE_WORKER_HOOKS {
+        let group = if h.matcher {
+            json!({ "matcher": "*", "hooks": [hook.clone()] })
         } else {
-            json!({ "hooks": [hook] })
-        }
+            json!({ "hooks": [hook.clone()] })
+        };
+        hooks.insert(h.event_name.to_string(), json!([group]));
     }
-
-    let value = json!({
-        "hooks": {
-            "PreToolUse": [group(hook_command, true)],
-            "PostToolUse": [group(hook_command, true)],
-            "PostToolUseFailure": [group(hook_command, true)],
-            "PermissionRequest": [group(hook_command, true)],
-            "UserPromptSubmit": [group(hook_command, false)],
-            "Stop": [group(hook_command, false)],
-            "StopFailure": [group(hook_command, false)],
-            "SessionStart": [group(hook_command, false)],
-            "SessionEnd": [group(hook_command, false)],
-            "Notification": [group(hook_command, false)]
-        }
-    });
+    let value = json!({ "hooks": serde_json::Value::Object(hooks) });
     serde_json::to_string_pretty(&value).expect("claude settings serializes")
 }
 
@@ -304,6 +292,36 @@ mod tests {
             v["hooks"]["Notification"][0]["hooks"][0]["command"],
             "bridge --provider claude"
         );
+    }
+
+    #[test]
+    fn settings_registers_exactly_the_fsm_projected_hooks() {
+        use std::collections::BTreeSet;
+
+        let s = build_claude_settings_json("bridge --provider claude");
+        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+        let registered: BTreeSet<String> = v["hooks"]
+            .as_object()
+            .expect("hooks is an object")
+            .keys()
+            .cloned()
+            .collect();
+        let expected: BTreeSet<String> = crate::card_fsm::CLAUDE_WORKER_HOOKS
+            .iter()
+            .map(|h| h.event_name.to_string())
+            .collect();
+        // Settings must register every hook the FSM projects (so Claude actually
+        // fires it) and nothing it ignores. #364: this set drifted before.
+        assert_eq!(registered, expected);
+        // Matcher presence per hook must match the table flag.
+        for h in crate::card_fsm::CLAUDE_WORKER_HOOKS {
+            let has_matcher = v["hooks"][h.event_name][0].get("matcher").is_some();
+            assert_eq!(
+                has_matcher, h.matcher,
+                "matcher mismatch for {}: settings has_matcher={has_matcher}, table={}",
+                h.event_name, h.matcher
+            );
+        }
     }
 
     #[test]

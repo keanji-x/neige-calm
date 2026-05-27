@@ -166,6 +166,127 @@ fn codex_kind_to_state(kind: &str) -> Option<State> {
 // Claude hook → State projection
 // ---------------------------------------------------------------------------
 
+/// Single source of truth for the Claude Code worker hooks the kernel
+/// subscribes to and projects onto worker FSM state.
+///
+/// `build_claude_settings_json` (routes::claude_cards) iterates this to emit
+/// the generated `--settings` file's `hooks` map, and `claude_kind_to_state`
+/// projects each onto a worker `State`. Driving both paths from one table is
+/// the #364 fix: previously the settings list and the projection match arms
+/// were maintained separately and drifted — six hooks the FSM recognized
+/// (`SubagentStart`/`SubagentStop`, `TaskCreated`/`TaskCompleted`,
+/// `PermissionDenied`, `Elicitation`) were never registered, so Claude never
+/// fired them and those transitions were unreachable.
+///
+/// Event names + matcher applicability verified against
+/// https://code.claude.com/docs/en/hooks (2026-05).
+pub(crate) struct ClaudeWorkerHook {
+    /// PascalCase event name, used verbatim as the key in the settings
+    /// `hooks` map (exactly what Claude Code reads).
+    pub event_name: &'static str,
+    /// Whether we register a `"matcher": "*"` for this hook. Mirrors the
+    /// pre-existing convention: only the tool-name-scoped hooks (the
+    /// PreToolUse family plus the two permission hooks) carry a matcher;
+    /// subagent / task / elicitation / lifecycle hooks omit it. Omission is
+    /// equivalent to match-all, which is what the FSM wants (every
+    /// occurrence) — so this flag only keeps us faithful to how the existing
+    /// settings were written; it never filters anything out.
+    pub matcher: bool,
+    /// Worker FSM state this hook projects the card onto.
+    pub state: State,
+}
+
+pub(crate) const CLAUDE_WORKER_HOOKS: &[ClaudeWorkerHook] = &[
+    ClaudeWorkerHook {
+        event_name: "SessionStart",
+        matcher: false,
+        state: State::Starting,
+    },
+    ClaudeWorkerHook {
+        event_name: "UserPromptSubmit",
+        matcher: false,
+        state: State::Working,
+    },
+    ClaudeWorkerHook {
+        event_name: "PreToolUse",
+        matcher: true,
+        state: State::Working,
+    },
+    ClaudeWorkerHook {
+        event_name: "PostToolUse",
+        matcher: true,
+        state: State::Working,
+    },
+    ClaudeWorkerHook {
+        event_name: "PostToolUseFailure",
+        matcher: true,
+        state: State::Working,
+    },
+    ClaudeWorkerHook {
+        event_name: "SubagentStart",
+        matcher: false,
+        state: State::Working,
+    },
+    ClaudeWorkerHook {
+        event_name: "SubagentStop",
+        matcher: false,
+        state: State::Working,
+    },
+    ClaudeWorkerHook {
+        event_name: "TaskCreated",
+        matcher: false,
+        state: State::Working,
+    },
+    ClaudeWorkerHook {
+        event_name: "TaskCompleted",
+        matcher: false,
+        state: State::Working,
+    },
+    ClaudeWorkerHook {
+        event_name: "PermissionRequest",
+        matcher: true,
+        state: State::AwaitingInput,
+    },
+    ClaudeWorkerHook {
+        event_name: "PermissionDenied",
+        matcher: true,
+        state: State::AwaitingInput,
+    },
+    ClaudeWorkerHook {
+        event_name: "Notification",
+        matcher: false,
+        state: State::AwaitingInput,
+    },
+    ClaudeWorkerHook {
+        event_name: "Elicitation",
+        matcher: false,
+        state: State::AwaitingInput,
+    },
+    // Interactive Claude workers follow the same turn-boundary semantics as
+    // codex foreground agents: `stop` means the worker is waiting for the
+    // user's next prompt, so the wave surfaces "waiting on you" (#358/#367) —
+    // not `Idle`.
+    ClaudeWorkerHook {
+        event_name: "Stop",
+        matcher: false,
+        state: State::AwaitingInput,
+    },
+    ClaudeWorkerHook {
+        event_name: "StopFailure",
+        matcher: false,
+        state: State::Errored,
+    },
+    // Documented `SessionEnd.reason` values are `clear`, `resume`, `logout`,
+    // `prompt_input_exit`, `bypass_permissions_disabled`, and `other`; none
+    // indicates an error, so a session ending projects to `Done`, never
+    // `Errored`. Verified against https://code.claude.com/docs/en/hooks.
+    ClaudeWorkerHook {
+        event_name: "SessionEnd",
+        matcher: false,
+        state: State::Done,
+    },
+];
+
 /// Project a Claude hook `kind` (e.g. `hook.claude.pre_tool_use`) onto the
 /// worker-card FSM. This intentionally stays separate from
 /// `codex_kind_to_state`, but interactive Claude workers follow the same
@@ -176,28 +297,10 @@ fn codex_kind_to_state(kind: &str) -> Option<State> {
 /// Claude Code hook names verified against https://code.claude.com/docs/en/hooks.
 fn claude_kind_to_state(kind: &str, _payload: &serde_json::Value) -> Option<State> {
     let bare = kind.strip_prefix("hook.claude.")?;
-    match bare {
-        "session_start" => Some(State::Starting),
-        "user_prompt_submit"
-        | "pre_tool_use"
-        | "post_tool_use"
-        | "post_tool_use_failure"
-        | "subagent_start"
-        | "subagent_stop"
-        | "task_created"
-        | "task_completed" => Some(State::Working),
-        "permission_request" | "permission_denied" | "notification" | "elicitation" => {
-            Some(State::AwaitingInput)
-        }
-        "stop" => Some(State::AwaitingInput),
-        "stop_failure" => Some(State::Errored),
-        // Documented `SessionEnd.reason` values are `clear`, `resume`,
-        // `logout`, `prompt_input_exit`, `bypass_permissions_disabled`,
-        // and `other`; none indicates an error. Verified against:
-        // https://code.claude.com/docs/en/hooks.
-        "session_end" => Some(State::Done),
-        _ => None,
-    }
+    CLAUDE_WORKER_HOOKS
+        .iter()
+        .find(|h| crate::routes::codex::to_snake_case(h.event_name) == bare)
+        .map(|h| h.state)
 }
 
 // ---------------------------------------------------------------------------
@@ -684,6 +787,38 @@ mod tests {
             None,
             "Claude mapping only strips the Claude prefix"
         );
+    }
+
+    #[test]
+    fn every_registered_hook_projects_to_its_table_state() {
+        for h in CLAUDE_WORKER_HOOKS {
+            let kind = format!(
+                "hook.claude.{}",
+                crate::routes::codex::to_snake_case(h.event_name)
+            );
+            assert_eq!(
+                claude_kind_to_state(&kind, &serde_json::Value::Null),
+                Some(h.state),
+                "hook {} (kind {kind}) must project to {:?}",
+                h.event_name,
+                h.state
+            );
+        }
+        // The six hooks #364 added must specifically be projected now.
+        for (name, want) in [
+            ("SubagentStart", State::Working),
+            ("SubagentStop", State::Working),
+            ("TaskCreated", State::Working),
+            ("TaskCompleted", State::Working),
+            ("PermissionDenied", State::AwaitingInput),
+            ("Elicitation", State::AwaitingInput),
+        ] {
+            let kind = format!("hook.claude.{}", crate::routes::codex::to_snake_case(name));
+            assert_eq!(
+                claude_kind_to_state(&kind, &serde_json::Value::Null),
+                Some(want)
+            );
+        }
     }
 
     #[test]
