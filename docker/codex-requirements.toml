@@ -67,11 +67,7 @@ command = "/usr/local/bin/neige-codex-bridge"
 type = "command"
 command = "/usr/local/bin/neige-codex-bridge"
 
-# NOTE: there is intentionally NO `[[hooks.Stop]]` block. Before the #293
-# push cutover, the Stop hook ran a synchronous long-poll against
-# `/internal/codex/pending_events` and emitted `{decision:"block",...}` to
-# re-prompt the spec agent (the pull model). Pull is gone — spec agents are
-# now driven by observations the kernel pushes onto their codex thread — so
-# the Stop hook is no longer needed. The bridge still treats any Stop event
-# it receives as a plain fire-and-forget POST to `/internal/codex/hook`, but
-# we don't register the hook here.
+[[hooks.Stop]]
+[[hooks.Stop.hooks]]
+type = "command"
+command = "/usr/local/bin/neige-codex-bridge"
