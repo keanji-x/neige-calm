@@ -139,6 +139,41 @@ impl State {
 // Codex hook → State projection
 // ---------------------------------------------------------------------------
 
+pub(crate) struct CodexWorkerHook {
+    /// PascalCase event name, used verbatim as the key in
+    /// docker/codex-requirements.toml.
+    pub event_name: &'static str,
+    /// Worker FSM state this hook projects the card onto.
+    pub state: State,
+}
+
+pub(crate) const CODEX_WORKER_HOOKS: &[CodexWorkerHook] = &[
+    CodexWorkerHook {
+        event_name: "SessionStart",
+        state: State::Starting,
+    },
+    CodexWorkerHook {
+        event_name: "UserPromptSubmit",
+        state: State::Working,
+    },
+    CodexWorkerHook {
+        event_name: "PreToolUse",
+        state: State::Working,
+    },
+    CodexWorkerHook {
+        event_name: "PostToolUse",
+        state: State::Working,
+    },
+    CodexWorkerHook {
+        event_name: "PermissionRequest",
+        state: State::AwaitingInput,
+    },
+    CodexWorkerHook {
+        event_name: "Stop",
+        state: State::AwaitingInput,
+    },
+];
+
 /// Project a codex hook `kind` (e.g. `hook.codex.pre_tool_use`) onto the FSM
 /// transition target. Returns `None` for hooks we don't model — the FSM
 /// leaves the card's state alone in that case.
@@ -151,15 +186,11 @@ impl State {
 /// Previously this was `Idle` with a 750ms debounce, which leaked through
 /// whenever inter-tool reasoning took longer than the quiet window.
 fn codex_kind_to_state(kind: &str) -> Option<State> {
-    match kind {
-        "hook.codex.session_start" => Some(State::Starting),
-        "hook.codex.user_prompt_submit"
-        | "hook.codex.pre_tool_use"
-        | "hook.codex.post_tool_use" => Some(State::Working),
-        "hook.codex.stop" => Some(State::AwaitingInput),
-        "hook.codex.permission_request" => Some(State::AwaitingInput),
-        _ => None,
-    }
+    let bare = kind.strip_prefix("hook.codex.")?;
+    CODEX_WORKER_HOOKS
+        .iter()
+        .find(|h| crate::routes::codex::to_snake_case(h.event_name) == bare)
+        .map(|h| h.state)
 }
 
 // ---------------------------------------------------------------------------
@@ -691,6 +722,8 @@ impl Inner {
 mod tests {
     use super::*;
 
+    const CODEX_REQUIREMENTS_TOML: &str = include_str!("../../../docker/codex-requirements.toml");
+
     #[test]
     fn codex_kind_mapping() {
         assert_eq!(
@@ -718,6 +751,20 @@ mod tests {
             Some(State::AwaitingInput)
         );
         assert_eq!(codex_kind_to_state("hook.codex.something_else"), None);
+    }
+
+    #[test]
+    fn every_codex_worker_hook_is_registered_in_requirements_toml() {
+        for hook in CODEX_WORKER_HOOKS {
+            let needle = format!("[[hooks.{}]]", hook.event_name);
+            assert!(
+                CODEX_REQUIREMENTS_TOML.contains(&needle),
+                "docker/codex-requirements.toml is missing registration for {needle}; \
+                 FSM projects this hook to {:?} but codex CLI never fires it. \
+                 See #372.",
+                hook.state,
+            );
+        }
     }
 
     #[test]
