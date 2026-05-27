@@ -214,7 +214,12 @@ async fn boot_full() -> Boot {
     let addr = listener.local_addr().unwrap();
     let serve_app = app.clone();
     tokio::spawn(async move {
-        axum::serve(listener, serve_app).await.unwrap();
+        axum::serve(
+            listener,
+            serve_app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
 

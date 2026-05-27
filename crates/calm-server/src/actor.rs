@@ -34,11 +34,12 @@
 
 use axum::{
     body::Body,
-    extract::FromRequestParts,
+    extract::{ConnectInfo, FromRequestParts},
     http::{HeaderMap, Request, request::Parts},
     middleware::Next,
     response::Response,
 };
+use std::net::SocketAddr;
 
 use crate::error::CalmError;
 use crate::ids::{ActorId, CardId};
@@ -197,6 +198,30 @@ pub async fn actor_middleware(
     };
 
     request.extensions_mut().insert(actor);
+    Ok(next.run(request).await)
+}
+
+/// Axum middleware: require the TCP peer to be loopback.
+///
+/// Internal worker hook routes are loopback callbacks, not browser/user REST
+/// endpoints. This enforces that server-side boundary; same-host spoofing and
+/// future loopback reverse-proxy bypasses remain tracked under #362.
+pub async fn require_loopback_connect_info(
+    request: Request<Body>,
+    next: Next,
+) -> Result<Response, CalmError> {
+    let Some(ConnectInfo(peer)) = request.extensions().get::<ConnectInfo<SocketAddr>>() else {
+        return Err(CalmError::Forbidden(
+            "internal hook requires loopback peer information".into(),
+        ));
+    };
+
+    if !peer.ip().is_loopback() {
+        return Err(CalmError::Forbidden(
+            "internal hook requires loopback peer".into(),
+        ));
+    }
+
     Ok(next.run(request).await)
 }
 

@@ -16,11 +16,12 @@
 //! `tests/ws_*.rs` suite plus a smoke test below that asserts the upgrade
 //! rejects an unauthenticated request with 401 (no upgrade response).
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use calm_server::actor::actor_middleware;
+use calm_server::actor::{actor_middleware, require_loopback_connect_info};
 use calm_server::auth::{self, AuthConfig, AuthState, SESSION_COOKIE};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
@@ -76,7 +77,7 @@ fn dev_auth_state() -> AuthState {
 }
 
 /// Mirror the assembly done in `main.rs`: protected REST behind the
-/// session middleware, internal worker hooks behind actor validation only,
+/// session middleware, internal worker hooks behind actor + loopback validation,
 /// and public REST + auth routes un-gated. Returns the router ready for
 /// `oneshot` calls.
 fn app(state: AppState, auth_state: AuthState) -> axum::Router {
@@ -86,8 +87,9 @@ fn app(state: AppState, auth_state: AuthState) -> axum::Router {
             auth_state.clone(),
             auth::require_session,
         ));
-    let internal_rest =
-        routes::internal_router().layer(axum::middleware::from_fn(actor_middleware));
+    let internal_rest = routes::internal_router()
+        .layer(axum::middleware::from_fn(actor_middleware))
+        .layer(axum::middleware::from_fn(require_loopback_connect_info));
     let public_rest = routes::public_router();
     let auth_router = auth::router().with_state(auth_state.clone());
     axum::Router::new()
@@ -96,6 +98,10 @@ fn app(state: AppState, auth_state: AuthState) -> axum::Router {
         .merge(public_rest)
         .with_state(state)
         .merge(auth_router)
+}
+
+fn connect_info(addr: &str) -> axum::extract::ConnectInfo<SocketAddr> {
+    axum::extract::ConnectInfo(addr.parse().unwrap())
 }
 
 fn extract_session_cookie(resp_headers: &axum::http::HeaderMap) -> String {
@@ -445,6 +451,7 @@ async fn internal_worker_hooks_bypass_session_gate_but_protected_rest_does_not()
                 ))
                 .header("content-type", "application/json")
                 .header("X-Calm-Actor", "ai:claude")
+                .extension(connect_info("127.0.0.1:12345"))
                 .body(Body::from(json!({ "hook_event_name": "Stop" }).to_string()))
                 .unwrap(),
         )
@@ -470,6 +477,7 @@ async fn internal_worker_hooks_bypass_session_gate_but_protected_rest_does_not()
                 ))
                 .header("content-type", "application/json")
                 .header("X-Calm-Actor", "ai:codex")
+                .extension(connect_info("127.0.0.1:12345"))
                 .body(Body::from(json!({ "hook_event_name": "Stop" }).to_string()))
                 .unwrap(),
         )
@@ -482,6 +490,121 @@ async fn internal_worker_hooks_bypass_session_gate_but_protected_rest_does_not()
     );
     assert_hook_event(&boot.repo, &boot.codex_card_id, "hook.codex.stop").await;
     await_card_state(&boot.repo, &boot.codex_card_id, "AwaitingInput").await;
+}
+
+#[tokio::test]
+async fn internal_worker_hook_rejects_non_loopback_peer() {
+    let boot = hook_boot().await;
+
+    let resp = boot
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/internal/claude/hook?card_id={}",
+                    boot.claude_card_id
+                ))
+                .header("content-type", "application/json")
+                .header("X-Calm-Actor", "ai:claude")
+                .extension(connect_info("203.0.113.7:54321"))
+                .body(Body::from(json!({ "hook_event_name": "Stop" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "internal hook must reject non-loopback peers"
+    );
+}
+
+#[tokio::test]
+async fn internal_worker_hook_rejects_missing_connect_info() {
+    let boot = hook_boot().await;
+
+    let resp = boot
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/internal/claude/hook?card_id={}",
+                    boot.claude_card_id
+                ))
+                .header("content-type", "application/json")
+                .header("X-Calm-Actor", "ai:claude")
+                .body(Body::from(json!({ "hook_event_name": "Stop" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "internal hook must fail closed when ConnectInfo is missing"
+    );
+}
+
+#[tokio::test]
+async fn internal_worker_hook_allows_ipv6_loopback_and_rejects_ipv4_mapped_ipv6() {
+    let boot = hook_boot().await;
+
+    let ipv6_loopback_resp = boot
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/internal/claude/hook?card_id={}",
+                    boot.claude_card_id
+                ))
+                .header("content-type", "application/json")
+                .header("X-Calm-Actor", "ai:claude")
+                .extension(connect_info("[::1]:12345"))
+                .body(Body::from(json!({ "hook_event_name": "Stop" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        ipv6_loopback_resp.status(),
+        StatusCode::OK,
+        "internal hook should accept IPv6 loopback peers"
+    );
+    assert_hook_event(&boot.repo, &boot.claude_card_id, "hook.claude.stop").await;
+
+    let mapped_resp = boot
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/internal/claude/hook?card_id={}",
+                    boot.claude_card_id
+                ))
+                .header("content-type", "application/json")
+                .header("X-Calm-Actor", "ai:claude")
+                .extension(connect_info("[::ffff:127.0.0.1]:12345"))
+                .body(Body::from(json!({ "hook_event_name": "Stop" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        mapped_resp.status(),
+        StatusCode::FORBIDDEN,
+        "internal hook must reject IPv4-mapped IPv6 peers"
+    );
 }
 
 #[tokio::test]
