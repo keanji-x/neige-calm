@@ -11,11 +11,12 @@ use std::sync::Arc;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
-use calm_server::event::EventBus;
-use calm_server::ids::{CardId, WaveId};
+use calm_server::event::{Event, EventBus, EventScope};
+use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::wave_file::{TOOL_WAVE_CAT, TOOL_WAVE_LS};
 use calm_server::mcp_server::tools::wave_report::TOOL_REPORT_READ;
+use calm_server::mcp_server::tools::wave_state::TOOL_UPDATE_TASK_META;
 use calm_server::mcp_server::{CardIdentity, ToolRegistry};
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
 use calm_server::plugin_host::mcp::RpcError;
@@ -25,20 +26,24 @@ use serde_json::{Value, json};
 struct Boot {
     ctx: Arc<AppContext>,
     registry: Arc<ToolRegistry>,
+    sqlx_repo: Arc<SqlxRepo>,
     repo: Arc<dyn Repo>,
+    cove_id: CoveId,
     wave_id: WaveId,
     spec_card_id: CardId,
     worker_card_id: CardId,
     report_card_id: CardId,
+    other_spec_card_id: CardId,
     other_wave_card_id: CardId,
 }
 
 async fn boot() -> Boot {
-    let repo: Arc<dyn Repo> = Arc::new(
+    let sqlx_repo = Arc::new(
         SqlxRepo::open("sqlite::memory:")
             .await
             .expect("open in-memory sqlite"),
     );
+    let repo: Arc<dyn Repo> = sqlx_repo.clone();
     let cove = repo
         .cove_create(NewCove {
             name: "wave-file-test".into(),
@@ -96,7 +101,7 @@ async fn boot() -> Boot {
         .unwrap();
     let wave2 = repo
         .wave_create(NewWave {
-            cove_id: cove2.id,
+            cove_id: cove2.id.clone(),
             title: "other wave".into(),
             sort: None,
             cwd: String::new(),
@@ -111,6 +116,15 @@ async fn boot() -> Boot {
             kind: "codex".into(),
             sort: None,
             payload: json!({ "task": "other-wave" }),
+        })
+        .await
+        .unwrap();
+    let other_spec_card = repo
+        .card_create(NewCard {
+            wave_id: wave2.id.clone(),
+            kind: "codex".into(),
+            sort: Some(-1.0),
+            payload: json!({ "role": "spec" }),
         })
         .await
         .unwrap();
@@ -129,6 +143,7 @@ async fn boot() -> Boot {
         CardRole::Worker,
         wave2.id.clone(),
     );
+    card_role_cache.insert(other_spec_card.id.clone(), CardRole::Spec, wave2.id.clone());
 
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
@@ -147,11 +162,14 @@ async fn boot() -> Boot {
     Boot {
         ctx,
         registry,
+        sqlx_repo,
         repo,
+        cove_id: cove.id,
         wave_id: wave.id,
         spec_card_id: spec_card.id,
         worker_card_id: worker_card.id,
         report_card_id: report_card.id,
+        other_spec_card_id: other_spec_card.id,
         other_wave_card_id: other_wave_card.id,
     }
 }
@@ -183,12 +201,180 @@ fn worker_identity(boot: &Boot) -> CardIdentity {
     }
 }
 
+fn other_spec_identity(boot: &Boot) -> CardIdentity {
+    CardIdentity {
+        card_id: boot.other_spec_card_id.clone(),
+        role: CardRole::Spec,
+    }
+}
+
 fn content_json(value: &Value) -> Value {
     let content = value
         .get("content")
         .and_then(Value::as_str)
         .expect("content string");
     serde_json::from_str(content).expect("content is JSON")
+}
+
+async fn log_wave_event(boot: &Boot, wave_id: &WaveId, cove_id: &CoveId, event: Event) -> i64 {
+    log_wave_event_as(boot, ActorId::User, wave_id, cove_id, event).await
+}
+
+async fn log_wave_event_as(
+    boot: &Boot,
+    actor: ActorId,
+    wave_id: &WaveId,
+    cove_id: &CoveId,
+    event: Event,
+) -> i64 {
+    boot.repo
+        .log_pure_event(
+            actor,
+            EventScope::Wave {
+                wave: wave_id.clone(),
+                cove: cove_id.clone(),
+            },
+            None,
+            &boot.ctx.events,
+            &boot.ctx.card_role_cache,
+            &boot.ctx.wave_cove_cache,
+            event,
+        )
+        .await
+        .expect("log event")
+}
+
+async fn log_worker_card_event(boot: &Boot, event: Event) -> i64 {
+    boot.repo
+        .log_pure_event(
+            ActorId::AiCodex(boot.worker_card_id.clone()),
+            EventScope::Card {
+                card: boot.worker_card_id.clone(),
+                wave: boot.wave_id.clone(),
+                cove: boot.cove_id.clone(),
+            },
+            None,
+            &boot.ctx.events,
+            &boot.ctx.card_role_cache,
+            &boot.ctx.wave_cove_cache,
+            event,
+        )
+        .await
+        .expect("log worker card event")
+}
+
+async fn set_event_at(boot: &Boot, event_id: i64, at: i64) {
+    sqlx::query("UPDATE events SET at = ?1 WHERE id = ?2")
+        .bind(at)
+        .bind(event_id)
+        .execute(boot.sqlx_repo.pool())
+        .await
+        .expect("set event timestamp");
+}
+
+async fn set_card_updated_at(boot: &Boot, card_id: &CardId, updated_at: i64) {
+    sqlx::query("UPDATE cards SET updated_at = ?1 WHERE id = ?2")
+        .bind(updated_at)
+        .bind(card_id.as_str())
+        .execute(boot.sqlx_repo.pool())
+        .await
+        .expect("set card updated_at");
+}
+
+async fn request_codex(boot: &Boot, key: &str) -> i64 {
+    log_wave_event(
+        boot,
+        &boot.wave_id,
+        &boot.cove_id,
+        Event::CodexJobRequested {
+            idempotency_key: key.into(),
+            goal: format!("goal for {key}"),
+            context: json!({ "key": key }),
+            acceptance_criteria: Some(format!("accept {key}")),
+        },
+    )
+    .await
+}
+
+async fn complete_run(boot: &Boot, key: &str, summary: &str) -> i64 {
+    complete_run_with_result(boot, key, json!({ "summary": summary })).await
+}
+
+async fn complete_run_with_result(boot: &Boot, key: &str, result: Value) -> i64 {
+    log_worker_card_event(
+        boot,
+        Event::TaskCompleted {
+            idempotency_key: key.into(),
+            result,
+            artifacts: vec![],
+        },
+    )
+    .await
+}
+
+async fn accept_run(boot: &Boot, key: &str, reason: &str) {
+    call_tool(
+        boot,
+        TOOL_UPDATE_TASK_META,
+        spec_identity(boot),
+        json!({
+            "idempotency_key": key,
+            "status": "accepted",
+            "reason": reason,
+        }),
+    )
+    .await
+    .expect("spec can accept run");
+}
+
+async fn reject_run(boot: &Boot, key: &str, reason: &str) {
+    call_tool(
+        boot,
+        TOOL_UPDATE_TASK_META,
+        spec_identity(boot),
+        json!({
+            "idempotency_key": key,
+            "status": "rejected",
+            "reason": reason,
+        }),
+    )
+    .await
+    .expect("spec can reject run");
+}
+
+async fn worker_fail_run(boot: &Boot, key: &str, reason: &str) -> i64 {
+    log_worker_card_event(
+        boot,
+        Event::TaskFailed {
+            idempotency_key: key.into(),
+            reason: reason.into(),
+        },
+    )
+    .await
+}
+
+async fn materialize_worker(boot: &Boot, key: &str) -> CardId {
+    let card = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: boot.wave_id.clone(),
+            kind: "codex".into(),
+            sort: Some(10.0),
+            payload: json!({
+                "idempotency_key": key,
+                "goal": format!("goal for {key}"),
+                "context": { "key": key },
+                "acceptance_criteria": format!("accept {key}"),
+                "role_request": "codex",
+                "prompt": format!("prompt for {key}")
+            }),
+        })
+        .await
+        .expect("create worker card");
+    boot.ctx
+        .card_role_cache
+        .insert(card.id.clone(), CardRole::Worker, boot.wave_id.clone());
+    card.id
 }
 
 #[tokio::test]
@@ -211,11 +397,17 @@ async fn ls_root_returns_top_level_entries() {
     assert!(names.contains(&"wave.json"), "entries = {entries:?}");
     assert!(names.contains(&"report.md"), "entries = {entries:?}");
     assert!(names.contains(&"cards/"), "entries = {entries:?}");
+    assert!(names.contains(&"runs/"), "entries = {entries:?}");
     let cards = entries
         .iter()
         .find(|entry| entry["name"] == "cards/")
         .expect("cards dir");
     assert_eq!(cards["kind"], json!("dir"));
+    let runs = entries
+        .iter()
+        .find(|entry| entry["name"] == "runs/")
+        .expect("runs dir");
+    assert_eq!(runs["kind"], json!("dir"));
 }
 
 #[tokio::test]
@@ -244,6 +436,854 @@ async fn cards_index_lists_only_bound_wave_cards_without_payload() {
         cards.iter().all(|card| card.get("payload").is_none()),
         "cards/index.json must not include payloads: {cards:?}"
     );
+}
+
+#[tokio::test]
+async fn ls_runs_returns_projected_runs_for_bound_wave() {
+    let boot = boot().await;
+    request_codex(&boot, "run-list").await;
+    let worker_id = materialize_worker(&boot, "run-list").await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_LS,
+        spec_identity(&boot),
+        json!({ "path": "runs/" }),
+    )
+    .await
+    .expect("spec can list runs");
+    let runs = out.as_array().expect("runs ls returns array");
+    assert_eq!(runs.len(), 1, "runs = {runs:?}");
+    assert_eq!(runs[0]["name"], json!("run-list.md"));
+    assert_eq!(runs[0]["kind"], json!("file"));
+    assert_eq!(runs[0]["idempotency_key"], json!("run-list"));
+    assert_eq!(runs[0]["status"], json!("running"));
+    assert_eq!(runs[0]["run_kind"], json!("codex"));
+    assert_eq!(runs[0]["worker_card_id"], json!(worker_id.as_str()));
+}
+
+#[tokio::test]
+async fn runs_projection_ignores_non_worker_cards_with_idempotency_key_payloads() {
+    let boot = boot().await;
+    let decoy = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: boot.wave_id.clone(),
+            kind: "spec".into(),
+            sort: Some(2.0),
+            payload: json!({ "idempotency_key": "decoy" }),
+        })
+        .await
+        .expect("create decoy card");
+    boot.ctx
+        .card_role_cache
+        .insert(decoy.id, CardRole::Spec, boot.wave_id.clone());
+
+    request_codex(&boot, "real-run").await;
+    materialize_worker(&boot, "real-run").await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/index.json" }),
+    )
+    .await
+    .expect("spec can read runs index");
+    let runs = content_json(&out);
+    let runs = runs.as_array().expect("runs index is array");
+    let keys: Vec<&str> = runs
+        .iter()
+        .map(|run| run["idempotency_key"].as_str().unwrap())
+        .collect();
+    assert_eq!(keys, vec!["real-run"], "runs = {runs:?}");
+}
+
+#[tokio::test]
+async fn runs_index_json_returns_same_run_set_as_ls_with_full_fields() {
+    let boot = boot().await;
+    request_codex(&boot, "run-a").await;
+    request_codex(&boot, "run-b").await;
+    materialize_worker(&boot, "run-b").await;
+
+    let ls = call_tool(
+        &boot,
+        TOOL_WAVE_LS,
+        spec_identity(&boot),
+        json!({ "path": "runs" }),
+    )
+    .await
+    .expect("spec can list runs");
+    let ls_keys: Vec<&str> = ls
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|run| run["idempotency_key"].as_str().unwrap())
+        .collect();
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/index.json" }),
+    )
+    .await
+    .expect("spec can read runs index");
+    assert_eq!(out["content_type"], json!("application/json"));
+    let runs = content_json(&out);
+    let runs = runs.as_array().expect("runs index is array");
+    let index_keys: Vec<&str> = runs
+        .iter()
+        .map(|run| run["idempotency_key"].as_str().unwrap())
+        .collect();
+    assert_eq!(index_keys, ls_keys);
+    for run in runs {
+        assert!(run.get("status").is_some(), "run = {run:?}");
+        assert!(run.get("kind").is_some(), "run = {run:?}");
+        assert!(run.get("requested_at").is_some(), "run = {run:?}");
+        assert!(run.get("finished_at").is_some(), "run = {run:?}");
+        assert!(run.get("worker_card_id").is_some(), "run = {run:?}");
+    }
+}
+
+#[tokio::test]
+async fn completed_run_markdown_includes_read_only_banner_and_worker_fields() {
+    let boot = boot().await;
+    request_codex(&boot, "done-md").await;
+    materialize_worker(&boot, "done-md").await;
+    complete_run(&boot, "done-md", "finished cleanly").await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/done-md.md" }),
+    )
+    .await
+    .expect("spec can read run markdown");
+    assert_eq!(out["content_type"], json!("text/markdown"));
+    let md = out["content"].as_str().expect("markdown content");
+    assert!(md.contains("READ-ONLY PROJECTION"), "md = {md}");
+    assert!(md.contains("- Status: completed"), "md = {md}");
+    assert!(md.contains("## Goal"), "md = {md}");
+    assert!(md.contains("goal for done-md"), "md = {md}");
+    assert!(md.contains("## Context"), "md = {md}");
+    assert!(md.contains("## Acceptance Criteria"), "md = {md}");
+    assert!(md.contains("accept done-md"), "md = {md}");
+    assert!(md.contains("## Prompt"), "md = {md}");
+    assert!(md.contains("prompt for done-md"), "md = {md}");
+    assert!(md.contains("TaskCompleted"), "md = {md}");
+    assert!(md.contains("finished cleanly"), "md = {md}");
+}
+
+#[tokio::test]
+async fn completed_run_json_returns_structured_projection() {
+    let boot = boot().await;
+    request_codex(&boot, "done-json").await;
+    let worker_id = materialize_worker(&boot, "done-json").await;
+    complete_run(&boot, "done-json", "json complete").await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/done-json.json" }),
+    )
+    .await
+    .expect("spec can read run json");
+    assert_eq!(out["content_type"], json!("application/json"));
+    let run = content_json(&out);
+    assert_eq!(run["idempotency_key"], json!("done-json"));
+    assert_eq!(run["status"], json!("completed"));
+    assert_eq!(run["kind"], json!("codex"));
+    assert_eq!(run["worker_card_id"], json!(worker_id.as_str()));
+    assert_eq!(
+        run["worker_card_payload"]["prompt"],
+        json!("prompt for done-json")
+    );
+    assert_eq!(
+        run["events"]["requested"]["payload"]["idempotency_key"],
+        json!("done-json")
+    );
+    assert_eq!(
+        run["events"]["completed"]["payload"]["result"]["summary"],
+        json!("json complete")
+    );
+    assert!(run["verdict"].is_null(), "run = {run:?}");
+    assert!(run["events"]["verdict"].is_null(), "run = {run:?}");
+    assert!(run["events"]["failed"].is_null(), "run = {run:?}");
+}
+
+#[tokio::test]
+async fn worker_completion_result_status_accepted_is_not_spec_verdict() {
+    let boot = boot().await;
+    request_codex(&boot, "worker-accepted-payload").await;
+    materialize_worker(&boot, "worker-accepted-payload").await;
+    complete_run_with_result(
+        &boot,
+        "worker-accepted-payload",
+        json!({ "status": "accepted", "summary": "yay" }),
+    )
+    .await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/worker-accepted-payload.json" }),
+    )
+    .await
+    .expect("spec can read run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("completed"));
+    assert_eq!(
+        run["events"]["completed"]["payload"]["result"],
+        json!({ "status": "accepted", "summary": "yay" })
+    );
+    assert!(run["verdict"].is_null(), "run = {run:?}");
+    assert!(run["events"]["verdict"].is_null(), "run = {run:?}");
+}
+
+#[tokio::test]
+async fn accepted_verdict_does_not_overwrite_worker_completion() {
+    let boot = boot().await;
+    request_codex(&boot, "accepted-run").await;
+    materialize_worker(&boot, "accepted-run").await;
+    complete_run(&boot, "accepted-run", "did the thing").await;
+    accept_run(&boot, "accepted-run", "LGTM").await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/accepted-run.json" }),
+    )
+    .await
+    .expect("spec can read accepted run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("completed"));
+    assert_eq!(
+        run["events"]["completed"]["payload"]["result"],
+        json!({ "summary": "did the thing" })
+    );
+    assert_eq!(run["verdict"]["status"], json!("accepted"));
+    assert_eq!(run["verdict"]["reason"], json!("LGTM"));
+    assert_eq!(
+        run["events"]["verdict"]["payload"]["result"],
+        json!({ "status": "accepted", "reason": "LGTM" })
+    );
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/index.json" }),
+    )
+    .await
+    .expect("spec can read runs index");
+    let runs = content_json(&out);
+    let entry = runs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|run| run["idempotency_key"] == "accepted-run")
+        .unwrap_or_else(|| panic!("missing accepted-run: {runs:?}"));
+    assert_eq!(entry["status"], json!("completed"));
+    assert_eq!(entry["verdict"]["status"], json!("accepted"));
+    assert!(
+        entry["verdict"].get("reason").is_none(),
+        "entry = {entry:?}"
+    );
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/accepted-run.md" }),
+    )
+    .await
+    .expect("spec can read accepted run markdown");
+    let md = out["content"].as_str().expect("markdown content");
+    assert!(md.contains("## Verdict"), "md = {md}");
+    assert!(
+        md.contains("accepted by spec at") && md.contains(": LGTM"),
+        "md = {md}"
+    );
+    assert!(md.contains("did the thing"), "md = {md}");
+}
+
+#[tokio::test]
+async fn run_listing_updated_at_uses_latest_verdict_timestamp() {
+    let boot = boot().await;
+    let requested_id = request_codex(&boot, "verdict-mtime").await;
+    let worker_id = materialize_worker(&boot, "verdict-mtime").await;
+    let completed_id = complete_run(&boot, "verdict-mtime", "done before verdict").await;
+    let verdict_id = log_wave_event(
+        &boot,
+        &boot.wave_id,
+        &boot.cove_id,
+        Event::TaskCompleted {
+            idempotency_key: "verdict-mtime".into(),
+            result: json!({ "status": "accepted", "reason": "checked later" }),
+            artifacts: vec![],
+        },
+    )
+    .await;
+    set_event_at(&boot, requested_id, 50).await;
+    set_event_at(&boot, completed_id, 100).await;
+    set_card_updated_at(&boot, &worker_id, 150).await;
+    set_event_at(&boot, verdict_id, 200).await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_LS,
+        spec_identity(&boot),
+        json!({ "path": "runs/" }),
+    )
+    .await
+    .expect("spec can list runs");
+    let runs = out.as_array().expect("runs ls returns array");
+    let entry = runs
+        .iter()
+        .find(|run| run["idempotency_key"] == "verdict-mtime")
+        .unwrap_or_else(|| panic!("missing verdict-mtime: {runs:?}"));
+    assert_eq!(entry["finished_at"], json!(100));
+    assert_eq!(entry["verdict"]["at"], json!(200));
+    assert_eq!(entry["updated_at"], json!(200));
+}
+
+#[tokio::test]
+async fn rejected_verdict_does_not_overwrite_worker_completion() {
+    let boot = boot().await;
+    request_codex(&boot, "rejected-run").await;
+    materialize_worker(&boot, "rejected-run").await;
+    complete_run(&boot, "rejected-run", "did stuff").await;
+    reject_run(&boot, "rejected-run", "not enough detail").await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/rejected-run.json" }),
+    )
+    .await
+    .expect("spec can read rejected run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("completed"));
+    assert_eq!(
+        run["events"]["completed"]["payload"]["result"],
+        json!({ "summary": "did stuff" })
+    );
+    assert!(run["events"]["failed"].is_null(), "run = {run:?}");
+    assert_eq!(run["verdict"]["status"], json!("rejected"));
+    assert_eq!(run["verdict"]["reason"], json!("not enough detail"));
+    assert_eq!(
+        run["events"]["verdict"]["payload"]["reason"],
+        json!("not enough detail")
+    );
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/rejected-run.md" }),
+    )
+    .await
+    .expect("spec can read rejected run markdown");
+    let md = out["content"].as_str().expect("markdown content");
+    assert!(
+        md.contains("Verdict: rejected by spec at") && md.contains(": not enough detail"),
+        "md = {md}"
+    );
+}
+
+#[tokio::test]
+async fn worker_failure_without_spec_verdict_stays_failed() {
+    let boot = boot().await;
+    request_codex(&boot, "worker-failed").await;
+    materialize_worker(&boot, "worker-failed").await;
+    worker_fail_run(&boot, "worker-failed", "stub failure").await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/worker-failed.json" }),
+    )
+    .await
+    .expect("spec can read worker-failed run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("failed"));
+    assert_eq!(
+        run["events"]["failed"]["payload"]["reason"],
+        json!("stub failure")
+    );
+    assert!(run["verdict"].is_null(), "run = {run:?}");
+    assert!(run["events"]["verdict"].is_null(), "run = {run:?}");
+}
+
+#[tokio::test]
+async fn wave_scoped_dispatcher_failure_is_not_spec_verdict() {
+    let boot = boot().await;
+    log_wave_event_as(
+        &boot,
+        ActorId::KernelDispatcher,
+        &boot.wave_id,
+        &boot.cove_id,
+        Event::CodexJobRequested {
+            idempotency_key: "dispatcher-wave-failed".into(),
+            goal: "wave-scoped dispatcher request".into(),
+            context: json!({}),
+            acceptance_criteria: None,
+        },
+    )
+    .await;
+    log_wave_event_as(
+        &boot,
+        ActorId::KernelDispatcher,
+        &boot.wave_id,
+        &boot.cove_id,
+        Event::TaskFailed {
+            idempotency_key: "dispatcher-wave-failed".into(),
+            reason: "spawn failed".into(),
+        },
+    )
+    .await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/dispatcher-wave-failed.json" }),
+    )
+    .await
+    .expect("spec can read dispatcher-wave-failed run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("failed"));
+    assert_eq!(
+        run["events"]["failed"]["payload"]["reason"],
+        json!("spawn failed")
+    );
+    assert!(run["verdict"].is_null(), "run = {run:?}");
+    assert!(run["events"]["verdict"].is_null(), "run = {run:?}");
+}
+
+#[tokio::test]
+async fn retry_recovery_uses_later_worker_completion_as_status() {
+    let boot = boot().await;
+    request_codex(&boot, "retry-recovered").await;
+    materialize_worker(&boot, "retry-recovered").await;
+    let failed_id = worker_fail_run(&boot, "retry-recovered", "spawn failed").await;
+    let completed_id = complete_run_with_result(
+        &boot,
+        "retry-recovered",
+        json!({ "summary": "second attempt worked" }),
+    )
+    .await;
+    set_event_at(&boot, failed_id, 100).await;
+    set_event_at(&boot, completed_id, 200).await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/retry-recovered.json" }),
+    )
+    .await
+    .expect("spec can read retry-recovered run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("completed"));
+    assert_eq!(
+        run["events"]["failed"]["payload"]["reason"],
+        json!("spawn failed")
+    );
+    assert_eq!(
+        run["events"]["completed"]["payload"]["result"],
+        json!({ "summary": "second attempt worked" })
+    );
+}
+
+#[tokio::test]
+async fn dispatcher_retry_completion_overrides_earlier_completion() {
+    let boot = boot().await;
+    request_codex(&boot, "dispatcher-retry-recovered").await;
+    materialize_worker(&boot, "dispatcher-retry-recovered").await;
+    let first_completed_id = complete_run_with_result(
+        &boot,
+        "dispatcher-retry-recovered",
+        json!({ "summary": "first attempt" }),
+    )
+    .await;
+    let failed_id = worker_fail_run(
+        &boot,
+        "dispatcher-retry-recovered",
+        "spawn failed mid-stream",
+    )
+    .await;
+    let retry_completed_id = complete_run_with_result(
+        &boot,
+        "dispatcher-retry-recovered",
+        json!({ "summary": "retry worked" }),
+    )
+    .await;
+    set_event_at(&boot, first_completed_id, 100).await;
+    set_event_at(&boot, failed_id, 200).await;
+    set_event_at(&boot, retry_completed_id, 300).await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/dispatcher-retry-recovered.json" }),
+    )
+    .await
+    .expect("spec can read dispatcher-retry-recovered run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("completed"));
+    assert_eq!(
+        run["events"]["completed"]["payload"]["result"],
+        json!({ "summary": "retry worked" })
+    );
+}
+
+#[tokio::test]
+async fn retry_regression_uses_later_worker_failure_as_status() {
+    let boot = boot().await;
+    request_codex(&boot, "retry-regressed").await;
+    materialize_worker(&boot, "retry-regressed").await;
+    let completed_id = complete_run(&boot, "retry-regressed", "first attempt worked").await;
+    let failed_id = worker_fail_run(&boot, "retry-regressed", "retry failed").await;
+    set_event_at(&boot, completed_id, 100).await;
+    set_event_at(&boot, failed_id, 200).await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/retry-regressed.json" }),
+    )
+    .await
+    .expect("spec can read retry-regressed run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("failed"));
+    assert_eq!(
+        run["events"]["completed"]["payload"]["result"],
+        json!({ "summary": "first attempt worked" })
+    );
+    assert_eq!(
+        run["events"]["failed"]["payload"]["reason"],
+        json!("retry failed")
+    );
+}
+
+#[tokio::test]
+async fn final_event_order_uses_event_id_not_wall_clock_at() {
+    let boot = boot().await;
+    request_codex(&boot, "retry-regressed-skew").await;
+    materialize_worker(&boot, "retry-regressed-skew").await;
+    let completed_id = complete_run(&boot, "retry-regressed-skew", "first attempt worked").await;
+    let failed_id = worker_fail_run(&boot, "retry-regressed-skew", "retry failed").await;
+    assert!(failed_id > completed_id);
+    set_event_at(&boot, completed_id, 1000).await;
+    set_event_at(&boot, failed_id, 500).await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/retry-regressed-skew.json" }),
+    )
+    .await
+    .expect("spec can read retry-regressed-skew run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("failed"));
+    assert_eq!(run["finished_at"], json!(500));
+    assert_eq!(
+        run["events"]["completed"]["payload"]["result"],
+        json!({ "summary": "first attempt worked" })
+    );
+    assert_eq!(
+        run["events"]["failed"]["payload"]["reason"],
+        json!("retry failed")
+    );
+}
+
+#[tokio::test]
+async fn final_event_same_timestamp_uses_event_id() {
+    let boot = boot().await;
+    request_codex(&boot, "retry-tie").await;
+    materialize_worker(&boot, "retry-tie").await;
+    let failed_id = worker_fail_run(&boot, "retry-tie", "same millisecond failure").await;
+    let completed_id = complete_run(&boot, "retry-tie", "same millisecond success").await;
+    assert!(completed_id > failed_id);
+    set_event_at(&boot, failed_id, 100).await;
+    set_event_at(&boot, completed_id, 100).await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/retry-tie.json" }),
+    )
+    .await
+    .expect("spec can read retry-tie run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("completed"));
+    assert_eq!(
+        run["events"]["completed"]["payload"]["result"],
+        json!({ "summary": "same millisecond success" })
+    );
+    assert_eq!(
+        run["events"]["failed"]["payload"]["reason"],
+        json!("same millisecond failure")
+    );
+}
+
+#[tokio::test]
+async fn worker_card_without_request_is_unknown_even_when_materialized() {
+    let boot = boot().await;
+    let worker_id = materialize_worker(&boot, "orphan-worker").await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/orphan-worker.json" }),
+    )
+    .await
+    .expect("spec can read orphan-worker run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("unknown"));
+    assert_eq!(run["worker_card_id"], json!(worker_id.as_str()));
+    assert!(run["events"]["requested"].is_null(), "run = {run:?}");
+}
+
+#[tokio::test]
+async fn spec_rejection_without_worker_failure_stays_out_of_failed_pool() {
+    let boot = boot().await;
+    request_codex(&boot, "reject-only").await;
+    reject_run(&boot, "reject-only", "not started").await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/reject-only.json" }),
+    )
+    .await
+    .expect("spec can read reject-only run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("requested"));
+    assert!(run["events"]["failed"].is_null(), "run = {run:?}");
+    assert_eq!(run["verdict"]["status"], json!("rejected"));
+    assert_eq!(run["verdict"]["reason"], json!("not started"));
+}
+
+#[tokio::test]
+async fn rejected_verdict_before_worker_completion_preserves_worker_output() {
+    let boot = boot().await;
+    request_codex(&boot, "reject-out-of-order").await;
+    materialize_worker(&boot, "reject-out-of-order").await;
+    reject_run(&boot, "reject-out-of-order", "early rejection").await;
+    complete_run(&boot, "reject-out-of-order", "worker arrived later").await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/reject-out-of-order.json" }),
+    )
+    .await
+    .expect("spec can read reject-out-of-order run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("completed"));
+    assert_eq!(
+        run["events"]["completed"]["payload"]["result"],
+        json!({ "summary": "worker arrived later" })
+    );
+    assert!(run["events"]["failed"].is_null(), "run = {run:?}");
+    assert_eq!(run["verdict"]["status"], json!("rejected"));
+    assert_eq!(run["verdict"]["reason"], json!("early rejection"));
+}
+
+#[tokio::test]
+async fn verdict_before_worker_completion_still_preserves_worker_output() {
+    let boot = boot().await;
+    request_codex(&boot, "out-of-order").await;
+    materialize_worker(&boot, "out-of-order").await;
+    log_wave_event(
+        &boot,
+        &boot.wave_id,
+        &boot.cove_id,
+        Event::TaskCompleted {
+            idempotency_key: "out-of-order".into(),
+            result: json!({ "status": "accepted", "reason": "early LGTM" }),
+            artifacts: vec![],
+        },
+    )
+    .await;
+    complete_run(&boot, "out-of-order", "worker arrived later").await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/out-of-order.json" }),
+    )
+    .await
+    .expect("spec can read out-of-order run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("completed"));
+    assert_eq!(
+        run["events"]["completed"]["payload"]["result"],
+        json!({ "summary": "worker arrived later" })
+    );
+    assert_eq!(run["verdict"]["status"], json!("accepted"));
+    assert_eq!(run["verdict"]["reason"], json!("early LGTM"));
+}
+
+async fn assert_reserved_run_key_error(tool: &str, path: &str, expect: &str) {
+    let boot = boot().await;
+    request_codex(&boot, "index").await;
+
+    let err = call_tool(&boot, tool, spec_identity(&boot), json!({ "path": path }))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, RpcError::INTERNAL_ERROR);
+    assert!(
+        err.message
+            .contains("idempotency_key `index` collides with reserved path"),
+        "{expect}: err = {err:?}"
+    );
+    assert!(
+        err.message.contains("Remediation: stop submitting jobs"),
+        "{expect}: err = {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn reserved_run_key_returns_structured_error_for_runs_index_json() {
+    assert_reserved_run_key_error(TOOL_WAVE_CAT, "runs/index.json", "cat runs/index.json").await;
+}
+
+#[tokio::test]
+async fn reserved_run_key_returns_structured_error_for_ls_root() {
+    assert_reserved_run_key_error(TOOL_WAVE_LS, "/", "ls /").await;
+}
+
+#[tokio::test]
+async fn reserved_run_key_returns_structured_error_for_ls_runs() {
+    assert_reserved_run_key_error(TOOL_WAVE_LS, "runs/", "ls runs/").await;
+}
+
+#[tokio::test]
+async fn reserved_run_key_returns_structured_error_for_run_markdown() {
+    assert_reserved_run_key_error(TOOL_WAVE_CAT, "runs/index.md", "cat runs/index.md").await;
+}
+
+#[tokio::test]
+async fn runs_do_not_leak_across_waves() {
+    let boot = boot().await;
+    request_codex(&boot, "private-run").await;
+    materialize_worker(&boot, "private-run").await;
+
+    let err = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        other_spec_identity(&boot),
+        json!({ "path": "runs/private-run.md" }),
+    )
+    .await
+    .expect_err("other wave must not see this run");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert!(
+        err.message.contains("path not available in this view"),
+        "err = {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn unknown_run_key_matches_unknown_card_error_shape() {
+    let boot = boot().await;
+    let card_err = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "cards/not-a-card/payload.json" }),
+    )
+    .await
+    .expect_err("unknown card must be unavailable");
+    let run_err = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/not-a-run.md" }),
+    )
+    .await
+    .expect_err("unknown run must be unavailable");
+    assert_eq!(run_err.code, card_err.code);
+    assert_eq!(run_err.code, RpcError::INVALID_PARAMS);
+    assert!(run_err.message.contains("path not available in this view"));
+}
+
+#[tokio::test]
+async fn run_status_derivation_follows_projection_rules() {
+    let boot = boot().await;
+    request_codex(&boot, "request-only").await;
+    request_codex(&boot, "running-run").await;
+    materialize_worker(&boot, "running-run").await;
+    request_codex(&boot, "completed-run").await;
+    complete_run(&boot, "completed-run", "done").await;
+    request_codex(&boot, "failed-run").await;
+    worker_fail_run(&boot, "failed-run", "bad exit").await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/index.json" }),
+    )
+    .await
+    .expect("spec can read runs index");
+    let runs = content_json(&out);
+    let runs = runs.as_array().expect("runs index array");
+    let status = |key: &str| {
+        runs.iter()
+            .find(|run| run["idempotency_key"] == key)
+            .unwrap_or_else(|| panic!("missing {key}: {runs:?}"))["status"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(status("request-only"), "requested");
+    assert_eq!(status("running-run"), "running");
+    assert_eq!(status("completed-run"), "completed");
+    assert_eq!(status("failed-run"), "failed");
+}
+
+#[tokio::test]
+async fn empty_wave_has_empty_runs_projection() {
+    let boot = boot().await;
+
+    let ls = call_tool(
+        &boot,
+        TOOL_WAVE_LS,
+        spec_identity(&boot),
+        json!({ "path": "runs/" }),
+    )
+    .await
+    .expect("spec can list runs");
+    assert_eq!(ls, json!([]));
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/index.json" }),
+    )
+    .await
+    .expect("spec can read empty runs index");
+    assert_eq!(content_json(&out), json!([]));
 }
 
 #[tokio::test]

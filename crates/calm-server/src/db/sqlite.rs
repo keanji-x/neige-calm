@@ -23,6 +23,7 @@ use async_trait::async_trait;
 use futures::future::BoxFuture;
 use sqlx::ConnectOptions;
 use sqlx::Executor;
+use sqlx::QueryBuilder;
 use sqlx::Row;
 use sqlx::Sqlite;
 use sqlx::SqlitePool;
@@ -30,8 +31,8 @@ use sqlx::Transaction;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
 use super::{
-    RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, WriteInTxFn, WriteWithEventFn,
-    WriteWithEventsFn,
+    RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, WaveEvent, WriteInTxFn,
+    WriteWithEventFn, WriteWithEventsFn,
 };
 use crate::card_role_cache::CardRoleCache;
 use crate::error::{CalmError, Result};
@@ -3018,6 +3019,86 @@ impl RepoEventWrite for SqlxRepo {
                     tracing::error!(
                         id, kind = %kind, error = %e,
                         "events_since: skipping row that no longer matches Event enum",
+                    );
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    async fn events_for_wave(&self, wave_id: &str, kinds: &[&str]) -> Result<Vec<WaveEvent>> {
+        if kinds.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        type ScopeRow = (
+            i64,            // id
+            String,         // kind
+            String,         // payload
+            String,         // actor
+            i64,            // at
+            Option<String>, // scope_kind
+            Option<String>, // scope_cove
+            Option<String>, // scope_wave
+            Option<String>, // scope_card
+        );
+
+        let mut query = QueryBuilder::<Sqlite>::new(
+            r#"SELECT id, kind, payload, actor, at,
+                      scope_kind, scope_cove, scope_wave, scope_card
+               FROM events
+               WHERE scope_wave = "#,
+        );
+        query.push_bind(wave_id);
+        query.push(" AND kind IN (");
+        let mut separated = query.separated(", ");
+        for kind in kinds {
+            separated.push_bind(*kind);
+        }
+        separated.push_unseparated(") ORDER BY id ASC");
+
+        let rows: Vec<ScopeRow> = query.build_query_as().fetch_all(&self.pool).await?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for (id, kind, payload_text, actor_text, at, sk, sc, sw, scard) in rows {
+            let payload: serde_json::Value = match serde_json::from_str(&payload_text) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!(
+                        id, kind = %kind, error = %e,
+                        "events_for_wave: skipping row with malformed payload JSON",
+                    );
+                    continue;
+                }
+            };
+            let actor: ActorId = match serde_json::from_str(&actor_text) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!(
+                        id, kind = %kind, error = %e,
+                        "events_for_wave: skipping row with malformed actor JSON",
+                    );
+                    continue;
+                }
+            };
+            let scope = EventScope::from_row(
+                sk.as_deref(),
+                sc.as_deref(),
+                sw.as_deref(),
+                scard.as_deref(),
+            );
+            match Event::from_kind_and_payload(&kind, payload) {
+                Ok(event) => out.push(WaveEvent {
+                    id,
+                    at,
+                    actor,
+                    scope,
+                    event,
+                }),
+                Err(e) => {
+                    tracing::error!(
+                        id, kind = %kind, error = %e,
+                        "events_for_wave: skipping row that no longer matches Event enum",
                     );
                 }
             }
