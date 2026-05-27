@@ -1,11 +1,11 @@
 // Component-level tests for the Sidebar pin-wave feature.
 //
-// Pinned waves appear in a dedicated "Pinned" section above "Waiting on you".
-// A pin/unpin button is revealed on row hover. Waves excluded from "Waiting
-// on you" when they are already pinned (no double render).
+// Pinned waves appear in a dedicated "Pinned" section below "Waiting on you".
+// A pin/unpin button is revealed on row hover. Pinned waves that need
+// attention also appear in "Waiting on you" and increment cove warn badges.
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { SessionContext } from '../../app/SessionProvider';
 import { Sidebar } from './Sidebar';
@@ -70,20 +70,31 @@ describe('Sidebar pinned section', () => {
   });
 
   it('renders a Pinned section when a wave has pinnedAt set', () => {
-    const wave = makeWave({ pinnedAt: 1000 });
+    const wave = makeWave({ lifecycle: 'draft', anyCardNeedsInput: false, pinnedAt: 1000 });
     render(wrap(<Sidebar {...sidebarProps([wave])} />));
     expect(screen.getByRole('region', { name: 'Pinned' })).toBeTruthy();
     expect(screen.getByText('My wave')).toBeTruthy();
   });
 
-  it('pinned wave does not appear in Waiting on you', () => {
-    // lifecycle=blocked + pinnedAt set → waiting predicate matches but
-    // pinned waves are filtered out of the Waiting section.
+  it('pinned wave appears in both Pinned and Waiting on you', () => {
     const wave = makeWave({ lifecycle: 'blocked', pinnedAt: 1000 });
     render(wrap(<Sidebar {...sidebarProps([wave])} />));
     const pinned = screen.getByRole('region', { name: 'Pinned' });
+    const waiting = screen.getByRole('region', { name: 'Waiting on you' });
     expect(pinned).toBeTruthy();
-    expect(screen.queryByRole('region', { name: 'Waiting on you' })).toBeNull();
+    expect(waiting).toBeTruthy();
+    expect(pinned).toHaveTextContent('My wave');
+    expect(waiting).toHaveTextContent('My wave');
+  });
+
+  it('renders Waiting on you before Pinned when a wave is both pinned and waiting', () => {
+    const wave = makeWave({ lifecycle: 'blocked', pinnedAt: 1000 });
+    render(wrap(<Sidebar {...sidebarProps([wave])} />));
+    const waiting = screen.getByRole('region', { name: 'Waiting on you' });
+    const pinned = screen.getByRole('region', { name: 'Pinned' });
+    expect(
+      waiting.compareDocumentPosition(pinned) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it('unpinned wave that needs attention appears only in Waiting on you', () => {
@@ -93,9 +104,21 @@ describe('Sidebar pinned section', () => {
     expect(screen.getByRole('region', { name: 'Waiting on you' })).toBeTruthy();
   });
 
+  it('waiting wave renders Waiting on you as an attention zone', () => {
+    const wave = makeWave({ lifecycle: 'blocked', pinnedAt: null });
+    render(wrap(<Sidebar {...sidebarProps([wave])} />));
+    const waiting = screen.getByRole('region', { name: 'Waiting on you' });
+    expect(waiting.classList.contains('attn-zone')).toBe(true);
+  });
+
   it('calls onPinWave(id, false) when pin button is clicked on a pinned wave', () => {
     const onPinWave = vi.fn();
-    const wave = makeWave({ id: 'w-pin', pinnedAt: 1000 });
+    const wave = makeWave({
+      id: 'w-pin',
+      lifecycle: 'draft',
+      anyCardNeedsInput: false,
+      pinnedAt: 1000,
+    });
     render(wrap(<Sidebar {...sidebarProps([wave], onPinWave)} />));
     const btn = screen.getByRole('button', { name: 'Unpin wave' });
     fireEvent.click(btn);
@@ -116,7 +139,8 @@ describe('Sidebar pinned section', () => {
     const w1 = makeWave({ id: 'w1', title: 'First', pinnedAt: 1000 });
     const w2 = makeWave({ id: 'w2', title: 'Second', pinnedAt: 500 });
     render(wrap(<Sidebar {...sidebarProps([w1, w2])} />));
-    const buttons = screen.getAllByRole('button', { name: /First|Second/ });
+    const pinned = screen.getByRole('region', { name: 'Pinned' });
+    const buttons = within(pinned).getAllByRole('button', { name: /First|Second/ });
     // "Second" (pinnedAt=500) must come before "First" (pinnedAt=1000)
     expect(buttons[0]).toHaveTextContent('Second');
     expect(buttons[1]).toHaveTextContent('First');
@@ -124,22 +148,13 @@ describe('Sidebar pinned section', () => {
 });
 
 describe('Sidebar per-cove badge parity with Waiting section', () => {
-  it('pinned blocked wave does not increment the cove red waiting badge', () => {
-    // A wave that is pinned AND blocked should appear in Pinned, not in the
-    // Waiting section, and the cove badge should show no red waiting count.
+  it('pinned blocked wave increments the cove warn waiting badge', () => {
     const wave = makeWave({ id: 'w-pinned-blocked', lifecycle: 'blocked', pinnedAt: 1000 });
     render(wrap(<Sidebar {...sidebarProps([wave])} />));
-    // Pinned section shows up
     expect(screen.getByRole('region', { name: 'Pinned' })).toBeTruthy();
-    // Waiting section is absent
-    expect(screen.queryByRole('region', { name: 'Waiting on you' })).toBeNull();
-    // Cove badge: no warn badge (no unpinned waiting wave) — the badge should
-    // show the muted total count (1), not a warn (red) count.
-    // The muted badge reads "1" (total cove waves) and has className "muted".
-    const badge = document.querySelector('.cove-nav-badge');
+    expect(screen.getByRole('region', { name: 'Waiting on you' })).toBeTruthy();
+    const badge = document.querySelector('.cove-nav-badge.warn');
     expect(badge).toBeTruthy();
-    expect(badge?.classList.contains('warn')).toBe(false);
-    expect(badge?.classList.contains('muted')).toBe(true);
     expect(badge?.textContent).toBe('1');
   });
 
@@ -150,6 +165,36 @@ describe('Sidebar per-cove badge parity with Waiting section', () => {
     expect(badge).toBeTruthy();
     expect(badge?.classList.contains('warn')).toBe(true);
     expect(badge?.textContent).toBe('1');
+  });
+
+  it('pinned attention row carries the attention class for warn title styling', () => {
+    const wave = makeWave({ id: 'w-pinned-attention', lifecycle: 'blocked', pinnedAt: 1000 });
+    render(wrap(<Sidebar {...sidebarProps([wave])} />));
+    const pinned = screen.getByRole('region', { name: 'Pinned' });
+    const row = pinned.querySelector('.side-wave-row.attention');
+    expect(row).toBeTruthy();
+    expect(row?.querySelector('.side-wave-title')).toHaveTextContent('My wave');
+  });
+
+  it('waiting attention row carries the attention class for warn title styling', () => {
+    const wave = makeWave({ id: 'w-attention', lifecycle: 'blocked', pinnedAt: null });
+    render(wrap(<Sidebar {...sidebarProps([wave])} />));
+    const waiting = screen.getByRole('region', { name: 'Waiting on you' });
+    const row = waiting.querySelector('.side-wave-row.attention');
+    expect(row).toBeTruthy();
+    expect(row?.querySelector('.side-wave-title')).toHaveTextContent('My wave');
+  });
+
+  it('inline cove row carries the attention class for warn title styling', () => {
+    const onPinWave = vi.fn();
+    const wave = makeWave({ id: 'w-inline-attention', lifecycle: 'blocked', pinnedAt: null });
+    render(wrap(<Sidebar {...sidebarProps([wave], onPinWave)} />));
+
+    fireEvent.click(screen.getByRole('button', { name: /Expand cove Atlas/ }));
+
+    const inline = screen.getByRole('group', { name: 'Waves in Atlas' });
+    expect(within(inline).getByText('My wave')).toBeTruthy();
+    expect(inline.querySelector('.side-wave-row.attention .side-wave-title')).toBeTruthy();
   });
 });
 
