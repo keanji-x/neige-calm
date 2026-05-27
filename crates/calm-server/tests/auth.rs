@@ -20,13 +20,19 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use calm_server::actor::actor_middleware;
 use calm_server::auth::{self, AuthConfig, AuthState, SESSION_COOKIE};
+use calm_server::card_role_cache::CardRoleCache;
+use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
-use calm_server::event::EventBus;
+use calm_server::event::{Event, EventBus};
+use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
+use calm_server::wave_cove_cache::WaveCoveCache;
 use http_body_util::BodyExt;
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 async fn fresh_state() -> AppState {
@@ -70,17 +76,23 @@ fn dev_auth_state() -> AuthState {
 }
 
 /// Mirror the assembly done in `main.rs`: protected REST behind the
-/// session middleware, public REST + auth routes un-gated. Returns the
-/// router ready for `oneshot` calls.
+/// session middleware, internal worker hooks behind actor validation only,
+/// and public REST + auth routes un-gated. Returns the router ready for
+/// `oneshot` calls.
 fn app(state: AppState, auth_state: AuthState) -> axum::Router {
-    let protected_rest = routes::protected_router().layer(axum::middleware::from_fn_with_state(
-        auth_state.clone(),
-        auth::require_session,
-    ));
+    let protected_rest = routes::protected_router()
+        .layer(axum::middleware::from_fn(actor_middleware))
+        .layer(axum::middleware::from_fn_with_state(
+            auth_state.clone(),
+            auth::require_session,
+        ));
+    let internal_rest =
+        routes::internal_router().layer(axum::middleware::from_fn(actor_middleware));
     let public_rest = routes::public_router();
     let auth_router = auth::router().with_state(auth_state.clone());
     axum::Router::new()
         .merge(protected_rest)
+        .merge(internal_rest)
         .merge(public_rest)
         .with_state(state)
         .merge(auth_router)
@@ -99,6 +111,133 @@ fn extract_session_cookie(resp_headers: &axum::http::HeaderMap) -> String {
         "expected {SESSION_COOKIE}=... got {first}"
     );
     first.to_string()
+}
+
+struct HookBoot {
+    app: axum::Router,
+    repo: Arc<dyn Repo>,
+    claude_card_id: String,
+    codex_card_id: String,
+}
+
+async fn hook_boot() -> HookBoot {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let cove = repo
+        .cove_create(NewCove {
+            name: "hook-auth".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo
+        .wave_create(NewWave {
+            cove_id: cove.id.clone(),
+            title: "hook auth wave".into(),
+            sort: None,
+            cwd: String::new(),
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let claude_card = repo
+        .card_create(NewCard {
+            wave_id: wave.id.clone(),
+            kind: "claude".into(),
+            sort: None,
+            payload: json!({}),
+        })
+        .await
+        .unwrap();
+    let codex_card = repo
+        .card_create(NewCard {
+            wave_id: wave.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({}),
+        })
+        .await
+        .unwrap();
+
+    sqlx::query("UPDATE cards SET role = 'worker' WHERE id IN (?1, ?2)")
+        .bind(claude_card.id.as_str())
+        .bind(codex_card.id.as_str())
+        .execute(repo.pool())
+        .await
+        .unwrap();
+
+    let card_role_cache = CardRoleCache::new();
+    card_role_cache.insert(claude_card.id.clone(), CardRole::Worker, wave.id.clone());
+    card_role_cache.insert(codex_card.id.clone(), CardRole::Worker, wave.id.clone());
+
+    let wave_cove_cache = WaveCoveCache::new();
+    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+
+    let events = EventBus::new();
+    let repo_dyn: Arc<dyn Repo> = repo.clone();
+    let state = AppState::from_parts(
+        repo_dyn.clone(),
+        events.clone(),
+        Arc::new(DaemonClient::new_stub()),
+        Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            repo_dyn.clone(),
+            std::path::PathBuf::new(),
+            std::env::temp_dir().join("calm-plugins-data-hook-auth"),
+            Vec::new(),
+            events.clone(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+        )),
+        Arc::new(CodexClient::new_stub()),
+        Some(card_role_cache.clone()),
+        Some(wave_cove_cache.clone()),
+    );
+
+    calm_server::card_fsm::spawn(repo_dyn.clone(), events, card_role_cache, wave_cove_cache);
+    tokio::task::yield_now().await;
+
+    HookBoot {
+        app: app(state, live_auth_state("alice", "hunter2")),
+        repo: repo_dyn,
+        claude_card_id: claude_card.id.to_string(),
+        codex_card_id: codex_card.id.to_string(),
+    }
+}
+
+async fn await_card_state(repo: &Arc<dyn Repo>, card_id: &str, expected_state: &str) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let overlays = repo.overlays_for("card", card_id).await.unwrap();
+        if overlays.iter().any(|o| {
+            o.kind == "status"
+                && o.payload.get("state").and_then(Value::as_str) == Some(expected_state)
+        }) {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {card_id} status {expected_state}; overlays: {overlays:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+async fn assert_hook_event(repo: &Arc<dyn Repo>, card_id: &str, want_kind: &str) {
+    let rows = repo.events_since(0, None).await.unwrap();
+    assert!(
+        rows.iter().any(|(_, _, _, ev)| match ev {
+            Event::ClaudeHook {
+                card_id: id, kind, ..
+            }
+            | Event::CodexHook {
+                card_id: id, kind, ..
+            } => id.as_str() == card_id && kind == want_kind,
+            _ => false,
+        }),
+        "expected hook event {want_kind} for card {card_id}; rows: {rows:?}"
+    );
 }
 
 #[tokio::test]
@@ -270,6 +409,79 @@ async fn protected_route_without_session_returns_401() {
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(v["code"], "unauthorized");
     assert_eq!(v["error"], "unauthorized");
+}
+
+#[tokio::test]
+async fn internal_worker_hooks_bypass_session_gate_but_protected_rest_does_not() {
+    let boot = hook_boot().await;
+
+    let protected_resp = boot
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/coves")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        protected_resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "protected user REST must still require a session"
+    );
+
+    let claude_resp = boot
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/internal/claude/hook?card_id={}",
+                    boot.claude_card_id
+                ))
+                .header("content-type", "application/json")
+                .header("X-Calm-Actor", "ai:claude")
+                .body(Body::from(json!({ "hook_event_name": "Stop" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        claude_resp.status(),
+        StatusCode::OK,
+        "Claude hook should be accepted without a session cookie"
+    );
+    assert_hook_event(&boot.repo, &boot.claude_card_id, "hook.claude.stop").await;
+    await_card_state(&boot.repo, &boot.claude_card_id, "AwaitingInput").await;
+
+    let codex_resp = boot
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/internal/codex/hook?card_id={}",
+                    boot.codex_card_id
+                ))
+                .header("content-type", "application/json")
+                .header("X-Calm-Actor", "ai:codex")
+                .body(Body::from(json!({ "hook_event_name": "Stop" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        codex_resp.status(),
+        StatusCode::NO_CONTENT,
+        "Codex hook should keep its existing 204 success semantics without a session cookie"
+    );
+    assert_hook_event(&boot.repo, &boot.codex_card_id, "hook.codex.stop").await;
+    await_card_state(&boot.repo, &boot.codex_card_id, "AwaitingInput").await;
 }
 
 #[tokio::test]

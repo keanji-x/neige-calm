@@ -126,6 +126,13 @@ async fn main() -> anyhow::Result<()> {
             auth::require_session,
         ));
 
+    // Internal worker hooks — loopback callbacks from codex/Claude worker
+    // subprocesses. They carry `X-Calm-Actor` but no browser session cookie,
+    // so they get actor validation only and stay outside the human session
+    // gate.
+    let internal_rest =
+        routes::internal_router().layer(axum::middleware::from_fn(actor_middleware));
+
     // WS routes — issue #189 — every upgrade handshake must carry a valid
     // session cookie (cookies are sent automatically with the WS upgrade
     // GET). The `actor_middleware` layer is NOT applied here because the
@@ -147,6 +154,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut app = axum::Router::new()
         .merge(protected_rest)
+        .merge(internal_rest)
         .merge(protected_ws)
         .merge(public_rest)
         .with_state(state)
