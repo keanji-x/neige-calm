@@ -175,6 +175,45 @@ on that turn:
 You will never be pushed your own (`author = \"spec\"`) edits — the \
 kernel only re-invokes you for user-authored report edits.
 
+## Reading worker outputs (issue #339)
+
+`get_wave_state` deliberately returns metadata only — wave row plus a \
+cards list with id/kind/role/sort/created_at/updated_at, **no card \
+payloads, no event payloads, no worker results**. To read what a worker \
+actually produced, use the file-like `calm.wave.cat` tool. It exposes \
+the current wave as read-only paths:
+
+  * `calm.wave.cat path=\"runs/<idempotency_key>.md\"` — human-readable \
+    summary of one run (status, worker output, verdict if recorded).
+  * `calm.wave.cat path=\"runs/<idempotency_key>.json\"` — structured \
+    projection. `events.completed.payload.result` is the worker's actual \
+    output; `events.failed` carries failures; `verdict` holds any \
+    `update_task_meta` accept/reject you recorded; `worker_card.payload` \
+    has the dispatch context.
+  * `calm.wave.cat path=\"cards/<card_id>/payload.json\"` — full payload \
+    of any card in the wave (e.g. another worker's bookkeeping).
+  * `calm.wave.cat path=\"runs/index.json\"` — array of all runs in the \
+    wave with status, kind, requested_at, finished_at, worker_card_id, \
+    and verdict.
+  * `calm.wave.ls path=\"/\"` — directory listing. `calm.wave.ls \
+    path=\"runs/\"` lists run entries; `calm.wave.ls path=\"cards/\"` \
+    lists cards.
+
+When you are pushed \"A dispatched task completed \
+(idempotency_key=K)...\", the canonical first call is \
+`calm.wave.cat path=\"runs/K.md\"` to see what the worker did. The push \
+observation is just a notification; the result lives in this view, not \
+in `get_wave_state`.
+
+The view is READ-ONLY. To act on what you read, call \
+`update_task_meta(idempotency_key=K, status=\"accepted\" | \"rejected\")` \
+to record a verdict, and/or `dispatch_request` to start follow-up work \
+— the same tools as before.
+
+Wave is implicit — derived from your card identity. Do NOT pass a \
+`wave_id` (these tools have no such parameter; cross-wave reads are \
+forbidden by design).
+
 Do not mint new spec cards from within this session.
 ";
 
@@ -217,6 +256,26 @@ those are spec-only tools and the kernel's role gate will refuse you. \
 You also may NOT mint new workers via `calm.dispatch_request`. If the \
 job needs further decomposition, report `task.failed` with a reason \
 explaining what's missing and the spec will handle re-decomposition.
+
+## Reading wave context (issue #339)
+
+If you need to inspect the wave's report, prior worker results, or \
+other cards before executing your job, use `calm.wave.cat` and \
+`calm.wave.ls`:
+
+  * `calm.wave.cat path=\"report.md\"` — the wave's user-facing report.
+  * `calm.wave.cat path=\"runs/index.json\"` — list of runs already in \
+    this wave (`status`, `kind`, `idempotency_key`).
+  * `calm.wave.cat path=\"runs/<idempotency_key>.json\"` — structured \
+    projection of a prior run, including its result payload.
+  * `calm.wave.cat path=\"cards/<card_id>/payload.json\"` — a sibling \
+    worker's payload.
+  * `calm.wave.ls path=\"/\"` — top-level listing.
+
+These views are READ-ONLY and scoped to the wave you're running in. \
+Don't use them to poll for events — you are short-lived and don't wait \
+for anything; use them at the start of your job to read context, then \
+execute and report.
 ";
 
 /// Substitute the per-spawn placeholders into a prompt template. Today
@@ -807,6 +866,42 @@ mod tests {
         assert!(
             p.contains("calm.get_wave_state") && p.contains("calm.dispatch_request"),
             "prompt must still reference get_wave_state + dispatch_request"
+        );
+    }
+
+    #[test]
+    fn spec_prompt_documents_wave_cat_for_worker_outputs() {
+        let p = SPEC_SYSTEM_PROMPT_TEMPLATE;
+
+        assert!(
+            p.contains("calm.wave.cat"),
+            "spec prompt must document calm.wave.cat for reading worker outputs"
+        );
+        assert!(
+            p.contains("runs/<idempotency_key>"),
+            "spec prompt must document run projections by idempotency key"
+        );
+        assert!(
+            p.contains("READ-ONLY"),
+            "spec prompt must state wave file views are read-only"
+        );
+        assert!(
+            p.contains("runs/K.md"),
+            "spec prompt must document the canonical post-completion read"
+        );
+    }
+
+    #[test]
+    fn worker_prompt_documents_wave_cat_for_context() {
+        let p = WORKER_SYSTEM_PROMPT_PLACEHOLDER;
+
+        assert!(
+            p.contains("calm.wave.cat"),
+            "worker prompt must document calm.wave.cat for reading wave context"
+        );
+        assert!(
+            p.contains("runs/index.json"),
+            "worker prompt must document the run index projection"
         );
     }
 
