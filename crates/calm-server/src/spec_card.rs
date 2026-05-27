@@ -199,6 +199,19 @@ the current wave as read-only paths:
     path=\"runs/\"` lists run entries; `calm.wave.ls path=\"cards/\"` \
     lists cards.
 
+The same read-only views are available from your shell via the `neige` \
+CLI, which composes with tools like `grep`, `jq`, and `head`:
+
+  * `neige ls [path]` — directory listing, e.g. `neige ls runs/` or \
+    `neige ls /`.
+  * `neige cat <path>` — read one view, e.g. `neige cat runs/K.md`, \
+    `neige cat runs/index.json`, or \
+    `neige cat cards/<card_id>/payload.json`.
+
+The paths are identical to the MCP-tool `path` arguments. The views are \
+READ-ONLY, and the MCP-tool form remains available as the in-band \
+equivalent.
+
 When you are pushed \"A dispatched task completed \
 (idempotency_key=K)...\", the canonical first call is \
 `calm.wave.cat path=\"runs/K.md\"` to see what the worker did. The push \
@@ -227,8 +240,6 @@ Do not mint new spec cards from within this session.
 /// can rename this to `WORKER_SYSTEM_PROMPT_TEMPLATE` for symmetry
 /// with [`SPEC_SYSTEM_PROMPT_TEMPLATE`] when there's no other PR
 /// touching this file.
-// Read-side wave-file tools (#339) are spec-only; if worker access is added later,
-// document the worker-visible subset here.
 pub(crate) const WORKER_SYSTEM_PROMPT_PLACEHOLDER: &str = "\
 You are a worker agent under spec card on wave `{wave_id}`.
 
@@ -258,6 +269,15 @@ those are spec-only tools and the kernel's role gate will refuse you. \
 You also may NOT mint new workers via `calm.dispatch_request`. If the \
 job needs further decomposition, report `task.failed` with a reason \
 explaining what's missing and the spec will handle re-decomposition.
+
+## Reading wave state
+
+You may read your wave's state READ-ONLY from the shell with the `neige` \
+CLI: `neige ls [path]` lists views and `neige cat <path>` reads one \
+view. Useful paths include `/`, `runs/index.json`, \
+`runs/<idempotency_key>.md`, `runs/<idempotency_key>.json`, and \
+`cards/<card_id>/payload.json`. These views are own-wave-only; \
+cross-wave reads are forbidden.
 ";
 
 /// Substitute the per-spawn placeholders into a prompt template. Today
@@ -446,6 +466,17 @@ pub(crate) fn build_codex_config_toml_with_prompt(
              args = []\n\
              \n\
              [mcp_servers.calm.env]\n\
+             NEIGE_MCP_SOCKET = \"{escaped_socket}\"\n\
+             NEIGE_MCP_TOKEN = \"{escaped_token}\"\n"
+        ));
+        // Codex does not pass the daemon's NEIGE_MCP_* into exec
+        // shells (the mcp_servers.calm.env table above only feeds the
+        // MCP server subprocess); depending on ignore_default_excludes,
+        // it may also drop `*TOKEN*`. Force-inject both vars after all
+        // inherit/exclude filtering so shell `neige` can reach the kernel.
+        out.push_str(&format!(
+            "\n\
+             [shell_environment_policy.set]\n\
              NEIGE_MCP_SOCKET = \"{escaped_socket}\"\n\
              NEIGE_MCP_TOKEN = \"{escaped_token}\"\n"
         ));
@@ -871,6 +902,24 @@ mod tests {
             p.contains("runs/K.md"),
             "spec prompt must document the canonical post-completion read"
         );
+        assert!(
+            p.contains("neige cat") && p.contains("neige ls"),
+            "spec prompt must document the shell neige read CLI"
+        );
+    }
+
+    #[test]
+    fn worker_prompt_documents_neige_read_cli() {
+        let p = WORKER_SYSTEM_PROMPT_PLACEHOLDER;
+
+        assert!(
+            p.contains("neige cat") && p.contains("neige ls"),
+            "worker prompt must document the shell neige read CLI"
+        );
+        assert!(
+            p.contains("READ-ONLY") && p.contains("own-wave-only"),
+            "worker prompt must constrain neige reads to read-only own-wave views"
+        );
     }
 
     /// PR6 baseline: `mcp_shim = None` produces no `[mcp_servers]`
@@ -883,6 +932,10 @@ mod tests {
         assert!(
             !s.contains("[mcp_servers"),
             "role-typed config.toml must not contain mcp_servers blocks when mcp_shim is None; got:\n{s}"
+        );
+        assert!(
+            !s.contains("shell_environment_policy"),
+            "role-typed config.toml must not contain shell env overrides when mcp_shim is None; got:\n{s}"
         );
     }
 
@@ -925,6 +978,16 @@ mod tests {
             s.contains("NEIGE_MCP_TOKEN = \"tok-abc123\""),
             "env block must bake per-card token so shim authenticates; got:\n{s}"
         );
+        assert!(
+            s.contains("[shell_environment_policy.set]"),
+            "role-typed config.toml must force-inject MCP env into codex exec shells; got:\n{s}"
+        );
+        assert!(
+            s.contains(
+                "[shell_environment_policy.set]\nNEIGE_MCP_SOCKET = \"/var/lib/neige/mcp/kernel.sock\"\nNEIGE_MCP_TOKEN = \"tok-abc123\""
+            ),
+            "shell env override block must reuse the mcp socket/token values; got:\n{s}"
+        );
     }
 
     /// #236 followup — the env block must escape `"` and `\` in both
@@ -951,6 +1014,17 @@ mod tests {
         assert!(
             s.contains(r#"NEIGE_MCP_TOKEN = "tok\"with-quote""#),
             "token with embedded quote must be escaped; got:\n{s}"
+        );
+        assert_eq!(
+            s.matches(r#"NEIGE_MCP_SOCKET = "/tmp/odd\"path/kernel.sock""#)
+                .count(),
+            2,
+            "escaped socket should appear in mcp env and shell env blocks; got:\n{s}"
+        );
+        assert_eq!(
+            s.matches(r#"NEIGE_MCP_TOKEN = "tok\"with-quote""#).count(),
+            2,
+            "escaped token should appear in mcp env and shell env blocks; got:\n{s}"
         );
     }
 

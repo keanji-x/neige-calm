@@ -10,7 +10,7 @@ use crate::ids::ActorId;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, CardIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    require_role,
+    require_role_any,
 };
 use crate::mcp_server::tools::wave_report;
 use crate::model::{Card, CardRole, Wave};
@@ -42,7 +42,7 @@ where
 fn ls_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_WAVE_LS.into(),
-        description: "Spec-only: list file-like read views for the current MCP-bound wave. \
+        description: "Spec/Worker: list file-like read views for the current MCP-bound wave. \
              Accepts optional `{ path }`; `/` lists `index.md`, `wave.json`, \
              `report.md`, `cards/`, and `runs/`. The wave is derived from the bound \
              card identity, never from arguments."
@@ -59,7 +59,7 @@ fn ls_descriptor() -> ToolDescriptor {
 fn cat_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_WAVE_CAT.into(),
-        description: "Spec-only: read one file-like view from the current MCP-bound wave. \
+        description: "Spec/Worker: read one file-like view from the current MCP-bound wave. \
              Supports `index.md`, `wave.json`, `report.md`, `cards/index.json`, \
              `cards/<card_id>/meta.json`, `cards/<card_id>/payload.json`, \
              `runs/index.json`, `runs/<idempotency_key>.md`, and \
@@ -80,7 +80,7 @@ async fn wave_ls(
     identity: CardIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Spec)?;
+    require_role_any(&identity, &[CardRole::Spec, CardRole::Worker])?;
     let path = parse_path_arg(&args, false)?;
     let (_, wave) = resolve_wave_for_identity(&ctx, &identity).await?;
 
@@ -136,7 +136,7 @@ async fn wave_cat(
     identity: CardIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Spec)?;
+    require_role_any(&identity, &[CardRole::Spec, CardRole::Worker])?;
     let path = parse_path_arg(&args, true)?;
     let (_, wave) = resolve_wave_for_identity(&ctx, &identity).await?;
 
@@ -147,12 +147,8 @@ async fn wave_cat(
         }
         "wave.json" => content_json(&wave),
         "report.md" => {
-            let report = wave_report::report_read(ctx, identity, json!({})).await?;
-            let body = report
-                .get("body")
-                .and_then(Value::as_str)
-                .ok_or_else(|| RpcError::internal("wave_file: report read returned no body"))?;
-            Ok(content_markdown(body.to_string()))
+            let (_, payload) = wave_report::load_report_for_wave(&ctx, &wave).await?;
+            Ok(content_markdown(payload.body))
         }
         "cards/index.json" => {
             let cards = cards_for_wave(&ctx, &wave).await?;
@@ -886,4 +882,30 @@ fn path_not_available(path: &str) -> RpcError {
         "calm.wave: path not available in this view: {}",
         if path.is_empty() { "/" } else { path }
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn descriptors_document_spec_worker_access() {
+        let ls = ls_descriptor();
+        let cat = cat_descriptor();
+
+        assert!(
+            ls.description.starts_with("Spec/Worker:"),
+            "ls descriptor should advertise Spec/Worker access: {}",
+            ls.description
+        );
+        assert!(
+            cat.description.starts_with("Spec/Worker:"),
+            "cat descriptor should advertise Spec/Worker access: {}",
+            cat.description
+        );
+        assert!(
+            !ls.description.contains("Spec-only") && !cat.description.contains("Spec-only"),
+            "wave file descriptors must not claim spec-only access"
+        );
+    }
 }
