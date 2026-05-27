@@ -474,6 +474,7 @@ input, textarea { font: inherit; color: inherit; }
     var(--space-2);
   background: var(--warn-soft);
   border: 1px solid var(--warn-border);
+  /* 3px accent stripe — intentionally thicker than the 1px hairline; one-off, no width token exists. */
   border-left: 3px solid var(--warn);
   border-radius: var(--radius-md);
 }

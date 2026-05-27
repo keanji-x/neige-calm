@@ -103,7 +103,12 @@ const coveRoute = createRoute({
     // Non-blocking: prime the cache but do NOT await, so the route commits
     // immediately and the sidebar's active-row highlight is instant.
     // CoveComponent renders with an empty wave list until wavesQ resolves.
-    void queryClient.ensureQueryData(wavesByCoveQueryOptions(params.coveId));
+    // `.catch` keeps a fetch failure (404/5xx/offline) from becoming an
+    // unhandled rejection; the error is still recorded on the query so the
+    // component can surface it.
+    void queryClient
+      .ensureQueryData(wavesByCoveQueryOptions(params.coveId))
+      .catch(() => {});
   },
   component: CoveComponent,
 });
@@ -116,7 +121,12 @@ const waveRoute = createRoute({
     // immediately and the sidebar's active-row highlight is instant.
     // WaveComponent renders its own loading state (returns null while
     // detailQ.isLoading) until the primed query resolves.
-    void queryClient.ensureQueryData(waveDetailQueryOptions(params.waveId));
+    // `.catch` keeps a fetch failure (404/5xx/offline) from becoming an
+    // unhandled rejection; the error is still recorded on the query so the
+    // component can surface it (MissingShell / empty state).
+    void queryClient
+      .ensureQueryData(waveDetailQueryOptions(params.waveId))
+      .catch(() => {});
   },
   component: WaveComponent,
 });
@@ -303,12 +313,20 @@ function WaveComponent() {
     detailStatus: detailQ.status,
   });
 
-  // Wave detail is the source of truth for "does this wave exist?".
-  if (!detailQ.data) {
-    if (detailQ.isLoading) return null;
-    return <MissingShell label="Wave" onGo={go} />;
-  }
   const detail = detailQ.data;
+  // Wave detail is the source of truth for "does this wave exist?".
+  // `detailQ.data` may be a keepPreviousData placeholder for the
+  // previously-viewed wave while THIS wave's detail is still fetching — the
+  // non-blocking route loader commits the URL before data lands. Treat an
+  // absent OR mismatched (stale-placeholder) detail as "loading this wave"
+  // so we never render the previous wave under this wave's URL. Only a
+  // settled miss (no data, not loading/fetching) is a truly missing wave.
+  if (!detail || detail.wave.id !== waveId) {
+    if (!detail && !detailQ.isLoading && !detailQ.isFetching) {
+      return <MissingShell label="Wave" onGo={go} />;
+    }
+    return null;
+  }
   const kernelCove = covesQ.data?.find((c) => c.id === detail.wave.cove_id);
   if (!kernelCove) {
     if (covesQ.isLoading) return null;
