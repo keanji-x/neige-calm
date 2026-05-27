@@ -13,13 +13,14 @@
 // a shared context — Query handles caching, deduplication, and refetch.
 // WS events translate to query invalidations in `app/eventBridge.tsx`.
 //
-// Each route declares a `loader` that primes the relevant TanStack Query
-// cache entries via `queryClient.ensureQueryData(...)` before the route
-// component mounts. The matching `useQuery` hook inside the component
-// then reads the already-cached data instantly — no per-route spinner
-// flash on navigation. The loader uses the same `{ queryKey, queryFn }`
-// factories exported from `api/queries.ts`, so cache shape stays in lock-
-// step with the hook call sites.
+// Route loaders prime the relevant TanStack Query cache entries via
+// `queryClient.ensureQueryData(...)` using the same `{ queryKey, queryFn }`
+// factories exported from `api/queries.ts`, so cache shape stays in lock-step
+// with the hook call sites. The wave/cove loaders intentionally do this
+// without blocking the route commit: selection feedback (URL commit + Sidebar
+// active highlight) is instant, and the route component owns its brief in-page
+// loading state. The parallel prefetch usually fills the cache before the lazy
+// chunk finishes mounting, so spinner flashes stay rare.
 
 import { lazy } from 'react';
 import {
@@ -98,16 +99,25 @@ const indexRoute = createRoute({
 const coveRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/cove/$coveId',
-  loader: ({ params }) =>
-    queryClient.ensureQueryData(wavesByCoveQueryOptions(params.coveId)),
+  loader: ({ params }) => {
+    // Non-blocking: prime the cache but do NOT await, so the route commits
+    // immediately and the sidebar's active-row highlight is instant.
+    // CoveComponent renders with an empty wave list until wavesQ resolves.
+    void queryClient.ensureQueryData(wavesByCoveQueryOptions(params.coveId));
+  },
   component: CoveComponent,
 });
 
 const waveRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/wave/$waveId',
-  loader: ({ params }) =>
-    queryClient.ensureQueryData(waveDetailQueryOptions(params.waveId)),
+  loader: ({ params }) => {
+    // Non-blocking: prime the cache but do NOT await, so the route commits
+    // immediately and the sidebar's active-row highlight is instant.
+    // WaveComponent renders its own loading state (returns null while
+    // detailQ.isLoading) until the primed query resolves.
+    void queryClient.ensureQueryData(waveDetailQueryOptions(params.waveId));
+  },
   component: WaveComponent,
 });
 
