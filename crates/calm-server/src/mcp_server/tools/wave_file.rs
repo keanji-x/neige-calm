@@ -447,7 +447,7 @@ fn project_runs(
             let verdict = verdict_event.as_ref().and_then(verdict_from_event);
 
             let final_event = match (failed_event.as_ref(), completed_event.as_ref()) {
-                (Some(failed), Some(completed)) if completed.at > failed.at => {
+                (Some(failed), Some(completed)) if completed.event_id > failed.event_id => {
                     Some(("completed", completed))
                 }
                 (Some(failed), _) => Some(("failed", failed)),
@@ -501,7 +501,7 @@ fn record_earliest(
     event: RunEventProjection,
 ) {
     match map.get(key) {
-        Some(existing) if (existing.at, existing.event_id) <= (event.at, event.event_id) => {}
+        Some(existing) if existing.event_id <= event.event_id => {}
         _ => {
             map.insert(key.to_string(), event);
         }
@@ -514,7 +514,7 @@ fn record_latest(
     event: RunEventProjection,
 ) {
     match map.get(key) {
-        Some(existing) if (existing.at, existing.event_id) >= (event.at, event.event_id) => {}
+        Some(existing) if existing.event_id >= event.event_id => {}
         _ => {
             map.insert(key.to_string(), event);
         }
@@ -526,7 +526,7 @@ fn latest_final_event<'a>(
     failed: Option<&'a RunEventProjection>,
 ) -> Option<&'a RunEventProjection> {
     match (completed, failed) {
-        (Some(done), Some(fail)) if done.at > fail.at => Some(done),
+        (Some(done), Some(fail)) if done.event_id > fail.event_id => Some(done),
         (Some(_), Some(fail)) => Some(fail),
         (Some(done), None) => Some(done),
         (None, Some(fail)) => Some(fail),

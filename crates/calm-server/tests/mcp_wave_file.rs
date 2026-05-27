@@ -977,12 +977,45 @@ async fn retry_regression_uses_later_worker_failure_as_status() {
 }
 
 #[tokio::test]
-async fn final_event_timestamp_tie_prefers_worker_failure() {
+async fn final_event_order_uses_event_id_not_wall_clock_at() {
+    let boot = boot().await;
+    request_codex(&boot, "retry-regressed-skew").await;
+    materialize_worker(&boot, "retry-regressed-skew").await;
+    let completed_id = complete_run(&boot, "retry-regressed-skew", "first attempt worked").await;
+    let failed_id = worker_fail_run(&boot, "retry-regressed-skew", "retry failed").await;
+    assert!(failed_id > completed_id);
+    set_event_at(&boot, completed_id, 1000).await;
+    set_event_at(&boot, failed_id, 500).await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_WAVE_CAT,
+        spec_identity(&boot),
+        json!({ "path": "runs/retry-regressed-skew.json" }),
+    )
+    .await
+    .expect("spec can read retry-regressed-skew run json");
+    let run = content_json(&out);
+    assert_eq!(run["status"], json!("failed"));
+    assert_eq!(run["finished_at"], json!(500));
+    assert_eq!(
+        run["events"]["completed"]["payload"]["result"],
+        json!({ "summary": "first attempt worked" })
+    );
+    assert_eq!(
+        run["events"]["failed"]["payload"]["reason"],
+        json!("retry failed")
+    );
+}
+
+#[tokio::test]
+async fn final_event_same_timestamp_uses_event_id() {
     let boot = boot().await;
     request_codex(&boot, "retry-tie").await;
     materialize_worker(&boot, "retry-tie").await;
     let failed_id = worker_fail_run(&boot, "retry-tie", "same millisecond failure").await;
     let completed_id = complete_run(&boot, "retry-tie", "same millisecond success").await;
+    assert!(completed_id > failed_id);
     set_event_at(&boot, failed_id, 100).await;
     set_event_at(&boot, completed_id, 100).await;
 
@@ -995,7 +1028,7 @@ async fn final_event_timestamp_tie_prefers_worker_failure() {
     .await
     .expect("spec can read retry-tie run json");
     let run = content_json(&out);
-    assert_eq!(run["status"], json!("failed"));
+    assert_eq!(run["status"], json!("completed"));
     assert_eq!(
         run["events"]["completed"]["payload"]["result"],
         json!({ "summary": "same millisecond success" })
