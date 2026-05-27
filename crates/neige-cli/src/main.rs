@@ -3,7 +3,8 @@
 //! The CLI is intentionally tiny. It inherits the per-card MCP socket and raw
 //! token from the terminal environment, initializes the existing kernel MCP
 //! server with the token under `params._meta["dev.neige/auth"].token`, then
-//! performs one `tools/call` for `calm.wave.ls` or `calm.wave.cat`.
+//! performs one `tools/call` for `calm.wave.ls`, `calm.wave.cat`, or
+//! `calm.get_wave_state`.
 
 use std::env;
 use std::io::{self, Write};
@@ -17,6 +18,7 @@ const ENV_SOCKET: &str = "NEIGE_MCP_SOCKET";
 const ENV_TOKEN: &str = "NEIGE_MCP_TOKEN";
 const TOOL_WAVE_LS: &str = "calm.wave.ls";
 const TOOL_WAVE_CAT: &str = "calm.wave.cat";
+const TOOL_GET_WAVE_STATE: &str = "calm.get_wave_state";
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
 #[tokio::main(flavor = "current_thread")]
@@ -52,6 +54,7 @@ async fn run(cli: Cli) -> Result<(), AppError> {
     match cli.command {
         Command::Ls { json_output, .. } => render_ls(&raw, json_output, cli.json_errors()),
         Command::Cat { .. } => render_cat(&raw, cli.json_errors()),
+        Command::State { json_output } => render_state(&raw, json_output, cli.json_errors()),
     }
 }
 
@@ -98,6 +101,7 @@ async fn call_wave_tool(socket: &str, token: &str, cli: &Cli) -> Result<Value, A
     let (name, arguments) = match &cli.command {
         Command::Ls { path, .. } => (TOOL_WAVE_LS, json!({ "path": path })),
         Command::Cat { path, .. } => (TOOL_WAVE_CAT, json!({ "path": path })),
+        Command::State { .. } => (TOOL_GET_WAVE_STATE, json!({})),
     };
     let call = json!({
         "jsonrpc": "2.0",
@@ -309,6 +313,32 @@ fn render_cat(value: &Value, json_error: bool) -> Result<(), AppError> {
     })
 }
 
+fn render_state(value: &Value, json_output: bool, json_error: bool) -> Result<(), AppError> {
+    if !value.is_object() {
+        return Err(AppError::new(
+            "calm.get_wave_state returned non-object structuredContent",
+            4,
+            json_error,
+            json!({ "kind": "shape", "tool": TOOL_GET_WAVE_STATE, "value": value }),
+        ));
+    }
+    let serialized = if json_output {
+        serde_json::to_string(value)
+    } else {
+        serde_json::to_string_pretty(value)
+    }
+    .map_err(|e| {
+        AppError::new(
+            format!("serialize state JSON: {e}"),
+            4,
+            json_error,
+            json!({ "kind": "shape", "message": e.to_string() }),
+        )
+    })?;
+    println!("{serialized}");
+    Ok(())
+}
+
 fn emit_error(err: &AppError) {
     if err.json {
         let _ = writeln!(io::stderr(), "{}", err.structured);
@@ -330,9 +360,9 @@ impl Cli {
             json = true;
             iter.next();
         }
-        let command = iter
-            .next()
-            .ok_or_else(|| AppError::usage("missing command; expected `ls` or `cat`", json))?;
+        let command = iter.next().ok_or_else(|| {
+            AppError::usage("missing command; expected `ls`, `cat`, or `state`", json)
+        })?;
         match command.as_str() {
             "ls" => {
                 let mut path: Option<String> = None;
@@ -372,6 +402,20 @@ impl Cli {
                     },
                 })
             }
+            "state" => {
+                for arg in iter {
+                    if arg == "--json" {
+                        json = true;
+                    } else if arg.starts_with('-') {
+                        return Err(AppError::usage(format!("unknown option `{arg}`"), json));
+                    } else {
+                        return Err(AppError::usage("state takes no path argument", json));
+                    }
+                }
+                Ok(Self {
+                    command: Command::State { json_output: json },
+                })
+            }
             other if other.starts_with('-') => {
                 Err(AppError::usage(format!("unknown option `{other}`"), json))
             }
@@ -383,6 +427,7 @@ impl Cli {
         match self.command {
             Command::Ls { json_output, .. } => json_output,
             Command::Cat { json_errors, .. } => json_errors,
+            Command::State { json_output } => json_output,
         }
     }
 }
@@ -391,6 +436,7 @@ impl Cli {
 enum Command {
     Ls { path: String, json_output: bool },
     Cat { path: String, json_errors: bool },
+    State { json_output: bool },
 }
 
 #[derive(Debug)]
@@ -424,7 +470,7 @@ impl AppError {
             json,
             json!({
                 "kind": "usage",
-                "usage": "neige [--json] ls [path] | neige cat <path>",
+                "usage": "neige [--json] ls [path] | neige cat <path> | neige state",
             }),
         )
     }
@@ -466,7 +512,24 @@ mod tests {
                 assert!(!json_output);
             }
             Command::Cat { .. } => panic!("expected ls"),
+            Command::State { .. } => panic!("expected ls"),
         }
+    }
+
+    #[test]
+    fn state_has_no_path() {
+        let cli = Cli::parse(["state"].into_iter().map(String::from)).expect("parse");
+        match cli.command {
+            Command::State { json_output } => assert!(!json_output),
+            Command::Ls { .. } | Command::Cat { .. } => panic!("expected state"),
+        }
+
+        let err = Cli::parse(["state", "extra"].into_iter().map(String::from))
+            .expect_err("state extra must not parse");
+        assert!(
+            err.message.contains("state takes no path argument"),
+            "err = {err:?}"
+        );
     }
 
     #[test]

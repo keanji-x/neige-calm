@@ -91,7 +91,11 @@ turn. Each turn begins with exactly one of:
 
 On each turn:
 
-1. Call `calm.get_wave_state` to read the wave's current shape (lifecycle, \
+Read wave state with the `neige` shell CLI (`neige state`, `neige ls`, \
+`neige cat`); mutate the wave with the `calm.*` MCP tools. Reads observe; \
+writes are transactional.
+
+1. Run `neige state` to read the wave's current shape (lifecycle, \
    dispatched jobs, task results). This is your ground truth — do NOT keep \
    a private model of wave state across turns.
 2. Decide what to do next and act:
@@ -123,11 +127,10 @@ enforces this.
 
 The wave has a user-facing Markdown report you maintain. The user sees \
 it as the top card on the Wave page. Treat it like a file you keep \
-updated — the kernel exposes three MCP tools that behave exactly like \
-your native Read / Edit / Write file tools, but target the wave's \
-report instead of a disk path:
+updated. READ the current body with `neige cat report.md` (returns the \
+report body). WRITE/EDIT via MCP tools that target the wave's report \
+instead of a disk path:
 
-  * `calm.report.read()` — fetch the current `{ body, summary, schemaVersion, updated_at }`.
   * `calm.report.write(body, summary?)` — wholesale replace (like Write).
   * `calm.report.edit(old_string, new_string, replace_all?)` — string \
     replacement (like Edit; `old_string` must be unique in the body or \
@@ -166,7 +169,7 @@ the kernel re-invokes you with a `wave.report_edited` (author = \
 \"user\") observation as that turn's input. Before doing anything else \
 on that turn:
 
-1. Call `calm.report.read` to fetch the latest body.
+1. Run `neige cat report.md` to fetch the latest body.
 2. Reconcile the user's changes with what you were about to write — \
    treat their version as ground truth for the sections they touched.
 3. Then continue your task. Do NOT blindly `report.write` your \
@@ -177,29 +180,10 @@ kernel only re-invokes you for user-authored report edits.
 
 ## Reading worker outputs (issue #339)
 
-`get_wave_state` deliberately returns metadata only — wave row plus a \
-cards list with id/kind/role/sort/created_at/updated_at, **no card \
-payloads, no event payloads, no worker results**. To read what a worker \
-actually produced, use the file-like `calm.wave.cat` tool. It exposes \
-the current wave as read-only paths:
-
-  * `calm.wave.cat path=\"runs/<idempotency_key>.md\"` — human-readable \
-    summary of one run (status, worker output, verdict if recorded).
-  * `calm.wave.cat path=\"runs/<idempotency_key>.json\"` — structured \
-    projection. `events.completed.payload.result` is the worker's actual \
-    output; `events.failed` carries failures; `verdict` holds any \
-    `update_task_meta` accept/reject you recorded; `worker_card.payload` \
-    has the dispatch context.
-  * `calm.wave.cat path=\"cards/<card_id>/payload.json\"` — full payload \
-    of any card in the wave (e.g. another worker's bookkeeping).
-  * `calm.wave.cat path=\"runs/index.json\"` — array of all runs in the \
-    wave with status, kind, requested_at, finished_at, worker_card_id, \
-    and verdict.
-  * `calm.wave.ls path=\"/\"` — directory listing. `calm.wave.ls \
-    path=\"runs/\"` lists run entries; `calm.wave.ls path=\"cards/\"` \
-    lists cards.
-
-The same read-only views are available from your shell via the `neige` \
+`neige state` deliberately returns metadata only — wave row plus a cards \
+list with id/kind/role/sort/created_at/updated_at, **no card payloads, \
+no event payloads, no worker results**. To read what a worker actually \
+produced, use the read-only wave views from your shell via the `neige` \
 CLI, which composes with tools like `grep`, `jq`, and `head`:
 
   * `neige ls [path]` — directory listing, e.g. `neige ls runs/` or \
@@ -208,20 +192,32 @@ CLI, which composes with tools like `grep`, `jq`, and `head`:
     `neige cat runs/index.json`, or \
     `neige cat cards/<card_id>/payload.json`.
 
-The paths are identical to the MCP-tool `path` arguments. The views are \
-READ-ONLY, and the MCP-tool form remains available as the in-band \
-equivalent.
+Available `<path>` values for `neige cat` / `neige ls`:
+
+  * `runs/<idempotency_key>.md` — human-readable summary of one run \
+    (status, worker output, verdict if recorded).
+  * `runs/<idempotency_key>.json` — structured projection. \
+    `events.completed.payload.result` is the worker's actual output; \
+    `events.failed` carries failures; `verdict` holds any \
+    `update_task_meta` accept/reject you recorded; `worker_card.payload` \
+    has the dispatch context.
+  * `runs/index.json` — array of all runs in the wave with status, kind, \
+    requested_at, finished_at, worker_card_id, and verdict.
+  * `cards/<card_id>/payload.json` — full payload of any card in the \
+    wave (e.g. another worker's bookkeeping).
+  * `/` — root directory listing.
+  * `report.md` — current wave report body.
 
 When you are pushed \"A dispatched task completed \
-(idempotency_key=K)...\", the canonical first call is \
-`calm.wave.cat path=\"runs/K.md\"` to see what the worker did. The push \
+(idempotency_key=K)...\", the canonical first read is \
+`neige cat runs/K.md` to see what the worker did. The push \
 observation is just a notification; the result lives in this view, not \
-in `get_wave_state`.
+in `neige state`.
 
 The view is READ-ONLY. To act on what you read, call \
-`update_task_meta(idempotency_key=K, status=\"accepted\" | \"rejected\")` \
-to record a verdict, and/or `dispatch_request` to start follow-up work \
-— the same tools as before.
+`calm.update_task_meta(idempotency_key=K, status=\"accepted\" | \
+\"rejected\")` to record a verdict, and/or `calm.dispatch_request` to \
+start follow-up work — the same tools as before.
 
 Wave is implicit — derived from your card identity. Do NOT pass a \
 `wave_id` (these tools have no such parameter; cross-wave reads are \
@@ -246,9 +242,9 @@ You are a worker agent under spec card on wave `{wave_id}`.
 You were spawned to execute one job. Your contract:
 
 1. Read the goal, context, and acceptance criteria handed to you. \
-   Call `calm.get_wave_state()` if you need to inspect the wave's \
-   shape before starting — but don't poll it; the wave snapshot \
-   you receive once is enough.
+   Run `neige state` if you need to inspect the wave's shape before \
+   starting — but don't poll it; the wave snapshot you receive once is \
+   enough.
 2. Execute the task. Make tool calls, write files, run commands \
    — whatever the goal requires.
 3. When the task is done, report exactly once:
@@ -273,8 +269,9 @@ explaining what's missing and the spec will handle re-decomposition.
 ## Reading wave state
 
 You may read your wave's state READ-ONLY from the shell with the `neige` \
-CLI: `neige ls [path]` lists views and `neige cat <path>` reads one \
-view. Useful paths include `/`, `runs/index.json`, \
+CLI: `neige state` reads the wave shape, `neige ls [path]` lists views, \
+and `neige cat <path>` reads one view. Useful paths include `/`, \
+`runs/index.json`, \
 `runs/<idempotency_key>.md`, `runs/<idempotency_key>.json`, and \
 `cards/<card_id>/payload.json`. These views are own-wave-only; \
 cross-wave reads are forbidden.
@@ -875,20 +872,34 @@ mod tests {
             p.contains("Do NOT poll") && p.contains("do NOT loop"),
             "prompt must forbid polling / looping"
         );
-        // Still references the kernel MCP tools the agent drives each turn.
+        // Reads go through the shell CLI; writes still go through MCP.
         assert!(
-            p.contains("calm.get_wave_state") && p.contains("calm.dispatch_request"),
-            "prompt must still reference get_wave_state + dispatch_request"
+            p.contains("Run `neige state`") && p.contains("calm.dispatch_request"),
+            "prompt must read state via neige and still dispatch via MCP"
+        );
+        assert!(
+            p.contains("calm.update_wave_state")
+                && p.contains("calm.dispatch_request")
+                && p.contains("calm.update_task_meta"),
+            "prompt must still document wave/task write tools"
+        );
+        assert!(
+            !p.contains("Call `calm.get_wave_state`"),
+            "prompt must not instruct state reads via MCP"
         );
     }
 
     #[test]
-    fn spec_prompt_documents_wave_cat_for_worker_outputs() {
+    fn spec_prompt_documents_neige_reads_for_worker_outputs() {
         let p = SPEC_SYSTEM_PROMPT_TEMPLATE;
 
         assert!(
-            p.contains("calm.wave.cat"),
-            "spec prompt must document calm.wave.cat for reading worker outputs"
+            p.contains("neige state") && p.contains("neige cat") && p.contains("neige ls"),
+            "spec prompt must document the shell neige read CLI"
+        );
+        assert!(
+            p.contains("neige cat report.md"),
+            "spec prompt must document reading the report through neige"
         );
         assert!(
             p.contains("runs/<idempotency_key>"),
@@ -903,8 +914,14 @@ mod tests {
             "spec prompt must document the canonical post-completion read"
         );
         assert!(
-            p.contains("neige cat") && p.contains("neige ls"),
-            "spec prompt must document the shell neige read CLI"
+            p.contains("calm.report.write") && p.contains("calm.report.edit"),
+            "spec prompt must document report write/edit MCP tools"
+        );
+        assert!(
+            !p.contains("calm.wave.cat")
+                && !p.contains("calm.wave.ls")
+                && !p.contains("calm.report.read"),
+            "spec prompt must not instruct reads via MCP"
         );
     }
 
@@ -913,8 +930,12 @@ mod tests {
         let p = WORKER_SYSTEM_PROMPT_PLACEHOLDER;
 
         assert!(
-            p.contains("neige cat") && p.contains("neige ls"),
+            p.contains("neige state") && p.contains("neige cat") && p.contains("neige ls"),
             "worker prompt must document the shell neige read CLI"
+        );
+        assert!(
+            p.contains("calm.task_completed") && p.contains("calm.task_failed"),
+            "worker prompt must still document task completion writes"
         );
         assert!(
             p.contains("READ-ONLY") && p.contains("own-wave-only"),

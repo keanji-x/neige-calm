@@ -174,6 +174,74 @@ async fn cat_report_writes_report_content() {
 }
 
 #[tokio::test]
+async fn state_outputs_pretty_wave_state_json() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let socket_path: PathBuf = tmp.path().join("kernel.sock");
+    let listener = listen(&socket_path);
+    let child = spawn_neige(&socket_path, &["state"]).await;
+
+    let (mut reader, mut wr) = accept_initialized(listener).await;
+    let call = read_frame(&mut reader).await;
+    assert_eq!(call["method"], "tools/call");
+    assert_eq!(call["params"]["name"], json!("calm.get_wave_state"));
+    assert_eq!(call["params"]["arguments"], json!({}));
+    let state = json!({
+        "wave": { "id": "w1", "lifecycle": "working" },
+        "cards": []
+    });
+    write_frame(&mut wr, tool_result(2, state.clone())).await;
+
+    let out = timeout(TEST_BUDGET, child.wait_with_output())
+        .await
+        .expect("child exited")
+        .expect("wait ok");
+    assert!(
+        out.status.success(),
+        "stderr = {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
+    assert!(stdout.contains('\n'), "stdout should be pretty: {stdout:?}");
+    let parsed: Value = serde_json::from_str(&stdout).expect("stdout JSON parses");
+    assert_eq!(parsed, state);
+}
+
+#[tokio::test]
+async fn state_json_outputs_compact_wave_state_json() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let socket_path: PathBuf = tmp.path().join("kernel.sock");
+    let listener = listen(&socket_path);
+    let child = spawn_neige(&socket_path, &["--json", "state"]).await;
+
+    let (mut reader, mut wr) = accept_initialized(listener).await;
+    let call = read_frame(&mut reader).await;
+    assert_eq!(call["params"]["name"], json!("calm.get_wave_state"));
+    assert_eq!(call["params"]["arguments"], json!({}));
+    let state = json!({
+        "wave": { "id": "w1", "lifecycle": "working" },
+        "cards": []
+    });
+    write_frame(&mut wr, tool_result(2, state.clone())).await;
+
+    let out = timeout(TEST_BUDGET, child.wait_with_output())
+        .await
+        .expect("child exited")
+        .expect("wait ok");
+    assert!(
+        out.status.success(),
+        "stderr = {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
+    assert!(
+        !stdout.trim_end().contains('\n'),
+        "stdout should be compact: {stdout:?}"
+    );
+    let parsed: Value = serde_json::from_str(&stdout).expect("stdout JSON parses");
+    assert_eq!(parsed, state);
+}
+
+#[tokio::test]
 async fn missing_token_env_exits_nonzero() {
     let out = timeout(
         TEST_BUDGET,
