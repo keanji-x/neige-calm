@@ -511,22 +511,6 @@ impl TerminalSessionState {
                 ]
             }
             ClientMsg::TerminalThemeUpdate { fg, bg } => {
-                // Same authorization shape as `Input`: owner OR
-                // kernel-input observer. This flips the daemon's
-                // advertised OSC 10/11 colors and (under DECSET 1004)
-                // writes `ESC[I` to the PTY, so we MUST NOT let an
-                // observer rewrite another user's terminal colors
-                // through a forged WS frame.
-                let kernel_input = self
-                    .capabilities
-                    .as_ref()
-                    .map(|c| c.kernel_originated_input)
-                    .unwrap_or(false);
-                if self.role != Some(Role::Owner) && !kernel_input {
-                    return vec![not_owner_error(
-                        "TerminalThemeUpdate requires owner role or kernel_originated_input capability",
-                    )];
-                }
                 // Fix A — drop the redundant mount-time theme update.
                 //
                 // `web/src/XtermView.tsx`'s theme effect fires on EVERY
@@ -542,17 +526,38 @@ impl TerminalSessionState {
                 // ICANON off) and treated the injected bytes as INPUT,
                 // redrawing them as `^[]10;rgb:…` glyphs (#295).
                 //
-                // So: if the requested colors already equal what the
-                // daemon is serving, emit nothing. A genuine toggle
-                // (colors actually differ) still flows through. We only
-                // suppress when `current_default_*` is known (`Some`);
-                // an unknown current color (legacy fixtures) falls
-                // through to the original always-emit behaviour, so we
-                // never swallow a real change.
+                // Suppress this no-op before the role gate (#359) so an
+                // observer's benign #177 mount-time re-POST does not
+                // surface as a NotOwner protocol error. This is safe:
+                // the unchanged path emits no effect, writes nothing to
+                // the PTY, and changes no state, so no authorization is
+                // bypassed. A genuine toggle (colors actually differ)
+                // still flows through to the authorization check below.
+                // We only suppress when `current_default_*` is known
+                // (`Some`); an unknown current color (legacy fixtures)
+                // falls through to the original always-emit behaviour,
+                // so we never swallow a real change.
                 let unchanged =
                     ctx.current_default_fg == Some(fg) && ctx.current_default_bg == Some(bg);
                 if unchanged {
                     return vec![];
+                }
+
+                // Same authorization shape as `Input`: owner OR
+                // kernel-input observer. This flips the daemon's
+                // advertised OSC 10/11 colors and (under DECSET 1004)
+                // writes `ESC[I` to the PTY, so we MUST NOT let an
+                // observer rewrite another user's terminal colors
+                // through a forged WS frame.
+                let kernel_input = self
+                    .capabilities
+                    .as_ref()
+                    .map(|c| c.kernel_originated_input)
+                    .unwrap_or(false);
+                if self.role != Some(Role::Owner) && !kernel_input {
+                    return vec![not_owner_error(
+                        "TerminalThemeUpdate requires owner role or kernel_originated_input capability",
+                    )];
                 }
                 vec![Effect::TerminalThemeUpdate { fg, bg }]
             }
