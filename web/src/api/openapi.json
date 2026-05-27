@@ -670,6 +670,137 @@
         }
       }
     },
+    "/api/fs/gitdiff": {
+      "get": {
+        "tags": [
+          "fs"
+        ],
+        "operationId": "gitdiff",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "description": "Absolute path to a file inside a git repository",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "old_path",
+            "in": "query",
+            "description": "Previous path for renamed files, relative to the repository root or absolute",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "HEAD and working-tree text for a changed file",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitDiffResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Path is not inside a git repository or file is binary/non-UTF-8",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Read permission denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/fs/gitstatus": {
+      "get": {
+        "tags": [
+          "fs"
+        ],
+        "operationId": "gitstatus",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "description": "Absolute path to a directory inside a git repository",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Working tree status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitStatusResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Path is not a directory or not inside a git repository",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Read permission denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/fs/listdir": {
       "get": {
         "tags": [
@@ -700,6 +831,67 @@
           },
           "400": {
             "description": "Path doesn't exist or is not a directory",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Read permission denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/fs/readfile": {
+      "get": {
+        "tags": [
+          "fs"
+        ],
+        "operationId": "readfile",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "description": "Absolute path to a text file",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Read text file contents",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadFileResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Path doesn't exist, is not a file, or is binary/non-UTF-8",
             "content": {
               "application/json": {
                 "schema": {
@@ -2693,6 +2885,81 @@
           "descendant"
         ]
       },
+      "GitChangedFile": {
+        "type": "object",
+        "required": [
+          "path",
+          "status"
+        ],
+        "properties": {
+          "old_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Previous path for renamed files, relative to the repository root."
+          },
+          "path": {
+            "type": "string",
+            "description": "Path relative to the repository root."
+          },
+          "status": {
+            "type": "string",
+            "description": "One of: modified, added, deleted, untracked, renamed."
+          }
+        }
+      },
+      "GitDiffResponse": {
+        "type": "object",
+        "required": [
+          "path",
+          "status",
+          "truncated"
+        ],
+        "properties": {
+          "head_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "description": "Path relative to the repository root."
+          },
+          "status": {
+            "type": "string",
+            "description": "One of: modified, added, deleted, renamed."
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "working_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "GitStatusResponse": {
+        "type": "object",
+        "required": [
+          "repo_root",
+          "files"
+        ],
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GitChangedFile"
+            }
+          },
+          "repo_root": {
+            "type": "string"
+          }
+        }
+      },
       "InstallBody": {
         "type": "object",
         "required": [
@@ -3204,6 +3471,31 @@
           },
           "version": {
             "type": "string"
+          }
+        }
+      },
+      "ReadFileResponse": {
+        "type": "object",
+        "required": [
+          "path",
+          "size",
+          "text",
+          "truncated"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "text": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
           }
         }
       },

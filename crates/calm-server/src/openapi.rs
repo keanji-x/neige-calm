@@ -21,7 +21,9 @@ use crate::routes::cards::{CreateCardBody, ViaToolCall};
 use crate::routes::claude_cards::NewClaudeCardBody;
 use crate::routes::codex_cards::NewCodexCardBody;
 use crate::routes::cove_folders::ResolveQuery;
-use crate::routes::fs::{DirEntry, ListdirResponse};
+use crate::routes::fs::{
+    DirEntry, GitChangedFile, GitDiffResponse, GitStatusResponse, ListdirResponse, ReadFileResponse,
+};
 use crate::routes::overlays::{OverlayDeleteBody, OverlayQuery};
 use crate::routes::plugins::{
     InstallBody, InstallSource, PluginDetail, PluginListItem, ToolCallBody, ViewCatalogEntry,
@@ -79,6 +81,9 @@ use utoipa::OpenApi;
         crate::routes::claude_cards::create_claude_card,
         // ---- fs ----
         crate::routes::fs::listdir,
+        crate::routes::fs::readfile,
+        crate::routes::fs::gitstatus,
+        crate::routes::fs::gitdiff,
         // ---- settings ----
         crate::routes::settings::get_settings,
         crate::routes::settings::put_settings,
@@ -137,6 +142,10 @@ use utoipa::OpenApi;
         NewClaudeCardBody,
         DirEntry,
         ListdirResponse,
+        ReadFileResponse,
+        GitChangedFile,
+        GitStatusResponse,
+        GitDiffResponse,
         SettingsBag,
         SettingsPutBody,
         OverlayQuery,

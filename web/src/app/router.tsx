@@ -451,6 +451,17 @@ async function addCardWithValues(
   values: Record<string, string>,
   theme: 'light' | 'dark',
 ): Promise<void> {
+  if (type === 'file-viewer') {
+    try {
+      await api.createCard(waveId, {
+        kind: 'file-viewer',
+        payload: { path: values.path },
+      });
+    } catch (err) {
+      console.warn('[Calm] file-viewer create failed:', err);
+    }
+    return;
+  }
   if (type !== 'codex' && type !== 'claude') {
     // Falls through to the default "no-config" pathway. The AddPanel
     // shouldn't surface a schema form for kinds without `createSchema`,

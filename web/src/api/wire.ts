@@ -124,6 +124,10 @@ export type NewClaudeCardBody = Schemas['NewClaudeCardBody'];
 // Used by the DirectoryPicker widget that backs the codex `cwd` field.
 export type ListdirResponse = Schemas['ListdirResponse'];
 export type DirEntry = Schemas['DirEntry'];
+export type ReadFileResponse = Schemas['ReadFileResponse'];
+export type GitChangedFile = Schemas['GitChangedFile'];
+export type GitStatusResponse = Schemas['GitStatusResponse'];
+export type GitDiffResponse = Schemas['GitDiffResponse'];
 
 // ---------------- settings ----------------
 //

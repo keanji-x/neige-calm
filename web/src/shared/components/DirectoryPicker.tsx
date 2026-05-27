@@ -35,6 +35,7 @@ export interface DirectoryPickerProps {
   onChange: (path: string) => void;
   id?: string;
   placeholder?: string;
+  mode?: 'directory' | 'file';
 }
 
 export function DirectoryPicker({
@@ -42,6 +43,7 @@ export function DirectoryPicker({
   onChange,
   id,
   placeholder = 'Choose a directory…',
+  mode = 'directory',
 }: DirectoryPickerProps) {
   const [browsing, setBrowsing] = useState(false);
   const modalView = useModalView();
@@ -63,13 +65,14 @@ export function DirectoryPicker({
       return;
     }
     modalView.pushView({
-      title: 'Choose a directory',
+      title: mode === 'file' ? 'Choose a file or folder' : 'Choose a directory',
       onEscape: cancelBrowse,
       body: (
         <DirectoryBrowser
           initialPath={value || null}
           onCancel={cancelBrowse}
           onSelect={commitBrowse}
+          mode={mode}
         />
       ),
     });
@@ -108,6 +111,7 @@ export function DirectoryPicker({
             initialPath={value || null}
             onCancel={cancelBrowse}
             onSelect={commitBrowse}
+            mode={mode}
           />
         </div>
       )}
@@ -120,6 +124,7 @@ export interface DirectoryBrowserProps {
   initialPath: string | null;
   onCancel: () => void;
   onSelect: (path: string) => void;
+  mode?: 'directory' | 'file';
   /** Label on the confirm button. Default "Select this directory"; the
    *  shortcut path uses "Create here" since selecting *is* the create. */
   selectLabel?: string;
@@ -131,7 +136,13 @@ export interface DirectoryBrowserProps {
  * inside the modal body when used through `useModalView()`, so it can
  * happily fill the available height.
  */
-export function DirectoryBrowser({ initialPath, onCancel, onSelect, selectLabel = 'Select this directory' }: DirectoryBrowserProps) {
+export function DirectoryBrowser({
+  initialPath,
+  onCancel,
+  onSelect,
+  mode = 'directory',
+  selectLabel = mode === 'file' ? 'Select current folder' : 'Select this directory',
+}: DirectoryBrowserProps) {
   // `browsePath === null` on first render → the request hits the
   // server with no path argument and the server canonicalizes to $HOME.
   // We seed it with `initialPath` (the field's current value, if any)
@@ -217,8 +228,14 @@ export function DirectoryBrowser({ initialPath, onCancel, onSelect, selectLabel 
                   role="option"
                   aria-selected={false}
                   className={`dirpicker-entry${ent.is_dir ? '' : ' dirpicker-entry-file'}`}
-                  disabled={!ent.is_dir}
-                  onClick={() => ent.is_dir && goTo(child)}
+                  disabled={!ent.is_dir && mode === 'directory'}
+                  onClick={() => {
+                    if (ent.is_dir) {
+                      goTo(child);
+                    } else if (mode === 'file') {
+                      onSelect(child);
+                    }
+                  }}
                   title={ent.name}
                 >
                   <span className="dirpicker-entry-icon" aria-hidden="true">

@@ -116,12 +116,13 @@ function FieldRow({
             </option>
           ))}
         </select>
-      ) : field.type === 'directory' ? (
+      ) : field.type === 'directory' || field.type === 'file' ? (
         <DirectoryPicker
           id={id}
           value={value}
           onChange={onChange}
           placeholder={field.placeholder}
+          mode={field.type === 'file' ? 'file' : 'directory'}
         />
       ) : (
         <input
