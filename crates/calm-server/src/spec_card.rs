@@ -227,6 +227,8 @@ Do not mint new spec cards from within this session.
 /// can rename this to `WORKER_SYSTEM_PROMPT_TEMPLATE` for symmetry
 /// with [`SPEC_SYSTEM_PROMPT_TEMPLATE`] when there's no other PR
 /// touching this file.
+// Read-side wave-file tools (#339) are spec-only; if worker access is added later,
+// document the worker-visible subset here.
 pub(crate) const WORKER_SYSTEM_PROMPT_PLACEHOLDER: &str = "\
 You are a worker agent under spec card on wave `{wave_id}`.
 
@@ -256,26 +258,6 @@ those are spec-only tools and the kernel's role gate will refuse you. \
 You also may NOT mint new workers via `calm.dispatch_request`. If the \
 job needs further decomposition, report `task.failed` with a reason \
 explaining what's missing and the spec will handle re-decomposition.
-
-## Reading wave context (issue #339)
-
-If you need to inspect the wave's report, prior worker results, or \
-other cards before executing your job, use `calm.wave.cat` and \
-`calm.wave.ls`:
-
-  * `calm.wave.cat path=\"report.md\"` — the wave's user-facing report.
-  * `calm.wave.cat path=\"runs/index.json\"` — list of runs already in \
-    this wave (`status`, `kind`, `idempotency_key`).
-  * `calm.wave.cat path=\"runs/<idempotency_key>.json\"` — structured \
-    projection of a prior run, including its result payload.
-  * `calm.wave.cat path=\"cards/<card_id>/payload.json\"` — a sibling \
-    worker's payload.
-  * `calm.wave.ls path=\"/\"` — top-level listing.
-
-These views are READ-ONLY and scoped to the wave you're running in. \
-Don't use them to poll for events — you are short-lived and don't wait \
-for anything; use them at the start of your job to read context, then \
-execute and report.
 ";
 
 /// Substitute the per-spawn placeholders into a prompt template. Today
@@ -888,20 +870,6 @@ mod tests {
         assert!(
             p.contains("runs/K.md"),
             "spec prompt must document the canonical post-completion read"
-        );
-    }
-
-    #[test]
-    fn worker_prompt_documents_wave_cat_for_context() {
-        let p = WORKER_SYSTEM_PROMPT_PLACEHOLDER;
-
-        assert!(
-            p.contains("calm.wave.cat"),
-            "worker prompt must document calm.wave.cat for reading wave context"
-        );
-        assert!(
-            p.contains("runs/index.json"),
-            "worker prompt must document the run index projection"
         );
     }
 
