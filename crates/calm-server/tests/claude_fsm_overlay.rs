@@ -196,3 +196,41 @@ async fn claude_activity_and_permission_hooks_set_distinct_card_states() {
     .await;
     await_card_state(&repo, &card_id, "AwaitingInput").await;
 }
+
+#[tokio::test]
+async fn claude_subagent_stop_sets_worker_card_working() {
+    let (app, repo, card_id) = setup().await;
+    post_claude_hook(&app, &card_id, json!({ "hook_event_name": "SubagentStop" })).await;
+    await_card_state(&repo, &card_id, "Working").await;
+}
+
+#[tokio::test]
+async fn claude_task_completed_sets_worker_card_working() {
+    let (app, repo, card_id) = setup().await;
+    post_claude_hook(
+        &app,
+        &card_id,
+        json!({ "hook_event_name": "TaskCompleted" }),
+    )
+    .await;
+    await_card_state(&repo, &card_id, "Working").await;
+}
+
+#[tokio::test]
+async fn claude_elicitation_sets_worker_card_awaiting_input() {
+    let (app, repo, card_id) = setup().await;
+    post_claude_hook(&app, &card_id, json!({ "hook_event_name": "Elicitation" })).await;
+    await_card_state(&repo, &card_id, "AwaitingInput").await;
+}
+
+#[tokio::test]
+async fn claude_permission_denied_sets_worker_card_awaiting_input() {
+    let (app, repo, card_id) = setup().await;
+    post_claude_hook(
+        &app,
+        &card_id,
+        json!({ "hook_event_name": "PermissionDenied" }),
+    )
+    .await;
+    await_card_state(&repo, &card_id, "AwaitingInput").await;
+}
