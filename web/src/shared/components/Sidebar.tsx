@@ -174,8 +174,8 @@ export function Sidebar({
   const waitingWaves = waves.filter(waveNeedsUserAttention);
   // Sub-landmarks inside the outer <aside aria-label="Navigation">:
   //   <nav aria-label="Sidebar navigation">  → Today button
-  //   <section aria-label="Pinned">          → pinned wave rows (when any)
   //   <section aria-label="Waiting on you">  → side-wave rows (when any)
+  //   <section aria-label="Pinned">          → pinned wave rows (when any)
   //   <nav aria-label="Coves">               → cove-nav buttons + New cove
   // Two <nav>s rather than one because the "Waiting on you" section sits
   // visually between Today and the cove list and reads as a third
@@ -199,6 +199,28 @@ export function Sidebar({
         </button>
       </nav>
 
+      {waitingWaves.length > 0 && (
+        <section className="side-section attn-zone" aria-label="Waiting on you">
+          <div className="nav-label warn-text">Waiting on you</div>
+          {waitingWaves.map((w) => {
+            const cove = coves.find((c) => c.id === w.coveId);
+            const active = route.name === 'wave' && route.id === w.id;
+            return (
+              <WaveRow
+                key={w.id}
+                wave={w}
+                active={active}
+                cove={cove ?? null}
+                title={(cove?.name ?? '') + ' · ' + w.title}
+                onGo={() => onGo({ name: 'wave', id: w.id })}
+                onPinWave={onPinWave}
+                rowRef={active ? setActiveWaveRowRef : undefined}
+              />
+            );
+          })}
+        </section>
+      )}
+
       {pinnedWaves.length > 0 && (
         <section className="side-section" aria-label="Pinned">
           <div className="nav-label">Pinned</div>
@@ -215,30 +237,6 @@ export function Sidebar({
                 onGo={() => onGo({ name: 'wave', id: w.id })}
                 onPinWave={onPinWave}
                 rowRef={active ? setActiveWaveRowRef : undefined}
-                attention={waveNeedsUserAttention(w)}
-              />
-            );
-          })}
-        </section>
-      )}
-
-      {waitingWaves.length > 0 && (
-        <section className="side-section" aria-label="Waiting on you">
-          <div className="nav-label warn-text">Waiting on you</div>
-          {waitingWaves.map((w) => {
-            const cove = coves.find((c) => c.id === w.coveId);
-            const active = route.name === 'wave' && route.id === w.id;
-            return (
-              <WaveRow
-                key={w.id}
-                wave={w}
-                active={active}
-                cove={cove ?? null}
-                title={(cove?.name ?? '') + ' · ' + w.title}
-                onGo={() => onGo({ name: 'wave', id: w.id })}
-                onPinWave={onPinWave}
-                rowRef={active ? setActiveWaveRowRef : undefined}
-                attention={waveNeedsUserAttention(w)}
               />
             );
           })}
@@ -526,7 +524,6 @@ function WaveRow({
   onGo,
   onPinWave,
   rowRef,
-  attention = false,
 }: {
   wave: Wave;
   active: boolean;
@@ -535,9 +532,9 @@ function WaveRow({
   onGo: () => void;
   onPinWave?: (waveId: string, pin: boolean) => void | Promise<void>;
   rowRef?: (node: HTMLDivElement | null) => void;
-  attention?: boolean;
 }) {
   const pinned = wave.pinnedAt != null;
+  const attention = waveNeedsUserAttention(wave);
   return (
     <div
       ref={rowRef}

@@ -1,6 +1,6 @@
 // Component-level tests for the Sidebar pin-wave feature.
 //
-// Pinned waves appear in a dedicated "Pinned" section above "Waiting on you".
+// Pinned waves appear in a dedicated "Pinned" section below "Waiting on you".
 // A pin/unpin button is revealed on row hover. Pinned waves that need
 // attention also appear in "Waiting on you" and increment cove warn badges.
 
@@ -87,11 +87,28 @@ describe('Sidebar pinned section', () => {
     expect(waiting).toHaveTextContent('My wave');
   });
 
+  it('renders Waiting on you before Pinned when a wave is both pinned and waiting', () => {
+    const wave = makeWave({ lifecycle: 'blocked', pinnedAt: 1000 });
+    render(wrap(<Sidebar {...sidebarProps([wave])} />));
+    const waiting = screen.getByRole('region', { name: 'Waiting on you' });
+    const pinned = screen.getByRole('region', { name: 'Pinned' });
+    expect(
+      waiting.compareDocumentPosition(pinned) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   it('unpinned wave that needs attention appears only in Waiting on you', () => {
     const wave = makeWave({ lifecycle: 'blocked', pinnedAt: null });
     render(wrap(<Sidebar {...sidebarProps([wave])} />));
     expect(screen.queryByRole('region', { name: 'Pinned' })).toBeNull();
     expect(screen.getByRole('region', { name: 'Waiting on you' })).toBeTruthy();
+  });
+
+  it('waiting wave renders Waiting on you as an attention zone', () => {
+    const wave = makeWave({ lifecycle: 'blocked', pinnedAt: null });
+    render(wrap(<Sidebar {...sidebarProps([wave])} />));
+    const waiting = screen.getByRole('region', { name: 'Waiting on you' });
+    expect(waiting.classList.contains('attn-zone')).toBe(true);
   });
 
   it('calls onPinWave(id, false) when pin button is clicked on a pinned wave', () => {
@@ -166,6 +183,18 @@ describe('Sidebar per-cove badge parity with Waiting section', () => {
     const row = waiting.querySelector('.side-wave-row.attention');
     expect(row).toBeTruthy();
     expect(row?.querySelector('.side-wave-title')).toHaveTextContent('My wave');
+  });
+
+  it('inline cove row carries the attention class for warn title styling', () => {
+    const onPinWave = vi.fn();
+    const wave = makeWave({ id: 'w-inline-attention', lifecycle: 'blocked', pinnedAt: null });
+    render(wrap(<Sidebar {...sidebarProps([wave], onPinWave)} />));
+
+    fireEvent.click(screen.getByRole('button', { name: /Expand cove Atlas/ }));
+
+    const inline = screen.getByRole('group', { name: 'Waves in Atlas' });
+    expect(within(inline).getByText('My wave')).toBeTruthy();
+    expect(inline.querySelector('.side-wave-row.attention .side-wave-title')).toBeTruthy();
   });
 });
 

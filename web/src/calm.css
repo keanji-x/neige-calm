@@ -463,6 +463,24 @@ input, textarea { font: inherit; color: inherit; }
 .side .side-section {
   padding-right: var(--rail-scrollbar-gutter);
 }
+/* Grouped attention should tint the zone; warn title text is reserved for
+   ungrouped rows (Pinned / inline cove list). `--warn` on `--warn-soft` is
+   tight at small title sizes, so titles inside the zone return to `--text`. */
+.side .side-section.attn-zone {
+  padding:
+    var(--space-2)
+    calc(var(--rail-scrollbar-gutter) + var(--space-2))
+    var(--space-2)
+    var(--space-2);
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-border);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius-md);
+}
+
+.side .side-section.attn-zone .side-wave-row.attention .side-wave-title {
+  color: var(--text);
+}
 /* The Coves nav grows to fill the column between the Today nav (or the
    "Waiting on you" section) and the user menu, then scrolls internally
    when the list overflows. `min-height: 0` is the load-bearing piece —
@@ -496,6 +514,7 @@ input, textarea { font: inherit; color: inherit; }
 .side .nav-item:hover { background: var(--overlay-hover); color: var(--text); }
 [data-theme="dark"] .side .nav-item:hover { background: var(--overlay-hover); }
 .side .nav-item.active { background: var(--overlay-hover-strong); color: var(--text); font-weight: 600; }
+.side .nav-item:active { background: var(--overlay-hover-strong); color: var(--text); }
 
 /* Today — text-only, bold; carries weight by typography, not by an icon.
    Matches the dot/swatch grammar of the rest of the sidebar by simply
@@ -581,8 +600,8 @@ input, textarea { font: inherit; color: inherit; }
   text-align: left;
   transition: background var(--motion-quick), color var(--motion-quick);
 }
-.side .side-wave:hover { background: var(--overlay-hover-faint); color: var(--text); }
-[data-theme="dark"] .side .side-wave:hover { background: var(--overlay-hover); }
+.side .side-wave:hover { background: var(--overlay-active); color: var(--text); }
+[data-theme="dark"] .side .side-wave:hover { background: var(--overlay-active); }
 .side .side-wave.active {
   background: var(--overlay-active);
   color: var(--text);
@@ -630,17 +649,21 @@ input, textarea { font: inherit; color: inherit; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.side .side-wave-row:hover .side-wave { background: var(--overlay-hover-faint); color: var(--text); }
-[data-theme="dark"] .side .side-wave-row:hover .side-wave { background: var(--overlay-hover); }
+/* Wave row hover intentionally matches the selected/active gray for a consistent sidebar selection feel. */
+.side .side-wave-row:hover .side-wave { background: var(--overlay-active); color: var(--text); }
+[data-theme="dark"] .side .side-wave-row:hover .side-wave { background: var(--overlay-active); }
 .side .side-wave-row .side-wave.active {
   background: var(--overlay-active);
   color: var(--text);
   font-weight: 500;
 }
 [data-theme="dark"] .side .side-wave-row .side-wave.active { background: var(--overlay-active); }
-/* Override the direct .side-wave hover rules so they don't double-apply
-   when the row wrapper already handles hover. */
-.side .side-wave-row .side-wave:hover { background: transparent; }
+/* Removed the old `.side-wave:hover { background: transparent }` override:
+   it erased the hover-faint and selected/active backgrounds at equal specificity.
+   The row-hover rule above sets the selected/active value, so no guard is needed. */
+/* Pressed feedback: paint the selected-row background on mousedown (before
+   the click navigates) so selection feels instant. */
+.side .side-wave-row .side-wave:active { background: var(--overlay-active); color: var(--text); }
 /* Pin button: hidden by default; revealed on row hover or when pinned.
    Sits absolutely at the same x column as .cove-row-delete and the
    Coves-header `+` so all three right-edge slots line up vertically. */
@@ -808,6 +831,7 @@ input, textarea { font: inherit; color: inherit; }
 [data-theme="dark"] .side .cove-nav:hover { background: var(--overlay-hover); }
 .side .cove-nav.active { background: var(--overlay-active); color: var(--text); font-weight: 600; }
 [data-theme="dark"] .side .cove-nav.active { background: var(--overlay-active); }
+.side .cove-nav:active { background: var(--overlay-active); color: var(--text); }
 .side .cove-nav .swatch-wrap {
   position: relative;
   width: 12px; height: 12px;
@@ -824,13 +848,15 @@ input, textarea { font: inherit; color: inherit; }
 
 /* Single right-edge badge slot — replaces the swatch-overlay pip + the
    gray total count. `.warn` shows the waiting count in red; `.muted`
-   shows the total wave count in the decorative tone. Sized to occupy
-   the same 20×20 column as `.nav-label-add` (the `+` on the Coves
-   header) so both align on the right edge. */
+   shows the total wave count in the decorative tone. The badge is a
+   compact 16×16 circle, right-aligned in the same right-edge column as
+   the Coves-header `+` (their right edges align; the badge is
+   intentionally a touch smaller so the red count reads as a quiet
+   reminder, not an alarm). */
 .side .cove-nav-badge {
   flex-shrink: 0;
   margin-left: var(--space-3);
-  width: 20px; height: 20px;
+  width: 16px; height: 16px;
   display: inline-flex; align-items: center; justify-content: center;
   font-size: var(--text-xs);
   font-weight: 700;
