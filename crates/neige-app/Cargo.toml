@@ -1,0 +1,25 @@
+[package]
+name = "neige-app"
+version = "0.1.0"
+edition = "2024"
+
+# Host-side shell for neige-calm. The binary is intentionally separate from
+# `calm-server`: systemd supervises `neige-app`, and `neige-app` supervises the
+# current calm-server release. M1 only implements the system service mode.
+
+[[bin]]
+name = "neige-app"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", features = ["macros"] }
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

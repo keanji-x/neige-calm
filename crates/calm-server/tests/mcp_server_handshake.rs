@@ -100,6 +100,8 @@ async fn boot() -> Boot {
         "/workspace".into(),
         json!({}),
         None,
+        None,
+        None,
         CardRole::Spec,
         // #229 PR A — spec cards are kernel-owned in production. The
         // mcp-handshake test focuses on the MCP surface, not on the

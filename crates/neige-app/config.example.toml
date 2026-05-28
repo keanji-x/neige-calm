@@ -1,0 +1,59 @@
+# neige-app system-only example configuration
+#
+# Copy this file to ~/.config/neige-app/config.toml and adjust paths for the
+# release directory you want neige-app to manage.
+# When binding to 0.0.0.0, replace every credential placeholder before exposing
+# the service beyond a trusted LAN.
+
+[admin]
+listen = "0.0.0.0:4050"
+token_file = "~/.config/neige-app/admin.token"
+
+[release]
+root = "~/.local/share/neige-app/releases"
+current_server = "~/.local/share/neige-app/releases/current-server"
+current_web = "~/.local/share/neige-app/releases/current-web"
+previous_server = "~/.local/share/neige-app/releases/previous-server"
+previous_web = "~/.local/share/neige-app/releases/previous-web"
+backups = "~/.local/share/neige-app/backups"
+
+[child]
+bin = "~/.local/share/neige-app/releases/current-server/bin/calm-server"
+web_dist = "~/.local/share/neige-app/releases/current-web/web/dist"
+calm_listen = "0.0.0.0:4040"
+db_url = ""
+data_dir = "~/.local/share/neige-calm"
+mcp_stdio_shim_bin = "~/.local/share/neige-app/releases/current-server/bin/neige-mcp-stdio-shim"
+auth_username = "owner"
+auth_password = ""
+auth_dev_autologin = false
+cwd = ""
+extra_args = []
+
+[timing]
+stop_grace_ms = 5000
+restart_delay_ms = 1000
+
+[systemd]
+unit_path = "~/.config/systemd/user/neige-app.service"
+unit_name = "neige-app"
+bin = "/usr/local/bin/neige-app"
+
+[upgrade]
+current_version_file = ""
+
+[source]
+url = ""
+branch = "main"
+# Optional: web-only, server-only, or bundle. Omit to infer from manifest.
+mode = ""
+checkout_dir = "~/.cache/neige-app/source"
+build_args = ["make", "build"]
+
+# Source-driven upgrades fail closed unless these are explicitly configured.
+# api_version = "1"
+# sync_event_version = 1
+# mcp_protocol_version = "2025-11-25"
+# web_compat_version = 2
+# min_web_compat_version = 2
+# db_migration_policy = "forwardOnly"

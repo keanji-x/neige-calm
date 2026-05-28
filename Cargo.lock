@@ -1606,6 +1606,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "neige-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "libc",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "neige-cli"
 version = "0.1.0"
 dependencies = [

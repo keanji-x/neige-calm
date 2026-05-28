@@ -1,0 +1,340 @@
+use std::path::{Path, PathBuf};
+use std::process::Command as StdCommand;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use anyhow::{Context, anyhow};
+use serde::{Deserialize, Serialize};
+
+use crate::config::AppConfig;
+use crate::manifest::Compatibility;
+use crate::package::{NamedPath, PackageConfig};
+use crate::preflight::PreflightMode;
+
+const SOURCE_MARKER: &str = ".neige-app-source.json";
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceMarker {
+    url: String,
+    branch: String,
+}
+
+pub(crate) fn build_source_package(
+    cfg: &AppConfig,
+    mode_override: Option<PreflightMode>,
+) -> anyhow::Result<PathBuf> {
+    let requested_mode = source_mode(cfg, mode_override)?;
+    let mode = requested_mode.unwrap_or(PreflightMode::Bundle);
+    let (compatibility, db_migration_policy) = source_manifest_config(cfg, mode)?;
+    let source_dir = prepare_source_checkout(cfg)?;
+    run_build(&source_dir, &cfg.source.build_args)?;
+    let release_id = format!("source-{}", unix_ts()?);
+    let release_dir = cfg.release.root.join("packages").join(&release_id);
+    crate::package::build_package(&PackageConfig {
+        release_dir,
+        out: None,
+        release_id,
+        app_version: None,
+        app_bin: None,
+        web_dist: if matches!(mode, PreflightMode::WebOnly | PreflightMode::Bundle) {
+            Some(source_dir.join("web").join("dist"))
+        } else {
+            None
+        },
+        web_version: if matches!(mode, PreflightMode::WebOnly | PreflightMode::Bundle) {
+            Some("source".into())
+        } else {
+            None
+        },
+        calm_server_version: if matches!(mode, PreflightMode::ServerOnly | PreflightMode::Bundle) {
+            Some("source".into())
+        } else {
+            None
+        },
+        db_migration_policy,
+        compatibility,
+        bins: if matches!(mode, PreflightMode::ServerOnly | PreflightMode::Bundle) {
+            required_bins(&source_dir)
+        } else {
+            Vec::new()
+        },
+    })
+}
+
+pub(crate) fn source_mode(
+    cfg: &AppConfig,
+    mode_override: Option<PreflightMode>,
+) -> anyhow::Result<Option<PreflightMode>> {
+    let mode = mode_override.or(cfg.source.mode);
+    if matches!(mode, Some(PreflightMode::AppOnly)) {
+        return Err(anyhow!(
+            "source-driven app-only self-upgrade is not supported"
+        ));
+    }
+    Ok(mode)
+}
+
+fn source_manifest_config(
+    cfg: &AppConfig,
+    mode: PreflightMode,
+) -> anyhow::Result<(Compatibility, crate::manifest::DbMigrationPolicy)> {
+    Ok((
+        Compatibility {
+            api_version: cfg
+                .source
+                .api_version
+                .clone()
+                .ok_or_else(|| anyhow!("source.api_version must be explicitly configured"))?,
+            sync_event_version: cfg.source.sync_event_version.ok_or_else(|| {
+                anyhow!("source.sync_event_version must be explicitly configured")
+            })?,
+            mcp_protocol_version: cfg.source.mcp_protocol_version.clone().ok_or_else(|| {
+                anyhow!("source.mcp_protocol_version must be explicitly configured")
+            })?,
+            web_compat_version: cfg.source.web_compat_version.ok_or_else(|| {
+                anyhow!("source.web_compat_version must be explicitly configured")
+            })?,
+            min_web_compat_version: cfg.source.min_web_compat_version.ok_or_else(|| {
+                anyhow!("source.min_web_compat_version must be explicitly configured")
+            })?,
+        },
+        if matches!(mode, PreflightMode::WebOnly) {
+            cfg.source
+                .db_migration_policy
+                .unwrap_or(crate::manifest::DbMigrationPolicy::None)
+        } else {
+            cfg.source.db_migration_policy.ok_or_else(|| {
+                anyhow!("source.db_migration_policy must be explicitly configured")
+            })?
+        },
+    ))
+}
+
+fn prepare_source_checkout(cfg: &AppConfig) -> anyhow::Result<PathBuf> {
+    let url = cfg
+        .source
+        .url
+        .as_ref()
+        .ok_or_else(|| anyhow!("source.url must be configured when --package is omitted"))?;
+    let local_path = PathBuf::from(url);
+    if local_path.exists() {
+        return Ok(local_path);
+    }
+
+    let checkout = &cfg.source.checkout_dir;
+    if checkout.exists() {
+        verify_source_marker(checkout, url, &cfg.source.branch)?;
+        verify_git_origin(checkout, url)?;
+        run_git(
+            checkout.parent().unwrap_or_else(|| Path::new(".")),
+            &["-C", path_str(checkout)?, "fetch", "origin"],
+        )?;
+        run_git(
+            checkout.parent().unwrap_or_else(|| Path::new(".")),
+            &["-C", path_str(checkout)?, "checkout", &cfg.source.branch],
+        )?;
+        let target = format!("origin/{}", cfg.source.branch);
+        run_git(
+            checkout.parent().unwrap_or_else(|| Path::new(".")),
+            &["-C", path_str(checkout)?, "reset", "--hard", &target],
+        )?;
+    } else {
+        if let Some(parent) = checkout.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create {}", parent.display()))?;
+        }
+        run_git(
+            checkout.parent().unwrap_or_else(|| Path::new(".")),
+            &[
+                "clone",
+                "--branch",
+                &cfg.source.branch,
+                url,
+                path_str(checkout)?,
+            ],
+        )?;
+        write_source_marker(checkout, url, &cfg.source.branch)?;
+    }
+    Ok(checkout.clone())
+}
+
+fn verify_source_marker(checkout: &Path, url: &str, branch: &str) -> anyhow::Result<()> {
+    let marker_path = checkout.join(SOURCE_MARKER);
+    let marker: SourceMarker = serde_json::from_slice(
+        &std::fs::read(&marker_path)
+            .with_context(|| format!("read source marker {}", marker_path.display()))?,
+    )
+    .with_context(|| format!("parse source marker {}", marker_path.display()))?;
+    if marker.url != url || marker.branch != branch {
+        return Err(anyhow!(
+            "checkout marker does not match config source url/branch"
+        ));
+    }
+    Ok(())
+}
+
+fn verify_git_origin(checkout: &Path, url: &str) -> anyhow::Result<()> {
+    let output = StdCommand::new("git")
+        .args(["-C", path_str(checkout)?, "remote", "get-url", "origin"])
+        .output()
+        .with_context(|| "read git origin url")?;
+    if !output.status.success() {
+        return Err(anyhow!("git remote get-url origin failed"));
+    }
+    let origin = String::from_utf8(output.stdout)
+        .context("git origin output was not UTF-8")?
+        .trim()
+        .to_string();
+    if origin != url {
+        return Err(anyhow!(
+            "checkout origin {origin} does not match configured source url {url}"
+        ));
+    }
+    Ok(())
+}
+
+fn write_source_marker(checkout: &Path, url: &str, branch: &str) -> anyhow::Result<()> {
+    let marker = SourceMarker {
+        url: url.into(),
+        branch: branch.into(),
+    };
+    let path = checkout.join(SOURCE_MARKER);
+    std::fs::write(&path, serde_json::to_vec_pretty(&marker)?)
+        .with_context(|| format!("write source marker {}", path.display()))?;
+    Ok(())
+}
+
+fn run_build(source_dir: &Path, build_args: &[String]) -> anyhow::Result<()> {
+    let args: Vec<String> = if build_args.is_empty() {
+        vec!["make".into(), "build".into()]
+    } else {
+        build_args.to_vec()
+    };
+    let (program, rest) = args
+        .split_first()
+        .ok_or_else(|| anyhow!("source.build_args must not be empty"))?;
+    let status = StdCommand::new(program)
+        .args(rest)
+        .current_dir(source_dir)
+        .status()
+        .with_context(|| format!("run build command in {}", source_dir.display()))?;
+    if !status.success() {
+        return Err(anyhow!("build command failed with {status}"));
+    }
+    Ok(())
+}
+
+fn run_git(cwd: &Path, args: &[&str]) -> anyhow::Result<()> {
+    let status = StdCommand::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .status()
+        .with_context(|| "run git")?;
+    if !status.success() {
+        return Err(anyhow!("git command failed with {status}"));
+    }
+    Ok(())
+}
+
+fn required_bins(source_dir: &Path) -> Vec<NamedPath> {
+    [
+        "calm-server",
+        "calm-session-daemon",
+        "neige-codex-bridge",
+        "neige-mcp-stdio-shim",
+        "neige",
+    ]
+    .into_iter()
+    .map(|name| NamedPath {
+        name: name.into(),
+        path: source_dir.join("target").join("release").join(name),
+    })
+    .collect()
+}
+
+fn path_str(path: &Path) -> anyhow::Result<&str> {
+    path.to_str()
+        .ok_or_else(|| anyhow!("path is not valid UTF-8: {}", path.display()))
+}
+
+fn unix_ts() -> anyhow::Result<u64> {
+    Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn existing_checkout_without_marker_fails() {
+        let tmp = test_temp_dir("source-marker");
+        let mut cfg = AppConfig::starter(tmp.join("config.toml"));
+        cfg.source.url = Some("https://example.com/repo.git".into());
+        cfg.source.checkout_dir = tmp.join("checkout");
+        std::fs::create_dir_all(&cfg.source.checkout_dir).expect("checkout dir");
+
+        let err = prepare_source_checkout(&cfg).expect_err("missing marker must fail");
+        assert!(err.to_string().contains("source marker"));
+    }
+
+    #[test]
+    fn source_missing_explicit_manifest_config_fails() {
+        let tmp = test_temp_dir("source-config");
+        let mut cfg = AppConfig::starter(tmp.join("config.toml"));
+        cfg.source.url = Some(tmp.display().to_string());
+
+        let err = build_source_package(&cfg, None).expect_err("missing compat must fail");
+        assert!(err.to_string().contains("source.api_version"));
+    }
+
+    #[test]
+    fn source_web_only_package_contains_only_web_unit() {
+        let tmp = test_temp_dir("source-web-only");
+        let source = tmp.join("checkout");
+        std::fs::create_dir_all(source.join("web").join("dist")).expect("create web dist");
+        std::fs::write(source.join("web").join("dist").join("index.html"), "web")
+            .expect("write web");
+
+        let mut cfg = AppConfig::starter(tmp.join("config.toml"));
+        cfg.release.root = tmp.join("releases");
+        cfg.source.url = Some(source.display().to_string());
+        cfg.source.mode = Some(PreflightMode::WebOnly);
+        cfg.source.build_args = vec!["true".into()];
+        cfg.source.api_version = Some("1".into());
+        cfg.source.sync_event_version = Some(1);
+        cfg.source.mcp_protocol_version = Some("2025-11-25".into());
+        cfg.source.web_compat_version = Some(2);
+        cfg.source.min_web_compat_version = Some(2);
+
+        let package = build_source_package(&cfg, None).expect("package");
+        let manifest: crate::manifest::ReleaseManifest = serde_json::from_slice(
+            &std::fs::read(package.join("manifest.json")).expect("read manifest"),
+        )
+        .expect("parse manifest");
+
+        assert!(manifest.units.web.is_some());
+        assert!(manifest.units.calm_server.is_none());
+        assert!(manifest.units.bundle.is_none());
+    }
+
+    #[test]
+    fn cli_mode_overrides_source_mode() {
+        let tmp = test_temp_dir("source-mode-override");
+        let mut cfg = AppConfig::starter(tmp.join("config.toml"));
+        cfg.source.mode = Some(PreflightMode::Bundle);
+
+        assert_eq!(
+            source_mode(&cfg, Some(PreflightMode::WebOnly)).expect("mode"),
+            Some(PreflightMode::WebOnly)
+        );
+    }
+
+    fn test_temp_dir(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("neige-app-{name}-{}", std::process::id()));
+        if path.exists() {
+            std::fs::remove_dir_all(&path).expect("remove stale temp dir");
+        }
+        std::fs::create_dir_all(&path).expect("create temp dir");
+        path
+    }
+}

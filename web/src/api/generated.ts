@@ -925,6 +925,10 @@ export interface components {
              *     (then `cwd` of server).
              */
             cwd?: string | null;
+            /** @description Optional card-head logo background CSS color. Empty string is ignored. */
+            icon_bg?: string | null;
+            /** @description Optional card-head logo foreground CSS color. Empty string is ignored. */
+            icon_fg?: string | null;
             /** @description Optional first prompt passed as Claude's positional prompt argument. */
             prompt?: string | null;
             /**
@@ -981,6 +985,10 @@ export interface components {
              *     (then `cwd` of server).
              */
             cwd?: string | null;
+            /** @description Optional card-head logo background CSS color. Empty string is ignored. */
+            icon_bg?: string | null;
+            /** @description Optional card-head logo foreground CSS color. Empty string is ignored. */
+            icon_fg?: string | null;
             /**
              * @description Hands-free seed prompt. When set and non-empty, codex boots with
              *     its composer pre-filled and the kernel auto-submits the composer

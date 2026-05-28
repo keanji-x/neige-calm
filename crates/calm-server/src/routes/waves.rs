@@ -508,6 +508,8 @@ pub(crate) async fn create_wave(
                     cwd_for_tx,         // codex's cwd
                     env_for_tx,         // terminal env
                     spec_prompt_for_tx, // prompt = wave title (#251)
+                    None,               // icon_bg: default frontend logo color
+                    None,               // icon_fg: default frontend logo color
                     CardRole::Spec,     // <— the PR6 binding
                     // Issue #229 PR A — the spec card is kernel-owned.
                     // Migration 0013 already backfilled `deletable = 0`

@@ -143,6 +143,8 @@ impl RuntimeHarness {
                         cwd_for_tx,
                         json!({}),
                         Some("runtime recovery".into()),
+                        None,
+                        None,
                         CardRole::Spec,
                         false,
                         &role_cache_for_tx,

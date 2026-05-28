@@ -486,6 +486,8 @@ async function addCardWithValues(
     const body = {
       cwd: values.cwd || undefined,
       prompt: values.prompt || undefined,
+      icon_bg: values.icon_bg || undefined,
+      icon_fg: values.icon_fg || undefined,
       theme: rgb,
     };
     const card =

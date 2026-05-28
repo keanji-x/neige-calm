@@ -13,7 +13,7 @@ use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::Event;
 use crate::model::{Card, CardRole, new_id};
 use crate::routes::cards::card_scope;
-use crate::routes::codex_cards::{default_cwd, shell_single_quote};
+use crate::routes::codex_cards::{default_cwd, normalize_optional_css_color, shell_single_quote};
 use crate::routes::settings::load_settings;
 use crate::routes::terminal::spawn_daemon_for;
 use crate::state::AppState;
@@ -48,6 +48,12 @@ pub struct NewClaudeCardBody {
     /// Optional first prompt passed as Claude's positional prompt argument.
     #[serde(default)]
     pub prompt: Option<String>,
+    /// Optional card-head logo background CSS color. Empty string is ignored.
+    #[serde(default)]
+    pub icon_bg: Option<String>,
+    /// Optional card-head logo foreground CSS color. Empty string is ignored.
+    #[serde(default)]
+    pub icon_fg: Option<String>,
     /// Host browser's current theme RGB. Required so the PTY daemon answers
     /// Claude's terminal color probes with colors matching the surrounding UI.
     pub theme: crate::routes::theme::RequestTheme,
@@ -83,6 +89,8 @@ pub(crate) async fn create_claude_card(
             "cwd must not contain ASCII control characters".into(),
         ));
     }
+    let icon_bg = normalize_optional_css_color(p.icon_bg.as_deref(), "icon_bg")?;
+    let icon_fg = normalize_optional_css_color(p.icon_fg.as_deref(), "icon_fg")?;
 
     let card_id = new_id();
     let claude_session_id = uuid::Uuid::new_v4().to_string();
@@ -155,6 +163,8 @@ pub(crate) async fn create_claude_card(
     let cwd_for_tx = cwd.clone();
     let env_for_tx = env.clone();
     let prompt_for_tx = prompt.clone();
+    let icon_bg_for_tx = icon_bg.clone();
+    let icon_fg_for_tx = icon_fg.clone();
     let settings_path_for_tx = settings_path_string.clone();
     let claude_session_id_for_tx = claude_session_id.clone();
     let theme_for_tx = p.theme;
@@ -185,6 +195,8 @@ pub(crate) async fn create_claude_card(
                     cwd_for_tx,
                     env_for_tx,
                     prompt_for_tx,
+                    icon_bg_for_tx,
+                    icon_fg_for_tx,
                     settings_path_for_tx,
                     claude_session_id_for_tx,
                     CardRole::Worker,

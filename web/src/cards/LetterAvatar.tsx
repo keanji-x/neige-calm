@@ -32,6 +32,13 @@ function firstLetter(s: string): string | null {
   return m ? m[0].toUpperCase() : null;
 }
 
+function semanticClass(title: string): string | null {
+  const key = title.trim().toLowerCase();
+  if (key === 'codex') return 'card-head-icon--codex';
+  if (key === 'claude') return 'card-head-icon--claude';
+  return null;
+}
+
 /**
  * Render the letter-avatar glyph for `title`, or `null` when the title is
  * blank (no letter to draw). Output is byte-identical to what `CardHead`'s
@@ -42,9 +49,10 @@ export function LetterAvatar({ title }: { title: string }) {
   const letter = firstLetter(title);
   if (!letter) return null;
   const idx = hashTitle(title);
+  const semantic = semanticClass(title);
   return (
     <span
-      className={`card-head-icon card-head-icon--letter card-head-icon--c${idx}`}
+      className={`card-head-icon card-head-icon--letter card-head-icon--c${idx}${semantic ? ` ${semantic}` : ''}`}
       aria-hidden="true"
     >
       {letter}
