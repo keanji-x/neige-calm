@@ -1,0 +1,826 @@
+use std::collections::HashSet;
+
+use clap::ValueEnum;
+use serde::Serialize;
+
+use crate::manifest::{
+    BundleUnit, CalmServerUnit, Compatibility, CurrentVersion, DbMigrationPolicy, FileManifest,
+    FileUnit, ReleaseManifest,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum PreflightMode {
+    WebOnly,
+    ServerOnly,
+    Bundle,
+    AppOnly,
+}
+
+impl PreflightMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            PreflightMode::WebOnly => "web-only",
+            PreflightMode::ServerOnly => "server-only",
+            PreflightMode::Bundle => "bundle",
+            PreflightMode::AppOnly => "app-only",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PreflightResult {
+    pub allowed: bool,
+    pub mode: String,
+    pub requires_db_backup: bool,
+    pub reason: String,
+    pub required_action: String,
+}
+
+impl PreflightResult {
+    fn allow(mode: PreflightMode, requires_db_backup: bool, reason: impl Into<String>) -> Self {
+        Self {
+            allowed: true,
+            mode: mode.as_str().to_string(),
+            requires_db_backup,
+            reason: reason.into(),
+            required_action: if requires_db_backup {
+                "backup-db-before-activate".to_string()
+            } else {
+                "none".to_string()
+            },
+        }
+    }
+
+    pub(crate) fn deny(
+        mode: PreflightMode,
+        reason: impl Into<String>,
+        action: impl Into<String>,
+    ) -> Self {
+        Self {
+            allowed: false,
+            mode: mode.as_str().to_string(),
+            requires_db_backup: false,
+            reason: reason.into(),
+            required_action: action.into(),
+        }
+    }
+}
+
+pub(crate) fn run_preflight(
+    mode: PreflightMode,
+    current: &CurrentVersion,
+    manifest: &ReleaseManifest,
+) -> PreflightResult {
+    if manifest.schema_version != 1 {
+        return PreflightResult::deny(
+            mode,
+            format!(
+                "unsupported manifest schemaVersion {}",
+                manifest.schema_version
+            ),
+            "provide-schema-version-1-manifest",
+        );
+    }
+
+    match mode {
+        PreflightMode::WebOnly => preflight_web_only(current, manifest),
+        PreflightMode::ServerOnly => preflight_server_only(current, manifest),
+        PreflightMode::Bundle => preflight_bundle(manifest),
+        PreflightMode::AppOnly => preflight_app_only(manifest),
+    }
+}
+
+pub(crate) fn infer_mode(manifest: &ReleaseManifest) -> Result<PreflightMode, String> {
+    let has_app = manifest.units.app.is_some();
+    let has_web = manifest.units.web.is_some();
+    let has_server = manifest.units.calm_server.is_some();
+    let has_bundle = manifest.units.bundle.is_some();
+
+    match (has_app, has_web, has_server, has_bundle) {
+        (true, false, false, false) => Ok(PreflightMode::AppOnly),
+        (false, true, false, false) => Ok(PreflightMode::WebOnly),
+        (false, false, true, false) => Ok(PreflightMode::ServerOnly),
+        (_, true, true, true) => Ok(PreflightMode::Bundle),
+        _ => Err("unable to infer upgrade mode from manifest units".into()),
+    }
+}
+
+fn preflight_web_only(current: &CurrentVersion, manifest: &ReleaseManifest) -> PreflightResult {
+    let mode = PreflightMode::WebOnly;
+    let Some(web) = manifest.units.web.as_ref() else {
+        return PreflightResult::deny(mode, "manifest is missing units.web", "provide-web-unit");
+    };
+    if let Err(reason) = require_web_files(manifest) {
+        return PreflightResult::deny(mode, reason, "provide-web-files");
+    }
+    let target = &web.compatibility;
+
+    if let Some(reason) = protocols_mismatch_current(current, target) {
+        return PreflightResult::deny(mode, reason, "ship-matching-web-or-bundle");
+    }
+    if target.web_compat_version < current.min_web_compat_version {
+        return PreflightResult::deny(
+            mode,
+            format!(
+                "target webCompatVersion {} is below current server minWebCompatVersion {}",
+                target.web_compat_version, current.min_web_compat_version
+            ),
+            "ship-newer-web",
+        );
+    }
+
+    PreflightResult::allow(mode, false, "target web is compatible with current server")
+}
+
+fn preflight_server_only(current: &CurrentVersion, manifest: &ReleaseManifest) -> PreflightResult {
+    let mode = PreflightMode::ServerOnly;
+    let Some(server) = manifest.units.calm_server.as_ref() else {
+        return PreflightResult::deny(
+            mode,
+            "manifest is missing units.calmServer",
+            "provide-calm-server-unit",
+        );
+    };
+    if let Err(reason) = require_file(manifest, FileUnit::CalmServer, "bin/calm-server") {
+        return PreflightResult::deny(mode, reason, "provide-calm-server-file");
+    }
+    let target = &server.compatibility;
+
+    if let Some(reason) = protocols_mismatch_current(current, target) {
+        return PreflightResult::deny(mode, reason, "ship-matching-server-or-bundle");
+    }
+
+    let current_web_compat = current.conservative_web_compat_version();
+    if current_web_compat < target.min_web_compat_version {
+        return PreflightResult::deny(
+            mode,
+            format!(
+                "current web compatibility {} is below target server minWebCompatVersion {}",
+                current_web_compat, target.min_web_compat_version
+            ),
+            "upgrade-web-or-ship-bundle",
+        );
+    }
+
+    db_policy_result(mode, server, "target server is compatible with current web")
+}
+
+fn preflight_bundle(manifest: &ReleaseManifest) -> PreflightResult {
+    let mode = PreflightMode::Bundle;
+    let Some(web) = manifest.units.web.as_ref() else {
+        return PreflightResult::deny(mode, "manifest is missing units.web", "provide-web-unit");
+    };
+    let Some(server) = manifest.units.calm_server.as_ref() else {
+        return PreflightResult::deny(
+            mode,
+            "manifest is missing units.calmServer",
+            "provide-calm-server-unit",
+        );
+    };
+    let Some(bundle) = manifest.units.bundle.as_ref() else {
+        return PreflightResult::deny(
+            mode,
+            "manifest is missing units.bundle",
+            "provide-bundle-unit",
+        );
+    };
+    if let Err(reason) = require_web_files(manifest) {
+        return PreflightResult::deny(mode, reason, "provide-web-files");
+    }
+    if let Err(reason) = require_bundle_files(manifest, bundle) {
+        return PreflightResult::deny(mode, reason, "provide-bundle-files");
+    }
+
+    let web_compat = &web.compatibility;
+    let server_compat = &server.compatibility;
+    if web_compat.api_version != server_compat.api_version {
+        return PreflightResult::deny(
+            mode,
+            "bundle web apiVersion does not match server apiVersion",
+            "ship-internally-compatible-bundle",
+        );
+    }
+    if web_compat.sync_event_version != server_compat.sync_event_version {
+        return PreflightResult::deny(
+            mode,
+            "bundle web syncEventVersion does not match server syncEventVersion",
+            "ship-internally-compatible-bundle",
+        );
+    }
+    if web_compat.mcp_protocol_version != server_compat.mcp_protocol_version {
+        return PreflightResult::deny(
+            mode,
+            "bundle web mcpProtocolVersion does not match server mcpProtocolVersion",
+            "ship-internally-compatible-bundle",
+        );
+    }
+    if web_compat.web_compat_version < server_compat.min_web_compat_version {
+        return PreflightResult::deny(
+            mode,
+            format!(
+                "bundle webCompatVersion {} is below bundled server minWebCompatVersion {}",
+                web_compat.web_compat_version, server_compat.min_web_compat_version
+            ),
+            "ship-newer-web-in-bundle",
+        );
+    }
+
+    db_policy_result(mode, server, "bundle is internally compatible")
+}
+
+fn preflight_app_only(manifest: &ReleaseManifest) -> PreflightResult {
+    let mode = PreflightMode::AppOnly;
+    let Some(app) = manifest.units.app.as_ref() else {
+        return PreflightResult::deny(mode, "manifest is missing units.app", "provide-app-unit");
+    };
+    if app.name != "neige-app" {
+        return PreflightResult::deny(
+            mode,
+            format!("app-only manifest targets {}", app.name),
+            "provide-neige-app-unit",
+        );
+    }
+    if let Err(reason) = require_file(manifest, FileUnit::App, "bin/neige-app") {
+        return PreflightResult::deny(mode, reason, "provide-app-file");
+    }
+
+    PreflightResult::allow(mode, false, "target app manifest exists")
+}
+
+fn require_file(
+    manifest: &ReleaseManifest,
+    unit: FileUnit,
+    expected_path: &str,
+) -> Result<(), String> {
+    let Some(file) = manifest
+        .files
+        .iter()
+        .find(|file| file.unit == unit && file.path == expected_path)
+    else {
+        return Err(format!(
+            "manifest files missing unit={unit:?} path {expected_path}"
+        ));
+    };
+    validate_file(file)
+}
+
+fn require_web_files(manifest: &ReleaseManifest) -> Result<(), String> {
+    let mut count = 0;
+    for file in manifest
+        .files
+        .iter()
+        .filter(|file| file.unit == FileUnit::Web && file.path.starts_with("web/dist/"))
+    {
+        validate_file(file)?;
+        count += 1;
+    }
+    if count == 0 {
+        return Err("manifest files missing web files under web/dist/".into());
+    }
+    Ok(())
+}
+
+fn require_bundle_files(manifest: &ReleaseManifest, bundle: &BundleUnit) -> Result<(), String> {
+    let required = [
+        "calm-server",
+        "calm-session-daemon",
+        "neige-codex-bridge",
+        "neige-mcp-stdio-shim",
+        "neige",
+    ];
+    let mut required_paths = HashSet::new();
+    for name in required {
+        let Some(binary) = bundle
+            .binaries
+            .iter()
+            .find(|binary| binary.name.as_str() == name)
+        else {
+            return Err(format!("bundle binaries missing required binary {name}"));
+        };
+
+        let expected_path = format!("bin/{name}");
+        if binary.path != expected_path {
+            return Err(format!(
+                "bundle binary {name} must map to {expected_path}, got {}",
+                binary.path
+            ));
+        }
+        if !required_paths.insert(binary.path.as_str()) {
+            return Err(format!("bundle binary path {} is duplicated", binary.path));
+        }
+
+        let expected_unit = if name == "calm-server" {
+            FileUnit::CalmServer
+        } else {
+            FileUnit::Bundle
+        };
+        let Some(file) = manifest
+            .files
+            .iter()
+            .find(|file| file.path == binary.path && file.unit == expected_unit)
+        else {
+            return Err(format!(
+                "manifest files missing bundle binary {name} at {} with unit {expected_unit:?}",
+                binary.path
+            ));
+        };
+        validate_file(file)?;
+    }
+
+    let all_paths: HashSet<&str> = bundle
+        .binaries
+        .iter()
+        .map(|binary| binary.path.as_str())
+        .collect();
+    if all_paths.len() != bundle.binaries.len() {
+        return Err("bundle binary paths must be distinct".into());
+    }
+
+    for binary in &bundle.binaries {
+        if required_paths.contains(binary.path.as_str()) {
+            continue;
+        }
+        let Some(file) = manifest.files.iter().find(|file| file.path == binary.path) else {
+            return Err(format!(
+                "manifest files missing bundle binary {} at {}",
+                binary.name, binary.path
+            ));
+        };
+        validate_file(file)?;
+    }
+    Ok(())
+}
+
+fn validate_file(file: &FileManifest) -> Result<(), String> {
+    if file.bytes == 0 {
+        return Err(format!("manifest file {} has zero bytes", file.path));
+    }
+    if file.sha256.len() != 64 || !file.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!("manifest file {} has invalid sha256", file.path));
+    }
+    Ok(())
+}
+
+fn protocols_mismatch_current(current: &CurrentVersion, target: &Compatibility) -> Option<String> {
+    if current.api_version != target.api_version {
+        return Some(format!(
+            "apiVersion mismatch: current {}, target {}",
+            current.api_version, target.api_version
+        ));
+    }
+    if current.sync_event_version != target.sync_event_version {
+        return Some(format!(
+            "syncEventVersion mismatch: current {}, target {}",
+            current.sync_event_version, target.sync_event_version
+        ));
+    }
+    if current.mcp_protocol_version != target.mcp_protocol_version {
+        return Some(format!(
+            "mcpProtocolVersion mismatch: current {}, target {}",
+            current.mcp_protocol_version, target.mcp_protocol_version
+        ));
+    }
+    None
+}
+
+fn db_policy_result(
+    mode: PreflightMode,
+    server: &CalmServerUnit,
+    allow_reason: &'static str,
+) -> PreflightResult {
+    match server.db_migration_policy {
+        DbMigrationPolicy::None => PreflightResult::allow(mode, false, allow_reason),
+        DbMigrationPolicy::Additive => {
+            PreflightResult::allow(mode, true, "additive DB migration requires backup")
+        }
+        DbMigrationPolicy::ForwardOnly => {
+            PreflightResult::allow(mode, true, "forward-only DB migration requires backup")
+        }
+        DbMigrationPolicy::Destructive => PreflightResult::deny(
+            mode,
+            "destructive DB migration policy is not allowed for automatic preflight",
+            "manual-migration-required",
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::manifest::{AppUnit, BinaryUnit, BundleUnit, FileManifest, ReleaseUnits, WebUnit};
+
+    fn compat(web: u32, min_web: u32) -> Compatibility {
+        Compatibility {
+            api_version: "1".into(),
+            sync_event_version: 1,
+            mcp_protocol_version: "2025-11-25".into(),
+            web_compat_version: web,
+            min_web_compat_version: min_web,
+        }
+    }
+
+    fn current() -> CurrentVersion {
+        CurrentVersion {
+            api_version: "1".into(),
+            sync_event_version: 1,
+            mcp_protocol_version: "2025-11-25".into(),
+            min_web_compat_version: 2,
+            web_compat_version: Some(2),
+        }
+    }
+
+    fn manifest(units: ReleaseUnits, files: Vec<FileManifest>) -> ReleaseManifest {
+        ReleaseManifest {
+            schema_version: 1,
+            release_id: "test".into(),
+            units,
+            files,
+        }
+    }
+
+    fn server(policy: DbMigrationPolicy, min_web: u32) -> CalmServerUnit {
+        CalmServerUnit {
+            version: "0.1.0".into(),
+            compatibility: compat(2, min_web),
+            db_migration_policy: policy,
+        }
+    }
+
+    fn file(unit: FileUnit, path: &str) -> FileManifest {
+        FileManifest {
+            path: path.into(),
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
+            bytes: 1,
+            unit,
+        }
+    }
+
+    fn web_file() -> FileManifest {
+        file(FileUnit::Web, "web/dist/index.html")
+    }
+
+    fn server_file() -> FileManifest {
+        file(FileUnit::CalmServer, "bin/calm-server")
+    }
+
+    fn app_file() -> FileManifest {
+        file(FileUnit::App, "bin/neige-app")
+    }
+
+    fn bundle_binaries() -> Vec<BinaryUnit> {
+        [
+            "calm-server",
+            "calm-session-daemon",
+            "neige-codex-bridge",
+            "neige-mcp-stdio-shim",
+            "neige",
+        ]
+        .into_iter()
+        .map(|name| BinaryUnit {
+            name: name.into(),
+            path: format!("bin/{name}"),
+        })
+        .collect()
+    }
+
+    fn bundle_files() -> Vec<FileManifest> {
+        vec![
+            server_file(),
+            file(FileUnit::Bundle, "bin/calm-session-daemon"),
+            file(FileUnit::Bundle, "bin/neige-codex-bridge"),
+            file(FileUnit::Bundle, "bin/neige-mcp-stdio-shim"),
+            file(FileUnit::Bundle, "bin/neige"),
+            web_file(),
+        ]
+    }
+
+    #[test]
+    fn web_only_allows_compatible_web() {
+        let result = run_preflight(
+            PreflightMode::WebOnly,
+            &current(),
+            &manifest(
+                ReleaseUnits {
+                    web: Some(WebUnit {
+                        version: "web".into(),
+                        compatibility: compat(2, 2),
+                    }),
+                    ..ReleaseUnits::default()
+                },
+                vec![web_file()],
+            ),
+        );
+
+        assert!(result.allowed);
+        assert!(!result.requires_db_backup);
+    }
+
+    #[test]
+    fn web_only_denies_old_web_compat() {
+        let result = run_preflight(
+            PreflightMode::WebOnly,
+            &current(),
+            &manifest(
+                ReleaseUnits {
+                    web: Some(WebUnit {
+                        version: "web".into(),
+                        compatibility: compat(1, 1),
+                    }),
+                    ..ReleaseUnits::default()
+                },
+                vec![web_file()],
+            ),
+        );
+
+        assert!(!result.allowed);
+        assert_eq!(result.required_action, "ship-newer-web");
+    }
+
+    #[test]
+    fn server_only_forward_only_requires_db_backup() {
+        let result = run_preflight(
+            PreflightMode::ServerOnly,
+            &current(),
+            &manifest(
+                ReleaseUnits {
+                    calm_server: Some(server(DbMigrationPolicy::ForwardOnly, 2)),
+                    ..ReleaseUnits::default()
+                },
+                vec![server_file()],
+            ),
+        );
+
+        assert!(result.allowed);
+        assert!(result.requires_db_backup);
+    }
+
+    #[test]
+    fn server_only_denies_destructive_db_policy() {
+        let result = run_preflight(
+            PreflightMode::ServerOnly,
+            &current(),
+            &manifest(
+                ReleaseUnits {
+                    calm_server: Some(server(DbMigrationPolicy::Destructive, 2)),
+                    ..ReleaseUnits::default()
+                },
+                vec![server_file()],
+            ),
+        );
+
+        assert!(!result.allowed);
+        assert_eq!(result.required_action, "manual-migration-required");
+    }
+
+    #[test]
+    fn bundle_checks_internal_web_server_compatibility() {
+        let result = run_preflight(
+            PreflightMode::Bundle,
+            &current(),
+            &manifest(
+                ReleaseUnits {
+                    web: Some(WebUnit {
+                        version: "web".into(),
+                        compatibility: compat(2, 2),
+                    }),
+                    calm_server: Some(server(DbMigrationPolicy::None, 3)),
+                    bundle: Some(BundleUnit {
+                        binaries: bundle_binaries(),
+                    }),
+                    ..ReleaseUnits::default()
+                },
+                bundle_files(),
+            ),
+        );
+
+        assert!(!result.allowed);
+        assert_eq!(result.required_action, "ship-newer-web-in-bundle");
+    }
+
+    #[test]
+    fn app_only_requires_neige_app_unit() {
+        let result = run_preflight(
+            PreflightMode::AppOnly,
+            &current(),
+            &manifest(
+                ReleaseUnits {
+                    app: Some(AppUnit {
+                        name: "other".into(),
+                        version: "0.1.0".into(),
+                    }),
+                    ..ReleaseUnits::default()
+                },
+                vec![app_file()],
+            ),
+        );
+
+        assert!(!result.allowed);
+        assert_eq!(result.required_action, "provide-neige-app-unit");
+    }
+
+    #[test]
+    fn infer_mode_detects_common_shapes() {
+        assert_eq!(
+            infer_mode(&manifest(
+                ReleaseUnits {
+                    web: Some(WebUnit {
+                        version: "web".into(),
+                        compatibility: compat(2, 2),
+                    }),
+                    calm_server: Some(server(DbMigrationPolicy::None, 2)),
+                    bundle: Some(BundleUnit {
+                        binaries: bundle_binaries(),
+                    }),
+                    ..ReleaseUnits::default()
+                },
+                bundle_files(),
+            ))
+            .expect("bundle"),
+            PreflightMode::Bundle
+        );
+        assert_eq!(
+            infer_mode(&manifest(
+                ReleaseUnits {
+                    web: Some(WebUnit {
+                        version: "web".into(),
+                        compatibility: compat(2, 2),
+                    }),
+                    ..ReleaseUnits::default()
+                },
+                vec![web_file()],
+            ))
+            .expect("web-only"),
+            PreflightMode::WebOnly
+        );
+        assert_eq!(
+            infer_mode(&manifest(
+                ReleaseUnits {
+                    calm_server: Some(server(DbMigrationPolicy::None, 2)),
+                    ..ReleaseUnits::default()
+                },
+                vec![server_file()],
+            ))
+            .expect("server-only"),
+            PreflightMode::ServerOnly
+        );
+    }
+
+    #[test]
+    fn app_only_requires_app_file() {
+        let result = run_preflight(
+            PreflightMode::AppOnly,
+            &current(),
+            &manifest(
+                ReleaseUnits {
+                    app: Some(AppUnit {
+                        name: "neige-app".into(),
+                        version: "0.1.0".into(),
+                    }),
+                    ..ReleaseUnits::default()
+                },
+                Vec::new(),
+            ),
+        );
+
+        assert!(!result.allowed);
+        assert_eq!(result.required_action, "provide-app-file");
+    }
+
+    #[test]
+    fn web_only_requires_valid_web_file_hash() {
+        let mut bad = web_file();
+        bad.sha256 = "not-a-sha".into();
+        let result = run_preflight(
+            PreflightMode::WebOnly,
+            &current(),
+            &manifest(
+                ReleaseUnits {
+                    web: Some(WebUnit {
+                        version: "web".into(),
+                        compatibility: compat(2, 2),
+                    }),
+                    ..ReleaseUnits::default()
+                },
+                vec![bad],
+            ),
+        );
+
+        assert!(!result.allowed);
+        assert_eq!(result.required_action, "provide-web-files");
+    }
+
+    #[test]
+    fn server_only_additive_requires_db_backup() {
+        let result = run_preflight(
+            PreflightMode::ServerOnly,
+            &current(),
+            &manifest(
+                ReleaseUnits {
+                    calm_server: Some(server(DbMigrationPolicy::Additive, 2)),
+                    ..ReleaseUnits::default()
+                },
+                vec![server_file()],
+            ),
+        );
+
+        assert!(result.allowed);
+        assert!(result.requires_db_backup);
+    }
+
+    #[test]
+    fn bundle_requires_all_expected_binaries() {
+        let result = run_preflight(
+            PreflightMode::Bundle,
+            &current(),
+            &manifest(
+                ReleaseUnits {
+                    web: Some(WebUnit {
+                        version: "web".into(),
+                        compatibility: compat(2, 2),
+                    }),
+                    calm_server: Some(server(DbMigrationPolicy::None, 2)),
+                    bundle: Some(BundleUnit {
+                        binaries: vec![BinaryUnit {
+                            name: "calm-server".into(),
+                            path: "bin/calm-server".into(),
+                        }],
+                    }),
+                    ..ReleaseUnits::default()
+                },
+                vec![server_file(), web_file()],
+            ),
+        );
+
+        assert!(!result.allowed);
+        assert_eq!(result.required_action, "provide-bundle-files");
+    }
+
+    #[test]
+    fn bundle_denies_required_binary_mapped_outside_bin_name() {
+        let mut binaries = bundle_binaries();
+        binaries
+            .iter_mut()
+            .find(|binary| binary.name == "calm-session-daemon")
+            .expect("session daemon binary")
+            .path = "web/dist/index.html".into();
+
+        let result = run_preflight(
+            PreflightMode::Bundle,
+            &current(),
+            &manifest(
+                ReleaseUnits {
+                    web: Some(WebUnit {
+                        version: "web".into(),
+                        compatibility: compat(2, 2),
+                    }),
+                    calm_server: Some(server(DbMigrationPolicy::None, 2)),
+                    bundle: Some(BundleUnit { binaries }),
+                    ..ReleaseUnits::default()
+                },
+                bundle_files(),
+            ),
+        );
+
+        assert!(!result.allowed);
+        assert_eq!(result.required_action, "provide-bundle-files");
+        assert!(
+            result
+                .reason
+                .contains("must map to bin/calm-session-daemon")
+        );
+    }
+
+    #[test]
+    fn bundle_denies_required_binary_with_wrong_file_unit() {
+        let mut files = bundle_files();
+        files
+            .iter_mut()
+            .find(|file| file.path == "bin/calm-session-daemon")
+            .expect("session daemon file")
+            .unit = FileUnit::Web;
+
+        let result = run_preflight(
+            PreflightMode::Bundle,
+            &current(),
+            &manifest(
+                ReleaseUnits {
+                    web: Some(WebUnit {
+                        version: "web".into(),
+                        compatibility: compat(2, 2),
+                    }),
+                    calm_server: Some(server(DbMigrationPolicy::None, 2)),
+                    bundle: Some(BundleUnit {
+                        binaries: bundle_binaries(),
+                    }),
+                    ..ReleaseUnits::default()
+                },
+                files,
+            ),
+        );
+
+        assert!(!result.allowed);
+        assert_eq!(result.required_action, "provide-bundle-files");
+        assert!(result.reason.contains("unit Bundle"));
+    }
+}
