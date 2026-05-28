@@ -96,9 +96,9 @@
   --warn: oklch(58% 0.16 30);
   --warn-soft: oklch(96% 0.03 30);
 
-  --agent-card-codex-logo-bg: oklch(12% 0 0);
+  --agent-card-codex-logo-bg: oklch(32% 0.12 255);
   --agent-card-codex-logo-fg: oklch(100% 0 0);
-  --agent-card-claude-logo-bg: oklch(66% 0.18 45);
+  --agent-card-claude-logo-bg: oklch(32% 0.12 255);
   --agent-card-claude-logo-fg: oklch(100% 0 0);
 
   /* Status colors — foreground for pass/fail / add/remove signals. Slice 3b
@@ -309,9 +309,9 @@
   --accent-soft: oklch(28% 0.05 245);
   --warn: oklch(70% 0.16 30);
   --warn-soft: oklch(28% 0.05 30);
-  --agent-card-codex-logo-bg: oklch(100% 0 0);
-  --agent-card-codex-logo-fg: oklch(12% 0 0);
-  --agent-card-claude-logo-bg: oklch(70% 0.18 45);
+  --agent-card-codex-logo-bg: oklch(36% 0.12 255);
+  --agent-card-codex-logo-fg: oklch(100% 0 0);
+  --agent-card-claude-logo-bg: oklch(36% 0.12 255);
   --agent-card-claude-logo-fg: oklch(100% 0 0);
   /* Dark-mode status colors standardize at L=74% (slice 3b of #137).
      Pre-consolidation we had three L values (72/74/78) scattered across

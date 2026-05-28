@@ -591,12 +591,11 @@ fn ensure_empty_target(path: &Path) -> anyhow::Result<()> {
                 path.display()
             ));
         }
-    } else if let Some(parent) = path.parent() {
-        if let Ok(parent_metadata) = fs::symlink_metadata(parent) {
-            if parent_metadata.file_type().is_symlink() {
-                return Err(anyhow!("stage parent {} is a symlink", parent.display()));
-            }
-        }
+    } else if let Some(parent) = path.parent()
+        && let Ok(parent_metadata) = fs::symlink_metadata(parent)
+        && parent_metadata.file_type().is_symlink()
+    {
+        return Err(anyhow!("stage parent {} is a symlink", parent.display()));
     }
     Ok(())
 }
@@ -711,10 +710,10 @@ fn replace_symlink_atomic(link: &Path, target: &Path) -> anyhow::Result<()> {
     if let Some(parent) = link.parent() {
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
-    if let Ok(metadata) = fs::symlink_metadata(link) {
-        if !metadata.file_type().is_symlink() {
-            return Err(anyhow!("{} exists and is not a symlink", link.display()));
-        }
+    if let Ok(metadata) = fs::symlink_metadata(link)
+        && !metadata.file_type().is_symlink()
+    {
+        return Err(anyhow!("{} exists and is not a symlink", link.display()));
     }
     let temp = link.with_extension(format!("tmp.{}", std::process::id()));
     if temp.exists() {

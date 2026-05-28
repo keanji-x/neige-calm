@@ -1,7 +1,7 @@
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::Arc;
 use std::time::Duration;
@@ -533,10 +533,10 @@ impl Supervisor {
             if let Err(err) = terminate_child_tree(pid) {
                 tracing::warn!(pid, error = %err, "failed to SIGTERM child");
             }
-            if !self.wait_pid_change(pid, self.cfg.stop_grace).await {
-                if let Err(err) = kill_child_tree(pid) {
-                    tracing::warn!(pid, error = %err, "failed to SIGKILL child");
-                }
+            if !self.wait_pid_change(pid, self.cfg.stop_grace).await
+                && let Err(err) = kill_child_tree(pid)
+            {
+                tracing::warn!(pid, error = %err, "failed to SIGKILL child");
             }
         }
     }
@@ -984,7 +984,7 @@ impl IntoResponse for ApiError {
     }
 }
 
-fn render_systemd_unit(name: &str, bin: &PathBuf, config_path: &PathBuf) -> anyhow::Result<String> {
+fn render_systemd_unit(name: &str, bin: &Path, config_path: &Path) -> anyhow::Result<String> {
     validate_systemd_exec_path(bin, "systemd.bin")?;
     validate_systemd_exec_path(config_path, "config path")?;
     Ok(format!(
@@ -1010,7 +1010,7 @@ WantedBy=default.target
     ))
 }
 
-fn validate_systemd_exec_path(path: &PathBuf, label: &str) -> anyhow::Result<()> {
+fn validate_systemd_exec_path(path: &Path, label: &str) -> anyhow::Result<()> {
     let text = path.to_string_lossy();
     if text.is_empty()
         || text
