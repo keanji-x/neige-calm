@@ -68,6 +68,8 @@ current_version_file = ""
 [source]
 url = ""
 branch = "main"
+# Optional: web-only, server-only, or bundle. Omit to infer from manifest.
+mode = ""
 checkout_dir = "~/.cache/neige-app/source"
 build_args = ["make", "build"]
 # Source-driven upgrades fail closed until these are explicitly configured.
@@ -158,8 +160,13 @@ Mode defaults to auto-detection:
 
 - app unit only -> `app-only`
 - web unit only -> `web-only`
-- calmServer unit only -> `server-only`
+- calmServer unit + backend bundle -> `server-only`
 - web + calmServer + bundle -> `bundle`
+
+When `system upgrade` runs without `--package`, `[source].mode` controls which
+source-built units are packaged. `--mode` overrides `[source].mode`; when both
+are omitted, source builds a full `bundle` package and mode is inferred from
+the resulting manifest.
 
 `system upgrade --activate` verifies a local package and copies only
 `manifest.json` plus the files listed in `manifest.json` to:
@@ -212,5 +219,6 @@ neige-app system rollback --config ~/.config/neige-app/config.toml
 ```
 
 It reads `<release.root>/last-activation.json` when present and restores the
-server and/or web symlink pair touched by the last activation. It does not
-restore a DB backup.
+server and/or web symlink pair touched by the last activation, then deletes the
+metadata so the same activation cannot be rolled back twice. It does not restore
+a DB backup.

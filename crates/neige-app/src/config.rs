@@ -74,6 +74,7 @@ pub(crate) struct UpgradeConfig {
 pub(crate) struct SourceConfig {
     pub url: Option<String>,
     pub branch: String,
+    pub mode: Option<crate::preflight::PreflightMode>,
     pub checkout_dir: PathBuf,
     pub build_args: Vec<String>,
     pub api_version: Option<String>,
@@ -131,6 +132,7 @@ struct ConfigBuilder {
     upgrade_current_version_file: Option<String>,
     source_url: Option<String>,
     source_branch: Option<String>,
+    source_mode: Option<String>,
     source_checkout_dir: Option<String>,
     source_build_args: Option<Vec<String>>,
     source_api_version: Option<String>,
@@ -206,6 +208,7 @@ impl AppConfig {
             source: SourceConfig {
                 url: None,
                 branch: "main".into(),
+                mode: None,
                 checkout_dir: expand_tilde("~/.cache/neige-app/source"),
                 build_args: vec!["make".into(), "build".into()],
                 api_version: None,
@@ -309,6 +312,11 @@ impl AppConfig {
         cfg.source.url = builder.source_url;
         if let Some(value) = builder.source_branch {
             cfg.source.branch = value;
+        }
+        if let Some(value) = builder.source_mode {
+            cfg.source.mode = Some(
+                parse_source_mode(&value).with_context(|| format!("parse source.mode {value}"))?,
+            );
         }
         if let Some(value) = builder.source_checkout_dir {
             cfg.source.checkout_dir = expand_tilde(&value);
@@ -438,6 +446,8 @@ current_version_file = ""
 [source]
 url = ""
 branch = "main"
+# Optional: web-only, server-only, or bundle. Omit to infer from manifest.
+mode = ""
 checkout_dir = "~/.cache/neige-app/source"
 build_args = ["make", "build"]
 # Source-driven upgrades fail closed unless these are explicitly configured.
@@ -533,6 +543,7 @@ fn set_value(
         }
         ("source", "url") => builder.source_url = parse_optional_string(value)?,
         ("source", "branch") => builder.source_branch = Some(parse_string(value)?),
+        ("source", "mode") => builder.source_mode = parse_optional_string(value)?,
         ("source", "checkout_dir") => builder.source_checkout_dir = Some(parse_string(value)?),
         ("source", "build_args") => builder.source_build_args = Some(parse_string_array(value)?),
         ("source", "api_version") => builder.source_api_version = Some(parse_string(value)?),
@@ -594,6 +605,15 @@ fn parse_db_migration_policy(value: &str) -> anyhow::Result<crate::manifest::DbM
         _ => Err(anyhow!(
             "expected one of: none, additive, forwardOnly, destructive"
         )),
+    }
+}
+
+fn parse_source_mode(value: &str) -> anyhow::Result<crate::preflight::PreflightMode> {
+    match value {
+        "web-only" => Ok(crate::preflight::PreflightMode::WebOnly),
+        "server-only" => Ok(crate::preflight::PreflightMode::ServerOnly),
+        "bundle" => Ok(crate::preflight::PreflightMode::Bundle),
+        _ => Err(anyhow!("expected one of: web-only, server-only, bundle")),
     }
 }
 
@@ -745,6 +765,7 @@ restart_delay_ms = 250
 [source]
 url = "/repo"
 branch = "release"
+mode = "web-only"
 checkout_dir = "/checkout"
 build_args = ["make", "build"]
 api_version = "2"
@@ -760,6 +781,10 @@ db_migration_policy = "additive"
         let cfg = AppConfig::load(Some(&path)).expect("load config");
         assert_eq!(cfg.source.url.as_deref(), Some("/repo"));
         assert_eq!(cfg.source.branch, "release");
+        assert_eq!(
+            cfg.source.mode,
+            Some(crate::preflight::PreflightMode::WebOnly)
+        );
         assert_eq!(cfg.source.checkout_dir, PathBuf::from("/checkout"));
         assert_eq!(cfg.source.build_args, vec!["make", "build"]);
         assert_eq!(cfg.source.sync_event_version, Some(3));

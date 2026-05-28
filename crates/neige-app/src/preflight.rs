@@ -100,7 +100,7 @@ pub(crate) fn infer_mode(manifest: &ReleaseManifest) -> Result<PreflightMode, St
     match (has_app, has_web, has_server, has_bundle) {
         (true, false, false, false) => Ok(PreflightMode::AppOnly),
         (false, true, false, false) => Ok(PreflightMode::WebOnly),
-        (false, false, true, false) => Ok(PreflightMode::ServerOnly),
+        (false, false, true, false) | (false, false, true, true) => Ok(PreflightMode::ServerOnly),
         (_, true, true, true) => Ok(PreflightMode::Bundle),
         _ => Err("unable to infer upgrade mode from manifest units".into()),
     }
@@ -142,8 +142,15 @@ fn preflight_server_only(current: &CurrentVersion, manifest: &ReleaseManifest) -
             "provide-calm-server-unit",
         );
     };
-    if let Err(reason) = require_file(manifest, FileUnit::CalmServer, "bin/calm-server") {
-        return PreflightResult::deny(mode, reason, "provide-calm-server-file");
+    let Some(bundle) = manifest.units.bundle.as_ref() else {
+        return PreflightResult::deny(
+            mode,
+            "manifest is missing units.bundle for backend sidecars",
+            "provide-backend-bundle-unit",
+        );
+    };
+    if let Err(reason) = require_bundle_files(manifest, bundle) {
+        return PreflightResult::deny(mode, reason, "provide-backend-bundle-files");
     }
     let target = &server.compatibility;
 
@@ -495,6 +502,13 @@ mod tests {
         ]
     }
 
+    fn backend_files() -> Vec<FileManifest> {
+        bundle_files()
+            .into_iter()
+            .filter(|file| file.unit != FileUnit::Web)
+            .collect()
+    }
+
     #[test]
     fn web_only_allows_compatible_web() {
         let result = run_preflight(
@@ -545,9 +559,12 @@ mod tests {
             &manifest(
                 ReleaseUnits {
                     calm_server: Some(server(DbMigrationPolicy::ForwardOnly, 2)),
+                    bundle: Some(BundleUnit {
+                        binaries: bundle_binaries(),
+                    }),
                     ..ReleaseUnits::default()
                 },
-                vec![server_file()],
+                backend_files(),
             ),
         );
 
@@ -563,9 +580,12 @@ mod tests {
             &manifest(
                 ReleaseUnits {
                     calm_server: Some(server(DbMigrationPolicy::Destructive, 2)),
+                    bundle: Some(BundleUnit {
+                        binaries: bundle_binaries(),
+                    }),
                     ..ReleaseUnits::default()
                 },
-                vec![server_file()],
+                backend_files(),
             ),
         );
 
@@ -657,9 +677,12 @@ mod tests {
             infer_mode(&manifest(
                 ReleaseUnits {
                     calm_server: Some(server(DbMigrationPolicy::None, 2)),
+                    bundle: Some(BundleUnit {
+                        binaries: bundle_binaries(),
+                    }),
                     ..ReleaseUnits::default()
                 },
-                vec![server_file()],
+                backend_files(),
             ))
             .expect("server-only"),
             PreflightMode::ServerOnly
@@ -718,14 +741,35 @@ mod tests {
             &manifest(
                 ReleaseUnits {
                     calm_server: Some(server(DbMigrationPolicy::Additive, 2)),
+                    bundle: Some(BundleUnit {
+                        binaries: bundle_binaries(),
+                    }),
+                    ..ReleaseUnits::default()
+                },
+                backend_files(),
+            ),
+        );
+
+        assert!(result.allowed);
+        assert!(result.requires_db_backup);
+    }
+
+    #[test]
+    fn server_only_requires_backend_sidecars() {
+        let result = run_preflight(
+            PreflightMode::ServerOnly,
+            &current(),
+            &manifest(
+                ReleaseUnits {
+                    calm_server: Some(server(DbMigrationPolicy::None, 2)),
                     ..ReleaseUnits::default()
                 },
                 vec![server_file()],
             ),
         );
 
-        assert!(result.allowed);
-        assert!(result.requires_db_backup);
+        assert!(!result.allowed);
+        assert_eq!(result.required_action, "provide-backend-bundle-unit");
     }
 
     #[test]

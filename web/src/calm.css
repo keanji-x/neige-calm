@@ -96,9 +96,9 @@
   --warn: oklch(58% 0.16 30);
   --warn-soft: oklch(96% 0.03 30);
 
-  --agent-card-codex-logo-bg: oklch(32% 0.12 255);
+  --agent-card-codex-logo-bg: oklch(45% 0.13 150);
   --agent-card-codex-logo-fg: oklch(100% 0 0);
-  --agent-card-claude-logo-bg: oklch(32% 0.12 255);
+  --agent-card-claude-logo-bg: oklch(52% 0.16 45);
   --agent-card-claude-logo-fg: oklch(100% 0 0);
 
   /* Status colors — foreground for pass/fail / add/remove signals. Slice 3b
@@ -309,9 +309,9 @@
   --accent-soft: oklch(28% 0.05 245);
   --warn: oklch(70% 0.16 30);
   --warn-soft: oklch(28% 0.05 30);
-  --agent-card-codex-logo-bg: oklch(36% 0.12 255);
+  --agent-card-codex-logo-bg: oklch(50% 0.13 150);
   --agent-card-codex-logo-fg: oklch(100% 0 0);
-  --agent-card-claude-logo-bg: oklch(36% 0.12 255);
+  --agent-card-claude-logo-bg: oklch(56% 0.16 45);
   --agent-card-claude-logo-fg: oklch(100% 0 0);
   /* Dark-mode status colors standardize at L=74% (slice 3b of #137).
      Pre-consolidation we had three L values (72/74/78) scattered across
@@ -736,8 +736,8 @@ input, textarea { font: inherit; color: inherit; }
 }
 .side .me-row .me {
   width: 26px; height: 26px; border-radius: var(--radius-pill);
-  background: linear-gradient(135deg, oklch(70% 0.08 245), oklch(55% 0.1 245));
-  color: white; font-weight: 600; font-size: var(--text-xs);
+  background: var(--agent-card-codex-logo-bg);
+  color: var(--agent-card-codex-logo-fg); font-weight: 600; font-size: var(--text-xs);
   display: grid; place-items: center;
   flex-shrink: 0;
 }
@@ -2326,6 +2326,14 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 [data-theme="dark"] .card-head-icon--c5 { background: oklch(52% 0.09 270); }
 [data-theme="dark"] .card-head-icon--c6 { background: oklch(52% 0.09 310); }
 [data-theme="dark"] .card-head-icon--c7 { background: oklch(52% 0.09 350); }
+.card-head-icon--codex {
+  background: var(--agent-card-codex-logo-bg);
+  color: var(--agent-card-codex-logo-fg);
+}
+.card-head-icon--claude {
+  background: var(--agent-card-claude-logo-bg);
+  color: var(--agent-card-claude-logo-fg);
+}
 /* stylelint-enable declaration-property-value-disallowed-list */
 
 .agent-card-logo {

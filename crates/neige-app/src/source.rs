@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::AppConfig;
 use crate::manifest::Compatibility;
 use crate::package::{NamedPath, PackageConfig};
+use crate::preflight::PreflightMode;
 
 const SOURCE_MARKER: &str = ".neige-app-source.json";
 
@@ -18,8 +19,13 @@ struct SourceMarker {
     branch: String,
 }
 
-pub(crate) fn build_source_package(cfg: &AppConfig) -> anyhow::Result<PathBuf> {
-    let (compatibility, db_migration_policy) = source_manifest_config(cfg)?;
+pub(crate) fn build_source_package(
+    cfg: &AppConfig,
+    mode_override: Option<PreflightMode>,
+) -> anyhow::Result<PathBuf> {
+    let requested_mode = source_mode(cfg, mode_override)?;
+    let mode = requested_mode.unwrap_or(PreflightMode::Bundle);
+    let (compatibility, db_migration_policy) = source_manifest_config(cfg, mode)?;
     let source_dir = prepare_source_checkout(cfg)?;
     run_build(&source_dir, &cfg.source.build_args)?;
     let release_id = format!("source-{}", unix_ts()?);
@@ -30,17 +36,47 @@ pub(crate) fn build_source_package(cfg: &AppConfig) -> anyhow::Result<PathBuf> {
         release_id,
         app_version: None,
         app_bin: None,
-        web_dist: Some(source_dir.join("web").join("dist")),
-        web_version: Some("source".into()),
-        calm_server_version: Some("source".into()),
+        web_dist: if matches!(mode, PreflightMode::WebOnly | PreflightMode::Bundle) {
+            Some(source_dir.join("web").join("dist"))
+        } else {
+            None
+        },
+        web_version: if matches!(mode, PreflightMode::WebOnly | PreflightMode::Bundle) {
+            Some("source".into())
+        } else {
+            None
+        },
+        calm_server_version: if matches!(mode, PreflightMode::ServerOnly | PreflightMode::Bundle) {
+            Some("source".into())
+        } else {
+            None
+        },
         db_migration_policy,
         compatibility,
-        bins: required_bins(&source_dir),
+        bins: if matches!(mode, PreflightMode::ServerOnly | PreflightMode::Bundle) {
+            required_bins(&source_dir)
+        } else {
+            Vec::new()
+        },
     })
+}
+
+pub(crate) fn source_mode(
+    cfg: &AppConfig,
+    mode_override: Option<PreflightMode>,
+) -> anyhow::Result<Option<PreflightMode>> {
+    let mode = mode_override.or(cfg.source.mode);
+    if matches!(mode, Some(PreflightMode::AppOnly)) {
+        return Err(anyhow!(
+            "source-driven app-only self-upgrade is not supported"
+        ));
+    }
+    Ok(mode)
 }
 
 fn source_manifest_config(
     cfg: &AppConfig,
+    mode: PreflightMode,
 ) -> anyhow::Result<(Compatibility, crate::manifest::DbMigrationPolicy)> {
     Ok((
         Compatibility {
@@ -62,9 +98,15 @@ fn source_manifest_config(
                 anyhow!("source.min_web_compat_version must be explicitly configured")
             })?,
         },
-        cfg.source
-            .db_migration_policy
-            .ok_or_else(|| anyhow!("source.db_migration_policy must be explicitly configured"))?,
+        if matches!(mode, PreflightMode::WebOnly) {
+            cfg.source
+                .db_migration_policy
+                .unwrap_or(crate::manifest::DbMigrationPolicy::None)
+        } else {
+            cfg.source.db_migration_policy.ok_or_else(|| {
+                anyhow!("source.db_migration_policy must be explicitly configured")
+            })?
+        },
     ))
 }
 
@@ -241,8 +283,50 @@ mod tests {
         let mut cfg = AppConfig::starter(tmp.join("config.toml"));
         cfg.source.url = Some(tmp.display().to_string());
 
-        let err = build_source_package(&cfg).expect_err("missing compat must fail");
+        let err = build_source_package(&cfg, None).expect_err("missing compat must fail");
         assert!(err.to_string().contains("source.api_version"));
+    }
+
+    #[test]
+    fn source_web_only_package_contains_only_web_unit() {
+        let tmp = test_temp_dir("source-web-only");
+        let source = tmp.join("checkout");
+        std::fs::create_dir_all(source.join("web").join("dist")).expect("create web dist");
+        std::fs::write(source.join("web").join("dist").join("index.html"), "web")
+            .expect("write web");
+
+        let mut cfg = AppConfig::starter(tmp.join("config.toml"));
+        cfg.release.root = tmp.join("releases");
+        cfg.source.url = Some(source.display().to_string());
+        cfg.source.mode = Some(PreflightMode::WebOnly);
+        cfg.source.build_args = vec!["true".into()];
+        cfg.source.api_version = Some("1".into());
+        cfg.source.sync_event_version = Some(1);
+        cfg.source.mcp_protocol_version = Some("2025-11-25".into());
+        cfg.source.web_compat_version = Some(2);
+        cfg.source.min_web_compat_version = Some(2);
+
+        let package = build_source_package(&cfg, None).expect("package");
+        let manifest: crate::manifest::ReleaseManifest = serde_json::from_slice(
+            &std::fs::read(package.join("manifest.json")).expect("read manifest"),
+        )
+        .expect("parse manifest");
+
+        assert!(manifest.units.web.is_some());
+        assert!(manifest.units.calm_server.is_none());
+        assert!(manifest.units.bundle.is_none());
+    }
+
+    #[test]
+    fn cli_mode_overrides_source_mode() {
+        let tmp = test_temp_dir("source-mode-override");
+        let mut cfg = AppConfig::starter(tmp.join("config.toml"));
+        cfg.source.mode = Some(PreflightMode::Bundle);
+
+        assert_eq!(
+            source_mode(&cfg, Some(PreflightMode::WebOnly)).expect("mode"),
+            Some(PreflightMode::WebOnly)
+        );
     }
 
     fn test_temp_dir(name: &str) -> PathBuf {

@@ -84,7 +84,9 @@ still block rollback to an older binary.
 ## Modes
 
 - `web-only` checks target web against the current server.
-- `server-only` checks target server against the current web. If the current
+- `server-only` checks target server against the current web and requires the
+  backend sidecar bundle (`calm-session-daemon`, `neige-codex-bridge`,
+  `neige-mcp-stdio-shim`, and `neige`) alongside `calm-server`. If the current
   version JSON does not include `webCompatVersion`, M1 conservatively uses the
   current server's `minWebCompatVersion` as the current web compatibility.
 - `bundle` checks target web and target server against each other inside the
@@ -93,6 +95,11 @@ still block rollback to an older binary.
 
 Missing required fields fail closed. The CLI still prints the standard
 preflight JSON result with `allowed=false`.
+
+Source-driven upgrades (`system upgrade` without `--package`) can set
+`[source].mode = "web-only" | "server-only" | "bundle"` in `config.toml`, or
+use `--mode` on the CLI. CLI mode wins. When neither is set, the source build
+packages a full bundle and the mode is inferred from the manifest.
 
 ## Activation
 
@@ -113,7 +120,8 @@ requires restart. `app-only` activation is not supported.
 
 Activation writes `<release.root>/last-activation.json` with the mode and
 symlink changes. `system rollback` uses that metadata to restore the symlink
-pair or pairs touched by the last activation.
+pair or pairs touched by the last activation, then deletes the metadata so the
+same activation cannot be rolled back twice.
 
 ## Safety Rules
 

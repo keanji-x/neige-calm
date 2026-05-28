@@ -640,11 +640,17 @@ fn run_install(args: SystemInstallArgs) -> anyhow::Result<()> {
 
 fn run_upgrade(args: SystemUpgradeArgs) -> anyhow::Result<()> {
     let cfg = AppConfig::load(args.config.as_deref())?;
+    let source_driven = args.package.is_none();
+    let mode_override = if source_driven {
+        source::source_mode(&cfg, args.mode)?
+    } else {
+        args.mode
+    };
     let package_dir = match args.package {
         Some(path) => path,
-        None => source::build_source_package(&cfg)?,
+        None => source::build_source_package(&cfg, args.mode)?,
     };
-    let mode = match args.mode {
+    let mode = match mode_override {
         Some(mode) => mode,
         None => upgrade::infer_package_mode(&package_dir)?,
     };

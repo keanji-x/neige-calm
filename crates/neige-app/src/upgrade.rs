@@ -265,6 +265,8 @@ fn rollback_last_activation(cfg: &AppConfig) -> anyhow::Result<RollbackResult> {
             restored_previous: change.old_previous.clone(),
         });
     }
+    fs::remove_file(&metadata_path)
+        .with_context(|| format!("remove activation metadata {}", metadata_path.display()))?;
 
     Ok(RollbackResult {
         rolled_back: true,
@@ -864,7 +866,15 @@ mod tests {
         let tmp = test_temp_dir("upgrade-stage-server");
         let src = tmp.join("src");
         fs::create_dir_all(&src).expect("create src");
-        fs::write(src.join("calm-server"), "server").expect("write server");
+        for name in [
+            "calm-server",
+            "calm-session-daemon",
+            "neige-codex-bridge",
+            "neige-mcp-stdio-shim",
+            "neige",
+        ] {
+            fs::write(src.join(name), name).expect("write bin");
+        }
         let package_dir = build_package(&PackageConfig {
             release_dir: tmp.join("pkg"),
             out: None,
@@ -876,10 +886,7 @@ mod tests {
             calm_server_version: Some("server".into()),
             db_migration_policy: DbMigrationPolicy::None,
             compatibility: compat(),
-            bins: vec![NamedPath {
-                name: "calm-server".into(),
-                path: src.join("calm-server"),
-            }],
+            bins: required_bins(&src),
         })
         .expect("package");
 
@@ -1150,6 +1157,7 @@ mod tests {
             fs::read_link(&cfg.release.previous_web).expect("read web previous"),
             stale_previous_web
         );
+        assert!(!activation_metadata_path(&cfg).exists());
     }
 
     #[cfg(unix)]

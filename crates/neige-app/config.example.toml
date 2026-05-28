@@ -2,6 +2,8 @@
 #
 # Copy this file to ~/.config/neige-app/config.toml and adjust paths for the
 # release directory you want neige-app to manage.
+# When binding to 0.0.0.0, replace every credential placeholder before exposing
+# the service beyond a trusted LAN.
 
 [admin]
 listen = "0.0.0.0:4050"
@@ -23,7 +25,7 @@ db_url = ""
 data_dir = "~/.local/share/neige-calm"
 mcp_stdio_shim_bin = "~/.local/share/neige-app/releases/current-server/bin/neige-mcp-stdio-shim"
 auth_username = "owner"
-auth_password = "change-me"
+auth_password = ""
 auth_dev_autologin = false
 cwd = ""
 extra_args = []
@@ -43,6 +45,8 @@ current_version_file = ""
 [source]
 url = ""
 branch = "main"
+# Optional: web-only, server-only, or bundle. Omit to infer from manifest.
+mode = ""
 checkout_dir = "~/.cache/neige-app/source"
 build_args = ["make", "build"]
 
