@@ -91,6 +91,8 @@ async fn boot_with_role(role: CardRole) -> CardBoot {
         "/workspace".into(),
         json!({}),
         None,
+        None,
+        None,
         role,
         // #229 PR A — test fixtures use `true` (user-deletable). The
         // dedicated guard tests in `tests/cards_deletable.rs` exercise
@@ -110,6 +112,8 @@ async fn boot_with_role(role: CardRole) -> CardBoot {
         None,
         "/workspace".into(),
         json!({}),
+        None,
+        None,
         None,
         CardRole::Worker,
         true,

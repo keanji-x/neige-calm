@@ -915,6 +915,8 @@ async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_payload_link(
         "/workspace".into(),
         json!({"CODEX_HOME": "/tmp/cx"}),
         None,
+        Some("#111111".into()),
+        Some("#ffffff".into()),
         calm_server::model::CardRole::Plain,
         true,
         &calm_server::card_role_cache::CardRoleCache::new(),
@@ -937,6 +939,8 @@ async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_payload_link(
     assert_eq!(got_card.kind, "codex");
     assert_eq!(got_card.payload["terminal_id"], json!(term.id));
     assert_eq!(got_card.payload["schemaVersion"], json!(1));
+    assert_eq!(got_card.payload["icon_bg"], json!("#111111"));
+    assert_eq!(got_card.payload["icon_fg"], json!("#ffffff"));
     // cwd is non-empty here — payload must carry it for the frontend's
     // status hint.
     assert_eq!(got_card.payload["cwd"], json!("/workspace"));
@@ -969,6 +973,8 @@ async fn card_with_codex_create_tx_rolls_back_on_invalid_wave() {
         None,
         "/workspace".into(),
         json!({}),
+        None,
+        None,
         None,
         calm_server::model::CardRole::Plain,
         true,
@@ -1010,6 +1016,8 @@ async fn card_with_codex_create_tx_uses_caller_supplied_sort() {
         Some(7.0),
         "/workspace".into(),
         json!({}),
+        None,
+        None,
         None,
         calm_server::model::CardRole::Plain,
         true,

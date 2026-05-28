@@ -116,6 +116,8 @@ export interface CodexCardData {
   /** Optional pointer at the PTY row spawned for this card. */
   terminalId?: string;
   cwd?: string;
+  iconBg?: string;
+  iconFg?: string;
   /** See `TerminalCardData.unsupportedVersion`. */
   unsupportedVersion?: number;
 }
@@ -129,6 +131,8 @@ export interface ClaudeCardData {
   id?: string;
   terminalId?: string;
   cwd?: string;
+  iconBg?: string;
+  iconFg?: string;
   claudeSessionId?: string;
   unsupportedVersion?: number;
 }

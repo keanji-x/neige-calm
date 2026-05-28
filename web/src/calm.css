@@ -96,6 +96,11 @@
   --warn: oklch(58% 0.16 30);
   --warn-soft: oklch(96% 0.03 30);
 
+  --agent-card-codex-logo-bg: oklch(12% 0 0);
+  --agent-card-codex-logo-fg: oklch(100% 0 0);
+  --agent-card-claude-logo-bg: oklch(66% 0.18 45);
+  --agent-card-claude-logo-fg: oklch(100% 0 0);
+
   /* Status colors — foreground for pass/fail / add/remove signals. Slice 3b
      of #137. Chroma 0.14 is the consolidated status family (warn lives at
      0.16 because amber needs more chroma to read as amber). The dark
@@ -304,6 +309,10 @@
   --accent-soft: oklch(28% 0.05 245);
   --warn: oklch(70% 0.16 30);
   --warn-soft: oklch(28% 0.05 30);
+  --agent-card-codex-logo-bg: oklch(100% 0 0);
+  --agent-card-codex-logo-fg: oklch(12% 0 0);
+  --agent-card-claude-logo-bg: oklch(70% 0.18 45);
+  --agent-card-claude-logo-fg: oklch(100% 0 0);
   /* Dark-mode status colors standardize at L=74% (slice 3b of #137).
      Pre-consolidation we had three L values (72/74/78) scattered across
      k-pass/k-fail, diff-add/rm, diff-line .diff-text, today-live/host. The
@@ -2318,6 +2327,30 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 [data-theme="dark"] .card-head-icon--c6 { background: oklch(52% 0.09 310); }
 [data-theme="dark"] .card-head-icon--c7 { background: oklch(52% 0.09 350); }
 /* stylelint-enable declaration-property-value-disallowed-list */
+
+.agent-card-logo {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--agent-card-logo-bg, var(--agent-card-logo-default-bg));
+  color: var(--agent-card-logo-fg, var(--agent-card-logo-default-fg));
+  font-weight: 700;
+  line-height: var(--leading-none);
+  letter-spacing: var(--tracking-normal);
+}
+.agent-card-logo--codex {
+  --agent-card-logo-default-bg: var(--agent-card-codex-logo-bg);
+  --agent-card-logo-default-fg: var(--agent-card-codex-logo-fg);
+  font-size: 7px;
+}
+.agent-card-logo--claude {
+  --agent-card-logo-default-bg: var(--agent-card-claude-logo-bg);
+  --agent-card-logo-default-fg: var(--agent-card-claude-logo-fg);
+  font-size: var(--text-xs);
+}
 
 /* ===== Unknown card (registry fallback) =====
    Rendered by `UnknownCard.tsx` when `adaptKernelCard` can't claim a

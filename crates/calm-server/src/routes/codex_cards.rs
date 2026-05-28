@@ -105,6 +105,12 @@ pub struct NewCodexCardBody {
     /// full mechanism.
     #[serde(default)]
     pub prompt: Option<String>,
+    /// Optional card-head logo background CSS color. Empty string is ignored.
+    #[serde(default)]
+    pub icon_bg: Option<String>,
+    /// Optional card-head logo foreground CSS color. Empty string is ignored.
+    #[serde(default)]
+    pub icon_fg: Option<String>,
     /// Host browser's current theme RGB (#177). Required — the kernel
     /// stamps `--terminal-fg=r,g,b --terminal-bg=r,g,b` onto the
     /// `calm-session-daemon` argv so the daemon's `TerminalModel`
@@ -157,6 +163,8 @@ pub(crate) async fn create_codex_card(
             "cwd must not contain ASCII control characters".into(),
         ));
     }
+    let icon_bg = normalize_optional_css_color(p.icon_bg.as_deref(), "icon_bg")?;
+    let icon_fg = normalize_optional_css_color(p.icon_fg.as_deref(), "icon_fg")?;
 
     // 2. Pre-mint the card id so we can derive `CODEX_HOME` (keyed on
     //    card id, see module-level doc) before the row hits the DB.
@@ -236,6 +244,8 @@ pub(crate) async fn create_codex_card(
     let cwd_for_tx = cwd.clone();
     let env_for_tx = env.clone();
     let prompt_for_tx = prompt.clone();
+    let icon_bg_for_tx = icon_bg.clone();
+    let icon_fg_for_tx = icon_fg.clone();
     // #177 — host browser's theme is written onto the terminal row in
     // the same tx that mints the card. The spawn helper below reads
     // `term.theme_fg/bg` directly when stamping the daemon argv, so
@@ -271,6 +281,8 @@ pub(crate) async fn create_codex_card(
                     cwd_for_tx,
                     env_for_tx,
                     prompt_for_tx,
+                    icon_bg_for_tx,
+                    icon_fg_for_tx,
                     // User-facing codex cards stay Plain. The spec
                     // role is exclusively minted by the wave-create
                     // route (PR6), and the dispatcher mints Worker
@@ -444,6 +456,30 @@ pub(crate) fn shell_single_quote(s: &str) -> String {
     }
     out.push('\'');
     out
+}
+
+pub(crate) fn normalize_optional_css_color(
+    raw: Option<&str>,
+    field: &str,
+) -> Result<Option<String>> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.len() > 128 {
+        return Err(CalmError::BadRequest(format!(
+            "{field} must be at most 128 bytes"
+        )));
+    }
+    if trimmed.chars().any(|c| c.is_ascii_control()) {
+        return Err(CalmError::BadRequest(format!(
+            "{field} must not contain ASCII control characters"
+        )));
+    }
+    Ok(Some(trimmed.to_string()))
 }
 
 /// Per-spawn `$CODEX_HOME/config.toml` body. Silences the three

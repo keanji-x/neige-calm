@@ -1215,6 +1215,8 @@ pub async fn card_with_codex_create_tx(
     cwd: String,
     env: serde_json::Value,
     prompt: Option<String>,
+    icon_bg: Option<String>,
+    icon_fg: Option<String>,
     role: CardRole,
     // Issue #229 PR A — required deletable bit. The wave-create route
     // passes `false` (the spec card is kernel-owned, must survive
@@ -1292,6 +1294,12 @@ pub async fn card_with_codex_create_tx(
     if let Some(p) = prompt.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         payload.insert("prompt".into(), serde_json::Value::String(p.to_string()));
     }
+    if let Some(c) = icon_bg.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        payload.insert("icon_bg".into(), serde_json::Value::String(c.to_string()));
+    }
+    if let Some(c) = icon_fg.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        payload.insert("icon_fg".into(), serde_json::Value::String(c.to_string()));
+    }
     let payload = serde_json::Value::Object(payload);
 
     // 4. Defense-in-depth: payload validation. The boundary call in
@@ -1351,6 +1359,8 @@ pub async fn card_with_claude_create_tx(
     cwd: String,
     env: serde_json::Value,
     prompt: Option<String>,
+    icon_bg: Option<String>,
+    icon_fg: Option<String>,
     settings_path: String,
     claude_session_id: String,
     role: CardRole,
@@ -1407,6 +1417,12 @@ pub async fn card_with_claude_create_tx(
     }
     if let Some(p) = prompt.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         payload.insert("prompt".into(), serde_json::Value::String(p.to_string()));
+    }
+    if let Some(c) = icon_bg.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        payload.insert("icon_bg".into(), serde_json::Value::String(c.to_string()));
+    }
+    if let Some(c) = icon_fg.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        payload.insert("icon_fg".into(), serde_json::Value::String(c.to_string()));
     }
     let payload = serde_json::Value::Object(payload);
     validate_card_payload("claude", &payload)?;

@@ -16,7 +16,7 @@
 //     local FSM here, so wave-union (the kernel computes it server-side)
 //     and per-card dot agree by construction.
 
-import { lazy, Suspense, useEffect } from 'react';
+import { lazy, Suspense, useEffect, type CSSProperties } from 'react';
 import { useState } from '../../shared/state';
 import { z } from 'zod';
 import type { ClaudeCardData, CodexCardData, FsmState } from '../../types';
@@ -50,15 +50,49 @@ const codexPayloadSchema = z.object({
   prompt: z.string().optional(),
   model: z.string().optional(),
   cwd: z.string().optional(),
+  icon_bg: z.string().optional(),
+  icon_fg: z.string().optional(),
 });
 
 const claudePayloadSchema = z.object({
   terminal_id: z.string().optional(),
   prompt: z.string().optional(),
   cwd: z.string().optional(),
+  icon_bg: z.string().optional(),
+  icon_fg: z.string().optional(),
   settings_path: z.string().optional(),
   claude_session_id: z.string().optional(),
 });
+
+type AgentProvider = 'codex' | 'claude';
+
+type AgentCardLogoStyle = CSSProperties & {
+  '--agent-card-logo-bg'?: string;
+  '--agent-card-logo-fg'?: string;
+};
+
+function AgentCardLogo({
+  provider,
+  bg,
+  fg,
+}: {
+  provider: AgentProvider;
+  bg?: string;
+  fg?: string;
+}) {
+  const style: AgentCardLogoStyle = {};
+  if (bg) style['--agent-card-logo-bg'] = bg;
+  if (fg) style['--agent-card-logo-fg'] = fg;
+  return (
+    <span
+      className={`agent-card-logo agent-card-logo--${provider}`}
+      style={style}
+      aria-hidden="true"
+    >
+      {provider === 'claude' ? 'C' : 'GPT'}
+    </span>
+  );
+}
 
 function UnsupportedCodexCard({
   title,
@@ -221,6 +255,7 @@ function CodexCardImpl({
       <CardHead
         className="card-drag-handle"
         title={title}
+        icon={<AgentCardLogo provider={provider} bg={card.iconBg} fg={card.iconFg} />}
         onClose={onClose}
         closeAriaLabel="Remove panel"
         // Dot-only status (unified with Terminal). The visible label is gone;
@@ -350,6 +385,8 @@ export const CodexEntry: CardEntry<CodexCardData> = {
       id: k.id,
       terminalId: parsed.data.terminal_id,
       cwd: parsed.data.cwd,
+      iconBg: parsed.data.icon_bg,
+      iconFg: parsed.data.icon_fg,
     };
   },
   addPanel: {
@@ -362,6 +399,18 @@ export const CodexEntry: CardEntry<CodexCardData> = {
           key: 'cwd',
           label: 'Working directory',
           type: 'directory',
+        },
+        {
+          key: 'icon_bg',
+          label: 'Logo background',
+          type: 'string',
+          placeholder: 'Optional CSS color, e.g. #111111',
+        },
+        {
+          key: 'icon_fg',
+          label: 'Logo foreground',
+          type: 'string',
+          placeholder: 'Optional CSS color, e.g. #ffffff',
         },
       ],
     },
@@ -399,6 +448,8 @@ export const ClaudeEntry: CardEntry<ClaudeCardData> = {
       id: k.id,
       terminalId: parsed.data.terminal_id,
       cwd: parsed.data.cwd,
+      iconBg: parsed.data.icon_bg,
+      iconFg: parsed.data.icon_fg,
       claudeSessionId: parsed.data.claude_session_id,
     };
   },
@@ -415,6 +466,18 @@ export const ClaudeEntry: CardEntry<ClaudeCardData> = {
           key: 'prompt',
           label: 'Prompt',
           type: 'textarea',
+        },
+        {
+          key: 'icon_bg',
+          label: 'Logo background',
+          type: 'string',
+          placeholder: 'Optional CSS color, e.g. #f97316',
+        },
+        {
+          key: 'icon_fg',
+          label: 'Logo foreground',
+          type: 'string',
+          placeholder: 'Optional CSS color, e.g. #ffffff',
         },
       ],
     },
