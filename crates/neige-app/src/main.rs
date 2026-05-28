@@ -272,6 +272,9 @@ struct SupervisorConfig {
     calm_db_url: Option<String>,
     calm_data_dir: Option<PathBuf>,
     calm_mcp_stdio_shim_bin: Option<PathBuf>,
+    calm_auth_username: Option<String>,
+    calm_auth_password: Option<String>,
+    calm_auth_dev_autologin: bool,
     child_cwd: Option<PathBuf>,
     child_args: Vec<String>,
     restart_delay: Duration,
@@ -293,6 +296,9 @@ impl From<&AppConfig> for SupervisorConfig {
             calm_db_url: cfg.child.db_url.clone(),
             calm_data_dir: cfg.child.data_dir.clone(),
             calm_mcp_stdio_shim_bin: cfg.child.mcp_stdio_shim_bin.clone(),
+            calm_auth_username: cfg.child.auth_username.clone(),
+            calm_auth_password: cfg.child.auth_password.clone(),
+            calm_auth_dev_autologin: cfg.child.auth_dev_autologin,
             child_cwd: cfg.child.cwd.clone(),
             child_args: cfg.child.extra_args.clone(),
             restart_delay: cfg.timing.restart_delay,
@@ -441,6 +447,20 @@ impl Supervisor {
         if let Some(shim) = &self.cfg.calm_mcp_stdio_shim_bin {
             cmd.env("CALM_MCP_STDIO_SHIM_BIN", shim);
         }
+        if let Some(username) = &self.cfg.calm_auth_username {
+            cmd.env("CALM_AUTH_USERNAME", username);
+        }
+        if let Some(password) = &self.cfg.calm_auth_password {
+            cmd.env("CALM_AUTH_PASSWORD", password);
+        }
+        cmd.env(
+            "CALM_DEV_AUTOLOGIN",
+            if self.cfg.calm_auth_dev_autologin {
+                "true"
+            } else {
+                "false"
+            },
+        );
         if let Some(cwd) = &self.cfg.child_cwd {
             cmd.current_dir(cwd);
         }
@@ -1256,6 +1276,9 @@ bin = "/usr/local/bin/neige-app"
                 calm_db_url: None,
                 calm_data_dir: None,
                 calm_mcp_stdio_shim_bin: None,
+                calm_auth_username: None,
+                calm_auth_password: None,
+                calm_auth_dev_autologin: false,
                 child_cwd: None,
                 child_args: Vec::new(),
                 restart_delay: Duration::from_millis(1),

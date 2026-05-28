@@ -45,6 +45,9 @@ pub(crate) struct ChildConfig {
     pub db_url: Option<String>,
     pub data_dir: Option<PathBuf>,
     pub mcp_stdio_shim_bin: Option<PathBuf>,
+    pub auth_username: Option<String>,
+    pub auth_password: Option<String>,
+    pub auth_dev_autologin: bool,
     pub cwd: Option<PathBuf>,
     pub extra_args: Vec<String>,
 }
@@ -115,6 +118,9 @@ struct ConfigBuilder {
     child_db_url: Option<String>,
     child_data_dir: Option<String>,
     child_mcp_stdio_shim_bin: Option<String>,
+    child_auth_username: Option<String>,
+    child_auth_password: Option<String>,
+    child_auth_dev_autologin: Option<bool>,
     child_cwd: Option<String>,
     child_extra_args: Option<Vec<String>>,
     timing_stop_grace_ms: Option<u64>,
@@ -179,6 +185,9 @@ impl AppConfig {
                 db_url: None,
                 data_dir: Some(expand_tilde("~/.local/share/neige-calm")),
                 mcp_stdio_shim_bin: Some(current_server.join("bin").join("neige-mcp-stdio-shim")),
+                auth_username: Some("owner".into()),
+                auth_password: None,
+                auth_dev_autologin: false,
                 cwd: None,
                 extra_args: Vec::new(),
             },
@@ -270,6 +279,11 @@ impl AppConfig {
                         .join("neige-mcp-stdio-shim"),
                 )
             });
+        cfg.child.auth_username = builder.child_auth_username;
+        cfg.child.auth_password = builder.child_auth_password;
+        if let Some(value) = builder.child_auth_dev_autologin {
+            cfg.child.auth_dev_autologin = value;
+        }
         cfg.child.cwd = builder.child_cwd.map(|v| expand_tilde(&v));
         if let Some(value) = builder.child_extra_args {
             cfg.child.extra_args = value;
@@ -403,6 +417,9 @@ calm_listen = "127.0.0.1:4040"
 db_url = ""
 data_dir = "~/.local/share/neige-calm"
 mcp_stdio_shim_bin = "~/.local/share/neige-app/releases/current-server/bin/neige-mcp-stdio-shim"
+auth_username = "owner"
+auth_password = ""
+auth_dev_autologin = false
 cwd = ""
 extra_args = []
 
@@ -499,6 +516,11 @@ fn set_value(
         ("child", "mcp_stdio_shim_bin") => {
             builder.child_mcp_stdio_shim_bin = parse_optional_string(value)?
         }
+        ("child", "auth_username") => builder.child_auth_username = parse_optional_string(value)?,
+        ("child", "auth_password") => builder.child_auth_password = parse_optional_string(value)?,
+        ("child", "auth_dev_autologin") => {
+            builder.child_auth_dev_autologin = Some(parse_bool(value)?)
+        }
         ("child", "cwd") => builder.child_cwd = parse_optional_string(value)?,
         ("child", "extra_args") => builder.child_extra_args = Some(parse_string_array(value)?),
         ("timing", "stop_grace_ms") => builder.timing_stop_grace_ms = Some(parse_u64(value)?),
@@ -553,6 +575,14 @@ fn parse_u64(value: &str) -> anyhow::Result<u64> {
 
 fn parse_u32(value: &str) -> anyhow::Result<u32> {
     Ok(strip_comment(value).trim().parse()?)
+}
+
+fn parse_bool(value: &str) -> anyhow::Result<bool> {
+    match strip_comment(value).trim() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        other => Err(anyhow!("expected boolean true or false, got {other}")),
+    }
 }
 
 fn parse_db_migration_policy(value: &str) -> anyhow::Result<crate::manifest::DbMigrationPolicy> {
@@ -677,6 +707,9 @@ token_file = "/tmp/token"
 [child]
 bin = "/opt/neige/calm-server"
 calm_listen = "127.0.0.1:5001"
+auth_username = "admin"
+auth_password = "secret"
+auth_dev_autologin = true
 extra_args = ["--one", "two"]
 
 [timing]
@@ -687,6 +720,9 @@ restart_delay_ms = 250
 
         let mut cfg = AppConfig::load(Some(&path)).expect("load config");
         assert_eq!(cfg.admin.listen.to_string(), "127.0.0.1:5000");
+        assert_eq!(cfg.child.auth_username.as_deref(), Some("admin"));
+        assert_eq!(cfg.child.auth_password.as_deref(), Some("secret"));
+        assert!(cfg.child.auth_dev_autologin);
         assert_eq!(cfg.child.extra_args, vec!["--one", "two"]);
         assert_eq!(cfg.timing.restart_delay, Duration::from_millis(250));
 

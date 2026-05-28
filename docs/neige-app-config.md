@@ -47,6 +47,9 @@ calm_listen = "127.0.0.1:4040"
 db_url = ""
 data_dir = "~/.local/share/neige-calm"
 mcp_stdio_shim_bin = "~/.local/share/neige-app/releases/current-server/bin/neige-mcp-stdio-shim"
+auth_username = "owner"
+auth_password = ""
+auth_dev_autologin = false
 cwd = ""
 extra_args = []
 
@@ -87,6 +90,15 @@ They are retained as legacy fields only; when split keys are omitted,
 `neige-app` uses the split defaults under `release.root`. Component activation
 requires `current_server` and `current_web` to be different paths, and likewise
 for `previous_server` and `previous_web`.
+
+`calm_listen` may be set to `0.0.0.0:<port>` when the calm-server API and
+built web bundle should be reachable from other hosts. Keep `admin.listen`
+loopback-only unless the bearer-token admin API is protected by the local
+machine or another access-control layer.
+
+`auth_username` and `auth_password` are passed through to calm-server as
+`CALM_AUTH_USERNAME` and `CALM_AUTH_PASSWORD`. Set `auth_dev_autologin=true`
+only for local development; it disables the normal owner login flow.
 
 ## Install
 

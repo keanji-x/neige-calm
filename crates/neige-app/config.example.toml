@@ -4,7 +4,7 @@
 # release directory you want neige-app to manage.
 
 [admin]
-listen = "127.0.0.1:4050"
+listen = "0.0.0.0:4050"
 token_file = "~/.config/neige-app/admin.token"
 
 [release]
@@ -18,10 +18,13 @@ backups = "~/.local/share/neige-app/backups"
 [child]
 bin = "~/.local/share/neige-app/releases/current-server/bin/calm-server"
 web_dist = "~/.local/share/neige-app/releases/current-web/web/dist"
-calm_listen = "127.0.0.1:4040"
+calm_listen = "0.0.0.0:4040"
 db_url = ""
 data_dir = "~/.local/share/neige-calm"
 mcp_stdio_shim_bin = "~/.local/share/neige-app/releases/current-server/bin/neige-mcp-stdio-shim"
+auth_username = "owner"
+auth_password = "change-me"
+auth_dev_autologin = false
 cwd = ""
 extra_args = []
 
