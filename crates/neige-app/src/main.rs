@@ -668,13 +668,36 @@ fn run_upgrade(args: SystemUpgradeArgs) -> anyhow::Result<()> {
             "packageDir": package_dir,
             "stage": stage,
             "activation": activation,
-            "nextSteps": [
-                format!("curl -H \"Authorization: Bearer $(cat {})\" -X POST http://{}/restart", cfg.admin.token_file.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "<token-file>".into()), cfg.admin.listen),
-                format!("systemctl --user restart {}", cfg.systemd.unit_name),
-            ],
+            "nextSteps": upgrade_next_steps(&cfg, activation.as_ref()),
         }))?
     );
     Ok(())
+}
+
+fn upgrade_next_steps(
+    cfg: &AppConfig,
+    activation: Option<&upgrade::ActivationResult>,
+) -> Vec<String> {
+    match activation {
+        Some(result) if result.restart_required => vec![
+            format!(
+                "curl -H \"Authorization: Bearer $(cat {})\" -X POST http://{}/restart",
+                cfg.admin
+                    .token_file
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "<token-file>".into()),
+                cfg.admin.listen
+            ),
+            format!("systemctl --user restart {}", cfg.systemd.unit_name),
+        ],
+        Some(_) => {
+            vec!["No backend restart required; refresh open browser tabs or reload /calm/.".into()]
+        }
+        None => vec![
+            "Review stage.preflight, then rerun with --activate to switch release symlinks.".into(),
+        ],
+    }
 }
 
 fn run_rollback(args: SystemRollbackArgs) -> anyhow::Result<()> {
@@ -1265,6 +1288,44 @@ bin = "/usr/local/bin/neige-app"
                 & 0o777;
             assert_eq!(mode, 0o600);
         }
+    }
+
+    #[test]
+    fn web_only_activation_next_steps_do_not_restart_backend() {
+        let cfg = AppConfig::starter(PathBuf::from("/tmp/neige-app/config.toml"));
+        let activation = upgrade::ActivationResult {
+            activated: true,
+            mode: "web-only".into(),
+            release_id: "web-1".into(),
+            restart_required: false,
+            changed_symlinks: Vec::new(),
+            db_backup: None,
+        };
+
+        let steps = upgrade_next_steps(&cfg, Some(&activation));
+
+        assert_eq!(steps.len(), 1);
+        assert!(steps[0].contains("No backend restart required"));
+        assert!(!steps.iter().any(|step| step.contains("/restart")));
+        assert!(!steps.iter().any(|step| step.contains("systemctl")));
+    }
+
+    #[test]
+    fn server_activation_next_steps_include_restart() {
+        let cfg = AppConfig::starter(PathBuf::from("/tmp/neige-app/config.toml"));
+        let activation = upgrade::ActivationResult {
+            activated: true,
+            mode: "server-only".into(),
+            release_id: "server-1".into(),
+            restart_required: true,
+            changed_symlinks: Vec::new(),
+            db_backup: None,
+        };
+
+        let steps = upgrade_next_steps(&cfg, Some(&activation));
+
+        assert!(steps.iter().any(|step| step.contains("/restart")));
+        assert!(steps.iter().any(|step| step.contains("systemctl")));
     }
 
     fn test_app_state(token: Option<&str>) -> AppState {
