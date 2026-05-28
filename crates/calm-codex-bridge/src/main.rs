@@ -168,33 +168,67 @@ fn extract_last_assistant_text(jsonl: &str) -> Option<String> {
             }
         };
 
-        match record.get("type").and_then(serde_json::Value::as_str) {
-            Some("summary" | "system" | "queue_operation" | "attachment") => continue,
-            Some("assistant") => {}
-            _ => continue,
+        if matches!(
+            record.get("type").and_then(serde_json::Value::as_str),
+            Some("summary" | "system" | "queue_operation" | "attachment")
+        ) {
+            continue;
         }
 
-        let mut text = String::new();
-        if let Some(content) = record
-            .get("message")
-            .and_then(|message| message.get("content"))
-            .and_then(serde_json::Value::as_array)
-        {
-            for block in content {
-                if block.get("type").and_then(serde_json::Value::as_str) == Some("text")
-                    && let Some(block_text) = block.get("text").and_then(serde_json::Value::as_str)
-                {
-                    text.push_str(block_text);
-                }
-            }
-        }
-
-        if !text.is_empty() {
+        if let Some(text) = assistant_text_from_record(&record) {
             return Some(text);
         }
     }
 
     None
+}
+
+fn assistant_text_from_record(record: &serde_json::Value) -> Option<String> {
+    // Claude shape: top-level `type == "assistant"`.
+    if record.get("type").and_then(serde_json::Value::as_str) == Some("assistant") {
+        return concat_text_blocks(
+            record
+                .get("message")
+                .and_then(|message| message.get("content")),
+            "text",
+        );
+    }
+
+    // Codex rollout shape: `type == "response_item"` with payload role.
+    if record.get("type").and_then(serde_json::Value::as_str) == Some("response_item")
+        && record
+            .get("payload")
+            .and_then(|payload| payload.get("role"))
+            .and_then(serde_json::Value::as_str)
+            == Some("assistant")
+    {
+        return concat_text_blocks(
+            record
+                .get("payload")
+                .and_then(|payload| payload.get("content")),
+            "output_text",
+        );
+    }
+
+    None
+}
+
+fn concat_text_blocks(
+    content: Option<&serde_json::Value>,
+    text_block_type: &str,
+) -> Option<String> {
+    let mut text = String::new();
+    let content = content.and_then(serde_json::Value::as_array)?;
+
+    for block in content {
+        if block.get("type").and_then(serde_json::Value::as_str) == Some(text_block_type)
+            && let Some(block_text) = block.get("text").and_then(serde_json::Value::as_str)
+        {
+            text.push_str(block_text);
+        }
+    }
+
+    (!text.is_empty()).then_some(text)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -374,6 +408,83 @@ mod tests {
     }
 
     #[test]
+    fn extracts_codex_response_item_output_text() {
+        let jsonl = json!({
+            "type": "response_item",
+            "payload": {
+                "role": "assistant",
+                "content": [
+                    { "type": "output_text", "text": "hello from codex" }
+                ]
+            }
+        })
+        .to_string();
+
+        assert_eq!(
+            extract_last_assistant_text(&jsonl).as_deref(),
+            Some("hello from codex")
+        );
+    }
+
+    #[test]
+    fn extracts_codex_response_item_with_mixed_blocks() {
+        let jsonl = json!({
+            "type": "response_item",
+            "payload": {
+                "role": "assistant",
+                "content": [
+                    { "type": "output_text", "text": "hello " },
+                    { "type": "function_call", "name": "lookup" },
+                    { "type": "output_text", "text": "world" }
+                ]
+            }
+        })
+        .to_string();
+
+        assert_eq!(
+            extract_last_assistant_text(&jsonl).as_deref(),
+            Some("hello world")
+        );
+    }
+
+    #[test]
+    fn codex_response_item_with_non_assistant_role_is_ignored() {
+        let jsonl = json!({
+            "type": "response_item",
+            "payload": {
+                "role": "user",
+                "content": [
+                    { "type": "output_text", "text": "ignored" }
+                ]
+            }
+        })
+        .to_string();
+
+        assert_eq!(extract_last_assistant_text(&jsonl), None);
+    }
+
+    #[test]
+    fn claude_shape_and_codex_shape_interleaved() {
+        let claude = json!({
+            "type": "assistant",
+            "message": { "content": [{ "type": "text", "text": "claude answer" }] }
+        });
+        let codex = json!({
+            "type": "response_item",
+            "payload": {
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": "codex answer" }]
+            }
+        });
+        let jsonl = format!("{claude}\n{codex}\n");
+
+        assert_eq!(
+            extract_last_assistant_text(&jsonl).as_deref(),
+            Some("codex answer")
+        );
+    }
+
+    #[test]
     fn extracts_last_assistant_line() {
         let first = json!({
             "type": "assistant",
@@ -492,6 +603,26 @@ mod tests {
                 .get("last_assistant_message")
                 .and_then(serde_json::Value::as_str),
             Some("from transcript")
+        );
+    }
+
+    #[test]
+    fn stop_hook_with_empty_string_last_assistant_message_injects_from_transcript() {
+        let transcript = write_transcript("from empty string");
+        let body = json!({
+            "hook_event_name": "Stop",
+            "last_assistant_message": "",
+            "transcript_path": transcript.path()
+        })
+        .to_string();
+
+        let enriched = maybe_enrich_stop_payload(&body).expect("enriched payload");
+        let parsed: serde_json::Value = serde_json::from_str(&enriched).unwrap();
+        assert_eq!(
+            parsed
+                .get("last_assistant_message")
+                .and_then(serde_json::Value::as_str),
+            Some("from empty string")
         );
     }
 

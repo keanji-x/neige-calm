@@ -136,6 +136,21 @@ fn write_transcript(text: &str) -> tempfile::NamedTempFile {
     file
 }
 
+fn write_codex_rollout(text: &str) -> tempfile::NamedTempFile {
+    let mut file = tempfile::NamedTempFile::new().expect("tempfile");
+    let record = serde_json::json!({
+        "type": "response_item",
+        "payload": {
+            "role": "assistant",
+            "content": [
+                { "type": "output_text", "text": text }
+            ]
+        }
+    });
+    writeln!(file, "{record}").expect("write codex rollout transcript");
+    file
+}
+
 async fn run_bridge_and_capture_body(
     provider: &str,
     payload: serde_json::Value,
@@ -190,7 +205,7 @@ async fn claude_stop_payload_is_enriched_from_transcript() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn codex_stop_payload_is_enriched_from_transcript() {
+async fn codex_provider_with_claude_shape_transcript_is_enriched() {
     let transcript = write_transcript("codex final answer");
     let payload = serde_json::json!({
         "hook_event_name": "Stop",
@@ -209,6 +224,29 @@ async fn codex_stop_payload_is_enriched_from_transcript() {
             .get("last_assistant_message")
             .and_then(serde_json::Value::as_str),
         Some("codex final answer")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn codex_stop_payload_is_enriched_from_codex_shape_rollout() {
+    let transcript = write_codex_rollout("codex rollout final answer");
+    let payload = serde_json::json!({
+        "hook_event_name": "Stop",
+        "session_id": "test-session",
+        "transcript_path": transcript.path()
+    });
+
+    let Some((posted, stdout, _stderr)) = run_bridge_and_capture_body("codex", payload).await
+    else {
+        return;
+    };
+
+    assert_eq!(stdout.trim(), "{}");
+    assert_eq!(
+        posted
+            .get("last_assistant_message")
+            .and_then(serde_json::Value::as_str),
+        Some("codex rollout final answer")
     );
 }
 
