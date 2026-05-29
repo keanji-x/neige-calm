@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/calm-server",
+    "crates/calm-proc-supervisor",
     "crates/calm-session",
     "crates/calm-codex-bridge",
     "crates/calm-editor",

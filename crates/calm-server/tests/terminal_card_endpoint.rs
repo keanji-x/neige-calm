@@ -96,6 +96,7 @@ async fn boot_with_daemon(session_daemon_bin: PathBuf) -> Boot {
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
         session_daemon_bin,
+        proc_supervisor_sock: None,
     });
     let events = EventBus::new();
     let state = AppState::from_parts(

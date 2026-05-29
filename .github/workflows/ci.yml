@@ -208,8 +208,13 @@ jobs:
       # chromium-e2e specs don't exercise codex today, but the docker
       # compose `up` step uses the same compose file as `make dev` and
       # will fail trying to bind-mount a non-existent host path.
-      - name: cargo build --release (server + daemon + codex bridge + mcp-stdio shim)
-        run: cargo build --release -p calm-server -p calm-session -p calm-codex-bridge -p neige-mcp-stdio-shim --bin calm-server --bin calm-session-daemon --bin neige-codex-bridge --bin neige-mcp-stdio-shim --locked
+      - name: cargo build --release (server + daemon + codex bridge + mcp-stdio shim + proc-supervisor)
+        # Issue #388 Phase 1 — `calm-proc-supervisor` is bind-mounted by
+        # docker-compose.yml into the calm-server container so calm-server can
+        # talk to it over a control UDS for every terminal spawn. Without it
+        # in the release build, docker-compose mounts a non-existent host path
+        # and the container shell aborts before `calm-server listening`.
+        run: cargo build --release -p calm-server -p calm-session -p calm-codex-bridge -p neige-mcp-stdio-shim -p calm-proc-supervisor --bin calm-server --bin calm-session-daemon --bin neige-codex-bridge --bin neige-mcp-stdio-shim --bin calm-proc-supervisor --locked
 
       - name: npm run build (web bundle for nginx)
         working-directory: web

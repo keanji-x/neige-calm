@@ -120,6 +120,12 @@ APP      := $(WORKTREE)/target/release/neige-app
 # `os error 2`. docker-compose.yml bind-mounts the built binary into
 # /usr/local/bin/.
 MCP_SHIM := $(WORKTREE)/target/release/neige-mcp-stdio-shim
+# Issue #388 Phase 1 — fork-broker between neige-app and calm-server's
+# per-PTY `calm-session-daemon` spawns. calm-server connects to the
+# control UDS at `proc_supervisor_sock` for every terminal spawn; without
+# this binary the first spawn fails with `connect calm-proc-supervisor …
+# No such file or directory`. neige-app peer-supervises it.
+PROC_SUP := $(WORKTREE)/target/release/calm-proc-supervisor
 NEIGE_CLI := $(WORKTREE)/target/release/neige
 DIST     := $(WORKTREE)/web/dist
 NODE_MODULES_STAMP := $(WORKTREE)/web/node_modules/.package-lock.json
@@ -134,6 +140,7 @@ export CALM_BIN := $(BIN)
 export CALM_DAEMON_BIN := $(DAEMON)
 export CALM_CODEX_BRIDGE_BIN := $(BRIDGE)
 export CALM_MCP_SHIM_BIN := $(MCP_SHIM)
+export CALM_PROC_SUPERVISOR_BIN := $(PROC_SUP)
 export CALM_WEB_DIST := $(DIST)
 
 # Wipe the local sqlite DB (with a timestamped backup) before `up -d` so
@@ -169,15 +176,15 @@ help: ## Show this help.
 # ---- build (on host, not in docker) -------------------------------------
 
 .PHONY: build
-build: $(BIN) $(DAEMON) $(BRIDGE) $(APP) $(MCP_SHIM) $(NEIGE_CLI) $(DIST) ## Build server, daemon, app shell, codex bridge, mcp-stdio shim, neige CLI, web bundle.
+build: $(BIN) $(DAEMON) $(BRIDGE) $(APP) $(MCP_SHIM) $(PROC_SUP) $(NEIGE_CLI) $(DIST) ## Build server, daemon, app shell, codex bridge, mcp-stdio shim, proc-supervisor, neige CLI, web bundle.
 
-# Single cargo invocation builds all four binaries — cheaper than four
-# separate calls because deps overlap. Touch every output so the rule
-# re-fires only when sources change. Issue #236 followup added the
-# `neige-mcp-stdio-shim` binary to the list; the docker-compose stack
-# bind-mounts it into /usr/local/bin so codex can spawn it per-card.
-$(BIN) $(DAEMON) $(BRIDGE) $(APP) $(MCP_SHIM) $(NEIGE_CLI) &: $(shell find $(WORKTREE)/crates -name '*.rs' -o -name 'Cargo.toml' 2>/dev/null) $(WORKTREE)/Cargo.toml $(WORKTREE)/Cargo.lock
-	cargo build --manifest-path $(WORKTREE)/Cargo.toml --release -p calm-server -p calm-session -p calm-codex-bridge -p neige-app -p neige-mcp-stdio-shim -p neige-cli --bin calm-server --bin calm-session-daemon --bin neige-codex-bridge --bin neige-app --bin neige-mcp-stdio-shim --bin neige
+# Single cargo invocation builds all binaries — cheaper than separate
+# calls because deps overlap. Touch every output so the rule re-fires
+# only when sources change. Issue #236 followup added `neige-mcp-stdio-shim`;
+# issue #388 Phase 1 added `calm-proc-supervisor` (peer-supervised by
+# neige-app and contacted by calm-server for every terminal spawn).
+$(BIN) $(DAEMON) $(BRIDGE) $(APP) $(MCP_SHIM) $(PROC_SUP) $(NEIGE_CLI) &: $(shell find $(WORKTREE)/crates -name '*.rs' -o -name 'Cargo.toml' 2>/dev/null) $(WORKTREE)/Cargo.toml $(WORKTREE)/Cargo.lock
+	cargo build --manifest-path $(WORKTREE)/Cargo.toml --release -p calm-server -p calm-session -p calm-codex-bridge -p neige-app -p neige-mcp-stdio-shim -p calm-proc-supervisor -p neige-cli --bin calm-server --bin calm-session-daemon --bin neige-codex-bridge --bin neige-app --bin neige-mcp-stdio-shim --bin calm-proc-supervisor --bin neige
 
 # npm rewrites node_modules/.package-lock.json after npm ci/install, so use
 # it as the dependency stamp for lockfile-driven web installs. Match CI's
@@ -275,6 +282,14 @@ prod: build prod-dirs prod-repair-codex-homes ## Run production locally without 
 	@echo "  → API: http://localhost:$(PROD_PORT)/api/coves"
 	@echo "  data:  $(PROD_DATA_DIR)"
 	@echo "  shell: $(LOCAL_SHELL)"
+	@# Issue #388 Phase 1 — calm-server now talks to calm-proc-supervisor
+	@# over a control UDS for every terminal spawn. Production has neige-app
+	@# peer-supervising both; for `make prod` we background the supervisor
+	@# on the same sock path calm-server resolves
+	@# (CALM_PROC_SUPERVISOR_SOCK env, falling back to
+	@# `CALM_DATA_DIR/proc-supervisor.sock`), wait for it to listen, then
+	@# exec calm-server. A trap on EXIT reaps the supervisor when the
+	@# foreground calm-server stops, so Ctrl-C doesn't leave it dangling.
 	env \
 	  CALM_LISTEN="$(PROD_LISTEN)" \
 	  CALM_ALLOWED_ORIGIN="http://localhost:$(PROD_PORT)" \
@@ -287,7 +302,18 @@ prod: build prod-dirs prod-repair-codex-homes ## Run production locally without 
 	  CALM_AUTH_PASSWORD="$(PROD_AUTH_PASSWORD)" \
 	  CALM_DEV_AUTOLOGIN="$(PROD_DEV_AUTOLOGIN)" \
 	  SHELL="$(LOCAL_SHELL)" \
-	  "$(BIN)"
+	  PROC_SUPERVISOR_BIN="$(PROC_SUP)" \
+	  CALM_SERVER_BIN="$(BIN)" \
+	  PROD_DATA_DIR="$(PROD_DATA_DIR)" \
+	  sh -c '\
+	    SOCK="$${CALM_PROC_SUPERVISOR_SOCK:-$$PROD_DATA_DIR/proc-supervisor.sock}"; \
+	    rm -f "$$SOCK"; \
+	    "$$PROC_SUPERVISOR_BIN" --control-sock "$$SOCK" & \
+	    sup_pid=$$!; \
+	    trap "kill -TERM $$sup_pid 2>/dev/null; wait $$sup_pid 2>/dev/null" EXIT INT TERM; \
+	    until [ -S "$$SOCK" ]; do sleep 0.1; done; \
+	    CALM_PROC_SUPERVISOR_SOCK="$$SOCK" exec "$$CALM_SERVER_BIN" \
+	  '
 
 # ---- housekeeping ------------------------------------------------------
 

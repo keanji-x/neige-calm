@@ -40,6 +40,7 @@ pub(crate) struct ReleaseConfig {
 #[derive(Debug, Clone)]
 pub(crate) struct ChildConfig {
     pub bin: PathBuf,
+    pub proc_supervisor_bin: PathBuf,
     pub web_dist: Option<PathBuf>,
     pub calm_listen: String,
     pub db_url: Option<String>,
@@ -90,6 +91,7 @@ pub(crate) struct ServeOverrides {
     pub admin_listen: Option<SocketAddr>,
     pub admin_token_file: Option<PathBuf>,
     pub child_bin: Option<PathBuf>,
+    pub proc_supervisor_bin: Option<PathBuf>,
     pub calm_listen: Option<String>,
     pub calm_web_dist: Option<PathBuf>,
     pub calm_db_url: Option<String>,
@@ -114,6 +116,7 @@ struct ConfigBuilder {
     release_previous_web: Option<String>,
     release_backups: Option<String>,
     child_bin: Option<String>,
+    child_proc_supervisor_bin: Option<String>,
     child_web_dist: Option<String>,
     child_calm_listen: Option<String>,
     child_db_url: Option<String>,
@@ -182,6 +185,7 @@ impl AppConfig {
             },
             child: ChildConfig {
                 bin: current_server.join("bin").join("calm-server"),
+                proc_supervisor_bin: current_server.join("bin").join("calm-proc-supervisor"),
                 web_dist: Some(current_web.join("web").join("dist")),
                 calm_listen: "127.0.0.1:4040".into(),
                 db_url: None,
@@ -262,6 +266,15 @@ impl AppConfig {
             .child_bin
             .map(|v| expand_tilde(&v))
             .unwrap_or_else(|| cfg.release.current_server.join("bin").join("calm-server"));
+        cfg.child.proc_supervisor_bin = builder
+            .child_proc_supervisor_bin
+            .map(|v| expand_tilde(&v))
+            .unwrap_or_else(|| {
+                cfg.release
+                    .current_server
+                    .join("bin")
+                    .join("calm-proc-supervisor")
+            });
         cfg.child.web_dist = builder
             .child_web_dist
             .map(|v| expand_tilde(&v))
@@ -358,6 +371,9 @@ impl AppConfig {
         if let Some(value) = overrides.child_bin {
             self.child.bin = value;
         }
+        if let Some(value) = overrides.proc_supervisor_bin {
+            self.child.proc_supervisor_bin = value;
+        }
         if let Some(value) = overrides.calm_listen {
             self.child.calm_listen = value;
         }
@@ -385,6 +401,17 @@ impl AppConfig {
         if let Some(value) = overrides.stop_grace_ms {
             self.timing.stop_grace = Duration::from_millis(value);
         }
+    }
+
+    pub(crate) fn calm_data_dir_resolved(&self) -> PathBuf {
+        self.child
+            .data_dir
+            .clone()
+            .unwrap_or_else(|| expand_tilde("~/.local/share/neige-calm"))
+    }
+
+    pub(crate) fn proc_supervisor_sock(&self) -> PathBuf {
+        self.calm_data_dir_resolved().join("proc-supervisor.sock")
     }
 }
 
@@ -420,6 +447,7 @@ backups = "~/.local/share/neige-app/backups"
 
 [child]
 bin = "~/.local/share/neige-app/releases/current-server/bin/calm-server"
+proc_supervisor_bin = "~/.local/share/neige-app/releases/current-server/bin/calm-proc-supervisor"
 web_dist = "~/.local/share/neige-app/releases/current-web/web/dist"
 calm_listen = "127.0.0.1:4040"
 db_url = ""
@@ -519,6 +547,9 @@ fn set_value(
         ("release", "previous_web") => builder.release_previous_web = Some(parse_string(value)?),
         ("release", "backups") => builder.release_backups = Some(parse_string(value)?),
         ("child", "bin") => builder.child_bin = Some(parse_string(value)?),
+        ("child", "proc_supervisor_bin") => {
+            builder.child_proc_supervisor_bin = Some(parse_string(value)?)
+        }
         ("child", "web_dist") => builder.child_web_dist = parse_optional_string(value)?,
         ("child", "calm_listen") => builder.child_calm_listen = Some(parse_string(value)?),
         ("child", "db_url") => builder.child_db_url = parse_optional_string(value)?,

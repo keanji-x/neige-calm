@@ -117,6 +117,12 @@ services:
       # narrow #236 sync-spawn fix doesn't surface that because it only
       # awaits the daemon socket, not the codex MCP handshake.
       - ${CALM_MCP_SHIM_BIN:-./target/release/neige-mcp-stdio-shim}:/usr/local/bin/neige-mcp-stdio-shim:ro
+      # Issue #388 Phase 1 — the proc-supervisor that calm-server now talks
+      # to over a control UDS for every `calm-session-daemon` spawn.
+      # neige-app peer-supervises it; calm-server's first terminal spawn
+      # fails with `connect calm-proc-supervisor … No such file or directory`
+      # if the binary isn't reachable inside the container.
+      - ${CALM_PROC_SUPERVISOR_BIN:-./target/release/calm-proc-supervisor}:/usr/local/bin/calm-proc-supervisor:ro
       # Issue #339 PR B — the `neige` CLI, invoked by spec/worker agents
       # from their terminals to read current-wave file views over the
       # per-card MCP socket. Mounting it at /usr/local/bin keeps it on
@@ -142,7 +148,18 @@ services:
       # the process still runs as the host user for mounted HOME/repo paths.
       - ${CALM_CONTAINER_STATE_DIR:-/var/lib/neige-calm}:uid=${UID:-1000},gid=${GID:-1000},mode=700
     # No host port mapping: nginx is the only published entrypoint.
-    command: ["calm-server"]
+    #
+    # Issue #388 Phase 1 — calm-server forks `calm-session-daemon` via
+    # `calm-proc-supervisor` over a control UDS. Production has neige-app
+    # peer-supervising both; in the docker dev stack we just background the
+    # supervisor before exec'ing calm-server so the first terminal spawn
+    # has someone listening. `init: true` (above) reaps the supervisor when
+    # calm-server exits. The sock path matches `proc_supervisor_sock_resolved()`
+    # default (CALM_DATA_DIR + proc-supervisor.sock).
+    command:
+      - sh
+      - -c
+      - 'set -e; DATA="$${CALM_DATA_DIR:-/var/lib/neige-calm/data}"; mkdir -p "$$DATA"; SOCK="$${CALM_PROC_SUPERVISOR_SOCK:-$$DATA/proc-supervisor.sock}"; rm -f "$$SOCK"; calm-proc-supervisor --control-sock "$$SOCK" & i=0; until [ -S "$$SOCK" ]; do i=$$((i+1)); if [ "$$i" -gt 100 ]; then echo "proc-supervisor sock $$SOCK never appeared" >&2; exit 1; fi; sleep 0.1; done; exec calm-server'
     restart: unless-stopped
 
   web:

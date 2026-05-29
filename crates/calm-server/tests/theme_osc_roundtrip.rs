@@ -178,6 +178,7 @@ async fn boot_full() -> Boot {
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
         session_daemon_bin: locate_daemon_bin(),
+        proc_supervisor_sock: None,
     });
     let card_role_cache = CardRoleCache::new();
     // #267 — `CodexClient::new_stub()` now mints its own per-instance

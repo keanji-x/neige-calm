@@ -159,6 +159,7 @@ mod behavioral {
         let daemon = Arc::new(DaemonClient {
             data_dir: tmp.join("terminals"),
             session_daemon_bin: locate_recorder_bin(),
+            proc_supervisor_sock: None,
         });
         let codex = common::fake_codex_client();
         let card_role_cache = CardRoleCache::new();

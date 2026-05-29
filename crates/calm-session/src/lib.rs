@@ -28,6 +28,7 @@
 //! inserted, etc.) fails fast at the read site with a typed [`FrameError`]
 //! instead of silently misinterpreting the bincode discriminants that follow.
 
+pub mod control;
 pub mod stream_json;
 pub mod terminal_model;
 pub mod terminal_session;

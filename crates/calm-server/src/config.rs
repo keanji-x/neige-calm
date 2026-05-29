@@ -21,6 +21,11 @@ pub struct Config {
     #[arg(long, env = "CALM_DATA_DIR")]
     pub data_dir: Option<PathBuf>,
 
+    /// Unix socket used to ask calm-proc-supervisor to fork session daemons.
+    /// Defaults to `<CALM_DATA_DIR>/proc-supervisor.sock`.
+    #[arg(long, env = "CALM_PROC_SUPERVISOR_SOCK")]
+    pub proc_supervisor_sock: Option<PathBuf>,
+
     /// CORS origin allowed by the API (typically the web-calm dev origin).
     #[arg(
         long,
@@ -128,6 +133,12 @@ impl Config {
                 .unwrap_or_else(|| PathBuf::from("."));
             base.join("neige-calm")
         })
+    }
+
+    pub fn proc_supervisor_sock_resolved(&self) -> PathBuf {
+        self.proc_supervisor_sock
+            .clone()
+            .unwrap_or_else(|| self.data_dir_resolved().join("proc-supervisor.sock"))
     }
 
     /// Where plugin install dirs live. Mirrors `data_dir_resolved`'s XDG
