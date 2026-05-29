@@ -18,64 +18,16 @@
 //! Chat mode is not exercised here — the args are intentionally ignored
 //! when `--mode chat` (no `TerminalModel` to apply colors to).
 
+mod common;
+
 use std::io::Read;
-use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
-use std::process::{Child, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
-use tempfile::TempDir;
 use uuid::Uuid;
 
 /// Path to the daemon binary cargo built for this test crate.
 fn daemon_bin() -> &'static str {
     env!("CARGO_BIN_EXE_calm-session-daemon")
-}
-
-fn supervisor_bin() -> &'static str {
-    "calm-proc-supervisor"
-}
-
-fn locate_bin(name: &str) -> PathBuf {
-    let env_key = format!("CARGO_BIN_EXE_{name}");
-    if let Ok(path) = std::env::var(env_key) {
-        return PathBuf::from(path);
-    }
-    let me = std::env::current_exe().expect("current_exe");
-    let target_profile = me
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("test bin parent");
-    let candidate = target_profile.join(name);
-    if candidate.exists() {
-        return candidate;
-    }
-    panic!("{name} binary not found at {}", candidate.display());
-}
-
-#[allow(clippy::zombie_processes)]
-fn spawn_supervisor() -> (Child, PathBuf, TempDir) {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let sock = temp.path().join("proc-supervisor.sock");
-    let mut child = std::process::Command::new(locate_bin(supervisor_bin()))
-        .arg("--control-sock")
-        .arg(&sock)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn supervisor");
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while Instant::now() < deadline {
-        if let Some(status) = child.try_wait().expect("try_wait supervisor") {
-            panic!("supervisor exited before listening: {status}");
-        }
-        if UnixStream::connect(&sock).is_ok() {
-            return (child, sock, temp);
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-    panic!("supervisor never listened on {}", sock.display());
 }
 
 /// Block until either the socket file exists OR the child exits, then
@@ -253,13 +205,13 @@ fn well_formed_flags_bind_socket() {
     // We use `sleep 30` so the daemon doesn't immediately exit and
     // race-delete the socket out from under our `sock.exists()` check.
     let sock = fresh_sock("ok");
-    let (mut supervisor, supervisor_sock, _supervisor_temp) = spawn_supervisor();
+    let supervisor = common::spawn_proc_supervisor();
     let id = Uuid::new_v4().to_string();
     let mut child = std::process::Command::new(daemon_bin())
         .args(["--id", &id])
         .args(["--sock", &sock.to_string_lossy()])
         .arg("--proc-supervisor-sock")
-        .arg(&supervisor_sock)
+        .arg(&supervisor.sock)
         .args(["--terminal-fg", "216,219,226"])
         .args(["--terminal-bg", "15,20,24"])
         .args(["--", "sh", "-c", "sleep 30"])
@@ -270,8 +222,6 @@ fn well_formed_flags_bind_socket() {
     let outcome = wait_bind_or_exit(&mut child, &sock);
     let _ = child.kill();
     let _ = child.wait();
-    let _ = supervisor.kill();
-    let _ = supervisor.wait();
     let _ = std::fs::remove_file(&sock);
     assert!(
         matches!(outcome, Outcome::Bound),
@@ -284,13 +234,13 @@ fn parse_rgb_accepts_whitespace_around_channels() {
     // `parse_rgb` trims each channel; `--terminal-fg ' 15 , 20 , 24 '`
     // should round-trip to (15, 20, 24).
     let sock = fresh_sock("ws");
-    let (mut supervisor, supervisor_sock, _supervisor_temp) = spawn_supervisor();
+    let supervisor = common::spawn_proc_supervisor();
     let id = Uuid::new_v4().to_string();
     let mut child = std::process::Command::new(daemon_bin())
         .args(["--id", &id])
         .args(["--sock", &sock.to_string_lossy()])
         .arg("--proc-supervisor-sock")
-        .arg(&supervisor_sock)
+        .arg(&supervisor.sock)
         .args(["--terminal-fg", " 216 , 219 , 226 "])
         .args(["--terminal-bg", "15,20,24"])
         .args(["--", "sh", "-c", "sleep 30"])
@@ -301,8 +251,6 @@ fn parse_rgb_accepts_whitespace_around_channels() {
     let outcome = wait_bind_or_exit(&mut child, &sock);
     let _ = child.kill();
     let _ = child.wait();
-    let _ = supervisor.kill();
-    let _ = supervisor.wait();
     let _ = std::fs::remove_file(&sock);
     assert!(
         matches!(outcome, Outcome::Bound),

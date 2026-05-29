@@ -9,6 +9,8 @@
 //! "Input requires owner role" error frame aimed at the observer. That
 //! was a leak (informational at best, confusing in any real client UI).
 
+mod common;
+
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
@@ -36,6 +38,7 @@ async fn protocol_error_targets_offending_client_only() {
     let id = Uuid::new_v4();
     let sock = std::env::temp_dir().join(format!("calm-perr-{id}.sock"));
     let _ = std::fs::remove_file(&sock);
+    let supervisor = common::spawn_proc_supervisor();
 
     // Spawn the daemon under `sleep 60` so the PTY child sticks around
     // long enough for both clients to exchange frames.
@@ -43,6 +46,8 @@ async fn protocol_error_targets_offending_client_only() {
         .args(["--mode", "terminal"])
         .args(["--id", &id.to_string()])
         .args(["--sock", &sock.to_string_lossy()])
+        .arg("--proc-supervisor-sock")
+        .arg(&supervisor.sock)
         // Per the daemon's own CLI semantics, `--id` is also re-used as
         // the terminal_id by clients. We assert TID == id.to_string()
         // by sending a matching ClientHello.

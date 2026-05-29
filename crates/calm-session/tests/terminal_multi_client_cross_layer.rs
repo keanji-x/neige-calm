@@ -45,6 +45,8 @@
 //! without buying isolation, and would hide the cross-layer composition
 //! (issue #199's whole point).
 
+mod common;
+
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
@@ -98,16 +100,24 @@ fn hello(real_tid: &str, client_id: Uuid) -> ClientMsg {
 /// step in this test, short enough that an abandoned daemon dies on
 /// its own. Returns the kill-on-drop handle, the unix socket path,
 /// and the terminal id the clients must echo back.
-async fn spawn_daemon() -> (tokio::process::Child, PathBuf, String) {
+async fn spawn_daemon() -> (
+    tokio::process::Child,
+    PathBuf,
+    String,
+    common::SupervisorHandle,
+) {
     let daemon_bin = env!("CARGO_BIN_EXE_calm-session-daemon");
     let id = Uuid::new_v4();
     let sock = std::env::temp_dir().join(format!("calm-mc-cross-{id}.sock"));
     let _ = std::fs::remove_file(&sock);
+    let supervisor = common::spawn_proc_supervisor();
 
     let child = Command::new(daemon_bin)
         .args(["--mode", "terminal"])
         .args(["--id", &id.to_string()])
         .args(["--sock", &sock.to_string_lossy()])
+        .arg("--proc-supervisor-sock")
+        .arg(&supervisor.sock)
         // #177 PR2: terminal-mode daemon now requires theme RGB.
         // Placeholders — this test doesn't exercise OSC replies.
         .args(["--terminal-fg", "216,219,226"])
@@ -133,7 +143,7 @@ async fn spawn_daemon() -> (tokio::process::Child, PathBuf, String) {
         tokio::time::sleep(Duration::from_millis(40)).await;
     }
     assert!(bound, "daemon did not bind socket within 6s");
-    (child, sock, id.to_string())
+    (child, sock, id.to_string(), supervisor)
 }
 
 /// Connect a new client, send `ClientHello`, drain `ServerHello`,
@@ -218,7 +228,7 @@ async fn try_read(rd: &mut tokio::net::unix::OwnedReadHalf, budget: Duration) ->
 
 #[tokio::test]
 async fn multi_client_cross_layer_round_trip() {
-    let (_daemon, sock, real_tid) = spawn_daemon().await;
+    let (_daemon, sock, real_tid, _supervisor) = spawn_daemon().await;
 
     // ---- 1. Owner attach + Observer attach ----
     let owner_cid = Uuid::new_v4();

@@ -4,6 +4,8 @@
 //! dropped instead of producing `ProtocolError(NotOwner)` or tearing down
 //! the observer connection.
 
+mod common;
+
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
@@ -31,6 +33,7 @@ async fn observer_matching_theme_update_is_silently_dropped() {
     let id = Uuid::new_v4();
     let sock = std::env::temp_dir().join(format!("calm-observer-theme-{id}.sock"));
     let _ = std::fs::remove_file(&sock);
+    let supervisor = common::spawn_proc_supervisor();
 
     // Spawn the daemon under `sleep 60` so the PTY child sticks around
     // long enough for both clients to exchange frames.
@@ -38,6 +41,8 @@ async fn observer_matching_theme_update_is_silently_dropped() {
         .args(["--mode", "terminal"])
         .args(["--id", &id.to_string()])
         .args(["--sock", &sock.to_string_lossy()])
+        .arg("--proc-supervisor-sock")
+        .arg(&supervisor.sock)
         // Per the daemon's own CLI semantics, `--id` is also re-used as
         // the terminal_id by clients. We assert TID == id.to_string()
         // by sending a matching ClientHello.

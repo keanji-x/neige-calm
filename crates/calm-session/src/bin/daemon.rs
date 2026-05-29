@@ -727,18 +727,23 @@ async fn run_terminal(cli: Cli, mut parent_death: ParentDeathSignals) -> anyhow:
     // PR_SET_PDEATHSIG fires only on us, not on our descendants, and
     // codex would otherwise survive once our PTY master fd is closed in
     // an unclean way.
+    let mut kill_after_sleep = false;
     tokio::select! {
         _ = shutdown_rx => {
             tracing::info!("child exited, shutting down");
         }
         sig = parent_death.recv() => {
-            tracing::info!(?sig, "received parent-death / terminate signal; killing PTY child");
-            signal_child(&supervisor_tx);
+            tracing::info!(?sig, "received parent-death / terminate signal; signaling PTY child via supervisor");
+            signal_child_direct(&supervisor_sock, &proc_id, ProcSignal::Term).await;
+            kill_after_sleep = true;
         }
     }
 
     // Let in-flight clients flush the ChildExited frame before we close.
     tokio::time::sleep(Duration::from_millis(200)).await;
+    if kill_after_sleep {
+        signal_child_direct(&supervisor_sock, &proc_id, ProcSignal::Kill).await;
+    }
     accept_task.abort();
     ready_task.abort();
 
@@ -2092,6 +2097,53 @@ fn request_resize(supervisor_tx: &mpsc::UnboundedSender<SupervisorControl>, cols
         return;
     }
     let _ = supervisor_tx.send(SupervisorControl::Resize { cols, rows });
+}
+
+async fn signal_child_direct(supervisor_sock: &Path, proc_id: &str, sig: ProcSignal) {
+    let mut conn = match UnixStream::connect(supervisor_sock).await {
+        Ok(conn) => conn,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                sock = %supervisor_sock.display(),
+                ?sig,
+                "failed to connect proc supervisor for direct signal"
+            );
+            return;
+        }
+    };
+    if let Err(e) = write_frame(
+        &mut conn,
+        &ControlMsg::Signal(SignalRequest {
+            proc_id: proc_id.to_string(),
+            sig,
+        }),
+    )
+    .await
+    {
+        tracing::warn!(error = %e, ?sig, "failed to send direct supervisor signal");
+        return;
+    }
+    match timeout(
+        Duration::from_millis(200),
+        read_frame::<ControlReply, _>(&mut conn),
+    )
+    .await
+    {
+        Ok(Ok(ControlReply::SignalOk)) => {}
+        Ok(Ok(ControlReply::Error { kind, message })) => {
+            tracing::debug!(?kind, %message, ?sig, "direct supervisor signal returned error");
+        }
+        Ok(Ok(other)) => {
+            tracing::debug!(reply = ?other, ?sig, "unexpected direct supervisor signal reply");
+        }
+        Ok(Err(e)) => {
+            tracing::debug!(error = %e, ?sig, "failed to read direct supervisor signal reply");
+        }
+        Err(_) => {
+            tracing::debug!(?sig, "timed out reading direct supervisor signal reply");
+        }
+    }
 }
 
 fn signal_child(supervisor_tx: &mpsc::UnboundedSender<SupervisorControl>) {
