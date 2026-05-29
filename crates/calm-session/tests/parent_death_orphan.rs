@@ -180,13 +180,18 @@ fn launch_daemon_under_sh(label: &str) -> Driver {
 fn parent_death_kills_daemon_and_pty_child() {
     let mut d = launch_daemon_under_sh("kill-parent");
     let daemon_pid = d.daemon_pid;
-    // Pick up the daemon's descendants BEFORE killing the parent —
-    // after orphaning, pgrep -P walks reparent to init and the
-    // relationship is lost.
-    let pty_children = all_descendants(daemon_pid);
+    // Phase 2 (#388): the PTY child is forked by `calm-proc-supervisor`,
+    // not the daemon. Enumerate the supervisor's descendants so we can
+    // assert they die after parent-death. The daemon's parent-death
+    // branch sends Signal{Term} (+ post-grace Signal{Kill}) to the
+    // supervisor over a fresh UDS connection, the supervisor SIGTERMs
+    // the PTY pgid, and the child should be reaped before our budget.
+    let supervisor_pid = d._supervisor.child.id() as i32;
+    let pty_children = all_descendants(supervisor_pid);
     assert!(
         !pty_children.is_empty(),
-        "expected daemon (pid {daemon_pid}) to have at least one PTY descendant; found none",
+        "expected proc-supervisor (pid {supervisor_pid}) to have at least one PTY descendant; \
+         daemon pid {daemon_pid} delegates PTY ownership to supervisor in Phase 2",
     );
 
     // SIGKILL the wrapping sh. The daemon (its child) is now an orphan
