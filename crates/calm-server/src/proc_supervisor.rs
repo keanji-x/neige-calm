@@ -61,7 +61,7 @@ where
 }
 
 #[cfg(feature = "fixtures")]
-async fn resolve_control_sock(control_sock: Option<&Path>) -> Result<PathBuf> {
+pub(crate) async fn resolve_control_sock(control_sock: Option<&Path>) -> Result<PathBuf> {
     if let Some(sock) = control_sock {
         return Ok(sock.to_path_buf());
     }
@@ -79,7 +79,7 @@ async fn resolve_control_sock(control_sock: Option<&Path>) -> Result<PathBuf> {
 }
 
 #[cfg(not(feature = "fixtures"))]
-async fn resolve_control_sock(control_sock: Option<&Path>) -> Result<PathBuf> {
+pub(crate) async fn resolve_control_sock(control_sock: Option<&Path>) -> Result<PathBuf> {
     control_sock
         .map(Path::to_path_buf)
         .ok_or_else(|| CalmError::Internal("proc-supervisor socket is not configured".into()))

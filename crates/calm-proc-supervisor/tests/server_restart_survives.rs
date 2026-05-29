@@ -1,4 +1,4 @@
-use calm_session::control::{ControlMsg, ControlReply, EnsureProcRequest};
+use calm_session::control::{ControlMsg, ControlReply, EnsureProcRequest, IoMode};
 use calm_session::{read_frame, write_frame};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -112,6 +112,8 @@ fn ensure_request(temp: &TempDir) -> EnsureProcRequest {
         envs: Vec::new(),
         cwd: temp.path().display().to_string(),
         ready_timeout_ms: 2_000,
+        io_mode: IoMode::Pipe,
+        replay_bytes: 0,
     }
 }
 
