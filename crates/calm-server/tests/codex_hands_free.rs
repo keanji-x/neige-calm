@@ -113,6 +113,7 @@ async fn boot_full() -> (
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
         session_daemon_bin: locate_daemon_bin(),
+        proc_supervisor_sock: None,
     });
     let state = AppState::from_parts(
         repo.clone(),
@@ -482,6 +483,7 @@ async fn route_to_subscriber_chain_skips_auto_submit_for_empty_or_absent_prompt(
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
         session_daemon_bin: bad_bin,
+        proc_supervisor_sock: None,
     });
     let events = EventBus::new();
     let state = AppState::from_parts(

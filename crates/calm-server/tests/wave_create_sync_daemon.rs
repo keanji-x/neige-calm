@@ -106,6 +106,7 @@ async fn boot() -> Boot {
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
         session_daemon_bin: locate_daemon_bin(),
+        proc_supervisor_sock: None,
     });
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
@@ -376,6 +377,7 @@ async fn post_api_waves_tolerates_broken_codex_bin_returns_201_inert_wave() {
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
         session_daemon_bin: locate_daemon_bin(),
+        proc_supervisor_sock: None,
     });
     let card_role_cache = CardRoleCache::new();
     let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();

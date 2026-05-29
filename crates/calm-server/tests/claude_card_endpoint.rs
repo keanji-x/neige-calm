@@ -64,6 +64,7 @@ async fn boot_happy() -> Boot {
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
         session_daemon_bin: locate_recorder_bin(),
+        proc_supervisor_sock: None,
     });
     let mut codex = CodexClient::new_stub();
     codex.claude_bin = "/bin/true".into();

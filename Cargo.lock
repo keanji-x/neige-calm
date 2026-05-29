@@ -353,6 +353,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "calm-proc-supervisor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "calm-session",
+ "clap",
+ "libc",
+ "serde",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "calm-server"
 version = "0.1.0"
 dependencies = [
@@ -362,6 +377,7 @@ dependencies = [
  "axum",
  "axum-extra",
  "base64",
+ "calm-proc-supervisor",
  "calm-server",
  "calm-session",
  "chrono",

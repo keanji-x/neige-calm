@@ -1,0 +1,33 @@
+[package]
+name = "calm-proc-supervisor"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "calm-proc-supervisor"
+path = "src/main.rs"
+
+[[bin]]
+name = "proc-supervisor-ready-sleeper"
+path = "tests/fixtures/ready-sleeper/main.rs"
+
+[features]
+default = []
+test-support = ["dep:tempfile"]
+
+[dependencies]
+anyhow = "1"
+calm-session = { path = "../calm-session" }
+clap = { version = "4", features = ["derive"] }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tempfile = { version = "3", optional = true }
+
+[dev-dependencies]
+tempfile = "3"

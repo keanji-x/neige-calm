@@ -444,6 +444,10 @@ impl ParentDeathSignals {
 /// orphans. The handler must exist before any signal can be delivered to
 /// us, so install order is strictly: signal handlers → prctl → race-guard
 /// check → (non-Linux) ppid poller spawn.
+///
+/// #388 phase 1: the intended fork parent is now `calm-proc-supervisor`,
+/// not calm-server. The kernel parent-death hook remains sufficient because
+/// it follows the actual fork parent selected by the OS.
 fn install_parent_death_watcher() -> ParentDeathSignals {
     use tokio::signal::unix::{SignalKind, signal};
     // Step 1: install the tokio SIGTERM / SIGHUP handlers BEFORE any

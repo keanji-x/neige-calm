@@ -121,6 +121,7 @@ async fn boot_full() -> (std::net::SocketAddr, axum::Router, String, TempDir) {
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
         session_daemon_bin: locate_daemon_bin(),
+        proc_supervisor_sock: None,
     });
     let state = AppState::from_parts(
         repo.clone(),

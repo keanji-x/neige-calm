@@ -80,6 +80,7 @@ impl RuntimeHarness {
             Arc::new(DaemonClient {
                 data_dir: tmp.path().join("data").join("terminals"),
                 session_daemon_bin: locate_recorder_bin(),
+                proc_supervisor_sock: None,
             }),
             Arc::new(PluginHost::new_full(
                 Arc::new(PluginRegistry::empty()),

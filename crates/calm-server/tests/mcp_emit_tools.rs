@@ -454,6 +454,7 @@ async fn dispatch_request_drives_dispatcher_rollback_on_stub_daemon() {
         Arc::new(calm_server::state::DaemonClient {
             data_dir: PathBuf::from("/tmp/neige-mcp-e2e-noop"),
             session_daemon_bin: PathBuf::from("/nonexistent-daemon-bin"),
+            proc_supervisor_sock: None,
         }),
         None,
         calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry

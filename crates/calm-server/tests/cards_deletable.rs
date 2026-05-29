@@ -107,6 +107,7 @@ async fn boot() -> Boot {
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
         session_daemon_bin: locate_daemon_bin(),
+        proc_supervisor_sock: None,
     });
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();

@@ -1554,6 +1554,7 @@ pub mod mcp_server;
 pub mod model;
 pub mod openapi;
 pub mod plugin_host;
+pub(crate) mod proc_supervisor;
 pub mod replay;
 pub mod role_gate;
 pub mod routes;

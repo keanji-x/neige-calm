@@ -465,6 +465,10 @@ pub struct DaemonClient {
     /// `target/release` layouts work without an install step); falls back to
     /// `calm-session-daemon` and lets `$PATH` lookup happen at spawn.
     pub session_daemon_bin: PathBuf,
+    /// Control socket for `calm-proc-supervisor`. Production config resolves
+    /// this to `<CALM_DATA_DIR>/proc-supervisor.sock`; fixture tests may leave
+    /// it unset to use an in-process framed supervisor.
+    pub proc_supervisor_sock: Option<PathBuf>,
 }
 
 impl DaemonClient {
@@ -475,6 +479,7 @@ impl DaemonClient {
         Self {
             data_dir,
             session_daemon_bin: resolve_session_daemon_bin(),
+            proc_supervisor_sock: Some(cfg.proc_supervisor_sock_resolved()),
         }
     }
 
@@ -488,6 +493,7 @@ impl DaemonClient {
         Self {
             data_dir: tmp,
             session_daemon_bin: resolve_session_daemon_bin(),
+            proc_supervisor_sock: None,
         }
     }
 
@@ -881,6 +887,7 @@ mod tests {
         let daemon = DaemonClient {
             data_dir: data_dir.join("terminals"),
             session_daemon_bin: PathBuf::from("calm-session-daemon"),
+            proc_supervisor_sock: None,
         };
 
         let dir = daemon.appserver_sock_dir("card-abc");

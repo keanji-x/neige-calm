@@ -18,7 +18,7 @@ default = []
 # `write_with_event_typed` / `log_pure_event` instead. Integration
 # tests under `tests/*.rs` auto-enable this via the `[dev-dependencies]`
 # self-loop below.
-fixtures = []
+fixtures = ["calm-proc-supervisor/test-support"]
 # Issue #236: opt-in end-to-end test that boots a real `codex` binary
 # (the agent's MCP-client side) and verifies the spec card's daemon
 # has `NEIGE_MCP_SOCKET` + `NEIGE_MCP_TOKEN` in its process env.
@@ -223,6 +223,7 @@ automerge = "0.9"
 
 # Local crates
 calm-session = { path = "../calm-session" }
+calm-proc-supervisor = { path = "../calm-proc-supervisor" }
 
 # Plugin host (Slice B): unix-only — used by `plugin_host::process` to send a
 # real SIGTERM before falling back to SIGKILL. `tokio::process::Child::kill()`

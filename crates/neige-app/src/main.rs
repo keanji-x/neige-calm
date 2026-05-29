@@ -90,6 +90,10 @@ struct SystemServeArgs {
     #[arg(long, env = "NEIGE_APP_CHILD_BIN")]
     child_bin: Option<PathBuf>,
 
+    /// calm-proc-supervisor binary to supervise beside calm-server.
+    #[arg(long, env = "NEIGE_APP_PROC_SUPERVISOR_BIN")]
+    proc_supervisor_bin: Option<PathBuf>,
+
     /// Address passed to calm-server as CALM_LISTEN.
     #[arg(long, env = "NEIGE_APP_CALM_LISTEN")]
     calm_listen: Option<String>,
@@ -266,19 +270,14 @@ struct SystemPackageArgs {
 
 #[derive(Debug, Clone)]
 struct SupervisorConfig {
+    name: String,
     child_bin: PathBuf,
-    calm_listen: String,
-    calm_web_dist: Option<PathBuf>,
-    calm_db_url: Option<String>,
-    calm_data_dir: Option<PathBuf>,
-    calm_mcp_stdio_shim_bin: Option<PathBuf>,
-    calm_auth_username: Option<String>,
-    calm_auth_password: Option<String>,
-    calm_auth_dev_autologin: bool,
     child_cwd: Option<PathBuf>,
     child_args: Vec<String>,
+    child_envs: Vec<(String, String)>,
     restart_delay: Duration,
     stop_grace: Duration,
+    calm_listen: Option<String>,
 }
 
 #[derive(Clone)]
@@ -289,21 +288,70 @@ struct AppState {
 
 impl From<&AppConfig> for SupervisorConfig {
     fn from(cfg: &AppConfig) -> Self {
-        Self {
-            child_bin: cfg.child.bin.clone(),
-            calm_listen: cfg.child.calm_listen.clone(),
-            calm_web_dist: cfg.child.web_dist.clone(),
-            calm_db_url: cfg.child.db_url.clone(),
-            calm_data_dir: cfg.child.data_dir.clone(),
-            calm_mcp_stdio_shim_bin: cfg.child.mcp_stdio_shim_bin.clone(),
-            calm_auth_username: cfg.child.auth_username.clone(),
-            calm_auth_password: cfg.child.auth_password.clone(),
-            calm_auth_dev_autologin: cfg.child.auth_dev_autologin,
-            child_cwd: cfg.child.cwd.clone(),
-            child_args: cfg.child.extra_args.clone(),
-            restart_delay: cfg.timing.restart_delay,
-            stop_grace: cfg.timing.stop_grace,
-        }
+        calm_server_supervisor_config(cfg)
+    }
+}
+
+fn calm_server_supervisor_config(cfg: &AppConfig) -> SupervisorConfig {
+    let control_sock = cfg.proc_supervisor_sock();
+    let mut child_envs = vec![
+        ("CALM_LISTEN".into(), cfg.child.calm_listen.clone()),
+        (
+            "CALM_PROC_SUPERVISOR_SOCK".into(),
+            control_sock.display().to_string(),
+        ),
+        (
+            "CALM_DEV_AUTOLOGIN".into(),
+            if cfg.child.auth_dev_autologin {
+                "true".into()
+            } else {
+                "false".into()
+            },
+        ),
+    ];
+    if let Some(web_dist) = &cfg.child.web_dist {
+        child_envs.push(("CALM_WEB_DIST".into(), web_dist.display().to_string()));
+    }
+    if let Some(db_url) = &cfg.child.db_url {
+        child_envs.push(("CALM_DB_URL".into(), db_url.clone()));
+    }
+    if let Some(data_dir) = &cfg.child.data_dir {
+        child_envs.push(("CALM_DATA_DIR".into(), data_dir.display().to_string()));
+    }
+    if let Some(shim) = &cfg.child.mcp_stdio_shim_bin {
+        child_envs.push(("CALM_MCP_STDIO_SHIM_BIN".into(), shim.display().to_string()));
+    }
+    if let Some(username) = &cfg.child.auth_username {
+        child_envs.push(("CALM_AUTH_USERNAME".into(), username.clone()));
+    }
+    if let Some(password) = &cfg.child.auth_password {
+        child_envs.push(("CALM_AUTH_PASSWORD".into(), password.clone()));
+    }
+    SupervisorConfig {
+        name: "calm-server".into(),
+        child_bin: cfg.child.bin.clone(),
+        child_cwd: cfg.child.cwd.clone(),
+        child_args: cfg.child.extra_args.clone(),
+        child_envs,
+        restart_delay: cfg.timing.restart_delay,
+        stop_grace: cfg.timing.stop_grace,
+        calm_listen: Some(cfg.child.calm_listen.clone()),
+    }
+}
+
+fn proc_supervisor_config(cfg: &AppConfig) -> SupervisorConfig {
+    SupervisorConfig {
+        name: "calm-proc-supervisor".into(),
+        child_bin: cfg.child.proc_supervisor_bin.clone(),
+        child_cwd: cfg.child.cwd.clone(),
+        child_args: vec![
+            "--control-sock".into(),
+            cfg.proc_supervisor_sock().display().to_string(),
+        ],
+        child_envs: Vec::new(),
+        restart_delay: cfg.timing.restart_delay,
+        stop_grace: cfg.timing.stop_grace,
+        calm_listen: None,
     }
 }
 
@@ -400,7 +448,7 @@ impl Supervisor {
                         state.child_state = ChildState::Exited;
                         state.last_exit = Some(format!("spawn failed: {err:#}"));
                     }
-                    tracing::error!(error = %err, "failed to spawn calm-server");
+                    tracing::error!(process = %self.cfg.name, error = %err, "failed to spawn child");
                 }
             }
 
@@ -433,34 +481,7 @@ impl Supervisor {
 
         let mut cmd = Command::new(&self.cfg.child_bin);
         cmd.args(&self.cfg.child_args)
-            .env("CALM_LISTEN", &self.cfg.calm_listen);
-
-        if let Some(web_dist) = &self.cfg.calm_web_dist {
-            cmd.env("CALM_WEB_DIST", web_dist);
-        }
-        if let Some(db_url) = &self.cfg.calm_db_url {
-            cmd.env("CALM_DB_URL", db_url);
-        }
-        if let Some(data_dir) = &self.cfg.calm_data_dir {
-            cmd.env("CALM_DATA_DIR", data_dir);
-        }
-        if let Some(shim) = &self.cfg.calm_mcp_stdio_shim_bin {
-            cmd.env("CALM_MCP_STDIO_SHIM_BIN", shim);
-        }
-        if let Some(username) = &self.cfg.calm_auth_username {
-            cmd.env("CALM_AUTH_USERNAME", username);
-        }
-        if let Some(password) = &self.cfg.calm_auth_password {
-            cmd.env("CALM_AUTH_PASSWORD", password);
-        }
-        cmd.env(
-            "CALM_DEV_AUTOLOGIN",
-            if self.cfg.calm_auth_dev_autologin {
-                "true"
-            } else {
-                "false"
-            },
-        );
+            .envs(self.cfg.child_envs.clone());
         if let Some(cwd) = &self.cfg.child_cwd {
             cmd.current_dir(cwd);
         }
@@ -474,8 +495,8 @@ impl Supervisor {
 
         tracing::info!(
             child_bin = %self.cfg.child_bin.display(),
-            calm_listen = %self.cfg.calm_listen,
-            "starting calm-server child"
+            process = %self.cfg.name,
+            "starting supervised child"
         );
         cmd.spawn()
             .with_context(|| format!("spawn {}", self.cfg.child_bin.display()))
@@ -486,7 +507,7 @@ impl Supervisor {
             Ok(status) => format_exit(status),
             Err(err) => format!("wait failed: {err}"),
         };
-        tracing::warn!(last_exit = %msg, "calm-server child exited");
+        tracing::warn!(process = %self.cfg.name, last_exit = %msg, "supervised child exited");
         let mut state = self.state.lock().await;
         state.child_pid = None;
         state.child_state = ChildState::Exited;
@@ -502,7 +523,7 @@ impl Supervisor {
             child_pid: state.child_pid,
             restart_count: state.restart_count,
             last_exit: state.last_exit.clone(),
-            calm_listen: self.cfg.calm_listen.clone(),
+            calm_listen: self.cfg.calm_listen.clone().unwrap_or_default(),
         }
     }
 
@@ -793,6 +814,7 @@ async fn serve_system(args: SystemServeArgs) -> anyhow::Result<()> {
         admin_listen: args.admin_listen,
         admin_token_file: args.admin_token_file,
         child_bin: args.child_bin,
+        proc_supervisor_bin: args.proc_supervisor_bin,
         calm_listen: args.calm_listen,
         calm_web_dist: args.calm_web_dist,
         calm_db_url: args.calm_db_url,
@@ -812,7 +834,9 @@ async fn serve_system(args: SystemServeArgs) -> anyhow::Result<()> {
         .await
         .with_context(|| format!("bind admin API on {admin_listen}"))?;
 
-    let supervisor = Supervisor::new(SupervisorConfig::from(&cfg));
+    let proc_control_sock = cfg.proc_supervisor_sock();
+    let proc_supervisor = Supervisor::new(proc_supervisor_config(&cfg));
+    let supervisor = Supervisor::new(calm_server_supervisor_config(&cfg));
     let app_state = AppState {
         supervisor: supervisor.clone(),
         admin_token,
@@ -825,19 +849,34 @@ async fn serve_system(args: SystemServeArgs) -> anyhow::Result<()> {
         .with_state(app_state);
 
     tracing::info!(addr = %admin_listen, "neige-app system admin API listening");
+    let proc_supervisor_task = tokio::spawn(proc_supervisor.clone().run());
+    wait_for_proc_supervisor(&proc_control_sock).await?;
     let supervisor_task = tokio::spawn(supervisor.clone().run());
 
     let server_result = axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal(supervisor.clone()))
+        .with_graceful_shutdown(shutdown_signal(supervisor.clone(), proc_supervisor.clone()))
         .await;
 
     supervisor.shutdown().await;
+    proc_supervisor.shutdown().await;
     supervisor_task.await?;
+    proc_supervisor_task.await?;
     server_result?;
     Ok(())
 }
 
-async fn shutdown_signal(supervisor: Arc<Supervisor>) {
+async fn wait_for_proc_supervisor(sock: &Path) -> anyhow::Result<()> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while tokio::time::Instant::now() < deadline {
+        if tokio::net::UnixStream::connect(sock).await.is_ok() {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    anyhow::bail!("calm-proc-supervisor did not listen on {}", sock.display())
+}
+
+async fn shutdown_signal(supervisor: Arc<Supervisor>, proc_supervisor: Arc<Supervisor>) {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
@@ -853,6 +892,7 @@ async fn shutdown_signal(supervisor: Arc<Supervisor>) {
     }
     tracing::info!("shutdown requested");
     supervisor.shutdown().await;
+    proc_supervisor.shutdown().await;
 }
 
 async fn health() -> Json<serde_json::Value> {
@@ -1337,19 +1377,14 @@ bin = "/usr/local/bin/neige-app"
     fn test_app_state(token: Option<&str>) -> AppState {
         AppState {
             supervisor: Supervisor::new(SupervisorConfig {
+                name: "calm-server".into(),
                 child_bin: PathBuf::from("calm-server"),
-                calm_listen: "127.0.0.1:4040".into(),
-                calm_web_dist: None,
-                calm_db_url: None,
-                calm_data_dir: None,
-                calm_mcp_stdio_shim_bin: None,
-                calm_auth_username: None,
-                calm_auth_password: None,
-                calm_auth_dev_autologin: false,
                 child_cwd: None,
                 child_args: Vec::new(),
+                child_envs: vec![("CALM_LISTEN".into(), "127.0.0.1:4040".into())],
                 restart_delay: Duration::from_millis(1),
                 stop_grace: Duration::from_millis(1),
+                calm_listen: Some("127.0.0.1:4040".into()),
             }),
             admin_token: token.map(Arc::from),
         }
