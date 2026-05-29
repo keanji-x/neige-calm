@@ -148,7 +148,23 @@ services:
       # the process still runs as the host user for mounted HOME/repo paths.
       - ${CALM_CONTAINER_STATE_DIR:-/var/lib/neige-calm}:uid=${UID:-1000},gid=${GID:-1000},mode=700
     # No host port mapping: nginx is the only published entrypoint.
-    command: ["calm-server"]
+    #
+    # Issue #388 Phase 1 — calm-server forks `calm-session-daemon` via
+    # `calm-proc-supervisor` over a control UDS. Production has neige-app
+    # peer-supervising both; in the docker dev stack we just background the
+    # supervisor before exec'ing calm-server so the first terminal spawn
+    # has someone listening. `init: true` (above) reaps the supervisor when
+    # calm-server exits. The sock path matches `proc_supervisor_sock_resolved()`
+    # default (CALM_DATA_DIR + proc-supervisor.sock).
+    command:
+      - sh
+      - -c
+      - |
+        mkdir -p "$${CALM_DATA_DIR:-/var/lib/neige-calm/data}"
+        SOCK="$${CALM_PROC_SUPERVISOR_SOCK:-$${CALM_DATA_DIR:-/var/lib/neige-calm/data}/proc-supervisor.sock}"
+        calm-proc-supervisor --control-sock "$$SOCK" &
+        until [ -S "$$SOCK" ]; do sleep 0.1; done
+        exec calm-server
     restart: unless-stopped
 
   web:
