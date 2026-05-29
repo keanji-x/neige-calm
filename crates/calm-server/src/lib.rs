@@ -1562,6 +1562,7 @@ pub mod spec_appserver;
 pub mod spec_card;
 pub mod state;
 pub(crate) mod terminal_probe;
+pub mod terminal_renderer;
 pub mod terminal_sweeper;
 pub mod validation;
 pub mod wave_cove_cache;
