@@ -24,6 +24,8 @@
 //! end of the contract: the file shape, location, and the SIGKILL
 //! absence-case.
 
+mod common;
+
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
@@ -43,17 +45,22 @@ fn workspace_root() -> PathBuf {
 /// Spawn a daemon running `program` (passed verbatim as the `--` argv
 /// tail). Returns the child handle (so callers can SIGKILL it for the
 /// daemon-lost branch) and the socket path the daemon binds.
-async fn spawn_daemon_running(program: &[&str]) -> (tokio::process::Child, PathBuf) {
+async fn spawn_daemon_running(
+    program: &[&str],
+) -> (tokio::process::Child, PathBuf, common::SupervisorHandle) {
     let daemon_bin = env!("CARGO_BIN_EXE_calm-session-daemon");
     let id = Uuid::new_v4();
     let sock = std::env::temp_dir().join(format!("calm-exit306-{id}.sock"));
     let _ = std::fs::remove_file(&sock);
     let _ = std::fs::remove_file(format!("{}.exit", sock.display()));
+    let supervisor = common::spawn_proc_supervisor();
 
     let mut cmd = Command::new(daemon_bin);
     cmd.args(["--mode", "terminal"])
         .args(["--id", &id.to_string()])
         .args(["--sock", &sock.to_string_lossy()])
+        .arg("--proc-supervisor-sock")
+        .arg(&supervisor.sock)
         .args(["--terminal-fg", "216,219,226"])
         .args(["--terminal-bg", "15,20,24"])
         .args(["--cwd", workspace_root().to_string_lossy().as_ref()])
@@ -78,7 +85,7 @@ async fn spawn_daemon_running(program: &[&str]) -> (tokio::process::Child, PathB
         tokio::time::sleep(Duration::from_millis(40)).await;
     }
     assert!(bound, "daemon did not bind socket within 6s");
-    (child, sock)
+    (child, sock, supervisor)
 }
 
 /// Wait up to `budget` for the sidecar file to appear. Returns its
@@ -104,7 +111,7 @@ async fn sidecar_records_clean_exit_zero() {
     // `true` returns 0 immediately. Captures the happy-path one-shot
     // worker shape (`printf done` etc. all funnel through `child.wait()`
     // with `signal = None, code = Some(0)`).
-    let (mut child, sock) = spawn_daemon_running(&["true"]).await;
+    let (mut child, sock, _supervisor) = spawn_daemon_running(&["true"]).await;
     let _ = child.wait().await;
     let raw = await_sidecar(&sock, Duration::from_secs(3)).await;
     let v: serde_json::Value = serde_json::from_str(&raw).expect("sidecar JSON parses");
@@ -122,7 +129,7 @@ async fn sidecar_records_non_zero_main_return() {
     // that produces the same 137 byte on POSIX's combined status word
     // (128 + 9). portable-pty's `signal()` discriminator is what makes
     // the two cases tell-apart-able.
-    let (mut child, sock) = spawn_daemon_running(&["sh", "-c", "exit 137"]).await;
+    let (mut child, sock, _supervisor) = spawn_daemon_running(&["sh", "-c", "exit 137"]).await;
     let _ = child.wait().await;
     let raw = await_sidecar(&sock, Duration::from_secs(3)).await;
     let v: serde_json::Value = serde_json::from_str(&raw).expect("sidecar JSON parses");
@@ -139,7 +146,7 @@ async fn sigkill_leaves_no_sidecar() {
     // when we kill it. Result: no sidecar on disk → kernel treats this
     // as "exit info unknown" (v1 surfaces as no badge; v2 as
     // DaemonLost).
-    let (mut child, sock) = spawn_daemon_running(&["sh", "-c", "sleep 60"]).await;
+    let (mut child, sock, _supervisor) = spawn_daemon_running(&["sh", "-c", "sleep 60"]).await;
     // SIGKILL. `child.kill().await` sends SIGKILL on Unix per tokio's
     // Process docs; the `kill_on_drop(true)` we set in `spawn_daemon_running`
     // would also do it if we dropped without waiting, but explicit is

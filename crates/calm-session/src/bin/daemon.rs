@@ -35,7 +35,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use clap::{Parser, ValueEnum};
-use portable_pty::{CommandBuilder, MasterPty, PtySize as PtPtySize, native_pty_system};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::process::{ChildStdin, Command};
@@ -43,6 +42,10 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::time::timeout;
 use uuid::Uuid;
 
+use calm_session::control::{
+    AttachRequest, Attached, ControlMsg, ControlReply, EnsureProcRequest, IoMode, ProcSignal,
+    ResizePtyRequest, SignalRequest, WriteStdinRequest,
+};
 use calm_session::terminal_model::ScrollbackLimit;
 use calm_session::terminal_session::{
     Effect, OwnerRegistry, RenderPlane, SessionContext, TerminalSessionState,
@@ -65,6 +68,12 @@ struct PtyWrite {
     data: Vec<u8>,
     input_seq: u64,
     ack: Option<mpsc::UnboundedSender<DaemonMsg>>,
+}
+
+enum SupervisorControl {
+    Write(PtyWrite),
+    Resize { cols: u16, rows: u16 },
+    Signal(ProcSignal),
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -135,6 +144,11 @@ struct Cli {
     /// accepting connections without racing to stat(2) the socket path.
     #[arg(long)]
     ready_fd: Option<i32>,
+
+    /// calm-proc-supervisor control socket. Required in terminal mode for
+    /// Phase 2 PTY ownership; ignored by chat mode.
+    #[arg(long)]
+    proc_supervisor_sock: Option<PathBuf>,
 
     /// Session mode. Default is `terminal` (PTY); `chat` spawns the Node
     /// sidecar runner under `node <runner-path> ...` and forwards NDJSON
@@ -275,7 +289,6 @@ impl EventBuffer {
 /// The IO shell pushes those onto `event_tx`.
 type SharedRenderPlane = Arc<Mutex<RenderPlane>>;
 type SharedEventBuffer = Arc<Mutex<EventBuffer>>;
-type SharedMaster = Arc<Mutex<Box<dyn MasterPty + Send>>>;
 type SharedOwnerRegistry = Arc<Mutex<OwnerRegistry>>;
 
 /// Default scrollback line cap for the terminal model. Mirrors xterm's
@@ -539,33 +552,45 @@ async fn run_terminal(cli: Cli, mut parent_death: ParentDeathSignals) -> anyhow:
         );
     }
 
-    // ---- PTY + child ----
-    let pty_system = native_pty_system();
-    let pair = pty_system.openpty(PtPtySize {
-        rows: cli.rows,
-        cols: cli.cols,
-        pixel_width: 0,
-        pixel_height: 0,
+    let supervisor_sock = cli
+        .proc_supervisor_sock
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--proc-supervisor-sock is required in terminal mode"))?;
+    let proc_id = format!("term:{}", cli.id);
+    let mut control_conn = UnixStream::connect(&supervisor_sock).await.map_err(|e| {
+        anyhow::anyhow!("connect proc supervisor {}: {e}", supervisor_sock.display())
     })?;
-    let mut cmd = CommandBuilder::new(&cli.cmd[0]);
-    for a in &cli.cmd[1..] {
-        cmd.arg(a);
+    write_frame(
+        &mut control_conn,
+        &ControlMsg::EnsureProc(EnsureProcRequest {
+            proc_id: proc_id.clone(),
+            program: cli.cmd[0].clone(),
+            args: cli.cmd[1..].to_vec(),
+            envs: std::env::vars().collect(),
+            cwd: cli
+                .cwd
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+            ready_timeout_ms: 0,
+            io_mode: IoMode::Pty {
+                cols: cli.cols,
+                rows: cli.rows,
+            },
+            replay_bytes: cli.buffer_bytes,
+        }),
+    )
+    .await?;
+    match read_frame(&mut control_conn).await? {
+        ControlReply::Spawned { .. } => {}
+        ControlReply::SpawnFailed { error, .. } => anyhow::bail!("{error}"),
+        other => anyhow::bail!("unexpected proc-supervisor spawn reply: {other:?}"),
     }
-    if let Some(cwd) = &cli.cwd {
-        cmd.cwd(cwd);
+    match read_frame(&mut control_conn).await? {
+        ControlReply::Ready => {}
+        ControlReply::ReadyFailed { error, .. } => anyhow::bail!("{error}"),
+        other => anyhow::bail!("unexpected proc-supervisor ready reply: {other:?}"),
     }
-    // Forward every env var we have to the child. The caller (neige-server)
-    // sets the env it wants (TERM, COLORTERM, proxy vars, ...) when it spawns
-    // us, and the child should see the same environment.
-    for (k, v) in std::env::vars() {
-        cmd.env(k, v);
-    }
-    let child = pair.slave.spawn_command(cmd)?;
-    // Split out a separately-owned killer before the child moves into the
-    // waiter task. A ClientMsg::Kill handler calls through this.
-    let killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>> =
-        Arc::new(Mutex::new(child.clone_killer()));
-    drop(pair.slave);
 
     // `with_colors` pre-seeds the OSC 10/11 reply colors so codex's
     // startup probe (#177) gets an authoritative answer from the very
@@ -585,7 +610,6 @@ async fn run_terminal(cli: Cli, mut parent_death: ParentDeathSignals) -> anyhow:
         cli.terminal_fg,
         cli.terminal_bg,
     )));
-    let master: SharedMaster = Arc::new(Mutex::new(pair.master));
     // Daemon-level owner registry. Single instance shared across every
     // accepted connection; the first successful handshake becomes Owner,
     // later attaches default to Observer.
@@ -597,27 +621,46 @@ async fn run_terminal(cli: Cli, mut parent_death: ParentDeathSignals) -> anyhow:
     // by `RenderPlane::on_pty_chunk` / `on_child_exit` / `on_resize`. The
     // handler tasks forward those onto each client's socket verbatim.
     let (event_tx, _) = broadcast::channel::<DaemonMsg>(2048);
-    let (stdin_tx, stdin_rx) = mpsc::unbounded_channel::<PtyWrite>();
+    let (supervisor_tx, supervisor_rx) = mpsc::unbounded_channel::<SupervisorControl>();
+    spawn_supervisor_control_writer(control_conn, proc_id.clone(), supervisor_rx);
 
-    // ---- PTY reader → buffer + broadcast ----
-    let reader = master.lock().unwrap().try_clone_reader()?;
-    spawn_pty_reader(
-        reader,
-        render_plane.clone(),
-        event_tx.clone(),
-        stdin_tx.clone(),
-    );
+    let mut attach_conn = UnixStream::connect(&supervisor_sock).await.map_err(|e| {
+        anyhow::anyhow!(
+            "connect proc supervisor attach {}: {e}",
+            supervisor_sock.display()
+        )
+    })?;
+    write_frame(
+        &mut attach_conn,
+        &ControlMsg::Attach(AttachRequest {
+            proc_id: proc_id.clone(),
+            from_cursor: None,
+            reader_id: "daemon".into(),
+        }),
+    )
+    .await?;
+    match read_frame(&mut attach_conn).await? {
+        ControlReply::AttachOk(Attached { replay, .. }) => {
+            if !replay.is_empty() {
+                let effects = match render_plane.lock() {
+                    Ok(mut rp) => rp.on_pty_chunk(replay),
+                    Err(_) => Vec::new(),
+                };
+                apply_broadcaster_effects(&event_tx, &supervisor_tx, effects);
+            }
+        }
+        ControlReply::Error { message, .. } => anyhow::bail!("{message}"),
+        other => anyhow::bail!("unexpected proc-supervisor attach reply: {other:?}"),
+    }
 
-    // ---- PTY writer ← client stdin ----
-    let writer = master.lock().unwrap().take_writer()?;
-    spawn_pty_writer(writer, stdin_rx);
-
-    // ---- Child-exit watcher ----
+    // ---- Supervisor attach stream → render plane + broadcast ----
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-    spawn_child_waiter(
-        child,
+    spawn_supervisor_attach_reader(
+        attach_conn,
+        proc_id.clone(),
         render_plane.clone(),
         event_tx.clone(),
+        supervisor_tx.clone(),
         shutdown_tx,
         cli.sock.clone(),
     );
@@ -672,9 +715,7 @@ async fn run_terminal(cli: Cli, mut parent_death: ParentDeathSignals) -> anyhow:
         listener,
         event_tx.clone(),
         render_plane.clone(),
-        master.clone(),
-        stdin_tx.clone(),
-        killer.clone(),
+        supervisor_tx.clone(),
         owner_registry.clone(),
         session_id,
         cli.id.to_string(),
@@ -686,18 +727,23 @@ async fn run_terminal(cli: Cli, mut parent_death: ParentDeathSignals) -> anyhow:
     // PR_SET_PDEATHSIG fires only on us, not on our descendants, and
     // codex would otherwise survive once our PTY master fd is closed in
     // an unclean way.
+    let mut kill_after_sleep = false;
     tokio::select! {
         _ = shutdown_rx => {
             tracing::info!("child exited, shutting down");
         }
         sig = parent_death.recv() => {
-            tracing::info!(?sig, "received parent-death / terminate signal; killing PTY child");
-            kill_child(&master, &killer);
+            tracing::info!(?sig, "received parent-death / terminate signal; signaling PTY child via supervisor");
+            signal_child_direct(&supervisor_sock, &proc_id, ProcSignal::Term).await;
+            kill_after_sleep = true;
         }
     }
 
     // Let in-flight clients flush the ChildExited frame before we close.
     tokio::time::sleep(Duration::from_millis(200)).await;
+    if kill_after_sleep {
+        signal_child_direct(&supervisor_sock, &proc_id, ProcSignal::Kill).await;
+    }
     accept_task.abort();
     ready_task.abort();
 
@@ -963,39 +1009,185 @@ fn notify_ready(fd: Option<i32>) {
     }
 }
 
-/// Drain PTY master stdout. Each chunk is pumped through
+/// Drain the supervisor attach stream. Each output frame is pumped through
 /// [`RenderPlane::on_pty_chunk`] which feeds the VT model (bumping
 /// `render_rev` on visible state change), appends to the transcript ring,
 /// and returns an [`Effect::Broadcast`] carrying a `RenderPatch`. We
 /// forward the underlying [`DaemonMsg`] onto the broadcast channel for
 /// every attached client to see.
-fn spawn_pty_reader(
-    mut reader: Box<dyn std::io::Read + Send>,
+fn spawn_supervisor_attach_reader(
+    mut attach_conn: UnixStream,
+    proc_id: String,
     render_plane: SharedRenderPlane,
     event_tx: broadcast::Sender<DaemonMsg>,
-    stdin_tx: mpsc::UnboundedSender<PtyWrite>,
+    supervisor_tx: mpsc::UnboundedSender<SupervisorControl>,
+    shutdown_tx: oneshot::Sender<()>,
+    sock_path: PathBuf,
 ) {
-    std::thread::spawn(move || {
-        let mut buf = [0u8; 8192];
+    tokio::spawn(async move {
         loop {
-            match reader.read(&mut buf) {
-                Ok(0) => break, // EOF; child closed stdout — child-waiter will signal exit
-                Ok(n) => {
-                    let bytes = buf[..n].to_vec();
+            match read_frame::<ControlReply, _>(&mut attach_conn).await {
+                Ok(ControlReply::Output { bytes, .. }) => {
                     let effects = match render_plane.lock() {
                         Ok(mut rp) => rp.on_pty_chunk(bytes),
                         Err(_) => Vec::new(),
                     };
-                    apply_broadcaster_effects(&event_tx, &stdin_tx, effects);
+                    apply_broadcaster_effects(&event_tx, &supervisor_tx, effects);
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Ok(ControlReply::Exited {
+                    status, signalled, ..
+                }) => {
+                    write_exit_sidecar(&sock_path, status, signalled);
+                    let effects = match render_plane.lock() {
+                        Ok(mut rp) => rp.on_child_exit(status),
+                        Err(_) => Vec::new(),
+                    };
+                    for eff in effects {
+                        if let Effect::Broadcast(msg) = eff {
+                            let _ = event_tx.send(msg);
+                        }
+                    }
+                    let _ = shutdown_tx.send(());
+                    break;
+                }
+                Ok(ControlReply::Gap {
+                    earliest_cursor,
+                    requested_cursor,
+                }) => {
+                    tracing::warn!(
+                        proc_id = %proc_id,
+                        earliest_cursor,
+                        requested_cursor,
+                        "supervisor byte stream reported a replay gap"
+                    );
+                }
+                Ok(other) => {
+                    tracing::warn!(proc_id = %proc_id, reply = ?other, "unexpected supervisor attach frame");
+                }
                 Err(e) => {
-                    tracing::warn!(error = %e, "pty read error; stopping reader");
+                    tracing::warn!(proc_id = %proc_id, error = %e, "supervisor attach stream ended");
                     break;
                 }
             }
         }
     });
+}
+
+fn spawn_supervisor_control_writer(
+    mut control_conn: UnixStream,
+    proc_id: String,
+    mut rx: mpsc::UnboundedReceiver<SupervisorControl>,
+) {
+    tokio::spawn(async move {
+        while let Some(item) = rx.recv().await {
+            match item {
+                SupervisorControl::Write(write) => {
+                    let PtyWrite {
+                        data,
+                        input_seq,
+                        ack,
+                    } = write;
+                    let write_seq = (input_seq > 0).then_some(input_seq);
+                    if let Err(e) = write_frame(
+                        &mut control_conn,
+                        &ControlMsg::WriteStdin(WriteStdinRequest {
+                            proc_id: proc_id.clone(),
+                            bytes: data,
+                            write_seq,
+                        }),
+                    )
+                    .await
+                    {
+                        tracing::warn!(error = %e, "failed to send supervisor WriteStdin");
+                        break;
+                    }
+                    if let Some(expected) = write_seq {
+                        match read_frame::<ControlReply, _>(&mut control_conn).await {
+                            Ok(ControlReply::WriteAck { write_seq }) if write_seq == expected => {
+                                if let Some(ack) = ack {
+                                    let _ = ack.send(DaemonMsg::InputAck {
+                                        input_seq: write_seq,
+                                    });
+                                }
+                            }
+                            Ok(other) => {
+                                tracing::warn!(reply = ?other, "unexpected supervisor write reply");
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "failed to read supervisor WriteAck");
+                                break;
+                            }
+                        }
+                    }
+                }
+                SupervisorControl::Resize { cols, rows } => {
+                    if cols == 0 || rows == 0 {
+                        continue;
+                    }
+                    if let Err(e) = write_frame(
+                        &mut control_conn,
+                        &ControlMsg::ResizePty(ResizePtyRequest {
+                            proc_id: proc_id.clone(),
+                            cols,
+                            rows,
+                            pixel_w: 0,
+                            pixel_h: 0,
+                        }),
+                    )
+                    .await
+                    {
+                        tracing::warn!(error = %e, "failed to send supervisor ResizePty");
+                        break;
+                    }
+                    match read_frame::<ControlReply, _>(&mut control_conn).await {
+                        Ok(ControlReply::ResizeOk) => {}
+                        Ok(other) => {
+                            tracing::warn!(reply = ?other, "unexpected supervisor resize reply")
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "failed to read supervisor ResizeOk");
+                            break;
+                        }
+                    }
+                }
+                SupervisorControl::Signal(sig) => {
+                    if let Err(e) = write_frame(
+                        &mut control_conn,
+                        &ControlMsg::Signal(SignalRequest {
+                            proc_id: proc_id.clone(),
+                            sig,
+                        }),
+                    )
+                    .await
+                    {
+                        tracing::warn!(error = %e, "failed to send supervisor Signal");
+                        break;
+                    }
+                    match read_frame::<ControlReply, _>(&mut control_conn).await {
+                        Ok(ControlReply::SignalOk) => {}
+                        Ok(other) => {
+                            tracing::warn!(reply = ?other, "unexpected supervisor signal reply")
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "failed to read supervisor SignalOk");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+fn write_exit_sidecar(sock_path: &Path, code: Option<i32>, signal_killed: bool) {
+    let exit_path = format!("{}.exit", sock_path.display());
+    let payload = serde_json::json!({
+        "code": code,
+        "signal_killed": signal_killed,
+    });
+    if let Err(e) = std::fs::write(&exit_path, payload.to_string()) {
+        tracing::warn!(error = %e, path = %exit_path, "failed to write .exit sidecar");
+    }
 }
 
 /// Translate a list of effects produced by [`RenderPlane`] (or, in older
@@ -1007,7 +1199,7 @@ fn spawn_pty_reader(
 /// here rather than a silent drop.
 fn apply_broadcaster_effects(
     tx: &broadcast::Sender<DaemonMsg>,
-    stdin_tx: &mpsc::UnboundedSender<PtyWrite>,
+    supervisor_tx: &mpsc::UnboundedSender<SupervisorControl>,
     effects: Vec<Effect>,
 ) {
     for eff in effects {
@@ -1020,11 +1212,11 @@ fn apply_broadcaster_effects(
                 // feeding the current chunk. Daemon-originated write,
                 // not client-originated — no ack needed regardless of
                 // `input_seq`.
-                let _ = stdin_tx.send(PtyWrite {
+                let _ = supervisor_tx.send(SupervisorControl::Write(PtyWrite {
                     data,
                     input_seq,
                     ack: None,
-                });
+                }));
             }
             // RenderPlane never emits these; the other variants belong
             // to the client-frame state machine.
@@ -1043,100 +1235,6 @@ fn apply_broadcaster_effects(
             }
         }
     }
-}
-
-fn spawn_pty_writer(
-    mut writer: Box<dyn std::io::Write + Send>,
-    mut stdin_rx: mpsc::UnboundedReceiver<PtyWrite>,
-) {
-    std::thread::spawn(move || {
-        while let Some(item) = stdin_rx.blocking_recv() {
-            let PtyWrite {
-                data,
-                input_seq,
-                ack,
-            } = item;
-            if let Err(e) = writer.write_all(&data) {
-                // Do NOT emit InputAck on failure — the client will time
-                // out on its outstanding seq, which is the correct
-                // semantics (see `DaemonMsg::InputAck` doc).
-                tracing::warn!(error = %e, "pty write error; stopping writer");
-                break;
-            }
-            // `flush()` failure is intentionally non-fatal (mirrors the
-            // pre-#115 behaviour). The bytes are already in the kernel
-            // tty buffer; a failed userspace flush is a logging concern,
-            // not a delivery failure. We still emit the ack.
-            let _ = writer.flush();
-            // Emit InputAck back to the originating connection only when
-            // the client requested one (seq > 0 + ack channel attached).
-            // The ack-emission point is HERE, after `write_all` returned
-            // successfully — not at channel-send time in `handle_client`
-            // — so the client's outstanding seq is only resolved once
-            // the bytes have actually been handed to the PTY master.
-            if input_seq > 0
-                && let Some(ack) = ack
-            {
-                // mpsc send failure means the connection has already
-                // gone away; not interesting.
-                let _ = ack.send(DaemonMsg::InputAck { input_seq });
-            }
-        }
-    });
-}
-
-fn spawn_child_waiter(
-    mut child: Box<dyn portable_pty::Child + Send + Sync>,
-    render_plane: SharedRenderPlane,
-    event_tx: broadcast::Sender<DaemonMsg>,
-    shutdown_tx: oneshot::Sender<()>,
-    sock_path: PathBuf,
-) {
-    tokio::task::spawn_blocking(move || {
-        let status = child.wait().ok();
-        // #306 — capture both exit_code and signal_killed before the
-        // broadcast effects fire, so by the time the WS pump sees the
-        // socket EOF the kernel can read the sidecar file off disk and
-        // persist the exit info on the terminal row. portable-pty 0.9
-        // gained `ExitStatus::signal() -> Option<&str>`, which is the
-        // discriminator we need: `Some(_)` ⇒ killed by signal,
-        // `None`     ⇒ returned via exit() / main-return.
-        let (code, signal_killed): (Option<i32>, bool) = match status.as_ref() {
-            Some(s) if s.signal().is_some() => (None, true),
-            Some(s) => (Some(s.exit_code() as i32), false),
-            None => (None, false),
-        };
-        tracing::info!(?code, signal_killed, "child wait returned");
-        // Write `.exit` sidecar BEFORE the broadcast effects fire. By
-        // the time the WS pump observes the socket close, the kernel's
-        // `resolve_live_sock` (and the pump-time `Close(1000, …)` path)
-        // can read this file and persist the exit info on the terminal
-        // row via `terminal_set_exit`. JSON shape matches what
-        // `crates/calm-server/src/ws/terminal.rs` expects.
-        let exit_path = format!("{}.exit", sock_path.display());
-        let payload = serde_json::json!({
-            "code": code,
-            "signal_killed": signal_killed,
-        });
-        if let Err(e) = std::fs::write(&exit_path, payload.to_string()) {
-            // Non-fatal: the kernel will treat the missing sidecar as
-            // "daemon died without writing exit info" (DaemonLost in
-            // v2). Logged so an operator can dig into it.
-            tracing::warn!(error = %e, path = %exit_path, "failed to write .exit sidecar");
-        }
-        // `on_child_exit` only emits `Broadcast(TerminalExited)`; inline
-        // the dispatch so we don't need to thread `stdin_tx` here.
-        let effects = match render_plane.lock() {
-            Ok(mut rp) => rp.on_child_exit(code),
-            Err(_) => Vec::new(),
-        };
-        for eff in effects {
-            if let Effect::Broadcast(msg) = eff {
-                let _ = event_tx.send(msg);
-            }
-        }
-        let _ = shutdown_tx.send(());
-    });
 }
 
 /// Read NDJSON from the chat-mode runner's stdout. Each non-empty line is
@@ -1251,9 +1349,7 @@ async fn accept_loop(
     listener: UnixListener,
     event_tx: broadcast::Sender<DaemonMsg>,
     render_plane: SharedRenderPlane,
-    master: SharedMaster,
-    stdin_tx: mpsc::UnboundedSender<PtyWrite>,
-    killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
+    supervisor_tx: mpsc::UnboundedSender<SupervisorControl>,
     owner_registry: SharedOwnerRegistry,
     session_id: Uuid,
     terminal_id: String,
@@ -1264,9 +1360,7 @@ async fn accept_loop(
                 let event_rx = event_tx.subscribe();
                 let event_tx_inner = event_tx.clone();
                 let render_plane = render_plane.clone();
-                let master = master.clone();
-                let stdin_tx = stdin_tx.clone();
-                let killer = killer.clone();
+                let supervisor_tx = supervisor_tx.clone();
                 let owner_registry = owner_registry.clone();
                 let terminal_id = terminal_id.clone();
                 tokio::spawn(async move {
@@ -1275,9 +1369,7 @@ async fn accept_loop(
                         event_rx,
                         event_tx_inner,
                         render_plane,
-                        master,
-                        stdin_tx,
-                        killer,
+                        supervisor_tx,
                         owner_registry,
                         session_id,
                         terminal_id,
@@ -1332,9 +1424,7 @@ async fn handle_client(
     event_rx: broadcast::Receiver<DaemonMsg>,
     event_tx: broadcast::Sender<DaemonMsg>,
     render_plane: SharedRenderPlane,
-    master: SharedMaster,
-    stdin_tx: mpsc::UnboundedSender<PtyWrite>,
-    killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
+    supervisor_tx: mpsc::UnboundedSender<SupervisorControl>,
     owner_registry: SharedOwnerRegistry,
     session_id: Uuid,
     terminal_id: String,
@@ -1402,7 +1492,7 @@ async fn handle_client(
     for eff in first_effects {
         match eff {
             Effect::ResizePty { cols, rows } => {
-                apply_resize(&master, cols, rows);
+                request_resize(&supervisor_tx, cols, rows);
                 if let Ok(mut rp) = render_plane.lock() {
                     // Also resize the model so its grid matches the new PTY
                     // geometry. We swallow the broadcast effect this
@@ -1586,7 +1676,7 @@ async fn handle_client(
                     let _ = event_tx.send(msg);
                 }
                 Effect::ResizePty { cols, rows } => {
-                    apply_resize(&master, cols, rows);
+                    request_resize(&supervisor_tx, cols, rows);
                     if let Ok(mut rp) = render_plane.lock() {
                         let resize_effects = rp.on_resize(cols, rows);
                         // RenderPlane::on_resize emits a Broadcast(RenderSnapshot)
@@ -1609,12 +1699,12 @@ async fn handle_client(
                     } else {
                         None
                     };
-                    if stdin_tx
-                        .send(PtyWrite {
+                    if supervisor_tx
+                        .send(SupervisorControl::Write(PtyWrite {
                             data,
                             input_seq,
                             ack,
-                        })
+                        }))
                         .is_err()
                     {
                         closed = true;
@@ -1623,7 +1713,7 @@ async fn handle_client(
                 }
                 Effect::KillChild => {
                     tracing::info!("client requested Kill; signaling child");
-                    kill_child(&master, &killer);
+                    signal_child(&supervisor_tx);
                 }
                 Effect::SendProtocolError {
                     code,
@@ -1720,12 +1810,12 @@ async fn handle_client(
                     if !focus_event_tracking {
                         continue;
                     }
-                    if stdin_tx
-                        .send(PtyWrite {
+                    if supervisor_tx
+                        .send(SupervisorControl::Write(PtyWrite {
                             data: b"\x1b[I".to_vec(),
                             input_seq: 0,
                             ack: None,
-                        })
+                        }))
                         .is_err()
                     {
                         closed = true;
@@ -2002,49 +2092,67 @@ async fn handle_chat_client(
     Ok(())
 }
 
-/// Try hard to tear down the child. We first SIGHUP the whole process group
-/// (portable-pty marks the child as its own session/pgid via setsid, so the
-/// pgid equals the child pid), then schedule a SIGKILL fallback in case the
-/// child ignored SIGHUP. Signaling the group catches transient subshells
-/// (e.g. `sh -c 'bash'` spawning a separate bash process) that a single-pid
-/// kill would miss.
-fn kill_child(
-    master: &SharedMaster,
-    killer: &Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
-) {
-    let pgid = master.lock().ok().and_then(|m| m.process_group_leader());
-    if let Some(pgid) = pgid {
-        // SAFETY: killpg-style negative pid targets the process group with
-        // the matching id. We created this pgid via setsid at spawn time.
-        unsafe {
-            libc::kill(-pgid, libc::SIGHUP);
-        }
-        // Hard fallback in case the child traps SIGHUP and keeps running.
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            unsafe {
-                libc::kill(-pgid, libc::SIGKILL);
-            }
-        });
-    } else if let Ok(mut k) = killer.lock() {
-        // Last-resort fallback through portable-pty's killer.
-        let _ = k.kill();
-    }
-}
-
-fn apply_resize(master: &SharedMaster, cols: u16, rows: u16) {
+fn request_resize(supervisor_tx: &mpsc::UnboundedSender<SupervisorControl>, cols: u16, rows: u16) {
     if cols == 0 || rows == 0 {
         return;
     }
-    let m = master.lock().unwrap();
-    if let Err(e) = m.resize(PtPtySize {
-        cols,
-        rows,
-        pixel_width: 0,
-        pixel_height: 0,
-    }) {
-        tracing::warn!(error = %e, "pty resize failed");
+    let _ = supervisor_tx.send(SupervisorControl::Resize { cols, rows });
+}
+
+async fn signal_child_direct(supervisor_sock: &Path, proc_id: &str, sig: ProcSignal) {
+    let mut conn = match UnixStream::connect(supervisor_sock).await {
+        Ok(conn) => conn,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                sock = %supervisor_sock.display(),
+                ?sig,
+                "failed to connect proc supervisor for direct signal"
+            );
+            return;
+        }
+    };
+    if let Err(e) = write_frame(
+        &mut conn,
+        &ControlMsg::Signal(SignalRequest {
+            proc_id: proc_id.to_string(),
+            sig,
+        }),
+    )
+    .await
+    {
+        tracing::warn!(error = %e, ?sig, "failed to send direct supervisor signal");
+        return;
     }
+    match timeout(
+        Duration::from_millis(200),
+        read_frame::<ControlReply, _>(&mut conn),
+    )
+    .await
+    {
+        Ok(Ok(ControlReply::SignalOk)) => {}
+        Ok(Ok(ControlReply::Error { kind, message })) => {
+            tracing::debug!(?kind, %message, ?sig, "direct supervisor signal returned error");
+        }
+        Ok(Ok(other)) => {
+            tracing::debug!(reply = ?other, ?sig, "unexpected direct supervisor signal reply");
+        }
+        Ok(Err(e)) => {
+            tracing::debug!(error = %e, ?sig, "failed to read direct supervisor signal reply");
+        }
+        Err(_) => {
+            tracing::debug!(?sig, "timed out reading direct supervisor signal reply");
+        }
+    }
+}
+
+fn signal_child(supervisor_tx: &mpsc::UnboundedSender<SupervisorControl>) {
+    let _ = supervisor_tx.send(SupervisorControl::Signal(ProcSignal::Hup));
+    let supervisor_tx = supervisor_tx.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let _ = supervisor_tx.send(SupervisorControl::Signal(ProcSignal::Kill));
+    });
 }
 
 #[allow(dead_code)]

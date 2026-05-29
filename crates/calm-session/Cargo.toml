@@ -40,3 +40,6 @@ vte = { version = "0.13", default-features = false }
 # `TS`; `no-serde-warnings` silences serde-default lint chatter on derives
 # we don't control.
 ts-rs = { version = "12", features = ["serde-json-impl", "no-serde-warnings"] }
+
+[dev-dependencies]
+tempfile = "3"

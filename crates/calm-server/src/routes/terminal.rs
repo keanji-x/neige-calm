@@ -91,6 +91,9 @@ pub(crate) async fn spawn_daemon_with_parts(
         let _ = std::fs::remove_file(&sock);
     }
     let sock_str = sock.to_string_lossy().to_string();
+    let proc_supervisor_sock =
+        crate::proc_supervisor::resolve_control_sock(daemon.proc_supervisor_sock.as_deref())
+            .await?;
 
     // #177 PR2 — `term.theme_fg/_bg` are the single source of truth
     // for daemon OSC 10/11 reply colors (write-once at row create,
@@ -108,6 +111,10 @@ pub(crate) async fn spawn_daemon_with_parts(
     args.extend(["--terminal-bg".to_string(), term.theme_bg.clone()]);
     args.extend(["--cwd".to_string(), cwd.to_string()]);
     args.extend(["--ready-fd".to_string(), "0".to_string()]);
+    args.extend([
+        "--proc-supervisor-sock".to_string(),
+        proc_supervisor_sock.display().to_string(),
+    ]);
     args.push("--".to_string());
     args.extend(["/bin/sh".to_string(), "-c".to_string(), program.to_string()]);
 
@@ -131,7 +138,7 @@ pub(crate) async fn spawn_daemon_with_parts(
     // supervisor's `Spawned` frame (which precedes readiness) in the
     // on_spawned callback below.
     let pid = crate::proc_supervisor::ensure_proc(
-        daemon.proc_supervisor_sock.as_deref(),
+        Some(proc_supervisor_sock.as_path()),
         calm_session::control::EnsureProcRequest {
             proc_id: term.id.clone(),
             program: daemon.session_daemon_bin.display().to_string(),
@@ -139,6 +146,8 @@ pub(crate) async fn spawn_daemon_with_parts(
             envs,
             cwd: cwd.to_string(),
             ready_timeout_ms: crate::proc_supervisor::DEFAULT_READY_TIMEOUT.as_millis() as u64,
+            io_mode: calm_session::control::IoMode::Pipe,
+            replay_bytes: 0,
         },
         |pid| {
             let term_id = term.id.clone();
@@ -518,6 +527,7 @@ mod tests {
             "--terminal-bg",
             "--cwd",
             "--ready-fd",
+            "--proc-supervisor-sock",
         ] {
             assert!(
                 argv.iter().any(|a| a == expected),

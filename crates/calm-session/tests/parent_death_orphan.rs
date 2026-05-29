@@ -20,9 +20,17 @@
 
 #![cfg(target_os = "linux")]
 
+mod common;
+
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+
+use calm_session::control::{ControlMsg, ControlReply, ProbeRequest};
+use calm_session::{
+    ClientCapabilities, ClientMsg, DaemonMsg, InitialScrollback, PROTOCOL_VERSION, PtySize,
+    RenderEncoding, read_frame, write_frame,
+};
 use uuid::Uuid;
 
 fn daemon_bin() -> &'static str {
@@ -107,18 +115,22 @@ struct Driver {
     sh: std::process::Child,
     daemon_pid: i32,
     sock: PathBuf,
+    _supervisor: common::SupervisorHandle,
 }
 
 fn launch_daemon_under_sh(label: &str) -> Driver {
     let sock = fresh_sock(label);
     let id = Uuid::new_v4().to_string();
+    let supervisor = common::spawn_proc_supervisor();
     let cmd = format!(
         "{daemon} --id {id} --sock {sock} \
+            --proc-supervisor-sock {supervisor_sock} \
             --terminal-fg 216,219,226 --terminal-bg 15,20,24 \
             -- sh -c 'sleep 600' & echo $!; wait",
         daemon = daemon_bin(),
         id = id,
         sock = sock.to_string_lossy(),
+        supervisor_sock = supervisor.sock.to_string_lossy(),
     );
     let mut sh = Command::new("sh")
         .arg("-c")
@@ -160,6 +172,7 @@ fn launch_daemon_under_sh(label: &str) -> Driver {
         sh,
         daemon_pid,
         sock,
+        _supervisor: supervisor,
     }
 }
 
@@ -167,13 +180,18 @@ fn launch_daemon_under_sh(label: &str) -> Driver {
 fn parent_death_kills_daemon_and_pty_child() {
     let mut d = launch_daemon_under_sh("kill-parent");
     let daemon_pid = d.daemon_pid;
-    // Pick up the daemon's descendants BEFORE killing the parent —
-    // after orphaning, pgrep -P walks reparent to init and the
-    // relationship is lost.
-    let pty_children = all_descendants(daemon_pid);
+    // Phase 2 (#388): the PTY child is forked by `calm-proc-supervisor`,
+    // not the daemon. Enumerate the supervisor's descendants so we can
+    // assert they die after parent-death. The daemon's parent-death
+    // branch sends Signal{Term} (+ post-grace Signal{Kill}) to the
+    // supervisor over a fresh UDS connection, the supervisor SIGTERMs
+    // the PTY pgid, and the child should be reaped before our budget.
+    let supervisor_pid = d._supervisor.child.id() as i32;
+    let pty_children = all_descendants(supervisor_pid);
     assert!(
         !pty_children.is_empty(),
-        "expected daemon (pid {daemon_pid}) to have at least one PTY descendant; found none",
+        "expected proc-supervisor (pid {supervisor_pid}) to have at least one PTY descendant; \
+         daemon pid {daemon_pid} delegates PTY ownership to supervisor in Phase 2",
     );
 
     // SIGKILL the wrapping sh. The daemon (its child) is now an orphan
@@ -354,4 +372,140 @@ fn parent_death_self_terminates_via_sigterm_path() {
     // sh wraps `wait`; the daemon exiting should let it return.
     let _ = d.sh.wait();
     let _ = std::fs::remove_file(&d.sock);
+}
+
+async fn probe_supervisor_running(sock: &std::path::Path, proc_id: &str) -> bool {
+    let mut conn = tokio::net::UnixStream::connect(sock)
+        .await
+        .expect("connect proc supervisor for probe");
+    write_frame(
+        &mut conn,
+        &ControlMsg::Probe(ProbeRequest {
+            proc_id: proc_id.to_string(),
+        }),
+    )
+    .await
+    .expect("write probe");
+    match tokio::time::timeout(
+        Duration::from_secs(1),
+        read_frame::<ControlReply, _>(&mut conn),
+    )
+    .await
+    .expect("probe reply timeout")
+    .expect("probe reply decode")
+    {
+        ControlReply::ProbeOk { proc_running, .. } => proc_running,
+        other => panic!("expected ProbeOk, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn parent_death_signal_bypasses_blocked_supervisor_writer() {
+    let supervisor = common::spawn_proc_supervisor();
+    let daemon_bin = env!("CARGO_BIN_EXE_calm-session-daemon");
+    let id = Uuid::new_v4();
+    let proc_id = format!("term:{id}");
+    let sock = std::env::temp_dir().join(format!("calm-orphan-blocked-writer-{id}.sock"));
+    let _ = std::fs::remove_file(&sock);
+
+    let mut daemon = tokio::process::Command::new(daemon_bin)
+        .args(["--mode", "terminal"])
+        .args(["--id", &id.to_string()])
+        .args(["--sock", &sock.to_string_lossy()])
+        .arg("--proc-supervisor-sock")
+        .arg(&supervisor.sock)
+        .args(["--terminal-fg", "216,219,226"])
+        .args(["--terminal-bg", "15,20,24"])
+        .args(["--cwd", "/tmp"])
+        .args(["--", "sh", "-c", "sleep 60"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn daemon");
+
+    let mut bound = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
+    while tokio::time::Instant::now() < deadline {
+        if tokio::net::UnixStream::connect(&sock).await.is_ok() {
+            bound = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+    assert!(bound, "daemon did not bind socket within 6s");
+
+    let stream = tokio::net::UnixStream::connect(&sock)
+        .await
+        .expect("client connect");
+    let (mut rd, mut wr) = stream.into_split();
+    write_frame(
+        &mut wr,
+        &ClientMsg::ClientHello {
+            protocol_version: PROTOCOL_VERSION,
+            terminal_id: id.to_string(),
+            client_id: Uuid::new_v4(),
+            desired_size: PtySize {
+                cols: 80,
+                rows: 24,
+                pixel_width: None,
+                pixel_height: None,
+            },
+            cell_size: None,
+            initial_scrollback: InitialScrollback::None,
+            resume_from: None,
+            role_hint: None,
+            capabilities: ClientCapabilities {
+                render_encodings: vec![RenderEncoding::Vt],
+                supports_scrollback: false,
+                supports_sixel: false,
+                supports_images: false,
+                kernel_originated_input: false,
+            },
+        },
+    )
+    .await
+    .expect("write client hello");
+    let _: DaemonMsg = tokio::time::timeout(Duration::from_secs(2), read_frame(&mut rd))
+        .await
+        .expect("server hello timeout")
+        .expect("server hello decode");
+
+    // Fill the PTY input queue behind a child that never reads stdin.
+    // This leaves the queued supervisor writer stuck in WriteStdin, so
+    // the parent-death Signal must use a fresh supervisor connection.
+    let bulk = vec![b'a'; 8 * 1024 * 1024];
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        write_frame(
+            &mut wr,
+            &ClientMsg::Input {
+                data: bulk,
+                input_seq: 1,
+            },
+        ),
+    )
+    .await
+    .expect("input frame write timeout")
+    .expect("write input frame");
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    let daemon_pid = daemon.id().expect("daemon pid") as libc::pid_t;
+    unsafe {
+        libc::kill(daemon_pid, libc::SIGTERM);
+    }
+    let _ = tokio::time::timeout(Duration::from_secs(3), daemon.wait())
+        .await
+        .expect("daemon wait timeout")
+        .expect("wait daemon");
+
+    let probe_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while tokio::time::Instant::now() < probe_deadline {
+        if !probe_supervisor_running(&supervisor.sock, &proc_id).await {
+            let _ = std::fs::remove_file(&sock);
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("supervisor still reports {proc_id} running after daemon SIGTERM");
 }

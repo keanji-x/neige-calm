@@ -19,6 +19,8 @@
 //! of PR #110's `inject_stdin` from a 50ms close-grace
 //! `tokio::time::sleep` to `await InputAck`.
 
+mod common;
+
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
@@ -86,16 +88,24 @@ async fn connect_and_attach(
 
 /// Spawn a daemon under `sleep 60` (long enough for any test sequence)
 /// and wait for its unix socket to bind.
-async fn spawn_daemon() -> (tokio::process::Child, std::path::PathBuf, String) {
+async fn spawn_daemon() -> (
+    tokio::process::Child,
+    std::path::PathBuf,
+    String,
+    common::SupervisorHandle,
+) {
     let daemon_bin = env!("CARGO_BIN_EXE_calm-session-daemon");
     let id = Uuid::new_v4();
     let sock = std::env::temp_dir().join(format!("calm-iack-{id}.sock"));
     let _ = std::fs::remove_file(&sock);
+    let supervisor = common::spawn_proc_supervisor();
 
     let child = Command::new(daemon_bin)
         .args(["--mode", "terminal"])
         .args(["--id", &id.to_string()])
         .args(["--sock", &sock.to_string_lossy()])
+        .arg("--proc-supervisor-sock")
+        .arg(&supervisor.sock)
         // #177 PR2: terminal-mode daemon now requires theme RGB. The
         // values are placeholders — this test exercises input-ack,
         // not OSC replies. See `tests/daemon_cli_theme.rs` for the
@@ -120,7 +130,7 @@ async fn spawn_daemon() -> (tokio::process::Child, std::path::PathBuf, String) {
         tokio::time::sleep(Duration::from_millis(40)).await;
     }
     assert!(bound, "daemon did not bind socket within 6s");
-    (child, sock, id.to_string())
+    (child, sock, id.to_string(), supervisor)
 }
 
 /// Walk the down stream looking for the next `DaemonMsg::InputAck`.
@@ -172,7 +182,7 @@ where
 
 #[tokio::test]
 async fn input_ack_arrives_after_pty_write() {
-    let (_child, sock, real_tid) = spawn_daemon().await;
+    let (_child, sock, real_tid, _supervisor) = spawn_daemon().await;
     let (mut rd, mut wr) = connect_and_attach(&sock, &real_tid, true).await;
 
     // Send Input with seq=42. The daemon must emit InputAck{42} after
@@ -195,7 +205,7 @@ async fn input_ack_arrives_after_pty_write() {
 
 #[tokio::test]
 async fn input_ack_preserves_seq_order() {
-    let (_child, sock, real_tid) = spawn_daemon().await;
+    let (_child, sock, real_tid, _supervisor) = spawn_daemon().await;
     let (mut rd, mut wr) = connect_and_attach(&sock, &real_tid, true).await;
 
     // Two consecutive Inputs with seqs N, N+1 → InputAck N, then
@@ -228,7 +238,7 @@ async fn input_ack_preserves_seq_order() {
 
 #[tokio::test]
 async fn input_seq_zero_produces_no_ack() {
-    let (_child, sock, real_tid) = spawn_daemon().await;
+    let (_child, sock, real_tid, _supervisor) = spawn_daemon().await;
     let (mut rd, mut wr) = connect_and_attach(&sock, &real_tid, true).await;
 
     // Send Input with seq=0 — the wire default for browser typing

@@ -18,6 +18,8 @@
 //! Chat mode is not exercised here — the args are intentionally ignored
 //! when `--mode chat` (no `TerminalModel` to apply colors to).
 
+mod common;
+
 use std::io::Read;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -203,10 +205,13 @@ fn well_formed_flags_bind_socket() {
     // We use `sleep 30` so the daemon doesn't immediately exit and
     // race-delete the socket out from under our `sock.exists()` check.
     let sock = fresh_sock("ok");
+    let supervisor = common::spawn_proc_supervisor();
     let id = Uuid::new_v4().to_string();
     let mut child = std::process::Command::new(daemon_bin())
         .args(["--id", &id])
         .args(["--sock", &sock.to_string_lossy()])
+        .arg("--proc-supervisor-sock")
+        .arg(&supervisor.sock)
         .args(["--terminal-fg", "216,219,226"])
         .args(["--terminal-bg", "15,20,24"])
         .args(["--", "sh", "-c", "sleep 30"])
@@ -229,10 +234,13 @@ fn parse_rgb_accepts_whitespace_around_channels() {
     // `parse_rgb` trims each channel; `--terminal-fg ' 15 , 20 , 24 '`
     // should round-trip to (15, 20, 24).
     let sock = fresh_sock("ws");
+    let supervisor = common::spawn_proc_supervisor();
     let id = Uuid::new_v4().to_string();
     let mut child = std::process::Command::new(daemon_bin())
         .args(["--id", &id])
         .args(["--sock", &sock.to_string_lossy()])
+        .arg("--proc-supervisor-sock")
+        .arg(&supervisor.sock)
         .args(["--terminal-fg", " 216 , 219 , 226 "])
         .args(["--terminal-bg", "15,20,24"])
         .args(["--", "sh", "-c", "sleep 30"])
