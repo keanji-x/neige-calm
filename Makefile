@@ -282,6 +282,14 @@ prod: build prod-dirs prod-repair-codex-homes ## Run production locally without 
 	@echo "  → API: http://localhost:$(PROD_PORT)/api/coves"
 	@echo "  data:  $(PROD_DATA_DIR)"
 	@echo "  shell: $(LOCAL_SHELL)"
+	@# Issue #388 Phase 1 — calm-server now talks to calm-proc-supervisor
+	@# over a control UDS for every terminal spawn. Production has neige-app
+	@# peer-supervising both; for `make prod` we background the supervisor
+	@# on the same sock path calm-server resolves
+	@# (CALM_PROC_SUPERVISOR_SOCK env, falling back to
+	@# `CALM_DATA_DIR/proc-supervisor.sock`), wait for it to listen, then
+	@# exec calm-server. A trap on EXIT reaps the supervisor when the
+	@# foreground calm-server stops, so Ctrl-C doesn't leave it dangling.
 	env \
 	  CALM_LISTEN="$(PROD_LISTEN)" \
 	  CALM_ALLOWED_ORIGIN="http://localhost:$(PROD_PORT)" \
@@ -294,7 +302,18 @@ prod: build prod-dirs prod-repair-codex-homes ## Run production locally without 
 	  CALM_AUTH_PASSWORD="$(PROD_AUTH_PASSWORD)" \
 	  CALM_DEV_AUTOLOGIN="$(PROD_DEV_AUTOLOGIN)" \
 	  SHELL="$(LOCAL_SHELL)" \
-	  "$(BIN)"
+	  PROC_SUPERVISOR_BIN="$(PROC_SUP)" \
+	  CALM_SERVER_BIN="$(BIN)" \
+	  PROD_DATA_DIR="$(PROD_DATA_DIR)" \
+	  sh -c '\
+	    SOCK="$${CALM_PROC_SUPERVISOR_SOCK:-$$PROD_DATA_DIR/proc-supervisor.sock}"; \
+	    rm -f "$$SOCK"; \
+	    "$$PROC_SUPERVISOR_BIN" --control-sock "$$SOCK" & \
+	    sup_pid=$$!; \
+	    trap "kill -TERM $$sup_pid 2>/dev/null; wait $$sup_pid 2>/dev/null" EXIT INT TERM; \
+	    until [ -S "$$SOCK" ]; do sleep 0.1; done; \
+	    CALM_PROC_SUPERVISOR_SOCK="$$SOCK" exec "$$CALM_SERVER_BIN" \
+	  '
 
 # ---- housekeeping ------------------------------------------------------
 

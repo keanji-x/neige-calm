@@ -242,6 +242,11 @@ fn required_bins(source_dir: &Path) -> Vec<NamedPath> {
         "calm-session-daemon",
         "neige-codex-bridge",
         "neige-mcp-stdio-shim",
+        // Issue #388 Phase 1 — calm-server connects to this binary over a
+        // control UDS for every terminal spawn; without it in the activated
+        // release `neige-app system serve` will time out waiting for
+        // `<current-server>/bin/calm-proc-supervisor` to come up.
+        "calm-proc-supervisor",
         "neige",
     ]
     .into_iter()
