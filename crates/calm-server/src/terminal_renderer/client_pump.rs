@@ -6,13 +6,14 @@ use calm_session::{ClientMsg, DaemonMsg};
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
-use super::{PtyWrite, SharedOwnerRegistry, SharedRenderPlane, SupervisorControl};
+use super::{PtyWrite, SharedExitState, SharedOwnerRegistry, SharedRenderPlane, SupervisorControl};
 use crate::terminal_renderer::snapshot::{rebuild_server_hello_snapshot, scrollback_request};
 
 pub struct ClientPumpContext {
     pub event_rx: broadcast::Receiver<DaemonMsg>,
     pub event_tx: broadcast::Sender<DaemonMsg>,
     pub render_plane: SharedRenderPlane,
+    pub exit: SharedExitState,
     pub supervisor_tx: mpsc::UnboundedSender<SupervisorControl>,
     pub owner_registry: SharedOwnerRegistry,
     pub session_id: Uuid,
@@ -28,13 +29,14 @@ pub async fn run_client_pump(
         event_rx,
         event_tx,
         render_plane,
+        exit,
         supervisor_tx,
         owner_registry,
         session_id,
         terminal_id,
     } = ctx;
     let mut state = TerminalSessionState::new();
-    let (per_client_tx, mut per_client_rx) = mpsc::channel::<DaemonMsg>(64);
+    let (per_client_tx, mut per_client_rx) = mpsc::unbounded_channel::<DaemonMsg>();
 
     let first = match incoming_rx.recv().await {
         Some(first) => first,
@@ -85,8 +87,22 @@ pub async fn run_client_pump(
                     desired_size,
                     scrollback_request,
                 );
+                let sent_server_hello = matches!(msg, DaemonMsg::ServerHello { .. });
                 if outgoing_tx.send(msg).await.is_err() {
                     return Ok(());
+                }
+                if sent_server_hello {
+                    let exit_info = exit.lock().ok().and_then(|guard| guard.clone());
+                    if let Some(exit_info) = exit_info {
+                        let exited = DaemonMsg::TerminalExited {
+                            code: exit_info.code,
+                            pty_seq: exit_info.pty_seq,
+                            render_rev: exit_info.render_rev,
+                        };
+                        if outgoing_tx.send(exited).await.is_err() {
+                            return Ok(());
+                        }
+                    }
                 }
             }
             Effect::SendProtocolError {
@@ -205,7 +221,7 @@ pub async fn run_client_pump(
         for eff in effects {
             match eff {
                 Effect::SendToClient(msg) => {
-                    let _ = per_client_tx.send(msg).await;
+                    let _ = per_client_tx.send(msg);
                 }
                 Effect::Broadcast(msg) => {
                     let _ = event_tx.send(msg);
@@ -248,13 +264,11 @@ pub async fn run_client_pump(
                     message,
                     expected_version,
                 } => {
-                    let _ = per_client_tx
-                        .send(DaemonMsg::ProtocolError {
-                            code,
-                            message,
-                            expected_version,
-                        })
-                        .await;
+                    let _ = per_client_tx.send(DaemonMsg::ProtocolError {
+                        code,
+                        message,
+                        expected_version,
+                    });
                 }
                 Effect::CloseConnection => {
                     closed = true;

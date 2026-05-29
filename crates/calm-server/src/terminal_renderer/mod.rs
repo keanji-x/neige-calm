@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use calm_session::control::{
@@ -24,8 +24,9 @@ mod snapshot;
 
 pub use client_pump::{ClientPumpContext, run_client_pump};
 
-pub type SharedRenderPlane = Arc<Mutex<RenderPlane>>;
-pub type SharedOwnerRegistry = Arc<Mutex<OwnerRegistry>>;
+pub type SharedRenderPlane = Arc<StdMutex<RenderPlane>>;
+pub type SharedOwnerRegistry = Arc<StdMutex<OwnerRegistry>>;
+pub type SharedExitState = Arc<StdMutex<Option<TerminalExitInfo>>>;
 
 pub(crate) const SCROLLBACK_MAX_LINES: usize = 2000;
 
@@ -36,7 +37,7 @@ pub(crate) const SCROLLBACK_MAX_LINES: usize = 2000;
 pub struct PtyWrite {
     pub data: Vec<u8>,
     pub input_seq: u64,
-    pub ack: Option<mpsc::Sender<DaemonMsg>>,
+    pub ack: Option<mpsc::UnboundedSender<DaemonMsg>>,
 }
 
 pub enum SupervisorControl {
@@ -68,14 +69,25 @@ pub struct RendererHandle {
     pub supervisor_tx: mpsc::UnboundedSender<SupervisorControl>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalExitInfo {
+    pub code: Option<i32>,
+    pub pty_seq: u32,
+    pub render_rev: u32,
+}
+
 pub struct RendererEntry {
     pub terminal_id: String,
     pub proc_id: String,
     pub supervisor_sock: PathBuf,
     pub handle: RendererHandle,
-    initial_event_rx: Mutex<Option<broadcast::Receiver<DaemonMsg>>>,
-    exited_rx: Mutex<Option<oneshot::Receiver<Option<i32>>>>,
-    tasks: Mutex<Vec<JoinHandle<()>>>,
+    /// Set exactly once when the supervisor's attach stream delivers
+    /// `Exited`. Late client pumps replay this immediately after
+    /// `ServerHello` because broadcast receivers do not retain history.
+    pub exit: SharedExitState,
+    initial_event_rx: StdMutex<Option<broadcast::Receiver<DaemonMsg>>>,
+    exited_rx: StdMutex<Option<oneshot::Receiver<Option<i32>>>>,
+    tasks: StdMutex<Vec<JoinHandle<()>>>,
 }
 
 impl RendererEntry {
@@ -123,13 +135,13 @@ impl RendererEntry {
 pub struct RendererSpawnError(#[from] anyhow::Error);
 
 pub struct TerminalRendererRegistry {
-    entries: Mutex<HashMap<String, Arc<RendererEntry>>>,
+    entries: StdMutex<HashMap<String, Arc<RendererEntry>>>,
 }
 
 impl TerminalRendererRegistry {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
-            entries: Mutex::new(HashMap::new()),
+            entries: StdMutex::new(HashMap::new()),
         })
     }
 
@@ -222,7 +234,7 @@ async fn ensure_entry(cfg: RendererConfig) -> anyhow::Result<RendererEntry> {
         other => anyhow::bail!("unexpected proc-supervisor ready reply: {other:?}"),
     }
 
-    let render_plane: SharedRenderPlane = Arc::new(Mutex::new(RenderPlane::with_colors(
+    let render_plane: SharedRenderPlane = Arc::new(StdMutex::new(RenderPlane::with_colors(
         cfg.cols,
         cfg.rows,
         cfg.buffer_bytes,
@@ -230,7 +242,8 @@ async fn ensure_entry(cfg: RendererConfig) -> anyhow::Result<RendererEntry> {
         Some(cfg.terminal_fg),
         Some(cfg.terminal_bg),
     )));
-    let owner_registry: SharedOwnerRegistry = Arc::new(Mutex::new(OwnerRegistry::new()));
+    let owner_registry: SharedOwnerRegistry = Arc::new(StdMutex::new(OwnerRegistry::new()));
+    let exit = Arc::new(StdMutex::new(None));
     let session_id = Uuid::new_v4();
     let (event_tx, initial_event_rx) = broadcast::channel::<DaemonMsg>(2048);
     let event_rx = event_tx.subscribe();
@@ -278,6 +291,7 @@ async fn ensure_entry(cfg: RendererConfig) -> anyhow::Result<RendererEntry> {
         attach_conn,
         proc_id.clone(),
         render_plane.clone(),
+        exit.clone(),
         event_tx.clone(),
         supervisor_tx.clone(),
         exited_tx,
@@ -296,9 +310,10 @@ async fn ensure_entry(cfg: RendererConfig) -> anyhow::Result<RendererEntry> {
             owner_registry,
             supervisor_tx,
         },
-        initial_event_rx: Mutex::new(Some(initial_event_rx)),
-        exited_rx: Mutex::new(Some(exited_rx)),
-        tasks: Mutex::new(vec![control_task, attach_task, ready_task]),
+        exit,
+        initial_event_rx: StdMutex::new(Some(initial_event_rx)),
+        exited_rx: StdMutex::new(Some(exited_rx)),
+        tasks: StdMutex::new(vec![control_task, attach_task, ready_task]),
     })
 }
 

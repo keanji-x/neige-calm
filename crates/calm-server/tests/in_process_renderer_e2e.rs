@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use calm_server::terminal_renderer::{
-    ClientPumpContext, RendererConfig, TerminalRendererRegistry, run_client_pump,
+    ClientPumpContext, RendererConfig, RendererEntry, TerminalRendererRegistry, run_client_pump,
 };
 use calm_session::{
     ClientCapabilities, ClientMsg, DaemonMsg, InitialScrollback, PROTOCOL_VERSION, PtySize,
@@ -12,6 +13,7 @@ use calm_session::{
 use tokio::net::UnixStream;
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use uuid::Uuid;
 
@@ -46,25 +48,7 @@ async fn in_process_renderer_drives_real_supervisor_and_pty() {
     wait_for_hello_patch(&mut events).await;
     wait_for_child_ready(&mut events).await;
 
-    let (client_tx, client_rx) = mpsc::channel::<ClientMsg>(16);
-    let (daemon_tx, mut daemon_rx) = mpsc::channel::<DaemonMsg>(64);
-    let pump_entry = entry.clone();
-    let pump = tokio::spawn(async move {
-        run_client_pump(
-            client_rx,
-            daemon_tx,
-            ClientPumpContext {
-                event_rx: pump_entry.handle.event_tx.subscribe(),
-                event_tx: pump_entry.handle.event_tx.clone(),
-                render_plane: pump_entry.handle.render_plane.clone(),
-                supervisor_tx: pump_entry.handle.supervisor_tx.clone(),
-                owner_registry: pump_entry.handle.owner_registry.clone(),
-                session_id: pump_entry.handle.session_id,
-                terminal_id: pump_entry.terminal_id.clone(),
-            },
-        )
-        .await
-    });
+    let (client_tx, mut daemon_rx, pump) = spawn_client_pump(entry.clone());
 
     client_tx
         .send(ClientMsg::ClientHello {
@@ -109,6 +93,7 @@ async fn in_process_renderer_drives_real_supervisor_and_pty() {
         .expect("send ctrl-c");
     wait_for_input_ack(&mut daemon_rx, 1).await;
     wait_for_terminal_exited(&mut events).await;
+    wait_for_daemon_terminal_exited(&mut daemon_rx).await;
     assert!(
         timeout(Duration::from_secs(2), entry.wait_exited())
             .await
@@ -128,6 +113,117 @@ async fn in_process_renderer_drives_real_supervisor_and_pty() {
         .expect("pump result");
     let _ = supervisor.kill().await;
     let _ = supervisor.wait().await;
+}
+
+#[tokio::test]
+async fn late_client_attach_receives_sticky_terminal_exited() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let control_sock = temp.path().join("proc-supervisor.sock");
+    let mut supervisor = spawn_proc_supervisor(&control_sock).await;
+
+    let registry = TerminalRendererRegistry::new();
+    let terminal_id = Uuid::new_v4().to_string();
+    let entry = registry
+        .ensure(RendererConfig {
+            terminal_id: terminal_id.clone(),
+            cols: 80,
+            rows: 24,
+            buffer_bytes: 1 << 20,
+            terminal_fg: (216, 219, 226),
+            terminal_bg: (15, 20, 24),
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "echo late; exit 7".into()],
+            envs: std::env::vars().collect(),
+            cwd: workspace_root().display().to_string(),
+            supervisor_sock: control_sock.clone(),
+        })
+        .await
+        .expect("ensure renderer");
+
+    let mut events = entry
+        .take_initial_event_rx()
+        .expect("initial renderer event receiver");
+    wait_for_terminal_exited(&mut events).await;
+
+    let (client_tx, mut daemon_rx, pump) = spawn_client_pump(entry.clone());
+    send_client_hello(&client_tx, &terminal_id).await;
+    let hello = timeout(Duration::from_secs(2), daemon_rx.recv())
+        .await
+        .expect("server hello timeout")
+        .expect("server hello channel closed");
+    assert!(
+        matches!(hello, DaemonMsg::ServerHello { .. }),
+        "expected ServerHello, got {hello:?}"
+    );
+    let exit = wait_for_daemon_terminal_exited(&mut daemon_rx).await;
+    assert_eq!(exit.code, Some(7));
+
+    registry.drop_entry(&terminal_id).await;
+    drop(client_tx);
+    timeout(Duration::from_secs(2), pump)
+        .await
+        .expect("pump join timeout")
+        .expect("pump join")
+        .expect("pump result");
+    let _ = supervisor.kill().await;
+    let _ = supervisor.wait().await;
+}
+
+fn spawn_client_pump(
+    entry: Arc<RendererEntry>,
+) -> (
+    mpsc::Sender<ClientMsg>,
+    mpsc::Receiver<DaemonMsg>,
+    JoinHandle<anyhow::Result<()>>,
+) {
+    let (client_tx, client_rx) = mpsc::channel::<ClientMsg>(16);
+    let (daemon_tx, daemon_rx) = mpsc::channel::<DaemonMsg>(64);
+    let pump = tokio::spawn(async move {
+        run_client_pump(
+            client_rx,
+            daemon_tx,
+            ClientPumpContext {
+                event_rx: entry.handle.event_tx.subscribe(),
+                event_tx: entry.handle.event_tx.clone(),
+                render_plane: entry.handle.render_plane.clone(),
+                exit: entry.exit.clone(),
+                supervisor_tx: entry.handle.supervisor_tx.clone(),
+                owner_registry: entry.handle.owner_registry.clone(),
+                session_id: entry.handle.session_id,
+                terminal_id: entry.terminal_id.clone(),
+            },
+        )
+        .await
+    });
+    (client_tx, daemon_rx, pump)
+}
+
+async fn send_client_hello(client_tx: &mpsc::Sender<ClientMsg>, terminal_id: &str) {
+    client_tx
+        .send(ClientMsg::ClientHello {
+            protocol_version: PROTOCOL_VERSION,
+            terminal_id: terminal_id.to_string(),
+            client_id: Uuid::new_v4(),
+            desired_size: PtySize {
+                cols: 80,
+                rows: 24,
+                pixel_width: None,
+                pixel_height: None,
+            },
+            cell_size: None,
+            initial_scrollback: InitialScrollback::None,
+            resume_from: None,
+            role_hint: None,
+            capabilities: ClientCapabilities {
+                render_encodings: vec![RenderEncoding::Vt],
+                supports_scrollback: false,
+                supports_sixel: false,
+                supports_images: false,
+                kernel_originated_input: false,
+            },
+        })
+        .await
+        .expect("send client hello");
 }
 
 async fn wait_for_hello_patch(rx: &mut tokio::sync::broadcast::Receiver<DaemonMsg>) {
@@ -189,6 +285,28 @@ async fn wait_for_terminal_exited(rx: &mut tokio::sync::broadcast::Receiver<Daem
             .expect("event channel closed");
         if matches!(msg, DaemonMsg::TerminalExited { .. }) {
             return;
+        }
+    }
+}
+
+struct ExitFrame {
+    code: Option<i32>,
+}
+
+async fn wait_for_daemon_terminal_exited(rx: &mut mpsc::Receiver<DaemonMsg>) -> ExitFrame {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "timed out waiting for daemon TerminalExited"
+        );
+        let msg = timeout(remaining, rx.recv())
+            .await
+            .expect("daemon terminal exited timeout")
+            .expect("daemon channel closed");
+        if let DaemonMsg::TerminalExited { code, .. } = msg {
+            return ExitFrame { code };
         }
     }
 }

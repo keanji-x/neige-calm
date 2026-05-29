@@ -41,11 +41,9 @@ pub fn spawn_supervisor_control_writer(
                         match read_frame::<ControlReply, _>(&mut control_conn).await {
                             Ok(ControlReply::WriteAck { write_seq }) if write_seq == expected => {
                                 if let Some(ack) = ack {
-                                    let _ = ack
-                                        .send(DaemonMsg::InputAck {
-                                            input_seq: write_seq,
-                                        })
-                                        .await;
+                                    let _ = ack.send(DaemonMsg::InputAck {
+                                        input_seq: write_seq,
+                                    });
                                 }
                             }
                             Ok(other) => {
