@@ -24,13 +24,12 @@ const DAEMON_READY_MAX_BYTES: usize = 64;
 
 #[derive(Clone)]
 pub struct ProcRegistry {
-    inner: Arc<Mutex<HashMap<String, Arc<ProcEntry>>>>,
+    inner: Arc<StdMutex<HashMap<String, Arc<ProcEntry>>>>,
     reap_children: bool,
 }
 
 struct ProcEntry {
     pid: u32,
-    pgid: i32,
     io_mode: IoMode,
     runtime: ProcRuntime,
     byte_ring: StdMutex<ByteRing>,
@@ -148,14 +147,14 @@ pub struct EnsureProcFailure {
 impl ProcRegistry {
     pub fn new() -> Self {
         Self {
-            inner: Arc::new(Mutex::new(HashMap::new())),
+            inner: Arc::new(StdMutex::new(HashMap::new())),
             reap_children: true,
         }
     }
 
     fn without_reaper() -> Self {
         Self {
-            inner: Arc::new(Mutex::new(HashMap::new())),
+            inner: Arc::new(StdMutex::new(HashMap::new())),
             reap_children: false,
         }
     }
@@ -163,19 +162,30 @@ impl ProcRegistry {
     pub async fn live_pids(&self) -> Vec<u32> {
         self.inner
             .lock()
-            .await
-            .values()
-            .map(|entry| entry.pid)
-            .collect()
+            .map(|entries| entries.values().map(|entry| entry.pid).collect())
+            .unwrap_or_default()
     }
 
     pub async fn terminate_all_process_groups(&self) {
-        let pgids: Vec<i32> = self
+        self.terminate_all_process_groups_sync();
+    }
+
+    pub fn terminate_all_process_groups_sync(&self) {
+        let entries: Vec<Arc<ProcEntry>> = self
             .inner
             .lock()
-            .await
-            .values()
-            .map(|entry| entry.pgid)
+            .map(|entries| entries.values().cloned().collect())
+            .unwrap_or_default();
+        let pgids: Vec<i32> = entries
+            .iter()
+            .filter(|entry| {
+                entry
+                    .exit
+                    .lock()
+                    .map(|exit| exit.is_none())
+                    .unwrap_or(false)
+            })
+            .filter_map(|entry| current_process_group(entry).ok())
             .collect();
         for pgid in pgids {
             #[cfg(unix)]
@@ -340,7 +350,10 @@ async fn lookup_proc(
     registry
         .inner
         .lock()
-        .await
+        .map_err(|_| ControlReply::Error {
+            kind: ControlErrorKind::Internal,
+            message: "proc registry mutex poisoned".into(),
+        })?
         .get(proc_id)
         .cloned()
         .ok_or_else(|| ControlReply::Error {
@@ -373,6 +386,7 @@ async fn handle_attach(
         return Ok(());
     }
 
+    let mut rx = entry.broadcast_tx.subscribe();
     let mut requested_gap = None;
     let attached = {
         let ring = entry
@@ -420,7 +434,7 @@ async fn handle_attach(
             }
         }
     };
-    let mut rx = entry.broadcast_tx.subscribe();
+    let snapshot_tail = attached.cursor_tail;
     write_frame(&mut stream, &ControlReply::AttachOk(attached)).await?;
     if let Some((earliest_cursor, requested_cursor)) = requested_gap {
         write_frame(
@@ -433,7 +447,9 @@ async fn handle_attach(
         .await?;
     }
     let sticky_exit = entry.exit.lock().ok().and_then(|exit| exit.clone());
-    if let Some(exit) = sticky_exit {
+    if let Some(exit) = sticky_exit
+        && exit.cursor <= snapshot_tail
+    {
         write_frame(
             &mut stream,
             &ControlReply::Exited {
@@ -449,7 +465,18 @@ async fn handle_attach(
 
     loop {
         match rx.recv().await {
-            Ok(DataFrame::Output { cursor, bytes }) => {
+            Ok(DataFrame::Output { cursor, mut bytes }) => {
+                let frame_tail = cursor.saturating_add(bytes.len() as u64);
+                if frame_tail <= snapshot_tail {
+                    continue;
+                }
+                let cursor = if cursor < snapshot_tail {
+                    let skip = (snapshot_tail - cursor) as usize;
+                    bytes = bytes.split_off(skip);
+                    snapshot_tail
+                } else {
+                    cursor
+                };
                 write_frame(
                     &mut stream,
                     &ControlReply::Output {
@@ -606,7 +633,8 @@ async fn handle_signal(
         ProcSignal::Kill => libc::SIGKILL,
         ProcSignal::Hup => libc::SIGHUP,
     };
-    let rc = unsafe { libc::kill(-(entry.pgid as libc::pid_t), sig) };
+    let pgid = current_process_group(&entry)?;
+    let rc = unsafe { libc::kill(-(pgid as libc::pid_t), sig) };
     if rc == 0 {
         write_frame(stream, &ControlReply::SignalOk).await?;
     } else {
@@ -617,7 +645,7 @@ async fn handle_signal(
                 message: format!(
                     "signal proc {} pgid {}: {}",
                     request.proc_id,
-                    entry.pgid,
+                    pgid,
                     io::Error::last_os_error()
                 ),
             },
@@ -625,6 +653,20 @@ async fn handle_signal(
         .await?;
     }
     Ok(())
+}
+
+fn current_process_group(entry: &ProcEntry) -> anyhow::Result<i32> {
+    match &entry.runtime {
+        ProcRuntime::Pipe { .. } => Ok(entry.pid as i32),
+        ProcRuntime::Pty { master, .. } => {
+            let master = master
+                .lock()
+                .map_err(|_| anyhow::anyhow!("pty master mutex poisoned"))?;
+            Ok(master
+                .process_group_leader()
+                .unwrap_or(entry.pid as libc::pid_t))
+        }
+    }
 }
 
 async fn handle_cleanup(
@@ -650,7 +692,11 @@ async fn handle_cleanup(
         .await?;
         return Ok(());
     }
-    registry.inner.lock().await.remove(&request.proc_id);
+    registry
+        .inner
+        .lock()
+        .map(|mut entries| entries.remove(&request.proc_id))
+        .ok();
     write_frame(stream, &ControlReply::CleanupOk).await?;
     Ok(())
 }
@@ -769,12 +815,14 @@ async fn try_spawn_pipe(
     let child = Arc::new(Mutex::new(child));
     let (broadcast_tx, _) = broadcast::channel(2048);
     {
-        let mut entries = registry.inner.lock().await;
+        let mut entries = registry.inner.lock().map_err(|_| EnsureProcFailure {
+            error: "proc registry mutex poisoned".into(),
+            child_already_reaped: false,
+        })?;
         entries.insert(
             request.proc_id.clone(),
             Arc::new(ProcEntry {
                 pid,
-                pgid: pid as i32,
                 io_mode: IoMode::Pipe,
                 runtime: ProcRuntime::Pipe {
                     child: child.clone(),
@@ -846,10 +894,6 @@ async fn try_spawn_pty(
     drop(pair.slave);
 
     let pid = child.process_id().unwrap_or_default();
-    let pgid = pair
-        .master
-        .process_group_leader()
-        .unwrap_or(pid as libc::pid_t) as i32;
     let master = Arc::new(StdMutex::new(pair.master));
     let writer = Arc::new(StdMutex::new(writer));
     let (broadcast_tx, _) = broadcast::channel(2048);
@@ -860,7 +904,6 @@ async fn try_spawn_pty(
     };
     let entry = Arc::new(ProcEntry {
         pid,
-        pgid,
         io_mode: IoMode::Pty { cols, rows },
         runtime: ProcRuntime::Pty {
             master: master.clone(),
@@ -875,7 +918,10 @@ async fn try_spawn_pty(
     registry
         .inner
         .lock()
-        .await
+        .map_err(|_| EnsureProcFailure {
+            error: "proc registry mutex poisoned".into(),
+            child_already_reaped: false,
+        })?
         .insert(request.proc_id.clone(), entry.clone());
     spawn_pty_reader_task(request.proc_id.clone(), entry.clone(), reader);
     spawn_pty_waiter(request.proc_id.clone(), entry, child);
@@ -992,7 +1038,11 @@ async fn await_ready_phase(spawned: Spawned) -> Result<u32, EnsureProcFailure> {
     };
     let readiness = await_readiness(&proc_id, child.clone(), ready_reader, ready_timeout).await;
     if let Err(err) = readiness {
-        registry.inner.lock().await.remove(&proc_id);
+        registry
+            .inner
+            .lock()
+            .map(|mut entries| entries.remove(&proc_id))
+            .ok();
         if !err.child_already_reaped {
             tokio::spawn(async move {
                 let _ = child.lock().await.wait().await;
@@ -1009,8 +1059,8 @@ async fn await_ready_phase(spawned: Spawned) -> Result<u32, EnsureProcFailure> {
             registry_for_wait
                 .inner
                 .lock()
-                .await
-                .remove(&proc_id_for_wait);
+                .map(|mut entries| entries.remove(&proc_id_for_wait))
+                .ok();
         });
     }
     Ok(pid)
@@ -1018,14 +1068,18 @@ async fn await_ready_phase(spawned: Spawned) -> Result<u32, EnsureProcFailure> {
 
 async fn existing_live_pid(registry: &ProcRegistry, proc_id: &str) -> Option<u32> {
     let entry = {
-        let entries = registry.inner.lock().await;
+        let entries = registry.inner.lock().ok()?;
         entries.get(proc_id).cloned()
     }?;
     match &entry.runtime {
         ProcRuntime::Pipe { child } => match child.lock().await.try_wait() {
             Ok(None) => Some(entry.pid),
             Ok(Some(_)) | Err(_) => {
-                registry.inner.lock().await.remove(proc_id);
+                registry
+                    .inner
+                    .lock()
+                    .map(|mut entries| entries.remove(proc_id))
+                    .ok();
                 None
             }
         },
@@ -1300,6 +1354,7 @@ pub mod test_support {
     pub struct InProcessProcSupervisor {
         sock: PathBuf,
         _temp: TempDir,
+        registry: ProcRegistry,
         shutdown: Option<oneshot::Sender<()>>,
         task: tokio::task::JoinHandle<()>,
     }
@@ -1309,6 +1364,7 @@ pub mod test_support {
             let temp = tempfile::tempdir()?;
             let sock = temp.path().join("proc-supervisor.sock");
             let registry = ProcRegistry::without_reaper();
+            let serve_registry = registry.clone();
             let (shutdown_tx, shutdown_rx) = oneshot::channel();
             // Bind the listener synchronously here so the socket is
             // reachable the moment start() returns — no listen-race
@@ -1317,11 +1373,13 @@ pub mod test_support {
             let listener = bind_control_listener(&sock)?;
             let serve_sock = sock.clone();
             let task = tokio::spawn(async move {
-                let _ = serve_with_listener(listener, serve_sock, registry, shutdown_rx).await;
+                let _ =
+                    serve_with_listener(listener, serve_sock, serve_registry, shutdown_rx).await;
             });
             Ok(Self {
                 sock,
                 _temp: temp,
+                registry,
                 shutdown: Some(shutdown_tx),
                 task,
             })
@@ -1334,6 +1392,7 @@ pub mod test_support {
 
     impl Drop for InProcessProcSupervisor {
         fn drop(&mut self) {
+            self.registry.terminate_all_process_groups_sync();
             if let Some(shutdown) = self.shutdown.take() {
                 let _ = shutdown.send(());
             }
