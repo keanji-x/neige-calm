@@ -159,12 +159,7 @@ services:
     command:
       - sh
       - -c
-      - |
-        mkdir -p "$${CALM_DATA_DIR:-/var/lib/neige-calm/data}"
-        SOCK="$${CALM_PROC_SUPERVISOR_SOCK:-$${CALM_DATA_DIR:-/var/lib/neige-calm/data}/proc-supervisor.sock}"
-        calm-proc-supervisor --control-sock "$$SOCK" &
-        until [ -S "$$SOCK" ]; do sleep 0.1; done
-        exec calm-server
+      - 'set -e; DATA="$${CALM_DATA_DIR:-/var/lib/neige-calm/data}"; mkdir -p "$$DATA"; SOCK="$${CALM_PROC_SUPERVISOR_SOCK:-$$DATA/proc-supervisor.sock}"; rm -f "$$SOCK"; calm-proc-supervisor --control-sock "$$SOCK" & i=0; until [ -S "$$SOCK" ]; do i=$$((i+1)); if [ "$$i" -gt 100 ]; then echo "proc-supervisor sock $$SOCK never appeared" >&2; exit 1; fi; sleep 0.1; done; exec calm-server'
     restart: unless-stopped
 
   web:
