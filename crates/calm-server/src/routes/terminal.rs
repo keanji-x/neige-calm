@@ -141,7 +141,6 @@ pub(crate) async fn spawn_daemon_with_parts(
             ready_timeout_ms: crate::proc_supervisor::DEFAULT_READY_TIMEOUT.as_millis() as u64,
         },
         |pid| {
-            let repo = repo;
             let term_id = term.id.clone();
             let sock_str = sock_str.clone();
             async move {

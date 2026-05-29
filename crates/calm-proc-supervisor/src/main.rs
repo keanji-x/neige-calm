@@ -2,7 +2,6 @@ use anyhow::Context;
 use calm_proc_supervisor::{ProcRegistry, serve_control_socket};
 use clap::Parser;
 use std::path::PathBuf;
-use std::time::Duration;
 use tokio::sync::oneshot;
 
 #[derive(Debug, Parser)]
@@ -35,8 +34,13 @@ async fn main() -> anyhow::Result<()> {
 
     wait_for_shutdown_signal().await;
     let _ = shutdown_tx.send(());
+    // Best-effort group-SIGTERM every live proc — enforces the #388
+    // "supervisor death drops procs" Non-goal explicitly. Per-proc reap
+    // happens via the registry's spawned wait tasks, which the runtime
+    // join below drains; we don't hold the shutdown for a fixed grace
+    // here, the daemons either honor SIGTERM or get SIGKILLed when this
+    // process exits (kernel reaps via init's reparenting).
     registry.terminate_all_process_groups().await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
     serve_task.await.context("join control socket task")??;
     Ok(())
 }

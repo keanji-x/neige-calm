@@ -174,6 +174,11 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
     Ok(())
 }
 
+/// Single-shot variant: combines try_spawn + await_ready_phase. Kept
+/// out of the connection-level path (which streams Spawned+Ready/Failed
+/// separately so the client can persist pid+handle between frames) but
+/// exposed for tests that don't care about the two-phase shape.
+#[doc(hidden)]
 pub async fn ensure_proc_impl(
     registry: ProcRegistry,
     request: EnsureProcRequest,
@@ -216,14 +221,22 @@ async fn try_spawn(
         child_already_reaped: false,
     })?;
 
-    // `request.cwd` is informational and passed to the daemon via the
-    // `--cwd` argv flag (used by the daemon for its PTY child's chdir).
-    // The daemon process itself inherits the supervisor's cwd, matching
-    // the pre-#388 behaviour of `spawn_daemon_with_parts` which never
-    // called `cmd.current_dir(...)`. Applying it here breaks tests that
-    // request a cwd that does not yet exist on disk (the daemon would
-    // create / use it only on behalf of its child).
-    let _ = &request.cwd;
+    // `EnsureProcRequest.cwd` is INTENTIONALLY NOT APPLIED here.
+    //
+    // Pre-#388 `spawn_daemon_with_parts` never set the daemon process's
+    // cwd: the desired cwd is only passed via the `--cwd` argv flag for
+    // the daemon to apply to its PTY child. Applying it as the daemon
+    // process's own cwd breaks callers that name a directory the daemon
+    // will create (or that doesn't need to exist for the supervisor /
+    // daemon themselves) — e.g. `wave_create_sync_daemon`'s
+    // `/tmp/issue-250-pr2-test`.
+    //
+    // The field is retained on the wire so future phases can choose to
+    // honor it for the PTY child's chdir separately from the supervisor
+    // /daemon process cwd; if you find yourself wanting to `cmd
+    // .current_dir(&request.cwd)` here, reconsider — you want the
+    // `--cwd` argv flag the kernel already builds.
+    let _intentionally_unused_at_supervisor = &request.cwd;
     let mut cmd = Command::new(&request.program);
     cmd.args(&args)
         .envs(request.envs)

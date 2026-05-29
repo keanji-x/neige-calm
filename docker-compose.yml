@@ -117,6 +117,12 @@ services:
       # narrow #236 sync-spawn fix doesn't surface that because it only
       # awaits the daemon socket, not the codex MCP handshake.
       - ${CALM_MCP_SHIM_BIN:-./target/release/neige-mcp-stdio-shim}:/usr/local/bin/neige-mcp-stdio-shim:ro
+      # Issue #388 Phase 1 — the proc-supervisor that calm-server now talks
+      # to over a control UDS for every `calm-session-daemon` spawn.
+      # neige-app peer-supervises it; calm-server's first terminal spawn
+      # fails with `connect calm-proc-supervisor … No such file or directory`
+      # if the binary isn't reachable inside the container.
+      - ${CALM_PROC_SUPERVISOR_BIN:-./target/release/calm-proc-supervisor}:/usr/local/bin/calm-proc-supervisor:ro
       # Issue #339 PR B — the `neige` CLI, invoked by spec/worker agents
       # from their terminals to read current-wave file views over the
       # per-card MCP socket. Mounting it at /usr/local/bin keeps it on

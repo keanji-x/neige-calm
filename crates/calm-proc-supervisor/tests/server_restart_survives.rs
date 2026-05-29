@@ -7,8 +7,35 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::process::Command;
 
+/// What this test proves and what it doesn't:
+///
+/// **Proves** — the proc-supervisor's load-bearing OS-level invariants:
+///   1. After a client (i.e. simulated calm-server) drops the UDS
+///      connection, the daemon process the supervisor spawned remains
+///      alive. This is the OS-level shape of "calm-server restart leaves
+///      daemons alive": from the supervisor's POV the restart looks
+///      exactly like a connection close followed by a fresh connection.
+///   2. EnsureProc is idempotent on `proc_id` — a reconnecting client
+///      gets the existing pid back, not a duplicate fork. This is the
+///      original primitive that boot-time reattach in calm-server will
+///      rely on.
+///   3. When the supervisor itself receives SIGTERM it tears down every
+///      live proc (the explicit "supervisor death drops procs" Non-goal
+///      from #388).
+///
+/// **Does NOT prove** — these belong to a fuller stack-level test that
+/// would spawn an actual `neige-app` + `calm-server`:
+///   * the daemon's `PR_SET_PDEATHSIG` is correctly anchored to the
+///     supervisor and not calm-server (it is, by construction — the
+///     supervisor is now the spawn-parent — but this test doesn't put
+///     a real `calm-session-daemon` in the loop to confirm);
+///   * neige-app's peer-supervision ordering (calm-proc-supervisor up
+///     before calm-server) and `/admin/restart` scope.
+///
+/// A follow-up PR should add a `neige_app_restart_calm_server_leaves_daemon_alive`
+/// E2E that walks the full stack.
 #[tokio::test]
-async fn server_restart_survives_and_reuses_existing_proc() {
+async fn proc_outlives_client_disconnect_and_dies_with_supervisor() {
     let temp = tempfile::tempdir().expect("tempdir");
     let control_sock = temp.path().join("proc-supervisor.sock");
     let mut supervisor = Command::new(locate_bin("calm-proc-supervisor"))
