@@ -69,6 +69,8 @@ pub(crate) struct VerdictSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ReleaseHistoryEntry {
+    #[serde(default = "default_history_kind")]
+    pub kind: String,
     pub release_id: String,
     pub timestamp: String,
     pub verdict_kind: String,
@@ -134,6 +136,14 @@ impl ApplyError {
             message: message.into(),
         }
     }
+
+    fn invalid_rollback_target(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            code: "invalid_rollback_target",
+            message: message.into(),
+        }
+    }
 }
 
 impl From<anyhow::Error> for ApplyError {
@@ -155,18 +165,18 @@ pub(crate) async fn apply_upgrade(
         url: source.url.clone(),
         ref_name: source.branch.clone(),
     };
-    let installed_before = read_installed_state(&cfg.calm_data_dir_resolved())?;
+    let installed_before = read_installed_state_blocking(cfg).await?;
     let installed_before_id = installed_before
         .as_ref()
         .map(|state| state.release_id.clone());
 
-    let package_dir = resolve_source_package(cfg, &source)?;
+    let package_dir = resolve_source_package_blocking(cfg, &source, !req.dry_run).await?;
+    let source_manifest = read_v2_manifest_blocking(&package_dir).await?;
+    let verdict = preflight::run_preflight_v2(installed_before.as_ref(), &source_manifest);
+    let summary = VerdictSummary::from(&verdict);
     if req.dry_run {
-        let manifest = read_v2_manifest(&package_dir)?;
-        let verdict = preflight::run_preflight_v2(installed_before.as_ref(), &manifest);
-        let summary = VerdictSummary::from(&verdict);
         return Ok(response_from_parts(
-            manifest.release_id.clone(),
+            source_manifest.release_id.clone(),
             summary,
             UpgradeResult::DryRun,
             started,
@@ -182,10 +192,30 @@ pub(crate) async fn apply_upgrade(
             None,
         ));
     }
+    if matches!(verdict, Verdict::Noop) {
+        let response = response_from_parts(
+            source_manifest.release_id.clone(),
+            summary,
+            UpgradeResult::Committed,
+            started,
+            None,
+            source_summary,
+            installed_before_id,
+            installed_before
+                .as_ref()
+                .map(|state| state.release_id.clone())
+                .unwrap_or_else(|| source_manifest.release_id.clone()),
+            false,
+            Vec::new(),
+            None,
+        );
+        append_release_history_best_effort(cfg, &response.release_history_entry).await;
+        return Ok(response);
+    }
 
-    let mode = upgrade::infer_package_mode(&package_dir)?;
-    let stage = upgrade::stage_upgrade(cfg, &package_dir, mode)?;
-    let manifest = read_v2_manifest(&stage.stage_dir)?;
+    let mode = infer_package_mode_blocking(&package_dir).await?;
+    let stage = stage_upgrade_blocking(cfg, &package_dir, mode).await?;
+    let manifest = read_v2_manifest_blocking(&stage.stage_dir).await?;
     let verdict = stage
         .preflight
         .verdict
@@ -194,26 +224,7 @@ pub(crate) async fn apply_upgrade(
     let summary = VerdictSummary::from(&verdict);
 
     match &verdict {
-        Verdict::Noop => {
-            let response = response_from_parts(
-                manifest.release_id.clone(),
-                summary,
-                UpgradeResult::Committed,
-                started,
-                None,
-                source_summary,
-                installed_before_id,
-                installed_before
-                    .as_ref()
-                    .map(|state| state.release_id.clone())
-                    .unwrap_or_else(|| manifest.release_id.clone()),
-                false,
-                Vec::new(),
-                None,
-            );
-            append_release_history(cfg, &response.release_history_entry);
-            Ok(response)
-        }
+        Verdict::Noop => unreachable!("noop is returned before staging"),
         Verdict::Preserving {
             requires_db_backup, ..
         } => {
@@ -244,7 +255,7 @@ pub(crate) async fn apply_upgrade(
                     Vec::new(),
                     None,
                 );
-                append_release_history(cfg, &response.release_history_entry);
+                append_release_history_best_effort(cfg, &response.release_history_entry).await;
                 return Ok(response);
             }
             apply_breaking(
@@ -279,7 +290,9 @@ async fn apply_preserving(
     } else {
         None
     };
-    let plan = swap_symlinks_for_verdict(cfg, &stage_dir(cfg, &manifest.release_id), verdict)?;
+    let plan =
+        swap_symlinks_for_verdict_blocking(cfg, &stage_dir(cfg, &manifest.release_id), verdict)
+            .await?;
     let mut restart_needed = false;
     let mut frontend_refresh = false;
     if let Verdict::Preserving { units_changed, .. } = verdict {
@@ -300,7 +313,7 @@ async fn apply_preserving(
             HealthcheckOutcome::Healthy => {}
             outcome => {
                 let message = outcome.message();
-                rollback_symlinks(&plan)?;
+                rollback_symlinks_blocking(&plan).await?;
                 if let Some(backup) = &backup {
                     restore_db(cfg, supervisor, backup).await?;
                 } else {
@@ -320,17 +333,17 @@ async fn apply_preserving(
                     plan.changes,
                     backup,
                 );
-                append_release_history(cfg, &response.release_history_entry);
+                append_release_history_best_effort(cfg, &response.release_history_entry).await;
                 return Ok(response);
             }
         }
     }
 
     if frontend_refresh {
-        write_last_upgrade_id(cfg, &manifest.release_id)?;
+        write_last_upgrade_id_blocking(cfg, &manifest.release_id).await?;
     }
     let installed = InstalledState::from_manifest(manifest);
-    write_installed_state(&cfg.calm_data_dir_resolved(), &installed)?;
+    write_installed_state_blocking(cfg, &installed).await?;
     let response = response_from_parts(
         manifest.release_id.clone(),
         VerdictSummary::from(verdict),
@@ -338,13 +351,13 @@ async fn apply_preserving(
         started,
         None,
         source,
-        installed_before_id,
+        installed_before_id.clone(),
         manifest.release_id.clone(),
         false,
         plan.changes,
         backup,
     );
-    append_release_history(cfg, &response.release_history_entry);
+    append_release_history_best_effort(cfg, &response.release_history_entry).await;
     Ok(response)
 }
 
@@ -365,34 +378,98 @@ async fn apply_breaking(
     } else {
         None
     };
-    let plan = swap_all_symlinks(cfg, &stage_dir(cfg, &manifest.release_id))?;
-    write_installed_state(
-        &cfg.calm_data_dir_resolved(),
-        &InstalledState::from_manifest(manifest),
-    )?;
-    if units_changed.contains(&UnitName::CalmProcSupervisor) {
-        proc_supervisor.stop_and_wait().await?;
-    }
+    let plan = swap_all_symlinks_blocking(cfg, &stage_dir(cfg, &manifest.release_id)).await?;
     let response = response_from_parts(
         manifest.release_id.clone(),
         VerdictSummary::from(verdict),
         UpgradeResult::Committed,
         started,
         None,
-        source,
-        installed_before_id,
+        source.clone(),
+        installed_before_id.clone(),
         manifest.release_id.clone(),
         true,
-        plan.changes,
-        backup,
+        plan.changes.clone(),
+        backup.clone(),
     );
-    append_release_history(cfg, &response.release_history_entry);
+    let post_swap_result: anyhow::Result<()> = async {
+        write_installed_state_blocking(cfg, &InstalledState::from_manifest(manifest)).await?;
+        if units_changed.contains(&UnitName::CalmProcSupervisor) {
+            proc_supervisor.stop_and_wait().await?;
+        }
+        append_release_history_checked(cfg, &response.release_history_entry).await?;
+        Ok(())
+    }
+    .await;
+    if let Err(err) = post_swap_result {
+        let message = err.to_string();
+        let mut rollback_error = None;
+        if let Err(err) = rollback_symlinks_blocking(&plan).await {
+            rollback_error = Some(format!("rollback symlinks failed: {err:#}"));
+        } else if let Err(err) = write_installed_from_current_server_blocking(cfg).await {
+            rollback_error = Some(format!("restore installed state failed: {err:#}"));
+        }
+        if let Some(backup) = &backup
+            && let Err(err) = restore_db(cfg, supervisor, backup).await
+        {
+            rollback_error = Some(match rollback_error {
+                Some(existing) => format!("{existing}; restore DB failed: {err:#}"),
+                None => format!("restore DB failed: {err:#}"),
+            });
+        }
+        if units_changed.contains(&UnitName::CalmProcSupervisor) {
+            proc_supervisor.resume().await;
+            let _ = proc_supervisor.wait_for_spawn(Duration::from_secs(5)).await;
+        }
+        let error = rollback_error
+            .map(|rollback| format!("{message}; {rollback}"))
+            .unwrap_or(message);
+        let rolled_back = response_from_parts(
+            manifest.release_id.clone(),
+            VerdictSummary::from(verdict),
+            UpgradeResult::RolledBack,
+            started,
+            Some(error.clone()),
+            source,
+            installed_before_id.clone(),
+            installed_before_id.unwrap_or_default(),
+            false,
+            plan.changes.clone(),
+            backup.clone(),
+        );
+        append_release_history_best_effort(cfg, &rolled_back.release_history_entry).await;
+        return Err(ApplyError::internal(error));
+    }
     Ok(response)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct SymlinkSwapPlan {
     changes: Vec<SymlinkPlanChange>,
+}
+
+async fn swap_symlinks_for_verdict_blocking(
+    cfg: &AppConfig,
+    stage_dir: &Path,
+    verdict: &Verdict,
+) -> anyhow::Result<SymlinkSwapPlan> {
+    let cfg = cfg.clone();
+    let stage_dir = stage_dir.to_path_buf();
+    let verdict = verdict.clone();
+    tokio::task::spawn_blocking(move || swap_symlinks_for_verdict(&cfg, &stage_dir, &verdict))
+        .await
+        .context("swap symlinks task panicked")?
+}
+
+async fn swap_all_symlinks_blocking(
+    cfg: &AppConfig,
+    stage_dir: &Path,
+) -> anyhow::Result<SymlinkSwapPlan> {
+    let cfg = cfg.clone();
+    let stage_dir = stage_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || swap_all_symlinks(&cfg, &stage_dir))
+        .await
+        .context("swap all symlinks task panicked")?
 }
 
 fn swap_symlinks_for_verdict(
@@ -469,6 +546,13 @@ fn rollback_symlinks(plan: &SymlinkSwapPlan) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn rollback_symlinks_blocking(plan: &SymlinkSwapPlan) -> anyhow::Result<()> {
+    let plan = plan.clone();
+    tokio::task::spawn_blocking(move || rollback_symlinks(&plan))
+        .await
+        .context("rollback symlinks task panicked")?
+}
+
 fn roles_for_units(units: &[UnitName]) -> anyhow::Result<Vec<ReleaseRole>> {
     let mut roles = Vec::new();
     for unit in units {
@@ -536,9 +620,10 @@ async fn backup_db(
         .join("backups")
         .join(release_id)
         .join("calm.db");
-    atomic_copy_file(&db_path, &backup_path)?;
+    let backup_result = backup_sqlite_files_blocking(&db_path, &backup_path).await;
     supervisor.resume().await;
     supervisor.wait_for_spawn(Duration::from_secs(5)).await?;
+    backup_result?;
     Ok(backup_path)
 }
 
@@ -552,10 +637,70 @@ async fn restore_db(
     })?;
     let db_path = upgrade::parse_sqlite_file_url(db_url)?;
     supervisor.stop_and_wait().await?;
-    atomic_copy_file(backup_path, &db_path)?;
+    let restore_result = restore_sqlite_files_blocking(backup_path, &db_path).await;
     supervisor.resume().await;
     supervisor.wait_for_spawn(Duration::from_secs(5)).await?;
+    restore_result?;
     Ok(())
+}
+
+async fn backup_sqlite_files_blocking(db_path: &Path, backup_path: &Path) -> anyhow::Result<()> {
+    let db_path = db_path.to_path_buf();
+    let backup_path = backup_path.to_path_buf();
+    tokio::task::spawn_blocking(move || backup_sqlite_files_sync(&db_path, &backup_path))
+        .await
+        .context("backup DB task panicked")?
+}
+
+async fn restore_sqlite_files_blocking(backup_path: &Path, db_path: &Path) -> anyhow::Result<()> {
+    let backup_path = backup_path.to_path_buf();
+    let db_path = db_path.to_path_buf();
+    tokio::task::spawn_blocking(move || restore_sqlite_files_sync(&backup_path, &db_path))
+        .await
+        .context("restore DB task panicked")?
+}
+
+fn backup_sqlite_files_sync(db_path: &Path, backup_path: &Path) -> anyhow::Result<()> {
+    atomic_copy_file(db_path, backup_path)?;
+    for suffix in ["wal", "shm"] {
+        let sidecar = sqlite_sidecar_path(db_path, suffix);
+        if sidecar.exists() {
+            atomic_copy_file(&sidecar, &sqlite_sidecar_path(backup_path, suffix))?;
+        }
+    }
+    Ok(())
+}
+
+fn restore_sqlite_files_sync(backup_path: &Path, db_path: &Path) -> anyhow::Result<()> {
+    if !backup_path.is_file() {
+        return Err(anyhow!(
+            "SQLite backup {} does not exist",
+            backup_path.display()
+        ));
+    }
+    for suffix in ["wal", "shm"] {
+        remove_file_if_exists(&sqlite_sidecar_path(db_path, suffix))?;
+    }
+    atomic_copy_file(backup_path, db_path)?;
+    for suffix in ["wal", "shm"] {
+        let backup_sidecar = sqlite_sidecar_path(backup_path, suffix);
+        if backup_sidecar.exists() {
+            atomic_copy_file(&backup_sidecar, &sqlite_sidecar_path(db_path, suffix))?;
+        }
+    }
+    Ok(())
+}
+
+fn sqlite_sidecar_path(path: &Path, suffix: &str) -> PathBuf {
+    PathBuf::from(format!("{}-{suffix}", path.display()))
+}
+
+fn remove_file_if_exists(path: &Path) -> anyhow::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("remove {}", path.display())),
+    }
 }
 
 fn atomic_copy_file(src: &Path, dst: &Path) -> anyhow::Result<()> {
@@ -696,6 +841,13 @@ fn string_field(key: &str, value: &serde_json::Value) -> Result<String, ApplyErr
         .ok_or_else(|| ApplyError::bad_request(format!("source.{key} must be a string")))
 }
 
+async fn read_v2_manifest_blocking(stage_dir: &Path) -> Result<ReleaseManifestV2, ApplyError> {
+    let stage_dir = stage_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || read_v2_manifest(&stage_dir))
+        .await
+        .map_err(|err| ApplyError::internal(format!("read manifest task panicked: {err}")))?
+}
+
 fn read_v2_manifest(stage_dir: &Path) -> Result<ReleaseManifestV2, ApplyError> {
     match upgrade::read_versioned_manifest(stage_dir)? {
         VersionedReleaseManifest::V2(manifest) => Ok(manifest),
@@ -705,14 +857,56 @@ fn read_v2_manifest(stage_dir: &Path) -> Result<ReleaseManifestV2, ApplyError> {
     }
 }
 
-fn resolve_source_package(cfg: &AppConfig, source: &SourceConfig) -> anyhow::Result<PathBuf> {
+async fn infer_package_mode_blocking(
+    package_dir: &Path,
+) -> anyhow::Result<preflight::PreflightMode> {
+    let package_dir = package_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || upgrade::infer_package_mode(&package_dir))
+        .await
+        .context("infer package mode task panicked")?
+}
+
+async fn stage_upgrade_blocking(
+    cfg: &AppConfig,
+    package_dir: &Path,
+    mode: preflight::PreflightMode,
+) -> anyhow::Result<upgrade::UpgradeStageResult> {
+    let cfg = cfg.clone();
+    let package_dir = package_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || upgrade::stage_upgrade(&cfg, &package_dir, mode))
+        .await
+        .context("stage upgrade task panicked")?
+}
+
+async fn resolve_source_package_blocking(
+    cfg: &AppConfig,
+    source: &SourceConfig,
+    allow_build: bool,
+) -> Result<PathBuf, ApplyError> {
+    let cfg = cfg.clone();
+    let source = source.clone();
+    tokio::task::spawn_blocking(move || resolve_source_package_sync(&cfg, &source, allow_build))
+        .await
+        .map_err(|err| ApplyError::internal(format!("source resolution task panicked: {err}")))?
+}
+
+fn resolve_source_package_sync(
+    cfg: &AppConfig,
+    source: &SourceConfig,
+    allow_build: bool,
+) -> Result<PathBuf, ApplyError> {
     if let Some(url) = &source.url {
         let path = PathBuf::from(url);
         if path.join("manifest.json").is_file() {
             return Ok(path);
         }
     }
-    source::build_source_package_from_source(cfg, source, None)
+    if !allow_build {
+        return Err(ApplyError::bad_request(
+            "dry-run requires source.url to point at a local manifest package; git-source dry-run would clone/build and is not zero-write",
+        ));
+    }
+    source::build_source_package_from_source(cfg, source, None).map_err(ApplyError::from)
 }
 
 fn stage_dir(cfg: &AppConfig, release_id: &str) -> PathBuf {
@@ -784,6 +978,7 @@ fn response_from_parts(
     let duration_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
     let result_text = result_text(result).to_string();
     let entry = ReleaseHistoryEntry {
+        kind: default_history_kind(),
         release_id: release_id.clone(),
         timestamp: chrono::Utc::now().to_rfc3339(),
         verdict_kind: verdict.kind.clone(),
@@ -814,6 +1009,10 @@ fn response_from_parts(
     }
 }
 
+fn default_history_kind() -> String {
+    "apply".into()
+}
+
 fn result_text(result: UpgradeResult) -> &'static str {
     match result {
         UpgradeResult::Committed => "committed",
@@ -823,16 +1022,24 @@ fn result_text(result: UpgradeResult) -> &'static str {
     }
 }
 
-pub(crate) fn append_release_history(cfg: &AppConfig, entry: &ReleaseHistoryEntry) {
-    if let Err(err) = append_release_history_inner(cfg, entry) {
+async fn append_release_history_best_effort(cfg: &AppConfig, entry: &ReleaseHistoryEntry) {
+    if let Err(err) = append_release_history_checked(cfg, entry).await {
         tracing::error!(error = %err, "failed to append release history");
     }
 }
 
-fn append_release_history_inner(
+async fn append_release_history_checked(
     cfg: &AppConfig,
     entry: &ReleaseHistoryEntry,
 ) -> anyhow::Result<()> {
+    let cfg = cfg.clone();
+    let entry = entry.clone();
+    tokio::task::spawn_blocking(move || append_release_history_sync(&cfg, &entry))
+        .await
+        .context("append release history task panicked")?
+}
+
+fn append_release_history_sync(cfg: &AppConfig, entry: &ReleaseHistoryEntry) -> anyhow::Result<()> {
     let path = release_history_path(cfg);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
@@ -845,6 +1052,16 @@ fn append_release_history_inner(
     writeln!(file, "{}", serde_json::to_string(entry)?)?;
     file.sync_all()?;
     Ok(())
+}
+
+pub(crate) async fn read_release_history_blocking(
+    cfg: &AppConfig,
+    limit: usize,
+) -> anyhow::Result<Vec<ReleaseHistoryEntry>> {
+    let cfg = cfg.clone();
+    tokio::task::spawn_blocking(move || read_release_history(&cfg, limit))
+        .await
+        .context("read release history task panicked")?
 }
 
 pub(crate) fn read_release_history(
@@ -871,44 +1088,65 @@ pub(crate) async fn rollback_last_preserving(
     to: &str,
 ) -> Result<UpgradeResponse, ApplyError> {
     let started = Instant::now();
-    let mut history = read_release_history(cfg, usize::MAX)?;
-    let Some(last) = history.pop() else {
+    let history = read_release_history_blocking(cfg, usize::MAX).await?;
+    let Some(last) = history
+        .into_iter()
+        .rev()
+        .find(|entry| entry.result == "committed" && !is_rollback_history(entry))
+    else {
         return Err(ApplyError::bad_request("release history is empty"));
     };
-    if last.result != "committed" || last.verdict_kind != "preserving" {
-        return Err(ApplyError::bad_request(
-            "PR 2 rollback only supports the last committed preserving apply",
+    if last.verdict_kind != "preserving" {
+        return Err(ApplyError::invalid_rollback_target(
+            "rollback only supports the last committed preserving apply",
         ));
     }
     if last.installed_at_before.as_deref() != Some(to) {
-        return Err(ApplyError::bad_request(
+        return Err(ApplyError::invalid_rollback_target(
             "rollback target must be the release immediately before the last apply",
         ));
+    }
+    let installed = read_installed_state_blocking(cfg).await?;
+    let current_release_id = installed.as_ref().map(|state| state.release_id.as_str());
+    if current_release_id != Some(last.release_id.as_str()) {
+        return Err(ApplyError::invalid_rollback_target(
+            "current installed release does not match the last committed apply",
+        ));
+    }
+    if let Some(backup) = &last.db_backup
+        && !backup.is_file()
+    {
+        return Err(ApplyError {
+            status: StatusCode::CONFLICT,
+            code: "backup_missing",
+            message: format!("rollback backup {} is missing", backup.display()),
+        });
     }
     let plan = SymlinkSwapPlan {
         changes: last.symlink_changes.clone(),
     };
-    rollback_symlinks(&plan)?;
+    rollback_symlinks_blocking(&plan).await?;
     if let Some(backup) = &last.db_backup {
         restore_db(cfg, supervisor, backup).await?;
     } else if last.units_changed.contains(&UnitName::CalmServer) {
         supervisor.restart().await?;
         supervisor.wait_for_spawn(Duration::from_secs(5)).await?;
     }
-    write_installed_from_current_server(cfg)?;
-    let installed_after = read_installed_state(&cfg.calm_data_dir_resolved())?
+    write_installed_from_current_server_blocking(cfg).await?;
+    let installed_after = read_installed_state_blocking(cfg)
+        .await?
         .map(|state| state.release_id)
         .unwrap_or_else(|| to.to_string());
     let source = last.source.clone();
     let verdict = VerdictSummary {
-        kind: "preserving".into(),
+        kind: "rollback".into(),
         units_changed: last.units_changed.clone(),
         deferred: last.deferred.clone(),
         refresh_frontend: last.refresh_frontend,
         requires_db_backup: last.requires_db_backup,
         reason: None,
     };
-    let response = response_from_parts(
+    let mut response = response_from_parts(
         to.to_string(),
         verdict,
         UpgradeResult::Committed,
@@ -921,8 +1159,13 @@ pub(crate) async fn rollback_last_preserving(
         plan.changes,
         last.db_backup,
     );
-    append_release_history(cfg, &response.release_history_entry);
+    response.release_history_entry.kind = "rollback".into();
+    append_release_history_best_effort(cfg, &response.release_history_entry).await;
     Ok(response)
+}
+
+fn is_rollback_history(entry: &ReleaseHistoryEntry) -> bool {
+    entry.kind == "rollback" || entry.verdict_kind == "rollback"
 }
 
 fn write_installed_from_current_server(cfg: &AppConfig) -> anyhow::Result<()> {
@@ -938,6 +1181,31 @@ fn write_installed_from_current_server(cfg: &AppConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn write_installed_from_current_server_blocking(cfg: &AppConfig) -> anyhow::Result<()> {
+    let cfg = cfg.clone();
+    tokio::task::spawn_blocking(move || write_installed_from_current_server(&cfg))
+        .await
+        .context("write installed from current server task panicked")?
+}
+
+async fn read_installed_state_blocking(cfg: &AppConfig) -> anyhow::Result<Option<InstalledState>> {
+    let data_dir = cfg.calm_data_dir_resolved();
+    tokio::task::spawn_blocking(move || read_installed_state(&data_dir))
+        .await
+        .context("read installed state task panicked")?
+}
+
+async fn write_installed_state_blocking(
+    cfg: &AppConfig,
+    installed: &InstalledState,
+) -> anyhow::Result<()> {
+    let data_dir = cfg.calm_data_dir_resolved();
+    let installed = installed.clone();
+    tokio::task::spawn_blocking(move || write_installed_state(&data_dir, &installed))
+        .await
+        .context("write installed state task panicked")?
+}
+
 pub(crate) fn release_history_path(cfg: &AppConfig) -> PathBuf {
     cfg.calm_data_dir_resolved()
         .join("state")
@@ -950,10 +1218,78 @@ pub(crate) fn last_upgrade_id_path(cfg: &AppConfig) -> PathBuf {
         .join("last-upgrade-id")
 }
 
+pub(crate) async fn read_last_upgrade_id_blocking(
+    cfg: &AppConfig,
+) -> anyhow::Result<Option<String>> {
+    let path = last_upgrade_id_path(cfg);
+    tokio::task::spawn_blocking(move || match fs::read_to_string(&path) {
+        Ok(value) => Ok(Some(value.trim().to_string())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(anyhow::Error::from(err).context("read last upgrade id")),
+    })
+    .await
+    .context("read last upgrade id task panicked")?
+}
+
 fn write_last_upgrade_id(cfg: &AppConfig, release_id: &str) -> anyhow::Result<()> {
     let path = last_upgrade_id_path(cfg);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
     fs::write(&path, release_id).with_context(|| format!("write {}", path.display()))
+}
+
+async fn write_last_upgrade_id_blocking(cfg: &AppConfig, release_id: &str) -> anyhow::Result<()> {
+    let cfg = cfg.clone();
+    let release_id = release_id.to_string();
+    tokio::task::spawn_blocking(move || write_last_upgrade_id(&cfg, &release_id))
+        .await
+        .context("write last upgrade id task panicked")?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn sqlite_backup_restore_copies_wal_and_shm() {
+        let tmp = test_temp_dir("sqlite-backup-restore");
+        let db = tmp.join("calm.db");
+        let backup = tmp.join("backup").join("calm.db");
+        fs::write(&db, "main-v1").expect("write db");
+        fs::write(sqlite_sidecar_path(&db, "wal"), "wal-v1").expect("write wal");
+        fs::write(sqlite_sidecar_path(&db, "shm"), "shm-v1").expect("write shm");
+
+        backup_sqlite_files_sync(&db, &backup).expect("backup sqlite files");
+        fs::write(&db, "main-v2").expect("overwrite db");
+        fs::write(sqlite_sidecar_path(&db, "wal"), "wal-v2").expect("overwrite wal");
+        fs::write(sqlite_sidecar_path(&db, "shm"), "shm-v2").expect("overwrite shm");
+
+        restore_sqlite_files_sync(&backup, &db).expect("restore sqlite files");
+
+        assert_eq!(fs::read_to_string(&db).expect("read db"), "main-v1");
+        assert_eq!(
+            fs::read_to_string(sqlite_sidecar_path(&db, "wal")).expect("read wal"),
+            "wal-v1"
+        );
+        assert_eq!(
+            fs::read_to_string(sqlite_sidecar_path(&db, "shm")).expect("read shm"),
+            "shm-v1"
+        );
+    }
+
+    fn test_temp_dir(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock before Unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "neige-app-apply-{name}-{}-{nanos}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).expect("create temp dir");
+        path
+    }
 }

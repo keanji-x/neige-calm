@@ -293,6 +293,7 @@ struct AppState {
     cfg: Arc<AppConfig>,
     supervisor: Arc<Supervisor>,
     proc_supervisor: Arc<Supervisor>,
+    apply_lock: Arc<Mutex<()>>,
     admin_token: Option<Arc<str>>,
 }
 
@@ -979,6 +980,7 @@ async fn serve_system(args: SystemServeArgs) -> anyhow::Result<()> {
         cfg: cfg.clone(),
         supervisor: supervisor.clone(),
         proc_supervisor: proc_supervisor.clone(),
+        apply_lock: Arc::new(Mutex::new(())),
         admin_token,
     };
     let app = admin_router(app_state);
@@ -1088,11 +1090,22 @@ async fn restart(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
     Ok((StatusCode::ACCEPTED, Json(state.status_snapshot().await)).into_response())
 }
 
+/// Applies are serialized with `try_lock` so a concurrent request receives an
+/// immediate 409 instead of queueing behind a potentially minutes-long upgrade.
 async fn upgrade_apply(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(req): Json<apply::UpgradeRequest>,
 ) -> Result<Response, ApiError> {
+    // Applies are serialized with `try_lock` so a second request gets an
+    // immediate 409 instead of queueing behind a minutes-long upgrade.
+    let _guard = state.apply_lock.try_lock().map_err(|_| {
+        ApiError::new(
+            StatusCode::CONFLICT,
+            "apply_in_progress",
+            "another upgrade is in progress",
+        )
+    })?;
     require_bearer(&headers, state.admin_token.as_deref())?;
     let response =
         apply::apply_upgrade(&state.cfg, &state.supervisor, &state.proc_supervisor, req).await?;
@@ -1110,10 +1123,21 @@ async fn upgrade_apply(
     Ok((status, Json(response)).into_response())
 }
 
+/// Full reboot shares the upgrade serialization lock and rejects concurrent
+/// apply/rollback work immediately instead of queueing.
 async fn upgrade_full_reboot(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    // Full reboot is serialized with apply/rollback and rejects concurrent
+    // upgrade work immediately rather than queueing behind it.
+    let _guard = state.apply_lock.try_lock().map_err(|_| {
+        ApiError::new(
+            StatusCode::CONFLICT,
+            "apply_in_progress",
+            "another upgrade is in progress",
+        )
+    })?;
     require_bearer(&headers, state.admin_token.as_deref())?;
     tokio::spawn(async {
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1138,7 +1162,7 @@ async fn upgrade_history(
 ) -> Result<Response, ApiError> {
     require_bearer(&headers, state.admin_token.as_deref())?;
     let limit = query.limit.unwrap_or(50).max(1);
-    let entries = apply::read_release_history(&state.cfg, limit)?;
+    let entries = apply::read_release_history_blocking(&state.cfg, limit).await?;
     Ok((StatusCode::OK, Json(entries)).into_response())
 }
 
@@ -1147,11 +1171,22 @@ struct RollbackRequest {
     to: String,
 }
 
+/// Rollback mutates the same symlinks, installed state, history, and DB backup
+/// paths as apply, so it uses the same non-queueing upgrade serialization lock.
 async fn upgrade_rollback(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(req): Json<RollbackRequest>,
 ) -> Result<Response, ApiError> {
+    // Rollback mutates the same symlinks, installed state, history, and DB
+    // backup paths as apply, so it also rejects concurrent upgrade work.
+    let _guard = state.apply_lock.try_lock().map_err(|_| {
+        ApiError::new(
+            StatusCode::CONFLICT,
+            "apply_in_progress",
+            "another upgrade is in progress",
+        )
+    })?;
     require_bearer(&headers, state.admin_token.as_deref())?;
     let response = apply::rollback_last_preserving(&state.cfg, &state.supervisor, &req.to).await?;
     Ok((StatusCode::OK, Json(response)).into_response())
@@ -1161,17 +1196,11 @@ async fn upgrade_applied_id(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    // TODO(#396): this sentinel is currently admin-authenticated, which makes
+    // unauthenticated browser polling awkward. Revisit with a proper frontend
+    // refresh/event design instead of loosening auth in this PR.
     require_bearer(&headers, state.admin_token.as_deref())?;
-    let path = apply::last_upgrade_id_path(&state.cfg);
-    let release_id = match std::fs::read_to_string(&path) {
-        Ok(value) => Some(value.trim().to_string()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-        Err(err) => {
-            return Err(anyhow::Error::from(err)
-                .context("read last upgrade id")
-                .into());
-        }
-    };
+    let release_id = apply::read_last_upgrade_id_blocking(&state.cfg).await?;
     Ok((
         StatusCode::OK,
         Json(serde_json::json!({ "releaseId": release_id })),
@@ -1181,9 +1210,11 @@ async fn upgrade_applied_id(
 
 fn schedule_exec_self(cfg: Arc<AppConfig>) {
     tokio::spawn(async move {
-        // Axum has no per-response flush hook here. The delay gives hyper time
-        // to write the 202 body before this process image is replaced.
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        // Axum has no per-response flush hook here. This delay gives hyper time
+        // to write the 202 body before this process image is replaced; a slow
+        // or dropped client may still observe the connection close first and
+        // should confirm success through /upgrade/history after reconnecting.
+        tokio::time::sleep(Duration::from_millis(2000)).await;
         exec_self(&cfg);
     });
 }
@@ -1542,6 +1573,7 @@ mod tests {
                 calm_listen: None,
                 persist_identity_to: None,
             }),
+            apply_lock: Arc::new(Mutex::new(())),
             admin_token: Some(Arc::from("test-token")),
         };
         let app = admin_router(state);

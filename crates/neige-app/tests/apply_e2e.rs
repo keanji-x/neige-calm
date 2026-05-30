@@ -32,7 +32,10 @@ impl Drop for Harness {
 
 #[test]
 #[ignore = "binds sockets and spawns neige-app; blocked by the Codex sandbox"]
-fn apply_preserving_swap_keeps_pty() -> anyhow::Result<()> {
+/// PTY survival under preserving apply is verified by the proc-supervisor PID
+/// invariant in `apply_preserving_supervisor_change_defers` (TODO: upgrade
+/// that test to use a process-level fake supervisor).
+fn apply_preserving_commits_calm_server_change() -> anyhow::Result<()> {
     let mut h = Harness::start("preserving", "0.1.0")?;
     let package = h.package(
         "rel-2",
@@ -65,6 +68,9 @@ fn apply_preserving_swap_keeps_pty() -> anyhow::Result<()> {
 
 #[test]
 #[ignore = "binds sockets and spawns neige-app; blocked by the Codex sandbox"]
+/// Limitation: fake proc-supervisor is a thread; for production-fidelity
+/// PID-stays testing, use the systemd integration test (out-of-scope for cargo
+/// test).
 fn apply_preserving_supervisor_change_defers() -> anyhow::Result<()> {
     let mut h = Harness::start("defer", "0.1.0")?;
     let package = h.package(
@@ -86,6 +92,85 @@ fn apply_preserving_supervisor_change_defers() -> anyhow::Result<()> {
     let after = fs::read_link(h.release_root.join("current-server"))?;
     assert_ne!(before, after, "server release symlink should move");
     assert_eq!(h.version()?, "0.1.0", "calm-server should not restart");
+    Ok(())
+}
+
+#[test]
+#[ignore = "binds sockets and spawns neige-app; blocked by the Codex sandbox"]
+fn apply_concurrent_request_gets_conflict() -> anyhow::Result<()> {
+    let mut h = Harness::start("concurrent", "0.1.0")?;
+    let package = h.slow_start_package("rel-slow")?;
+    let body = json!({"source": {"url": package.display().to_string()}});
+    let admin = h.admin;
+    let token = h.token.clone();
+    let body_for_thread = body.clone();
+
+    let first = thread::spawn(move || {
+        http_json(
+            "POST",
+            admin,
+            "/upgrade/apply",
+            Some(&token),
+            Some(body_for_thread),
+        )
+    });
+    thread::sleep(Duration::from_millis(100));
+    let second = h.post_json("/upgrade/apply", body)?;
+    let first = first
+        .join()
+        .map_err(|_| anyhow::anyhow!("first apply thread panicked"))??;
+
+    assert_eq!(first.status, 200, "body: {}", first.body);
+    assert_eq!(second.status, 409, "body: {}", second.body);
+    assert_eq!(second.json["error"], "apply_in_progress");
+    Ok(())
+}
+
+#[test]
+#[ignore = "binds sockets and spawns neige-app; blocked by the Codex sandbox"]
+fn apply_noop_short_circuits_before_staging() -> anyhow::Result<()> {
+    let mut h = Harness::start("noop", "0.1.0")?;
+    let package = h.package(
+        "rel-1",
+        [("calmServer", "0.1.0", "restartViaAdminApi")],
+        true,
+    )?;
+    let existing_stage = h.release_root.join("staged").join("rel-1");
+    fs::create_dir_all(&existing_stage)?;
+    fs::write(existing_stage.join("leftover"), "existing")?;
+
+    let resp = h.post_json(
+        "/upgrade/apply",
+        json!({"source": {"url": package.display().to_string()}}),
+    )?;
+
+    assert_eq!(resp.status, 200, "body: {}", resp.body);
+    assert_eq!(resp.json["result"], "committed");
+    assert_eq!(resp.json["verdict"]["kind"], "noop");
+    Ok(())
+}
+
+#[test]
+#[ignore = "binds sockets and spawns neige-app; blocked by the Codex sandbox"]
+fn apply_dry_run_writes_nothing() -> anyhow::Result<()> {
+    let mut h = Harness::start("dry-run", "0.1.0")?;
+    let package = h.package(
+        "rel-dry",
+        [("calmServer", "0.2.0", "restartViaAdminApi")],
+        true,
+    )?;
+    let state_dir = h.data_dir.join("state");
+    let before = sorted_entries(&state_dir)?;
+
+    let resp = h.post_json(
+        "/upgrade/apply",
+        json!({"source": {"url": package.display().to_string()}, "dryRun": true}),
+    )?;
+
+    assert_eq!(resp.status, 200, "body: {}", resp.body);
+    assert_eq!(resp.json["result"], "dryRun");
+    assert_eq!(sorted_entries(&state_dir)?, before);
+    assert!(!state_dir.join("release-history.jsonl").exists());
     Ok(())
 }
 
@@ -120,6 +205,36 @@ fn apply_preserving_healthcheck_fail_rolls_back() -> anyhow::Result<()> {
 
 #[test]
 #[ignore = "binds sockets and spawns neige-app; blocked by the Codex sandbox"]
+fn apply_breaking_history_failure_reverts_symlinks() -> anyhow::Result<()> {
+    let mut h = Harness::start("breaking-history-fail", "0.1.0")?;
+    let package = h.breaking_package("rel-breaking")?;
+    let before_server = fs::read_link(h.release_root.join("current-server"))?;
+    let before_web = fs::read_link(h.release_root.join("current-web"))?;
+    fs::create_dir(h.data_dir.join("state").join("release-history.jsonl"))?;
+
+    let resp = h.post_json(
+        "/upgrade/apply",
+        json!({"source": {"url": package.display().to_string()}, "allowBreaking": true}),
+    )?;
+
+    assert_eq!(resp.status, 500, "body: {}", resp.body);
+    assert_eq!(
+        fs::read_link(h.release_root.join("current-server"))?,
+        before_server
+    );
+    assert_eq!(
+        fs::read_link(h.release_root.join("current-web"))?,
+        before_web
+    );
+    assert_eq!(
+        read_json(&h.data_dir.join("state").join("installed.json"))?["releaseId"],
+        "rel-1"
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "binds sockets and spawns neige-app; blocked by the Codex sandbox"]
 fn apply_breaking_without_opt_in_rejects() -> anyhow::Result<()> {
     let mut h = Harness::start("breaking-reject", "0.1.0")?;
     let package = h.breaking_package("rel-breaking")?;
@@ -146,6 +261,76 @@ fn apply_breaking_opt_in_then_exec_self() -> anyhow::Result<()> {
     )?;
     assert_eq!(resp.status, 202, "body: {}", resp.body);
     assert_eq!(resp.json["result"], "committed");
+    assert_eq!(
+        resp.json["releaseHistoryEntry"]["releaseId"],
+        "rel-breaking"
+    );
+    assert_eq!(resp.json["releaseHistoryEntry"]["result"], "committed");
+    assert_eq!(
+        resp.json["releaseHistoryEntry"]["executedBreakingSelfExec"],
+        true
+    );
+    let history = http_json(
+        "GET",
+        h.admin,
+        "/upgrade/history?limit=1",
+        Some(&h.token),
+        None,
+    )?;
+    assert_eq!(history.status, 200, "body: {}", history.body);
+    assert_eq!(history.json[0]["releaseId"], "rel-breaking");
+    assert_eq!(history.json[0]["result"], "committed");
+    Ok(())
+}
+
+#[test]
+#[ignore = "binds sockets and spawns neige-app; blocked by the Codex sandbox"]
+fn apply_rollback_with_missing_backup_returns_error() -> anyhow::Result<()> {
+    let mut h = Harness::start("rollback-missing-backup", "0.1.0")?;
+    let package = h.package_with_db_policy(
+        "rel-2",
+        [("calmServer", "0.2.0", "restartViaAdminApi")],
+        true,
+        "additive",
+    )?;
+    let apply = h.post_json(
+        "/upgrade/apply",
+        json!({"source": {"url": package.display().to_string()}}),
+    )?;
+    assert_eq!(apply.status, 200, "body: {}", apply.body);
+    let backup = apply.json["releaseHistoryEntry"]["dbBackup"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing db backup"))?;
+    fs::remove_file(backup)?;
+
+    let rollback = h.post_json("/upgrade/rollback", json!({"to": "rel-1"}))?;
+
+    assert_eq!(rollback.status, 409, "body: {}", rollback.body);
+    assert_eq!(rollback.json["error"], "backup_missing");
+    Ok(())
+}
+
+#[test]
+#[ignore = "binds sockets and spawns neige-app; blocked by the Codex sandbox"]
+fn apply_rollback_then_rollback_fails() -> anyhow::Result<()> {
+    let mut h = Harness::start("rollback-twice", "0.1.0")?;
+    let package = h.package(
+        "rel-2",
+        [("calmServer", "0.2.0", "restartViaAdminApi")],
+        true,
+    )?;
+    let apply = h.post_json(
+        "/upgrade/apply",
+        json!({"source": {"url": package.display().to_string()}}),
+    )?;
+    assert_eq!(apply.status, 200, "body: {}", apply.body);
+
+    let first = h.post_json("/upgrade/rollback", json!({"to": "rel-1"}))?;
+    assert_eq!(first.status, 200, "body: {}", first.body);
+    let second = h.post_json("/upgrade/rollback", json!({"to": "rel-2"}))?;
+
+    assert_eq!(second.status, 400, "body: {}", second.body);
+    assert_eq!(second.json["error"], "invalid_rollback_target");
     Ok(())
 }
 
@@ -173,6 +358,13 @@ impl Harness {
             "#!/bin/sh\nsleep 300\n",
         )?;
         write_executable(&old.join("bin").join("neige-app"), "#!/bin/sh\nsleep 300\n")?;
+        write_manifest(
+            &old,
+            "rel-1",
+            0,
+            [("calmServer", initial_version, "restartViaAdminApi")],
+            "none",
+        )?;
         make_symlink(&old, &release_root.join("current-server"))?;
         make_symlink(&old, &release_root.join("current-web"))?;
         write_installed(
@@ -302,6 +494,21 @@ build_args = ["true"]
         changed: [(&str, &str, &str); N],
         healthy: bool,
     ) -> anyhow::Result<PathBuf> {
+        self.package_with_db_policy(
+            release_id,
+            changed,
+            healthy,
+            if healthy { "none" } else { "forwardOnly" },
+        )
+    }
+
+    fn package_with_db_policy<const N: usize>(
+        &self,
+        release_id: &str,
+        changed: [(&str, &str, &str); N],
+        healthy: bool,
+        calm_db_policy: &str,
+    ) -> anyhow::Result<PathBuf> {
         let dir = self.root.join(release_id);
         fs::create_dir_all(dir.join("bin"))?;
         let calm_version = changed
@@ -315,13 +522,7 @@ build_args = ["true"]
             "#!/bin/sh\nsleep 300\n",
         )?;
         write_executable(&dir.join("bin").join("neige-app"), "#!/bin/sh\nsleep 300\n")?;
-        write_manifest(
-            &dir,
-            release_id,
-            0,
-            changed,
-            if healthy { "none" } else { "forwardOnly" },
-        )?;
+        write_manifest(&dir, release_id, 0, changed, calm_db_policy)?;
         Ok(dir)
     }
 
@@ -331,10 +532,28 @@ build_args = ["true"]
             [("calmServer", "0.2.0", "restartViaAdminApi")],
             true,
         )?;
+        write_executable(&dir.join("bin").join("neige-app"), "#!/bin/sh\nsleep 300\n")?;
         write_manifest(
             &dir,
             release_id,
             1,
+            [("calmServer", "0.2.0", "restartViaAdminApi")],
+            "none",
+        )?;
+        Ok(dir)
+    }
+
+    fn slow_start_package(&self, release_id: &str) -> anyhow::Result<PathBuf> {
+        let dir = self.package(
+            release_id,
+            [("calmServer", "0.2.0", "restartViaAdminApi")],
+            true,
+        )?;
+        write_calm_server_with_delay(&dir.join("bin").join("calm-server"), "0.2.0", 2)?;
+        write_manifest(
+            &dir,
+            release_id,
+            0,
             [("calmServer", "0.2.0", "restartViaAdminApi")],
             "none",
         )?;
@@ -460,6 +679,39 @@ httpd = socketserver.TCPServer((host, int(port)), H)
     )
 }
 
+fn write_calm_server_with_delay(path: &Path, version: &str, delay_secs: u64) -> anyhow::Result<()> {
+    write_executable(
+        path,
+        &format!(
+            r#"#!/usr/bin/env python3
+import http.server, json, os, socketserver, sys, time
+listen = os.environ.get("CALM_LISTEN", "127.0.0.1:4040")
+host, port = listen.rsplit(":", 1)
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        pass
+    def do_GET(self):
+        if self.path == "/api/version":
+            body = json.dumps({{"kernelVersion":"{version}"}}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(404)
+            self.end_headers()
+socketserver.TCPServer.allow_reuse_address = True
+time.sleep({delay_secs})
+httpd = socketserver.TCPServer((host, int(port)), H)
+httpd.serve_forever()
+"#,
+            version = version,
+            delay_secs = delay_secs
+        ),
+    )
+}
+
 fn write_executable(path: &Path, content: &str) -> anyhow::Result<()> {
     fs::write(path, content)?;
     let mut perms = fs::metadata(path)?.permissions();
@@ -565,6 +817,14 @@ fn compatibility() -> serde_json::Value {
 
 fn read_json(path: &Path) -> anyhow::Result<serde_json::Value> {
     Ok(serde_json::from_slice(&fs::read(path)?)?)
+}
+
+fn sorted_entries(path: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let mut entries = fs::read_dir(path)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()?;
+    entries.sort();
+    Ok(entries)
 }
 
 fn make_symlink(target: &Path, link: &Path) -> anyhow::Result<()> {
