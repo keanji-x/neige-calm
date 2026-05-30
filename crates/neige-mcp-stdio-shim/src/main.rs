@@ -62,6 +62,11 @@ const ENV_TOKEN: &str = "NEIGE_MCP_TOKEN";
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
+    if env::args().nth(1).as_deref() == Some("--version") {
+        println!("neige-mcp-stdio-shim {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
+
     // Resolve the UDS path from the env. Codex sets this from the
     // `[mcp_servers.calm].env` block the kernel writes into the per-card
     // config.toml — see `spec_card::build_codex_config_toml_with_prompt`.

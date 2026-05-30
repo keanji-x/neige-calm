@@ -139,17 +139,9 @@ pub struct VersionInfo {
     pub db_instance_id: String,
 }
 
-#[utoipa::path(
-    get,
-    path = "/api/version",
-    tag = "version",
-    responses(
-        (status = 200, description = "Kernel + protocol version metadata", body = VersionInfo),
-    ),
-)]
-pub(crate) async fn get_version(State(state): State<AppState>) -> Json<VersionInfo> {
+pub fn current_version_info(db_instance_id: String) -> VersionInfo {
     let compatibility = current_kernel_compatibility();
-    Json(VersionInfo {
+    VersionInfo {
         kernel_version: env!("CARGO_PKG_VERSION").to_string(),
         api_version: compatibility.api_version,
         sync_event_version: compatibility.sync_event_version,
@@ -159,8 +151,20 @@ pub(crate) async fn get_version(State(state): State<AppState>) -> Json<VersionIn
         min_web_compat_version: compatibility.min_web_compat_version,
         supervisor_control_version: compatibility.supervisor_control_version,
         build_sha: option_env!("NEIGE_BUILD_SHA").map(|s| s.to_string()),
-        db_instance_id: (*state.db_instance_id).clone(),
-    })
+        db_instance_id,
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/version",
+    tag = "version",
+    responses(
+        (status = 200, description = "Kernel + protocol version metadata", body = VersionInfo),
+    ),
+)]
+pub(crate) async fn get_version(State(state): State<AppState>) -> Json<VersionInfo> {
+    Json(current_version_info((*state.db_instance_id).clone()))
 }
 
 #[cfg(test)]

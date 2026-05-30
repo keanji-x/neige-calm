@@ -23,7 +23,13 @@ const PROTOCOL_VERSION: &str = "2024-11-05";
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
-    let cli = match Cli::parse(env::args().skip(1)) {
+    let args = env::args().skip(1).collect::<Vec<_>>();
+    if args.first().map(String::as_str) == Some("--version") {
+        println!("neige {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
+
+    let cli = match Cli::parse(args) {
         Ok(cli) => cli,
         Err(err) => {
             emit_error(&err);

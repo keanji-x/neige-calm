@@ -334,6 +334,45 @@ fn apply_rollback_then_rollback_fails() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[test]
+#[ignore = "builds + binds sockets and spawns neige-app; blocked by the Codex sandbox"]
+fn apply_v2_from_git_source_triggers_v2_verdict() -> anyhow::Result<()> {
+    let mut h = Harness::start("git-v2", "0.1.0")?;
+    let source = h.root.join("source-repo");
+    write_v2_source_tree(&source, "0.2.0")?;
+    init_git_repo(&source)?;
+
+    let resp = h.post_json(
+        "/upgrade/apply",
+        json!({"source": {"type": "git", "url": source.display().to_string(), "branch": "main"}}),
+    )?;
+
+    assert_eq!(resp.status, 200, "body: {}", resp.body);
+    assert_eq!(resp.json["result"], "committed");
+    assert!(resp.json["verdict"]["kind"].is_string());
+    assert!(resp.json["verdict"]["unitsChanged"].is_array());
+    assert!(
+        resp.json.get("mode").is_none(),
+        "legacy mode response leaked"
+    );
+
+    let installed = read_json(&h.data_dir.join("state").join("installed.json"))?;
+    assert_eq!(installed["schemaVersion"], 1);
+    assert_eq!(installed["productMajor"], 0);
+    for unit in [
+        "neigeApp",
+        "calmServer",
+        "calmProcSupervisor",
+        "web",
+        "neigeCodexBridge",
+        "neigeMcpStdioShim",
+        "neigeCli",
+    ] {
+        assert!(installed["units"][unit].is_object(), "missing unit {unit}");
+    }
+    Ok(())
+}
+
 impl Harness {
     fn start(name: &str, initial_version: &str) -> anyhow::Result<Self> {
         let root =
@@ -717,6 +756,113 @@ fn write_executable(path: &Path, content: &str) -> anyhow::Result<()> {
     let mut perms = fs::metadata(path)?.permissions();
     perms.set_mode(0o755);
     fs::set_permissions(path, perms)?;
+    Ok(())
+}
+
+fn write_v2_source_tree(source: &Path, version: &str) -> anyhow::Result<()> {
+    let release = source.join("target").join("release");
+    fs::create_dir_all(&release)?;
+    fs::create_dir_all(source.join("web").join("dist"))?;
+    fs::write(source.join("web").join("dist").join("index.html"), "web")?;
+    fs::write(
+        source.join("web").join("package.json"),
+        format!(r#"{{"version":"{version}"}}"#),
+    )?;
+    write_source_calm_server(&release.join("calm-server"), version)?;
+    for name in [
+        "neige-app",
+        "calm-proc-supervisor",
+        "neige-codex-bridge",
+        "neige-mcp-stdio-shim",
+        "neige",
+    ] {
+        write_executable(
+            &release.join(name),
+            &format!(
+                r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '{name} {version}\n'
+  exit 0
+fi
+sleep 300
+"#,
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+fn write_source_calm_server(path: &Path, version: &str) -> anyhow::Result<()> {
+    write_executable(
+        path,
+        &format!(
+            r#"#!/usr/bin/env python3
+import http.server, json, os, socketserver, sys
+if len(sys.argv) > 1 and sys.argv[1] == "--version":
+    print("calm-server {version}")
+    sys.exit(0)
+if len(sys.argv) > 1 and sys.argv[1] == "--emit-kernel-compatibility-json":
+    print(json.dumps({{
+        "terminalFrameVersion": 4,
+        "terminalProtocolVersion": 4,
+        "apiVersion": "1",
+        "syncEventVersion": 1,
+        "mcpProtocolVersion": "2024-11-05",
+        "pluginMcpProtocolVersion": "2025-11-25",
+        "webCompatVersion": 2,
+        "minWebCompatVersion": 2,
+        "supervisorControlVersion": 1
+    }}))
+    sys.exit(0)
+listen = os.environ.get("CALM_LISTEN", "127.0.0.1:4040")
+host, port = listen.rsplit(":", 1)
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        pass
+    def do_GET(self):
+        if self.path == "/api/version":
+            body = json.dumps({{"kernelVersion":"{version}"}}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(404)
+            self.end_headers()
+socketserver.TCPServer.allow_reuse_address = True
+httpd = socketserver.TCPServer((host, int(port)), H)
+httpd.serve_forever()
+"#,
+            version = version
+        ),
+    )
+}
+
+fn init_git_repo(path: &Path) -> anyhow::Result<()> {
+    run_git(path, &["init"])?;
+    run_git(path, &["checkout", "-b", "main"])?;
+    run_git(path, &["add", "."])?;
+    run_git(
+        path,
+        &[
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "source",
+        ],
+    )?;
+    Ok(())
+}
+
+fn run_git(cwd: &Path, args: &[&str]) -> anyhow::Result<()> {
+    let status = Command::new("git").args(args).current_dir(cwd).status()?;
+    if !status.success() {
+        anyhow::bail!("git {:?} failed with {status}", args);
+    }
     Ok(())
 }
 

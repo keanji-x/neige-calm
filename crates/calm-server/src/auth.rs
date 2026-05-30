@@ -481,6 +481,7 @@ mod tests {
     fn auth_config_panics_without_password_in_prod_mode() {
         // Build a Config with no auth fields set and dev_autologin off.
         let cfg = Config {
+            emit_kernel_compatibility_json: false,
             listen: "127.0.0.1:0".into(),
             db_url: "mock".into(),
             data_dir: None,
@@ -506,6 +507,7 @@ mod tests {
     #[test]
     fn auth_config_allows_no_password_when_dev_autologin_on() {
         let cfg = Config {
+            emit_kernel_compatibility_json: false,
             listen: "127.0.0.1:0".into(),
             db_url: "mock".into(),
             data_dir: None,

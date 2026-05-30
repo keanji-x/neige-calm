@@ -29,6 +29,11 @@ use std::time::Duration;
 const MAX_TRANSCRIPT_BYTES: u64 = 256 * 1024 * 1024;
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        println!("neige-codex-bridge {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
     let provider = Provider::from_env_and_args();
     // Read full stdin. Hooks send one JSON object per invocation; we
     // forward it verbatim as the POST body so backend can parse it as
