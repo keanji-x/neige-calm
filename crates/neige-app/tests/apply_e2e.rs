@@ -675,7 +675,34 @@ build_args = ["true"]
             app,
             orphan: orphan.take(),
         };
+        if initial_healthy {
+            harness.wait_calm_server_running(Duration::from_secs(10))?;
+        }
         Ok((harness, orphan_pid))
+    }
+
+    fn wait_calm_server_running(&self, timeout: Duration) -> anyhow::Result<u32> {
+        let deadline = Instant::now() + timeout;
+        let mut last = None;
+        while Instant::now() < deadline {
+            match self.status() {
+                Ok(status) => {
+                    let state = status["calmServer"]["childState"].as_str();
+                    match status_pid(&status, "/calmServer/childPid") {
+                        Ok(pid) if state == Some("running") => return Ok(pid),
+                        Ok(_) | Err(_) => {
+                            last = Some(anyhow::anyhow!(
+                                "calm-server not running yet: {}",
+                                status["calmServer"]
+                            ));
+                        }
+                    }
+                }
+                Err(err) => last = Some(err),
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        Err(last.unwrap_or_else(|| anyhow::anyhow!("timed out waiting for calm-server")))
     }
 
     fn version(&self) -> anyhow::Result<String> {
