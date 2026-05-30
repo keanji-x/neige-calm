@@ -11,7 +11,7 @@
 //!    `card.updated` follow-up, no intermediate "half-built" state for
 //!    EventBridge to react to.
 //! 2. After commit, the handler spawns `calm-session-daemon` via the same
-//!    `spawn_daemon_for` helper the GET-side and the codex route still use.
+//!    `spawn_terminal_for` helper the GET-side and the codex route still use.
 //!    A daemon-spawn failure returns 500 to the client but does NOT roll
 //!    back the persisted rows: the orphan-terminal sweeper reaps them
 //!    within ~60s. This matches the prior behavior of the deleted
@@ -28,7 +28,7 @@ use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::Event;
 use crate::model::{Card, new_id};
 use crate::routes::cards::card_scope;
-use crate::routes::terminal::spawn_daemon_for;
+use crate::routes::terminal::spawn_terminal_for;
 use crate::state::AppState;
 use axum::{
     Json, Router,
@@ -181,8 +181,8 @@ pub(crate) async fn create_terminal_card(
     .await?;
 
     // 4. Fetch the persisted terminal row so we can hand it to
-    //    `spawn_daemon_for`. The helper stamps the daemon socket path back
-    //    onto the row via `terminal_set_handle`, so we don't need the
+    //    `spawn_terminal_for`. The helper stamps the daemon socket path back
+    //    onto the row via `renderer setup`, so we don't need the
     //    pre-spawn snapshot — we just need its id + program/cwd/env, which
     //    the row carries. The row is guaranteed to exist: the transaction
     //    above committed both card and terminal as one unit.
@@ -202,7 +202,7 @@ pub(crate) async fn create_terminal_card(
     //    its grace window. This matches the prior `routes/terminal.rs`
     //    semantics: a 500 here tells the client the spawn failed, but the
     //    card/terminal pair is still in the DB until the sweeper runs.
-    spawn_daemon_for(&s, &term, &program, &cwd, &env).await?;
+    spawn_terminal_for(&s, &term, &program, &cwd, &env).await?;
 
     Ok((StatusCode::CREATED, Json(card)))
 }

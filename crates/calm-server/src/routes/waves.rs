@@ -16,10 +16,10 @@
 //! Earlier iterations of this handler ran the post-commit
 //! `seed_and_spawn_spec_daemon` call inside `tokio::spawn` so the route
 //! could return 201 instantly. That introduced a TOCTOU race against
-//! the WS terminal revive path in `ws::terminal::resolve_live_sock`:
+//! the WS terminal revive path in `ws::terminal::resolve_live_renderer`:
 //! the frontend would open the spec card's WS in the ~400 ms window
 //! between commit and the background task running, see
-//! `daemon_handle = None`, and respawn the daemon from the **baked
+//! `renderer entry = None`, and respawn the daemon from the **baked
 //! terminal-row env**, which is missing `NEIGE_MCP_SOCKET` /
 //! `NEIGE_MCP_TOKEN` (those vars are folded in only on the post-commit
 //! env clone, never persisted to the terminal row). Two daemons would
@@ -39,7 +39,7 @@
 //! grace) if no daemon is attached.
 //!
 //! The earlier rationale for the `tokio::spawn` form was the old
-//! readiness wait in `spawn_daemon_for`. That latency affected one
+//! readiness wait in `spawn_terminal_for`. That latency affected one
 //! specific test path (`web/e2e/a11y-keyboard.spec.ts`'s 5 s navigation
 //! budget when running without a real codex). The tradeoff was wrong:
 //! the WS race is a correctness bug for every production user, the
@@ -434,7 +434,7 @@ pub(crate) async fn create_wave(
     // #177 — capture the host browser's theme RGB BEFORE `p` is moved
     // into `wave_create_tx`. The value lands on the spec card's
     // terminal row inside the tx; the synchronous spec-card spawn
-    // below reads it back from that row via `spawn_daemon_for`, so
+    // below reads it back from that row via `spawn_terminal_for`, so
     // the daemon argv and the row stay agreement-by-construction.
     let theme_for_tx = p.theme;
     let ((wave, mcp_token), _event_ids) = write_with_events_typed(
@@ -639,13 +639,13 @@ pub(crate) async fn create_wave(
     //    handing this off via `tokio::spawn` opened a TOCTOU race
     //    where the frontend could open the spec card's WS in the
     //    window between commit and the background task running,
-    //    observe `daemon_handle = None` in
-    //    `ws::terminal::resolve_live_sock`, and trigger that handler's
+    //    observe `renderer entry = None` in
+    //    `ws::terminal::resolve_live_renderer`, and trigger that handler's
     //    respawn branch using the terminal row's baked env — which
     //    omits `NEIGE_MCP_SOCKET` / `NEIGE_MCP_TOKEN`. Two daemons
     //    would then race on the same `--sock` path and the WS would
     //    attach to the no-MCP one. Awaiting the spawn inline closes
-    //    the race by guaranteeing `daemon_handle` is `Some` by the
+    //    the race by guaranteeing `renderer entry` is `Some` by the
     //    time the 201 reaches the client.
     //
     //    PR7a (#136) — fold the freshly minted per-card MCP token +
@@ -663,7 +663,7 @@ pub(crate) async fn create_wave(
     //    tx; we don't have a hash→raw lookup for `card_mcp_tokens`
     //    today — see `mcp_server::auth::hash_token`). A long-tail
     //    daemon death + WS revive will hit the buggy "respawn from
-    //    baked env" branch in `ws::terminal::resolve_live_sock`
+    //    baked env" branch in `ws::terminal::resolve_live_renderer`
     //    today; that branch now emits a defensive warn log when
     //    MCP env is absent on a Spec card. The proper revive-side
     //    fix (re-mint token + update hash) is deferred to an issue

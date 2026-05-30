@@ -139,7 +139,7 @@ use crate::ids::WaveId;
 /// How long to poll for the app-server's listen socket to appear + accept
 /// a connection before giving up. The server creates the socket after
 /// binding; we reuse the same `UnixStream::connect` poll cadence the PTY
-/// daemon spawn uses (`routes::terminal::spawn_daemon_with_parts` —
+/// daemon spawn uses (`routes::terminal::spawn_terminal_with_parts` —
 /// 75 × 40 ms). 20 s is generous for a local `app-server` boot (a model
 /// turn is NOT required for the socket to come up) while still bounding a
 /// binary that never binds (e.g. missing auth → exit during boot).
@@ -1596,7 +1596,7 @@ impl SpecPushRegistry {
 /// `codex_bin` is the resolved `codex` CLI path (`CodexClient::codex_bin`).
 /// `env_map` is the `serde_json` object map of env vars (string values
 /// only are applied — non-string values are ignored, matching
-/// `spawn_daemon_with_parts`).
+/// `spawn_terminal_with_parts`).
 pub async fn spawn_spec_appserver(
     codex_bin: &str,
     env_map: &Value,
@@ -1658,7 +1658,7 @@ pub async fn spawn_spec_appserver_with_watchdog_config_and_recovery(
 
     // 1. Spawn the app-server child with the codex daemon's env. We start
     //    from a clean env-application loop (same shape as
-    //    `spawn_daemon_with_parts`): apply each string-valued entry. This
+    //    `spawn_terminal_with_parts`): apply each string-valued entry. This
     //    carries CODEX_HOME + proxy (so model turns work) + MCP vars.
     let mut cmd = Command::new(codex_bin);
     cmd.arg("app-server")
@@ -2410,7 +2410,7 @@ fn park_handle(
 
 /// Poll `UnixStream::connect(sock)` until it succeeds (the app-server has
 /// bound), bailing out as a skip-able error if the child exits during
-/// boot. Mirrors the readiness loop in `spawn_daemon_with_parts`.
+/// boot. Mirrors the readiness loop in `spawn_terminal_with_parts`.
 ///
 /// The socket budgets are wedge backstops for "process stayed alive but
 /// never bound"; readiness itself is still connect-ok, and failure is still

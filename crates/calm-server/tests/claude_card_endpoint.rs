@@ -21,11 +21,6 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
-
-fn locate_recorder_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_argv-recorder-daemon"))
-}
-
 struct Boot {
     app: axum::Router,
     wave_id: String,

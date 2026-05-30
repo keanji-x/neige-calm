@@ -15,10 +15,8 @@
 //! `RenderPatch` cursors) or are handled at the daemon attach layer.
 //! Calm-server just shuttles frames.
 
-use crate::db::{RepoOutOfDomain, RouteRepo};
 use crate::error::Result;
 use crate::state::AppState;
-use crate::terminal_probe::{TerminalProbe, probe_terminal_daemon};
 use crate::terminal_renderer::{ClientPumpContext, RendererEntry, run_client_pump};
 use axum::{
     Router,
@@ -31,10 +29,8 @@ use axum::{
 };
 use calm_session::{ClientMsg, DaemonMsg, FrameError, read_frame, write_frame};
 use futures::{SinkExt, StreamExt};
-use std::path::{Path as StdPath, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::net::UnixStream;
 use tokio::sync::{Mutex, mpsc};
 // `tokio::time::Instant` (not `std::time::Instant`) so `tokio::time::pause()`
 // in tests virtual-advances `elapsed()` along with `interval` ticks. In
@@ -271,207 +267,6 @@ fn sanitize_client_msg(parsed: &mut ClientMsg) {
     }
 }
 
-/// Outcome of [`resolve_live_sock`].
-#[allow(dead_code)]
-enum LiveSock {
-    /// Daemon socket responded to a probe — hand back its path so the
-    /// caller can hand off to [`handle`].
-    Alive(PathBuf),
-    /// Terminal row exists and a daemon was spawned for it at some
-    /// point (`daemon_handle.is_some()`), but the socket no longer
-    /// accepts connections. This is the "one-shot worker child exited
-    /// faster than the browser could connect" path — surface a
-    /// `child-exited` close to the client instead of a 500.
-    ///
-    /// `exit_code` carries the parsed value from the `<sock>.exit`
-    /// sidecar when one was present and parseable; `None` means either
-    /// no sidecar on disk (SIGKILL'd / DaemonLost) or the sidecar
-    /// carried `code: null` (signal-killed child). The upgrade-time
-    /// fast path uses this to decide whether to emit a JSON
-    /// `TerminalExited` frame before the close — see
-    /// [`send_child_exited_close`].
-    ChildExited { exit_code: Option<i32> },
-}
-
-/// Resolve the socket path for a terminal row.
-///   1. Read the terminal row from the repo.
-///   2. If `daemon_handle` is set, probe the socket with the calm-session
-///      handshake. If it returns `ServerHello`, the daemon is alive —
-///      return `Alive(path)`.
-///   3. If `daemon_handle` is set but the handshake fails, the daemon
-///      spawned and has since exited (or the socket is stale / wrong
-///      protocol); return `ChildExited` so the caller can emit a
-///      `child-exited` close on the WS.
-///   4. If the row has no `daemon_handle` at all, treat it as a clean
-///      child exit as well: the row exists (we passed `terminal_get`),
-///      so a caller tried to spawn a daemon — and either the spawn
-///      succeeded but the eager-persist racd (covered by the spawn-site
-///      eager-write), or the spawn itself failed. Either way the user
-///      sees "no live daemon for this row", and surfacing
-///      `Close(1000, "child-exited")` gives them the same Restart UX
-///      as a normal exit instead of a generic 1006.
-///
-/// #177 — this used to be an "auto-respawn on cold socket" path. That
-/// behaviour was the source of the WS race in PR #193: the un-themed
-/// respawn could win the socket against the initial themed spawn,
-/// silently dropping the OSC 10/11 theme reply. The legitimate
-/// "daemon died while server was down" recovery is now handled by
-/// `revive_orphans_on_boot` walked once at server startup; the per-
-/// request WS attach path is probe-only.
-/// #306 — payload shape the daemon writes to `<sock_path>.exit` at child-wait
-/// time. Mutually exclusive at the writer: `signal_killed = true` ⇒
-/// `code = None`; `code = Some(_)` ⇒ `signal_killed = false`. v1 doesn't
-/// enforce this on the reader — the repo writes whatever was on disk and
-/// the frontend renders whichever field is present.
-#[derive(serde::Deserialize)]
-#[allow(dead_code)]
-struct ExitSidecar {
-    code: Option<i32>,
-    #[serde(default)]
-    signal_killed: bool,
-}
-
-/// #306 — pick up `<sock_path>.exit`, stamp the exit info on the
-/// terminal row, and return the parsed payload so the upgrade-time
-/// fast path can also forward it to the WS client.
-///
-/// Best-effort: read failure / parse failure / persist failure all
-/// degrade to a single warn-log because the caller is about to
-/// surface `LiveSock::ChildExited` either way, and the worst-case
-/// degraded UX (no badge until next attach) is acceptable. The
-/// returned `Option<ExitSidecar>` is `Some` iff the file existed and
-/// parsed cleanly — persist-failure still yields `Some` because the
-/// in-memory payload is still good enough to send to the client.
-#[allow(dead_code)]
-async fn persist_exit_sidecar(
-    s: &AppState,
-    terminal_id: &str,
-    sock_handle: &str,
-) -> Option<ExitSidecar> {
-    let exit_path = format!("{sock_handle}.exit");
-    let raw = match std::fs::read_to_string(&exit_path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // Common case for SIGKILL'd daemons; not surprising.
-            tracing::debug!(
-                terminal_id,
-                path = %exit_path,
-                "no .exit sidecar on disk (daemon may have been killed before writing)",
-            );
-            return None;
-        }
-        Err(e) => {
-            tracing::warn!(
-                terminal_id,
-                path = %exit_path,
-                error = %e,
-                "reading .exit sidecar failed",
-            );
-            return None;
-        }
-    };
-    let parsed: ExitSidecar = match serde_json::from_str(&raw) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(
-                terminal_id,
-                path = %exit_path,
-                error = %e,
-                "parsing .exit sidecar failed",
-            );
-            return None;
-        }
-    };
-    if let Err(e) = s
-        .repo
-        .terminal_set_exit(terminal_id, parsed.code, parsed.signal_killed)
-        .await
-    {
-        tracing::warn!(
-            terminal_id,
-            error = %e,
-            "persisting .exit sidecar to terminal row failed",
-        );
-    } else {
-        tracing::info!(
-            terminal_id,
-            exit_code = ?parsed.code,
-            signal_killed = parsed.signal_killed,
-            "persisted .exit sidecar to terminal row",
-        );
-    }
-    Some(parsed)
-}
-
-#[allow(dead_code)]
-async fn resolve_live_sock(s: &AppState, id: &str) -> Result<LiveSock> {
-    let term = s
-        .repo
-        .terminal_get(id)
-        .await?
-        .ok_or_else(|| crate::error::CalmError::NotFound(format!("terminal {id}")))?;
-
-    if let Some(handle) = term.daemon_handle.as_ref() {
-        match probe_terminal_daemon(StdPath::new(handle), &term.id).await {
-            TerminalProbe::Alive => {
-                // Live daemon — fast path.
-                return Ok(LiveSock::Alive(PathBuf::from(handle)));
-            }
-            TerminalProbe::AcceptingButStale | TerminalProbe::Unreachable => {}
-        }
-        // Handle was stamped (daemon spawned at least once) but its
-        // socket fails the protocol handshake — the daemon unlinked
-        // the socket on its way out, an old daemon binary is still
-        // bound, or some other stale listener accepted the connect.
-        // Surface all of these as the existing clean child-exit close.
-        tracing::info!(
-            terminal_id = %term.id,
-            sock = %handle,
-            "daemon handshake failed with handle set — treating as clean child exit",
-        );
-        // #306 — sidecar pickup. The daemon writes
-        // `<sock_path>.exit` with `{"code": <i32|null>,
-        // "signal_killed": <bool>}` immediately before its broadcast
-        // effects fire, so by the time we see the socket unreachable
-        // the file is on disk (modulo daemon-killed-by-SIGKILL, which
-        // never gets the chance to write — that branch leaves the
-        // row's exit_code at NULL and surfaces as DaemonLost in v2).
-        // We persist the parsed payload onto the terminal row so the
-        // REST card view + the badge logic on the frontend can render
-        // immediately, even without ever attaching to a WS. Return the
-        // parsed sidecar to the caller so the upgrade-time fast path
-        // can also forward `exit_code` to the client via a JSON
-        // `TerminalExited` frame — without that, the REST seed and the
-        // WS upgrade race, and a REST-loses race renders "exit"
-        // neutral until the next page refresh.
-        let parsed = persist_exit_sidecar(s, &term.id, handle).await;
-        let exit_code = parsed.and_then(|p| {
-            // Forward the numeric exit code only. Signal-killed
-            // children (`code: None, signal_killed: true`) go through
-            // the close-only path because the wire shape for
-            // `DaemonMsg::TerminalExited` has no signal flag — the
-            // frontend would render `exit` neutral instead of the
-            // correct `signal` (error) palette. The REST seed reads
-            // `signal_killed` straight off the row and renders it
-            // properly; we just don't override it on the WS side.
-            if p.signal_killed { None } else { p.code }
-        });
-        return Ok(LiveSock::ChildExited { exit_code });
-    }
-    // No daemon_handle: with the spawn-site eager-write this should be
-    // rare in practice (only if `cmd.spawn()` itself failed). Treat it
-    // the same as a clean child exit — the row exists, no daemon is
-    // live, and the Restart button is the right recovery path. Surfacing
-    // a 500 here would land in the browser as a 1006 close with no
-    // reason text, which is what made the user-visible bug indistinct
-    // from a network drop.
-    tracing::info!(
-        terminal_id = %term.id,
-        "terminal has no daemon_handle — treating as clean child exit",
-    );
-    Ok(LiveSock::ChildExited { exit_code: None })
-}
-
 /// Accept the WS upgrade, optionally send a JSON `TerminalExited`
 /// frame carrying the parsed sidecar exit code, then send a single
 /// `Close(1000, "child-exited")` frame and drop the socket.
@@ -532,101 +327,8 @@ async fn send_child_exited_close(mut socket: WebSocket, exit_code: Option<i32>) 
         .await;
 }
 
-#[allow(dead_code)]
-async fn handle(socket: WebSocket, sock: PathBuf, terminal_id: String, repo: Arc<dyn RouteRepo>) {
-    let stream = match UnixStream::connect(&sock).await {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(error = %e, sock = ?sock, "connect daemon socket failed");
-            return;
-        }
-    };
-    let outcome = pump(
-        socket,
-        stream,
-        terminal_id.clone(),
-        PING_INTERVAL,
-        PONG_TIMEOUT,
-    )
-    .await;
-    if let PumpOutcome::FramingSkew { error } = outcome {
-        // Stale daemon binary still bound to this socket. Clear the row's
-        // `daemon_handle` and unlink the socket file so the next attach hits
-        // `resolve_live_sock`'s spawn path with a clean slate. The old daemon
-        // process exits on its own when its accept loop sees the socket gone
-        // (no PID bookkeeping needed here).
-        tracing::warn!(
-            terminal_id = %terminal_id,
-            sock = ?sock,
-            error = %error,
-            "framing skew — clearing stale daemon_handle and unlinking socket"
-        );
-        cleanup_stale_daemon(repo.as_ref(), &terminal_id, &sock).await;
-    }
-}
-
-/// Drop the stale daemon's footprint after a framing-skew close: clear the
-/// terminal row's `daemon_handle` and remove the socket file on disk. Pulled
-/// into a free function so it can be exercised by a focused unit test
-/// without standing up a full WS round-trip.
-///
-/// Errors are downgraded to warn-log: a row that's already been deleted
-/// concurrently, or a socket file that another path already removed, are
-/// both benign — the next attach will respawn either way.
-pub(crate) async fn cleanup_stale_daemon(
-    repo: &dyn RepoOutOfDomain,
-    terminal_id: &str,
-    sock: &StdPath,
-) {
-    if let Err(e) = repo.terminal_set_handle(terminal_id, None).await {
-        tracing::warn!(
-            terminal_id = %terminal_id,
-            error = %e,
-            "clearing daemon_handle after framing skew failed"
-        );
-    }
-    match std::fs::remove_file(sock) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => {
-            tracing::warn!(
-                terminal_id = %terminal_id,
-                sock = ?sock,
-                error = %e,
-                "unlinking stale daemon socket failed"
-            );
-        }
-    }
-    // #306 — GC the daemon's `.exit` sidecar alongside the socket file.
-    // We tolerate ENOENT silently: the daemon may have been SIGKILL'd
-    // before it ever wrote the file, or another path may have already
-    // cleaned it up.
-    let exit_path = exit_sidecar_path(sock);
-    match std::fs::remove_file(&exit_path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => {
-            tracing::warn!(
-                terminal_id = %terminal_id,
-                path = ?exit_path,
-                error = %e,
-                "unlinking stale .exit sidecar failed"
-            );
-        }
-    }
-}
-
-/// #306 — derive the `<sock>.exit` sidecar path from a socket path.
-/// Lifted into a free function so the daemon's writer and the kernel's
-/// reader / GC use a single canonical formula.
-pub(crate) fn exit_sidecar_path(sock: &StdPath) -> PathBuf {
-    let mut s = sock.as_os_str().to_owned();
-    s.push(".exit");
-    PathBuf::from(s)
-}
-
 /// Outcome reported by [`pump`] when it returns. Lets [`handle`] decide
-/// whether to perform stale-daemon cleanup (clear `daemon_handle`, unlink
+/// whether to perform stale-daemon cleanup (clear `renderer entry`, unlink
 /// the socket) before the connection fully tears down. Keeping the side
 /// effects in `handle` (rather than threading the repo into `pump`) leaves
 /// `pump` purely I/O-bound and easy to test against in-memory transports.
@@ -640,7 +342,7 @@ pub enum PumpOutcome {
     /// The daemon read-half produced a framing error (bad magic or
     /// unsupported version). This means the bytes on the kernel↔daemon
     /// socket aren't from a current-protocol `calm-session-daemon`, so the
-    /// row's `daemon_handle` is stale and must be cleared before the next
+    /// row's `renderer entry` is stale and must be cleared before the next
     /// attach.
     FramingSkew { error: FrameError },
 }
@@ -809,9 +511,9 @@ pub async fn pump<T: DaemonTransport>(
                     // can correlate to the deploy that introduced the skew,
                     // then surface the skew up to `handle` (via
                     // `PumpOutcome::FramingSkew`) so it can clear the
-                    // row's `daemon_handle` + unlink the socket file. The
+                    // row's `renderer entry` + unlink the socket file. The
                     // next attach to this terminal will then go through
-                    // `resolve_live_sock`'s spawn path and start a fresh
+                    // `resolve_live_renderer`'s spawn path and start a fresh
                     // daemon binary.
                     framing_skew = matches!(
                         &e,
@@ -1566,7 +1268,7 @@ mod pump_tests {
 
     /// Bad magic on the daemon side: `pump` must return
     /// `PumpOutcome::FramingSkew { error: FrameError::BadMagic { .. } }`
-    /// so the caller (`handle`) can clear the stale `daemon_handle` and
+    /// so the caller (`handle`) can clear the stale `renderer entry` and
     /// unlink the socket. We assert on the variant + the wrapped
     /// `FrameError` shape; `bad_magic_breaks_pump_cleanly` above asserts
     /// the WS-side semantics (Close frame + stream end).
@@ -1844,144 +1546,5 @@ mod pump_tests {
         let _ = tokio::time::timeout(Duration::from_secs(2), outcome_rx)
             .await
             .expect("send_child_exited_close did not return");
-    }
-}
-
-#[cfg(test)]
-mod cleanup_tests {
-    //! Unit tests for [`cleanup_stale_daemon`], the helper `handle` calls
-    //! after a framing-skew pump exit. We exercise the success path
-    //! against a real in-memory `SqlxRepo` and a real socket file on
-    //! disk: the framing-skew path's whole point is to leave the next
-    //! attach with `daemon_handle = None` + socket file gone, so the
-    //! `resolve_live_sock` cold path can respawn.
-    use super::*;
-    use crate::db::sqlite::SqlxRepo;
-    use crate::model::NewTerminal;
-    use serde_json::json;
-    use std::sync::Arc;
-
-    /// Seed a cove + wave + card + terminal, stamp a fake daemon_handle
-    /// onto the terminal row, drop a placeholder file at that path so
-    /// `cleanup_stale_daemon` has something to unlink. Returns
-    /// `(repo, terminal_id, sock_path)`. The repo is wrapped in `Arc`
-    /// because the helper signature wants `&dyn RepoOutOfDomain` and
-    /// `SqlxRepo: RepoOutOfDomain`.
-    async fn seed_terminal_with_stale_handle() -> (Arc<SqlxRepo>, String, PathBuf) {
-        use crate::db::prelude::*;
-        use crate::model::{NewCard, NewCove, NewWave};
-
-        let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-        let cove = repo
-            .cove_create(NewCove {
-                name: "c".into(),
-                color: "#000".into(),
-                sort: None,
-            })
-            .await
-            .unwrap();
-        let wave = repo
-            .wave_create(NewWave {
-                cove_id: cove.id,
-                title: "w".into(),
-                sort: None,
-                cwd: String::new(),
-                attach_folder: false,
-                theme: crate::routes::theme::RequestTheme::default_dark(),
-            })
-            .await
-            .unwrap();
-        let card = repo
-            .card_create(NewCard {
-                wave_id: wave.id,
-                kind: "terminal".into(),
-                sort: None,
-                payload: json!({}),
-            })
-            .await
-            .unwrap();
-        let term = repo
-            .terminal_create(NewTerminal {
-                card_id: card.id,
-                program: "/bin/true".into(),
-                cwd: "/tmp".into(),
-                env: json!({}),
-                theme: crate::routes::theme::RequestTheme::default_dark(),
-            })
-            .await
-            .unwrap();
-
-        // Materialize a fake socket file under tempdir + stamp its path
-        // onto the row. The cleanup helper unlinks the file by path; it
-        // doesn't care that the file isn't a real Unix socket.
-        let dir = tempfile::tempdir().unwrap().keep();
-        let sock = dir.join(format!("{}.sock", term.id));
-        std::fs::write(&sock, b"stub").unwrap();
-        let sock_str = sock.to_string_lossy().to_string();
-        repo.terminal_set_handle(&term.id, Some(&sock_str))
-            .await
-            .unwrap();
-
-        (repo, term.id, sock)
-    }
-
-    /// Happy path: cleanup clears `daemon_handle` and unlinks the socket
-    /// file. After the call:
-    ///   * `terminal_get(id).daemon_handle == None`
-    ///   * the socket file no longer exists on disk
-    /// This is exactly the post-state the next `resolve_live_sock` needs
-    /// to take the spawn path instead of the probe-and-reuse path.
-    #[tokio::test]
-    async fn cleanup_stale_daemon_clears_handle_and_unlinks_socket() {
-        use crate::db::prelude::*;
-        let (repo, id, sock) = seed_terminal_with_stale_handle().await;
-
-        // Sanity: pre-state has a handle + the file on disk.
-        let before = repo.terminal_get(&id).await.unwrap().unwrap();
-        assert!(
-            before.daemon_handle.is_some(),
-            "seed did not stamp daemon_handle"
-        );
-        assert!(sock.exists(), "seed did not materialize the socket file");
-
-        // Act.
-        cleanup_stale_daemon(repo.as_ref(), &id, &sock).await;
-
-        // Assert: row's daemon_handle is cleared.
-        let after = repo.terminal_get(&id).await.unwrap().unwrap();
-        assert!(
-            after.daemon_handle.is_none(),
-            "expected daemon_handle = None after cleanup, got {:?}",
-            after.daemon_handle
-        );
-        // Assert: the on-disk socket file is gone.
-        assert!(
-            !sock.exists(),
-            "expected socket file at {:?} to be unlinked",
-            sock
-        );
-    }
-
-    /// Idempotent on missing socket: if the file has already been removed
-    /// (concurrent sweeper run, manual cleanup, etc.), the helper must
-    /// still clear `daemon_handle` and not panic. ErrorKind::NotFound on
-    /// `remove_file` is swallowed by the helper.
-    #[tokio::test]
-    async fn cleanup_stale_daemon_tolerates_missing_socket() {
-        use crate::db::prelude::*;
-        let (repo, id, sock) = seed_terminal_with_stale_handle().await;
-        // Pre-delete the socket file so the helper's remove_file call
-        // hits NotFound.
-        std::fs::remove_file(&sock).unwrap();
-        assert!(!sock.exists());
-
-        cleanup_stale_daemon(repo.as_ref(), &id, &sock).await;
-
-        let after = repo.terminal_get(&id).await.unwrap().unwrap();
-        assert!(
-            after.daemon_handle.is_none(),
-            "expected daemon_handle = None after cleanup, got {:?}",
-            after.daemon_handle
-        );
     }
 }

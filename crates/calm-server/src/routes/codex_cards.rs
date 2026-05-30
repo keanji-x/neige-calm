@@ -14,7 +14,7 @@
 //!    `payload=null` flash for the renderer's "Codex is starting…"
 //!    placeholder to react to.
 //! 2. After commit, the handler seeds the per-card `CODEX_HOME` and
-//!    spawns `calm-session-daemon` via the same `spawn_daemon_for`
+//!    spawns `calm-session-daemon` via the same `spawn_terminal_for`
 //!    helper the terminal-card endpoint uses. Hooks come from
 //!    `/etc/codex/requirements.toml` (policy-managed, bind-mounted via
 //!    docker-compose) — no per-card `hooks.json` is written. A daemon-
@@ -38,7 +38,7 @@ use crate::event::Event;
 use crate::model::{Card, new_id};
 use crate::routes::cards::card_scope;
 use crate::routes::settings::load_settings;
-use crate::routes::terminal::spawn_daemon_for;
+use crate::routes::terminal::spawn_terminal_for;
 use crate::state::AppState;
 use axum::{
     Json, Router,
@@ -344,7 +344,7 @@ pub(crate) async fn create_codex_card(
     }
 
     // 7. Fetch the persisted terminal row so we can hand it to
-    //    `spawn_daemon_for`. Guaranteed to exist: the transaction above
+    //    `spawn_terminal_for`. Guaranteed to exist: the transaction above
     //    committed both card and terminal as one unit.
     let term = s
         .repo
@@ -357,7 +357,7 @@ pub(crate) async fn create_codex_card(
             ))
         })?;
 
-    // 8. Build the codex command. `spawn_daemon_for` passes
+    // 8. Build the codex command. `spawn_terminal_for` passes
     //    whatever we hand here to `sh -c`, so for hands-free spawns we
     //    append the prompt as codex's positional `[PROMPT]` arg,
     //    shell-single-quoted so any user payload (including single
@@ -373,7 +373,7 @@ pub(crate) async fn create_codex_card(
     //    within its grace window. Matches the prior endpoint's semantics:
     //    a 500 tells the client the spawn failed, but the card/terminal
     //    pair is still in the DB until the sweeper runs.
-    spawn_daemon_for(&s, &term, &command_line, &cwd, &env).await?;
+    spawn_terminal_for(&s, &term, &command_line, &cwd, &env).await?;
 
     tracing::info!(
         card_id = %card.id,

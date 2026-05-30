@@ -7,7 +7,7 @@
 //!
 //! Pre-#197 the lifecycle leaked: `terminals.card_id` was
 //! `ON DELETE CASCADE`, so the FK quietly nuked the terminal row when
-//! its card was deleted — but the daemon process + unix socket lived
+//! its card was deleted — but the terminal process lived
 //! on until the orphan sweeper caught them ~30-60 s later (or never,
 //! if the server restarted in between).
 //!
@@ -18,24 +18,17 @@
 //! fires.
 //!
 //! These tests drive the real route handlers via `tower::ServiceExt::oneshot`,
-//! seed a terminal row with a real spawned child process and a real
-//! socket file on disk, then assert post-delete that:
+//! seed a terminal row with a real spawned child process, then assert
+//! post-delete that:
 //!   * the child process is gone (waited away or signalled away),
-//!   * the socket file is unlinked,
 //!   * the terminal row is removed from the DB.
 //!
 //! The child we spawn is `/bin/sleep` (POSIX guaranteed) — we never
-//! stand up the real `calm-session-daemon` binary, just a long-running
-//! process that the cleanup helper can SIGTERM. The "socket" is a
-//! regular file at the same path the helper would unlink; we don't
-//! need it to bind/listen because the graceful-Kill connect attempt
-//! fails immediately (file is not a socket), the cleanup falls
-//! through to SIGTERM, then unlinks the file. End-to-end shape is
-//! identical to a real daemon.
+//! stand up a terminal renderer, just a long-running process that the
+//! cleanup helper can SIGTERM via the persisted pid fallback.
 
 #![cfg(unix)]
 
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
@@ -54,7 +47,7 @@ use tower::ServiceExt;
 
 /// Spin up an `AppState` backed by an in-memory SQLite repo, mirroring
 /// the existing test fixtures (`payload_validation.rs`,
-/// `terminal_sweeper.rs`). No real daemon / codex binaries — we never
+/// `terminal_sweeper.rs`). No real codex binaries — we never
 /// invoke them in this file.
 async fn fresh_state() -> AppState {
     let repo: Arc<dyn Repo> = Arc::new(
@@ -109,20 +102,6 @@ fn spawn_long_running_child() -> std::process::Child {
         .expect("spawn /bin/sleep")
 }
 
-/// Make a unique tempdir + socket-path target. We create the path as
-/// a regular file (not a real unix socket) — the cleanup helper's
-/// graceful-Kill connect will fail (`ECONNREFUSED` / similar), it
-/// falls through to SIGTERM, then `unlink`s the file. End-to-end the
-/// state transition is the same as a real socket.
-fn make_socket_path(test_name: &str) -> PathBuf {
-    let dir =
-        std::env::temp_dir().join(format!("calm-test-{}-{}", test_name, uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).expect("mkdir tempdir");
-    let path = dir.join("daemon.sock");
-    std::fs::write(&path, b"placeholder").expect("touch socket file");
-    path
-}
-
 /// Confirm that a child process spawned by the test has been killed by
 /// the cleanup helper. Since the test process is the parent of the
 /// child, we have to reap via `try_wait` ourselves to see the exit —
@@ -150,7 +129,7 @@ async fn await_child_killed(child: &mut std::process::Child) {
             Err(e) => panic!("try_wait(pid={pid}) failed: {e}"),
         }
     }
-    panic!("pid {pid} was still alive after 2s — daemon was not reaped");
+    panic!("pid {pid} was still alive after 2s");
 }
 
 // ---------------------------------------------------------------------------
@@ -158,14 +137,12 @@ async fn await_child_killed(child: &mut std::process::Child) {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn card_delete_reaps_daemon_and_unlinks_socket() {
-    // Removed in #388 Phase 3b: daemon socket unlink no longer exists post-renderer-lift.
-    // See PR #391 / PR #388 Phase 3b design doc for replacement coverage.
+async fn card_delete_reaps_terminal_process() {
     let state = fresh_state().await;
     let raw = state.raw_repo();
 
     // Seed: cove → wave → terminal card → terminal row pointing at a
-    // real spawned process + a real on-disk socket file.
+    // real spawned process.
     let cove = raw
         .cove_create(NewCove {
             name: "c".into(),
@@ -206,20 +183,13 @@ async fn card_delete_reaps_daemon_and_unlinks_socket() {
         .await
         .unwrap();
     let mut child = spawn_long_running_child();
-    let sock = make_socket_path("card_delete");
-    state
-        .repo
-        .terminal_set_handle(&term.id, Some(sock.to_string_lossy().as_ref()))
-        .await
-        .unwrap();
     state
         .repo
         .terminal_set_pid(&term.id, Some(child.id()))
         .await
         .unwrap();
 
-    // Sanity: pid is alive, socket file exists, terminal row exists.
-    assert!(sock.exists(), "socket file must exist pre-delete");
+    // Sanity: pid is alive and terminal row exists.
     assert!(
         state.repo.terminal_get(&term.id).await.unwrap().is_some(),
         "terminal row exists pre-delete"
@@ -243,7 +213,7 @@ async fn card_delete_reaps_daemon_and_unlinks_socket() {
         "card delete should return 204"
     );
 
-    // Post-delete: process gone, socket unlinked, row removed.
+    // Post-delete: process gone and row removed.
     await_child_killed(&mut child).await;
     assert!(
         state.repo.terminal_get(&term.id).await.unwrap().is_none(),
@@ -269,8 +239,8 @@ async fn wave_delete_reaps_every_terminal_under_wave() {
     let state = fresh_state().await;
     let raw = state.raw_repo();
 
-    // Seed: cove → wave with TWO terminal cards, each with a live
-    // daemon. The wave-delete path must reap both.
+    // Seed: cove → wave with TWO terminal cards, each with a live child.
+    // The wave-delete path must reap both.
     let cove = raw
         .cove_create(NewCove {
             name: "c".into(),
@@ -335,18 +305,6 @@ async fn wave_delete_reaps_every_terminal_under_wave() {
 
     let mut child_a = spawn_long_running_child();
     let mut child_b = spawn_long_running_child();
-    let sock_a = make_socket_path("wave_delete_a");
-    let sock_b = make_socket_path("wave_delete_b");
-    state
-        .repo
-        .terminal_set_handle(&term_a.id, Some(sock_a.to_string_lossy().as_ref()))
-        .await
-        .unwrap();
-    state
-        .repo
-        .terminal_set_handle(&term_b.id, Some(sock_b.to_string_lossy().as_ref()))
-        .await
-        .unwrap();
     state
         .repo
         .terminal_set_pid(&term_a.id, Some(child_a.id()))
@@ -357,9 +315,6 @@ async fn wave_delete_reaps_every_terminal_under_wave() {
         .terminal_set_pid(&term_b.id, Some(child_b.id()))
         .await
         .unwrap();
-
-    assert!(sock_a.exists());
-    assert!(sock_b.exists());
 
     // DELETE /api/waves/{id}
     let app = build_app(state.clone());
@@ -421,7 +376,7 @@ async fn cove_delete_reaps_every_terminal_under_cove() {
     let raw = state.raw_repo();
 
     // Seed: cove → wave → terminal card → terminal row pointing at a
-    // real spawned process + a real on-disk socket file. The cove-delete
+    // real spawned process. The cove-delete
     // path walks waves → cards → terminals and must reap the terminal
     // before the structural delete fires (else `terminals.card_id`'s
     // RESTRICT FK would trip).
@@ -465,19 +420,11 @@ async fn cove_delete_reaps_every_terminal_under_cove() {
         .await
         .unwrap();
     let mut child = spawn_long_running_child();
-    let sock = make_socket_path("cove_delete");
-    state
-        .repo
-        .terminal_set_handle(&term.id, Some(sock.to_string_lossy().as_ref()))
-        .await
-        .unwrap();
     state
         .repo
         .terminal_set_pid(&term.id, Some(child.id()))
         .await
         .unwrap();
-
-    assert!(sock.exists(), "socket file must exist pre-delete");
     assert!(
         state.repo.terminal_get(&term.id).await.unwrap().is_some(),
         "terminal row exists pre-delete"

@@ -23,7 +23,7 @@
 //! Tests run against an in-memory `SqlxRepo` and a stubbed
 //! `CodexClient` / `DaemonClient` — PR5 keeps daemon spawn deferred
 //! (worker card + role write-through is the testable surface), so we
-//! never actually call `spawn_daemon_for`.
+//! never actually call `spawn_terminal_for`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -244,7 +244,7 @@ async fn dispatcher_happy_path_mints_worker_card() {
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
 
     // #310 followup — the dispatcher now rolls back the worker card +
-    // terminal row when `spawn_daemon_with_parts` returns Err (orphan
+    // terminal row when `spawn_terminal_with_parts` returns Err (orphan
     // cleanup; see `rollback_orphan_worker`). Pre-rollback we could
     // use `stub_daemon()` here and catch the orphan card with
     // `wait_for` because it stuck around; post-rollback the card is
@@ -389,7 +389,7 @@ async fn dispatcher_role_is_worker_via_role_cache() {
 /// `idempotency_collision_distinct_from_conflict` test.
 ///
 /// Note (#310 followup): the dispatcher now rolls back the worker card
-/// + terminal row when the post-commit `spawn_daemon_with_parts` step
+/// + terminal row when the post-commit `spawn_terminal_with_parts` step
 /// fails — see `rollback_orphan_worker`. That means a failing daemon
 /// is the WRONG fixture to test the dedup invariant against: the
 /// orphan no longer persists and the "exactly one card stays" signal
@@ -890,49 +890,6 @@ fn artifact_ref_smoke() {
     let a = ArtifactRef::from("a-1");
     assert_eq!(a.as_str(), "a-1");
 }
-
-// ---------------------------------------------------------------------------
-// 8. #177 PR3 — dispatcher-spawned codex workers carry the dark theme
-//     default onto the daemon argv as `--terminal-fg=216,219,226` /
-//     `--terminal-bg=15,20,24` (mirrors `DARK_THEME_RGB` in
-//     `web/src/shared/themeRgb.ts`).
-//
-// The dispatcher is kernel-internal (driven by `codex.job_requested`
-// events, not a user click) so there is no host-browser theme to
-// forward — the rationale for picking dark-by-default is documented on
-// the call site in `dispatcher.rs` (most operators run dark; light-mode
-// users see a two-shades-off mismatch rather than codex's default-purple
-// on white). This test pins the exact RGB so a drift between this
-// kernel default and the web's `DARK_THEME_RGB` constant trips loudly
-// instead of silently desyncing.
-//
-// Strategy: swap the dispatcher's daemon binary pointer at the
-// `argv-recorder-daemon` fixture (same fixture used by
-// `tests/wave_create_with_theme.rs`) + emit a `CodexJobRequested` —
-// then assert the recorder logged `--terminal-fg/-bg` with the dark
-// RGB. The worker card path goes through `card_with_codex_create_tx`
-// → terminal row write → `spawn_daemon_with_parts`, which reads
-// `term.theme_fg/_bg` directly off the row. So this test exercises
-// both the kernel-internal default-dark seed AND the PR2 spawn-arg
-// stamping in one assertion.
-// ---------------------------------------------------------------------------
-
-/// Locate the argv-recorder fake daemon — same fixture as
-/// `tests/wave_create_with_theme.rs`. Cargo drops it next to the test
-/// binary (`target/<profile>/argv-recorder-daemon`).
-fn locate_recorder_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_argv-recorder-daemon"))
-}
-
-/// Locate the never-ready fake daemon (#310 followup). Spawns
-/// successfully, persists its pid to `<sock>.partial-pid`, then
-/// sleeps without binding the socket — guaranteed to trip the
-/// kernel's hung-daemon readiness backstop and surface the partial-
-/// spawn state the rollback reap path is supposed to clean up.
-fn locate_never_ready_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_never-ready-daemon"))
-}
-
 /// Wait up to `timeout` for any `*.argv` file under `data_dir` to
 /// land + return its lines. The recorder writes the file BEFORE
 /// binding the unix socket so by the time the kernel sees the daemon
@@ -991,7 +948,7 @@ async fn dispatcher_codex_worker_spawns_with_dark_theme_default() {
 
     // Emit a Wave-scoped CodexJobRequested envelope; the dispatcher
     // picks it up, mints a worker card with `RequestTheme::default_dark()`
-    // on the terminal row, then spawns the daemon. `spawn_daemon_with_parts`
+    // on the terminal row, then spawns the daemon. `spawn_terminal_with_parts`
     // reads the row's theme_fg/_bg and stamps `--terminal-fg/-bg` on argv.
     let idem = "dispatcher-theme-default";
     let req = codex_req(idem, "do thing");
@@ -1031,7 +988,7 @@ async fn dispatcher_codex_worker_spawns_with_dark_theme_default() {
 //    card path (issue #251) for the worker side.
 //
 // We funnel the daemon argv through the same `argv-recorder-daemon`
-// fixture used by the theme test above. `spawn_daemon_with_parts` ends
+// fixture used by the theme test above. `spawn_terminal_with_parts` ends
 // the argv with `-- /bin/sh -c "<program>"`, so the rendered prompt
 // lands as one element starting with `codex `.
 // ---------------------------------------------------------------------------
@@ -1105,13 +1062,13 @@ async fn dispatcher_codex_worker_spawn_carries_prompt_argv() {
 // ---------------------------------------------------------------------------
 // 10. Issue #310 — `CardAdded` ordering contract: the dispatcher must NOT
 //     broadcast `Event::CardAdded` for a worker card until AFTER
-//     `spawn_daemon_with_parts` has written `daemon_handle` on the backing
+//     `spawn_terminal_with_parts` has written `renderer entry` on the backing
 //     terminal row.
 //
 //     The pre-#310 bug: `CardAdded` was emitted inside the row-creation tx,
 //     so a spec card hot-subscribed to the wave's event stream saw the
 //     card frame, mounted an `XtermView`, attempted WS attach, and hit
-//     `resolve_live_sock`'s "no daemon_handle = clean child exit" branch
+//     `resolve_live_renderer`'s "no renderer entry = clean child exit" branch
 //     (#304) — producing a spurious `Close(1000, "child-exited")` for a
 //     daemon ~670ms away from being alive.
 //
@@ -1120,7 +1077,7 @@ async fn dispatcher_codex_worker_spawn_carries_prompt_argv() {
 //     (so daemon spawn actually succeeds), captures the FIRST `CardAdded`
 //     envelope, then queries the matching `terminal_get(...)` row and
 //     asserts:
-//        - `daemon_handle.is_some()`  ← the core ordering contract
+//        - `renderer entry.is_some()`  ← the core ordering contract
 //        - the socket path is connectable (the daemon really is up)
 //
 //     If anyone reverts the dispatcher back to emitting `CardAdded`
@@ -1128,7 +1085,7 @@ async fn dispatcher_codex_worker_spawn_carries_prompt_argv() {
 //     again), this test trips loudly.
 // ---------------------------------------------------------------------------
 #[tokio::test]
-async fn dispatcher_codex_card_added_after_daemon_handle_set_issue_310() {
+async fn dispatcher_codex_card_added_after_renderer_entry_set_issue_310() {
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
 
     let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
@@ -1216,16 +1173,16 @@ async fn dispatcher_codex_card_added_after_daemon_handle_set_issue_310() {
 //     terminal-worker path (`spawn_terminal_worker`). The pre-fix bug
 //     existed on BOTH spawn helpers: each emitted `CardAdded` inside the
 //     row-creation tx, so a hot subscriber saw the card frame before
-//     `spawn_daemon_with_parts` populated `daemon_handle`. The fix
+//     `spawn_terminal_with_parts` populated `renderer entry`. The fix
 //     deferred the broadcast in both helpers; this test guards the
 //     terminal half so a future refactor that reverts ONLY the terminal
 //     change (leaving the codex test green) still trips a regression.
 //
-//     Mirrors `dispatcher_codex_card_added_after_daemon_handle_set_issue_310`
+//     Mirrors `dispatcher_codex_card_added_after_renderer_entry_set_issue_310`
 //     in shape — see that test's doc comment for the full bug rationale.
 // ---------------------------------------------------------------------------
 #[tokio::test]
-async fn dispatcher_terminal_card_added_after_daemon_handle_set_issue_310() {
+async fn dispatcher_terminal_card_added_after_renderer_entry_set_issue_310() {
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
 
     let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
@@ -1315,7 +1272,7 @@ async fn dispatcher_terminal_card_added_after_daemon_handle_set_issue_310() {
 // 12. Issue #310 followup (codex's P2 escalation) — orphan-row rollback on
 //     post-commit spawn failure.
 //
-//     Pre-fix: when `spawn_daemon_with_parts` returned Err after the
+//     Pre-fix: when `spawn_terminal_with_parts` returned Err after the
 //     row-creation tx committed (real failure modes: missing daemon
 //     binary, fd exhaustion, permission denied, readiness failure), the
 //     dispatcher returned the error WITHOUT cleaning up the card +
@@ -1340,7 +1297,7 @@ async fn dispatcher_terminal_card_added_after_daemon_handle_set_issue_310() {
 //
 //     We provoke spawn failure by pointing `DaemonClient.session_daemon_bin`
 //     at a nonexistent path (same trick `stub_daemon()` uses) — `cmd.spawn()`
-//     returns ENOENT, `spawn_daemon_with_parts` maps it to
+//     returns ENOENT, `spawn_terminal_with_parts` maps it to
 //     `CalmError::Internal`. Then we swap the bin to the argv-recorder
 //     fixture for the retry leg.
 // ---------------------------------------------------------------------------
@@ -1672,9 +1629,9 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
 // ---------------------------------------------------------------------------
 // 14. Issue #310 followup (codex's P1 escalation) — daemon reap on rollback.
 //
-//     Pre-fix: when `spawn_daemon_with_parts` returned Err AFTER it had
+//     Pre-fix: when `spawn_terminal_with_parts` returned Err AFTER it had
 //     already spawned the daemon child + persisted `pid` + persisted
-//     `daemon_handle` but before readiness succeeded (real failure mode:
+//     `renderer entry` but before readiness succeeded (real failure mode:
 //     the daemon hangs during setup until the backstop fires),
 //     `rollback_orphan_worker` deleted the rows but left the
 //     daemon process + unix socket leaking — the sweeper's SQL excludes
@@ -1684,7 +1641,7 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
 //     anchor cleanup, until the next kernel boot.
 //
 //     The fix re-fetches the terminal row (to pick up any post-commit
-//     pid / daemon_handle writes) and calls `reap_terminal_artifacts`
+//     pid / renderer entry writes) and calls `reap_terminal_artifacts`
 //     before the row delete. This test pins that ordering by:
 //        a) Pointing the dispatcher at `never-ready-daemon` — spawns
 //           OK, persists pid via a `.partial-pid` sidecar, then sleeps
@@ -1742,7 +1699,7 @@ async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
         .unwrap();
 
     // Wait for task.failed — the dispatcher's readiness race in
-    // `spawn_daemon_with_parts` reaches its hung-daemon backstop before
+    // `spawn_terminal_with_parts` reaches its hung-daemon backstop before
     // returning the timeout error. The rollback then runs synchronously
     // before `run_one` emits `task.failed`. Allow a generous deadline.
     let mut saw_failed = false;
@@ -1784,28 +1741,18 @@ async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
         leftover.len()
     );
 }
-
-/// Locate the fast-exit fake daemon (#310 fix-loop round 4). Writes
-/// `<sock>.exit` with `{"code":0,"signal_killed":false}` then exits
-/// 0 without binding the socket or writing ready — drives the kernel's
-/// child-exit readiness arm, then the dispatcher's rollback discriminator into the
-/// `Preserved` branch (case 2 of `rollback_orphan_worker`).
-fn locate_fast_exit_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_fast-exit-daemon"))
-}
-
 // ---------------------------------------------------------------------------
 // 12. Issue #310 fix-loop round 4 — codex caught a regression in the round-3
 //     rollback patch: a fast-exit terminal worker (e.g. `printf done`,
 //     `/bin/true`, `make build`) writes the daemon's `.exit` sidecar AND
 //     exits before the kernel sees `ready\n`.
-//     `spawn_daemon_with_parts` returned Err for this case, and round 3's
+//     `spawn_terminal_with_parts` returned Err for this case, and round 3's
 //     unconditional rollback would then DELETE the card + terminal row —
 //     turning a completed worker into `task.failed` with no card/output
 //     for the user to inspect.
 //
 //     The fix discriminates inside `rollback_orphan_worker`: when the
-//     re-fetched terminal row has `daemon_handle = Some(...)` AND a
+//     re-fetched terminal row has `renderer entry = Some(...)` AND a
 //     `<handle>.exit` sidecar exists on disk, the helper persists the
 //     sidecar's exit_code/signal_killed onto the row and returns
 //     `Preserved` (no row delete). The caller then broadcasts
@@ -1828,7 +1775,7 @@ fn locate_fast_exit_bin() -> PathBuf {
 //           - The terminal row's `exit_code = Some(0)` and
 //             `signal_killed = false` (persisted by the discriminator
 //             from the sidecar).
-//           - The terminal row's `daemon_handle` is still set
+//           - The terminal row's `renderer entry` is still set
 //             (preserved, not nulled by the rollback path).
 //
 //     This test would FAIL on the round-3 code (rollback always
@@ -1924,7 +1871,7 @@ async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
         !saw_task_failed,
         "task.failed must NOT be emitted for a fast-exit success — the worker \
          actually completed (exit_code = 0 in `.exit` sidecar); pre-fix this \
-         fired because spawn_daemon_with_parts's readiness error \
+         fired because spawn_terminal_with_parts's readiness error \
          propagated unconditionally to `run_one`",
     );
 
@@ -1942,7 +1889,7 @@ async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
         Some(idem),
     );
 
-    // Terminal row survives, has daemon_handle preserved, and the
+    // Terminal row survives, has renderer entry preserved, and the
     // discriminator persisted exit_code = 0 / signal_killed = false
     // from the sidecar.
     let terminal_id = card_row
@@ -1969,10 +1916,5 @@ async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
     assert!(
         !term_row.signal_killed,
         "signal_killed must be false for a clean fast-exit; got true",
-    );
-
-    assert!(
-        term_row.daemon_handle.is_none(),
-        "Phase 3b no longer writes daemon_handle for renderer-backed terminals",
     );
 }

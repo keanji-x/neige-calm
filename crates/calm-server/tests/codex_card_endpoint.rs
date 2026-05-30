@@ -41,25 +41,6 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
-
-/// Locate the `calm-session-daemon` binary the workspace built. Same
-/// strategy as `terminal_card_endpoint.rs` — test binaries live at
-/// `target/<profile>/deps/<test_name>`, two pops land us in
-/// `target/<profile>/`.
-fn locate_daemon_bin() -> PathBuf {
-    let mut p = std::env::current_exe().expect("current_exe");
-    p.pop();
-    p.pop();
-    p.push("calm-session-daemon");
-    assert!(
-        p.exists(),
-        "calm-session-daemon not found at {p:?}; run \
-         `cargo build -p calm-session --bin calm-session-daemon` first, or \
-         use `cargo test --workspace` which builds workspace bins"
-    );
-    p
-}
-
 struct Boot {
     app: axum::Router,
     wave_id: String,
@@ -68,7 +49,7 @@ struct Boot {
     _tmp: TempDir,
 }
 
-async fn boot_with_daemon(session_daemon_bin: PathBuf) -> Boot {
+async fn boot() -> Boot {
     let tmp = TempDir::new().expect("tempdir for daemon sockets");
     let repo: Arc<dyn Repo> = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -135,7 +116,7 @@ async fn boot_with_daemon(session_daemon_bin: PathBuf) -> Boot {
 }
 
 async fn boot_happy() -> Boot {
-    boot_with_daemon(locate_daemon_bin()).await
+    boot().await
 }
 
 /// #388 Phase 3b: drive a deliberate spawn failure by pointing
@@ -379,7 +360,7 @@ async fn post_codex_card_atomic_returns_500_on_daemon_spawn_failure_but_persists
 #[tokio::test]
 async fn post_codex_card_atomic_404_on_unknown_wave() {
     // No daemon spawn happens on the 404 path, so the stub binary is fine.
-    let boot = boot_with_daemon(PathBuf::from("calm-session-daemon")).await;
+    let boot = boot().await;
 
     let (status, body) = post(
         boot.app.clone(),
@@ -416,8 +397,8 @@ async fn post_codex_card_atomic_rejects_control_chars_in_cwd() {
 
     for (cwd, label) in cases {
         // No daemon spawn happens on the validation-rejection path, so
-        // a non-existent binary is fine — we never reach `spawn_daemon_for`.
-        let boot = boot_with_daemon(PathBuf::from("calm-session-daemon")).await;
+        // a non-existent binary is fine — we never reach `spawn_terminal_for`.
+        let boot = boot().await;
 
         let (status, body) = post(
             boot.app.clone(),

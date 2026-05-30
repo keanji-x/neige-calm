@@ -2,7 +2,7 @@
 //!
 //! The most surface-area test in the suite: stands up the real
 //! `calm-session-daemon` binary, spawns it via the production
-//! `spawn_daemon_for_with_opts` helper with theme args, and runs a
+//! `spawn_terminal_for_with_opts` helper with theme args, and runs a
 //! fixture child (`osc-probe-child`) under the daemon's PTY that
 //! probes OSC 11 the same way the real codex CLI does. The fixture
 //! writes "OK" / "FAIL" to a sidecar file the test driver polls.
@@ -117,23 +117,6 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(5);
 /// reply → result-file write). 15s leaves room on hot CI without
 /// blowing the 30s per-test budget the task constraints set.
 const ROUNDTRIP_BUDGET: Duration = Duration::from_secs(15);
-
-/// Locate the real `calm-session-daemon` binary built by the workspace.
-/// Same pattern as `tests/ws_terminal_e2e.rs::locate_daemon_bin`.
-fn locate_daemon_bin() -> PathBuf {
-    let mut p = std::env::current_exe().expect("current_exe");
-    p.pop(); // strip test name
-    p.pop(); // strip "deps/"
-    p.push("calm-session-daemon");
-    assert!(
-        p.exists(),
-        "calm-session-daemon not found at {p:?}; run \
-         `cargo build -p calm-session --bin calm-session-daemon` first, or \
-         use `cargo test --workspace` which builds workspace bins"
-    );
-    p
-}
-
 /// Locate the `osc-probe-child` test fixture bin. Cargo populates
 /// `CARGO_BIN_EXE_osc-probe-child` for integration test crates.
 fn locate_probe_bin() -> PathBuf {
@@ -738,7 +721,7 @@ async fn osc_roundtrip_mid_session_theme_update() {
 /// handler atomically mints a spec card + terminal row and fires
 /// `spec_card::seed_and_spawn_spec_daemon` as a background task; the
 /// helper passes the theme through `SpawnDaemonOpts` to
-/// `spawn_daemon_for_with_opts`. This is the **separate** spawn code
+/// `spawn_terminal_for_with_opts`. This is the **separate** spawn code
 /// path from cases 1 and 2 — those exercise `routes::codex_cards`'s
 /// inline spawn. A regression that drops theme inside
 /// `seed_and_spawn_spec_daemon` (or the `NewWave.theme` snapshot in
@@ -754,7 +737,7 @@ async fn osc_roundtrip_mid_session_theme_update() {
 /// `NEIGE_OSC_RESULT_PATH` and `NEIGE_OSC_EXPECTED_BG` from its
 /// process env. `tokio::process::Command::spawn` inherits the parent
 /// process env by default (no `env_clear` anywhere in
-/// `spawn_daemon_with_parts`), so vars we set on the test process
+/// `spawn_terminal_with_parts`), so vars we set on the test process
 /// reach the daemon and then the PTY child unchanged — exactly the
 /// same chain cases 1 and 2 rely on. The per-card env_map built by
 /// `spec_card::build_codex_env_map` only **adds** overrides
@@ -790,7 +773,7 @@ async fn spec_card_path_osc_roundtrip_light_theme() {
     //      tx and returns 201.
     //   2. Spawns `seed_and_spawn_spec_daemon` as a background task,
     //      which threads the theme into `SpawnDaemonOpts` and calls
-    //      `spawn_daemon_for_with_opts`. The daemon argv carries
+    //      `spawn_terminal_for_with_opts`. The daemon argv carries
     //      `--terminal-fg=42,47,58 --terminal-bg=252,254,255`.
     //   3. Daemon launches `/bin/sh -c codex`; sh's PATH lookup
     //      resolves `codex` → our `<tmp>/bin/codex` symlink → the

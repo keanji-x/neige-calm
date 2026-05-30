@@ -989,15 +989,14 @@ pub async fn terminal_create_tx(
     let env_text = serde_json::to_string(&p.env)?;
     // #177 — theme is a write-once row invariant. Render the
     // `(r, g, b)` tuples to comma-decimal once at row creation so
-    // every spawn path that reads this row can stamp the daemon
-    // argv with zero allocation.
+    // every spawn path that reads this row can use the theme with zero
+    // allocation.
     let theme_fg = p.theme.fg_arg();
     let theme_bg = p.theme.bg_arg();
     sqlx::query(
         r#"INSERT INTO terminals
-               (id, card_id, program, cwd, env, daemon_handle, pid,
-                theme_fg, theme_bg, created_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6, ?7, ?8)"#,
+               (id, card_id, program, cwd, env, pid, theme_fg, theme_bg, created_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)"#,
     )
     .bind(&id)
     .bind(&p.card_id)
@@ -1015,7 +1014,6 @@ pub async fn terminal_create_tx(
         program: p.program,
         cwd: p.cwd,
         env: p.env,
-        daemon_handle: None,
         pid: None,
         theme_fg,
         theme_bg,
@@ -1777,7 +1775,7 @@ impl RepoRead for SqlxRepo {
     // ------------------------------------------------------------- terminals
     async fn terminal_get(&self, id: &str) -> Result<Option<Terminal>> {
         let row = sqlx::query_as::<_, Terminal>(
-            r#"SELECT id, card_id, program, cwd, env, daemon_handle, pid,
+            r#"SELECT id, card_id, program, cwd, env, pid,
                       theme_fg, theme_bg, exit_code, signal_killed, created_at
                FROM terminals WHERE id = ?1"#,
         )
@@ -1789,7 +1787,7 @@ impl RepoRead for SqlxRepo {
 
     async fn terminal_get_by_card(&self, card_id: &str) -> Result<Option<Terminal>> {
         let row = sqlx::query_as::<_, Terminal>(
-            r#"SELECT id, card_id, program, cwd, env, daemon_handle, pid,
+            r#"SELECT id, card_id, program, cwd, env, pid,
                       theme_fg, theme_bg, exit_code, signal_killed, created_at
                FROM terminals WHERE card_id = ?1"#,
         )
@@ -1808,7 +1806,7 @@ impl RepoRead for SqlxRepo {
         let cutoff = now_ms() - grace_seconds.saturating_mul(1000);
         let rows = sqlx::query_as::<_, Terminal>(
             r#"SELECT t.id, t.card_id, t.program, t.cwd, t.env,
-                      t.daemon_handle, t.pid,
+                      t.pid,
                       t.theme_fg, t.theme_bg,
                       t.exit_code, t.signal_killed,
                       t.created_at
@@ -1825,29 +1823,10 @@ impl RepoRead for SqlxRepo {
         Ok(rows)
     }
 
-    async fn terminals_with_daemon_handle(&self) -> Result<Vec<Terminal>> {
-        // #177 — boot-time orphan-revive sweep input. Every row with a
-        // non-NULL `daemon_handle` was paired with a live daemon when
-        // the kernel previously exited; on startup we probe each one
-        // and respawn the unreachable ones.
-        let rows = sqlx::query_as::<_, Terminal>(
-            r#"SELECT id, card_id, program, cwd, env,
-                      daemon_handle, pid,
-                      theme_fg, theme_bg,
-                      exit_code, signal_killed,
-                      created_at
-               FROM terminals
-               WHERE daemon_handle IS NOT NULL"#,
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows)
-    }
-
     async fn terminals_running(&self) -> Result<Vec<Terminal>> {
         let rows = sqlx::query_as::<_, Terminal>(
             r#"SELECT id, card_id, program, cwd, env,
-                      daemon_handle, pid,
+                      pid,
                       theme_fg, theme_bg,
                       exit_code, signal_killed,
                       created_at
@@ -2213,14 +2192,13 @@ impl RepoOutOfDomain for SqlxRepo {
         let env_text = serde_json::to_string(&p.env)?;
         // #177 — render theme RGB once at row-creation; persisted in
         // comma-decimal form so every spawn-path read is a zero-alloc
-        // string slice straight into the daemon argv.
+        // string slice.
         let theme_fg = p.theme.fg_arg();
         let theme_bg = p.theme.bg_arg();
         sqlx::query(
             r#"INSERT INTO terminals
-                   (id, card_id, program, cwd, env, daemon_handle, pid,
-                    theme_fg, theme_bg, created_at)
-               VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6, ?7, ?8)"#,
+                   (id, card_id, program, cwd, env, pid, theme_fg, theme_bg, created_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)"#,
         )
         .bind(&id)
         .bind(&p.card_id)
@@ -2238,7 +2216,6 @@ impl RepoOutOfDomain for SqlxRepo {
             program: p.program,
             cwd: p.cwd,
             env: p.env,
-            daemon_handle: None,
             pid: None,
             theme_fg,
             theme_bg,
@@ -2246,18 +2223,6 @@ impl RepoOutOfDomain for SqlxRepo {
             signal_killed: false,
             created_at: now,
         })
-    }
-
-    async fn terminal_set_handle(&self, id: &str, handle: Option<&str>) -> Result<()> {
-        let res = sqlx::query("UPDATE terminals SET daemon_handle = ?1 WHERE id = ?2")
-            .bind(handle)
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-        if res.rows_affected() == 0 {
-            return Err(CalmError::NotFound(format!("terminal {id}")));
-        }
-        Ok(())
     }
 
     async fn terminal_set_pid(&self, id: &str, pid: Option<u32>) -> Result<()> {

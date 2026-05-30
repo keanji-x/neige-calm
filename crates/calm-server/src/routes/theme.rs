@@ -9,7 +9,7 @@
 //! After the #177 root-cause refactor the value lands on the
 //! `terminals.theme_fg / .theme_bg` columns (NOT NULL via migration
 //! 0013) inside the row-creation transaction. The spawn helper
-//! (`routes::terminal::spawn_daemon_for`) reads the row at every
+//! (`routes::terminal::spawn_terminal_for`) reads the row at every
 //! spawn — there is no separate `SpawnDaemonOpts` carry between
 //! transaction commit and daemon spawn anymore.
 

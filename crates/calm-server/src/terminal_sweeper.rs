@@ -61,11 +61,7 @@
 //! the card and emits `Event::CardDeleted` (or `WaveDeleted` /
 //! `CoveDeleted`) as the audit signal.
 
-use std::path::Path;
 use std::time::Duration;
-
-use tokio::io::AsyncWriteExt;
-use tokio::net::UnixStream;
 
 use crate::db::sqlite::terminal_delete_tx;
 use crate::db::write_with_event_typed;
@@ -74,10 +70,8 @@ use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, WaveId};
 use crate::model::Terminal;
 use crate::state::AppState;
-use crate::terminal_probe::probe_client_hello;
 use crate::terminal_renderer::TerminalRendererRegistry;
 use calm_session::control::ProcSignal;
-use calm_session::{ClientMsg, write_frame};
 
 /// Actor stamped on every event the sweeper produces. Distinct from
 /// [`ActorId::User`] (REST) and [`ActorId::Plugin`]; matches the convention
@@ -225,7 +219,7 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
 /// Daemon + socket housekeeping for a single terminal row, shared between
 /// the sweeper and the eager-teardown route handlers (issue #197).
 ///
-/// Idempotent: missing socket, dead pid, and absent `daemon_handle` /
+/// Idempotent: missing socket, dead pid, and absent `renderer entry` /
 /// `pid` all collapse to a clean return. The caller is responsible for
 /// the *row delete* step (eager teardown: inside the surrounding
 /// `card_delete_tx` / `wave_delete_tx` transaction; sweeper: inside its
@@ -379,13 +373,13 @@ pub async fn reap_spec_push(state: &AppState, wave_id: &WaveId) {
 const GROUP_KILL_GRACE: Duration = Duration::from_millis(500);
 
 /// SIGTERM a known pid for a partial spawn that wrote `pid` to the
-/// terminal row but never reached the `daemon_handle` write. The
+/// terminal row but never reached the `renderer entry` write. The
 /// dispatcher's rollback path uses this when it detects case 1b
 /// (handle = None AND pid = Some): the daemon process is alive (the
 /// `cmd.spawn()` succeeded and we persisted the pid before the
-/// `terminal_set_handle` write that subsequently failed), but the
+/// `renderer setup` write that subsequently failed), but the
 /// usual [`reap_terminal_artifacts`] graceful path is a no-op because
-/// it keys off `daemon_handle`. Without this direct kill the daemon
+/// it keys off `renderer entry`. Without this direct kill the daemon
 /// would leak once the row is deleted — the sweeper can no longer find
 /// the pid.
 ///
@@ -408,34 +402,6 @@ pub fn reap_terminal_pid_only(terminal_id: &str, pid: i64) {
             "reap_terminal_pid_only: SIGTERM delivered to pid-only partial-spawn daemon"
         );
     }
-}
-
-/// Open the daemon's unix socket, send the required v2 `ClientHello`
-/// (so the daemon's handshake accepts us and routes the connection
-/// through `TerminalSessionState`), then a `Kill` frame, drop the
-/// connection. Bounded by the caller via `tokio::time::timeout`.
-///
-/// `ClientHello.role_hint` is left `None` so the sweeper is implicitly
-/// promoted to Owner when no live client holds ownership — which is the
-/// common case at reap time (the original client is long gone). If a live
-/// client *does* still hold ownership, our `Kill` is rejected as
-/// `NotOwner` and we fall through to the SIGTERM step. Either path lands
-/// at "daemon process gone" within the bounded timeout.
-#[allow(dead_code)]
-async fn graceful_kill_via_socket(sock: &Path, terminal_id: &str) -> std::io::Result<()> {
-    let stream = UnixStream::connect(sock).await?;
-    let (_rd, mut wr) = stream.into_split();
-    write_frame(&mut wr, &probe_client_hello(terminal_id, None))
-        .await
-        .map_err(std::io::Error::other)?;
-    write_frame(&mut wr, &ClientMsg::Kill)
-        .await
-        .map_err(std::io::Error::other)?;
-    // Flush + close — `into_split` write half drops here, closing the
-    // socket. The daemon picks up EOF and exits naturally after the Kill
-    // has signaled its child.
-    let _ = wr.shutdown().await;
-    Ok(())
 }
 
 #[cfg(unix)]

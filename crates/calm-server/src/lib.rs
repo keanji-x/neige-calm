@@ -166,7 +166,6 @@ mod claude_boot_revive_tests {
             program: program.into(),
             cwd: cwd.into(),
             env: json!({"NEIGE_HOOK_PROVIDER": "claude"}),
-            daemon_handle: Some("/tmp/stale.sock".into()),
             pid: None,
             theme_fg: "216,219,226".into(),
             theme_bg: "15,20,24".into(),
@@ -1492,7 +1491,6 @@ pub mod routes;
 pub mod spec_appserver;
 pub mod spec_card;
 pub mod state;
-pub(crate) mod terminal_probe;
 pub mod terminal_renderer;
 pub mod terminal_sweeper;
 pub mod validation;

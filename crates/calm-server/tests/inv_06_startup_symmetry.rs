@@ -132,15 +132,6 @@ mod behavioral {
 
     use super::common;
 
-    /// `argv-recorder-daemon` test-binary path — Cargo drops it next to
-    /// the integration-test bin. Used as the spec card's session daemon
-    /// (it just records its argv and binds the unix socket the kernel
-    /// polls; the takeover path doesn't touch this anyway, but a wave
-    /// create needs a daemon that succeeds).
-    fn locate_recorder_bin() -> PathBuf {
-        PathBuf::from(env!("CARGO_BIN_EXE_argv-recorder-daemon"))
-    }
-
     /// Build a fresh `AppState` backed by the SAME on-disk sqlite file
     /// (so a takeover restart in the second build sees the prior
     /// build's persisted spec card). `db_url` is reused across builds;

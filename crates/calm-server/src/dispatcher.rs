@@ -433,7 +433,7 @@ impl Dispatcher {
     /// constructs the kernel-as-MCP-server first, then hands the handle
     /// to the dispatcher) and `None` for test fixtures that don't need
     /// MCP wiring. When `Some`, the dispatcher folds `NEIGE_MCP_TOKEN` +
-    /// `NEIGE_MCP_SOCKET` into the env it hands to `spawn_daemon_with_parts`
+    /// `NEIGE_MCP_SOCKET` into the env it hands to `spawn_terminal_with_parts`
     /// for codex workers, and threads the shim config into
     /// `seed_codex_home_with_parts` so each worker's `$CODEX_HOME/config.toml`
     /// carries a `[mcp_servers.calm]` block — mirroring the spec card path
@@ -1314,7 +1314,7 @@ impl Inner {
         // shape (no token/socket). The per-card MCP token is minted
         // inside the tx by `card_with_codex_create_tx`; we fold it +
         // the kernel socket path into the env handed to
-        // `spawn_daemon_with_parts` post-commit. Mirrors the spec
+        // `spawn_terminal_with_parts` post-commit. Mirrors the spec
         // card path in `routes::waves::create_wave`.
         let env = build_codex_env_map(
             codex.as_ref(),
@@ -1378,16 +1378,16 @@ impl Inner {
         let bookkeeping_for_tx = bookkeeping_value.clone();
 
         // Issue #310 — two-stage spawn. Stage 1: a tx that mints the
-        // worker card + terminal row (`daemon_handle = NULL`).
+        // worker card + terminal row (`renderer entry = NULL`).
         // **Does NOT emit `CardAdded` here.** Stage 2 (post-commit,
-        // below): `seed_codex_home_with_parts` + `spawn_daemon_with_parts`
-        // (writes `daemon_handle`, spawns daemon, probes readiness).
+        // below): `seed_codex_home_with_parts` + `spawn_terminal_with_parts`
+        // (writes `renderer entry`, spawns daemon, probes readiness).
         // Stage 3 (post-spawn-success): broadcast `CardAdded` via
         // `log_pure_event` so subscribers see the card only after the
         // backing terminal has a live daemon. Without this split, a
         // spec card hot-subscribed to the wave's event stream sees
         // `CardAdded` immediately, mounts its `XtermView`, attempts a
-        // WS attach, and hits `resolve_live_sock`'s "no daemon_handle
+        // WS attach, and hits `resolve_live_renderer`'s "no renderer entry
         // = clean child exit" branch (#304) — producing a spurious
         // `Close(1000, "child-exited")` for a daemon that's in fact
         // ~670ms away from being alive.
@@ -1528,7 +1528,7 @@ impl Inner {
         //      / `calm.task_failed`.
         //
         //   2. Fold `NEIGE_MCP_TOKEN` + `NEIGE_MCP_SOCKET` into the
-        //      env handed to `spawn_daemon_with_parts`. The codex
+        //      env handed to `spawn_terminal_with_parts`. The codex
         //      daemon forwards these to the `neige-mcp-stdio-shim`
         //      child it spawns from the config block above.
         //
@@ -1550,7 +1550,7 @@ impl Inner {
         // Fetch the terminal row the helper just minted. Guaranteed
         // to exist post-commit. Pulled up BEFORE the seed step so the
         // failure-rollback below has a `term.id` to delete by — keeping
-        // the orphan cleanup path symmetric with `spawn_daemon_with_parts`'s
+        // the orphan cleanup path symmetric with `spawn_terminal_with_parts`'s
         // failure arm.
         //
         // NOTE (#310 followup, accepted scope): an error from this
@@ -1600,7 +1600,7 @@ impl Inner {
             // No fast-exit-preserve case can land on this branch: the
             // CODEX_HOME seed is a synchronous in-process filesystem
             // op that runs BEFORE any daemon is spawned, so the
-            // terminal row never has a `daemon_handle` here. The
+            // terminal row never has a `renderer entry` here. The
             // helper still returns `RollbackOutcome::Deleted` and we
             // surface the original Err — but we drop the explicit
             // pattern match below since `_ =` is enough; clippy's
@@ -1646,7 +1646,7 @@ impl Inner {
         // Mirror the spec card path: hand codex the rendered prompt as
         // its positional `[PROMPT]` arg so the composer mounts pre-filled.
         // `shell_single_quote` ships the whole string as one literal sh
-        // word (`spawn_daemon_with_parts` ultimately funnels through
+        // word (`spawn_terminal_with_parts` ultimately funnels through
         // `sh -c`). `codex_auto_submit` then sees the non-empty
         // `payload.prompt` and injects a `\r` on `hook.codex.session_start`.
         let command_line = format!("codex {}", shell_single_quote(&user_prompt));
@@ -1716,13 +1716,13 @@ impl Inner {
         }
 
         // Issue #310 — Stage 3: broadcast `CardAdded` only after
-        // `spawn_daemon_with_parts` has written `daemon_handle` and
+        // `spawn_terminal_with_parts` has written `renderer entry` and
         // probed daemon readiness. Subscribers (the spec card on the
         // requesting wave page) now see the new worker card with a
-        // populated `daemon_handle`; the WS attach in
-        // `ws::terminal::resolve_live_sock` resolves to `Alive` (or,
+        // populated `renderer entry`; the WS attach in
+        // `ws::terminal::resolve_live_renderer` resolves to `Alive` (or,
         // for a genuine fast-exit, the existing `ChildExited` branch)
-        // — never the spurious "no daemon_handle = clean child exit"
+        // — never the spurious "no renderer entry = clean child exit"
         // path that #304 introduced for actual zero-handle rows. See
         // module-level doc comment for the cross-PR rationale.
         if let Err(e) = self
@@ -1852,8 +1852,8 @@ impl Inner {
         // Issue #310 — two-stage spawn (see `spawn_codex_worker`
         // module-level doc for the full rationale). The tx mints the
         // worker card + terminal row but does NOT emit `CardAdded`;
-        // the broadcast is deferred until after `spawn_daemon_with_parts`
-        // populates `daemon_handle`, mirroring the codex path.
+        // the broadcast is deferred until after `spawn_terminal_with_parts`
+        // populates `renderer entry`, mirroring the codex path.
         let card_id_result =
             write_in_tx_typed::<crate::model::Card, _>(self.repo.as_ref(), move |tx| {
                 Box::pin(async move {
@@ -2009,7 +2009,7 @@ impl Inner {
 
         // Issue #310 — broadcast `CardAdded` post-spawn-success so the
         // emitted snapshot's backing terminal row has a populated
-        // `daemon_handle`. See `spawn_codex_worker` for the full
+        // `renderer entry`. See `spawn_codex_worker` for the full
         // rationale + cross-PR pointers.
         if let Err(e) = self
             .repo
@@ -2095,7 +2095,7 @@ fn build_observation(event: &Event) -> String {
 /// Outcome of [`rollback_orphan_worker`]. The caller dispatches on the
 /// variant: a `Deleted` outcome means the row is gone and the original
 /// spawn error should propagate (→ `TaskFailed`); a `Preserved` outcome
-/// means `spawn_daemon_with_parts` returned `Err` for a daemon that
+/// means `spawn_terminal_with_parts` returned `Err` for a daemon that
 /// actually finished cleanly via the `.exit` sidecar — the row stays
 /// alive so the WS attach fast path can render the exit badge, and the
 /// caller must NOT surface this as a task failure.
@@ -2108,10 +2108,10 @@ enum RollbackOutcome {
     /// caller surfaces the spawn error to `task.failed`; the orphan
     /// sweeper is the fallback for tx failures).
     Deleted,
-    /// The terminal row had `daemon_handle = Some(...)` AND the
+    /// The terminal row had `renderer entry = Some(...)` AND the
     /// daemon's `.exit` sidecar was present on disk. The daemon
     /// spawned, executed its command, wrote the exit info, and exited
-    /// before `spawn_daemon_with_parts`'s ready-fd/child-exit race
+    /// before `spawn_terminal_with_parts`'s ready-fd/child-exit race
     /// resolved. We preserved both rows (and persisted the
     /// sidecar's `exit_code` / `signal_killed` onto the terminal row)
     /// so the WS attach fast path resolves to `ChildExited` and the
@@ -2141,7 +2141,7 @@ enum RollbackOutcome {
 ///
 /// **The three cases (after re-fetching the terminal row):**
 ///
-///   * **case 1: `daemon_handle = None`** — spawn never wrote a handle.
+///   * **case 1: `renderer entry = None`** — spawn never wrote a handle.
 ///     This splits on `pid`:
 ///
 ///       * **case 1a: `pid = None`** — `cmd.spawn()` itself failed (or
@@ -2151,20 +2151,20 @@ enum RollbackOutcome {
 ///
 ///       * **case 1b: `pid = Some(...)`** — `cmd.spawn()` succeeded
 ///         and `terminal_set_pid` persisted the pid, but the
-///         subsequent `terminal_set_handle` failed (rare: a
+///         subsequent `renderer setup` failed (rare: a
 ///         `SQLITE_BUSY` at the exact wrong moment, disk full, etc.).
 ///         The daemon process is alive but `reap_terminal_artifacts`
-///         would no-op because it keys off `daemon_handle`. We must
+///         would no-op because it keys off `renderer entry`. We must
 ///         SIGTERM the pid directly via
 ///         [`reap_terminal_pid_only`] BEFORE the row delete —
 ///         otherwise the sweeper can't see it once the row is gone and
 ///         the daemon leaks until reboot.
 ///
-///   * **case 2: `daemon_handle = Some(...)` AND `<handle>.exit`
+///   * **case 2: `renderer entry = Some(...)` AND `<handle>.exit`
 ///     exists** — the daemon DID spawn, ran its command (e.g.
 ///     `printf done`), wrote the canonical `.exit` sidecar via its
 ///     normal-exit path, then exited before writing `ready\n`.
-///     `spawn_daemon_with_parts` drains the ready fd after observing
+///     `spawn_terminal_with_parts` drains the ready fd after observing
 ///     child exit; with no ready signal it surfaces a "did not become
 ///     ready" error — but that's spurious for this rollback path: the
 ///     worker actually completed. **Preserve the rows.** Persist the
@@ -2175,7 +2175,7 @@ enum RollbackOutcome {
 ///     The caller broadcasts `CardAdded` and returns Ok(()) — see
 ///     [`RollbackOutcome::Preserved`].
 ///
-///   * **case 3: `daemon_handle = Some(...)` AND no sidecar** — the
+///   * **case 3: `renderer entry = Some(...)` AND no sidecar** — the
 ///     daemon spawned but hung / crashed / never wrote `.exit`. This
 ///     is the original P1 leak: SIGTERM the pid + unlink the socket
 ///     via [`reap_terminal_artifacts`] BEFORE the row delete, then
@@ -2184,7 +2184,7 @@ enum RollbackOutcome {
 ///
 /// **Why discriminate inside the helper (not the caller).** The helper
 /// already re-fetches the terminal row to pick up the latest
-/// `daemon_handle`/`pid`. Adding a sidecar-existence check at the same
+/// `renderer entry`/`pid`. Adding a sidecar-existence check at the same
 /// site keeps the case-detection logic in one place, and lets the two
 /// call sites (`spawn_codex_worker` / `spawn_terminal_worker`) stay
 /// thin — they just match on the returned variant. Pushing the
@@ -2206,8 +2206,8 @@ async fn rollback_orphan_worker(
     card_id: &str,
     terminal_id: &str,
 ) -> RollbackOutcome {
-    // 1. Re-fetch the terminal row. `spawn_daemon_with_parts` may have
-    //    written `pid` + `daemon_handle` between the row-creation tx
+    // 1. Re-fetch the terminal row. `spawn_terminal_with_parts` may have
+    //    written `pid` + `renderer entry` between the row-creation tx
     //    commit and its eventual error return (e.g. ready-fd backstop,
     //    post-spawn IO error). The `term` snapshot the caller
     //    passes in was taken pre-spawn and would miss those columns.
@@ -2252,16 +2252,16 @@ async fn rollback_orphan_worker(
             // case 1b — handle = None but pid = Some. The daemon
             // process is alive (cmd.spawn() succeeded and
             // terminal_set_pid persisted the pid before
-            // terminal_set_handle was attempted), but the handle
+            // renderer setup was attempted), but the handle
             // write failed mid-spawn. We can't go through
             // `reap_terminal_artifacts` because its graceful-Kill +
-            // socket-unlink steps both key off `daemon_handle`.
+            // socket-unlink steps both key off `renderer entry`.
             // Send SIGTERM directly via the pid before the row
             // delete; the sweeper would otherwise never find this
             // pid (the row is about to be deleted).
             reap_terminal_pid_only(&term.id, pid);
         }
-        // case 1a (term present, daemon_handle = None, pid = None)
+        // case 1a (term present, renderer entry = None, pid = None)
         // falls through to the row delete below — `cmd.spawn()`
         // either failed outright or never made it to pid persistence,
         // so there is no daemon process. We skip the reap to avoid a

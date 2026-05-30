@@ -3,7 +3,7 @@
 //! argv as `--terminal-fg=r,g,b --terminal-bg=r,g,b`.
 //!
 //! Pre-#177 the wave-create route auto-minted a spec card and spawned
-//! its codex daemon via `spawn_daemon_for` (the no-opts shim that
+//! its codex daemon via `spawn_terminal_for` (the no-opts shim that
 //! ignored theme). That meant codex's OSC 10/11 startup probe got no
 //! answer from the daemon, so the composer painted against codex's
 //! built-in default and visually clashed with the surrounding card.
@@ -40,13 +40,6 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 mod common;
-
-/// Locate the argv-recorder fake daemon — Cargo drops it next to the
-/// test binary (`target/<profile>/argv-recorder-daemon`).
-fn locate_recorder_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_argv-recorder-daemon"))
-}
-
 struct Boot {
     app: axum::Router,
     cove_id: String,

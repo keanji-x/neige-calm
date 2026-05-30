@@ -85,25 +85,6 @@ fn resolve_codex_bin() -> Option<PathBuf> {
     }
     Some(expanded)
 }
-
-fn locate_recorder_bin() -> PathBuf {
-    if let Ok(p) = std::env::var("CARGO_BIN_EXE_argv-recorder-daemon") {
-        return PathBuf::from(p);
-    }
-    let me = std::env::current_exe().expect("current_exe");
-    let target_profile = me
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("test bin parent");
-    let candidate = target_profile.join("argv-recorder-daemon");
-    assert!(
-        candidate.exists(),
-        "argv-recorder-daemon not found at {candidate:?}; build with \
-         `cargo build --tests -p calm-server`"
-    );
-    candidate
-}
-
 macro_rules! skip {
     ($($arg:tt)*) => {{
         eprintln!("[spec-push-dispatch-e2e] SKIP: {}", format!($($arg)*));

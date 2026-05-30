@@ -572,19 +572,15 @@ pub struct Terminal {
     #[sqlx(json)]
     #[schema(value_type = Object)]
     pub env: serde_json::Value,
-    pub daemon_handle: Option<String>,
-    /// Daemon process id, captured by `spawn_daemon_for` after `cmd.spawn()`.
-    /// Used by the orphan-terminal sweeper (`terminal_sweeper`) as the
-    /// SIGTERM fallback target when the graceful `ClientMsg::Kill` path
-    /// fails. `None` for rows that predate Scope C or for which the spawn
+    /// Child process id, captured after supervisor spawn. Used by the
+    /// orphan-terminal sweeper (`terminal_sweeper`) as the SIGTERM fallback
+    /// target. `None` for rows that predate Scope C or for which the spawn
     /// returned no pid (kernel-level edge case).
     pub pid: Option<i64>,
     /// #177 — host browser's foreground RGB at row-creation time, as
-    /// comma-decimal `r,g,b` (the daemon CLI's `--terminal-fg` arg
-    /// format). NOT NULL after migration 0017: every spawn path reads
-    /// these columns and stamps the daemon argv from them, so the
-    /// auto-revive in `ws::terminal` can no longer race a themed spawn
-    /// with an un-themed one (both candidates carry identical argv).
+    /// comma-decimal `r,g,b` format). NOT NULL after migration 0017:
+    /// every spawn path reads these columns so renderer startup observes
+    /// the browser theme.
     pub theme_fg: String,
     /// #177 — host browser's background RGB at row-creation time.
     /// Mirrors `theme_fg` semantics; both columns are written together
@@ -628,7 +624,7 @@ pub struct NewTerminal {
     /// transaction. Required so the `terminals.theme_fg/_bg` NOT NULL
     /// columns always get a value at the same instant the row mints,
     /// closing the WS auto-revive race (see `ws::terminal::
-    /// resolve_live_sock` for the read side).
+    /// resolve_live_renderer` for the read side).
     pub theme: crate::routes::theme::RequestTheme,
 }
 

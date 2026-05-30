@@ -7,15 +7,15 @@
 //! terminal-row tx committed, and `seed_and_spawn_spec_daemon` was
 //! fired through `tokio::spawn`. That opened a ~400 ms race window in
 //! which the frontend could open the spec card's WS (which goes
-//! through `ws::terminal::resolve_live_sock`), see
-//! `daemon_handle = None` on the terminal row, and trigger the
+//! through `ws::terminal::resolve_live_renderer`), see
+//! `renderer entry = None` on the terminal row, and trigger the
 //! revive-by-respawn path with the row's **baked env** — which omits
 //! `NEIGE_MCP_SOCKET` / `NEIGE_MCP_TOKEN` (those are folded in only
-//! at the original `spawn_daemon_for` call site). Result: two daemons
+//! at the original `spawn_terminal_for` call site). Result: two daemons
 //! race on the same `--sock` path and the WS attaches to the
 //! no-MCP one, breaking the codex MCP handshake.
 //!
-//! Post-fix: by the time 201 reaches the client, `daemon_handle` on
+//! Post-fix: by the time 201 reaches the client, `renderer entry` on
 //! the spec card's terminal row is `Some(<sock>)`, the socket exists
 //! on disk, and a subsequent WS attach never hits the respawn branch.
 //!
@@ -26,18 +26,18 @@
 //! locate). The spec card's `program` is hard-coded to `"codex"` by
 //! `seed_and_spawn_spec_daemon`; there's no `codex` binary in CI, so
 //! `/bin/sh -c codex` will fail-fast inside the daemon child. That's
-//! fine — `spawn_daemon_for` waits for the *daemon* socket to accept,
+//! fine — `spawn_terminal_for` waits for the *daemon* socket to accept,
 //! not for the spawned program to stay alive. The socket binds before
 //! the daemon execs the child, so the wait-for-socket loop completes
-//! and `terminal_set_handle` lands.
+//! and `renderer setup` lands.
 //!
 //! Assertions:
 //!   1. `POST /api/waves` returns 201 (synchronous spawn succeeded).
-//!   2. The spec card's terminal row has `daemon_handle = Some(_)`.
+//!   2. The spec card's terminal row has `renderer entry = Some(_)`.
 //!   3. The socket file exists on disk at that path.
 //!   4. A second `terminal_get` immediately after the response (the
-//!      shape `ws::terminal::resolve_live_sock` would see) does NOT
-//!      observe `daemon_handle = None`, i.e. the race window is
+//!      shape `ws::terminal::resolve_live_renderer` would see) does NOT
+//!      observe `renderer entry = None`, i.e. the race window is
 //!      closed.
 
 #![cfg(unix)]
@@ -61,24 +61,6 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 mod common;
-
-/// Same daemon-locator as `codex_card_endpoint.rs` /
-/// `codex_hands_free.rs` — workspace bins live one dir up from the
-/// per-test `deps/` directory.
-fn locate_daemon_bin() -> PathBuf {
-    let mut p = std::env::current_exe().expect("current_exe");
-    p.pop();
-    p.pop();
-    p.push("calm-session-daemon");
-    assert!(
-        p.exists(),
-        "calm-session-daemon not found at {p:?}; run \
-         `cargo build -p calm-session --bin calm-session-daemon` first, or \
-         use `cargo test --workspace` which builds workspace bins",
-    );
-    p
-}
-
 struct Boot {
     app: axum::Router,
     cove_id: String,
@@ -178,7 +160,7 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) 
 /// terminal row has a registered renderer entry and a persisted pid.
 /// This is the post-#388 Phase 3b contract — no race window.
 #[tokio::test]
-async fn post_api_waves_spec_terminal_has_daemon_handle_before_response() {
+async fn post_api_waves_spec_terminal_has_renderer_entry_before_response() {
     let boot = boot().await;
 
     let (status, body) = post(
@@ -229,7 +211,7 @@ async fn post_api_waves_spec_terminal_has_daemon_handle_before_response() {
 
     // The #388 Phase 3b contract: by the time the 201 response has reached
     // the test, the renderer registry carries the live entry and the row
-    // has a pid. `daemon_handle` is no longer written.
+    // has a pid. `renderer entry` is no longer written.
     let term = boot
         .repo
         .terminal_get_by_card(spec_card_id.as_str())
@@ -262,7 +244,7 @@ async fn ws_revive_path_does_not_trigger_respawn_for_freshly_created_wave() {
     .await;
     assert_eq!(status, StatusCode::CREATED);
 
-    // Mirror `resolve_live_sock`'s lookup: it does
+    // Mirror `resolve_live_renderer`'s lookup: it does
     // `repo.terminal_get(id)` synchronously off the WS upgrade
     // handler. We resolve the spec terminal id via card_id (the WS
     // upgrade URL is /api/terminals/:id, where :id is the terminal
@@ -467,7 +449,7 @@ async fn post_api_waves_tolerates_broken_codex_bin_returns_201_inert_wave() {
 ///
 /// We do NOT assert on the codex `argv` directly here — the daemon
 /// hands `sh -c "codex …"` to `Command::spawn`, and the test harness
-/// would need to either ptrace the child or instrument `spawn_daemon_for`
+/// would need to either ptrace the child or instrument `spawn_terminal_for`
 /// to capture it. The payload assertion is the contract that matters at
 /// this layer: it's the same shape `codex_hands_free.rs::auto_submit_*`
 /// tests use to lock down the auto-submit gate for plain cards.
@@ -578,12 +560,12 @@ async fn whitespace_title_does_not_stamp_prompt_on_spec_card() {
 ///      frontend can render the path hint.
 ///
 /// We can't directly observe the daemon child's `current_dir` because
-/// `spawn_daemon_for` passes cwd as a `--cwd` CLI arg to
+/// `spawn_terminal_for` passes cwd as a `--cwd` CLI arg to
 /// `calm-session-daemon` (not via `Command::current_dir`); capturing
 /// argv would require ptrace or instrumenting the spawner. The
 /// terminal-row cwd is the equivalent persisted contract — it's what
 /// the WS revive path would re-pass on respawn (see
-/// `ws::terminal::resolve_live_sock`), so any cwd drift between
+/// `ws::terminal::resolve_live_renderer`), so any cwd drift between
 /// `wave.cwd` and `terminal.cwd` would surface as a daemon spawned
 /// under the wrong directory after a revive.
 #[tokio::test]
@@ -618,7 +600,7 @@ async fn post_api_waves_uses_wave_cwd_for_spec_daemon() {
     assert_eq!(wave.cwd, cwd);
 
     // Terminal row baked the same cwd. This is the value the WS
-    // revive path would re-pass to `spawn_daemon_for` on respawn,
+    // revive path would re-pass to `spawn_terminal_for` on respawn,
     // so drift here would surface as a daemon spawned under the
     // wrong cwd after a daemon death.
     let cards = boot.repo.cards_by_wave(wave.id.as_str()).await.unwrap();

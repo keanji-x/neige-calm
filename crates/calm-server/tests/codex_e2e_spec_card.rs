@@ -96,21 +96,6 @@ fn resolve_codex_bin() -> Option<PathBuf> {
     }
     Some(expanded)
 }
-
-fn locate_daemon_bin() -> PathBuf {
-    let mut p = std::env::current_exe().expect("current_exe");
-    p.pop();
-    p.pop();
-    p.push("calm-session-daemon");
-    assert!(
-        p.exists(),
-        "calm-session-daemon not found at {p:?}; run \
-         `cargo build -p calm-session --bin calm-session-daemon` first, or \
-         use `cargo test --workspace` which builds workspace bins",
-    );
-    p
-}
-
 /// Issue #236 followup — locate the `neige-mcp-stdio-shim` binary the
 /// codex daemon will spawn for the spec card. Same sibling-of-test-bin
 /// resolver as the daemon helper above; depends on `cargo test

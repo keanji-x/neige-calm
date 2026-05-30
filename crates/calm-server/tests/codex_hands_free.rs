@@ -60,21 +60,6 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 const STEP_TIMEOUT: Duration = Duration::from_secs(5);
-
-fn locate_daemon_bin() -> PathBuf {
-    let mut p = std::env::current_exe().expect("current_exe");
-    p.pop();
-    p.pop();
-    p.push("calm-session-daemon");
-    assert!(
-        p.exists(),
-        "calm-session-daemon not found at {p:?}; run \
-         `cargo build -p calm-session --bin calm-session-daemon` first, or \
-         use `cargo test --workspace` which builds workspace bins"
-    );
-    p
-}
-
 /// Boots a router pointed at a real daemon binary + a fresh in-memory
 /// SqlxRepo + a `127.0.0.1:0` listener serving the merged app.
 async fn boot_full() -> (
@@ -278,7 +263,7 @@ async fn inject_stdin_writes_bytes_and_awaits_input_ack() {
     // call either errors or hangs past STEP_TIMEOUT.
     // sock_path is keyed on the *simple* (no-dashes) form because
     // `model::new_id` and the terminal row both store that form, and
-    // `routes::terminal::spawn_daemon_for` writes the socket file at
+    // `routes::terminal::spawn_terminal_for` writes the socket file at
     // `<data_dir>/<simple>.sock`. The hyphenated form is what we put
     // into `ClientHello.terminal_id` for the daemon's identity match
     // — `inject_stdin` handles that normalization internally.
@@ -582,7 +567,7 @@ async fn route_to_subscriber_chain_skips_auto_submit_for_empty_or_absent_prompt(
     // Issue #197 — `terminals.card_id` is now `ON DELETE RESTRICT`, so
     // we drop the terminal row first (the eager-teardown shape the
     // route handler applies). The actual daemon process was never
-    // spawned (the bogus binary path made `spawn_daemon_for` 500
+    // spawned (the bogus binary path made `spawn_terminal_for` 500
     // immediately), so there's nothing to SIGTERM here.
     for c in repo.cards_by_wave(wave.id.as_str()).await.unwrap() {
         if let Some(t) = repo.terminal_get_by_card(c.id.as_str()).await.unwrap() {
