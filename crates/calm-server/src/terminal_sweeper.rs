@@ -4,19 +4,19 @@
 //! ## Two-layer cleanup model (issue #197)
 //!
 //! Terminal rows are owned by a single card row via
-//! `terminals.card_id` (UNIQUE, NOT NULL). A `calm-session-daemon`
-//! process + unix socket live alongside the row. Cleanup happens in two
+//! `terminals.card_id` (UNIQUE, NOT NULL). A terminal renderer entry
+//! can live alongside the row. Cleanup happens in two
 //! layers:
 //!
 //!   1. **Eager teardown in the route handler.** When a user issues
 //!      `DELETE /api/cards/:id`, `DELETE /api/waves/:id`, or
 //!      `DELETE /api/coves/:id`, the handler walks the affected card
-//!      list, calls [`reap_terminal_artifacts`] to kill the daemon +
-//!      unlink the socket + delete the terminal row, *then* deletes the
+//!      list, calls [`reap_terminal_artifacts`] to stop the renderer and
+//!      delete the terminal row, *then* deletes the
 //!      card / wave / cove row. The `terminals.card_id` FK is
 //!      `ON DELETE RESTRICT` (migration 0011), so a missed cleanup
 //!      surfaces as a transaction-level FK error rather than a silent
-//!      daemon-process leak.
+//!      renderer-process leak.
 //!   2. **This sweeper.** Catches the residual shape: a crashed server,
 //!      a SIGKILL'd writer, or a partial-success transaction that left
 //!      a terminal row whose `card_id` no longer matches any

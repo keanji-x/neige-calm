@@ -13,7 +13,7 @@
 //!      [`CodexAppServer`] client), and
 //!   2. the browser-facing **`codex resume <thread_id> --remote
 //!      unix://<sock>`** TUI, spawned under the existing PTY
-//!      `calm-session-daemon` so the WS render path
+//!      terminal renderer so the WS render path
 //!      (`RenderPlane`/`RenderPatch`) is byte-identical to today.
 //!
 //! The spike (`docs/spikes/293-appserver-thread-sharing.md`) verified the

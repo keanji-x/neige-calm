@@ -42,7 +42,6 @@ automatic apply.
     "bundle": {
       "binaries": [
         { "name": "calm-server", "path": "bin/calm-server" },
-        { "name": "calm-session-daemon", "path": "bin/calm-session-daemon" },
         { "name": "neige-codex-bridge", "path": "bin/neige-codex-bridge" },
         { "name": "neige-mcp-stdio-shim", "path": "bin/neige-mcp-stdio-shim" },
         { "name": "neige", "path": "bin/neige" }
@@ -85,7 +84,7 @@ still block rollback to an older binary.
 
 - `web-only` checks target web against the current server.
 - `server-only` checks target server against the current web and requires the
-  backend sidecar bundle (`calm-session-daemon`, `neige-codex-bridge`,
+  backend sidecar bundle (`neige-codex-bridge`,
   `neige-mcp-stdio-shim`, and `neige`) alongside `calm-server`. If the current
   version JSON does not include `webCompatVersion`, M1 conservatively uses the
   current server's `minWebCompatVersion` as the current web compatibility.

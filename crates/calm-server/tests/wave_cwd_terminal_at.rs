@@ -4,7 +4,7 @@
 //! calendar window query `GET /api/waves?since&until&cove_id`.
 //!
 //! These tests boot a stub-daemon router (no real codex / no real
-//! `calm-session-daemon`) so the spec-push app-server boot fails on
+//! terminal renderer) so the spec-push app-server boot fails on
 //! `POST /api/waves`. Issue #293 / PR #311 made that boot NON-FATAL —
 //! the route now returns 201 (inert wave) on that branch rather than
 //! 500 — and the wave + cards + (optional) cove_folder rows land at

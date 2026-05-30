@@ -51,7 +51,7 @@ type Theme = (typeof THEMES)[number];
 // Sidebar mounts and is independent of whether useTodayTerminal's
 // full bootstrap (system cove → Today wave → terminal card) completes.
 // In the replay-binary harness the terminal-card POST may surface a
-// daemon-spawn error (no `calm-session-daemon` in CI) and never set
+// renderer-start error in CI and never set
 // `localStorage['calm.todayCardId']`, so we can't anchor on that —
 // the Today nav button is the equivalent "app shell is mounted"
 // signal that works in both replay and live-daemon environments.

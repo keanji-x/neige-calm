@@ -21,7 +21,7 @@
 //!
 //! ## Test design
 //!
-//! We use the real `calm-session-daemon` binary (the same one
+//! We use the real terminal renderer path (the same one
 //! `tests/codex_card_endpoint.rs` and `tests/ws_terminal_e2e.rs`
 //! locate). The spec card's `program` is hard-coded to `"codex"` by
 //! `seed_and_spawn_spec_daemon`; there's no `codex` binary in CI, so
@@ -561,7 +561,7 @@ async fn whitespace_title_does_not_stamp_prompt_on_spec_card() {
 ///
 /// We can't directly observe the daemon child's `current_dir` because
 /// `spawn_terminal_for` passes cwd as a `--cwd` CLI arg to
-/// `calm-session-daemon` (not via `Command::current_dir`); capturing
+/// terminal renderer startup (not via `Command::current_dir`); capturing
 /// argv would require ptrace or instrumenting the spawner. The
 /// terminal-row cwd is the equivalent persisted contract — it's what
 /// the WS revive path would re-pass on respawn (see

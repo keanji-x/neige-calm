@@ -555,7 +555,6 @@ impl DaemonClient {
         .await
         .map_err(|_| anyhow::anyhow!("inject_stdin to {terminal_id} timed out after {timeout:?}"))?
     }
-
 }
 
 // ---------------------------------------------------------------------------

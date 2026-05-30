@@ -1,7 +1,7 @@
 //! Full-chain e2e for terminal protocol v2.
 //!
 //! Boots a real axum server (in-memory SqlxRepo) → spawns the real
-//! `calm-session-daemon` binary backing `/bin/sh` → drives a tokio-tungstenite
+//! terminal renderer backing `/bin/sh` → drives a tokio-tungstenite
 //! client through the v2 happy path:
 //!   ClientHello → ServerHello → Input → RenderPatch → ResizeCommit
 //!   → ResizeApplied → Kill → TerminalExited.

@@ -10,9 +10,9 @@
 //!    single broadcast carries the fully-formed card to peers — no
 //!    `card.updated` follow-up, no intermediate "half-built" state for
 //!    EventBridge to react to.
-//! 2. After commit, the handler spawns `calm-session-daemon` via the same
+//! 2. After commit, the handler starts the terminal renderer via the same
 //!    `spawn_terminal_for` helper the GET-side and the codex route still use.
-//!    A daemon-spawn failure returns 500 to the client but does NOT roll
+//!    A renderer-start failure returns 500 to the client but does NOT roll
 //!    back the persisted rows: the orphan-terminal sweeper reaps them
 //!    within ~60s. This matches the prior behavior of the deleted
 //!    `POST /api/cards/:id/terminal` handler.

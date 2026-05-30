@@ -778,7 +778,7 @@ async fn try_spawn_pipe(
     //
     // The field is retained on the wire so future phases can choose to
     // honor it for the PTY child's chdir separately from the supervisor
-    // /daemon process cwd; if you find yourself wanting to `cmd
+    // process cwd; if you find yourself wanting to `cmd
     // .current_dir(&request.cwd)` here, reconsider — you want the
     // `--cwd` argv flag the kernel already builds.
     let _intentionally_unused_at_supervisor = &request.cwd;
@@ -807,7 +807,7 @@ async fn try_spawn_pipe(
     }
 
     let child = cmd.spawn().map_err(|e| EnsureProcFailure {
-        error: format!("spawn calm-session-daemon: {e}"),
+        error: format!("spawn pty bootstrap process: {e}"),
         child_already_reaped: false,
     })?;
     drop(ready_writer);

@@ -671,7 +671,7 @@ test.describe('a11y · keyboard-only navigation', () => {
       await expect(terminalItem).toBeFocused();
       await page.keyboard.press('Enter');
       // Give the new card a moment to land. The replay binary lacks a
-      // calm-session-daemon so the terminal create may surface a console
+      // terminal renderer so the terminal create may surface a console
       // error, but the kernel Card row is still inserted (the daemon
       // spawn happens asynchronously after the card lands); the card
       // body just falls back to its non-live rendering.

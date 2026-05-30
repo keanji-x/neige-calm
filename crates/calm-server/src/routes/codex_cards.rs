@@ -14,15 +14,15 @@
 //!    `payload=null` flash for the renderer's "Codex is starting…"
 //!    placeholder to react to.
 //! 2. After commit, the handler seeds the per-card `CODEX_HOME` and
-//!    spawns `calm-session-daemon` via the same `spawn_terminal_for`
+//!    starts the terminal renderer via the same `spawn_terminal_for`
 //!    helper the terminal-card endpoint uses. Hooks come from
 //!    `/etc/codex/requirements.toml` (policy-managed, bind-mounted via
-//!    docker-compose) — no per-card `hooks.json` is written. A daemon-
-//!    spawn failure returns 500 to the client but does NOT roll back the
+//!    docker-compose) — no per-card `hooks.json` is written. A renderer-
+//!    start failure returns 500 to the client but does NOT roll back the
 //!    persisted rows: the orphan-terminal sweeper reaps them within ~60s.
 //!
 //! Why a pre-minted card_id (design option C)? The `CODEX_HOME` path is
-//! `<codex_homes_dir>/<card_id>/` — keyed on the card id so the daemon
+//! `<codex_homes_dir>/<card_id>/` — keyed on the card id so the renderer
 //! sees the same auth.json / state across container restarts. Pre-minting
 //! the id lets us derive that path *before* the row hits the DB and
 //! propagate it into the env map without a post-commit "stamp env" round

@@ -18,7 +18,7 @@
 //!      turn #1, and persisted the thread,
 //!   b. the **PTY daemon argv** is `codex resume <tid> --remote
 //!      unix://<sock>` (captured via the `argv-recorder-daemon` fixture
-//!      standing in for `calm-session-daemon`), and
+//!      standing in for the terminal renderer), and
 //!   c. **turn #1 started** — the kernel's app-server client observed a
 //!      `turn/started` (a precondition for the 201, per DECISION A) and the
 //!      parked [`SpecPushHandle`] reflects a running turn.

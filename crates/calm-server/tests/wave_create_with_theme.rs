@@ -1,5 +1,5 @@
 //! Integration test (#177): `POST /api/waves` threads `theme: { fg, bg }`
-//! through to the auto-minted spec card's `calm-session-daemon` spawn
+//! through to the auto-minted spec card's terminal renderer startup
 //! argv as `--terminal-fg=r,g,b --terminal-bg=r,g,b`.
 //!
 //! Pre-#177 the wave-create route auto-minted a spec card and spawned

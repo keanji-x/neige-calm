@@ -568,7 +568,7 @@ Decisions:
 
 ## 10. Terminal lifecycle cleanup (eager teardown + sweeper fallback)
 
-Terminal rows carry three pieces of operational state: the row itself, a `calm-session-daemon` process, and a unix socket. All three must be torn down when the owning card / wave / cove is deleted. Cleanup happens in two layers.
+Terminal rows carry the row itself and a renderer entry backed by the process supervisor. Both must be torn down when the owning card / wave / cove is deleted. Cleanup happens in two layers.
 
 ### 10.1 Eager teardown — the happy path
 

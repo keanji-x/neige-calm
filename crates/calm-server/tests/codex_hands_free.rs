@@ -9,7 +9,7 @@
 //!
 //!   1. `inject_stdin_writes_bytes_and_awaits_input_ack` — happy path for
 //!      the new `DaemonClient::inject_stdin` primitive. Boots a real
-//!      `calm-session-daemon` running `/bin/cat` (so any byte we feed it
+//!      terminal renderer running `/bin/cat` (so any byte we feed it
 //!      echoes back), uses an observer WS to see the echo, then calls
 //!      `inject_stdin(b"hello\r")`. Asserts the call returns `Ok` (i.e.
 //!      InputAck arrived) AND the observer sees the bytes show up in a
@@ -26,7 +26,7 @@
 //!      `inject_stdin` and exercising both ends in one test would require
 //!      a real codex binary (out of scope for an integration test).
 //!
-//! Prerequisite: `calm-session-daemon` binary must be built. `cargo test
+//! Prerequisite: terminal renderer dependencies must be built. `cargo test
 //! --workspace` builds it; `cargo test -p calm-server` alone may not.
 
 #![cfg(unix)]

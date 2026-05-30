@@ -3,7 +3,7 @@
 //! Subscribes to the event bus through [`EventBus::subscribe_filtered`] +
 //! a [`SubscribeFilter`] that picks out `codex.job_requested` and
 //! `terminal.job_requested` envelopes, then mints a worker-roled card
-//! (and, for the codex case, spawns a backing `calm-session-daemon`) for
+//! (and, for the codex case, starts a backing terminal renderer) for
 //! each.
 //!
 //! ## Design rationale

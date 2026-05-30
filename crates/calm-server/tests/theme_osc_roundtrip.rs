@@ -1,7 +1,7 @@
 //! End-to-end byte-level OSC roundtrip test (#177).
 //!
 //! The most surface-area test in the suite: stands up the real
-//! `calm-session-daemon` binary, spawns it via the production
+//! terminal renderer, starts it via the production
 //! `spawn_terminal_for_with_opts` helper with theme args, and runs a
 //! fixture child (`osc-probe-child`) under the daemon's PTY that
 //! probes OSC 11 the same way the real codex CLI does. The fixture
@@ -399,7 +399,7 @@ async fn osc_roundtrip_codex_card_create_theme() {
     // POST the codex card with theme. The handler:
     //   1. Mints card + terminal rows in one txn.
     //   2. Seeds CODEX_HOME + writes hooks.json (best-effort).
-    //   3. Spawns calm-session-daemon with `--terminal-fg=216,219,226
+    //   3. Starts the terminal renderer with foreground 216,219,226
     //      --terminal-bg=15,20,24 -- /bin/sh -c codex`.
     //   4. sh's PATH lookup resolves codex → our fixture symlink.
     //   5. Fixture inherits our env vars, runs probe, writes result.

@@ -2,7 +2,7 @@
 //! the atomic codex-card endpoint introduced in #117.
 //!
 //! Twin of `tests/terminal_card_endpoint.rs`. Boots a real Axum router
-//! (in-memory `SqlxRepo`) + the actual `calm-session-daemon` binary for
+//! (in-memory `SqlxRepo`) + the actual terminal renderer for
 //! happy paths, and points `DaemonClient::session_daemon_bin` at a
 //! non-existent path for the "spawn failure but rows persisted" case.
 //!
@@ -314,7 +314,7 @@ async fn post_codex_card_atomic_emits_single_card_added_event() {
 async fn post_codex_card_atomic_returns_500_on_daemon_spawn_failure_but_persists_row() {
     // #388 Phase 3b: production spawn now goes through
     // `calm-proc-supervisor` over a control UDS instead of forking the
-    // `calm-session-daemon` binary directly. To deliberately fail spawn,
+    // terminal renderer directly. To deliberately fail startup,
     // point `proc_supervisor_sock` at a non-existent path so the
     // renderer's connect to the supervisor fails with NotFound.
     let bad_sock = std::env::temp_dir().join("definitely-not-a-real-proc-supervisor-sock-xyz");

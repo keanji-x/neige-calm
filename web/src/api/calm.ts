@@ -248,7 +248,7 @@ export const deleteOverlay = (b: {
 
 /**
  * Atomic terminal-card create. Single round-trip writes the card row, its
- * linked terminal row, AND spawns the `calm-session-daemon`. Server emits a
+ * linked terminal row, AND starts the terminal renderer. Server emits a
  * single `card.added` event carrying the final payload — no intermediate
  * `payload=null` flash for EventBridge to swallow. See `routes::terminal_cards`
  * and issue #13.

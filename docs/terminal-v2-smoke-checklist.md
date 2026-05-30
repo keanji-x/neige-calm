@@ -50,7 +50,7 @@ Run before bumping `WEB_COMPAT_VERSION`, before any change to
       restored screen shows the daemon's current viewport, not a
       stale cached copy.
 - [ ] **Daemon crash recovery.** With a terminal open, find the
-      daemon PID (`pgrep calm-session-daemon`) and `kill -9` it.
+      supervised child PID and `kill -9` it.
       The WS bridge closes, the React component shows an error
       state (or auto-reconnects), and refreshing / re-opening the
       card spawns a fresh daemon via the `resolve_live_sock` cold
@@ -59,7 +59,7 @@ Run before bumping `WEB_COMPAT_VERSION`, before any change to
       `FRAME_VERSION`) at the resolved bin path, kill the current
       daemon, then re-attach. The bridge logs an `error!` with
       `terminal framing magic mismatch — closing WS`, clears
-      `daemon_handle`, and the next attach respawns cleanly.
+      supervisor handle, and the next attach reattaches or respawns cleanly.
 - [ ] **Owner-only Input enforcement.** Open the same terminal in
       two browser tabs. The first attach is the owner — it can type.
       The second tab attaches as observer and types — keystrokes

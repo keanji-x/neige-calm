@@ -19,7 +19,7 @@
 //!      calls leave it intact.
 //!
 //! Daemon-process killing is exercised at the unit level only — the
-//! integration tests don't spawn `calm-session-daemon`. The graceful-kill
+//! integration tests don't start a terminal renderer. The graceful-kill
 //! path is tested by aiming `renderer entry` at a path that doesn't exist
 //! (connect fails → fall through), and the SIGTERM path is bypassed by
 //! leaving `pid` as `None` on the seeded row. The full end-to-end with a

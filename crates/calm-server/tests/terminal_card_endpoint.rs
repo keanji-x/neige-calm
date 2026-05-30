@@ -2,7 +2,7 @@
 //! the atomic terminal-card endpoint introduced in #13 PR2.
 //!
 //! Boots a real Axum router (in-memory `SqlxRepo`) + the actual
-//! `calm-session-daemon` binary for the happy paths, and points
+//! terminal renderer for the happy paths, and points
 //! `DaemonClient::session_daemon_bin` at a non-existent path for the
 //! "spawn failure but row persisted" case.
 //!

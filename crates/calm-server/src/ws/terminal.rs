@@ -328,30 +328,30 @@ async fn send_child_exited_close(mut socket: WebSocket, exit_code: Option<i32>) 
 }
 
 /// Outcome reported by [`pump`] when it returns. Lets [`handle`] decide
-/// whether to perform stale-daemon cleanup (clear `renderer entry`, unlink
+/// whether to perform stale-renderer cleanup (clear the renderer entry)
 /// the socket) before the connection fully tears down. Keeping the side
 /// effects in `handle` (rather than threading the repo into `pump`) leaves
 /// `pump` purely I/O-bound and easy to test against in-memory transports.
 #[derive(Debug)]
 pub enum PumpOutcome {
-    /// Connection ended cleanly: client closed, daemon emitted
+    /// Connection ended cleanly: client closed, terminal process exited,
     /// `ChildExited`, heartbeat timed out, or one of the WS arms hit EOF.
-    /// No socket-level cleanup is needed — the daemon either already exited
-    /// (ChildExited) or is still healthy (client just walked away).
+    /// No socket-level cleanup is needed — the process either already exited
+    /// or is still healthy (client just walked away).
     Clean,
-    /// The daemon read-half produced a framing error (bad magic or
+    /// The renderer read-half produced a framing error (bad magic or
     /// unsupported version). This means the bytes on the kernel↔daemon
-    /// socket aren't from a current-protocol `calm-session-daemon`, so the
+    /// socket aren't from the current terminal renderer protocol, so the
     /// row's `renderer entry` is stale and must be cleared before the next
     /// attach.
     FramingSkew { error: FrameError },
 }
 
-/// Daemon transport abstraction. The WS bridge only needs the
+/// Renderer transport abstraction. The WS bridge only needs the
 /// bidirectional `AsyncRead + AsyncWrite` half — in production this is a
 /// `tokio::net::UnixStream`; in tests it's one end of a
 /// `tokio::io::duplex` pair so we can drive the pump in-process without
-/// forking a real `calm-session-daemon`.
+/// starting a real terminal renderer.
 ///
 /// A blanket impl covers any type with the right combination of bounds;
 /// callers don't need to opt in explicitly.
@@ -777,8 +777,8 @@ mod heartbeat_tests {
 
 #[cfg(test)]
 mod pump_tests {
-    //! In-process tests for the WS↔daemon bridge that don't fork a real
-    //! `calm-session-daemon`. We mount [`pump`] under a tiny `axum::Router`
+    //! In-process tests for the WS↔renderer bridge that don't start a real
+    //! terminal renderer. We mount [`pump`] under a tiny `axum::Router`
     //! with a single WS route, drive it with a `tokio_tungstenite` client
     //! over a local TCP listener (the same pattern used in
     //! `tests/ws_events.rs`), and on the daemon side substitute a
