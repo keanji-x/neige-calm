@@ -113,15 +113,24 @@ impl PreflightResult {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub(crate) enum Verdict {
+    /// Target manifest matches the installed state; no symlinks or processes move.
     Noop,
+    /// Target can be applied without breaking live Tier A/B contracts.
     Preserving {
+        /// Release units whose version or content hash differs from installed.json.
         units_changed: Vec<UnitName>,
+        /// Changed units whose restart policy waits for full neige-app restart.
         deferred: Vec<UnitName>,
+        /// True when web clients need to reload after the web symlink moves.
         refresh_frontend: bool,
+        /// True when calm-server changes include additive/forward-only DB work.
         requires_db_backup: bool,
     },
+    /// Target crosses a compatibility boundary and requires explicit operator opt-in.
     Breaking {
+        /// Compatibility boundary that made this upgrade breaking.
         reason: BreakingReason,
+        /// Release units whose version or content hash differs from installed.json.
         units_changed: Vec<UnitName>,
     },
 }
@@ -129,9 +138,13 @@ pub(crate) enum Verdict {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum BreakingReason {
+    /// Top-level productMajor changed.
     ProductMajorChanged,
+    /// One or more Tier B protocol/version compatibility fields changed.
     WireIncompatibility,
+    /// Target calm-server declares a destructive DB migration.
     DestructiveDbMigration,
+    /// No installed.json exists, so preserving semantics cannot be proven.
     NoInstalledState,
 }
 

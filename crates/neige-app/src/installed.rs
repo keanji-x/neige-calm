@@ -13,20 +13,29 @@ static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct InstalledState {
+    /// installed.json schema version; currently `1`.
     pub schema_version: u32,
+    /// Release id currently considered committed.
     pub release_id: String,
+    /// Product compatibility major currently installed.
     pub product_major: u32,
+    /// Tier A/B compatibility values installed at commit time.
     pub compatibility: Compatibility,
+    /// Per-unit versions and content hashes installed at commit time.
     pub units: BTreeMap<UnitName, InstalledUnit>,
+    /// RFC3339 timestamp written when this state was committed.
     pub installed_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct InstalledUnit {
+    /// Crate or bundle version recorded for this unit.
     pub version: String,
+    /// Binary SHA-256 for executable units.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binary_sha256: Option<String>,
+    /// Tree SHA-256 for directory/bundle units such as web.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tree_sha256: Option<String>,
 }
@@ -87,6 +96,8 @@ where
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
     let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    // Callers pass concrete `*.json` state paths, so replacing the final
+    // extension preserves multi-dot parent names while making a sibling temp.
     let temp = path.with_extension(format!("json.tmp.{}.{}", std::process::id(), counter));
     if temp.exists() {
         fs::remove_file(&temp).with_context(|| format!("remove {}", temp.display()))?;

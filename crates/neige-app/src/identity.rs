@@ -13,9 +13,13 @@ use crate::installed::write_json_atomic;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SpawnIdentity {
+    /// Canonical binary path used for the spawn.
     pub binary_path: PathBuf,
+    /// SHA-256 of the binary bytes at spawn time.
     pub binary_sha256: String,
+    /// Semver parsed from `<binary> --version`, when available.
     pub crate_version: Option<String>,
+    /// RFC3339 timestamp for when the identity was captured.
     pub captured_at: String,
 }
 

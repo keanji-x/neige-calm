@@ -585,18 +585,33 @@ The numeric values are not bumped by PR 1.
 PR 1 only surfaces existing boundaries and adds the supervisor-control constant
 at version `1`.
 
-## 18. PR 2 TODO
+## 18. PR 2 Apply Behavior
 
-PR 2 implements apply behavior:
+`POST /upgrade/apply` is synchronous: the HTTP response is held until the
+upgrade is committed, rolled back, rejected, or reported as a dry run.
 
-- rename `/update/apply` to `/upgrade/apply`
-- add release history
-- implement preserving symlink swaps and calm-server restart
-- implement frontend refresh notification
-- implement breaking opt-in and exec-self
-- implement healthcheck and rollback behavior
-- implement DB backup and restore where promised
-- decide how installed state is recovered after failed activation
-- add E2E tests for live PTY preservation and breaking termination
+For preserving calm-server changes, `neige-app` swaps the relevant release
+symlink, restarts calm-server, then polls `GET /api/version` on the configured
+calm listen address.
 
-PR 1 intentionally leaves these pieces untouched.
+The healthcheck has two startup-progress outcomes:
+
+- dead: the supervisor reports `stopped` or no child pid; rollback starts
+  immediately.
+- slow: the process is still running but `/api/version` is unavailable,
+  non-200, unparsable, or reports the wrong `kernelVersion`; polling continues
+  for up to 60 seconds.
+
+Success requires HTTP 200, valid JSON, and `kernelVersion` equal to the target
+manifest's `calmServer.version`.
+
+For web refresh, PR 2 uses a sentinel instead of routing a synthetic event
+through calm-server. `neige-app` writes
+`<data_dir>/state/last-upgrade-id`, exposed as `GET /upgrade/applied-id`, after
+the web symlink moves. Frontends can poll this admin endpoint and reload when
+the id changes. A durable WS event can replace this in a later PR.
+
+Breaking upgrades require `allowBreaking=true`. After symlinks and
+`installed.json` are committed, `neige-app` returns `202` and then execs the new
+`bin/neige-app` from the current server release. The PID is preserved when the
+service is run under systemd.

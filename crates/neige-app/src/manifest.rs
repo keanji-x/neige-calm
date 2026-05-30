@@ -17,11 +17,17 @@ pub(crate) type ReleaseManifest = ReleaseManifestV1;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ReleaseManifestV2 {
+    /// Manifest schema version; v2 is required for state-machine apply.
     pub schema_version: u32,
+    /// Stable release identifier used for staging, history, and installed.json.
     pub release_id: String,
+    /// Whole-product compatibility major.
     pub product_major: u32,
+    /// Tier A/B compatibility boundaries for this release.
     pub compatibility: Compatibility,
+    /// Release units keyed by stable wire names.
     pub units: BTreeMap<UnitName, ReleaseUnit>,
+    /// Manifested payload files and hashes.
     #[serde(default)]
     pub files: Vec<FileManifest>,
 }
@@ -120,38 +126,59 @@ pub(crate) struct CompatibilityV1 {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Compatibility {
+    /// calm-session terminal frame envelope version.
     pub terminal_frame_version: u16,
+    /// calm-session terminal payload protocol version.
     pub terminal_protocol_version: u16,
+    /// REST API compatibility version.
     pub api_version: String,
+    /// Persisted/live sync-event envelope version.
     pub sync_event_version: u32,
+    /// Kernel MCP protocol date.
     pub mcp_protocol_version: String,
+    /// Plugin-host MCP protocol date.
     pub plugin_mcp_protocol_version: String,
+    /// Web bundle compatibility version supplied by this release.
     pub web_compat_version: u32,
+    /// Minimum web compatibility accepted by this release.
     pub min_web_compat_version: u32,
+    /// calm-server to calm-proc-supervisor control protocol version.
     pub supervisor_control_version: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum UnitName {
+    /// The neige-app host process.
     NeigeApp,
+    /// The calm-server kernel binary.
     CalmServer,
+    /// The PTY/process supervisor binary.
     CalmProcSupervisor,
+    /// The web frontend bundle.
     Web,
+    /// Codex helper bridge binary.
     NeigeCodexBridge,
+    /// MCP stdio shim binary.
     NeigeMcpStdioShim,
+    /// CLI binary.
     NeigeCli,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ReleaseUnit {
+    /// Crate or bundle version for operator diagnostics and healthcheck matching.
     pub version: String,
+    /// Binary SHA-256 for executable units.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binary_sha256: Option<String>,
+    /// Tree SHA-256 for directory/bundle units such as web.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tree_sha256: Option<String>,
+    /// How this unit becomes active after its symlink moves.
     pub restart_policy: RestartPolicy,
+    /// DB migration policy, meaningful for calmServer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub db_migration_policy: Option<DbMigrationPolicy>,
 }
@@ -159,10 +186,15 @@ pub(crate) struct ReleaseUnit {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum RestartPolicy {
+    /// Restart calm-server through the local admin/supervisor path.
     RestartViaAdminApi,
+    /// Move symlink now; process change waits for full neige-app restart.
     DeferUntilFullReboot,
+    /// Move web symlink and notify clients to reload.
     RefreshFrontend,
+    /// Move symlink now; future helper spawns pick it up.
     NextSpawn,
+    /// Only valid in breaking upgrades where neige-app execs itself.
     ExecSelfForBreakingOnly,
 }
 

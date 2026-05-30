@@ -125,7 +125,7 @@ pub(crate) fn stage_upgrade(
             PreflightResult::from_verdict(mode_for_verdict(&verdict, mode), verdict)
         }
     };
-    if !preflight.allowed {
+    if !preflight.allowed && preflight.verdict.is_none() {
         return Err(anyhow!(
             "preflight denied staged upgrade: {} ({})",
             preflight.reason,
@@ -649,7 +649,7 @@ fn sqlite_cli_quote(path: &Path) -> String {
     path.to_string_lossy().replace('\'', "''")
 }
 
-fn parse_sqlite_file_url(db_url: &str) -> anyhow::Result<PathBuf> {
+pub(crate) fn parse_sqlite_file_url(db_url: &str) -> anyhow::Result<PathBuf> {
     let Some(rest) = db_url.strip_prefix("sqlite://") else {
         return Err(anyhow!(
             "DB backup currently supports only sqlite://path?mode=rwc URLs"
@@ -812,7 +812,7 @@ fn copy_verified_files(
     Ok(())
 }
 
-fn validate_staged_release_target(cfg: &AppConfig, target: &Path) -> anyhow::Result<()> {
+pub(crate) fn validate_staged_release_target(cfg: &AppConfig, target: &Path) -> anyhow::Result<()> {
     let metadata =
         fs::symlink_metadata(target).with_context(|| format!("stat {}", target.display()))?;
     if metadata.file_type().is_symlink() {
@@ -846,7 +846,7 @@ fn validate_staged_release_target(cfg: &AppConfig, target: &Path) -> anyhow::Res
 }
 
 #[cfg(unix)]
-fn replace_symlink_atomic(link: &Path, target: &Path) -> anyhow::Result<()> {
+pub(crate) fn replace_symlink_atomic(link: &Path, target: &Path) -> anyhow::Result<()> {
     use std::os::unix::fs::symlink;
 
     if let Some(parent) = link.parent() {
@@ -869,11 +869,11 @@ fn replace_symlink_atomic(link: &Path, target: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(not(unix))]
-fn replace_symlink_atomic(_link: &Path, _target: &Path) -> anyhow::Result<()> {
+pub(crate) fn replace_symlink_atomic(_link: &Path, _target: &Path) -> anyhow::Result<()> {
     Err(anyhow!("symlink activation is only implemented on Unix"))
 }
 
-fn read_symlink_if_exists(path: &Path) -> anyhow::Result<Option<PathBuf>> {
+pub(crate) fn read_symlink_if_exists(path: &Path) -> anyhow::Result<Option<PathBuf>> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
             if !metadata.file_type().is_symlink() {
@@ -886,7 +886,7 @@ fn read_symlink_if_exists(path: &Path) -> anyhow::Result<Option<PathBuf>> {
     }
 }
 
-fn remove_symlink_if_exists(path: &Path) -> anyhow::Result<()> {
+pub(crate) fn remove_symlink_if_exists(path: &Path) -> anyhow::Result<()> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
             if !metadata.file_type().is_symlink() {
@@ -900,7 +900,7 @@ fn remove_symlink_if_exists(path: &Path) -> anyhow::Result<()> {
     }
 }
 
-fn resolve_link_target(link: &Path, target: &Path) -> PathBuf {
+pub(crate) fn resolve_link_target(link: &Path, target: &Path) -> PathBuf {
     if target.is_absolute() {
         target.to_path_buf()
     } else {
@@ -1153,11 +1153,12 @@ mod tests {
         cfg.release.root = tmp.join("releases");
         cfg.child.data_dir = Some(tmp.join("data"));
 
-        let err = stage_upgrade(&cfg, &package_dir, PreflightMode::ServerOnly)
-            .expect_err("missing installed state must deny v2 staging");
+        let stage = stage_upgrade(&cfg, &package_dir, PreflightMode::ServerOnly)
+            .expect("v2 breaking staging succeeds so apply can return a structured rejection");
 
-        assert!(err.to_string().contains("NoInstalledState"));
-        assert!(err.to_string().contains("allow-breaking-upgrade"));
+        assert!(!stage.preflight.allowed);
+        assert!(stage.preflight.reason.contains("NoInstalledState"));
+        assert_eq!(stage.preflight.required_action, "allow-breaking-upgrade");
     }
 
     #[test]
