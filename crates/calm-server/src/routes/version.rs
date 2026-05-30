@@ -123,6 +123,8 @@ pub fn router() -> Router<AppState> {
 #[serde(rename_all = "camelCase")]
 pub struct VersionInfo {
     pub kernel_version: String,
+    pub terminal_frame_version: u16,
+    pub terminal_protocol_version: u16,
     /// REST contract version. Diagnostic-only on the wire — the frontend
     /// gates compatibility on `min_web_compat_version` (whole bundle) and
     /// `sync_event_version` (per-event-frame). See `API_VERSION` for the
@@ -139,6 +141,24 @@ pub struct VersionInfo {
     pub db_instance_id: String,
 }
 
+pub fn current_version_info(db_instance_id: String) -> VersionInfo {
+    let compatibility = current_kernel_compatibility();
+    VersionInfo {
+        kernel_version: env!("CARGO_PKG_VERSION").to_string(),
+        terminal_frame_version: compatibility.terminal_frame_version,
+        terminal_protocol_version: compatibility.terminal_protocol_version,
+        api_version: compatibility.api_version,
+        sync_event_version: compatibility.sync_event_version,
+        mcp_protocol_version: compatibility.mcp_protocol_version,
+        plugin_mcp_protocol_version: compatibility.plugin_mcp_protocol_version,
+        web_compat_version: compatibility.web_compat_version,
+        min_web_compat_version: compatibility.min_web_compat_version,
+        supervisor_control_version: compatibility.supervisor_control_version,
+        build_sha: option_env!("NEIGE_BUILD_SHA").map(|s| s.to_string()),
+        db_instance_id,
+    }
+}
+
 #[utoipa::path(
     get,
     path = "/api/version",
@@ -148,19 +168,7 @@ pub struct VersionInfo {
     ),
 )]
 pub(crate) async fn get_version(State(state): State<AppState>) -> Json<VersionInfo> {
-    let compatibility = current_kernel_compatibility();
-    Json(VersionInfo {
-        kernel_version: env!("CARGO_PKG_VERSION").to_string(),
-        api_version: compatibility.api_version,
-        sync_event_version: compatibility.sync_event_version,
-        mcp_protocol_version: compatibility.mcp_protocol_version,
-        plugin_mcp_protocol_version: compatibility.plugin_mcp_protocol_version,
-        web_compat_version: compatibility.web_compat_version,
-        min_web_compat_version: compatibility.min_web_compat_version,
-        supervisor_control_version: compatibility.supervisor_control_version,
-        build_sha: option_env!("NEIGE_BUILD_SHA").map(|s| s.to_string()),
-        db_instance_id: (*state.db_instance_id).clone(),
-    })
+    Json(current_version_info((*state.db_instance_id).clone()))
 }
 
 #[cfg(test)]
@@ -178,6 +186,8 @@ mod tests {
     fn min_web_compat_version_matches_constant() {
         let body = VersionInfo {
             kernel_version: env!("CARGO_PKG_VERSION").to_string(),
+            terminal_frame_version: calm_session::FRAME_VERSION,
+            terminal_protocol_version: calm_session::PROTOCOL_VERSION,
             api_version: API_VERSION.to_string(),
             sync_event_version: SYNC_EVENT_VERSION,
             mcp_protocol_version: KERNEL_MCP_PROTOCOL_VERSION.to_string(),

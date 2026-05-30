@@ -31,9 +31,7 @@ pub(crate) fn build_source_package_from_source(
     source: &SourceConfig,
     mode_override: Option<PreflightMode>,
 ) -> anyhow::Result<PathBuf> {
-    let requested_mode = source_mode_for(source, mode_override)?;
-    let mode = requested_mode.unwrap_or(PreflightMode::Bundle);
-    let (compatibility, db_migration_policy) = source_manifest_config(source, mode)?;
+    source_mode_for(source, mode_override)?;
     let source_dir = prepare_source_checkout(source)?;
     run_build(&source_dir, &source.build_args)?;
     let release_id = format!("source-{}", unix_ts()?);
@@ -43,29 +41,19 @@ pub(crate) fn build_source_package_from_source(
         out: None,
         release_id,
         app_version: None,
-        app_bin: None,
-        web_dist: if matches!(mode, PreflightMode::WebOnly | PreflightMode::Bundle) {
-            Some(source_dir.join("web").join("dist"))
-        } else {
-            None
+        app_bin: Some(source_dir.join("target").join("release").join("neige-app")),
+        web_dist: Some(source_dir.join("web").join("dist")),
+        web_version: None,
+        calm_server_version: None,
+        db_migration_policy: crate::manifest::DbMigrationPolicy::ForwardOnly,
+        compatibility: CompatibilityV1 {
+            api_version: String::new(),
+            sync_event_version: 0,
+            mcp_protocol_version: String::new(),
+            web_compat_version: 0,
+            min_web_compat_version: 0,
         },
-        web_version: if matches!(mode, PreflightMode::WebOnly | PreflightMode::Bundle) {
-            Some("source".into())
-        } else {
-            None
-        },
-        calm_server_version: if matches!(mode, PreflightMode::ServerOnly | PreflightMode::Bundle) {
-            Some("source".into())
-        } else {
-            None
-        },
-        db_migration_policy,
-        compatibility,
-        bins: if matches!(mode, PreflightMode::ServerOnly | PreflightMode::Bundle) {
-            required_bins(&source_dir)
-        } else {
-            Vec::new()
-        },
+        bins: required_bins(&source_dir),
     })
 }
 
@@ -87,41 +75,6 @@ pub(crate) fn source_mode_for(
         ));
     }
     Ok(mode)
-}
-
-fn source_manifest_config(
-    source: &SourceConfig,
-    mode: PreflightMode,
-) -> anyhow::Result<(CompatibilityV1, crate::manifest::DbMigrationPolicy)> {
-    Ok((
-        CompatibilityV1 {
-            api_version: source
-                .api_version
-                .clone()
-                .ok_or_else(|| anyhow!("source.api_version must be explicitly configured"))?,
-            sync_event_version: source.sync_event_version.ok_or_else(|| {
-                anyhow!("source.sync_event_version must be explicitly configured")
-            })?,
-            mcp_protocol_version: source.mcp_protocol_version.clone().ok_or_else(|| {
-                anyhow!("source.mcp_protocol_version must be explicitly configured")
-            })?,
-            web_compat_version: source.web_compat_version.ok_or_else(|| {
-                anyhow!("source.web_compat_version must be explicitly configured")
-            })?,
-            min_web_compat_version: source.min_web_compat_version.ok_or_else(|| {
-                anyhow!("source.min_web_compat_version must be explicitly configured")
-            })?,
-        },
-        if matches!(mode, PreflightMode::WebOnly) {
-            source
-                .db_migration_policy
-                .unwrap_or(crate::manifest::DbMigrationPolicy::None)
-        } else {
-            source.db_migration_policy.ok_or_else(|| {
-                anyhow!("source.db_migration_policy must be explicitly configured")
-            })?
-        },
-    ))
 }
 
 fn prepare_source_checkout(source: &SourceConfig) -> anyhow::Result<PathBuf> {
@@ -281,6 +234,7 @@ fn unix_ts() -> anyhow::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn existing_checkout_without_marker_fails() {
@@ -295,43 +249,41 @@ mod tests {
     }
 
     #[test]
-    fn source_missing_explicit_manifest_config_fails() {
+    fn source_package_fails_when_built_artifacts_are_missing() {
         let tmp = test_temp_dir("source-config");
         let mut cfg = AppConfig::starter(tmp.join("config.toml"));
         cfg.source.url = Some(tmp.display().to_string());
+        cfg.source.build_args = vec!["true".into()];
 
         let err = build_source_package(&cfg, None).expect_err("missing compat must fail");
-        assert!(err.to_string().contains("source.api_version"));
+        assert!(err.to_string().contains("neige-app"));
     }
 
     #[test]
-    fn source_web_only_package_contains_only_web_unit() {
-        let tmp = test_temp_dir("source-web-only");
+    fn source_package_contains_v2_units() {
+        let tmp = test_temp_dir("source-v2");
         let source = tmp.join("checkout");
-        std::fs::create_dir_all(source.join("web").join("dist")).expect("create web dist");
-        std::fs::write(source.join("web").join("dist").join("index.html"), "web")
-            .expect("write web");
+        fake_build_output(&source);
 
         let mut cfg = AppConfig::starter(tmp.join("config.toml"));
         cfg.release.root = tmp.join("releases");
         cfg.source.url = Some(source.display().to_string());
-        cfg.source.mode = Some(PreflightMode::WebOnly);
         cfg.source.build_args = vec!["true".into()];
-        cfg.source.api_version = Some("1".into());
-        cfg.source.sync_event_version = Some(1);
-        cfg.source.mcp_protocol_version = Some("2025-11-25".into());
-        cfg.source.web_compat_version = Some(2);
-        cfg.source.min_web_compat_version = Some(2);
 
         let package = build_source_package(&cfg, None).expect("package");
-        let manifest: crate::manifest::ReleaseManifest = serde_json::from_slice(
+        let manifest: crate::manifest::ReleaseManifestV2 = serde_json::from_slice(
             &std::fs::read(package.join("manifest.json")).expect("read manifest"),
         )
         .expect("parse manifest");
 
-        assert!(manifest.units.web.is_some());
-        assert!(manifest.units.calm_server.is_none());
-        assert!(manifest.units.bundle.is_none());
+        assert_eq!(manifest.schema_version, 2);
+        assert_eq!(manifest.units.len(), 7);
+        assert!(
+            manifest
+                .units
+                .contains_key(&crate::manifest::UnitName::CalmServer)
+        );
+        assert!(manifest.units.contains_key(&crate::manifest::UnitName::Web));
     }
 
     #[test]
@@ -353,5 +305,58 @@ mod tests {
         }
         std::fs::create_dir_all(&path).expect("create temp dir");
         path
+    }
+
+    fn fake_build_output(source: &Path) {
+        let release = source.join("target").join("release");
+        std::fs::create_dir_all(&release).expect("create release dir");
+        std::fs::create_dir_all(source.join("web").join("dist")).expect("create web dist");
+        std::fs::write(source.join("web").join("dist").join("index.html"), "web")
+            .expect("write web");
+        std::fs::write(
+            source.join("web").join("package.json"),
+            r#"{"version":"1.0.0"}"#,
+        )
+        .expect("write package json");
+        write_script(
+            &release.join("calm-server"),
+            r#"case "$1" in
+  --version) printf 'calm-server 1.0.0\n'; exit 0 ;;
+  --emit-version-json) cat <<'JSON'
+{"kernelVersion":"1.0.0","terminalFrameVersion":4,"terminalProtocolVersion":4,"apiVersion":"1","syncEventVersion":1,"mcpProtocolVersion":"2024-11-05","pluginMcpProtocolVersion":"2025-11-25","webCompatVersion":2,"minWebCompatVersion":2,"supervisorControlVersion":1,"buildSha":null,"dbInstanceId":"test"}
+JSON
+    exit 0 ;;
+esac
+exit 2
+"#,
+        );
+        for name in [
+            "neige-app",
+            "calm-proc-supervisor",
+            "neige-codex-bridge",
+            "neige-mcp-stdio-shim",
+            "neige",
+        ] {
+            write_script(
+                &release.join(name),
+                &format!(
+                    r#"if [ "$1" = "--version" ]; then
+  printf '{name} 1.0.0\n'
+  exit 0
+fi
+exit 2
+"#,
+                ),
+            );
+        }
+    }
+
+    fn write_script(path: &Path, body: &str) {
+        std::fs::write(path, format!("#!/bin/sh\n{body}")).expect("write script");
+        let mut permissions = std::fs::metadata(path)
+            .expect("script metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("chmod script");
     }
 }

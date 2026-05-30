@@ -39,7 +39,11 @@ use package::{NamedPath, PackageConfig};
 use preflight::PreflightMode;
 
 #[derive(Parser, Debug)]
-#[command(name = "neige-app", about = "neige-calm host application shell")]
+#[command(
+    name = "neige-app",
+    version,
+    about = "neige-calm host application shell"
+)]
 struct Cli {
     #[command(subcommand)]
     command: CommandMode,
@@ -53,6 +57,7 @@ enum CommandMode {
 }
 
 #[derive(Subcommand, Debug)]
+#[allow(clippy::large_enum_variant)]
 enum SystemCommand {
     /// Run the supervisor and local admin API.
     Serve(SystemServeArgs),
@@ -226,49 +231,13 @@ struct SystemPackageArgs {
     #[arg(long, default_value = "local")]
     release_id: String,
 
-    /// Optional app shell version for units.app.
+    /// neige-app binary copied to bin/neige-app.
     #[arg(long)]
-    app_version: Option<String>,
+    app_bin: PathBuf,
 
-    /// Optional neige-app binary copied to bin/neige-app.
+    /// web/dist directory copied to web/dist.
     #[arg(long)]
-    app_bin: Option<PathBuf>,
-
-    /// Optional web/dist directory copied to web/dist.
-    #[arg(long)]
-    web_dist: Option<PathBuf>,
-
-    /// Optional web unit version.
-    #[arg(long)]
-    web_version: Option<String>,
-
-    /// Optional calm-server unit version.
-    #[arg(long)]
-    calm_server_version: Option<String>,
-
-    /// REST API compatibility version.
-    #[arg(long)]
-    api_version: String,
-
-    /// Sync event compatibility version.
-    #[arg(long)]
-    sync_event_version: u32,
-
-    /// MCP protocol compatibility version.
-    #[arg(long)]
-    mcp_protocol_version: String,
-
-    /// Web bundle compatibility version.
-    #[arg(long)]
-    web_compat_version: u32,
-
-    /// Minimum web compatibility accepted by the target server.
-    #[arg(long)]
-    min_web_compat_version: u32,
-
-    /// DB migration policy: none, additive, forwardOnly, destructive.
-    #[arg(long, default_value = "none", value_parser = parse_db_migration_policy)]
-    db_migration_policy: DbMigrationPolicy,
+    web_dist: PathBuf,
 
     /// Binary to copy into bin/, as NAME=PATH. Repeat for each bundle binary.
     #[arg(long = "bin", value_parser = package::parse_named_path)]
@@ -901,18 +870,18 @@ fn run_package_cli(args: SystemPackageArgs) -> anyhow::Result<()> {
         release_dir: args.release_dir,
         out: args.out,
         release_id: args.release_id,
-        app_version: args.app_version,
-        app_bin: args.app_bin,
-        web_dist: args.web_dist,
-        web_version: args.web_version,
-        calm_server_version: args.calm_server_version,
-        db_migration_policy: args.db_migration_policy,
+        app_version: None,
+        app_bin: Some(args.app_bin),
+        web_dist: Some(args.web_dist),
+        web_version: None,
+        calm_server_version: None,
+        db_migration_policy: DbMigrationPolicy::ForwardOnly,
         compatibility: CompatibilityV1 {
-            api_version: args.api_version,
-            sync_event_version: args.sync_event_version,
-            mcp_protocol_version: args.mcp_protocol_version,
-            web_compat_version: args.web_compat_version,
-            min_web_compat_version: args.min_web_compat_version,
+            api_version: String::new(),
+            sync_event_version: 0,
+            mcp_protocol_version: String::new(),
+            web_compat_version: 0,
+            min_web_compat_version: 0,
         },
         bins: args.bins,
     })?;
@@ -932,16 +901,6 @@ where
 {
     let bytes = std::fs::read(path)?;
     Ok(serde_json::from_slice(&bytes)?)
-}
-
-fn parse_db_migration_policy(value: &str) -> Result<DbMigrationPolicy, String> {
-    match value {
-        "none" => Ok(DbMigrationPolicy::None),
-        "additive" => Ok(DbMigrationPolicy::Additive),
-        "forwardOnly" => Ok(DbMigrationPolicy::ForwardOnly),
-        "destructive" => Ok(DbMigrationPolicy::Destructive),
-        _ => Err("expected one of: none, additive, forwardOnly, destructive".into()),
-    }
 }
 
 async fn serve_system(args: SystemServeArgs) -> anyhow::Result<()> {

@@ -926,39 +926,15 @@ mod tests {
     use crate::config::AppConfig;
     use crate::installed::InstalledUnit;
     use crate::manifest::{
-        Compatibility, CompatibilityV1, DbMigrationPolicy, FileManifest, FileUnit, ReleaseManifest,
-        ReleaseManifestV2, ReleaseUnit, RestartPolicy, UnitName,
+        AppUnit, BinaryUnit, BundleUnit, CalmServerUnit, Compatibility, CompatibilityV1,
+        DbMigrationPolicy, FileManifest, FileUnit, ReleaseManifest, ReleaseManifestV2, ReleaseUnit,
+        ReleaseUnits, RestartPolicy, UnitName, WebUnit,
     };
-    use crate::package::{NamedPath, PackageConfig, build_package};
 
     #[test]
     fn upgrade_stage_verifies_hash_and_copies_package() {
         let tmp = test_temp_dir("upgrade-stage");
-        let src = tmp.join("src");
-        fs::create_dir_all(src.join("web")).expect("create web");
-        for name in [
-            "calm-server",
-            "neige-codex-bridge",
-            "neige-mcp-stdio-shim",
-            "neige",
-        ] {
-            fs::write(src.join(name), name).expect("write bin");
-        }
-        fs::write(src.join("web").join("index.html"), "web").expect("write web");
-        let package_dir = build_package(&PackageConfig {
-            release_dir: tmp.join("pkg"),
-            out: None,
-            release_id: "rel-1".into(),
-            app_version: None,
-            app_bin: None,
-            web_dist: Some(src.join("web")),
-            web_version: Some("web".into()),
-            calm_server_version: Some("server".into()),
-            db_migration_policy: DbMigrationPolicy::None,
-            compatibility: compat(),
-            bins: required_bins(&src),
-        })
-        .expect("package");
+        let package_dir = make_bundle_package(&tmp);
 
         let mut cfg = AppConfig::starter(tmp.join("config.toml"));
         cfg.release.root = tmp.join("releases");
@@ -972,23 +948,7 @@ mod tests {
     #[test]
     fn stage_web_only_reports_no_restart_required() {
         let tmp = test_temp_dir("upgrade-stage-web");
-        let src = tmp.join("src");
-        fs::create_dir_all(src.join("web")).expect("create web");
-        fs::write(src.join("web").join("index.html"), "web").expect("write web");
-        let package_dir = build_package(&PackageConfig {
-            release_dir: tmp.join("pkg"),
-            out: None,
-            release_id: "rel-web".into(),
-            app_version: None,
-            app_bin: None,
-            web_dist: Some(src.join("web")),
-            web_version: Some("web".into()),
-            calm_server_version: None,
-            db_migration_policy: DbMigrationPolicy::None,
-            compatibility: compat(),
-            bins: Vec::new(),
-        })
-        .expect("package");
+        let package_dir = make_web_package(&tmp);
 
         let mut cfg = AppConfig::starter(tmp.join("config.toml"));
         cfg.release.root = tmp.join("releases");
@@ -1007,30 +967,7 @@ mod tests {
     #[test]
     fn stage_server_only_reports_restart_required() {
         let tmp = test_temp_dir("upgrade-stage-server");
-        let src = tmp.join("src");
-        fs::create_dir_all(&src).expect("create src");
-        for name in [
-            "calm-server",
-            "neige-codex-bridge",
-            "neige-mcp-stdio-shim",
-            "neige",
-        ] {
-            fs::write(src.join(name), name).expect("write bin");
-        }
-        let package_dir = build_package(&PackageConfig {
-            release_dir: tmp.join("pkg"),
-            out: None,
-            release_id: "rel-server".into(),
-            app_version: None,
-            app_bin: None,
-            web_dist: None,
-            web_version: None,
-            calm_server_version: Some("server".into()),
-            db_migration_policy: DbMigrationPolicy::None,
-            compatibility: compat(),
-            bins: required_bins(&src),
-        })
-        .expect("package");
+        let package_dir = make_server_package(&tmp);
 
         let mut cfg = AppConfig::starter(tmp.join("config.toml"));
         cfg.release.root = tmp.join("releases");
@@ -1048,24 +985,7 @@ mod tests {
     #[test]
     fn stage_v1_app_only_succeeds_without_activation_support() {
         let tmp = test_temp_dir("upgrade-stage-app-only");
-        let src = tmp.join("src");
-        fs::create_dir_all(&src).expect("create src");
-        let app_bin = src.join("neige-app");
-        fs::write(&app_bin, "app").expect("write app");
-        let package_dir = build_package(&PackageConfig {
-            release_dir: tmp.join("pkg"),
-            out: None,
-            release_id: "rel-app".into(),
-            app_version: Some("app".into()),
-            app_bin: Some(app_bin),
-            web_dist: None,
-            web_version: None,
-            calm_server_version: None,
-            db_migration_policy: DbMigrationPolicy::None,
-            compatibility: compat(),
-            bins: Vec::new(),
-        })
-        .expect("package");
+        let package_dir = make_app_package(&tmp);
 
         let mut cfg = AppConfig::starter(tmp.join("config.toml"));
         cfg.release.root = tmp.join("releases");
@@ -1557,31 +1477,7 @@ mod tests {
     #[test]
     fn upgrade_stage_refuses_bad_hash() {
         let tmp = test_temp_dir("upgrade-bad-hash");
-        let src = tmp.join("src");
-        fs::create_dir_all(src.join("web")).expect("create web");
-        for name in [
-            "calm-server",
-            "neige-codex-bridge",
-            "neige-mcp-stdio-shim",
-            "neige",
-        ] {
-            fs::write(src.join(name), name).expect("write bin");
-        }
-        fs::write(src.join("web").join("index.html"), "web").expect("write web");
-        let package_dir = build_package(&PackageConfig {
-            release_dir: tmp.join("pkg"),
-            out: None,
-            release_id: "rel-1".into(),
-            app_version: None,
-            app_bin: None,
-            web_dist: Some(src.join("web")),
-            web_version: Some("web".into()),
-            calm_server_version: Some("server".into()),
-            db_migration_policy: DbMigrationPolicy::None,
-            compatibility: compat(),
-            bins: required_bins(&src),
-        })
-        .expect("package");
+        let package_dir = make_bundle_package(&tmp);
         fs::write(package_dir.join("bin").join("neige"), "tampered").expect("tamper");
 
         let mut cfg = AppConfig::starter(tmp.join("config.toml"));
@@ -1594,31 +1490,7 @@ mod tests {
     #[test]
     fn upgrade_stage_refuses_non_empty_target() {
         let tmp = test_temp_dir("upgrade-non-empty");
-        let src = tmp.join("src");
-        fs::create_dir_all(src.join("web")).expect("create web");
-        for name in [
-            "calm-server",
-            "neige-codex-bridge",
-            "neige-mcp-stdio-shim",
-            "neige",
-        ] {
-            fs::write(src.join(name), name).expect("write bin");
-        }
-        fs::write(src.join("web").join("index.html"), "web").expect("write web");
-        let package_dir = build_package(&PackageConfig {
-            release_dir: tmp.join("pkg"),
-            out: None,
-            release_id: "rel-1".into(),
-            app_version: None,
-            app_bin: None,
-            web_dist: Some(src.join("web")),
-            web_version: Some("web".into()),
-            calm_server_version: Some("server".into()),
-            db_migration_policy: DbMigrationPolicy::None,
-            compatibility: compat(),
-            bins: required_bins(&src),
-        })
-        .expect("package");
+        let package_dir = make_bundle_package(&tmp);
 
         let mut cfg = AppConfig::starter(tmp.join("config.toml"));
         cfg.release.root = tmp.join("releases");
@@ -1634,31 +1506,7 @@ mod tests {
     #[test]
     fn upgrade_stage_rejects_manifest_path_escape() {
         let tmp = test_temp_dir("upgrade-path-escape");
-        let src = tmp.join("src");
-        fs::create_dir_all(src.join("web")).expect("create web");
-        for name in [
-            "calm-server",
-            "neige-codex-bridge",
-            "neige-mcp-stdio-shim",
-            "neige",
-        ] {
-            fs::write(src.join(name), name).expect("write bin");
-        }
-        fs::write(src.join("web").join("index.html"), "web").expect("write web");
-        let package_dir = build_package(&PackageConfig {
-            release_dir: tmp.join("pkg"),
-            out: None,
-            release_id: "rel-1".into(),
-            app_version: None,
-            app_bin: None,
-            web_dist: Some(src.join("web")),
-            web_version: Some("web".into()),
-            calm_server_version: Some("server".into()),
-            db_migration_policy: DbMigrationPolicy::None,
-            compatibility: compat(),
-            bins: required_bins(&src),
-        })
-        .expect("package");
+        let package_dir = make_bundle_package(&tmp);
 
         let manifest_path = package_dir.join("manifest.json");
         let mut manifest: ReleaseManifest =
@@ -1844,47 +1692,196 @@ mod tests {
         package_dir
     }
 
-    fn required_bins(src: &Path) -> Vec<NamedPath> {
-        [
-            "calm-server",
-            "neige-codex-bridge",
-            "neige-mcp-stdio-shim",
-            "neige",
-        ]
-        .into_iter()
-        .map(|name| NamedPath {
-            name: name.into(),
-            path: src.join(name),
-        })
-        .collect()
-    }
-
     fn make_bundle_package(tmp: &Path) -> PathBuf {
-        let src = tmp.join("src");
-        fs::create_dir_all(src.join("web")).expect("create web");
+        let package_dir = tmp.join("pkg");
+        fs::create_dir_all(package_dir.join("bin")).expect("create bin");
+        fs::create_dir_all(package_dir.join("web").join("dist")).expect("create web");
         for name in [
             "calm-server",
             "neige-codex-bridge",
             "neige-mcp-stdio-shim",
             "neige",
         ] {
-            fs::write(src.join(name), name).expect("write bin");
+            fs::write(package_dir.join("bin").join(name), name).expect("write bin");
         }
-        fs::write(src.join("web").join("index.html"), "web").expect("write web");
-        build_package(&PackageConfig {
-            release_dir: tmp.join("pkg"),
-            out: None,
-            release_id: "rel-1".into(),
-            app_version: None,
-            app_bin: None,
-            web_dist: Some(src.join("web")),
-            web_version: Some("web".into()),
-            calm_server_version: Some("server".into()),
-            db_migration_policy: DbMigrationPolicy::None,
-            compatibility: compat(),
-            bins: required_bins(&src),
+        fs::write(
+            package_dir.join("web").join("dist").join("index.html"),
+            "web",
+        )
+        .expect("write web");
+
+        let binaries = [
+            "calm-server",
+            "neige-codex-bridge",
+            "neige-mcp-stdio-shim",
+            "neige",
+        ]
+        .into_iter()
+        .map(|name| BinaryUnit {
+            name: name.into(),
+            path: format!("bin/{name}"),
         })
-        .expect("package")
+        .collect();
+        write_legacy_manifest(
+            &package_dir,
+            ReleaseManifest {
+                schema_version: 1,
+                release_id: "rel-1".into(),
+                units: ReleaseUnits {
+                    app: None,
+                    web: Some(WebUnit {
+                        version: "web".into(),
+                        compatibility: compat(),
+                    }),
+                    calm_server: Some(CalmServerUnit {
+                        version: "server".into(),
+                        compatibility: compat(),
+                        db_migration_policy: DbMigrationPolicy::None,
+                    }),
+                    bundle: Some(BundleUnit { binaries }),
+                },
+                files: manifest_files(
+                    &package_dir,
+                    &[
+                        ("web/dist/index.html", FileUnit::Web),
+                        ("bin/calm-server", FileUnit::CalmServer),
+                        ("bin/neige-codex-bridge", FileUnit::Bundle),
+                        ("bin/neige-mcp-stdio-shim", FileUnit::Bundle),
+                        ("bin/neige", FileUnit::Bundle),
+                    ],
+                ),
+            },
+        );
+        package_dir
+    }
+
+    fn make_web_package(tmp: &Path) -> PathBuf {
+        let package_dir = tmp.join("pkg-web");
+        fs::create_dir_all(package_dir.join("web").join("dist")).expect("create web");
+        fs::write(
+            package_dir.join("web").join("dist").join("index.html"),
+            "web",
+        )
+        .expect("write web");
+        write_legacy_manifest(
+            &package_dir,
+            ReleaseManifest {
+                schema_version: 1,
+                release_id: "rel-web".into(),
+                units: ReleaseUnits {
+                    app: None,
+                    web: Some(WebUnit {
+                        version: "web".into(),
+                        compatibility: compat(),
+                    }),
+                    calm_server: None,
+                    bundle: None,
+                },
+                files: manifest_files(&package_dir, &[("web/dist/index.html", FileUnit::Web)]),
+            },
+        );
+        package_dir
+    }
+
+    fn make_server_package(tmp: &Path) -> PathBuf {
+        let package_dir = tmp.join("pkg-server");
+        fs::create_dir_all(package_dir.join("bin")).expect("create bin");
+        for name in [
+            "calm-server",
+            "neige-codex-bridge",
+            "neige-mcp-stdio-shim",
+            "neige",
+        ] {
+            fs::write(package_dir.join("bin").join(name), name).expect("write bin");
+        }
+        let binaries = [
+            "calm-server",
+            "neige-codex-bridge",
+            "neige-mcp-stdio-shim",
+            "neige",
+        ]
+        .into_iter()
+        .map(|name| BinaryUnit {
+            name: name.into(),
+            path: format!("bin/{name}"),
+        })
+        .collect();
+        write_legacy_manifest(
+            &package_dir,
+            ReleaseManifest {
+                schema_version: 1,
+                release_id: "rel-server".into(),
+                units: ReleaseUnits {
+                    app: None,
+                    web: None,
+                    calm_server: Some(CalmServerUnit {
+                        version: "server".into(),
+                        compatibility: compat(),
+                        db_migration_policy: DbMigrationPolicy::None,
+                    }),
+                    bundle: Some(BundleUnit { binaries }),
+                },
+                files: manifest_files(
+                    &package_dir,
+                    &[
+                        ("bin/calm-server", FileUnit::CalmServer),
+                        ("bin/neige-codex-bridge", FileUnit::Bundle),
+                        ("bin/neige-mcp-stdio-shim", FileUnit::Bundle),
+                        ("bin/neige", FileUnit::Bundle),
+                    ],
+                ),
+            },
+        );
+        package_dir
+    }
+
+    fn make_app_package(tmp: &Path) -> PathBuf {
+        let package_dir = tmp.join("pkg-app");
+        fs::create_dir_all(package_dir.join("bin")).expect("create bin");
+        fs::write(package_dir.join("bin").join("neige-app"), "app").expect("write app");
+        write_legacy_manifest(
+            &package_dir,
+            ReleaseManifest {
+                schema_version: 1,
+                release_id: "rel-app".into(),
+                units: ReleaseUnits {
+                    app: Some(AppUnit {
+                        name: "neige-app".into(),
+                        version: "app".into(),
+                    }),
+                    web: None,
+                    calm_server: None,
+                    bundle: None,
+                },
+                files: manifest_files(&package_dir, &[("bin/neige-app", FileUnit::App)]),
+            },
+        );
+        package_dir
+    }
+
+    fn write_legacy_manifest(package_dir: &Path, mut manifest: ReleaseManifest) {
+        manifest.files.sort_by(|a, b| a.path.cmp(&b.path));
+        fs::write(
+            package_dir.join("manifest.json"),
+            serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+        )
+        .expect("write manifest");
+    }
+
+    fn manifest_files(package_dir: &Path, files: &[(&str, FileUnit)]) -> Vec<FileManifest> {
+        files
+            .iter()
+            .map(|(path, unit)| {
+                let (sha256, bytes) =
+                    sha256_file(&package_dir.join(path)).expect("hash legacy payload");
+                FileManifest {
+                    path: (*path).into(),
+                    sha256,
+                    bytes,
+                    unit: *unit,
+                }
+            })
+            .collect()
     }
 
     fn read_manifest(path: &Path) -> ReleaseManifest {

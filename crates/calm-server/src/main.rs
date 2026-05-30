@@ -26,6 +26,12 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cfg = Config::parse();
+    if cfg.emit_version_json {
+        let info =
+            calm_server::routes::version::current_version_info(uuid::Uuid::new_v4().to_string());
+        println!("{}", serde_json::to_string_pretty(&info)?);
+        return Ok(());
+    }
     warn_if_worker_hook_callback_is_not_loopback(&cfg);
 
     // Storage. `mock` keeps the in-memory backend for dev — it now resolves to

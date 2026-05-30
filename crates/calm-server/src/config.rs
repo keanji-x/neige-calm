@@ -6,6 +6,10 @@ use std::path::PathBuf;
 #[derive(Parser, Debug, Clone)]
 #[command(name = "calm-server", version, about = "neige-calm kernel")]
 pub struct Config {
+    /// Print VersionInfo JSON and exit without opening storage or sockets.
+    #[arg(long, default_value_t = false)]
+    pub emit_version_json: bool,
+
     /// HTTP listen address.
     #[arg(long, env = "CALM_LISTEN", default_value = "127.0.0.1:4040")]
     pub listen: String,

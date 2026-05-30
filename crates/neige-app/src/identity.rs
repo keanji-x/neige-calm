@@ -48,7 +48,7 @@ pub(crate) fn write_supervisor_identity(
     write_json_atomic(&supervisor_identity_path(data_dir), identity)
 }
 
-fn sha256_file(path: &Path) -> anyhow::Result<String> {
+pub(crate) fn sha256_file(path: &Path) -> anyhow::Result<String> {
     let mut file = fs::File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
@@ -117,7 +117,7 @@ fn capture_version(bin: &Path) -> Option<String> {
     }
 }
 
-fn parse_version_output(output: &str) -> Option<String> {
+pub(crate) fn parse_version_output(output: &str) -> Option<String> {
     let mut tokens = output.split_whitespace();
     let _binary_name = tokens.next()?;
     let version = tokens.next()?;

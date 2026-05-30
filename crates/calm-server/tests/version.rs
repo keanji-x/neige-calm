@@ -18,7 +18,7 @@ use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::routes::version::{API_VERSION, WEB_COMPAT_VERSION};
 use calm_server::state::{AppState, CodexClient, DaemonClient};
-use calm_session::SUPERVISOR_CONTROL_VERSION;
+use calm_session::{FRAME_VERSION, PROTOCOL_VERSION, SUPERVISOR_CONTROL_VERSION};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
@@ -70,6 +70,8 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     let obj = v.as_object().expect("response is a JSON object");
     for key in [
         "kernelVersion",
+        "terminalFrameVersion",
+        "terminalProtocolVersion",
         "apiVersion",
         "syncEventVersion",
         "mcpProtocolVersion",
@@ -92,6 +94,8 @@ async fn get_version_returns_all_fields_with_expected_sources() {
 
     // Type correctness.
     assert!(v["kernelVersion"].is_string());
+    assert!(v["terminalFrameVersion"].is_number());
+    assert!(v["terminalProtocolVersion"].is_number());
     assert!(v["apiVersion"].is_string());
     assert!(v["syncEventVersion"].is_number());
     assert!(v["mcpProtocolVersion"].is_string());
@@ -117,6 +121,14 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert_eq!(
         v["kernelVersion"].as_str().unwrap(),
         env!("CARGO_PKG_VERSION")
+    );
+    assert_eq!(
+        v["terminalFrameVersion"].as_u64().unwrap(),
+        FRAME_VERSION as u64
+    );
+    assert_eq!(
+        v["terminalProtocolVersion"].as_u64().unwrap(),
+        PROTOCOL_VERSION as u64
     );
     assert_eq!(
         v["mcpProtocolVersion"].as_str().unwrap(),
