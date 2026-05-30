@@ -57,8 +57,8 @@ const PONG_TIMEOUT: Duration = Duration::from_secs(30);
 /// surfaced in server logs when troubleshooting.
 const PONG_TIMEOUT_REASON: &str = "no pong";
 
-/// Reason text we attach to the 1000 close frame when the daemon emitted
-/// `TerminalExited` / `ChildExited`. The browser surfaces this via
+/// Reason text we attach to the 1000 close frame when the terminal emitted
+/// `TerminalExited`. The browser surfaces this via
 /// `CloseEvent.reason`; the JS client matches on this exact string to
 /// distinguish a clean child exit from a network-level disconnect even
 /// if the prior JSON exit frame got dropped on a slow link.
@@ -217,10 +217,7 @@ async fn handle_renderer(socket: WebSocket, entry: Arc<RendererEntry>, terminal_
     let ws_tx_down = ws_tx.clone();
     let down = async move {
         while let Some(msg) = outgoing_rx.recv().await {
-            let exit = matches!(
-                msg,
-                DaemonMsg::TerminalExited { .. } | DaemonMsg::ChildExited { .. }
-            );
+            let exit = matches!(msg, DaemonMsg::TerminalExited { .. });
             let text = match serde_json::to_string(&msg) {
                 Ok(s) => s,
                 Err(e) => {
@@ -859,13 +856,7 @@ pub async fn pump<T: DaemonTransport>(
                     break;
                 }
             };
-            // Both terminal-mode TerminalExited and chat-mode ChildExited
-            // signal end-of-session; the pump tears down the WS after
-            // either lands.
-            let exit = matches!(
-                msg,
-                DaemonMsg::TerminalExited { .. } | DaemonMsg::ChildExited { .. }
-            );
+            let exit = matches!(msg, DaemonMsg::TerminalExited { .. });
             let text = match serde_json::to_string(&msg) {
                 Ok(s) => s,
                 Err(e) => {
@@ -1672,13 +1663,11 @@ mod pump_tests {
         }
     }
 
-    /// Normal close path (daemon sends `ChildExited`): `pump` must return
-    /// `PumpOutcome::Clean`. The kernel must NOT clear `daemon_handle` in
-    /// this case — the daemon process exits on its own and a fresh attach
-    /// will see the empty handle and respawn through the cold path; we
-    /// just don't want to *force* cleanup on every healthy exit.
+    /// Normal close path (renderer sends `TerminalExited`): `pump` must
+    /// return `PumpOutcome::Clean`. The kernel must not force cleanup on
+    /// every healthy exit.
     #[tokio::test]
-    async fn pump_returns_clean_on_child_exited() {
+    async fn pump_returns_clean_on_terminal_exited() {
         let (mut daemon_side, server_side) = tokio::io::duplex(8192);
         let (ping, pong) = long_window();
         let (addr, outcome) = boot_pump(server_side, ping, pong).await;
@@ -1686,9 +1675,16 @@ mod pump_tests {
         let url = format!("ws://{}/pump", addr);
         let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-        write_frame(&mut daemon_side, &DaemonMsg::ChildExited { code: Some(0) })
-            .await
-            .unwrap();
+        write_frame(
+            &mut daemon_side,
+            &DaemonMsg::TerminalExited {
+                code: Some(0),
+                pty_seq: 0,
+                render_rev: 0,
+            },
+        )
+        .await
+        .unwrap();
         drop(daemon_side);
 
         // Drain WS to let the up arm exit (drop the client → up sees None).
@@ -1703,7 +1699,7 @@ mod pump_tests {
             .expect("outcome sender dropped without sending");
         assert!(
             matches!(got, PumpOutcome::Clean),
-            "expected Clean on ChildExited, got {:?}",
+            "expected Clean on TerminalExited, got {:?}",
             got
         );
     }
