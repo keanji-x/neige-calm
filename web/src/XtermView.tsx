@@ -101,8 +101,11 @@ interface CloseInfo {
  *  via `DaemonMsg::ProtocolError(UnsupportedVersion)` and the overlay below.
  *  Bumped 2 → 3 in #177 for the `ClientMsg::TerminalThemeUpdate` variant
  *  the daemon uses to update its OSC 10/11 defaults and nudge a
- *  focus-aware TUI to re-query on host theme toggles. */
-const PROTOCOL_VERSION = 3;
+ *  focus-aware TUI to re-query on host theme toggles.
+ *  Bumped 3 → 4 in #388 (Phase 3c): chat-mode wire variants removed
+ *  alongside daemon binary retirement; the bincode discriminants shift
+ *  so `FRAME_VERSION` + `PROTOCOL_VERSION` move in lockstep. */
+const PROTOCOL_VERSION = 4;
 
 /**
  * UI status for the v2 terminal protocol. Slimmed-down state machine
