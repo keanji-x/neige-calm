@@ -69,8 +69,8 @@ pub fn router() -> Router<AppState> {
 ///      injected stdin lands on the composer instead of a modal, and
 ///   3. stamps `prompt` onto the card payload — the
 ///      `codex_auto_submit` subscriber reads it and, once codex emits
-///      `hook.codex.session_start`, opens a kernel-private connection
-///      to the daemon and injects a `\r` so the composer auto-submits.
+///      `hook.codex.session_start`, routes `\r` through the renderer so
+///      the composer auto-submits.
 ///
 /// Empty / absent `prompt` reverts to the user-initiated flow: codex
 /// boots, the composer is empty, the user types and hits Enter.
@@ -83,9 +83,9 @@ pub fn router() -> Router<AppState> {
 /// callers should be putting text now.
 ///
 /// `theme` is required end-to-end (#177): callers MUST send the host
-/// browser's current foreground/background RGB. The kernel stamps it
-/// onto the `calm-session-daemon` argv so codex's OSC 10/11 startup
-/// probe gets matching colors. Forcing it at the type layer means a
+/// browser's current foreground/background RGB. The renderer uses it so
+/// codex's OSC 10/11 startup probe gets matching colors. Forcing it at
+/// the type layer means a
 /// caller that forgets — the exact bug that motivated this refactor —
 /// fails at compile time (TS) or at the deserialize step (Rust/JSON,
 /// 422). No `Option`, no `#[serde(default)]`, no implicit fallback.
@@ -111,10 +111,8 @@ pub struct NewCodexCardBody {
     /// Optional card-head logo foreground CSS color. Empty string is ignored.
     #[serde(default)]
     pub icon_fg: Option<String>,
-    /// Host browser's current theme RGB (#177). Required — the kernel
-    /// stamps `--terminal-fg=r,g,b --terminal-bg=r,g,b` onto the
-    /// `calm-session-daemon` argv so the daemon's `TerminalModel`
-    /// answers codex's OSC 10/11 startup probe with colors matching
+    /// Host browser's current theme RGB (#177). Required so the terminal
+    /// model answers codex's OSC 10/11 startup probe with colors matching
     /// the host theme. A caller that omits this field gets 422.
     pub theme: crate::routes::theme::RequestTheme,
 }

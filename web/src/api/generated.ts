@@ -973,7 +973,7 @@ export interface components {
          *
          *     `theme` is required end-to-end (#177): callers MUST send the host
          *     browser's current foreground/background RGB. The kernel stamps it
-         *     onto the `calm-session-daemon` argv so codex's OSC 10/11 startup
+         *     onto the `terminal renderer` argv so codex's OSC 10/11 startup
          *     probe gets matching colors. Forcing it at the type layer means a
          *     caller that forgets — the exact bug that motivated this refactor —
          *     fails at compile time (TS) or at the deserialize step (Rust/JSON,
@@ -1004,7 +1004,7 @@ export interface components {
             /**
              * @description Host browser's current theme RGB (#177). Required — the kernel
              *     stamps `--terminal-fg=r,g,b --terminal-bg=r,g,b` onto the
-             *     `calm-session-daemon` argv so the daemon's `TerminalModel`
+             *     `terminal renderer` argv so the terminal model
              *     answers codex's OSC 10/11 startup probe with colors matching
              *     the host theme. A caller that omits this field gets 422.
              */
@@ -1092,7 +1092,7 @@ export interface components {
             /**
              * @description Host browser's current theme RGB (#177). Required end-to-end —
              *     the kernel stamps `--terminal-fg=r,g,b --terminal-bg=r,g,b`
-             *     onto the auto-minted spec card's `calm-session-daemon` argv so
+             *     onto the auto-minted spec card's `terminal renderer` argv so
              *     codex's OSC 10/11 startup probe gets matching colors. A body
              *     missing this field is rejected at the deserialize layer (422):
              *     the spec card is invisible to the user and a silent fallback
@@ -1246,7 +1246,6 @@ export interface components {
             /** Format: int64 */
             created_at: number;
             cwd: string;
-            daemon_handle?: string | null;
             env: Record<string, never>;
             /**
              * Format: int32

@@ -409,10 +409,9 @@ pub struct NewWave {
     /// conflict.
     #[serde(default)]
     pub attach_folder: bool,
-    /// Host browser's current theme RGB (#177). Required end-to-end —
-    /// the kernel stamps `--terminal-fg=r,g,b --terminal-bg=r,g,b`
-    /// onto the auto-minted spec card's `calm-session-daemon` argv so
-    /// codex's OSC 10/11 startup probe gets matching colors. A body
+    /// Host browser's current theme RGB (#177). Required end-to-end so
+    /// the auto-minted spec card's terminal renderer answers codex's
+    /// OSC 10/11 startup probe with matching colors. A body
     /// missing this field is rejected at the deserialize layer (422):
     /// the spec card is invisible to the user and a silent fallback
     /// would mean every wave-from-the-UI spawned with a mis-tinted

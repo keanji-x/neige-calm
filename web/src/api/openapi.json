@@ -3112,7 +3112,7 @@
       },
       "NewCodexCardBody": {
         "type": "object",
-        "description": "Body for `POST /api/waves/:wave_id/codex-cards`.\n\nDeliberately omits `kind` (always `\"codex\"`) and `payload` (the kernel\nstamps `{schemaVersion, terminal_id, cwd?, prompt?}` itself). Empty\n`cwd` falls back to `$HOME` then the server's cwd.\n\n`prompt` is the hands-free entry point: when non-empty, the kernel\n  1. passes it to codex CLI as the positional `[PROMPT]` arg\n     (shell-single-quoted), which mounts the TUI with the composer\n     pre-filled,\n  2. writes a per-spawn `$CODEX_HOME/config.toml` that silences the\n     three first-run dialogs (approval, sandbox, project trust) so\n     injected stdin lands on the composer instead of a modal, and\n  3. stamps `prompt` onto the card payload — the\n     `codex_auto_submit` subscriber reads it and, once codex emits\n     `hook.codex.session_start`, opens a kernel-private connection\n     to the daemon and injects a `\\r` so the composer auto-submits.\n\nEmpty / absent `prompt` reverts to the user-initiated flow: codex\nboots, the composer is empty, the user types and hits Enter.\n\nNote: the old `initial_prompt` field (which had been a documented\nno-op since the codex-TUI port) was removed; serde rejects unknown\nfields with the default config, so a stale caller that still sends\nit will get a 422 — that's the intended fail-loud signal to update\nthe caller. The interactive `prompt` channel is the one place\ncallers should be putting text now.\n\n`theme` is required end-to-end (#177): callers MUST send the host\nbrowser's current foreground/background RGB. The kernel stamps it\nonto the `calm-session-daemon` argv so codex's OSC 10/11 startup\nprobe gets matching colors. Forcing it at the type layer means a\ncaller that forgets — the exact bug that motivated this refactor —\nfails at compile time (TS) or at the deserialize step (Rust/JSON,\n422). No `Option`, no `#[serde(default)]`, no implicit fallback.",
+        "description": "Body for `POST /api/waves/:wave_id/codex-cards`.\n\nDeliberately omits `kind` (always `\"codex\"`) and `payload` (the kernel\nstamps `{schemaVersion, terminal_id, cwd?, prompt?}` itself). Empty\n`cwd` falls back to `$HOME` then the server's cwd.\n\n`prompt` is the hands-free entry point: when non-empty, the kernel\n  1. passes it to codex CLI as the positional `[PROMPT]` arg\n     (shell-single-quoted), which mounts the TUI with the composer\n     pre-filled,\n  2. writes a per-spawn `$CODEX_HOME/config.toml` that silences the\n     three first-run dialogs (approval, sandbox, project trust) so\n     injected stdin lands on the composer instead of a modal, and\n  3. stamps `prompt` onto the card payload — the\n     `codex_auto_submit` subscriber reads it and, once codex emits\n     `hook.codex.session_start`, routes `\\r` through the renderer so\n     the composer auto-submits.\n\nEmpty / absent `prompt` reverts to the user-initiated flow: codex\nboots, the composer is empty, the user types and hits Enter.\n\nNote: the old `initial_prompt` field (which had been a documented\nno-op since the codex-TUI port) was removed; serde rejects unknown\nfields with the default config, so a stale caller that still sends\nit will get a 422 — that's the intended fail-loud signal to update\nthe caller. The interactive `prompt` channel is the one place\ncallers should be putting text now.\n\n`theme` is required end-to-end (#177): callers MUST send the host\nbrowser's current foreground/background RGB. The renderer uses it so\ncodex's OSC 10/11 startup probe gets matching colors. Forcing it at\nthe type layer means a\ncaller that forgets — the exact bug that motivated this refactor —\nfails at compile time (TS) or at the deserialize step (Rust/JSON,\n422). No `Option`, no `#[serde(default)]`, no implicit fallback.",
         "required": [
           "theme"
         ],
@@ -3155,7 +3155,7 @@
           },
           "theme": {
             "$ref": "#/components/schemas/RequestTheme",
-            "description": "Host browser's current theme RGB (#177). Required — the kernel\nstamps `--terminal-fg=r,g,b --terminal-bg=r,g,b` onto the\n`calm-session-daemon` argv so the daemon's `TerminalModel`\nanswers codex's OSC 10/11 startup probe with colors matching\nthe host theme. A caller that omits this field gets 422."
+            "description": "Host browser's current theme RGB (#177). Required so the terminal\nmodel answers codex's OSC 10/11 startup probe with colors matching\nthe host theme. A caller that omits this field gets 422."
           }
         },
         "additionalProperties": false
@@ -3284,7 +3284,7 @@
           },
           "theme": {
             "$ref": "#/components/schemas/RequestTheme",
-            "description": "Host browser's current theme RGB (#177). Required end-to-end —\nthe kernel stamps `--terminal-fg=r,g,b --terminal-bg=r,g,b`\nonto the auto-minted spec card's `calm-session-daemon` argv so\ncodex's OSC 10/11 startup probe gets matching colors. A body\nmissing this field is rejected at the deserialize layer (422):\nthe spec card is invisible to the user and a silent fallback\nwould mean every wave-from-the-UI spawned with a mis-tinted\ncomposer (the bug that motivated this refactor).\n\nDirect repo callers (`db::sqlite::wave_create_tx`, used by tests\nand a couple of non-route helpers) still pass a value here even\nthough the txn-level helper does not consume it — spec-card\nspawning is owned by `routes::waves::create_wave`. Tests can\nuse `RequestTheme::default_dark()` as a no-op sentinel."
+            "description": "Host browser's current theme RGB (#177). Required end-to-end so\nthe auto-minted spec card's terminal renderer answers codex's\nOSC 10/11 startup probe with matching colors. A body\nmissing this field is rejected at the deserialize layer (422):\nthe spec card is invisible to the user and a silent fallback\nwould mean every wave-from-the-UI spawned with a mis-tinted\ncomposer (the bug that motivated this refactor).\n\nDirect repo callers (`db::sqlite::wave_create_tx`, used by tests\nand a couple of non-route helpers) still pass a value here even\nthough the txn-level helper does not consume it — spec-card\nspawning is owned by `routes::waves::create_wave`. Tests can\nuse `RequestTheme::default_dark()` as a no-op sentinel."
           },
           "title": {
             "type": "string"
@@ -3653,12 +3653,6 @@
           "cwd": {
             "type": "string"
           },
-          "daemon_handle": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "env": {
             "type": "object"
           },
@@ -3679,7 +3673,7 @@
               "null"
             ],
             "format": "int64",
-            "description": "Daemon process id, captured by `spawn_daemon_for` after `cmd.spawn()`.\nUsed by the orphan-terminal sweeper (`terminal_sweeper`) as the\nSIGTERM fallback target when the graceful `ClientMsg::Kill` path\nfails. `None` for rows that predate Scope C or for which the spawn\nreturned no pid (kernel-level edge case)."
+            "description": "Child process id, captured after supervisor spawn. Used by the\norphan-terminal sweeper (`terminal_sweeper`) as the SIGTERM fallback\ntarget. `None` for rows that predate Scope C or for which the spawn\nreturned no pid (kernel-level edge case)."
           },
           "program": {
             "type": "string"
@@ -3694,7 +3688,7 @@
           },
           "theme_fg": {
             "type": "string",
-            "description": "#177 — host browser's foreground RGB at row-creation time, as\ncomma-decimal `r,g,b` (the daemon CLI's `--terminal-fg` arg\nformat). NOT NULL after migration 0017: every spawn path reads\nthese columns and stamps the daemon argv from them, so the\nauto-revive in `ws::terminal` can no longer race a themed spawn\nwith an un-themed one (both candidates carry identical argv)."
+            "description": "#177 — host browser's foreground RGB at row-creation time, as\ncomma-decimal `r,g,b` format). NOT NULL after migration 0017:\nevery spawn path reads these columns so renderer startup observes\nthe browser theme."
           }
         }
       },
