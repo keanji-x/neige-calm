@@ -81,13 +81,13 @@ use crate::ids::{ActorId, CardId, CoveId, WaveId};
 use crate::model::CardRole;
 use crate::routes::codex_cards::shell_single_quote;
 use crate::routes::settings::load_settings;
-use crate::routes::terminal::spawn_daemon_with_parts;
+use crate::routes::terminal::spawn_terminal_with_parts;
 use crate::spec_appserver::SpecPushRegistry;
 use crate::spec_card::{SeededCardRole, build_codex_env_map, seed_codex_home_with_parts};
 use crate::state::{CodexClient, DaemonClient};
-use crate::terminal_sweeper::{reap_terminal_artifacts, reap_terminal_pid_only};
+use crate::terminal_renderer::TerminalRendererRegistry;
+use crate::terminal_sweeper::{reap_terminal_artifacts_with_renderer, reap_terminal_pid_only};
 use crate::wave_cove_cache::WaveCoveCache;
-use crate::ws::terminal::exit_sidecar_path;
 
 /// Default number of permits when `NEIGE_DISPATCHER_PERMITS` is unset /
 /// invalid / `0`. Mirrors the v2 spec for issue #136.
@@ -459,6 +459,35 @@ impl Dispatcher {
         codex: Arc<CodexClient>,
         daemon: Arc<DaemonClient>,
         mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
+        spec_push: SpecPushRegistry,
+        permits: usize,
+    ) -> Self {
+        let route_repo: Arc<dyn RouteRepo> = repo.clone();
+        let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo);
+        Self::spawn_with_terminal_renderer(
+            repo,
+            events,
+            card_role_cache,
+            wave_cove_cache,
+            codex,
+            daemon,
+            terminal_renderer,
+            mcp_server,
+            spec_push,
+            permits,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_with_terminal_renderer(
+        repo: Arc<dyn Repo>,
+        events: EventBus,
+        card_role_cache: CardRoleCache,
+        wave_cove_cache: WaveCoveCache,
+        codex: Arc<CodexClient>,
+        daemon: Arc<DaemonClient>,
+        terminal_renderer: Arc<TerminalRendererRegistry>,
+        mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
         // #293 — the wave→app-server push registry (shared with
         // `AppState.spec_push`; `create_wave` fills it). Push is the only
         // path now (#293 cutover): the subscribe filter unconditionally
@@ -489,6 +518,7 @@ impl Dispatcher {
             wave_cove_cache,
             codex,
             daemon,
+            terminal_renderer,
             mcp_server,
             spec_push,
             // #293 PR3b — a DEDICATED push watermark cache. Intentionally
@@ -596,6 +626,7 @@ struct Inner {
     /// dispatcher should no-op until the bus closes.
     codex: Weak<CodexClient>,
     daemon: Arc<DaemonClient>,
+    terminal_renderer: Arc<TerminalRendererRegistry>,
     /// PR7a.1 (#136 followup) — kernel-as-MCP-server handle. When `Some`,
     /// every codex-worker spawn folds the per-card MCP token + kernel
     /// socket path into the daemon env *and* seeds the per-card
@@ -1577,6 +1608,7 @@ impl Inner {
             // explicit ack.
             let _ = rollback_orphan_worker(
                 self.repo.as_ref(),
+                self.terminal_renderer.as_ref(),
                 &self.card_role_cache,
                 card_id.as_str(),
                 term.id.as_str(),
@@ -1618,8 +1650,9 @@ impl Inner {
         // `sh -c`). `codex_auto_submit` then sees the non-empty
         // `payload.prompt` and injects a `\r` on `hook.codex.session_start`.
         let command_line = format!("codex {}", shell_single_quote(&user_prompt));
-        if let Err(e) = spawn_daemon_with_parts(
+        if let Err(e) = spawn_terminal_with_parts(
             self.daemon.as_ref(),
+            self.terminal_renderer.as_ref(),
             self.repo.as_ref(),
             &term,
             &command_line,
@@ -1647,6 +1680,7 @@ impl Inner {
             //     `task.failed` for a worker that completed.
             match rollback_orphan_worker(
                 self.repo.as_ref(),
+                self.terminal_renderer.as_ref(),
                 &self.card_role_cache,
                 card_id.as_str(),
                 term.id.as_str(),
@@ -1916,8 +1950,9 @@ impl Inner {
                 ))
             })?;
 
-        if let Err(e) = spawn_daemon_with_parts(
+        if let Err(e) = spawn_terminal_with_parts(
             self.daemon.as_ref(),
+            self.terminal_renderer.as_ref(),
             self.repo.as_ref(),
             &term,
             &cmd,
@@ -1941,6 +1976,7 @@ impl Inner {
             // badge (v1 #309 UX).
             match rollback_orphan_worker(
                 self.repo.as_ref(),
+                self.terminal_renderer.as_ref(),
                 &self.card_role_cache,
                 card_id.as_str(),
                 term.id.as_str(),
@@ -2165,6 +2201,7 @@ enum RollbackOutcome {
 /// (same role it plays for crash-time orphans).
 async fn rollback_orphan_worker(
     repo: &dyn Repo,
+    terminal_renderer: &TerminalRendererRegistry,
     card_role_cache: &CardRoleCache,
     card_id: &str,
     terminal_id: &str,
@@ -2198,75 +2235,19 @@ async fn rollback_orphan_worker(
     // 2. Case discriminator. Inspect the re-fetched row to decide
     //    between the three post-spawn-error shapes documented above.
     if let Some(term) = latest.as_ref() {
-        if let Some(handle) = term.daemon_handle.as_deref() {
-            // `daemon_handle` is set — either case 2 (fast-exit with
-            // sidecar) or case 3 (partial spawn with no sidecar).
-            let sidecar = exit_sidecar_path(std::path::Path::new(handle));
-            if let Ok(raw) = std::fs::read_to_string(&sidecar) {
-                // case 2 — fast-exit success. Parse and persist the
-                // exit info onto the row so REST callers (and the WS
-                // attach fast path) see `exit_code` / `signal_killed`
-                // immediately, then return `Preserved` without
-                // touching the rows. We preserve the sidecar file too
-                // — the WS attach path's `persist_exit_sidecar` is
-                // idempotent against re-parsing a row that's already
-                // populated, and `reap_terminal_artifacts` is the only
-                // path that unlinks it; preservation skips that.
-                match serde_json::from_str::<PreservedExitSidecar>(&raw) {
-                    Ok(parsed) => {
-                        if let Err(e) = repo
-                            .terminal_set_exit(terminal_id, parsed.code, parsed.signal_killed)
-                            .await
-                        {
-                            // Best-effort: the WS upgrade path will
-                            // re-read the sidecar and try again. Log
-                            // loudly so an operator notices the write
-                            // failure, but DO NOT fall back to
-                            // deletion — the worker really did
-                            // complete and the row reflects reality.
-                            tracing::warn!(
-                                card_id = %card_id,
-                                terminal_id = %terminal_id,
-                                error = %e,
-                                "rollback_orphan_worker: persisting fast-exit \
-                                 sidecar to row failed; WS attach will retry",
-                            );
-                        } else {
-                            tracing::info!(
-                                card_id = %card_id,
-                                terminal_id = %terminal_id,
-                                exit_code = ?parsed.code,
-                                signal_killed = parsed.signal_killed,
-                                "rollback_orphan_worker: preserving fast-exit worker card \
-                                 (sidecar persisted to row)",
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        // Sidecar exists but is malformed — treat as
-                        // case 2 anyway: the daemon got far enough to
-                        // write SOMETHING to its exit path, which is
-                        // a stronger signal than "no sidecar = case
-                        // 3". Falling back to row-delete here would
-                        // erase real user output (the daemon's stdout
-                        // is still on its PTY scrollback / log). The
-                        // row stays; `exit_code` stays NULL and the
-                        // WS attach falls through to its existing
-                        // `DaemonLost`-shape path.
-                        tracing::warn!(
-                            card_id = %card_id,
-                            terminal_id = %terminal_id,
-                            error = %e,
-                            "rollback_orphan_worker: fast-exit sidecar present but malformed; \
-                             preserving row anyway (WS attach will surface as DaemonLost)",
-                        );
-                    }
-                }
-                return RollbackOutcome::Preserved;
-            }
-            // case 3 — daemon_handle set but no sidecar. Reap +
-            // delete. This is the original P1 leak fix.
-            reap_terminal_artifacts(term).await;
+        if term.exit_code.is_some() || term.signal_killed {
+            tracing::info!(
+                card_id = %card_id,
+                terminal_id = %terminal_id,
+                exit_code = ?term.exit_code,
+                signal_killed = term.signal_killed,
+                "rollback_orphan_worker: preserving worker card with recorded terminal exit",
+            );
+            return RollbackOutcome::Preserved;
+        }
+
+        if terminal_renderer.get(&term.id).is_some() {
+            reap_terminal_artifacts_with_renderer(Some(terminal_renderer), term).await;
         } else if let Some(pid) = term.pid {
             // case 1b — handle = None but pid = Some. The daemon
             // process is alive (cmd.spawn() succeeded and
@@ -2320,16 +2301,6 @@ async fn rollback_orphan_worker(
         );
     }
     RollbackOutcome::Deleted
-}
-
-/// Payload shape the daemon writes to `<sock>.exit` on clean child
-/// exit. Local copy of `crate::ws::terminal::ExitSidecar` (which is
-/// module-private) — same field set, same defaulting.
-#[derive(serde::Deserialize)]
-struct PreservedExitSidecar {
-    code: Option<i32>,
-    #[serde(default)]
-    signal_killed: bool,
 }
 
 /// SELECT a card by its `payload.idempotency_key` inside a tx. Returns

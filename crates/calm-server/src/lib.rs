@@ -32,160 +32,84 @@ pub mod actor;
 pub mod aspect;
 pub mod auth;
 
-/// #177 root-cause refactor — replace the WS handler's auto-revive with
-/// a single boot-time sweep that re-spawns the `calm-session-daemon`
-/// for every terminal row whose persisted socket is unreachable. This
-/// is the **only** kernel-internal auto-revive seam: the WS upgrade
-/// path is now probe-only and surfaces a 500 / browser-reconnect on a
-/// dead daemon (see [`ws::terminal::resolve_live_sock`]).
-///
-/// Why a boot-time sweep is enough: production daemons live as child
-/// processes of the kernel.
-///   * **kernel restart while daemons were running** — when the kernel
-///     exits, its children may survive (no `prctl(PR_SET_PDEATHSIG)`
-///     today). Their `daemon_handle` lingers on the row but the
-///     socket file path may be stale. We probe + respawn unreachable
-///     ones, no-op the live ones.
-///   * **daemon crash mid-session** — the row still points at a stale
-///     socket; the next WS upgrade returns 500 (probe-only resolve),
-///     the browser's "Reconnect" UI calls into the wave detail re-
-///     fetch path, and a future spawn (or the operator restarting the
-///     kernel) brings it back. We deliberately *don't* auto-revive
-///     crashes on the WS hot path because that path can't carry the
-///     per-card MCP token or any env that was generated post-create
-///     — keeping the crash recovery opt-in is safer than a partial
-///     respawn.
-///
-/// The sweep walks `terminals` rows whose `daemon_handle IS NOT NULL`,
-/// probes the socket with the calm-session handshake, and on a
-/// non-`Alive` outcome clears the handle and calls
-/// `spawn_daemon_with_parts` with the row's existing cwd / env.
-/// Most rows also reuse the persisted program verbatim; Claude worker
-/// rows that carry `payload.claude_session_id` rebuild the child command
-/// as `claude --settings <path> --resume <id>` so a boot revive resumes
-/// the same Claude conversation instead of replaying the first launch.
-/// The row's `theme_fg / _bg` (NOT NULL post-migration 0017) flow
-/// through to the new daemon argv automatically — every spawn reads
-/// theme from the row.
-pub async fn revive_orphans_on_boot(state: &state::AppState) {
-    let rows = match state.repo.terminals_with_daemon_handle().await {
+/// #388 Phase 3b — reconcile DB rows that still look live with the
+/// process supervisor's PTY registry. Production no longer respawns
+/// daemon binaries at boot. If the supervisor does not know a supposedly
+/// running terminal, mark the row exited with the stale-row sentinel `-1`
+/// and move on.
+pub async fn reconcile_supervisor_on_boot(state: &state::AppState) {
+    let rows = match state.repo.terminals_running().await {
         Ok(rs) => rs,
         Err(e) => {
             tracing::warn!(
                 error = %e,
-                "revive_orphans_on_boot: list-orphans query failed; skipping sweep"
+                "reconcile_supervisor_on_boot: list-running query failed; skipping sweep"
             );
             return;
         }
     };
-    let mut respawned = 0usize;
-    let mut alive = 0usize;
+    let mut running = 0usize;
+    let mut stale = 0usize;
     for term in rows {
-        let Some(handle) = term.daemon_handle.clone() else {
-            continue;
-        };
-        let probe =
-            terminal_probe::probe_terminal_daemon(std::path::Path::new(&handle), &term.id).await;
-        // Probe — only the protocol handshake proves the daemon is
-        // alive (kernel restarted but daemons survived); no action.
-        if probe == terminal_probe::TerminalProbe::Alive {
-            alive += 1;
-            continue;
-        }
-        tracing::info!(
-            terminal_id = %term.id,
-            sock = %handle,
-            probe = ?probe,
-            "revive_orphans_on_boot: daemon handshake failed — respawning",
-        );
-        if probe == terminal_probe::TerminalProbe::AcceptingButStale {
-            // Reap only when a process is actively accepting on this socket
-            // path; persisted PIDs for unreachable sockets may have been
-            // reused after reboot and must not be signaled.
-            crate::terminal_sweeper::reap_terminal_artifacts(&term).await;
-            if let Some(pid) = term.pid {
-                match crate::terminal_sweeper::wait_for_pid_exit(
-                    pid,
-                    std::time::Duration::from_secs(3),
-                )
-                .await
-                {
-                    crate::terminal_sweeper::WaitForPidExit::Exited => {
-                        tracing::debug!(
-                            terminal_id = %term.id,
-                            pid,
-                            "revive_orphans_on_boot: stale daemon exited before respawn"
-                        );
-                    }
-                    crate::terminal_sweeper::WaitForPidExit::InvalidPid => {
-                        tracing::warn!(
-                            terminal_id = %term.id,
-                            pid,
-                            "revive_orphans_on_boot: stale daemon pid is invalid; respawning best-effort"
-                        );
-                    }
-                    crate::terminal_sweeper::WaitForPidExit::StillAliveAfterSigkill => {
-                        tracing::warn!(
-                            terminal_id = %term.id,
-                            pid,
-                            "revive_orphans_on_boot: stale daemon stayed alive after SIGKILL grace; respawning best-effort"
-                        );
-                    }
-                    crate::terminal_sweeper::WaitForPidExit::Unsupported => {
-                        tracing::debug!(
-                            terminal_id = %term.id,
-                            pid,
-                            "revive_orphans_on_boot: pid wait unsupported on this platform; respawning best-effort"
-                        );
-                    }
-                }
-            } else {
-                tracing::debug!(
+        match probe_supervisor_for_terminal(state, &term.id).await {
+            Ok(true) => running += 1,
+            Ok(false) => {
+                stale += 1;
+                tracing::warn!(
                     terminal_id = %term.id,
-                    "revive_orphans_on_boot: no stale daemon pid recorded; respawning best-effort"
+                    "terminal row is running in DB but supervisor has no live PTY; marking exited",
                 );
+                if let Err(e) = state.repo.terminal_set_exit(&term.id, Some(-1), false).await {
+                    tracing::warn!(
+                        terminal_id = %term.id,
+                        error = %e,
+                        "failed to mark stale terminal exited during boot reconcile"
+                    );
+                }
             }
-        }
-        // Clear the stale handle before respawn — the helper writes a
-        // fresh one on success.
-        let _ = db::RepoOutOfDomain::terminal_set_handle(state.repo.as_ref(), &term.id, None).await;
-        let env = term.env.clone();
-        let card = match state.repo.card_get(term.card_id.as_ref()).await {
-            Ok(card) => card,
             Err(e) => {
                 tracing::warn!(
                     terminal_id = %term.id,
-                    card_id = %term.card_id,
                     error = %e,
-                    "revive_orphans_on_boot: card lookup failed; replaying persisted terminal program"
+                    "supervisor probe failed during boot reconcile; leaving row unchanged"
                 );
-                None
             }
-        };
-        let program =
-            boot_revive_program_for_terminal(&term, card.as_ref(), &state.codex.claude_bin);
-        if let Err(e) = routes::terminal::spawn_daemon_with_parts(
-            state.daemon.as_ref(),
-            state.repo.as_ref(),
-            &term,
-            &program,
-            &term.cwd,
-            &env,
-        )
-        .await
-        {
-            tracing::warn!(
-                terminal_id = %term.id,
-                error = %e,
-                "revive_orphans_on_boot: respawn failed; row stays orphaned and the next WS attach returns 500",
-            );
-        } else {
-            respawned += 1;
         }
     }
-    tracing::info!(respawned, alive, "revive_orphans_on_boot: complete",);
+    tracing::info!(running, stale, "reconcile_supervisor_on_boot: complete",);
 }
 
+pub async fn revive_orphans_on_boot(state: &state::AppState) {
+    reconcile_supervisor_on_boot(state).await;
+}
+
+async fn probe_supervisor_for_terminal(state: &state::AppState, terminal_id: &str) -> anyhow::Result<bool> {
+    use calm_session::control::{ControlMsg, ControlReply, ProbeRequest};
+    use calm_session::{read_frame, write_frame};
+    use tokio::net::UnixStream;
+
+    let sock =
+        crate::proc_supervisor::resolve_control_sock(state.daemon.proc_supervisor_sock.as_deref())
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut stream = UnixStream::connect(&sock)
+        .await
+        .map_err(|e| anyhow::anyhow!("connect proc supervisor {}: {e}", sock.display()))?;
+    write_frame(
+        &mut stream,
+        &ControlMsg::Probe(ProbeRequest {
+            proc_id: format!("term:{terminal_id}"),
+        }),
+    )
+    .await?;
+    match read_frame(&mut stream).await? {
+        ControlReply::ProbeOk { proc_running, .. } => Ok(proc_running),
+        ControlReply::Error { message, .. } => anyhow::bail!("{message}"),
+        other => anyhow::bail!("unexpected supervisor probe reply: {other:?}"),
+    }
+}
+
+#[allow(dead_code)]
 fn boot_revive_program_for_terminal(
     term: &model::Terminal,
     card: Option<&model::Card>,

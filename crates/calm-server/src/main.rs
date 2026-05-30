@@ -42,12 +42,9 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState::new(&cfg, repo).await?;
 
-    // #177 — boot-time orphan-revive sweep. The WS upgrade path is
-    // probe-only (no auto-respawn); this is the ONLY kernel-internal
-    // path that re-mounts a daemon for an existing row. Runs once
-    // before the listener binds so a request that hits in flight can't
-    // race the sweep.
-    calm_server::revive_orphans_on_boot(&state).await;
+    // #388 Phase 3b — reconcile non-exited terminal rows with the
+    // supervisor PTY registry. No daemon binary respawn happens here.
+    calm_server::reconcile_supervisor_on_boot(&state).await;
 
     // #313 problem #1 — boot-time **takeover** of in-flight spec waves.
     // Replaces the previous "kill-on-boot" sweep

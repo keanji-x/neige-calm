@@ -325,7 +325,7 @@ pub(crate) async fn delete_cove(
         let cards = s.repo.cards_by_wave(wave.id.as_str()).await?;
         for card in &cards {
             if let Some(t) = s.repo.terminal_get_by_card(card.id.as_str()).await? {
-                reap_terminal_artifacts(&t).await;
+                reap_terminal_artifacts(&s, &t).await;
                 terminal_ids.push(t.id);
             }
         }

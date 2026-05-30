@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
+use crate::db::RouteRepo;
 use calm_session::control::{
     AttachRequest, Attached, ControlMsg, ControlReply, EnsureProcRequest, IoMode, ProcSignal,
     SignalRequest,
@@ -136,12 +137,21 @@ pub struct RendererSpawnError(#[from] anyhow::Error);
 
 pub struct TerminalRendererRegistry {
     entries: StdMutex<HashMap<String, Arc<RendererEntry>>>,
+    repo: Option<Arc<dyn RouteRepo>>,
 }
 
 impl TerminalRendererRegistry {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             entries: StdMutex::new(HashMap::new()),
+            repo: None,
+        })
+    }
+
+    pub fn new_with_repo(repo: Arc<dyn RouteRepo>) -> Arc<Self> {
+        Arc::new(Self {
+            entries: StdMutex::new(HashMap::new()),
+            repo: Some(repo),
         })
     }
 
@@ -155,7 +165,7 @@ impl TerminalRendererRegistry {
             return Ok(existing);
         }
 
-        let entry = Arc::new(ensure_entry(cfg).await?);
+        let entry = Arc::new(ensure_entry(cfg, self.repo.clone()).await?);
         let mut entries = self
             .entries
             .lock()
@@ -196,7 +206,7 @@ impl TerminalRendererRegistry {
     }
 }
 
-async fn ensure_entry(cfg: RendererConfig) -> anyhow::Result<RendererEntry> {
+async fn ensure_entry(cfg: RendererConfig, repo: Option<Arc<dyn RouteRepo>>) -> anyhow::Result<RendererEntry> {
     let proc_id = format!("term:{}", cfg.terminal_id);
     let mut control_conn = UnixStream::connect(&cfg.supervisor_sock)
         .await
@@ -224,7 +234,18 @@ async fn ensure_entry(cfg: RendererConfig) -> anyhow::Result<RendererEntry> {
     )
     .await?;
     match read_frame(&mut control_conn).await? {
-        ControlReply::Spawned { .. } => {}
+        ControlReply::Spawned { pid } => {
+            if let Some(repo) = repo.as_ref()
+                && let Err(e) = repo.terminal_set_pid(&cfg.terminal_id, Some(pid)).await
+            {
+                tracing::warn!(
+                    terminal_id = %cfg.terminal_id,
+                    pid,
+                    error = %e,
+                    "failed to persist terminal pid after supervisor spawn"
+                );
+            }
+        }
         ControlReply::SpawnFailed { error, .. } => anyhow::bail!("{error}"),
         other => anyhow::bail!("unexpected proc-supervisor spawn reply: {other:?}"),
     }
@@ -295,6 +316,8 @@ async fn ensure_entry(cfg: RendererConfig) -> anyhow::Result<RendererEntry> {
         event_tx.clone(),
         supervisor_tx.clone(),
         exited_tx,
+        repo,
+        cfg.terminal_id.clone(),
     );
     let ready_task = child_ready::spawn_child_ready_poller(render_plane.clone(), event_tx.clone());
 

@@ -15,11 +15,13 @@ use crate::db::RouteRepo;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::model::Terminal;
 use crate::state::{AppState, DaemonClient};
+use crate::terminal_renderer::{RendererConfig, RendererEntry, TerminalRendererRegistry};
 use axum::{
     Json, Router,
     extract::{Path, State},
     routing::get,
 };
+use std::sync::Arc;
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/api/cards/{card_id}/terminal", get(get_terminal_for_card))
@@ -56,6 +58,25 @@ pub(crate) async fn get_terminal_for_card(
 /// `daemon_handle`. Used by `routes::terminal_cards::create_terminal_card`
 /// (the atomic-create endpoint), the codex route's PTY spawn, and (when a
 /// previously-spawned daemon has died) by the WS handler's auto-revive path.
+pub(crate) async fn spawn_terminal_for(
+    s: &AppState,
+    term: &Terminal,
+    program: &str,
+    cwd: &str,
+    env: &serde_json::Value,
+) -> Result<Arc<RendererEntry>> {
+    spawn_terminal_with_parts(
+        s.daemon.as_ref(),
+        s.terminal_renderer.as_ref(),
+        s.repo.as_ref(),
+        term,
+        program,
+        cwd,
+        env,
+    )
+    .await
+}
+
 pub(crate) async fn spawn_daemon_for(
     s: &AppState,
     term: &Terminal,
@@ -63,7 +84,8 @@ pub(crate) async fn spawn_daemon_for(
     cwd: &str,
     env: &serde_json::Value,
 ) -> Result<()> {
-    spawn_daemon_with_parts(s.daemon.as_ref(), s.repo.as_ref(), term, program, cwd, env).await
+    let _ = spawn_terminal_for(s, term, program, cwd, env).await?;
+    Ok(())
 }
 
 /// PR6 (#136) — lower-level seam over `spawn_daemon_for` that takes the
@@ -72,25 +94,15 @@ pub(crate) async fn spawn_daemon_for(
 /// it's a kernel-internal worker that ships before AppState exists in
 /// the boot order). Identical semantics to `spawn_daemon_for`; the
 /// latter is now a one-line forwarder.
-pub(crate) async fn spawn_daemon_with_parts(
+pub(crate) async fn spawn_terminal_with_parts(
     daemon: &DaemonClient,
+    renderer: &TerminalRendererRegistry,
     repo: &dyn RouteRepo,
     term: &Terminal,
     program: &str,
     cwd: &str,
     env: &serde_json::Value,
-) -> Result<()> {
-    let sock = daemon.sock_path(&term.id);
-    if let Some(parent) = sock.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| CalmError::Internal(format!("mkdir sock parent: {e}")))?;
-    }
-    // Stale leftover socket file from a previous daemon — must remove or
-    // bind() refuses.
-    if sock.exists() {
-        let _ = std::fs::remove_file(&sock);
-    }
-    let sock_str = sock.to_string_lossy().to_string();
+) -> Result<Arc<RendererEntry>> {
     let proc_supervisor_sock =
         crate::proc_supervisor::resolve_control_sock(daemon.proc_supervisor_sock.as_deref())
             .await?;
@@ -104,20 +116,6 @@ pub(crate) async fn spawn_daemon_with_parts(
     // NOT NULL row invariant should make that unreachable but the
     // belt-and-braces check protects against future kernel-side
     // regressions that forget to thread through this helper.
-    let mut args = Vec::with_capacity(15);
-    args.extend(["--id".to_string(), term.id.clone()]);
-    args.extend(["--sock".to_string(), sock_str.clone()]);
-    args.extend(["--terminal-fg".to_string(), term.theme_fg.clone()]);
-    args.extend(["--terminal-bg".to_string(), term.theme_bg.clone()]);
-    args.extend(["--cwd".to_string(), cwd.to_string()]);
-    args.extend(["--ready-fd".to_string(), "0".to_string()]);
-    args.extend([
-        "--proc-supervisor-sock".to_string(),
-        proc_supervisor_sock.display().to_string(),
-    ]);
-    args.push("--".to_string());
-    args.extend(["/bin/sh".to_string(), "-c".to_string(), program.to_string()]);
-
     let mut envs = vec![
         ("TERM".to_string(), "xterm-256color".to_string()),
         ("COLORTERM".to_string(), "truecolor".to_string()),
@@ -130,51 +128,65 @@ pub(crate) async fn spawn_daemon_with_parts(
         }
     }
 
-    // pid + handle must be persisted BEFORE readiness completes:
-    //   * the dispatcher's `rollback_orphan_worker` fast-exit-preserve
-    //     discriminator reads `daemon_handle` to find `<sock>.exit`;
-    //   * the partial-spawn reap path reads `pid` to SIGTERM a hung daemon.
-    // Both run if readiness errors. We achieve this by reacting to the
-    // supervisor's `Spawned` frame (which precedes readiness) in the
-    // on_spawned callback below.
-    let pid = crate::proc_supervisor::ensure_proc(
-        Some(proc_supervisor_sock.as_path()),
-        calm_session::control::EnsureProcRequest {
-            proc_id: term.id.clone(),
-            program: daemon.session_daemon_bin.display().to_string(),
-            args,
+    // Best-effort clear for rows created before 3b. Production no longer
+    // writes daemon_handle; leaving a stale value around would confuse old
+    // tests and operator queries.
+    if term.daemon_handle.is_some()
+        && let Err(e) = repo.terminal_set_handle(&term.id, None).await
+    {
+        tracing::warn!(
+            terminal_id = %term.id,
+            error = %e,
+            "failed to clear stale daemon_handle before renderer spawn"
+        );
+    }
+
+    renderer
+        .ensure(RendererConfig {
+            terminal_id: term.id.clone(),
+            cols: 80,
+            rows: 24,
+            buffer_bytes: 1 << 20,
+            terminal_fg: parse_rgb(&term.theme_fg).map_err(CalmError::Internal)?,
+            terminal_bg: parse_rgb(&term.theme_bg).map_err(CalmError::Internal)?,
+            program: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), program.to_string()],
             envs,
             cwd: cwd.to_string(),
-            ready_timeout_ms: crate::proc_supervisor::DEFAULT_READY_TIMEOUT.as_millis() as u64,
-            io_mode: calm_session::control::IoMode::Pipe,
-            replay_bytes: 0,
-        },
-        |pid| {
-            let term_id = term.id.clone();
-            let sock_str = sock_str.clone();
-            async move {
-                tracing::info!(pid = ?pid, terminal_id = %term_id, "spawned calm-session-daemon");
-                // Best-effort: a failed pid write degrades the sweeper's
-                // SIGTERM lever but must not abort the spawn.
-                if let Err(e) = repo.terminal_set_pid(&term_id, Some(pid)).await {
-                    tracing::warn!(
-                        terminal_id = %term_id,
-                        pid = ?pid,
-                        error = %e,
-                        "failed to persist terminal pid; sweeper will fall back to socket-Kill only"
-                    );
-                }
-                // Handle MUST persist before readiness completes: a one-shot
-                // child (e.g. `printf done`) can exit + the daemon can
-                // unlink its socket before any attach observes it, and the
-                // dispatcher's discriminator reads this field to find the
-                // `.exit` sidecar.
-                repo.terminal_set_handle(&term_id, Some(&sock_str)).await
-            }
-        },
-    )
-    .await?;
-    let _ = pid;
+            supervisor_sock: proc_supervisor_sock,
+        })
+        .await
+        .map_err(|e| CalmError::Internal(e.to_string()))
+}
+
+fn parse_rgb(s: &str) -> std::result::Result<(u8, u8, u8), String> {
+    let parts: Vec<&str> = s.split(',').collect();
+    if parts.len() != 3 {
+        return Err(format!(
+            "expected `r,g,b` (three comma-separated u8 channels), got {s:?}"
+        ));
+    }
+    let parse = |i: usize| -> std::result::Result<u8, String> {
+        parts[i]
+            .trim()
+            .parse::<u8>()
+            .map_err(|e| format!("channel {i} ({:?}): {e}", parts[i]))
+    };
+    Ok((parse(0)?, parse(1)?, parse(2)?))
+}
+
+#[cfg(test)]
+async fn spawn_daemon_with_parts(
+    daemon: &DaemonClient,
+    repo: &dyn RouteRepo,
+    term: &Terminal,
+    program: &str,
+    cwd: &str,
+    env: &serde_json::Value,
+) -> Result<()> {
+    let renderer = TerminalRendererRegistry::new();
+    let _ = spawn_terminal_with_parts(daemon, renderer.as_ref(), repo, term, program, cwd, env)
+        .await?;
     Ok(())
 }
 
@@ -324,6 +336,7 @@ mod tests {
     /// atomic-create / WS auto-revive spawn sites all inherit the
     /// same coverage — they all go through `spawn_daemon_with_parts`.
     #[tokio::test]
+    #[ignore = "Phase 3b no longer builds daemon argv from calm-server"]
     async fn spawn_threads_theme_from_row_onto_daemon_argv() {
         let (repo, daemon, _tmp, term_id) = boot().await;
 
@@ -367,6 +380,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Phase 3b no longer spawns calm-session-daemon from calm-server"]
     async fn spawn_treats_ready_then_fast_exit_as_ready() {
         let (repo, daemon, _tmp, term_id) = boot().await;
         let daemon = DaemonClient {
@@ -405,6 +419,7 @@ mod tests {
     /// the readiness check** — verifying it directly from the row
     /// after the failure returns.
     #[tokio::test]
+    #[ignore = "Phase 3b no longer persists daemon_handle from calm-server"]
     async fn spawn_persists_handle_even_when_daemon_exits_before_ready() {
         use crate::db::prelude::*;
 
@@ -503,6 +518,7 @@ mod tests {
     /// appear on the same argv. Catches a `.args(...)` call that
     /// accidentally lands in a `cmd.env(...)` block.
     #[tokio::test]
+    #[ignore = "Phase 3b no longer builds daemon argv from calm-server"]
     async fn spawn_argv_includes_required_kernel_flags() {
         let (repo, daemon, _tmp, term_id) = boot().await;
         let term = repo.terminal_get(&term_id).await.unwrap().expect("row");

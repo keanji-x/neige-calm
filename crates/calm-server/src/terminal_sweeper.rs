@@ -74,7 +74,9 @@ use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, WaveId};
 use crate::model::Terminal;
 use crate::state::AppState;
+use crate::terminal_renderer::TerminalRendererRegistry;
 use crate::terminal_probe::probe_client_hello;
+use calm_session::control::ProcSignal;
 use calm_session::{ClientMsg, write_frame};
 
 /// Actor stamped on every event the sweeper produces. Distinct from
@@ -146,7 +148,7 @@ pub async fn sweep(state: &AppState) -> Result<()> {
 async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
     // Steps 1-3: daemon + socket housekeeping, shared with the eager-
     // teardown route handlers via `reap_terminal_artifacts`.
-    reap_terminal_artifacts(term).await;
+    reap_terminal_artifacts(state, term).await;
 
     // Step 4: audit-log + row delete in one transaction. This step is
     // the headline guarantee: regardless of how steps 1-3 went, the row
@@ -234,34 +236,37 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
 /// the graceful path; SIGTERM is non-blocking. Safe to call inline from
 /// an HTTP handler — the worst-case latency is `GRACEFUL_KILL_TIMEOUT`
 /// (5 s) when the daemon is hung; the common case is single-digit ms.
-pub async fn reap_terminal_artifacts(term: &Terminal) {
-    // 1. Graceful Kill via unix socket. Bounded by GRACEFUL_KILL_TIMEOUT.
-    if let Some(sock) = term.daemon_handle.as_deref() {
-        match tokio::time::timeout(
-            GRACEFUL_KILL_TIMEOUT,
-            graceful_kill_via_socket(Path::new(sock), &term.id),
-        )
-        .await
+pub async fn reap_terminal_artifacts(state: &AppState, term: &Terminal) {
+    reap_terminal_artifacts_with_renderer(Some(state.terminal_renderer.as_ref()), term).await;
+}
+
+pub async fn reap_terminal_artifacts_with_renderer(
+    renderer: Option<&TerminalRendererRegistry>,
+    term: &Terminal,
+) {
+    // 1. Graceful shutdown through the in-process renderer. The handle
+    // uses a fresh supervisor UDS connection so it bypasses any queued PTY
+    // writes that might be stuck behind backpressure.
+    if let Some((renderer, entry)) = renderer.and_then(|r| r.get(&term.id).map(|e| (r, e))) {
+        match tokio::time::timeout(GRACEFUL_KILL_TIMEOUT, entry.shutdown_signal(ProcSignal::Term))
+            .await
         {
-            Ok(Ok(())) => {
-                tracing::debug!(terminal_id = %term.id, sock = %sock, "graceful Kill delivered");
-            }
-            Ok(Err(e)) => {
-                tracing::debug!(
-                    terminal_id = %term.id,
-                    sock = %sock,
-                    error = %e,
-                    "graceful Kill failed; falling through to SIGTERM"
-                );
+            Ok(()) => {
+                tracing::debug!(terminal_id = %term.id, "renderer shutdown signal delivered");
             }
             Err(_) => {
                 tracing::debug!(
                     terminal_id = %term.id,
-                    sock = %sock,
-                    "graceful Kill timed out; falling through to SIGTERM"
+                    "renderer shutdown signal timed out; falling through to pid fallback"
                 );
             }
         }
+        renderer.drop_entry(&term.id).await;
+    } else {
+        tracing::warn!(
+            terminal_id = %term.id,
+            "no live renderer entry while reaping terminal; using pid fallback if available"
+        );
     }
 
     // 2. SIGTERM fallback. Skipped when no pid persisted (legacy rows or
@@ -280,11 +285,6 @@ pub async fn reap_terminal_artifacts(term: &Terminal) {
         );
     }
 
-    // 3. Remove the socket file. Best-effort; the daemon may have
-    //    cleaned it up itself on graceful exit.
-    if let Some(sock) = term.daemon_handle.as_deref() {
-        let _ = std::fs::remove_file(sock);
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -419,6 +419,7 @@ pub fn reap_terminal_pid_only(terminal_id: &str, pid: i64) {
 /// client *does* still hold ownership, our `Kill` is rejected as
 /// `NotOwner` and we fall through to the SIGTERM step. Either path lands
 /// at "daemon process gone" within the bounded timeout.
+#[allow(dead_code)]
 async fn graceful_kill_via_socket(sock: &Path, terminal_id: &str) -> std::io::Result<()> {
     let stream = UnixStream::connect(sock).await?;
     let (_rd, mut wr) = stream.into_split();

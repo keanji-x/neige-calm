@@ -12,6 +12,7 @@ use crate::event::EventBus;
 use crate::mcp_server::McpServer;
 use crate::plugin_host::{PluginHost, PluginRegistry};
 use crate::spec_appserver::SpecPushRegistry;
+use crate::terminal_renderer::TerminalRendererRegistry;
 use crate::wave_cove_cache::WaveCoveCache;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -34,6 +35,7 @@ pub struct AppState {
     pub repo: Arc<dyn RouteRepo>,
     pub events: EventBus,
     pub daemon: Arc<DaemonClient>,
+    pub terminal_renderer: Arc<TerminalRendererRegistry>,
     pub plugin: Arc<PluginHost>,
     pub codex: Arc<CodexClient>,
     /// UUID v4 minted once per server-process boot, surfaced on
@@ -179,6 +181,7 @@ impl AppState {
         wave_cove_cache: Option<WaveCoveCache>,
     ) -> Self {
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
+        let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
         let card_role_cache = card_role_cache.unwrap_or_default();
         let wave_cove_cache = wave_cove_cache.unwrap_or_default();
         // PR5 (#136): every `AppState` carries a live dispatcher. Test
@@ -192,13 +195,14 @@ impl AppState {
         // (`Arc<DashMap>` inside); the dispatcher takes a clone so its push
         // path resolves the same handles `create_wave` parks here.
         let spec_push = SpecPushRegistry::new();
-        let dispatcher = Arc::new(Dispatcher::spawn(
+        let dispatcher = Arc::new(Dispatcher::spawn_with_terminal_renderer(
             repo.clone(),
             events.clone(),
             card_role_cache.clone(),
             wave_cove_cache.clone(),
             codex.clone(),
             daemon.clone(),
+            terminal_renderer.clone(),
             // `from_parts` is the test / replay hatch — no live MCP
             // server. PR7a.1 (#136 followup) added this slot.
             None,
@@ -210,6 +214,7 @@ impl AppState {
             repo: route_repo,
             events,
             daemon,
+            terminal_renderer,
             plugin,
             codex,
             // Fresh UUID per `AppState` — same boot-scoped semantics as
@@ -344,6 +349,9 @@ impl AppState {
         )
         .await?;
 
+        let route_repo: Arc<dyn RouteRepo> = repo.clone();
+        let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
+
         // PR5 (#136) — dispatcher worker. Subscribes to
         // `*.job_requested` envelopes and mints worker-roled cards
         // (Cap: `NEIGE_DISPATCHER_PERMITS` env override, default 8).
@@ -357,13 +365,14 @@ impl AppState {
         // dispatcher spawn so the dispatcher's push path and the route both
         // touch the same `Arc<DashMap>`.
         let spec_push = SpecPushRegistry::new();
-        let dispatcher = Arc::new(crate::dispatcher::Dispatcher::spawn(
+        let dispatcher = Arc::new(crate::dispatcher::Dispatcher::spawn_with_terminal_renderer(
             repo.clone(),
             events.clone(),
             card_role_cache.clone(),
             wave_cove_cache.clone(),
             codex.clone(),
             daemon.clone(),
+            terminal_renderer.clone(),
             // PR7a.1 — hand the MCP server handle to the dispatcher so
             // worker codex spawns can join the same MCP wire the spec
             // card uses.
@@ -389,14 +398,11 @@ impl AppState {
         // the rest of the boot path.
         plugin.autospawn_enabled().await;
 
-        // Upcast the full `Arc<dyn Repo>` to the narrow `Arc<dyn RouteRepo>`
-        // exposed via `AppState::repo`. Stable trait-object upcasting (Rust
-        // 1.86+) gives us this for free because `Repo: RouteRepo`.
-        let route_repo: Arc<dyn RouteRepo> = repo.clone();
         let state = Self {
             repo: route_repo,
             events,
             daemon,
+            terminal_renderer,
             plugin,
             codex,
             // See struct doc for `db_instance_id`: one fresh UUID v4 per
@@ -431,9 +437,10 @@ impl AppState {
         // a non-empty `payload.prompt`, injects `\r` to the codex daemon
         // via `DaemonClient::inject_stdin`. Empty / absent prompt → no-op
         // (the user spawned codex without a hands-free prompt).
-        crate::codex_auto_submit::spawn(
+        crate::codex_auto_submit::spawn_with_terminal_renderer(
             state.repo.clone(),
             state.daemon.clone(),
+            state.terminal_renderer.clone(),
             state.events.clone(),
         );
 
@@ -478,7 +485,7 @@ impl DaemonClient {
         let data_dir = cfg.data_dir_resolved().join("terminals");
         Self {
             data_dir,
-            session_daemon_bin: resolve_session_daemon_bin(),
+            session_daemon_bin: PathBuf::from("calm-session-daemon"),
             proc_supervisor_sock: Some(cfg.proc_supervisor_sock_resolved()),
         }
     }
@@ -492,7 +499,7 @@ impl DaemonClient {
             .join("calm-terminals");
         Self {
             data_dir: tmp,
-            session_daemon_bin: resolve_session_daemon_bin(),
+            session_daemon_bin: PathBuf::from("calm-session-daemon"),
             proc_supervisor_sock: None,
         }
     }
@@ -526,37 +533,48 @@ impl DaemonClient {
         self.appserver_sock_dir(card_id).join("app.sock")
     }
 
-    /// Kernel-private transient stdin injection. Opens the daemon's unix
-    /// socket, frames a [`ClientHello`] asserting
-    /// `kernel_originated_input = true` so the daemon's owner-only gate
-    /// on [`ClientMsg::Input`] is relaxed for this connection, awaits
-    /// `ChildReady` if the snapshot says the child is not yet ready,
-    /// sends a single [`ClientMsg::Input`] with `input_seq = 1`, and
-    /// blocks until the matching [`DaemonMsg::InputAck`] confirms the
-    /// PTY write returned.
-    ///
-    /// The connection is closed (socket dropped) right after the ack
-    /// lands — no further frames are sent. The whole call is bounded by
-    /// `timeout` (5s in production) only as a backstop for a wedged PTY
-    /// writer or silent peer; success is still judged by deterministic
-    /// protocol stages (`ServerHello`, optional `ChildReady`, `InputAck`).
-    /// On timeout we log at warn and return `Err(...)`, leaving the daemon
-    /// untouched. Caller is expected to degrade (the auto-submit path keeps
-    /// the codex TUI alive — the user can hit Enter manually).
-    ///
-    /// `terminal_id` is normalized to its hyphenated UUID form before
-    /// being placed on the handshake — `card.payload.terminal_id`
-    /// stores the simple no-dashes form (see `model::new_id`), and the
-    /// daemon validates against `Uuid::Display` (always hyphenated). If
-    /// the input isn't a valid UUID we pass it through verbatim and let
-    /// the daemon reject as `BadHandshake`.
-    ///
-    /// **Trust model**: this method is the *only* legitimate producer
-    /// of `kernel_originated_input = true`. It is reachable only from
-    /// in-process kernel code; the WS bridge in `ws/terminal.rs`
-    /// strips the bit unconditionally before forwarding any browser
-    /// `ClientHello`. See `ClientCapabilities` doc in `calm-session`
-    /// for the full trust model.
+    /// Kernel-private transient stdin injection. Routes directly through
+    /// the in-process renderer's supervisor writer and waits for the
+    /// matching InputAck generated from the supervisor WriteAck.
+    pub async fn inject_stdin_renderer(
+        &self,
+        renderer: &TerminalRendererRegistry,
+        terminal_id: &str,
+        bytes: &[u8],
+        timeout: Duration,
+    ) -> anyhow::Result<()> {
+        tokio::time::timeout(timeout, async move {
+            let entry = renderer
+                .get(terminal_id)
+                .ok_or_else(|| anyhow::anyhow!("no live renderer for terminal {terminal_id}"))?;
+            let (ack_tx, mut ack_rx) = tokio::sync::mpsc::unbounded_channel();
+            entry
+                .handle
+                .supervisor_tx
+                .send(crate::terminal_renderer::SupervisorControl::Write(
+                    crate::terminal_renderer::PtyWrite {
+                        data: bytes.to_vec(),
+                        input_seq: 1,
+                        ack: Some(ack_tx),
+                    },
+                ))
+                .map_err(|_| anyhow::anyhow!("renderer supervisor writer is closed"))?;
+            match ack_rx.recv().await {
+                Some(calm_session::DaemonMsg::InputAck { input_seq: 1 }) => Ok(()),
+                Some(other) => Err(anyhow::anyhow!(
+                    "expected InputAck(1) from renderer, got {other:?}"
+                )),
+                None => Err(anyhow::anyhow!("renderer ack channel closed")),
+            }
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("inject_stdin to {terminal_id} timed out after {timeout:?}"))?
+    }
+
+    /// Legacy daemon-UDS injection retained for daemon-binary tests until
+    /// Phase 3c deletes that binary and its tests. Production code uses
+    /// [`Self::inject_stdin_renderer`].
+    #[allow(dead_code)]
     pub async fn inject_stdin(
         &self,
         sock_path: &Path,
@@ -577,18 +595,10 @@ impl DaemonClient {
 
         tokio::time::timeout(timeout, async move {
             let mut stream = UnixStream::connect(sock_path).await.map_err(|e| {
-                anyhow::anyhow!(
-                    "connect daemon socket {}: {e}",
-                    sock_path.display()
-                )
+                anyhow::anyhow!("connect daemon socket {}: {e}", sock_path.display())
             })?;
             let (mut rd, mut wr) = stream.split();
 
-            // ClientHello — Observer role (we are not the user, we are the
-            // kernel relaying input). `kernel_originated_input = true`
-            // unlocks the daemon's owner-only gate on `Input`. ResizeCommit
-            // and Kill remain owner-only even with this bit set — see
-            // `ClientCapabilities` doc.
             let hello = ClientMsg::ClientHello {
                 protocol_version: PROTOCOL_VERSION,
                 terminal_id: normalized,
@@ -613,16 +623,9 @@ impl DaemonClient {
             };
             write_frame(&mut wr, &hello).await?;
 
-            // Read ServerHello and learn whether the child is already
-            // ready. If not, wait for the one-shot ChildReady broadcast
-            // before injecting bytes — otherwise the input lands while
-            // codex is still loading its splash and gets eaten by the
-            // composer-init flush.
             let server_hello: DaemonMsg = read_frame(&mut rd).await?;
             let child_ready = match server_hello {
-                DaemonMsg::ServerHello {
-                    is_child_ready, ..
-                } => is_child_ready,
+                DaemonMsg::ServerHello { is_child_ready, .. } => is_child_ready,
                 DaemonMsg::ProtocolError {
                     code,
                     message,
@@ -640,8 +643,6 @@ impl DaemonClient {
             };
 
             if !child_ready {
-                // Drain frames until ChildReady fires. RenderPatch /
-                // RenderSnapshot frames can interleave — skip them.
                 loop {
                     let msg: DaemonMsg = read_frame(&mut rd).await?;
                     match msg {
@@ -651,9 +652,7 @@ impl DaemonClient {
                                 "daemon TerminalExited (code={code:?}) before ChildReady"
                             ));
                         }
-                        DaemonMsg::ProtocolError {
-                            code, message, ..
-                        } => {
+                        DaemonMsg::ProtocolError { code, message, .. } => {
                             return Err(anyhow::anyhow!(
                                 "daemon ProtocolError {code:?}: {message}"
                             ));
@@ -663,8 +662,6 @@ impl DaemonClient {
                 }
             }
 
-            // Send the Input. `input_seq = 1` is monotonic for this
-            // ephemeral connection (which only ever sends one Input).
             write_frame(
                 &mut wr,
                 &ClientMsg::Input {
@@ -674,10 +671,6 @@ impl DaemonClient {
             )
             .await?;
 
-            // Await the matching InputAck. The daemon emits acks in
-            // PTY-write completion order; since we only sent one Input,
-            // the next ack with `input_seq == 1` is ours. Skip any
-            // intervening RenderPatch / RenderSnapshot / etc.
             loop {
                 let msg: DaemonMsg = read_frame(&mut rd).await?;
                 match msg {
@@ -687,9 +680,7 @@ impl DaemonClient {
                             "daemon TerminalExited (code={code:?}) before InputAck"
                         ));
                     }
-                    DaemonMsg::ProtocolError {
-                        code, message, ..
-                    } => {
+                    DaemonMsg::ProtocolError { code, message, .. } => {
                         return Err(anyhow::anyhow!(
                             "daemon ProtocolError {code:?}: {message}"
                         ));
@@ -709,21 +700,6 @@ impl DaemonClient {
             )
         })?
     }
-}
-
-/// Prefer a sibling of the running executable (works for `cargo run` and
-/// release layouts). Fall back to the bare name so PATH lookup happens at
-/// spawn time if the sibling isn't there.
-fn resolve_session_daemon_bin() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        let candidate = dir.join("calm-session-daemon");
-        if candidate.exists() {
-            return candidate;
-        }
-    }
-    PathBuf::from("calm-session-daemon")
 }
 
 // ---------------------------------------------------------------------------

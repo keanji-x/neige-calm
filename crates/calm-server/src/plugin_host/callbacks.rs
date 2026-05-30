@@ -27,7 +27,7 @@ use crate::db::{RepoRead, RouteRepo, write_with_event_typed};
 use crate::event::{Event, EventBus, EventScope};
 use crate::ids::{ActorId, CardId};
 use crate::model::{CardPatch, CardRole, NewCard, NewOverlay, new_id};
-use crate::terminal_sweeper::reap_terminal_artifacts;
+use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::validation::{validate_card_payload, validate_overlay_payload};
 use crate::wave_cove_cache::WaveCoveCache;
 
@@ -615,7 +615,7 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         .await
         .map_err(internal_repo_err)?;
     if let Some(t) = term.as_ref() {
-        reap_terminal_artifacts(t).await;
+        reap_terminal_artifacts_with_renderer(None, t).await;
     }
     let terminal_id = term.map(|t| t.id);
 
