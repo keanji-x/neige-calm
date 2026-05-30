@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, anyhow};
 use serde::{Deserialize, Serialize};
 
-use crate::config::AppConfig;
+use crate::config::{AppConfig, SourceConfig};
 use crate::manifest::CompatibilityV1;
 use crate::package::{NamedPath, PackageConfig};
 use crate::preflight::PreflightMode;
@@ -23,11 +23,19 @@ pub(crate) fn build_source_package(
     cfg: &AppConfig,
     mode_override: Option<PreflightMode>,
 ) -> anyhow::Result<PathBuf> {
-    let requested_mode = source_mode(cfg, mode_override)?;
+    build_source_package_from_source(cfg, &cfg.source, mode_override)
+}
+
+pub(crate) fn build_source_package_from_source(
+    cfg: &AppConfig,
+    source: &SourceConfig,
+    mode_override: Option<PreflightMode>,
+) -> anyhow::Result<PathBuf> {
+    let requested_mode = source_mode_for(source, mode_override)?;
     let mode = requested_mode.unwrap_or(PreflightMode::Bundle);
-    let (compatibility, db_migration_policy) = source_manifest_config(cfg, mode)?;
-    let source_dir = prepare_source_checkout(cfg)?;
-    run_build(&source_dir, &cfg.source.build_args)?;
+    let (compatibility, db_migration_policy) = source_manifest_config(source, mode)?;
+    let source_dir = prepare_source_checkout(source)?;
+    run_build(&source_dir, &source.build_args)?;
     let release_id = format!("source-{}", unix_ts()?);
     let release_dir = cfg.release.root.join("packages").join(&release_id);
     crate::package::build_package(&PackageConfig {
@@ -65,7 +73,14 @@ pub(crate) fn source_mode(
     cfg: &AppConfig,
     mode_override: Option<PreflightMode>,
 ) -> anyhow::Result<Option<PreflightMode>> {
-    let mode = mode_override.or(cfg.source.mode);
+    source_mode_for(&cfg.source, mode_override)
+}
+
+pub(crate) fn source_mode_for(
+    source: &SourceConfig,
+    mode_override: Option<PreflightMode>,
+) -> anyhow::Result<Option<PreflightMode>> {
+    let mode = mode_override.or(source.mode);
     if matches!(mode, Some(PreflightMode::AppOnly)) {
         return Err(anyhow!(
             "source-driven app-only self-upgrade is not supported"
@@ -75,44 +90,42 @@ pub(crate) fn source_mode(
 }
 
 fn source_manifest_config(
-    cfg: &AppConfig,
+    source: &SourceConfig,
     mode: PreflightMode,
 ) -> anyhow::Result<(CompatibilityV1, crate::manifest::DbMigrationPolicy)> {
     Ok((
         CompatibilityV1 {
-            api_version: cfg
-                .source
+            api_version: source
                 .api_version
                 .clone()
                 .ok_or_else(|| anyhow!("source.api_version must be explicitly configured"))?,
-            sync_event_version: cfg.source.sync_event_version.ok_or_else(|| {
+            sync_event_version: source.sync_event_version.ok_or_else(|| {
                 anyhow!("source.sync_event_version must be explicitly configured")
             })?,
-            mcp_protocol_version: cfg.source.mcp_protocol_version.clone().ok_or_else(|| {
+            mcp_protocol_version: source.mcp_protocol_version.clone().ok_or_else(|| {
                 anyhow!("source.mcp_protocol_version must be explicitly configured")
             })?,
-            web_compat_version: cfg.source.web_compat_version.ok_or_else(|| {
+            web_compat_version: source.web_compat_version.ok_or_else(|| {
                 anyhow!("source.web_compat_version must be explicitly configured")
             })?,
-            min_web_compat_version: cfg.source.min_web_compat_version.ok_or_else(|| {
+            min_web_compat_version: source.min_web_compat_version.ok_or_else(|| {
                 anyhow!("source.min_web_compat_version must be explicitly configured")
             })?,
         },
         if matches!(mode, PreflightMode::WebOnly) {
-            cfg.source
+            source
                 .db_migration_policy
                 .unwrap_or(crate::manifest::DbMigrationPolicy::None)
         } else {
-            cfg.source.db_migration_policy.ok_or_else(|| {
+            source.db_migration_policy.ok_or_else(|| {
                 anyhow!("source.db_migration_policy must be explicitly configured")
             })?
         },
     ))
 }
 
-fn prepare_source_checkout(cfg: &AppConfig) -> anyhow::Result<PathBuf> {
-    let url = cfg
-        .source
+fn prepare_source_checkout(source: &SourceConfig) -> anyhow::Result<PathBuf> {
+    let url = source
         .url
         .as_ref()
         .ok_or_else(|| anyhow!("source.url must be configured when --package is omitted"))?;
@@ -121,9 +134,9 @@ fn prepare_source_checkout(cfg: &AppConfig) -> anyhow::Result<PathBuf> {
         return Ok(local_path);
     }
 
-    let checkout = &cfg.source.checkout_dir;
+    let checkout = &source.checkout_dir;
     if checkout.exists() {
-        verify_source_marker(checkout, url, &cfg.source.branch)?;
+        verify_source_marker(checkout, url, &source.branch)?;
         verify_git_origin(checkout, url)?;
         run_git(
             checkout.parent().unwrap_or_else(|| Path::new(".")),
@@ -131,9 +144,9 @@ fn prepare_source_checkout(cfg: &AppConfig) -> anyhow::Result<PathBuf> {
         )?;
         run_git(
             checkout.parent().unwrap_or_else(|| Path::new(".")),
-            &["-C", path_str(checkout)?, "checkout", &cfg.source.branch],
+            &["-C", path_str(checkout)?, "checkout", &source.branch],
         )?;
-        let target = format!("origin/{}", cfg.source.branch);
+        let target = format!("origin/{}", source.branch);
         run_git(
             checkout.parent().unwrap_or_else(|| Path::new(".")),
             &["-C", path_str(checkout)?, "reset", "--hard", &target],
@@ -148,12 +161,12 @@ fn prepare_source_checkout(cfg: &AppConfig) -> anyhow::Result<PathBuf> {
             &[
                 "clone",
                 "--branch",
-                &cfg.source.branch,
+                &source.branch,
                 url,
                 path_str(checkout)?,
             ],
         )?;
-        write_source_marker(checkout, url, &cfg.source.branch)?;
+        write_source_marker(checkout, url, &source.branch)?;
     }
     Ok(checkout.clone())
 }
@@ -277,7 +290,7 @@ mod tests {
         cfg.source.checkout_dir = tmp.join("checkout");
         std::fs::create_dir_all(&cfg.source.checkout_dir).expect("checkout dir");
 
-        let err = prepare_source_checkout(&cfg).expect_err("missing marker must fail");
+        let err = prepare_source_checkout(&cfg.source).expect_err("missing marker must fail");
         assert!(err.to_string().contains("source marker"));
     }
 

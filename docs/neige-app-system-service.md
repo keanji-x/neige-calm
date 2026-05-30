@@ -247,3 +247,29 @@ neige-app system rollback --config ~/.config/neige-app/config.toml
 ```
 
 DB restore is not implemented.
+
+## Admin Apply Endpoints
+
+`system serve` exposes the PR 2 apply state machine at
+`POST /upgrade/apply`. The endpoint accepts a v2 package source, stages it,
+computes the manifest/installed-state verdict, and returns only after commit,
+rollback, rejection, or dry run.
+
+Breaking upgrades return `202` after `installed.json` and release history are
+written. The process then waits briefly for the response to flush and execs the
+new `bin/neige-app` through the current server-release symlink. Under systemd
+this keeps the same service PID and lets the manager treat the process as
+continuing.
+
+On boot, `neige-app` checks the configured proc-supervisor socket. If an
+existing supervisor answers, the process adopts it instead of spawning a new
+one and reloads the persisted supervisor identity from
+`<data_dir>/state/supervisor-identity.json`.
+
+`POST /upgrade/full-reboot` returns `202` and exits shortly afterward so
+systemd can restart the service. Use it after a preserving upgrade deferred a
+`neigeApp` or `calmProcSupervisor` binary change.
+
+`GET /upgrade/history` tails `<data_dir>/state/release-history.jsonl`.
+`POST /upgrade/rollback` is intentionally narrow in PR 2: it only reverses the
+last committed preserving apply to the immediately previous release id.

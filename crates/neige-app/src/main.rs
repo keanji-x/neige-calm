@@ -1,12 +1,15 @@
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+use axum::extract::Query;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
@@ -19,6 +22,7 @@ use tokio::process::Command;
 use tokio::sync::{Mutex, Notify};
 use tokio::time::timeout;
 
+mod apply;
 mod config;
 mod identity;
 mod installed;
@@ -286,8 +290,10 @@ struct SupervisorConfig {
 
 #[derive(Clone)]
 struct AppState {
+    cfg: Arc<AppConfig>,
     supervisor: Arc<Supervisor>,
     proc_supervisor: Arc<Supervisor>,
+    apply_lock: Arc<Mutex<()>>,
     admin_token: Option<Arc<str>>,
 }
 
@@ -411,6 +417,7 @@ struct ProcessStatus {
 #[derive(Debug)]
 struct SupervisorState {
     desired_running: bool,
+    shutdown_requested: bool,
     child_state: ChildState,
     child_pid: Option<u32>,
     restart_count: u64,
@@ -452,6 +459,7 @@ impl Supervisor {
             cfg,
             state: Mutex::new(SupervisorState {
                 desired_running: true,
+                shutdown_requested: false,
                 child_state: ChildState::Stopped,
                 child_pid: None,
                 restart_count: 0,
@@ -466,8 +474,13 @@ impl Supervisor {
         loop {
             {
                 let state = self.state.lock().await;
-                if !state.desired_running {
+                if state.shutdown_requested {
                     break;
+                }
+                if !state.desired_running {
+                    drop(state);
+                    self.changed.notified().await;
+                    continue;
                 }
             }
 
@@ -498,14 +511,12 @@ impl Supervisor {
 
             let should_restart = {
                 let state = self.state.lock().await;
-                state.desired_running
+                state.desired_running && !state.shutdown_requested
             };
             if should_restart {
                 tokio::time::sleep(self.cfg.restart_delay).await;
                 let mut state = self.state.lock().await;
                 state.restart_count += 1;
-            } else {
-                break;
             }
         }
 
@@ -622,10 +633,58 @@ impl Supervisor {
         Ok(self.process_status().await)
     }
 
+    async fn stop_and_wait(&self) -> anyhow::Result<ProcessStatus> {
+        let pid = {
+            let mut state = self.state.lock().await;
+            state.desired_running = false;
+            state.child_state = ChildState::Stopping;
+            state.child_pid
+        };
+        self.changed.notify_waiters();
+        if let Some(pid) = pid {
+            terminate_child_tree(pid)?;
+            if !self.wait_pid_change(pid, self.cfg.stop_grace).await {
+                kill_child_tree(pid)?;
+                let _ = self.wait_pid_change(pid, Duration::from_secs(1)).await;
+            }
+        }
+        Ok(self.process_status().await)
+    }
+
+    async fn resume(&self) {
+        let mut state = self.state.lock().await;
+        state.desired_running = true;
+        self.changed.notify_waiters();
+    }
+
+    async fn wait_for_spawn(&self, grace: Duration) -> anyhow::Result<ProcessStatus> {
+        let wait = async {
+            loop {
+                let snapshot = self.process_status().await;
+                if snapshot.child_state == "running" && snapshot.child_pid.is_some() {
+                    return snapshot;
+                }
+                self.changed.notified().await;
+            }
+        };
+        timeout(grace, wait)
+            .await
+            .with_context(|| format!("{} did not spawn within {:?}", self.cfg.name, grace))
+    }
+
+    async fn adopt_identity(&self, identity: Option<SpawnIdentity>) {
+        let mut state = self.state.lock().await;
+        state.desired_running = false;
+        state.child_state = ChildState::Running;
+        state.identity = identity;
+        self.changed.notify_waiters();
+    }
+
     async fn shutdown(&self) {
         let pid = {
             let mut state = self.state.lock().await;
             state.desired_running = false;
+            state.shutdown_requested = true;
             state.child_state = ChildState::Stopping;
             state.child_pid
         };
@@ -914,23 +973,28 @@ async fn serve_system(args: SystemServeArgs) -> anyhow::Result<()> {
         .with_context(|| format!("bind admin API on {admin_listen}"))?;
 
     let proc_control_sock = cfg.proc_supervisor_sock();
+    let cfg = Arc::new(cfg);
     let proc_supervisor = Supervisor::new(proc_supervisor_config(&cfg));
     let supervisor = Supervisor::new(calm_server_supervisor_config(&cfg));
     let app_state = AppState {
+        cfg: cfg.clone(),
         supervisor: supervisor.clone(),
         proc_supervisor: proc_supervisor.clone(),
+        apply_lock: Arc::new(Mutex::new(())),
         admin_token,
     };
-    let app = Router::new()
-        .route("/health", get(health))
-        .route("/status", get(status))
-        .route("/restart", post(restart))
-        .route("/update/apply", post(update_apply_placeholder))
-        .with_state(app_state);
+    let app = admin_router(app_state);
 
     tracing::info!(addr = %admin_listen, "neige-app system admin API listening");
-    let proc_supervisor_task = tokio::spawn(proc_supervisor.clone().run());
-    wait_for_proc_supervisor(&proc_control_sock).await?;
+    let proc_supervisor_task = if proc_supervisor_is_adoptable(&proc_control_sock).await {
+        let identity = read_supervisor_identity(&cfg.calm_data_dir_resolved());
+        proc_supervisor.adopt_identity(identity).await;
+        None
+    } else {
+        let task = tokio::spawn(proc_supervisor.clone().run());
+        wait_for_proc_supervisor(&proc_control_sock).await?;
+        Some(task)
+    };
     let supervisor_task = tokio::spawn(supervisor.clone().run());
 
     let server_result = axum::serve(listener, app)
@@ -940,9 +1004,46 @@ async fn serve_system(args: SystemServeArgs) -> anyhow::Result<()> {
     supervisor.shutdown().await;
     proc_supervisor.shutdown().await;
     supervisor_task.await?;
-    proc_supervisor_task.await?;
+    if let Some(task) = proc_supervisor_task {
+        task.await?;
+    }
     server_result?;
     Ok(())
+}
+
+fn admin_router(app_state: AppState) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/status", get(status))
+        .route("/restart", post(restart))
+        .route("/upgrade/apply", post(upgrade_apply))
+        .route("/upgrade/full-reboot", post(upgrade_full_reboot))
+        .route("/upgrade/history", get(upgrade_history))
+        .route("/upgrade/rollback", post(upgrade_rollback))
+        .route("/upgrade/applied-id", get(upgrade_applied_id))
+        .with_state(app_state)
+}
+
+async fn proc_supervisor_is_adoptable(sock: &Path) -> bool {
+    sock.exists() && tokio::net::UnixStream::connect(sock).await.is_ok()
+}
+
+fn read_supervisor_identity(data_dir: &Path) -> Option<SpawnIdentity> {
+    let path = identity::supervisor_identity_path(data_dir);
+    match std::fs::read(&path) {
+        Ok(bytes) => match serde_json::from_slice(&bytes) {
+            Ok(identity) => Some(identity),
+            Err(err) => {
+                tracing::warn!(path = %path.display(), error = %err, "failed to parse supervisor identity");
+                None
+            }
+        },
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => {
+            tracing::warn!(path = %path.display(), error = %err, "failed to read supervisor identity");
+            None
+        }
+    }
 }
 
 async fn wait_for_proc_supervisor(sock: &Path) -> anyhow::Result<()> {
@@ -989,18 +1090,160 @@ async fn restart(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
     Ok((StatusCode::ACCEPTED, Json(state.status_snapshot().await)).into_response())
 }
 
-async fn update_apply_placeholder(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(err) = require_bearer(&headers, state.admin_token.as_deref()) {
-        return err.into_response();
-    }
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(serde_json::json!({
-            "error": "update_apply_not_implemented",
-            "message": "M1 supports system service supervision; release apply will use the documented stage/verify/backup/activate/healthcheck/rollback state machine.",
-        })),
+/// Applies are serialized with `try_lock` so a concurrent request receives an
+/// immediate 409 instead of queueing behind a potentially minutes-long upgrade.
+async fn upgrade_apply(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<apply::UpgradeRequest>,
+) -> Result<Response, ApiError> {
+    // Applies are serialized with `try_lock` so a second request gets an
+    // immediate 409 instead of queueing behind a minutes-long upgrade.
+    let _guard = state.apply_lock.try_lock().map_err(|_| {
+        ApiError::new(
+            StatusCode::CONFLICT,
+            "apply_in_progress",
+            "another upgrade is in progress",
+        )
+    })?;
+    require_bearer(&headers, state.admin_token.as_deref())?;
+    let response =
+        apply::apply_upgrade(&state.cfg, &state.supervisor, &state.proc_supervisor, req).await?;
+    let status = match response.result {
+        apply::UpgradeResult::Committed
+            if response.release_history_entry.executed_breaking_self_exec =>
+        {
+            schedule_exec_self(state.cfg.clone());
+            StatusCode::ACCEPTED
+        }
+        apply::UpgradeResult::Committed | apply::UpgradeResult::DryRun => StatusCode::OK,
+        apply::UpgradeResult::Rejected => StatusCode::BAD_REQUEST,
+        apply::UpgradeResult::RolledBack => StatusCode::BAD_GATEWAY,
+    };
+    Ok((status, Json(response)).into_response())
+}
+
+/// Full reboot shares the upgrade serialization lock and rejects concurrent
+/// apply/rollback work immediately instead of queueing.
+async fn upgrade_full_reboot(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    // Full reboot is serialized with apply/rollback and rejects concurrent
+    // upgrade work immediately rather than queueing behind it.
+    let _guard = state.apply_lock.try_lock().map_err(|_| {
+        ApiError::new(
+            StatusCode::CONFLICT,
+            "apply_in_progress",
+            "another upgrade is in progress",
+        )
+    })?;
+    require_bearer(&headers, state.admin_token.as_deref())?;
+    tokio::spawn(async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        std::process::exit(0);
+    });
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({"status": "full-reboot-scheduled"})),
     )
-        .into_response()
+        .into_response())
+}
+
+#[derive(Debug, Deserialize)]
+struct HistoryQuery {
+    limit: Option<usize>,
+}
+
+async fn upgrade_history(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<HistoryQuery>,
+) -> Result<Response, ApiError> {
+    require_bearer(&headers, state.admin_token.as_deref())?;
+    let limit = query.limit.unwrap_or(50).max(1);
+    let entries = apply::read_release_history_blocking(&state.cfg, limit).await?;
+    Ok((StatusCode::OK, Json(entries)).into_response())
+}
+
+#[derive(Debug, Deserialize)]
+struct RollbackRequest {
+    to: String,
+}
+
+/// Rollback mutates the same symlinks, installed state, history, and DB backup
+/// paths as apply, so it uses the same non-queueing upgrade serialization lock.
+async fn upgrade_rollback(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<RollbackRequest>,
+) -> Result<Response, ApiError> {
+    // Rollback mutates the same symlinks, installed state, history, and DB
+    // backup paths as apply, so it also rejects concurrent upgrade work.
+    let _guard = state.apply_lock.try_lock().map_err(|_| {
+        ApiError::new(
+            StatusCode::CONFLICT,
+            "apply_in_progress",
+            "another upgrade is in progress",
+        )
+    })?;
+    require_bearer(&headers, state.admin_token.as_deref())?;
+    let response = apply::rollback_last_preserving(&state.cfg, &state.supervisor, &req.to).await?;
+    Ok((StatusCode::OK, Json(response)).into_response())
+}
+
+async fn upgrade_applied_id(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    // TODO(#396): this sentinel is currently admin-authenticated, which makes
+    // unauthenticated browser polling awkward. Revisit with a proper frontend
+    // refresh/event design instead of loosening auth in this PR.
+    require_bearer(&headers, state.admin_token.as_deref())?;
+    let release_id = apply::read_last_upgrade_id_blocking(&state.cfg).await?;
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({ "releaseId": release_id })),
+    )
+        .into_response())
+}
+
+fn schedule_exec_self(cfg: Arc<AppConfig>) {
+    tokio::spawn(async move {
+        // Axum has no per-response flush hook here. This delay gives hyper time
+        // to write the 202 body before this process image is replaced; a slow
+        // or dropped client may still observe the connection close first and
+        // should confirm success through /upgrade/history after reconnecting.
+        tokio::time::sleep(Duration::from_millis(2000)).await;
+        exec_self(&cfg);
+    });
+}
+
+#[cfg(unix)]
+fn exec_self(cfg: &AppConfig) -> ! {
+    let mut args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if args.is_empty() {
+        args.push("neige-app".into());
+    }
+    if args.len() == 1 {
+        args.extend(["system".into(), "serve".into()]);
+    }
+    if !args
+        .iter()
+        .any(|arg| arg == std::ffi::OsStr::new("--config"))
+    {
+        args.extend(["--config".into(), cfg.config_path.clone().into_os_string()]);
+    }
+    let program = cfg.release.current_server.join("bin").join("neige-app");
+    let err = std::process::Command::new(&program).args(&args[1..]).exec();
+    tracing::error!(program = %program.display(), error = %err, "exec self failed");
+    std::process::exit(127);
+}
+
+#[cfg(not(unix))]
+fn exec_self(_cfg: &AppConfig) -> ! {
+    tracing::error!("exec self is only implemented on Unix");
+    std::process::exit(127);
 }
 
 fn load_admin_token(
@@ -1088,6 +1331,12 @@ impl From<anyhow::Error> for ApiError {
             "internal_error",
             value.to_string(),
         )
+    }
+}
+
+impl From<apply::ApplyError> for ApiError {
+    fn from(value: apply::ApplyError) -> Self {
+        Self::new(value.status, value.code, value.message)
     }
 }
 
@@ -1294,23 +1543,60 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_apply_placeholder_is_explicitly_not_implemented_for_m1() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            "Bearer test-token".parse().expect("valid auth header"),
-        );
-        let response =
-            update_apply_placeholder(State(test_app_state(Some("test-token"))), headers).await;
-        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    async fn status_route_returns_supervisor_identity_shape() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
 
+        let cfg = AppConfig::starter(PathBuf::from("/tmp/neige-app/config.toml"));
+        let state = AppState {
+            cfg: Arc::new(cfg),
+            supervisor: Supervisor::new(SupervisorConfig {
+                name: "calm-server".into(),
+                child_bin: PathBuf::from("calm-server"),
+                child_cwd: None,
+                child_args: Vec::new(),
+                child_envs: vec![("CALM_LISTEN".into(), "127.0.0.1:4040".into())],
+                restart_delay: Duration::from_millis(1),
+                stop_grace: Duration::from_millis(1),
+                calm_listen: Some("127.0.0.1:4040".into()),
+                persist_identity_to: None,
+            }),
+            proc_supervisor: Supervisor::new(SupervisorConfig {
+                name: "calm-proc-supervisor".into(),
+                child_bin: PathBuf::from("calm-proc-supervisor"),
+                child_cwd: None,
+                child_args: Vec::new(),
+                child_envs: Vec::new(),
+                restart_delay: Duration::from_millis(1),
+                stop_grace: Duration::from_millis(1),
+                calm_listen: None,
+                persist_identity_to: None,
+            }),
+            apply_lock: Arc::new(Mutex::new(())),
+            admin_token: Some(Arc::from("test-token")),
+        };
+        let app = admin_router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/status")
+                    .header(axum::http::header::AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("status response");
+        assert_eq!(response.status(), StatusCode::OK);
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
-            .expect("read response body");
-        let body = String::from_utf8(body.to_vec()).expect("utf8 response body");
-
-        assert!(body.contains("update_apply_not_implemented"));
-        assert!(body.contains("M1 supports system service supervision"));
+            .expect("body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert!(body["calmServer"].is_object());
+        assert!(body["procSupervisor"].is_object());
+        assert!(body["calmServer"]["identity"].is_null());
+        assert!(body["procSupervisor"]["identity"].is_null());
     }
 
     #[test]
@@ -1452,34 +1738,6 @@ bin = "/usr/local/bin/neige-app"
 
         assert!(steps.iter().any(|step| step.contains("/restart")));
         assert!(steps.iter().any(|step| step.contains("systemctl")));
-    }
-
-    fn test_app_state(token: Option<&str>) -> AppState {
-        AppState {
-            supervisor: Supervisor::new(SupervisorConfig {
-                name: "calm-server".into(),
-                child_bin: PathBuf::from("calm-server"),
-                child_cwd: None,
-                child_args: Vec::new(),
-                child_envs: vec![("CALM_LISTEN".into(), "127.0.0.1:4040".into())],
-                restart_delay: Duration::from_millis(1),
-                stop_grace: Duration::from_millis(1),
-                calm_listen: Some("127.0.0.1:4040".into()),
-                persist_identity_to: None,
-            }),
-            proc_supervisor: Supervisor::new(SupervisorConfig {
-                name: "calm-proc-supervisor".into(),
-                child_bin: PathBuf::from("calm-proc-supervisor"),
-                child_cwd: None,
-                child_args: Vec::new(),
-                child_envs: Vec::new(),
-                restart_delay: Duration::from_millis(1),
-                stop_grace: Duration::from_millis(1),
-                calm_listen: None,
-                persist_identity_to: None,
-            }),
-            admin_token: token.map(Arc::from),
-        }
     }
 
     fn test_temp_dir(name: &str) -> PathBuf {
