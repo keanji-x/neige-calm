@@ -19,13 +19,21 @@ struct Harness {
     calm: SocketAddr,
     token: String,
     app: Child,
-    _proc_sock_thread: thread::JoinHandle<()>,
+    orphan: Option<Child>,
 }
 
 impl Drop for Harness {
     fn drop(&mut self) {
+        if let Ok(status) = self.status() {
+            kill_status_pid(&status, "/calmServer/childPid");
+            kill_status_pid(&status, "/procSupervisor/childPid");
+        }
         let _ = self.app.kill();
         let _ = self.app.wait();
+        if let Some(orphan) = &mut self.orphan {
+            let _ = orphan.kill();
+            let _ = orphan.wait();
+        }
         let _ = fs::remove_dir_all(&self.root);
     }
 }
@@ -251,6 +259,44 @@ fn apply_breaking_without_opt_in_rejects() -> anyhow::Result<()> {
 }
 
 #[test]
+#[ignore = "binds sockets and spawns neige-app; blocked by the Codex sandbox"]
+fn apply_breaking_rejected_does_not_leave_stage_dir() -> anyhow::Result<()> {
+    let mut h = Harness::start("breaking-reject-stage", "0.1.0")?;
+    let package = h.breaking_package("rel-breaking")?;
+
+    let resp = h.post_json(
+        "/upgrade/apply",
+        json!({"source": {"url": package.display().to_string()}}),
+    )?;
+
+    assert_eq!(resp.status, 400, "body: {}", resp.body);
+    assert_eq!(resp.json["result"], "rejected");
+    assert!(!h.release_root.join("staged").join("rel-breaking").exists());
+    Ok(())
+}
+
+#[test]
+#[ignore = "binds sockets and spawns neige-app; blocked by the Codex sandbox"]
+fn apply_breaking_rejected_then_apply_with_allow_breaking_succeeds() -> anyhow::Result<()> {
+    let mut h = Harness::start("breaking-retry", "0.1.0")?;
+    let package = h.breaking_package("rel-breaking")?;
+
+    let rejected = h.post_json(
+        "/upgrade/apply",
+        json!({"source": {"url": package.display().to_string()}}),
+    )?;
+    assert_eq!(rejected.status, 400, "body: {}", rejected.body);
+    let accepted = h.post_json(
+        "/upgrade/apply",
+        json!({"source": {"url": package.display().to_string()}, "allowBreaking": true}),
+    )?;
+
+    assert_eq!(accepted.status, 202, "body: {}", accepted.body);
+    assert_eq!(accepted.json["result"], "committed");
+    Ok(())
+}
+
+#[test]
 #[ignore = "exec-self replaces the test child process image; run manually outside cargo test"]
 fn apply_breaking_opt_in_then_exec_self() -> anyhow::Result<()> {
     let mut h = Harness::start("breaking-exec", "0.1.0")?;
@@ -280,6 +326,81 @@ fn apply_breaking_opt_in_then_exec_self() -> anyhow::Result<()> {
     assert_eq!(history.status, 200, "body: {}", history.body);
     assert_eq!(history.json[0]["releaseId"], "rel-breaking");
     assert_eq!(history.json[0]["result"], "committed");
+    Ok(())
+}
+
+#[test]
+#[ignore = "exec-self replaces the test child process image; run manually outside cargo test"]
+fn apply_breaking_exec_self_kills_calm_server() -> anyhow::Result<()> {
+    let mut h = Harness::start("breaking-exec-kills-calm", "0.1.0")?;
+    let old_pid = status_pid(&h.status()?, "/calmServer/childPid")?;
+    let package = h.breaking_package("rel-breaking")?;
+
+    let resp = h.post_json(
+        "/upgrade/apply",
+        json!({"source": {"url": package.display().to_string()}, "allowBreaking": true}),
+    )?;
+
+    assert_eq!(resp.status, 202, "body: {}", resp.body);
+    wait_until(Duration::from_secs(6), || !pid_exists(old_pid))?;
+    wait_until(Duration::from_secs(10), || {
+        h.version().ok().as_deref() == Some("0.2.0")
+    })?;
+    let new_pid = status_pid(&h.status()?, "/calmServer/childPid")?;
+    assert_ne!(old_pid, new_pid);
+    Ok(())
+}
+
+#[test]
+#[ignore = "binds sockets and spawns neige-app; blocked by the Codex sandbox"]
+fn full_reboot_kills_children() -> anyhow::Result<()> {
+    let mut h = Harness::start("full-reboot", "0.1.0")?;
+    let status = h.status()?;
+    let calm_pid = status_pid(&status, "/calmServer/childPid")?;
+    let proc_pid = status_pid(&status, "/procSupervisor/childPid")?;
+
+    let resp = h.post_json("/upgrade/full-reboot", json!({}))?;
+
+    assert_eq!(resp.status, 202, "body: {}", resp.body);
+    thread::sleep(Duration::from_secs(3));
+    assert!(!pid_exists(calm_pid), "old calm-server pid still exists");
+    assert!(
+        !pid_exists(proc_pid),
+        "old proc-supervisor pid still exists"
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "binds sockets and spawns neige-app; blocked by the Codex sandbox"]
+fn neige_app_boot_kills_orphan_calm_server() -> anyhow::Result<()> {
+    let (mut h, orphan_pid) = Harness::start_with_orphan_mcp("boot-kills-orphan", "0.1.0")?;
+    wait_until(Duration::from_secs(6), || {
+        h.orphan_exited().unwrap_or(false)
+    })?;
+    assert!(!pid_exists(orphan_pid));
+    assert_eq!(h.version()?, "0.1.0");
+    Ok(())
+}
+
+#[test]
+#[ignore = "binds sockets and spawns neige-app; blocked by the Codex sandbox"]
+fn supervisor_aborts_after_rapid_crash_loop() -> anyhow::Result<()> {
+    let h = Harness::start_crashing("crash-loop", "0.1.0")?;
+    wait_until(Duration::from_secs(12), || {
+        h.status()
+            .ok()
+            .and_then(|status| status["calmServer"]["desiredRunning"].as_bool())
+            == Some(false)
+    })?;
+    let first = h.status()?["calmServer"]["restartCount"]
+        .as_u64()
+        .ok_or_else(|| anyhow::anyhow!("missing restartCount"))?;
+    thread::sleep(Duration::from_secs(2));
+    let second = h.status()?["calmServer"]["restartCount"]
+        .as_u64()
+        .ok_or_else(|| anyhow::anyhow!("missing restartCount"))?;
+    assert_eq!(first, second);
     Ok(())
 }
 
@@ -375,6 +496,23 @@ fn apply_v2_from_git_source_triggers_v2_verdict() -> anyhow::Result<()> {
 
 impl Harness {
     fn start(name: &str, initial_version: &str) -> anyhow::Result<Self> {
+        Self::start_inner(name, initial_version, true, false).map(|(h, _)| h)
+    }
+
+    fn start_crashing(name: &str, initial_version: &str) -> anyhow::Result<Self> {
+        Self::start_inner(name, initial_version, false, false).map(|(h, _)| h)
+    }
+
+    fn start_with_orphan_mcp(name: &str, initial_version: &str) -> anyhow::Result<(Self, u32)> {
+        Self::start_inner(name, initial_version, true, true)
+    }
+
+    fn start_inner(
+        name: &str,
+        initial_version: &str,
+        initial_healthy: bool,
+        orphan_mcp_holder: bool,
+    ) -> anyhow::Result<(Self, u32)> {
         let root =
             std::env::temp_dir().join(format!("neige-app-apply-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -391,10 +529,14 @@ impl Harness {
 
         let old = root.join("old-release");
         fs::create_dir_all(old.join("bin"))?;
-        write_calm_server(&old.join("bin").join("calm-server"), initial_version, true)?;
+        write_calm_server(
+            &old.join("bin").join("calm-server"),
+            initial_version,
+            initial_healthy,
+        )?;
         write_executable(
             &old.join("bin").join("calm-proc-supervisor"),
-            "#!/bin/sh\nsleep 300\n",
+            PROC_SUPERVISOR_SCRIPT,
         )?;
         write_executable(&old.join("bin").join("neige-app"), "#!/bin/sh\nsleep 300\n")?;
         write_manifest(
@@ -487,8 +629,28 @@ build_args = ["true"]
             ),
         )?;
 
-        let proc_sock = data_dir.join("proc-supervisor.sock");
-        let proc_sock_thread = spawn_proc_sock(&proc_sock)?;
+        let mut orphan = if orphan_mcp_holder {
+            let script = root.join("orphan-mcp.py");
+            write_executable(&script, ORPHAN_MCP_SCRIPT)?;
+            Some(
+                Command::new(&script)
+                    .arg(&data_dir)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()?,
+            )
+        } else {
+            None
+        };
+        let orphan_pid = orphan.as_ref().map(Child::id).unwrap_or_default();
+        if orphan_mcp_holder {
+            wait_until(Duration::from_secs(3), || {
+                std::os::unix::net::UnixStream::connect(data_dir.join("mcp").join("kernel.sock"))
+                    .is_ok()
+            })?;
+        }
+
         let mut app = Command::new(locate_neige_app())
             .args(["system", "serve", "--config"])
             .arg(&config)
@@ -503,7 +665,7 @@ build_args = ["true"]
             return Err(err);
         }
 
-        Ok(Self {
+        let harness = Self {
             root,
             data_dir,
             release_root,
@@ -511,8 +673,9 @@ build_args = ["true"]
             calm,
             token,
             app,
-            _proc_sock_thread: proc_sock_thread,
-        })
+            orphan: orphan.take(),
+        };
+        Ok((harness, orphan_pid))
     }
 
     fn version(&self) -> anyhow::Result<String> {
@@ -525,6 +688,17 @@ build_args = ["true"]
 
     fn post_json(&mut self, path: &str, body: serde_json::Value) -> anyhow::Result<HttpResp> {
         http_json("POST", self.admin, path, Some(&self.token), Some(body))
+    }
+
+    fn status(&self) -> anyhow::Result<serde_json::Value> {
+        Ok(http_json("GET", self.admin, "/status", Some(&self.token), None)?.json)
+    }
+
+    fn orphan_exited(&mut self) -> anyhow::Result<bool> {
+        let Some(orphan) = &mut self.orphan else {
+            return Ok(true);
+        };
+        Ok(orphan.try_wait()?.is_some())
     }
 
     fn package<const N: usize>(
@@ -558,7 +732,7 @@ build_args = ["true"]
         write_calm_server(&dir.join("bin").join("calm-server"), calm_version, healthy)?;
         write_executable(
             &dir.join("bin").join("calm-proc-supervisor"),
-            "#!/bin/sh\nsleep 300\n",
+            PROC_SUPERVISOR_SCRIPT,
         )?;
         write_executable(&dir.join("bin").join("neige-app"), "#!/bin/sh\nsleep 300\n")?;
         write_manifest(&dir, release_id, 0, changed, calm_db_policy)?;
@@ -666,20 +840,44 @@ fn free_addr() -> anyhow::Result<SocketAddr> {
     Ok(listener.local_addr()?)
 }
 
-fn spawn_proc_sock(path: &Path) -> anyhow::Result<thread::JoinHandle<()>> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let path = path.to_path_buf();
-    let listener = std::os::unix::net::UnixListener::bind(&path)?;
-    Ok(thread::spawn(move || {
-        for stream in listener.incoming() {
-            if stream.is_err() {
-                break;
-            }
-        }
-    }))
-}
+const PROC_SUPERVISOR_SCRIPT: &str = r#"#!/usr/bin/env python3
+import os, socket, sys, time
+sock = None
+if "--control-sock" in sys.argv:
+    index = sys.argv.index("--control-sock")
+    if index + 1 < len(sys.argv):
+        sock = sys.argv[index + 1]
+if sock is None:
+    time.sleep(300)
+    sys.exit(0)
+try:
+    os.unlink(sock)
+except FileNotFoundError:
+    pass
+os.makedirs(os.path.dirname(sock), exist_ok=True)
+server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+server.bind(sock)
+server.listen(16)
+while True:
+    conn, _ = server.accept()
+    conn.close()
+"#;
+
+const ORPHAN_MCP_SCRIPT: &str = r#"#!/usr/bin/env python3
+import os, socket, sys, time
+data_dir = sys.argv[1]
+sock = os.path.join(data_dir, "mcp", "kernel.sock")
+os.makedirs(os.path.dirname(sock), exist_ok=True)
+try:
+    os.unlink(sock)
+except FileNotFoundError:
+    pass
+server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+server.bind(sock)
+server.listen(16)
+while True:
+    time.sleep(1)
+"#;
 
 fn write_calm_server(path: &Path, version: &str, healthy: bool) -> anyhow::Result<()> {
     let behavior = if healthy {
@@ -691,9 +889,21 @@ fn write_calm_server(path: &Path, version: &str, healthy: bool) -> anyhow::Resul
         path,
         &format!(
             r#"#!/usr/bin/env python3
-import http.server, json, os, socketserver, sys
+import http.server, json, os, socket, socketserver, sys
 listen = os.environ.get("CALM_LISTEN", "127.0.0.1:4040")
 host, port = listen.rsplit(":", 1)
+data_dir = os.environ.get("CALM_DATA_DIR")
+uds = None
+if data_dir:
+    mcp_sock = os.path.join(data_dir, "mcp", "kernel.sock")
+    os.makedirs(os.path.dirname(mcp_sock), exist_ok=True)
+    try:
+        os.unlink(mcp_sock)
+    except FileNotFoundError:
+        pass
+    uds = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    uds.bind(mcp_sock)
+    uds.listen(16)
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
@@ -723,9 +933,21 @@ fn write_calm_server_with_delay(path: &Path, version: &str, delay_secs: u64) -> 
         path,
         &format!(
             r#"#!/usr/bin/env python3
-import http.server, json, os, socketserver, sys, time
+import http.server, json, os, socket, socketserver, sys, time
 listen = os.environ.get("CALM_LISTEN", "127.0.0.1:4040")
 host, port = listen.rsplit(":", 1)
+data_dir = os.environ.get("CALM_DATA_DIR")
+uds = None
+if data_dir:
+    mcp_sock = os.path.join(data_dir, "mcp", "kernel.sock")
+    os.makedirs(os.path.dirname(mcp_sock), exist_ok=True)
+    try:
+        os.unlink(mcp_sock)
+    except FileNotFoundError:
+        pass
+    uds = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    uds.bind(mcp_sock)
+    uds.listen(16)
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
@@ -971,6 +1193,45 @@ fn sorted_entries(path: &Path) -> anyhow::Result<Vec<PathBuf>> {
         .collect::<Result<Vec<_>, _>>()?;
     entries.sort();
     Ok(entries)
+}
+
+fn status_pid(status: &serde_json::Value, pointer: &str) -> anyhow::Result<u32> {
+    status
+        .pointer(pointer)
+        .and_then(|value| value.as_u64())
+        .and_then(|pid| pid.try_into().ok())
+        .ok_or_else(|| anyhow::anyhow!("missing pid at {pointer}: {status}"))
+}
+
+fn kill_status_pid(status: &serde_json::Value, pointer: &str) {
+    if let Some(pid) = status
+        .pointer(pointer)
+        .and_then(|value| value.as_u64())
+        .and_then(|pid| libc::pid_t::try_from(pid).ok())
+    {
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+    }
+}
+
+fn pid_exists(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    let rc = unsafe { libc::kill(pid, 0) };
+    rc == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+fn wait_until(deadline_after: Duration, mut condition: impl FnMut() -> bool) -> anyhow::Result<()> {
+    let deadline = Instant::now() + deadline_after;
+    while Instant::now() < deadline {
+        if condition() {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    anyhow::bail!("condition was not met within {:?}", deadline_after)
 }
 
 fn make_symlink(target: &Path, link: &Path) -> anyhow::Result<()> {

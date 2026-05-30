@@ -212,6 +212,23 @@ pub(crate) async fn apply_upgrade(
         append_release_history_best_effort(cfg, &response.release_history_entry).await;
         return Ok(response);
     }
+    if matches!(verdict, Verdict::Breaking { .. }) && !req.allow_breaking {
+        let response = response_from_parts(
+            source_manifest.release_id.clone(),
+            summary,
+            UpgradeResult::Rejected,
+            started,
+            Some("breaking upgrade requires allowBreaking=true".into()),
+            source_summary,
+            installed_before_id.clone(),
+            installed_before_id.unwrap_or_default(),
+            false,
+            Vec::new(),
+            None,
+        );
+        append_release_history_best_effort(cfg, &response.release_history_entry).await;
+        return Ok(response);
+    }
 
     let mode = infer_package_mode_blocking(&package_dir).await?;
     let stage = stage_upgrade_blocking(cfg, &package_dir, mode).await?;
@@ -221,7 +238,6 @@ pub(crate) async fn apply_upgrade(
         .verdict
         .clone()
         .ok_or_else(|| ApplyError::bad_request("POST /upgrade/apply requires a v2 manifest"))?;
-    let summary = VerdictSummary::from(&verdict);
 
     match &verdict {
         Verdict::Noop => unreachable!("noop is returned before staging"),
@@ -241,23 +257,6 @@ pub(crate) async fn apply_upgrade(
             .await
         }
         Verdict::Breaking { units_changed, .. } => {
-            if !req.allow_breaking {
-                let response = response_from_parts(
-                    manifest.release_id.clone(),
-                    summary,
-                    UpgradeResult::Rejected,
-                    started,
-                    Some("breaking upgrade requires allowBreaking=true".into()),
-                    source_summary,
-                    installed_before_id.clone(),
-                    installed_before_id.unwrap_or_default(),
-                    false,
-                    Vec::new(),
-                    None,
-                );
-                append_release_history_best_effort(cfg, &response.release_history_entry).await;
-                return Ok(response);
-            }
             apply_breaking(
                 cfg,
                 supervisor,
