@@ -1376,6 +1376,10 @@ export interface components {
             /** Format: int32 */
             syncEventVersion: number;
             /** Format: int32 */
+            terminalFrameVersion: number;
+            /** Format: int32 */
+            terminalProtocolVersion: number;
+            /** Format: int32 */
             webCompatVersion: number;
         };
         ViaToolCall: {

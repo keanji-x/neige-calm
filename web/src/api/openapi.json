@@ -3738,6 +3738,8 @@
         "description": "Response shape for `GET /api/version`. camelCase on the wire so it lines\nup with the rest of the TypeScript-facing surface.",
         "required": [
           "kernelVersion",
+          "terminalFrameVersion",
+          "terminalProtocolVersion",
           "apiVersion",
           "syncEventVersion",
           "mcpProtocolVersion",
@@ -3782,6 +3784,16 @@
             "minimum": 0
           },
           "syncEventVersion": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "terminalFrameVersion": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "terminalProtocolVersion": {
             "type": "integer",
             "format": "int32",
             "minimum": 0
