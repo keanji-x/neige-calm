@@ -261,14 +261,30 @@ new `bin/neige-app` through the current server-release symlink. Under systemd
 this keeps the same service PID and lets the manager treat the process as
 continuing.
 
+Before execing, `neige-app` terminates the supervised `calm-server` process
+tree. If the breaking release also changes `calmProcSupervisor`, it terminates
+that process tree too. Each tree receives SIGTERM, then SIGKILL after the
+configured stop grace if it is still alive.
+
 On boot, `neige-app` checks the configured proc-supervisor socket. If an
 existing supervisor answers, the process adopts it instead of spawning a new
 one and reloads the persisted supervisor identity from
 `<data_dir>/state/supervisor-identity.json`.
 
+`neige-app` also checks `<data_dir>/mcp/kernel.sock` before spawning
+`calm-server`. If another process still owns that socket, the process is
+treated as an orphaned server from a previous service image and is killed before
+the new server starts.
+
 `POST /upgrade/full-reboot` returns `202` and exits shortly afterward so
 systemd can restart the service. Use it after a preserving upgrade deferred a
 `neigeApp` or `calmProcSupervisor` binary change.
+
+If `[child] data_dir` is configured and `[child] db_url` is omitted or empty,
+`neige-app` defaults `CALM_DB_URL` to
+`sqlite://<data_dir>/calm.db?mode=rwc`. An explicit `db_url = "mock"` remains
+mock mode for development; set an explicit `sqlite://...` URL to use another
+database path.
 
 `GET /upgrade/history` tails `<data_dir>/state/release-history.jsonl`.
 `POST /upgrade/rollback` is intentionally narrow in PR 2: it only reverses the

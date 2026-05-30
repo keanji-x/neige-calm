@@ -1,6 +1,9 @@
+use std::collections::VecDeque;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -34,6 +37,7 @@ mod upgrade;
 
 use config::{AppConfig, ServeOverrides, default_config_path, init_config};
 use identity::SpawnIdentity;
+use manifest::UnitName;
 use manifest::{CurrentVersion, ReleaseManifest};
 use package::{NamedPath, PackageConfig};
 use preflight::PreflightMode;
@@ -387,6 +391,7 @@ struct ProcessStatus {
 struct SupervisorState {
     desired_running: bool,
     shutdown_requested: bool,
+    owns_child: bool,
     child_state: ChildState,
     child_pid: Option<u32>,
     restart_count: u64,
@@ -415,6 +420,9 @@ impl ChildState {
     }
 }
 
+const RESTART_ABORT_LIMIT: usize = 10;
+const RESTART_ABORT_WINDOW: Duration = Duration::from_secs(60);
+
 #[derive(Debug)]
 struct Supervisor {
     cfg: SupervisorConfig,
@@ -429,6 +437,7 @@ impl Supervisor {
             state: Mutex::new(SupervisorState {
                 desired_running: true,
                 shutdown_requested: false,
+                owns_child: false,
                 child_state: ChildState::Stopped,
                 child_pid: None,
                 restart_count: 0,
@@ -440,6 +449,7 @@ impl Supervisor {
     }
 
     async fn run(self: Arc<Self>) {
+        let mut restart_times = VecDeque::new();
         loop {
             {
                 let state = self.state.lock().await;
@@ -459,6 +469,7 @@ impl Supervisor {
                     {
                         let mut state = self.state.lock().await;
                         state.child_pid = pid;
+                        state.owns_child = true;
                         state.child_state = ChildState::Running;
                         state.last_exit = None;
                     }
@@ -471,6 +482,7 @@ impl Supervisor {
                     {
                         let mut state = self.state.lock().await;
                         state.child_pid = None;
+                        state.owns_child = false;
                         state.child_state = ChildState::Exited;
                         state.last_exit = Some(format!("spawn failed: {err:#}"));
                     }
@@ -483,6 +495,26 @@ impl Supervisor {
                 state.desired_running && !state.shutdown_requested
             };
             if should_restart {
+                let now = std::time::Instant::now();
+                restart_times.push_back(now);
+                while restart_times
+                    .front()
+                    .is_some_and(|at| now.duration_since(*at) > RESTART_ABORT_WINDOW)
+                {
+                    restart_times.pop_front();
+                }
+                if restart_times.len() > RESTART_ABORT_LIMIT {
+                    let mut state = self.state.lock().await;
+                    state.desired_running = false;
+                    tracing::error!(
+                        process = %self.cfg.name,
+                        restart_count = state.restart_count,
+                        last_exit = ?state.last_exit,
+                        "supervised child exceeded restart rate limit; stopping respawn"
+                    );
+                    self.changed.notify_waiters();
+                    continue;
+                }
                 tokio::time::sleep(self.cfg.restart_delay).await;
                 let mut state = self.state.lock().await;
                 state.restart_count += 1;
@@ -491,6 +523,7 @@ impl Supervisor {
 
         let mut state = self.state.lock().await;
         state.child_pid = None;
+        state.owns_child = false;
         state.child_state = ChildState::Stopped;
         self.changed.notify_waiters();
     }
@@ -500,6 +533,7 @@ impl Supervisor {
             let mut state = self.state.lock().await;
             state.child_state = ChildState::Starting;
             state.child_pid = None;
+            state.owns_child = false;
             state.identity = None;
         }
         self.changed.notify_waiters();
@@ -589,15 +623,13 @@ impl Supervisor {
     async fn restart(&self) -> anyhow::Result<ProcessStatus> {
         let pid = {
             let mut state = self.state.lock().await;
+            state.desired_running = true;
             state.child_state = ChildState::Stopping;
             state.child_pid
         };
+        self.changed.notify_waiters();
         if let Some(pid) = pid {
-            terminate_child_tree(pid)?;
-            let stopped = self.wait_pid_change(pid, self.cfg.stop_grace).await;
-            if !stopped {
-                kill_child_tree(pid)?;
-            }
+            self.terminate_current_child_wait_then_kill(pid).await?;
         }
         Ok(self.process_status().await)
     }
@@ -611,11 +643,7 @@ impl Supervisor {
         };
         self.changed.notify_waiters();
         if let Some(pid) = pid {
-            terminate_child_tree(pid)?;
-            if !self.wait_pid_change(pid, self.cfg.stop_grace).await {
-                kill_child_tree(pid)?;
-                let _ = self.wait_pid_change(pid, Duration::from_secs(1)).await;
-            }
+            self.terminate_current_child_wait_then_kill(pid).await?;
         }
         Ok(self.process_status().await)
     }
@@ -641,10 +669,12 @@ impl Supervisor {
             .with_context(|| format!("{} did not spawn within {:?}", self.cfg.name, grace))
     }
 
-    async fn adopt_identity(&self, identity: Option<SpawnIdentity>) {
+    async fn adopt_identity(&self, identity: Option<SpawnIdentity>, child_pid: Option<u32>) {
         let mut state = self.state.lock().await;
         state.desired_running = false;
         state.child_state = ChildState::Running;
+        state.child_pid = child_pid;
+        state.owns_child = false;
         state.identity = identity;
         self.changed.notify_waiters();
     }
@@ -655,18 +685,37 @@ impl Supervisor {
             state.desired_running = false;
             state.shutdown_requested = true;
             state.child_state = ChildState::Stopping;
+            if state.owns_child {
+                state.child_pid
+            } else {
+                None
+            }
+        };
+        if let Some(pid) = pid
+            && let Err(err) = self.terminate_current_child_wait_then_kill(pid).await
+        {
+            tracing::warn!(pid, error = %err, "failed to terminate child");
+        }
+    }
+
+    async fn force_stop_and_wait(&self) -> anyhow::Result<ProcessStatus> {
+        let pid = {
+            let mut state = self.state.lock().await;
+            state.desired_running = false;
+            state.child_state = ChildState::Stopping;
             state.child_pid
         };
+        self.changed.notify_waiters();
         if let Some(pid) = pid {
-            if let Err(err) = terminate_child_tree(pid) {
-                tracing::warn!(pid, error = %err, "failed to SIGTERM child");
-            }
-            if !self.wait_pid_change(pid, self.cfg.stop_grace).await
-                && let Err(err) = kill_child_tree(pid)
-            {
-                tracing::warn!(pid, error = %err, "failed to SIGKILL child");
-            }
+            self.terminate_current_child_wait_then_kill(pid).await?;
         }
+        Ok(self.process_status().await)
+    }
+
+    async fn terminate_current_child_wait_then_kill(&self, pid: u32) -> anyhow::Result<()> {
+        terminate_child_tree_wait_then_kill(pid, self.cfg.stop_grace).await?;
+        let _ = self.wait_pid_change(pid, Duration::from_secs(1)).await;
+        Ok(())
     }
 
     async fn wait_pid_change(&self, pid: u32, grace: Duration) -> bool {
@@ -935,14 +984,16 @@ async fn serve_system(args: SystemServeArgs) -> anyhow::Result<()> {
 
     tracing::info!(addr = %admin_listen, "neige-app system admin API listening");
     let proc_supervisor_task = if proc_supervisor_is_adoptable(&proc_control_sock).await {
+        let child_pid = peer_pid_for_unix_socket(&proc_control_sock).await;
         let identity = read_supervisor_identity(&cfg.calm_data_dir_resolved());
-        proc_supervisor.adopt_identity(identity).await;
+        proc_supervisor.adopt_identity(identity, child_pid).await;
         None
     } else {
         let task = tokio::spawn(proc_supervisor.clone().run());
         wait_for_proc_supervisor(&proc_control_sock).await?;
         Some(task)
     };
+    kill_orphan_calm_server_socket_holder(&cfg).await?;
     let supervisor_task = tokio::spawn(supervisor.clone().run());
 
     let server_result = axum::serve(listener, app)
@@ -974,6 +1025,57 @@ fn admin_router(app_state: AppState) -> Router {
 
 async fn proc_supervisor_is_adoptable(sock: &Path) -> bool {
     sock.exists() && tokio::net::UnixStream::connect(sock).await.is_ok()
+}
+
+#[cfg(unix)]
+async fn peer_pid_for_unix_socket(sock: &Path) -> Option<u32> {
+    let stream = match tokio::net::UnixStream::connect(sock).await {
+        Ok(stream) => stream,
+        Err(err) => {
+            tracing::warn!(socket = %sock.display(), error = %err, "failed to connect for peer credentials");
+            return None;
+        }
+    };
+    match unix_stream_peer_pid(&stream) {
+        Ok(pid) => Some(pid),
+        Err(err) => {
+            tracing::warn!(socket = %sock.display(), error = %err, "failed to read peer credentials");
+            None
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn peer_pid_for_unix_socket(_sock: &Path) -> Option<u32> {
+    None
+}
+
+async fn kill_orphan_calm_server_socket_holder(cfg: &AppConfig) -> anyhow::Result<()> {
+    let sock = cfg.calm_mcp_kernel_sock();
+    if !sock.exists() {
+        return Ok(());
+    }
+    let Some(pid) = peer_pid_for_unix_socket(&sock).await else {
+        return Ok(());
+    };
+    tracing::warn!(
+        pid,
+        socket = %sock.display(),
+        "killing orphan calm-server socket holder before spawn"
+    );
+    kill_pid(pid)?;
+    wait_for_unix_socket_peer_to_change(&sock, pid, cfg.timing.stop_grace).await;
+    Ok(())
+}
+
+async fn wait_for_unix_socket_peer_to_change(sock: &Path, old_pid: u32, grace: Duration) {
+    let deadline = tokio::time::Instant::now() + grace;
+    while tokio::time::Instant::now() < deadline {
+        if peer_pid_for_unix_socket(sock).await != Some(old_pid) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 fn read_supervisor_identity(data_dir: &Path) -> Option<SpawnIdentity> {
@@ -1061,7 +1163,16 @@ async fn upgrade_apply(
         apply::UpgradeResult::Committed
             if response.release_history_entry.executed_breaking_self_exec =>
         {
-            schedule_exec_self(state.cfg.clone());
+            let kill_proc_supervisor = response
+                .release_history_entry
+                .units_changed
+                .contains(&UnitName::CalmProcSupervisor);
+            schedule_exec_self(
+                state.cfg.clone(),
+                state.supervisor.clone(),
+                state.proc_supervisor.clone(),
+                kill_proc_supervisor,
+            );
             StatusCode::ACCEPTED
         }
         apply::UpgradeResult::Committed | apply::UpgradeResult::DryRun => StatusCode::OK,
@@ -1087,8 +1198,16 @@ async fn upgrade_full_reboot(
         )
     })?;
     require_bearer(&headers, state.admin_token.as_deref())?;
-    tokio::spawn(async {
+    let supervisor = state.supervisor.clone();
+    let proc_supervisor = state.proc_supervisor.clone();
+    tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(500)).await;
+        if let Err(err) = supervisor.force_stop_and_wait().await {
+            tracing::warn!(error = %err, "failed to stop calm-server before full reboot");
+        }
+        if let Err(err) = proc_supervisor.force_stop_and_wait().await {
+            tracing::warn!(error = %err, "failed to stop proc-supervisor before full reboot");
+        }
         std::process::exit(0);
     });
     Ok((
@@ -1156,13 +1275,24 @@ async fn upgrade_applied_id(
         .into_response())
 }
 
-fn schedule_exec_self(cfg: Arc<AppConfig>) {
+fn schedule_exec_self(
+    cfg: Arc<AppConfig>,
+    supervisor: Arc<Supervisor>,
+    proc_supervisor: Arc<Supervisor>,
+    kill_proc_supervisor: bool,
+) {
     tokio::spawn(async move {
         // Axum has no per-response flush hook here. This delay gives hyper time
         // to write the 202 body before this process image is replaced; a slow
         // or dropped client may still observe the connection close first and
         // should confirm success through /upgrade/history after reconnecting.
         tokio::time::sleep(Duration::from_millis(2000)).await;
+        if let Err(err) = supervisor.force_stop_and_wait().await {
+            tracing::warn!(error = %err, "failed to stop calm-server before exec-self");
+        }
+        if kill_proc_supervisor && let Err(err) = proc_supervisor.force_stop_and_wait().await {
+            tracing::warn!(error = %err, "failed to stop proc-supervisor before exec-self");
+        }
         exec_self(&cfg);
     });
 }
@@ -1397,6 +1527,46 @@ fn format_exit(status: ExitStatus) -> String {
 }
 
 #[cfg(unix)]
+async fn terminate_child_tree_wait_then_kill(pid: u32, grace: Duration) -> anyhow::Result<()> {
+    terminate_child_tree(pid)?;
+    if !wait_for_process_group_exit(pid, grace).await {
+        kill_child_tree(pid)?;
+        let _ = wait_for_process_group_exit(pid, Duration::from_secs(1)).await;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn terminate_child_tree_wait_then_kill(_pid: u32, _grace: Duration) -> anyhow::Result<()> {
+    anyhow::bail!("process signaling is not implemented on this platform")
+}
+
+#[cfg(unix)]
+async fn wait_for_process_group_exit(pid: u32, grace: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + grace;
+    while tokio::time::Instant::now() < deadline {
+        if !process_group_exists(pid) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    !process_group_exists(pid)
+}
+
+#[cfg(unix)]
+fn process_group_exists(pid: u32) -> bool {
+    let Ok(raw_pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    let rc = unsafe { libc::kill(-raw_pid, 0) };
+    if rc == 0 {
+        true
+    } else {
+        std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    }
+}
+
+#[cfg(unix)]
 fn terminate_child_tree(pid: u32) -> anyhow::Result<()> {
     signal_process_group(pid, libc::SIGTERM, "SIGTERM")
 }
@@ -1421,6 +1591,49 @@ fn signal_process_group(pid: u32, signal: libc::c_int, name: &str) -> anyhow::Re
     }
 }
 
+#[cfg(unix)]
+fn kill_pid(pid: u32) -> anyhow::Result<()> {
+    signal_pid(pid, libc::SIGKILL, "SIGKILL")
+}
+
+#[cfg(unix)]
+fn signal_pid(pid: u32, signal: libc::c_int, name: &str) -> anyhow::Result<()> {
+    let raw_pid: libc::pid_t = pid
+        .try_into()
+        .with_context(|| format!("pid {pid} does not fit pid_t"))?;
+    let rc = unsafe { libc::kill(raw_pid, signal) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error()).with_context(|| format!("send {name} to pid {pid}"))
+    }
+}
+
+#[cfg(unix)]
+fn unix_stream_peer_pid(stream: &tokio::net::UnixStream) -> anyhow::Result<u32> {
+    let mut cred = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut cred as *mut libc::ucred).cast(),
+            &mut len,
+        )
+    };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error()).context("getsockopt SO_PEERCRED");
+    }
+    cred.pid
+        .try_into()
+        .context("peer pid from SO_PEERCRED does not fit u32")
+}
+
 #[cfg(not(unix))]
 fn terminate_child_tree(_pid: u32) -> anyhow::Result<()> {
     anyhow::bail!("process signaling is not implemented on this platform")
@@ -1428,6 +1641,11 @@ fn terminate_child_tree(_pid: u32) -> anyhow::Result<()> {
 
 #[cfg(not(unix))]
 fn kill_child_tree(_pid: u32) -> anyhow::Result<()> {
+    anyhow::bail!("process signaling is not implemented on this platform")
+}
+
+#[cfg(not(unix))]
+fn kill_pid(_pid: u32) -> anyhow::Result<()> {
     anyhow::bail!("process signaling is not implemented on this platform")
 }
 
@@ -1545,6 +1763,28 @@ mod tests {
         assert!(body["procSupervisor"].is_object());
         assert!(body["calmServer"]["identity"].is_null());
         assert!(body["procSupervisor"]["identity"].is_null());
+    }
+
+    #[tokio::test]
+    async fn adopted_supervisor_status_keeps_peer_pid() {
+        let supervisor = Supervisor::new(SupervisorConfig {
+            name: "calm-proc-supervisor".into(),
+            child_bin: PathBuf::from("calm-proc-supervisor"),
+            child_cwd: None,
+            child_args: Vec::new(),
+            child_envs: Vec::new(),
+            restart_delay: Duration::from_millis(1),
+            stop_grace: Duration::from_millis(1),
+            calm_listen: None,
+            persist_identity_to: None,
+        });
+
+        supervisor.adopt_identity(None, Some(12345)).await;
+        let status = supervisor.process_status().await;
+
+        assert_eq!(status.child_state, "running");
+        assert_eq!(status.child_pid, Some(12345));
+        assert!(!status.desired_running);
     }
 
     #[test]

@@ -154,7 +154,9 @@ impl AppConfig {
             if explicit {
                 return Err(anyhow!("config {} does not exist", path.display()));
             }
-            return Ok(Self::starter(path));
+            let mut cfg = Self::starter(path);
+            cfg.apply_child_db_default();
+            return Ok(cfg);
         }
         let text =
             fs::read_to_string(&path).with_context(|| format!("read config {}", path.display()))?;
@@ -358,6 +360,7 @@ impl AppConfig {
                     .with_context(|| format!("parse source.db_migration_policy {value}"))?,
             );
         }
+        cfg.apply_child_db_default();
         Ok(cfg)
     }
 
@@ -401,6 +404,7 @@ impl AppConfig {
         if let Some(value) = overrides.stop_grace_ms {
             self.timing.stop_grace = Duration::from_millis(value);
         }
+        self.apply_child_db_default();
     }
 
     pub(crate) fn calm_data_dir_resolved(&self) -> PathBuf {
@@ -412,6 +416,28 @@ impl AppConfig {
 
     pub(crate) fn proc_supervisor_sock(&self) -> PathBuf {
         self.calm_data_dir_resolved().join("proc-supervisor.sock")
+    }
+
+    pub(crate) fn calm_mcp_kernel_sock(&self) -> PathBuf {
+        self.calm_data_dir_resolved()
+            .join("mcp")
+            .join("kernel.sock")
+    }
+
+    fn apply_child_db_default(&mut self) {
+        if self.child.db_url.is_some() {
+            return;
+        }
+        let Some(data_dir) = &self.child.data_dir else {
+            return;
+        };
+        let db_url = format!("sqlite://{}/calm.db?mode=rwc", data_dir.display());
+        tracing::info!(
+            data_dir = %data_dir.display(),
+            db_url = %db_url,
+            "child.db_url not set; defaulting to <data_dir>/calm.db"
+        );
+        self.child.db_url = Some(db_url);
     }
 }
 
@@ -784,6 +810,53 @@ restart_delay_ms = 250
         });
         assert_eq!(cfg.child.calm_listen, "127.0.0.1:6001");
         assert_eq!(cfg.timing.restart_delay, Duration::from_millis(750));
+    }
+
+    #[test]
+    fn config_defaults_missing_child_db_url_to_data_dir_sqlite() {
+        let tmp = test_temp_dir("config-db-default");
+        let path = tmp.join("config.toml");
+        let data_dir = tmp.join("data");
+        fs::write(
+            &path,
+            format!(
+                r#"
+[child]
+data_dir = "{}"
+"#,
+                data_dir.display()
+            ),
+        )
+        .expect("write config");
+
+        let cfg = AppConfig::load(Some(&path)).expect("load config");
+
+        assert_eq!(
+            cfg.child.db_url.as_deref(),
+            Some(format!("sqlite://{}/calm.db?mode=rwc", data_dir.display()).as_str())
+        );
+    }
+
+    #[test]
+    fn config_keeps_explicit_mock_child_db_url() {
+        let tmp = test_temp_dir("config-db-mock");
+        let path = tmp.join("config.toml");
+        fs::write(
+            &path,
+            format!(
+                r#"
+[child]
+data_dir = "{}"
+db_url = "mock"
+"#,
+                tmp.join("data").display()
+            ),
+        )
+        .expect("write config");
+
+        let cfg = AppConfig::load(Some(&path)).expect("load config");
+
+        assert_eq!(cfg.child.db_url.as_deref(), Some("mock"));
     }
 
     #[test]
