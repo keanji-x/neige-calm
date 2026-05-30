@@ -83,6 +83,7 @@ struct Boot {
     app: axum::Router,
     cove_id: String,
     repo: Arc<dyn Repo>,
+    state: AppState,
     card_role_cache: CardRoleCache,
     _tmp: TempDir,
 }
@@ -144,12 +145,13 @@ async fn boot() -> Boot {
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
         ))
-        .with_state(state);
+        .with_state(state.clone());
 
     Boot {
         app,
         cove_id: cove.id.to_string(),
         repo,
+        state,
         card_role_cache,
         _tmp: tmp,
     }
@@ -174,8 +176,8 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) 
 }
 
 /// Verify: after `POST /api/waves` returns 201, the spec card's
-/// terminal row has a non-None `daemon_handle` AND the socket file
-/// exists. This is the post-#236 contract — no race window.
+/// terminal row has a registered renderer entry and a persisted pid.
+/// This is the post-#388 Phase 3b contract — no race window.
 #[tokio::test]
 async fn post_api_waves_spec_terminal_has_daemon_handle_before_response() {
     let boot = boot().await;
@@ -226,52 +228,29 @@ async fn post_api_waves_spec_terminal_has_daemon_handle_before_response() {
         Some(calm_server::model::CardRole::Spec),
     );
 
-    // The #236 contract: by the time the 201 response has reached
-    // the test, the terminal row carries the daemon handle. The
-    // pre-fix shape had `daemon_handle = None` here (the background
-    // `tokio::spawn` task had not yet won the race against the
-    // route returning), which is what `ws::terminal::resolve_live_sock`
-    // was tripping on.
+    // The #388 Phase 3b contract: by the time the 201 response has reached
+    // the test, the renderer registry carries the live entry and the row
+    // has a pid. `daemon_handle` is no longer written.
     let term = boot
         .repo
         .terminal_get_by_card(spec_card_id.as_str())
         .await
         .unwrap()
         .expect("spec terminal row exists");
-    let handle = term.daemon_handle.as_deref().unwrap_or_else(|| {
-        panic!(
-            "spec card's terminal row must carry a daemon_handle by the time 201 returns \
-             (issue #236 sync-spawn contract); got None on row {:?}",
-            term
-        )
-    });
-
-    // Socket file must exist on disk: the recorder fixture only writes
-    // `ready\n` after binding, so absence here would mean the row was set
-    // without the underlying socket.
-    let sock_path = std::path::Path::new(handle);
     assert!(
-        sock_path.exists(),
-        "daemon socket file must exist on disk at {sock_path:?} (per the ready-fd \
-         after-bind contract); row handle={handle}",
+        boot.state.terminal_renderer.get(&term.id).is_some(),
+        "spec card's terminal row must have a renderer entry by the time 201 returns; row={term:?}",
     );
 
-    // PID also persisted (`spawn_daemon_for` set it before the
-    // wait-for-socket loop). Best-effort assertion; absence would be
-    // a separate degradation but not the #236 bug.
     assert!(
         term.pid.is_some(),
-        "spawn_daemon_for should have persisted pid for sweeper SIGTERM fallback; \
-         row = {term:?}",
+        "renderer spawn should have persisted pid for sweeper SIGTERM fallback; row = {term:?}",
     );
 }
 
-/// Regression test for the WS revive path: immediately after `POST
-/// /api/waves`, the shape `ws::terminal::resolve_live_sock` sees on a
-/// fresh terminal row must NOT trigger its respawn branch. Pre-#236
-/// this lookup returned `daemon_handle = None` and the revive code
-/// path would respawn from `term.env` (missing MCP vars). Post-#236
-/// the lookup always returns `Some`.
+/// Regression test for the WS attach path: immediately after `POST
+/// /api/waves`, the fresh terminal must already have a renderer entry.
+/// Phase 3b no longer has a daemon-UDS revive branch.
 #[tokio::test]
 async fn ws_revive_path_does_not_trigger_respawn_for_freshly_created_wave() {
     let boot = boot().await;
@@ -308,19 +287,9 @@ async fn ws_revive_path_does_not_trigger_respawn_for_freshly_created_wave() {
         .unwrap()
         .expect("spec terminal row");
 
-    // The branch in `resolve_live_sock`:
-    //   if let Some(handle) = term.daemon_handle.as_ref() { ... } else {
-    //       /* respawn from term.env — the #236 bug */
-    //   }
-    //
-    // Pre-#236 the `else` branch fired with #236-shaped probability
-    // (~400 ms after commit). Post-#236 `daemon_handle` is always
-    // `Some` here.
     assert!(
-        term.daemon_handle.is_some(),
-        "freshly-created spec card's terminal must carry daemon_handle so \
-         ws::terminal::resolve_live_sock never enters the respawn branch \
-         (issue #236); row = {term:?}",
+        boot.state.terminal_renderer.get(&term.id).is_some(),
+        "freshly-created spec card's terminal must have a registered renderer; row = {term:?}",
     );
 
     // Also verify the env baked into the terminal row is the

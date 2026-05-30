@@ -34,6 +34,7 @@ use calm_server::event::EventBus;
 use calm_server::model::{NewCard, NewCove, NewTerminal, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::state::{AppState, CodexClient, DaemonClient};
+use calm_server::terminal_renderer::RendererConfig;
 use calm_server::ws;
 use calm_session::{
     ClientCapabilities, ClientMsg, DaemonMsg, InitialScrollback, PROTOCOL_VERSION, PtySize,
@@ -41,7 +42,7 @@ use calm_session::{
 };
 use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
-use tokio::net::{TcpListener, UnixListener, UnixStream};
+use tokio::net::{TcpListener, UnixListener};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 use uuid::Uuid;
@@ -60,6 +61,7 @@ fn locate_daemon_bin() -> PathBuf {
 struct Boot {
     addr: std::net::SocketAddr,
     repo: Arc<dyn Repo>,
+    state: AppState,
     term_id: String,
     _tmp: TempDir,
 }
@@ -134,7 +136,9 @@ async fn boot_with_terminal_row() -> Boot {
         None,
     );
 
-    let app = axum::Router::new().merge(ws::router()).with_state(state);
+    let app = axum::Router::new()
+        .merge(ws::router())
+        .with_state(state.clone());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -151,6 +155,7 @@ async fn boot_with_terminal_row() -> Boot {
     Boot {
         addr,
         repo,
+        state,
         term_id: term.id,
         _tmp: tmp,
     }
@@ -181,6 +186,7 @@ fn client_hello(terminal_id: &str) -> ClientMsg {
     }
 }
 
+#[allow(dead_code)]
 fn server_hello(terminal_id: &str) -> DaemonMsg {
     let terminal_id = Uuid::parse_str(terminal_id)
         .map(|uuid| uuid.to_string())
@@ -214,6 +220,7 @@ fn server_hello(terminal_id: &str) -> DaemonMsg {
     }
 }
 
+#[allow(dead_code)]
 fn spawn_handshake_listener(
     sock: &std::path::Path,
     terminal_id: String,
@@ -240,6 +247,7 @@ fn spawn_handshake_listener(
     rx
 }
 
+#[allow(dead_code)]
 fn spawn_garbage_listener(sock: &std::path::Path) {
     let listener = UnixListener::bind(sock).expect("bind stale protocol listener");
     tokio::spawn(async move {
@@ -388,14 +396,27 @@ async fn ws_upgrade_with_handshake_live_daemon_enters_alive_path() {
     use tokio_tungstenite::tungstenite::Message as TMessage;
 
     let boot = boot_with_terminal_row().await;
-
-    let live_sock = boot._tmp.path().join("live-protocol.sock");
-    let mut observed_hellos = spawn_handshake_listener(&live_sock, boot.term_id.clone());
-    let live_sock_str = live_sock.to_string_lossy().to_string();
-    boot.repo
-        .terminal_set_handle(&boot.term_id, Some(&live_sock_str))
+    let supervisor = calm_proc_supervisor::test_support::InProcessProcSupervisor::start()
         .await
-        .unwrap();
+        .expect("start in-process supervisor");
+    let _entry = boot
+        .state
+        .terminal_renderer
+        .ensure(RendererConfig {
+            terminal_id: boot.term_id.clone(),
+            cols: 80,
+            rows: 24,
+            buffer_bytes: 1 << 20,
+            terminal_fg: (216, 219, 226),
+            terminal_bg: (15, 20, 24),
+            program: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "cat".to_string()],
+            envs: Vec::new(),
+            cwd: "/tmp".to_string(),
+            supervisor_sock: supervisor.sock().to_path_buf(),
+        })
+        .await
+        .expect("renderer entry");
 
     let url = format!("ws://{}/api/terminals/{}", boot.addr, boot.term_id);
     let (mut ws, _resp) = tokio_tungstenite::connect_async(&url)
@@ -424,33 +445,13 @@ async fn ws_upgrade_with_handshake_live_daemon_enters_alive_path() {
         other => panic!("expected Text(ServerHello), got {other:?}"),
     }
 
-    let expected_hyphenated = Uuid::parse_str(&boot.term_id)
-        .expect("terminal id should be UUID parseable")
-        .to_string();
-    assert!(
-        expected_hyphenated.contains('-'),
-        "regression guard must assert the hyphenated terminal id form"
-    );
-    let observed_probe_id = observed_hellos
-        .recv()
-        .await
-        .expect("mock daemon should observe resolver probe ClientHello");
-    assert_eq!(
-        observed_probe_id, expected_hyphenated,
-        "resolver probe must send the daemon-facing hyphenated terminal_id"
-    );
-
     let post = boot
         .repo
         .terminal_get(&boot.term_id)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(
-        post.daemon_handle.as_deref(),
-        Some(live_sock_str.as_str()),
-        "live protocol probe must not rewrite daemon handle"
-    );
+    assert!(post.pid.is_some(), "renderer spawn must persist pid");
 }
 
 /// #337 — an accepting socket that does not speak calm-session is stale.
@@ -464,23 +465,10 @@ async fn ws_upgrade_with_stale_protocol_socket_emits_child_exited_close_with_exi
 
     let boot = boot_with_terminal_row().await;
 
-    let stale_sock = boot._tmp.path().join("stale-protocol.sock");
-    spawn_garbage_listener(&stale_sock);
-    let stale_sock_str = stale_sock.to_string_lossy().to_string();
     boot.repo
-        .terminal_set_handle(&boot.term_id, Some(&stale_sock_str))
+        .terminal_set_exit(&boot.term_id, Some(7), false)
         .await
         .unwrap();
-    std::fs::write(
-        format!("{stale_sock_str}.exit"),
-        r#"{"code":7,"signal_killed":false}"#,
-    )
-    .expect("write sidecar");
-
-    assert!(
-        UnixStream::connect(&stale_sock).await.is_ok(),
-        "precondition: old bare-connect probe would have misclassified this stale socket as live",
-    );
 
     let url = format!("ws://{}/api/terminals/{}", boot.addr, boot.term_id);
     let (mut ws, _resp) = tokio_tungstenite::connect_async(&url)
@@ -528,11 +516,6 @@ async fn ws_upgrade_with_stale_protocol_socket_emits_child_exited_close_with_exi
         .unwrap()
         .unwrap();
     assert_eq!(post.exit_code, Some(7));
-    assert_eq!(
-        post.daemon_handle.as_deref(),
-        Some(stale_sock_str.as_str()),
-        "WS probe-only path must not respawn or rewrite the stale handle"
-    );
 }
 
 /// #306 — companion to the stale-handle path: when the daemon DID get
@@ -544,40 +527,16 @@ async fn ws_upgrade_with_stale_protocol_socket_emits_child_exited_close_with_exi
 /// terminal-card builtin then reads those columns off the REST DTO and
 /// seeds the header badge before the WS even attaches.
 #[tokio::test]
-async fn ws_upgrade_reads_exit_sidecar_and_persists_exit_code() {
+async fn ws_upgrade_replays_persisted_exit_code() {
     use futures_util::StreamExt;
     use tokio_tungstenite::tungstenite::Message as TMessage;
 
     let boot = boot_with_terminal_row().await;
 
-    // Plant a stale handle + a sidecar file at `<handle>.exit`. The
-    // handle file itself doesn't exist (and that's what
-    // `resolve_live_sock`'s probe fails on); the sidecar is at the
-    // canonical `<sock>.exit` path and carries `{"code": 0,
-    // "signal_killed": false}` — the shape the daemon's
-    // `spawn_child_waiter` writes on a `printf done`-style clean
-    // exit.
-    let stale_sock = boot._tmp.path().join("stale-with-sidecar.sock");
-    let stale_sock_str = stale_sock.to_string_lossy().to_string();
     boot.repo
-        .terminal_set_handle(&boot.term_id, Some(&stale_sock_str))
+        .terminal_set_exit(&boot.term_id, Some(0), false)
         .await
         .unwrap();
-    std::fs::write(
-        format!("{stale_sock_str}.exit"),
-        r#"{"code":0,"signal_killed":false}"#,
-    )
-    .expect("write sidecar");
-
-    // Precondition: row carries no exit info yet.
-    let pre = boot
-        .repo
-        .terminal_get(&boot.term_id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(pre.exit_code, None);
-    assert!(!pre.signal_killed);
 
     let url = format!("ws://{}/api/terminals/{}", boot.addr, boot.term_id);
     let (mut ws, _resp) = tokio_tungstenite::connect_async(&url)
