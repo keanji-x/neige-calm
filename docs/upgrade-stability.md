@@ -98,8 +98,10 @@ neige-calm exposes several version numbers, each tracking a distinct compatibili
 - **`kernelVersion`** — Tier A. The `calm-server` crate's `CARGO_PKG_VERSION`. Bumped by normal semver on the kernel binary.
 - **`apiVersion`** — Tier B. REST contract version. Hand-bumped only when the REST wire shape changes in a way the web client must gate on. `API_VERSION` constant at `routes/version.rs:48`.
 - **`syncEventVersion`** — Tier A. The persisted `event_version` stamped onto every sync envelope. `SYNC_EVENT_VERSION` constant at `event.rs:254`, mirrored by migration `0006_events_version.sql`.
-- **`mcpProtocolVersion`** — Tier B. The MCP spec date the kernel advertises on `initialize`. Sourced from `KERNEL_PROTOCOL_VERSION` at `plugin_host/mcp.rs:47` so the response payload and the handshake compare never drift.
-- **`minWebCompatVersion`** — Tier B. The minimum frontend `WEB_COMPAT_VERSION` the kernel still considers wire-compatible. Frontends below this value hard-refresh. `WEB_COMPAT_VERSION` constant at `routes/version.rs:65`.
+- **`mcpProtocolVersion`** — Tier B. The MCP spec date the kernel-as-MCP-server advertises to Codex clients. Sourced from `KERNEL_MCP_PROTOCOL_VERSION` in `mcp_server/transport.rs`.
+- **`pluginMcpProtocolVersion`** — Tier B. The MCP spec date the plugin host advertises to plugin processes. Sourced from `KERNEL_PROTOCOL_VERSION` at `plugin_host/mcp.rs:47` so the response payload and the handshake compare never drift.
+- **`webCompatVersion` / `minWebCompatVersion`** — Tier B. The current and minimum frontend `WEB_COMPAT_VERSION` the kernel considers wire-compatible. Frontends below the minimum hard-refresh. `WEB_COMPAT_VERSION` constant at `routes/version.rs:65`.
+- **`supervisorControlVersion`** — Tier B. The control-wire version between `calm-server` and `calm-proc-supervisor`. Sourced from `calm_session::SUPERVISOR_CONTROL_VERSION`.
 
 **OpenAPI `info.version` is intentionally distinct.** The generated `openapi.json` ships `info.version = env!("CARGO_PKG_VERSION")` (`crates/calm-server/src/openapi.rs:36`) — that is the **kernel binary version**, not the wire-contract version. Clients that need wire-contract gating MUST read `apiVersion` from `GET /api/version`, not the OpenAPI document's `info.version`. The two are decoupled by design; bumping `CARGO_PKG_VERSION` to ship a patch should not force every frontend to re-handshake. A future cleanup may surface `apiVersion` separately inside the OpenAPI document for ergonomics, but the contract today is "read `/api/version`."
 

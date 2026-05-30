@@ -3741,7 +3741,10 @@
           "apiVersion",
           "syncEventVersion",
           "mcpProtocolVersion",
+          "pluginMcpProtocolVersion",
+          "webCompatVersion",
           "minWebCompatVersion",
+          "supervisorControlVersion",
           "dbInstanceId"
         ],
         "properties": {
@@ -3770,7 +3773,20 @@
             "format": "int32",
             "minimum": 0
           },
+          "pluginMcpProtocolVersion": {
+            "type": "string"
+          },
+          "supervisorControlVersion": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
           "syncEventVersion": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "webCompatVersion": {
             "type": "integer",
             "format": "int32",
             "minimum": 0

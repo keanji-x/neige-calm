@@ -6,7 +6,7 @@ use anyhow::{Context, anyhow};
 use serde::{Deserialize, Serialize};
 
 use crate::config::AppConfig;
-use crate::manifest::Compatibility;
+use crate::manifest::CompatibilityV1;
 use crate::package::{NamedPath, PackageConfig};
 use crate::preflight::PreflightMode;
 
@@ -77,9 +77,9 @@ pub(crate) fn source_mode(
 fn source_manifest_config(
     cfg: &AppConfig,
     mode: PreflightMode,
-) -> anyhow::Result<(Compatibility, crate::manifest::DbMigrationPolicy)> {
+) -> anyhow::Result<(CompatibilityV1, crate::manifest::DbMigrationPolicy)> {
     Ok((
-        Compatibility {
+        CompatibilityV1 {
             api_version: cfg
                 .source
                 .api_version

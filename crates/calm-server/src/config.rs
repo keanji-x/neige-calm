@@ -4,7 +4,7 @@ use clap::Parser;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug, Clone)]
-#[command(name = "calm-server", about = "neige-calm kernel")]
+#[command(name = "calm-server", version, about = "neige-calm kernel")]
 pub struct Config {
     /// HTTP listen address.
     #[arg(long, env = "CALM_LISTEN", default_value = "127.0.0.1:4040")]

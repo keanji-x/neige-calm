@@ -6,7 +6,7 @@ use std::process::Command as StdCommand;
 use anyhow::{Context, anyhow};
 
 use crate::manifest::{
-    AppUnit, BinaryUnit, BundleUnit, CalmServerUnit, Compatibility, DbMigrationPolicy,
+    AppUnit, BinaryUnit, BundleUnit, CalmServerUnit, CompatibilityV1, DbMigrationPolicy,
     FileManifest, FileUnit, ReleaseManifest, ReleaseUnits, WebUnit,
 };
 
@@ -27,7 +27,7 @@ pub(crate) struct PackageConfig {
     pub web_version: Option<String>,
     pub calm_server_version: Option<String>,
     pub db_migration_policy: DbMigrationPolicy,
-    pub compatibility: Compatibility,
+    pub compatibility: CompatibilityV1,
     pub bins: Vec<NamedPath>,
 }
 
@@ -312,7 +312,7 @@ mod tests {
             web_version: Some("web-1".into()),
             calm_server_version: Some("server-1".into()),
             db_migration_policy: DbMigrationPolicy::ForwardOnly,
-            compatibility: Compatibility {
+            compatibility: CompatibilityV1 {
                 api_version: "1".into(),
                 sync_event_version: 1,
                 mcp_protocol_version: "2025-11-25".into(),
@@ -387,7 +387,7 @@ mod tests {
             web_version: None,
             calm_server_version: Some("server-1".into()),
             db_migration_policy: DbMigrationPolicy::None,
-            compatibility: Compatibility {
+            compatibility: CompatibilityV1 {
                 api_version: "1".into(),
                 sync_event_version: 1,
                 mcp_protocol_version: "2025-11-25".into(),
@@ -422,7 +422,7 @@ mod tests {
             web_version: None,
             calm_server_version: None,
             db_migration_policy: DbMigrationPolicy::None,
-            compatibility: Compatibility {
+            compatibility: CompatibilityV1 {
                 api_version: "1".into(),
                 sync_event_version: 1,
                 mcp_protocol_version: "2025-11-25".into(),
@@ -457,7 +457,7 @@ mod tests {
             web_version: None,
             calm_server_version: Some("server-1".into()),
             db_migration_policy: DbMigrationPolicy::None,
-            compatibility: Compatibility {
+            compatibility: CompatibilityV1 {
                 api_version: "1".into(),
                 sync_event_version: 1,
                 mcp_protocol_version: "2025-11-25".into(),

@@ -72,6 +72,11 @@ pub const FRAME_VERSION: u16 = 4;
 /// they happen to be in lockstep at 4/4 (#388 bump).
 pub const PROTOCOL_VERSION: u16 = 4;
 
+/// Supervisor control wire version. Bumped when the ControlMsg / ControlReply
+/// shapes between calm-server and calm-proc-supervisor change in an
+/// incompatible way. Tier B per docs/upgrade-stability.md.
+pub const SUPERVISOR_CONTROL_VERSION: u32 = 1;
+
 /// Typed errors from the framing layer. The kernel↔daemon WS bridge in
 /// `calm-server` matches on [`FrameError::BadMagic`] /
 /// [`FrameError::UnsupportedFrameVersion`] to log + close the connection on

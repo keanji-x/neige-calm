@@ -12,11 +12,13 @@ use axum::body::Body;
 use axum::http::Request;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{EventBus, SYNC_EVENT_VERSION};
+use calm_server::mcp_server::transport::KERNEL_MCP_PROTOCOL_VERSION;
 use calm_server::plugin_host::mcp::KERNEL_PROTOCOL_VERSION;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::routes::version::{API_VERSION, WEB_COMPAT_VERSION};
 use calm_server::state::{AppState, CodexClient, DaemonClient};
+use calm_session::SUPERVISOR_CONTROL_VERSION;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
@@ -64,14 +66,17 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
-    // All seven fields present.
+    // All version fields are present and camelCase.
     let obj = v.as_object().expect("response is a JSON object");
     for key in [
         "kernelVersion",
         "apiVersion",
         "syncEventVersion",
         "mcpProtocolVersion",
+        "pluginMcpProtocolVersion",
+        "webCompatVersion",
         "minWebCompatVersion",
+        "supervisorControlVersion",
         "buildSha",
         "dbInstanceId",
     ] {
@@ -90,7 +95,10 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert!(v["apiVersion"].is_string());
     assert!(v["syncEventVersion"].is_number());
     assert!(v["mcpProtocolVersion"].is_string());
+    assert!(v["pluginMcpProtocolVersion"].is_string());
+    assert!(v["webCompatVersion"].is_number());
     assert!(v["minWebCompatVersion"].is_number());
+    assert!(v["supervisorControlVersion"].is_number());
     assert!(v["buildSha"].is_null() || v["buildSha"].is_string());
     assert!(v["dbInstanceId"].is_string());
 
@@ -112,6 +120,10 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     );
     assert_eq!(
         v["mcpProtocolVersion"].as_str().unwrap(),
+        KERNEL_MCP_PROTOCOL_VERSION
+    );
+    assert_eq!(
+        v["pluginMcpProtocolVersion"].as_str().unwrap(),
         KERNEL_PROTOCOL_VERSION
     );
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
@@ -128,8 +140,16 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     // bumping the response builder (or vice-versa), this assertion
     // catches it.
     assert_eq!(
+        v["webCompatVersion"].as_u64().unwrap(),
+        WEB_COMPAT_VERSION as u64,
+    );
+    assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
+    );
+    assert_eq!(
+        v["supervisorControlVersion"].as_u64().unwrap(),
+        SUPERVISOR_CONTROL_VERSION as u64,
     );
 }
 

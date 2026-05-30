@@ -18,12 +18,18 @@
 //! * `syncEventVersion` — the version stamped onto sync-engine envelopes.
 //!   Will be threaded into `BroadcastEnvelope` in a later PR so replicas can
 //!   refuse incompatible event logs.
-//! * `mcpProtocolVersion` — the MCP spec date we advertise in `initialize`
-//!   responses to plugin processes. Sourced from `plugin_host::mcp` so the
-//!   two surfaces never drift.
+//! * `mcpProtocolVersion` — the MCP spec date the kernel-as-MCP-server
+//!   advertises to Codex clients.
+//! * `pluginMcpProtocolVersion` — the MCP spec date the plugin host advertises
+//!   to plugin processes. Sourced from `plugin_host::mcp` so the two surfaces
+//!   never drift.
+//! * `webCompatVersion` — the frontend compatibility value this server was
+//!   built with.
 //! * `minWebCompatVersion` — the minimum frontend `WEB_COMPAT_VERSION` the
 //!   running kernel still considers wire-compatible. Frontends below this
 //!   value must hard-refresh; see `docs/upgrade-stability.md` (Tier B).
+//! * `supervisorControlVersion` — the control-wire version between the kernel
+//!   and `calm-proc-supervisor`.
 //! * `buildSha` — optional git SHA baked in at compile time via
 //!   `option_env!("NEIGE_BUILD_SHA")`. `null` for local `cargo build` runs;
 //!   release CI sets the env var.
@@ -37,9 +43,11 @@
 //!   and continue to work, so no `WEB_COMPAT_VERSION` bump is required.
 
 use crate::event::SYNC_EVENT_VERSION;
+use crate::mcp_server::transport::KERNEL_MCP_PROTOCOL_VERSION;
 use crate::plugin_host::mcp::KERNEL_PROTOCOL_VERSION;
 use crate::state::AppState;
 use axum::{Json, Router, extract::State, routing::get};
+use calm_session::SUPERVISOR_CONTROL_VERSION;
 use serde::Serialize;
 use utoipa::ToSchema;
 
@@ -90,7 +98,10 @@ pub struct VersionInfo {
     pub api_version: String,
     pub sync_event_version: u32,
     pub mcp_protocol_version: String,
+    pub plugin_mcp_protocol_version: String,
+    pub web_compat_version: u32,
     pub min_web_compat_version: u32,
+    pub supervisor_control_version: u32,
     pub build_sha: Option<String>,
     /// UUID v4 minted once per process boot. See module doc.
     pub db_instance_id: String,
@@ -109,8 +120,11 @@ pub(crate) async fn get_version(State(state): State<AppState>) -> Json<VersionIn
         kernel_version: env!("CARGO_PKG_VERSION").to_string(),
         api_version: API_VERSION.to_string(),
         sync_event_version: SYNC_EVENT_VERSION,
-        mcp_protocol_version: KERNEL_PROTOCOL_VERSION.to_string(),
+        mcp_protocol_version: KERNEL_MCP_PROTOCOL_VERSION.to_string(),
+        plugin_mcp_protocol_version: KERNEL_PROTOCOL_VERSION.to_string(),
+        web_compat_version: WEB_COMPAT_VERSION,
         min_web_compat_version: WEB_COMPAT_VERSION,
+        supervisor_control_version: SUPERVISOR_CONTROL_VERSION,
         build_sha: option_env!("NEIGE_BUILD_SHA").map(|s| s.to_string()),
         db_instance_id: (*state.db_instance_id).clone(),
     })
@@ -133,11 +147,17 @@ mod tests {
             kernel_version: env!("CARGO_PKG_VERSION").to_string(),
             api_version: API_VERSION.to_string(),
             sync_event_version: SYNC_EVENT_VERSION,
-            mcp_protocol_version: KERNEL_PROTOCOL_VERSION.to_string(),
+            mcp_protocol_version: KERNEL_MCP_PROTOCOL_VERSION.to_string(),
+            plugin_mcp_protocol_version: KERNEL_PROTOCOL_VERSION.to_string(),
+            web_compat_version: WEB_COMPAT_VERSION,
             min_web_compat_version: WEB_COMPAT_VERSION,
+            supervisor_control_version: SUPERVISOR_CONTROL_VERSION,
             build_sha: option_env!("NEIGE_BUILD_SHA").map(|s| s.to_string()),
             db_instance_id: "test-id".to_string(),
         };
         assert_eq!(body.min_web_compat_version, WEB_COMPAT_VERSION);
+        assert_eq!(body.web_compat_version, WEB_COMPAT_VERSION);
+        assert_eq!(body.supervisor_control_version, SUPERVISOR_CONTROL_VERSION);
+        assert_eq!(body.plugin_mcp_protocol_version, KERNEL_PROTOCOL_VERSION);
     }
 }

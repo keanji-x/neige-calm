@@ -8,9 +8,10 @@ use anyhow::{Context, anyhow};
 use serde::{Deserialize, Serialize};
 
 use crate::config::AppConfig;
-use crate::manifest::{CurrentVersion, ReleaseManifest};
+use crate::installed::{InstalledState, read_installed_state, write_installed_state};
+use crate::manifest::{CurrentVersion, VersionedReleaseManifest, parse_versioned_manifest};
 use crate::package::{sha256_file, validate_release_id};
-use crate::preflight::{self, PreflightMode, PreflightResult};
+use crate::preflight::{self, PreflightMode, PreflightResult, Verdict};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -85,14 +86,22 @@ struct SymlinkPair {
 }
 
 pub(crate) fn infer_package_mode(package_dir: &Path) -> anyhow::Result<PreflightMode> {
-    let manifest = read_manifest(package_dir)?;
-    preflight::infer_mode(&manifest).map_err(|err| anyhow!("{err}"))
+    match read_versioned_manifest(package_dir)? {
+        VersionedReleaseManifest::V1(manifest) => {
+            preflight::infer_mode(&manifest).map_err(|err| anyhow!("{err}"))
+        }
+        VersionedReleaseManifest::V2(manifest) => mode_for_v2_manifest(&manifest),
+    }
 }
 
-pub(crate) fn read_manifest(package_dir: &Path) -> anyhow::Result<ReleaseManifest> {
+pub(crate) fn read_versioned_manifest(
+    package_dir: &Path,
+) -> anyhow::Result<VersionedReleaseManifest> {
     let manifest_path = package_dir.join("manifest.json");
-    read_json(&manifest_path)
-        .with_context(|| format!("read package manifest {}", manifest_path.display()))
+    let bytes = fs::read(&manifest_path)
+        .with_context(|| format!("read package manifest {}", manifest_path.display()))?;
+    parse_versioned_manifest(&bytes)
+        .with_context(|| format!("parse package manifest {}", manifest_path.display()))
 }
 
 pub(crate) fn stage_upgrade(
@@ -100,13 +109,22 @@ pub(crate) fn stage_upgrade(
     package_dir: &Path,
     mode: PreflightMode,
 ) -> anyhow::Result<UpgradeStageResult> {
-    let manifest = read_manifest(package_dir)?;
-    validate_release_id(&manifest.release_id).map_err(|err| anyhow!("{err}"))?;
+    let manifest = read_versioned_manifest(package_dir)?;
+    validate_release_id(manifest.release_id()).map_err(|err| anyhow!("{err}"))?;
     let verified_files = verify_package_hashes(package_dir, &manifest)?;
     reject_unmanifested_payload(package_dir, &verified_files)?;
 
-    let current = current_version_for_mode(cfg, mode)?;
-    let preflight = preflight::run_preflight(mode, &current, &manifest);
+    let preflight = match &manifest {
+        VersionedReleaseManifest::V1(manifest) => {
+            let current = current_version_for_mode(cfg, mode)?;
+            preflight::run_preflight(mode, &current, manifest)
+        }
+        VersionedReleaseManifest::V2(manifest) => {
+            let installed = read_installed_state(&cfg.calm_data_dir_resolved())?;
+            let verdict = preflight::run_preflight_v2(installed.as_ref(), manifest);
+            PreflightResult::from_verdict(mode_for_verdict(&verdict, mode), verdict)
+        }
+    };
     if !preflight.allowed {
         return Err(anyhow!(
             "preflight denied staged upgrade: {} ({})",
@@ -116,7 +134,8 @@ pub(crate) fn stage_upgrade(
     }
 
     let stage_root = cfg.release.root.join("staged");
-    let stage_dir = stage_root.join(&manifest.release_id);
+    let release_id = manifest.release_id().to_string();
+    let stage_dir = stage_root.join(&release_id);
     if !stage_dir.starts_with(&stage_root) {
         return Err(anyhow!(
             "stage dir {} escapes stage root {}",
@@ -129,11 +148,11 @@ pub(crate) fn stage_upgrade(
 
     Ok(UpgradeStageResult {
         staged: true,
-        mode: mode.as_str().to_string(),
-        release_id: manifest.release_id,
+        mode: preflight.mode.clone(),
+        release_id,
         stage_dir,
-        restart_required: restart_required_for_mode(mode),
-        required_action: stage_required_action(mode).into(),
+        restart_required: restart_required_for_preflight(&preflight)?,
+        required_action: stage_required_action_for_preflight(&preflight)?,
         preflight,
     })
 }
@@ -191,6 +210,10 @@ pub(crate) fn activate_staged_release(
             changed_symlinks: changed_symlinks.clone(),
         },
     )?;
+    if let VersionedReleaseManifest::V2(manifest) = read_versioned_manifest(stage_dir)? {
+        let installed = InstalledState::from_manifest(&manifest);
+        write_installed_state(&cfg.calm_data_dir_resolved(), &installed)?;
+    }
     Ok(ActivationResult {
         activated: true,
         mode: mode.as_str().into(),
@@ -288,6 +311,8 @@ fn current_version_for_mode(
             mcp_protocol_version: "unused-for-mode".into(),
             min_web_compat_version: 0,
             web_compat_version: Some(0),
+            plugin_mcp_protocol_version: None,
+            supervisor_control_version: None,
         });
     }
     let path = cfg.upgrade.current_version_file.as_ref().ok_or_else(|| {
@@ -301,6 +326,62 @@ fn current_version_for_mode(
 
 fn mode_from_preflight(preflight: &PreflightResult) -> anyhow::Result<PreflightMode> {
     activation_mode_from_str(&preflight.mode)
+}
+
+fn restart_required_for_preflight(preflight: &PreflightResult) -> anyhow::Result<bool> {
+    Ok(restart_required_for_mode(mode_from_preflight(preflight)?))
+}
+
+fn stage_required_action_for_preflight(preflight: &PreflightResult) -> anyhow::Result<String> {
+    Ok(stage_required_action(mode_from_preflight(preflight)?).into())
+}
+
+fn mode_for_v2_manifest(
+    manifest: &crate::manifest::ReleaseManifestV2,
+) -> anyhow::Result<PreflightMode> {
+    let has_web = manifest.units.contains_key(&crate::manifest::UnitName::Web);
+    let has_backend = manifest.units.keys().any(|unit| {
+        !matches!(
+            unit,
+            crate::manifest::UnitName::Web | crate::manifest::UnitName::NeigeApp
+        )
+    });
+    let has_app_only = manifest.units.len() == 1
+        && manifest
+            .units
+            .contains_key(&crate::manifest::UnitName::NeigeApp);
+
+    match (has_app_only, has_web, has_backend) {
+        (true, false, false) => Ok(PreflightMode::AppOnly),
+        (false, true, false) => Ok(PreflightMode::WebOnly),
+        (false, false, true) => Ok(PreflightMode::ServerOnly),
+        (false, true, true) => Ok(PreflightMode::Bundle),
+        _ => Err(anyhow!(
+            "unable to infer upgrade mode from manifest v2 units"
+        )),
+    }
+}
+
+fn mode_for_verdict(verdict: &Verdict, fallback: PreflightMode) -> PreflightMode {
+    let units = match verdict {
+        Verdict::Noop => return fallback,
+        Verdict::Preserving { units_changed, .. } | Verdict::Breaking { units_changed, .. } => {
+            units_changed
+        }
+    };
+    let has_web = units.contains(&crate::manifest::UnitName::Web);
+    let has_backend = units.iter().any(|unit| {
+        !matches!(
+            unit,
+            crate::manifest::UnitName::Web | crate::manifest::UnitName::NeigeApp
+        )
+    });
+    match (has_web, has_backend) {
+        (true, true) => PreflightMode::Bundle,
+        (true, false) => PreflightMode::WebOnly,
+        (false, true) => PreflightMode::ServerOnly,
+        (false, false) => fallback,
+    }
 }
 
 fn activation_mode_from_str(mode: &str) -> anyhow::Result<PreflightMode> {
@@ -518,13 +599,13 @@ fn parse_sqlite_file_url(db_url: &str) -> anyhow::Result<PathBuf> {
 
 fn verify_package_hashes(
     package_dir: &Path,
-    manifest: &ReleaseManifest,
+    manifest: &VersionedReleaseManifest,
 ) -> anyhow::Result<HashSet<String>> {
-    if manifest.files.is_empty() {
+    if manifest.files().is_empty() {
         return Err(anyhow!("manifest files must not be empty"));
     }
     let mut verified = HashSet::new();
-    for file in &manifest.files {
+    for file in manifest.files() {
         validate_manifest_relative_path(&file.path)?;
         if !verified.insert(file.path.clone()) {
             return Err(anyhow!("duplicate manifest file path {}", file.path));
@@ -694,14 +775,8 @@ fn validate_staged_release_target(cfg: &AppConfig, target: &Path) -> anyhow::Res
         ));
     }
 
-    let manifest: ReleaseManifest =
-        read_json(&target.join("manifest.json")).with_context(|| {
-            format!(
-                "read staged manifest {}",
-                target.join("manifest.json").display()
-            )
-        })?;
-    validate_release_id(&manifest.release_id).map_err(|err| anyhow!("{err}"))?;
+    let manifest = read_versioned_manifest(target)?;
+    validate_release_id(manifest.release_id()).map_err(|err| anyhow!("{err}"))?;
     Ok(())
 }
 
@@ -784,7 +859,7 @@ where
 mod tests {
     use super::*;
     use crate::config::AppConfig;
-    use crate::manifest::{Compatibility, DbMigrationPolicy, ReleaseManifest};
+    use crate::manifest::{CompatibilityV1, DbMigrationPolicy, ReleaseManifest};
     use crate::package::{NamedPath, PackageConfig, build_package};
 
     #[test]
@@ -943,6 +1018,7 @@ mod tests {
             requires_db_backup: false,
             reason: "ok".into(),
             required_action: "none".into(),
+            verdict: None,
         };
 
         let result = activate_staged_release(&cfg, &new, &preflight, "rel-1").expect("activate");
@@ -992,6 +1068,7 @@ mod tests {
             requires_db_backup: false,
             reason: "ok".into(),
             required_action: "none".into(),
+            verdict: None,
         };
 
         let result = activate_staged_release(&cfg, &new, &preflight, "rel-1").expect("activate");
@@ -1042,6 +1119,7 @@ mod tests {
             requires_db_backup: false,
             reason: "ok".into(),
             required_action: "none".into(),
+            verdict: None,
         };
 
         let result = activate_staged_release(&cfg, &new, &preflight, "rel-1").expect("activate");
@@ -1139,6 +1217,7 @@ mod tests {
             requires_db_backup: false,
             reason: "ok".into(),
             required_action: "none".into(),
+            verdict: None,
         };
         activate_staged_release(&cfg, &new, &preflight, "new-web").expect("activate");
 
@@ -1278,6 +1357,7 @@ mod tests {
             requires_db_backup: false,
             reason: "ok".into(),
             required_action: "none".into(),
+            verdict: None,
         };
 
         activate_staged_release(&cfg, &new, &preflight, "rel-new").expect("activate");
@@ -1493,8 +1573,8 @@ mod tests {
         assert!(err.to_string().contains("not a directory"));
     }
 
-    fn compat() -> Compatibility {
-        Compatibility {
+    fn compat() -> CompatibilityV1 {
+        CompatibilityV1 {
             api_version: "1".into(),
             sync_event_version: 1,
             mcp_protocol_version: "2025-11-25".into(),
@@ -1577,6 +1657,8 @@ mod tests {
             mcp_protocol_version: "2025-11-25".into(),
             min_web_compat_version: 2,
             web_compat_version: Some(2),
+            plugin_mcp_protocol_version: None,
+            supervisor_control_version: None,
         };
         fs::write(
             &path,
@@ -1593,6 +1675,7 @@ mod tests {
             requires_db_backup: false,
             reason: "ok".into(),
             required_action: "none".into(),
+            verdict: None,
         }
     }
 

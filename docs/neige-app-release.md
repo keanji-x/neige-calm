@@ -7,6 +7,10 @@ the relevant release symlink with `--activate`, and roll back the last
 activation. It still does not download remote packages or perform daemon-side
 automatic apply.
 
+This page documents the legacy schemaVersion 1 package shape. The
+schemaVersion 2 model, per-crate units, installed-state file, and verdict
+preflight algorithm are documented in `docs/upgrade-pipeline.md`.
+
 ## Shape
 
 ```json

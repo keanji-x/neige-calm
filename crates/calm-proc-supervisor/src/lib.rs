@@ -717,7 +717,7 @@ async fn handle_probe(
     write_frame(
         stream,
         &ControlReply::ProbeOk {
-            supervisor_version: 1,
+            supervisor_version: calm_session::SUPERVISOR_CONTROL_VERSION,
             proc_running,
         },
     )

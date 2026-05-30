@@ -3,9 +3,10 @@ use std::collections::HashSet;
 use clap::ValueEnum;
 use serde::Serialize;
 
+use crate::installed::{InstalledState, InstalledUnit};
 use crate::manifest::{
-    BundleUnit, CalmServerUnit, Compatibility, CurrentVersion, DbMigrationPolicy, FileManifest,
-    FileUnit, ReleaseManifest,
+    BundleUnit, CalmServerUnit, Compatibility, CompatibilityV1, CurrentVersion, DbMigrationPolicy,
+    FileManifest, FileUnit, ReleaseManifest, ReleaseManifestV2, RestartPolicy, UnitName,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -35,6 +36,8 @@ pub(crate) struct PreflightResult {
     pub requires_db_backup: bool,
     pub reason: String,
     pub required_action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<Verdict>,
 }
 
 impl PreflightResult {
@@ -49,6 +52,7 @@ impl PreflightResult {
             } else {
                 "none".to_string()
             },
+            verdict: None,
         }
     }
 
@@ -63,7 +67,87 @@ impl PreflightResult {
             requires_db_backup: false,
             reason: reason.into(),
             required_action: action.into(),
+            verdict: None,
         }
+    }
+
+    pub(crate) fn from_verdict(mode: PreflightMode, verdict: Verdict) -> Self {
+        match &verdict {
+            Verdict::Noop => Self {
+                allowed: true,
+                mode: mode.as_str().to_string(),
+                requires_db_backup: false,
+                reason: "target release is already installed".into(),
+                required_action: "none".into(),
+                verdict: Some(verdict),
+            },
+            Verdict::Preserving {
+                requires_db_backup,
+                refresh_frontend,
+                deferred,
+                ..
+            } => Self {
+                allowed: true,
+                mode: mode.as_str().to_string(),
+                requires_db_backup: *requires_db_backup,
+                reason: "target release is preserving for this installed state".into(),
+                required_action: preserving_action(
+                    *requires_db_backup,
+                    *refresh_frontend,
+                    deferred,
+                ),
+                verdict: Some(verdict),
+            },
+            Verdict::Breaking { reason, .. } => Self {
+                allowed: false,
+                mode: mode.as_str().to_string(),
+                requires_db_backup: false,
+                reason: format!("breaking upgrade requires explicit opt-in: {reason:?}"),
+                required_action: "allow-breaking-upgrade".into(),
+                verdict: Some(verdict),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub(crate) enum Verdict {
+    Noop,
+    Preserving {
+        units_changed: Vec<UnitName>,
+        deferred: Vec<UnitName>,
+        refresh_frontend: bool,
+        requires_db_backup: bool,
+    },
+    Breaking {
+        reason: BreakingReason,
+        units_changed: Vec<UnitName>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum BreakingReason {
+    ProductMajorChanged,
+    WireIncompatibility,
+    DestructiveDbMigration,
+    NoInstalledState,
+}
+
+fn preserving_action(
+    requires_db_backup: bool,
+    refresh_frontend: bool,
+    deferred: &[UnitName],
+) -> String {
+    if requires_db_backup {
+        "backup-db-before-activate".into()
+    } else if refresh_frontend {
+        "activate-staged-release-and-refresh-frontend".into()
+    } else if !deferred.is_empty() {
+        "activate-staged-release-deferred-until-full-reboot".into()
+    } else {
+        "activate-staged-release".into()
     }
 }
 
@@ -89,6 +173,113 @@ pub(crate) fn run_preflight(
         PreflightMode::Bundle => preflight_bundle(manifest),
         PreflightMode::AppOnly => preflight_app_only(manifest),
     }
+}
+
+pub(crate) fn run_preflight_v2(
+    installed: Option<&InstalledState>,
+    manifest: &ReleaseManifestV2,
+) -> Verdict {
+    let Some(installed) = installed else {
+        return Verdict::Breaking {
+            reason: BreakingReason::NoInstalledState,
+            units_changed: manifest.units.keys().copied().collect(),
+        };
+    };
+    compute_verdict(installed, manifest)
+}
+
+pub(crate) fn compute_verdict(installed: &InstalledState, target: &ReleaseManifestV2) -> Verdict {
+    let units_changed = changed_units(installed, target);
+    if target.product_major != installed.product_major {
+        return Verdict::Breaking {
+            reason: BreakingReason::ProductMajorChanged,
+            units_changed,
+        };
+    }
+    if compatibility_breaks(&installed.compatibility, &target.compatibility) {
+        return Verdict::Breaking {
+            reason: BreakingReason::WireIncompatibility,
+            units_changed,
+        };
+    }
+    if target
+        .units
+        .values()
+        .any(|unit| unit.db_migration_policy == Some(DbMigrationPolicy::Destructive))
+    {
+        return Verdict::Breaking {
+            reason: BreakingReason::DestructiveDbMigration,
+            units_changed,
+        };
+    }
+    if units_changed.is_empty() {
+        return Verdict::Noop;
+    }
+
+    let deferred = units_changed
+        .iter()
+        .copied()
+        .filter(|name| {
+            target
+                .units
+                .get(name)
+                .map(|unit| unit.restart_policy == RestartPolicy::DeferUntilFullReboot)
+                .unwrap_or(false)
+        })
+        .collect();
+    let refresh_frontend = units_changed.iter().any(|name| {
+        target
+            .units
+            .get(name)
+            .map(|unit| unit.restart_policy == RestartPolicy::RefreshFrontend)
+            .unwrap_or(false)
+    });
+    let requires_db_backup = units_changed.contains(&UnitName::CalmServer)
+        && matches!(
+            target
+                .units
+                .get(&UnitName::CalmServer)
+                .and_then(|unit| unit.db_migration_policy),
+            Some(DbMigrationPolicy::Additive | DbMigrationPolicy::ForwardOnly)
+        );
+
+    Verdict::Preserving {
+        units_changed,
+        deferred,
+        refresh_frontend,
+        requires_db_backup,
+    }
+}
+
+fn changed_units(installed: &InstalledState, target: &ReleaseManifestV2) -> Vec<UnitName> {
+    target
+        .units
+        .iter()
+        .filter_map(|(name, target_unit)| {
+            let installed_unit = installed.units.get(name);
+            let target_as_installed = InstalledUnit {
+                version: target_unit.version.clone(),
+                binary_sha256: target_unit.binary_sha256.clone(),
+                tree_sha256: target_unit.tree_sha256.clone(),
+            };
+            if installed_unit == Some(&target_as_installed) {
+                None
+            } else {
+                Some(*name)
+            }
+        })
+        .collect()
+}
+
+fn compatibility_breaks(installed: &Compatibility, target: &Compatibility) -> bool {
+    installed.terminal_frame_version != target.terminal_frame_version
+        || installed.terminal_protocol_version != target.terminal_protocol_version
+        || installed.api_version != target.api_version
+        || installed.sync_event_version != target.sync_event_version
+        || installed.mcp_protocol_version != target.mcp_protocol_version
+        || installed.plugin_mcp_protocol_version != target.plugin_mcp_protocol_version
+        || installed.supervisor_control_version != target.supervisor_control_version
+        || target.min_web_compat_version > installed.web_compat_version
 }
 
 pub(crate) fn infer_mode(manifest: &ReleaseManifest) -> Result<PreflightMode, String> {
@@ -368,7 +559,10 @@ fn validate_file(file: &FileManifest) -> Result<(), String> {
     Ok(())
 }
 
-fn protocols_mismatch_current(current: &CurrentVersion, target: &Compatibility) -> Option<String> {
+fn protocols_mismatch_current(
+    current: &CurrentVersion,
+    target: &CompatibilityV1,
+) -> Option<String> {
     if current.api_version != target.api_version {
         return Some(format!(
             "apiVersion mismatch: current {}, target {}",
@@ -414,10 +608,15 @@ fn db_policy_result(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::{AppUnit, BinaryUnit, BundleUnit, FileManifest, ReleaseUnits, WebUnit};
+    use std::collections::BTreeMap;
 
-    fn compat(web: u32, min_web: u32) -> Compatibility {
-        Compatibility {
+    use crate::manifest::{
+        AppUnit, BinaryUnit, BundleUnit, FileManifest, ReleaseUnit, ReleaseUnits, RestartPolicy,
+        WebUnit,
+    };
+
+    fn compat(web: u32, min_web: u32) -> CompatibilityV1 {
+        CompatibilityV1 {
             api_version: "1".into(),
             sync_event_version: 1,
             mcp_protocol_version: "2025-11-25".into(),
@@ -433,6 +632,8 @@ mod tests {
             mcp_protocol_version: "2025-11-25".into(),
             min_web_compat_version: 2,
             web_compat_version: Some(2),
+            plugin_mcp_protocol_version: None,
+            supervisor_control_version: None,
         }
     }
 
@@ -472,6 +673,86 @@ mod tests {
 
     fn app_file() -> FileManifest {
         file(FileUnit::App, "bin/neige-app")
+    }
+
+    fn compat_v2(web: u32, min_web: u32) -> Compatibility {
+        Compatibility {
+            terminal_frame_version: 4,
+            terminal_protocol_version: 4,
+            api_version: "1".into(),
+            sync_event_version: 1,
+            mcp_protocol_version: "2024-11-05".into(),
+            plugin_mcp_protocol_version: "2025-11-25".into(),
+            web_compat_version: web,
+            min_web_compat_version: min_web,
+            supervisor_control_version: 1,
+        }
+    }
+
+    fn release_unit(
+        version: &str,
+        binary_sha256: Option<&str>,
+        tree_sha256: Option<&str>,
+        restart_policy: RestartPolicy,
+        db_migration_policy: Option<DbMigrationPolicy>,
+    ) -> ReleaseUnit {
+        ReleaseUnit {
+            version: version.into(),
+            binary_sha256: binary_sha256.map(str::to_string),
+            tree_sha256: tree_sha256.map(str::to_string),
+            restart_policy,
+            db_migration_policy,
+        }
+    }
+
+    fn v2_manifest(units: BTreeMap<UnitName, ReleaseUnit>) -> ReleaseManifestV2 {
+        ReleaseManifestV2 {
+            schema_version: 2,
+            release_id: "target".into(),
+            product_major: 0,
+            compatibility: compat_v2(2, 2),
+            units,
+            files: Vec::new(),
+        }
+    }
+
+    fn installed_from(target: &ReleaseManifestV2) -> InstalledState {
+        InstalledState::from_manifest(target)
+    }
+
+    fn v2_units() -> BTreeMap<UnitName, ReleaseUnit> {
+        let mut units = BTreeMap::new();
+        units.insert(
+            UnitName::CalmServer,
+            release_unit(
+                "0.1.0",
+                Some(&"a".repeat(64)),
+                None,
+                RestartPolicy::RestartViaAdminApi,
+                Some(DbMigrationPolicy::None),
+            ),
+        );
+        units.insert(
+            UnitName::CalmProcSupervisor,
+            release_unit(
+                "0.1.0",
+                Some(&"b".repeat(64)),
+                None,
+                RestartPolicy::DeferUntilFullReboot,
+                None,
+            ),
+        );
+        units.insert(
+            UnitName::Web,
+            release_unit(
+                "0.1.0",
+                None,
+                Some(&"c".repeat(64)),
+                RestartPolicy::RefreshFrontend,
+                None,
+            ),
+        );
+        units
     }
 
     fn bundle_binaries() -> Vec<BinaryUnit> {
@@ -634,6 +915,199 @@ mod tests {
 
         assert!(!result.allowed);
         assert_eq!(result.required_action, "provide-neige-app-unit");
+    }
+
+    #[test]
+    fn verdict_noop_for_identical_manifest_and_state() {
+        let manifest = v2_manifest(v2_units());
+        let installed = installed_from(&manifest);
+
+        assert_eq!(compute_verdict(&installed, &manifest), Verdict::Noop);
+    }
+
+    #[test]
+    fn verdict_preserving_for_calm_server_change_requires_backup_by_policy() {
+        let mut manifest = v2_manifest(v2_units());
+        let installed = installed_from(&manifest);
+        manifest.units.insert(
+            UnitName::CalmServer,
+            release_unit(
+                "0.2.0",
+                Some(&"d".repeat(64)),
+                None,
+                RestartPolicy::RestartViaAdminApi,
+                Some(DbMigrationPolicy::ForwardOnly),
+            ),
+        );
+
+        let verdict = compute_verdict(&installed, &manifest);
+
+        assert_eq!(
+            verdict,
+            Verdict::Preserving {
+                units_changed: vec![UnitName::CalmServer],
+                deferred: vec![],
+                refresh_frontend: false,
+                requires_db_backup: true,
+            }
+        );
+    }
+
+    #[test]
+    fn verdict_preserving_deferred_for_supervisor_change() {
+        let mut manifest = v2_manifest(v2_units());
+        let installed = installed_from(&manifest);
+        manifest.units.insert(
+            UnitName::CalmProcSupervisor,
+            release_unit(
+                "0.2.0",
+                Some(&"e".repeat(64)),
+                None,
+                RestartPolicy::DeferUntilFullReboot,
+                None,
+            ),
+        );
+
+        let verdict = compute_verdict(&installed, &manifest);
+
+        assert_eq!(
+            verdict,
+            Verdict::Preserving {
+                units_changed: vec![UnitName::CalmProcSupervisor],
+                deferred: vec![UnitName::CalmProcSupervisor],
+                refresh_frontend: false,
+                requires_db_backup: false,
+            }
+        );
+    }
+
+    #[test]
+    fn verdict_preserving_refresh_frontend_for_web_change() {
+        let mut manifest = v2_manifest(v2_units());
+        let installed = installed_from(&manifest);
+        manifest.units.insert(
+            UnitName::Web,
+            release_unit(
+                "0.2.0",
+                None,
+                Some(&"f".repeat(64)),
+                RestartPolicy::RefreshFrontend,
+                None,
+            ),
+        );
+
+        let verdict = compute_verdict(&installed, &manifest);
+
+        assert_eq!(
+            verdict,
+            Verdict::Preserving {
+                units_changed: vec![UnitName::Web],
+                deferred: vec![],
+                refresh_frontend: true,
+                requires_db_backup: false,
+            }
+        );
+    }
+
+    #[test]
+    fn verdict_breaking_when_product_major_changes() {
+        let mut manifest = v2_manifest(v2_units());
+        let installed = installed_from(&manifest);
+        manifest.product_major = 1;
+
+        let verdict = compute_verdict(&installed, &manifest);
+
+        assert_eq!(
+            verdict,
+            Verdict::Breaking {
+                reason: BreakingReason::ProductMajorChanged,
+                units_changed: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn verdict_breaking_when_web_compat_minimum_exceeds_installed_web() {
+        let mut manifest = v2_manifest(v2_units());
+        let installed = installed_from(&manifest);
+        manifest.compatibility.min_web_compat_version = 3;
+
+        let verdict = compute_verdict(&installed, &manifest);
+
+        assert_eq!(
+            verdict,
+            Verdict::Breaking {
+                reason: BreakingReason::WireIncompatibility,
+                units_changed: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn verdict_breaking_for_destructive_db_policy() {
+        let mut manifest = v2_manifest(v2_units());
+        let installed = installed_from(&manifest);
+        manifest.units.insert(
+            UnitName::CalmServer,
+            release_unit(
+                "0.2.0",
+                Some(&"a".repeat(64)),
+                None,
+                RestartPolicy::RestartViaAdminApi,
+                Some(DbMigrationPolicy::Destructive),
+            ),
+        );
+
+        let verdict = compute_verdict(&installed, &manifest);
+
+        assert_eq!(
+            verdict,
+            Verdict::Breaking {
+                reason: BreakingReason::DestructiveDbMigration,
+                units_changed: vec![UnitName::CalmServer],
+            }
+        );
+    }
+
+    #[test]
+    fn verdict_breaking_when_installed_state_is_missing() {
+        let manifest = v2_manifest(v2_units());
+
+        let verdict = run_preflight_v2(None, &manifest);
+
+        assert_eq!(
+            verdict,
+            Verdict::Breaking {
+                reason: BreakingReason::NoInstalledState,
+                units_changed: vec![
+                    UnitName::CalmServer,
+                    UnitName::CalmProcSupervisor,
+                    UnitName::Web,
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn missing_installed_state_does_not_regress_v1_mode_based_preflight() {
+        let result = run_preflight(
+            PreflightMode::WebOnly,
+            &current(),
+            &manifest(
+                ReleaseUnits {
+                    web: Some(WebUnit {
+                        version: "web".into(),
+                        compatibility: compat(2, 2),
+                    }),
+                    ..ReleaseUnits::default()
+                },
+                vec![web_file()],
+            ),
+        );
+
+        assert!(result.allowed);
+        assert_eq!(result.mode, "web-only");
+        assert!(result.verdict.is_none());
     }
 
     #[test]
