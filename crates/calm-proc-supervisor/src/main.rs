@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use tokio::sync::oneshot;
 
 #[derive(Debug, Parser)]
-#[command(name = "calm-proc-supervisor")]
+#[command(name = "calm-proc-supervisor", version)]
 struct Args {
     /// Control Unix socket path. In production callers should use
     /// $CALM_DATA_DIR/proc-supervisor.sock.

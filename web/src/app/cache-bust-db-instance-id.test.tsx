@@ -66,8 +66,11 @@ function makeServerInfo(dbInstanceId: string): ServerVersionInfo {
     kernelVersion: '0.1.0',
     apiVersion: '1',
     syncEventVersion: 1,
-    mcpProtocolVersion: '2025-11-25',
+    mcpProtocolVersion: '2024-11-05',
+    pluginMcpProtocolVersion: '2025-11-25',
+    webCompatVersion: WEB_COMPAT_VERSION,
     minWebCompatVersion: WEB_COMPAT_VERSION,
+    supervisorControlVersion: 1,
     buildSha: null,
     dbInstanceId,
   };

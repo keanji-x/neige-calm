@@ -8,9 +8,10 @@ use anyhow::{Context, anyhow};
 use serde::{Deserialize, Serialize};
 
 use crate::config::AppConfig;
-use crate::manifest::{CurrentVersion, ReleaseManifest};
+use crate::installed::{InstalledState, read_installed_state, write_installed_state};
+use crate::manifest::{CurrentVersion, VersionedReleaseManifest, parse_versioned_manifest};
 use crate::package::{sha256_file, validate_release_id};
-use crate::preflight::{self, PreflightMode, PreflightResult};
+use crate::preflight::{self, PreflightMode, PreflightResult, Verdict};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -85,14 +86,22 @@ struct SymlinkPair {
 }
 
 pub(crate) fn infer_package_mode(package_dir: &Path) -> anyhow::Result<PreflightMode> {
-    let manifest = read_manifest(package_dir)?;
-    preflight::infer_mode(&manifest).map_err(|err| anyhow!("{err}"))
+    match read_versioned_manifest(package_dir)? {
+        VersionedReleaseManifest::V1(manifest) => {
+            preflight::infer_mode(&manifest).map_err(|err| anyhow!("{err}"))
+        }
+        VersionedReleaseManifest::V2(manifest) => mode_for_v2_manifest(&manifest),
+    }
 }
 
-pub(crate) fn read_manifest(package_dir: &Path) -> anyhow::Result<ReleaseManifest> {
+pub(crate) fn read_versioned_manifest(
+    package_dir: &Path,
+) -> anyhow::Result<VersionedReleaseManifest> {
     let manifest_path = package_dir.join("manifest.json");
-    read_json(&manifest_path)
-        .with_context(|| format!("read package manifest {}", manifest_path.display()))
+    let bytes = fs::read(&manifest_path)
+        .with_context(|| format!("read package manifest {}", manifest_path.display()))?;
+    parse_versioned_manifest(&bytes)
+        .with_context(|| format!("parse package manifest {}", manifest_path.display()))
 }
 
 pub(crate) fn stage_upgrade(
@@ -100,13 +109,22 @@ pub(crate) fn stage_upgrade(
     package_dir: &Path,
     mode: PreflightMode,
 ) -> anyhow::Result<UpgradeStageResult> {
-    let manifest = read_manifest(package_dir)?;
-    validate_release_id(&manifest.release_id).map_err(|err| anyhow!("{err}"))?;
+    let manifest = read_versioned_manifest(package_dir)?;
+    validate_release_id(manifest.release_id()).map_err(|err| anyhow!("{err}"))?;
     let verified_files = verify_package_hashes(package_dir, &manifest)?;
     reject_unmanifested_payload(package_dir, &verified_files)?;
 
-    let current = current_version_for_mode(cfg, mode)?;
-    let preflight = preflight::run_preflight(mode, &current, &manifest);
+    let preflight = match &manifest {
+        VersionedReleaseManifest::V1(manifest) => {
+            let current = current_version_for_mode(cfg, mode)?;
+            preflight::run_preflight(mode, &current, manifest)
+        }
+        VersionedReleaseManifest::V2(manifest) => {
+            let installed = read_installed_state(&cfg.calm_data_dir_resolved())?;
+            let verdict = preflight::run_preflight_v2(installed.as_ref(), manifest);
+            PreflightResult::from_verdict(mode_for_verdict(&verdict, mode), verdict)
+        }
+    };
     if !preflight.allowed {
         return Err(anyhow!(
             "preflight denied staged upgrade: {} ({})",
@@ -116,7 +134,8 @@ pub(crate) fn stage_upgrade(
     }
 
     let stage_root = cfg.release.root.join("staged");
-    let stage_dir = stage_root.join(&manifest.release_id);
+    let release_id = manifest.release_id().to_string();
+    let stage_dir = stage_root.join(&release_id);
     if !stage_dir.starts_with(&stage_root) {
         return Err(anyhow!(
             "stage dir {} escapes stage root {}",
@@ -129,11 +148,11 @@ pub(crate) fn stage_upgrade(
 
     Ok(UpgradeStageResult {
         staged: true,
-        mode: mode.as_str().to_string(),
-        release_id: manifest.release_id,
+        mode: preflight.mode.clone(),
+        release_id,
         stage_dir,
-        restart_required: restart_required_for_mode(mode),
-        required_action: stage_required_action(mode).into(),
+        restart_required: restart_required_for_preflight(&preflight)?,
+        required_action: stage_required_action_for_preflight(&preflight)?,
         preflight,
     })
 }
@@ -191,6 +210,10 @@ pub(crate) fn activate_staged_release(
             changed_symlinks: changed_symlinks.clone(),
         },
     )?;
+    if let VersionedReleaseManifest::V2(manifest) = read_versioned_manifest(stage_dir)? {
+        let installed = InstalledState::from_manifest(&manifest);
+        write_installed_state(&cfg.calm_data_dir_resolved(), &installed)?;
+    }
     Ok(ActivationResult {
         activated: true,
         mode: mode.as_str().into(),
@@ -288,6 +311,8 @@ fn current_version_for_mode(
             mcp_protocol_version: "unused-for-mode".into(),
             min_web_compat_version: 0,
             web_compat_version: Some(0),
+            plugin_mcp_protocol_version: None,
+            supervisor_control_version: None,
         });
     }
     let path = cfg.upgrade.current_version_file.as_ref().ok_or_else(|| {
@@ -303,6 +328,70 @@ fn mode_from_preflight(preflight: &PreflightResult) -> anyhow::Result<PreflightM
     activation_mode_from_str(&preflight.mode)
 }
 
+fn restart_required_for_preflight(preflight: &PreflightResult) -> anyhow::Result<bool> {
+    if let Some(verdict) = &preflight.verdict {
+        return Ok(restart_required_for_verdict(verdict));
+    }
+    Ok(restart_required_for_mode(staging_mode_from_str(
+        &preflight.mode,
+    )?))
+}
+
+fn stage_required_action_for_preflight(preflight: &PreflightResult) -> anyhow::Result<String> {
+    if let Some(verdict) = &preflight.verdict {
+        return Ok(stage_required_action_for_verdict(verdict).into());
+    }
+    Ok(stage_required_action(staging_mode_from_str(&preflight.mode)?).into())
+}
+
+fn mode_for_v2_manifest(
+    manifest: &crate::manifest::ReleaseManifestV2,
+) -> anyhow::Result<PreflightMode> {
+    let has_web = manifest.units.contains_key(&crate::manifest::UnitName::Web);
+    let has_backend = manifest.units.keys().any(|unit| {
+        !matches!(
+            unit,
+            crate::manifest::UnitName::Web | crate::manifest::UnitName::NeigeApp
+        )
+    });
+    let has_app_only = manifest.units.len() == 1
+        && manifest
+            .units
+            .contains_key(&crate::manifest::UnitName::NeigeApp);
+
+    match (has_app_only, has_web, has_backend) {
+        (true, false, false) => Ok(PreflightMode::AppOnly),
+        (false, true, false) => Ok(PreflightMode::WebOnly),
+        (false, false, true) => Ok(PreflightMode::ServerOnly),
+        (false, true, true) => Ok(PreflightMode::Bundle),
+        _ => Err(anyhow!(
+            "unable to infer upgrade mode from manifest v2 units"
+        )),
+    }
+}
+
+fn mode_for_verdict(verdict: &Verdict, fallback: PreflightMode) -> PreflightMode {
+    let units = match verdict {
+        Verdict::Noop => return fallback,
+        Verdict::Preserving { units_changed, .. } | Verdict::Breaking { units_changed, .. } => {
+            units_changed
+        }
+    };
+    let has_web = units.contains(&crate::manifest::UnitName::Web);
+    let has_backend = units.iter().any(|unit| {
+        !matches!(
+            unit,
+            crate::manifest::UnitName::Web | crate::manifest::UnitName::NeigeApp
+        )
+    });
+    match (has_web, has_backend) {
+        (true, true) => PreflightMode::Bundle,
+        (true, false) => PreflightMode::WebOnly,
+        (false, true) => PreflightMode::ServerOnly,
+        (false, false) => fallback,
+    }
+}
+
 fn activation_mode_from_str(mode: &str) -> anyhow::Result<PreflightMode> {
     match mode {
         "web-only" => Ok(PreflightMode::WebOnly),
@@ -310,6 +399,63 @@ fn activation_mode_from_str(mode: &str) -> anyhow::Result<PreflightMode> {
         "bundle" => Ok(PreflightMode::Bundle),
         "app-only" => Err(anyhow!("app-only self-upgrade activation is not supported")),
         other => Err(anyhow!("unsupported preflight mode {other}")),
+    }
+}
+
+fn staging_mode_from_str(mode: &str) -> anyhow::Result<PreflightMode> {
+    match mode {
+        "web-only" => Ok(PreflightMode::WebOnly),
+        "server-only" => Ok(PreflightMode::ServerOnly),
+        "bundle" => Ok(PreflightMode::Bundle),
+        "app-only" => Ok(PreflightMode::AppOnly),
+        other => Err(anyhow!("unsupported preflight mode {other}")),
+    }
+}
+
+fn restart_required_for_verdict(verdict: &Verdict) -> bool {
+    match verdict {
+        Verdict::Noop => false,
+        Verdict::Breaking { .. } => true,
+        Verdict::Preserving {
+            units_changed,
+            deferred,
+            refresh_frontend,
+            ..
+        } => {
+            if units_changed.len() == deferred.len() {
+                return false;
+            }
+            let has_restart_unit = units_changed
+                .iter()
+                .filter(|unit| !deferred.contains(unit))
+                .any(|unit| !matches!(unit, crate::manifest::UnitName::Web));
+            !*refresh_frontend || has_restart_unit
+        }
+    }
+}
+
+fn stage_required_action_for_verdict(verdict: &Verdict) -> &'static str {
+    match verdict {
+        Verdict::Noop => "noop",
+        Verdict::Breaking { .. } => "allow-breaking-upgrade",
+        Verdict::Preserving {
+            units_changed,
+            deferred,
+            refresh_frontend,
+            requires_db_backup,
+        } => {
+            if units_changed.len() == deferred.len() {
+                "activate-staged-release-deferred-until-full-reboot"
+            } else if *refresh_frontend && !restart_required_for_verdict(verdict) {
+                "activate-staged-release-and-refresh-frontend"
+            } else if *requires_db_backup {
+                "backup-db-before-activate"
+            } else if restart_required_for_verdict(verdict) {
+                "activate-staged-release-and-restart-service"
+            } else {
+                "activate-staged-release"
+            }
+        }
     }
 }
 
@@ -518,13 +664,13 @@ fn parse_sqlite_file_url(db_url: &str) -> anyhow::Result<PathBuf> {
 
 fn verify_package_hashes(
     package_dir: &Path,
-    manifest: &ReleaseManifest,
+    manifest: &VersionedReleaseManifest,
 ) -> anyhow::Result<HashSet<String>> {
-    if manifest.files.is_empty() {
+    if manifest.files().is_empty() {
         return Err(anyhow!("manifest files must not be empty"));
     }
     let mut verified = HashSet::new();
-    for file in &manifest.files {
+    for file in manifest.files() {
         validate_manifest_relative_path(&file.path)?;
         if !verified.insert(file.path.clone()) {
             return Err(anyhow!("duplicate manifest file path {}", file.path));
@@ -694,14 +840,8 @@ fn validate_staged_release_target(cfg: &AppConfig, target: &Path) -> anyhow::Res
         ));
     }
 
-    let manifest: ReleaseManifest =
-        read_json(&target.join("manifest.json")).with_context(|| {
-            format!(
-                "read staged manifest {}",
-                target.join("manifest.json").display()
-            )
-        })?;
-    validate_release_id(&manifest.release_id).map_err(|err| anyhow!("{err}"))?;
+    let manifest = read_versioned_manifest(target)?;
+    validate_release_id(manifest.release_id()).map_err(|err| anyhow!("{err}"))?;
     Ok(())
 }
 
@@ -784,7 +924,11 @@ where
 mod tests {
     use super::*;
     use crate::config::AppConfig;
-    use crate::manifest::{Compatibility, DbMigrationPolicy, ReleaseManifest};
+    use crate::installed::InstalledUnit;
+    use crate::manifest::{
+        Compatibility, CompatibilityV1, DbMigrationPolicy, FileManifest, FileUnit, ReleaseManifest,
+        ReleaseManifestV2, ReleaseUnit, RestartPolicy, UnitName,
+    };
     use crate::package::{NamedPath, PackageConfig, build_package};
 
     #[test]
@@ -902,6 +1046,121 @@ mod tests {
     }
 
     #[test]
+    fn stage_v1_app_only_succeeds_without_activation_support() {
+        let tmp = test_temp_dir("upgrade-stage-app-only");
+        let src = tmp.join("src");
+        fs::create_dir_all(&src).expect("create src");
+        let app_bin = src.join("neige-app");
+        fs::write(&app_bin, "app").expect("write app");
+        let package_dir = build_package(&PackageConfig {
+            release_dir: tmp.join("pkg"),
+            out: None,
+            release_id: "rel-app".into(),
+            app_version: Some("app".into()),
+            app_bin: Some(app_bin),
+            web_dist: None,
+            web_version: None,
+            calm_server_version: None,
+            db_migration_policy: DbMigrationPolicy::None,
+            compatibility: compat(),
+            bins: Vec::new(),
+        })
+        .expect("package");
+
+        let mut cfg = AppConfig::starter(tmp.join("config.toml"));
+        cfg.release.root = tmp.join("releases");
+
+        let result = stage_upgrade(&cfg, &package_dir, PreflightMode::AppOnly).expect("stage");
+
+        assert!(result.staged);
+        assert!(!result.restart_required);
+        assert_eq!(result.required_action, "activation-unsupported");
+    }
+
+    #[test]
+    fn stage_v2_deferred_only_reports_no_restart_required() {
+        let tmp = test_temp_dir("upgrade-stage-v2-deferred");
+        let package_dir = make_v2_package(
+            &tmp,
+            "rel-supervisor",
+            UnitName::CalmProcSupervisor,
+            ReleaseUnit {
+                version: "0.2.0".into(),
+                binary_sha256: None,
+                tree_sha256: None,
+                restart_policy: RestartPolicy::DeferUntilFullReboot,
+                db_migration_policy: None,
+            },
+        );
+        let mut installed = installed_state_with_unit(
+            "rel-current",
+            UnitName::CalmProcSupervisor,
+            InstalledUnit {
+                version: "0.1.0".into(),
+                binary_sha256: None,
+                tree_sha256: None,
+            },
+        );
+        installed.compatibility = compat_v2();
+        write_installed_state(&tmp.join("data"), &installed).expect("write installed state");
+
+        let mut cfg = AppConfig::starter(tmp.join("config.toml"));
+        cfg.release.root = tmp.join("releases");
+        cfg.child.data_dir = Some(tmp.join("data"));
+
+        let result = stage_upgrade(&cfg, &package_dir, PreflightMode::ServerOnly).expect("stage");
+
+        assert!(!result.restart_required);
+        assert_eq!(
+            result.required_action,
+            "activate-staged-release-deferred-until-full-reboot"
+        );
+    }
+
+    #[test]
+    fn stage_v2_without_installed_state_is_denied_by_preflight_gate() {
+        let tmp = test_temp_dir("upgrade-stage-v2-no-installed");
+        let package_dir = make_v2_package(
+            &tmp,
+            "rel-no-installed",
+            UnitName::CalmServer,
+            ReleaseUnit {
+                version: "0.2.0".into(),
+                binary_sha256: None,
+                tree_sha256: None,
+                restart_policy: RestartPolicy::RestartViaAdminApi,
+                db_migration_policy: Some(DbMigrationPolicy::None),
+            },
+        );
+        let manifest = match read_versioned_manifest(&package_dir).expect("read manifest") {
+            VersionedReleaseManifest::V2(manifest) => manifest,
+            VersionedReleaseManifest::V1(_) => panic!("expected v2 manifest"),
+        };
+        assert!(
+            read_installed_state(&tmp.join("data"))
+                .expect("read installed")
+                .is_none()
+        );
+        assert!(matches!(
+            preflight::run_preflight_v2(None, &manifest),
+            Verdict::Breaking {
+                reason: preflight::BreakingReason::NoInstalledState,
+                ..
+            }
+        ));
+
+        let mut cfg = AppConfig::starter(tmp.join("config.toml"));
+        cfg.release.root = tmp.join("releases");
+        cfg.child.data_dir = Some(tmp.join("data"));
+
+        let err = stage_upgrade(&cfg, &package_dir, PreflightMode::ServerOnly)
+            .expect_err("missing installed state must deny v2 staging");
+
+        assert!(err.to_string().contains("NoInstalledState"));
+        assert!(err.to_string().contains("allow-breaking-upgrade"));
+    }
+
+    #[test]
     fn sqlite_backup_fails_through_sqlite3_path_for_invalid_db() {
         let tmp = test_temp_dir("sqlite-backup");
         let db = tmp.join("calm.db");
@@ -943,6 +1202,7 @@ mod tests {
             requires_db_backup: false,
             reason: "ok".into(),
             required_action: "none".into(),
+            verdict: None,
         };
 
         let result = activate_staged_release(&cfg, &new, &preflight, "rel-1").expect("activate");
@@ -992,6 +1252,7 @@ mod tests {
             requires_db_backup: false,
             reason: "ok".into(),
             required_action: "none".into(),
+            verdict: None,
         };
 
         let result = activate_staged_release(&cfg, &new, &preflight, "rel-1").expect("activate");
@@ -1042,6 +1303,7 @@ mod tests {
             requires_db_backup: false,
             reason: "ok".into(),
             required_action: "none".into(),
+            verdict: None,
         };
 
         let result = activate_staged_release(&cfg, &new, &preflight, "rel-1").expect("activate");
@@ -1139,6 +1401,7 @@ mod tests {
             requires_db_backup: false,
             reason: "ok".into(),
             required_action: "none".into(),
+            verdict: None,
         };
         activate_staged_release(&cfg, &new, &preflight, "new-web").expect("activate");
 
@@ -1278,6 +1541,7 @@ mod tests {
             requires_db_backup: false,
             reason: "ok".into(),
             required_action: "none".into(),
+            verdict: None,
         };
 
         activate_staged_release(&cfg, &new, &preflight, "rel-new").expect("activate");
@@ -1493,14 +1757,90 @@ mod tests {
         assert!(err.to_string().contains("not a directory"));
     }
 
-    fn compat() -> Compatibility {
-        Compatibility {
+    fn compat() -> CompatibilityV1 {
+        CompatibilityV1 {
             api_version: "1".into(),
             sync_event_version: 1,
             mcp_protocol_version: "2025-11-25".into(),
             web_compat_version: 2,
             min_web_compat_version: 2,
         }
+    }
+
+    fn compat_v2() -> Compatibility {
+        Compatibility {
+            terminal_frame_version: 4,
+            terminal_protocol_version: 4,
+            api_version: "1".into(),
+            sync_event_version: 1,
+            mcp_protocol_version: "2024-11-05".into(),
+            plugin_mcp_protocol_version: "2025-11-25".into(),
+            web_compat_version: 2,
+            min_web_compat_version: 2,
+            supervisor_control_version: 1,
+        }
+    }
+
+    fn installed_state_with_unit(
+        release_id: &str,
+        unit_name: UnitName,
+        unit: InstalledUnit,
+    ) -> InstalledState {
+        InstalledState {
+            schema_version: 1,
+            release_id: release_id.into(),
+            product_major: 0,
+            compatibility: compat_v2(),
+            units: [(unit_name, unit)].into_iter().collect(),
+            installed_at: "2026-05-30T00:00:00Z".into(),
+        }
+    }
+
+    fn make_v2_package(
+        tmp: &Path,
+        release_id: &str,
+        unit_name: UnitName,
+        unit: ReleaseUnit,
+    ) -> PathBuf {
+        let package_dir = tmp.join("pkg-v2").join(release_id);
+        fs::create_dir_all(package_dir.join("bin")).expect("create package");
+        let payload = match unit_name {
+            UnitName::Web => "web/index.html",
+            _ => "bin/payload",
+        };
+        let payload_path = package_dir.join(payload);
+        if let Some(parent) = payload_path.parent() {
+            fs::create_dir_all(parent).expect("create payload parent");
+        }
+        fs::write(&payload_path, release_id).expect("write payload");
+        let (sha256, bytes) = sha256_file(&payload_path).expect("hash payload");
+        let manifest = ReleaseManifestV2 {
+            schema_version: 2,
+            release_id: release_id.into(),
+            product_major: 0,
+            compatibility: compat_v2(),
+            units: [(unit_name, unit)].into_iter().collect(),
+            files: vec![FileManifest {
+                path: payload.into(),
+                sha256,
+                bytes,
+                unit: match unit_name {
+                    UnitName::NeigeApp => FileUnit::App,
+                    UnitName::Web => FileUnit::Web,
+                    UnitName::CalmServer => FileUnit::CalmServer,
+                    UnitName::CalmProcSupervisor
+                    | UnitName::NeigeCodexBridge
+                    | UnitName::NeigeMcpStdioShim
+                    | UnitName::NeigeCli => FileUnit::Bundle,
+                },
+            }],
+        };
+        fs::write(
+            package_dir.join("manifest.json"),
+            serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+        )
+        .expect("write manifest");
+        package_dir
     }
 
     fn required_bins(src: &Path) -> Vec<NamedPath> {
@@ -1577,6 +1917,8 @@ mod tests {
             mcp_protocol_version: "2025-11-25".into(),
             min_web_compat_version: 2,
             web_compat_version: Some(2),
+            plugin_mcp_protocol_version: None,
+            supervisor_control_version: None,
         };
         fs::write(
             &path,
@@ -1593,6 +1935,7 @@ mod tests {
             requires_db_backup: false,
             reason: "ok".into(),
             required_action: "none".into(),
+            verdict: None,
         }
     }
 

@@ -1370,8 +1370,13 @@ export interface components {
             mcpProtocolVersion: string;
             /** Format: int32 */
             minWebCompatVersion: number;
+            pluginMcpProtocolVersion: string;
+            /** Format: int32 */
+            supervisorControlVersion: number;
             /** Format: int32 */
             syncEventVersion: number;
+            /** Format: int32 */
+            webCompatVersion: number;
         };
         ViaToolCall: {
             arguments?: Record<string, never>;

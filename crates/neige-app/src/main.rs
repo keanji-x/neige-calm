@@ -20,6 +20,8 @@ use tokio::sync::{Mutex, Notify};
 use tokio::time::timeout;
 
 mod config;
+mod identity;
+mod installed;
 mod manifest;
 mod package;
 mod preflight;
@@ -27,7 +29,8 @@ mod source;
 mod upgrade;
 
 use config::{AppConfig, ServeOverrides, default_config_path, init_config};
-use manifest::{Compatibility, CurrentVersion, DbMigrationPolicy, ReleaseManifest};
+use identity::SpawnIdentity;
+use manifest::{CompatibilityV1, CurrentVersion, DbMigrationPolicy, ReleaseManifest};
 use package::{NamedPath, PackageConfig};
 use preflight::PreflightMode;
 
@@ -278,12 +281,31 @@ struct SupervisorConfig {
     restart_delay: Duration,
     stop_grace: Duration,
     calm_listen: Option<String>,
+    persist_identity_to: Option<PathBuf>,
 }
 
 #[derive(Clone)]
 struct AppState {
     supervisor: Arc<Supervisor>,
+    proc_supervisor: Arc<Supervisor>,
     admin_token: Option<Arc<str>>,
+}
+
+impl AppState {
+    async fn status_snapshot(&self) -> StatusSnapshot {
+        let calm_server = self.supervisor.process_status().await;
+        let proc_supervisor = self.proc_supervisor.process_status().await;
+        StatusSnapshot {
+            desired_running: calm_server.desired_running,
+            child_state: calm_server.child_state.clone(),
+            child_pid: calm_server.child_pid,
+            restart_count: calm_server.restart_count,
+            last_exit: calm_server.last_exit.clone(),
+            calm_listen: self.supervisor.cfg.calm_listen.clone().unwrap_or_default(),
+            calm_server,
+            proc_supervisor,
+        }
+    }
 }
 
 impl From<&AppConfig> for SupervisorConfig {
@@ -336,6 +358,7 @@ fn calm_server_supervisor_config(cfg: &AppConfig) -> SupervisorConfig {
         restart_delay: cfg.timing.restart_delay,
         stop_grace: cfg.timing.stop_grace,
         calm_listen: Some(cfg.child.calm_listen.clone()),
+        persist_identity_to: None,
     }
 }
 
@@ -352,18 +375,37 @@ fn proc_supervisor_config(cfg: &AppConfig) -> SupervisorConfig {
         restart_delay: cfg.timing.restart_delay,
         stop_grace: cfg.timing.stop_grace,
         calm_listen: None,
+        persist_identity_to: Some(cfg.calm_data_dir_resolved()),
     }
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StatusSnapshot {
+    /// Deprecated compatibility field; mirrors `calmServer.desiredRunning`.
+    desired_running: bool,
+    /// Deprecated compatibility field; mirrors `calmServer.childState`.
+    child_state: String,
+    /// Deprecated compatibility field; mirrors `calmServer.childPid`.
+    child_pid: Option<u32>,
+    /// Deprecated compatibility field; mirrors `calmServer.restartCount`.
+    restart_count: u64,
+    /// Deprecated compatibility field; mirrors `calmServer.lastExit`.
+    last_exit: Option<String>,
+    calm_listen: String,
+    calm_server: ProcessStatus,
+    proc_supervisor: ProcessStatus,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProcessStatus {
     desired_running: bool,
     child_state: String,
     child_pid: Option<u32>,
     restart_count: u64,
     last_exit: Option<String>,
-    calm_listen: String,
+    identity: Option<SpawnIdentity>,
 }
 
 #[derive(Debug)]
@@ -373,6 +415,7 @@ struct SupervisorState {
     child_pid: Option<u32>,
     restart_count: u64,
     last_exit: Option<String>,
+    identity: Option<SpawnIdentity>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -413,6 +456,7 @@ impl Supervisor {
                 child_pid: None,
                 restart_count: 0,
                 last_exit: None,
+                identity: None,
             }),
             changed: Notify::new(),
         })
@@ -476,6 +520,41 @@ impl Supervisor {
             let mut state = self.state.lock().await;
             state.child_state = ChildState::Starting;
             state.child_pid = None;
+            state.identity = None;
+        }
+        self.changed.notify_waiters();
+
+        let child_bin = self.cfg.child_bin.clone();
+        let persist_identity_to = self.cfg.persist_identity_to.clone();
+        let process_name = self.cfg.name.clone();
+        let identity = tokio::task::spawn_blocking(move || match identity::capture(&child_bin) {
+            Ok(identity) => {
+                if let Some(data_dir) = &persist_identity_to
+                    && let Err(err) = identity::write_supervisor_identity(data_dir, &identity)
+                {
+                    tracing::warn!(
+                        process = %process_name,
+                        error = %err,
+                        "failed to persist supervisor identity"
+                    );
+                }
+                Some(identity)
+            }
+            Err(err) => {
+                tracing::warn!(
+                    process = %process_name,
+                    child_bin = %child_bin.display(),
+                    error = %err,
+                    "failed to capture spawn identity"
+                );
+                None
+            }
+        })
+        .await
+        .context("identity capture task panicked")?;
+        {
+            let mut state = self.state.lock().await;
+            state.identity = identity;
         }
         self.changed.notify_waiters();
 
@@ -515,19 +594,19 @@ impl Supervisor {
         self.changed.notify_waiters();
     }
 
-    async fn status(&self) -> StatusSnapshot {
+    async fn process_status(&self) -> ProcessStatus {
         let state = self.state.lock().await;
-        StatusSnapshot {
+        ProcessStatus {
             desired_running: state.desired_running,
             child_state: state.child_state.as_str().to_string(),
             child_pid: state.child_pid,
             restart_count: state.restart_count,
             last_exit: state.last_exit.clone(),
-            calm_listen: self.cfg.calm_listen.clone().unwrap_or_default(),
+            identity: state.identity.clone(),
         }
     }
 
-    async fn restart(&self) -> anyhow::Result<StatusSnapshot> {
+    async fn restart(&self) -> anyhow::Result<ProcessStatus> {
         let pid = {
             let mut state = self.state.lock().await;
             state.child_state = ChildState::Stopping;
@@ -540,7 +619,7 @@ impl Supervisor {
                 kill_child_tree(pid)?;
             }
         }
-        Ok(self.status().await)
+        Ok(self.process_status().await)
     }
 
     async fn shutdown(&self) {
@@ -769,7 +848,7 @@ fn run_package_cli(args: SystemPackageArgs) -> anyhow::Result<()> {
         web_version: args.web_version,
         calm_server_version: args.calm_server_version,
         db_migration_policy: args.db_migration_policy,
-        compatibility: Compatibility {
+        compatibility: CompatibilityV1 {
             api_version: args.api_version,
             sync_event_version: args.sync_event_version,
             mcp_protocol_version: args.mcp_protocol_version,
@@ -839,6 +918,7 @@ async fn serve_system(args: SystemServeArgs) -> anyhow::Result<()> {
     let supervisor = Supervisor::new(calm_server_supervisor_config(&cfg));
     let app_state = AppState {
         supervisor: supervisor.clone(),
+        proc_supervisor: proc_supervisor.clone(),
         admin_token,
     };
     let app = Router::new()
@@ -900,13 +980,13 @@ async fn health() -> Json<serde_json::Value> {
 }
 
 async fn status(State(state): State<AppState>) -> Json<StatusSnapshot> {
-    Json(state.supervisor.status().await)
+    Json(state.status_snapshot().await)
 }
 
 async fn restart(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
     require_bearer(&headers, state.admin_token.as_deref())?;
-    let status = state.supervisor.restart().await?;
-    Ok((StatusCode::ACCEPTED, Json(status)).into_response())
+    state.supervisor.restart().await?;
+    Ok((StatusCode::ACCEPTED, Json(state.status_snapshot().await)).into_response())
 }
 
 async fn update_apply_placeholder(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -1385,6 +1465,18 @@ bin = "/usr/local/bin/neige-app"
                 restart_delay: Duration::from_millis(1),
                 stop_grace: Duration::from_millis(1),
                 calm_listen: Some("127.0.0.1:4040".into()),
+                persist_identity_to: None,
+            }),
+            proc_supervisor: Supervisor::new(SupervisorConfig {
+                name: "calm-proc-supervisor".into(),
+                child_bin: PathBuf::from("calm-proc-supervisor"),
+                child_cwd: None,
+                child_args: Vec::new(),
+                child_envs: Vec::new(),
+                restart_delay: Duration::from_millis(1),
+                stop_grace: Duration::from_millis(1),
+                calm_listen: None,
+                persist_identity_to: None,
             }),
             admin_token: token.map(Arc::from),
         }
