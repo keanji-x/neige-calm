@@ -1020,9 +1020,14 @@ async fn dispatcher_codex_worker_spawns_with_dark_theme_default() {
     let terminal_id = card.payload["terminal_id"]
         .as_str()
         .expect("payload.terminal_id stamped");
-    let entry = terminal_renderer
-        .get(terminal_id)
-        .expect("renderer entry registered before CardAdded");
+    // Same dispatcher-spawn race as the carries_prompt_argv test above:
+    // the card-mint DB write can win against renderer.ensure() inserting
+    // into the registry by a tick or two.
+    let entry = wait_for(Duration::from_secs(3), || async {
+        terminal_renderer.get(terminal_id)
+    })
+    .await
+    .expect("renderer entry registered before CardAdded within 3s");
     assert_eq!(entry.config().terminal_fg, (216, 219, 226));
     assert_eq!(entry.config().terminal_bg, (15, 20, 24));
 }
@@ -1087,9 +1092,14 @@ async fn dispatcher_codex_worker_spawn_carries_prompt_argv() {
     let terminal_id = card.payload["terminal_id"]
         .as_str()
         .expect("payload.terminal_id stamped");
-    let entry = terminal_renderer
-        .get(terminal_id)
-        .expect("renderer entry registered for worker");
+    // Dispatcher's spawn races against the card-mint write — the card
+    // can land in the DB a tick before the renderer's ensure() completes
+    // its registry insert. Poll briefly.
+    let entry = wait_for(Duration::from_secs(3), || async {
+        terminal_renderer.get(terminal_id)
+    })
+    .await
+    .expect("renderer entry registered for worker within 3s");
     let argv_text = entry.config().args.join("\n");
     assert!(
         argv_text.contains("codex '"),
