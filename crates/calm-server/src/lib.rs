@@ -87,7 +87,7 @@ pub async fn revive_orphans_on_boot(state: &state::AppState) {
     reconcile_supervisor_on_boot(state).await;
 }
 
-async fn probe_supervisor_for_terminal(
+pub(crate) async fn probe_supervisor_for_terminal(
     state: &state::AppState,
     terminal_id: &str,
 ) -> anyhow::Result<bool> {

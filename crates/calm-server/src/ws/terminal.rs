@@ -111,19 +111,52 @@ async fn resolve_live_renderer(s: &AppState, id: &str) -> Result<LiveRenderer> {
         });
     }
 
-    tracing::info!(
-        terminal_id = %term.id,
-        "terminal has no live renderer entry; attempting lazy supervisor reattach",
-    );
-    match crate::routes::terminal::spawn_terminal_for(s, &term, &term.program, &term.cwd, &term.env)
-        .await
-    {
-        Ok(entry) => Ok(LiveRenderer::Alive(entry)),
+    // #388 Phase 3b: probe the supervisor before reattaching. If the
+    // supervisor doesn't know about this proc_id, there's no live PTY
+    // child to reattach to — calling spawn_terminal_for would SPAWN a
+    // fresh child (violating the "stale handle does not respawn"
+    // invariant the daemon-binary world enforced). Only call
+    // spawn_terminal_for when the supervisor confirms the proc is
+    // running; EnsureProc's idempotent fast-path then makes it a true
+    // reattach.
+    match crate::probe_supervisor_for_terminal(s, &term.id).await {
+        Ok(true) => {
+            tracing::info!(
+                terminal_id = %term.id,
+                "supervisor confirms live PTY; attempting lazy renderer reattach",
+            );
+            match crate::routes::terminal::spawn_terminal_for(
+                s,
+                &term,
+                &term.program,
+                &term.cwd,
+                &term.env,
+            )
+            .await
+            {
+                Ok(entry) => Ok(LiveRenderer::Alive(entry)),
+                Err(e) => {
+                    tracing::warn!(
+                        terminal_id = %term.id,
+                        error = %e,
+                        "ws upgrade: lazy renderer reattach failed; surfacing child-exit",
+                    );
+                    Ok(LiveRenderer::ChildExited { exit_code: None })
+                }
+            }
+        }
+        Ok(false) => {
+            tracing::info!(
+                terminal_id = %term.id,
+                "no live PTY at supervisor and no exit recorded; surfacing child-exit without respawn",
+            );
+            Ok(LiveRenderer::ChildExited { exit_code: None })
+        }
         Err(e) => {
             tracing::warn!(
                 terminal_id = %term.id,
                 error = %e,
-                "ws upgrade: lazy renderer reattach failed; surfacing child-exit",
+                "supervisor probe failed; surfacing child-exit",
             );
             Ok(LiveRenderer::ChildExited { exit_code: None })
         }
