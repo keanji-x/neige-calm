@@ -3,8 +3,8 @@
 //!
 //! Boots a real Axum router (in-memory `SqlxRepo`) + the actual
 //! terminal renderer for the happy paths, and points
-//! `DaemonClient::session_daemon_bin` at a non-existent path for the
-//! "spawn failure but row persisted" case.
+//! `DaemonClient::proc_supervisor_sock` at a non-existent socket for
+//! the "spawn failure but row persisted" case.
 //!
 //! Test taxonomy:
 //!   * `post_terminal_card_atomic_returns_card_with_linked_payload` — 201,

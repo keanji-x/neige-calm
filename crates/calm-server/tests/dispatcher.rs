@@ -246,11 +246,11 @@ async fn dispatcher_happy_path_mints_worker_card() {
     // #310 followup — the dispatcher now rolls back the worker card +
     // terminal row when `spawn_terminal_with_parts` returns Err (orphan
     // cleanup; see `rollback_orphan_worker`). Pre-rollback we could
-    // use `stub_daemon()` here and catch the orphan card with
-    // `wait_for` because it stuck around; post-rollback the card is
-    // deleted before `wait_for` can poll for it, making this happy-
-    // path test flaky. Point the daemon at the argv-recorder fixture
-    // so spawn actually succeeds and the card stays.
+    // use a missing proc-supervisor socket here and catch the orphan
+    // card with `wait_for` because it stuck around; post-rollback the
+    // card is deleted before `wait_for` can poll for it, making this
+    // happy-path test flaky. Let the fixture-backed proc supervisor
+    // satisfy EnsureProc so spawn succeeds and the card stays.
     let codex = stub_codex();
     let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
     let daemon = Arc::new(calm_server::state::DaemonClient {
@@ -390,12 +390,13 @@ async fn dispatcher_role_is_worker_via_role_cache() {
 ///
 /// Note (#310 followup): the dispatcher now rolls back the worker card
 /// + terminal row when the post-commit `spawn_terminal_with_parts` step
-/// fails — see `rollback_orphan_worker`. That means a failing daemon
-/// is the WRONG fixture to test the dedup invariant against: the
+/// fails — see `rollback_orphan_worker`. That means a failing
+/// proc-supervisor connection is the WRONG fixture to test the dedup
+/// invariant against: the
 /// orphan no longer persists and the "exactly one card stays" signal
-/// disappears. We point the daemon at the argv-recorder fixture so the
-/// first dispatch succeeds end-to-end (no rollback, no task.failed)
-/// and the dedup'd second emit silently short-circuits as it should.
+/// disappears. We use the fixture-backed proc supervisor so the first
+/// dispatch succeeds end-to-end (no rollback, no task.failed) and the
+/// dedup'd second emit silently short-circuits as it should.
 #[tokio::test]
 async fn dispatcher_dedup_does_not_double_emit_task_failed() {
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
@@ -784,12 +785,12 @@ async fn dispatcher_dedupes_under_real_concurrent_race() {
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
     // Permits >= 2 so both racers can run concurrently.
     //
-    // #310 followup: switched from `stub_daemon()` (nonexistent binary,
-    // every spawn fails) to the argv-recorder fixture. Pre-rollback the
-    // failing winning racer left an orphan card the assertion below
-    // counted as "exactly one"; post-rollback that orphan is wiped, so
-    // we need the spawn to actually succeed for the "exactly one card
-    // lands" dedup signal to remain meaningful.
+    // #310 followup: switched from a missing proc-supervisor socket
+    // (every spawn fails) to the fixture-backed proc supervisor.
+    // Pre-rollback the failing winning racer left an orphan card the
+    // assertion below counted as "exactly one"; post-rollback that
+    // orphan is wiped, so we need EnsureProc to succeed for the
+    // "exactly one card lands" dedup signal to remain meaningful.
     let codex = stub_codex();
     let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
     let daemon = Arc::new(calm_server::state::DaemonClient {
@@ -890,40 +891,14 @@ fn artifact_ref_smoke() {
     let a = ArtifactRef::from("a-1");
     assert_eq!(a.as_str(), "a-1");
 }
-/// Wait up to `timeout` for any `*.argv` file under `data_dir` to
-/// land + return its lines. The recorder writes the file BEFORE
-/// binding the unix socket so by the time the kernel sees the daemon
-/// ready, the argv sidecar is complete on disk.
-#[allow(dead_code)]
-async fn wait_for_argv_file(data_dir: &std::path::Path, timeout: Duration) -> Vec<String> {
-    let start = Instant::now();
-    loop {
-        if let Ok(read) = std::fs::read_dir(data_dir) {
-            for entry in read.flatten() {
-                let p = entry.path();
-                if p.extension().and_then(|s| s.to_str()) == Some("argv") {
-                    let content = std::fs::read_to_string(&p).expect("read argv file");
-                    return content.lines().map(String::from).collect();
-                }
-            }
-        }
-        if start.elapsed() > timeout {
-            panic!(
-                "no *.argv file landed under {data_dir:?} within {timeout:?} — \
-                 dispatcher daemon spawn never ran (or recorder fixture failed)"
-            );
-        }
-        tokio::time::sleep(Duration::from_millis(40)).await;
-    }
-}
-
 #[tokio::test]
 async fn dispatcher_codex_worker_spawns_with_dark_theme_default() {
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
 
-    // Point the daemon at the argv-recorder fixture so the dispatcher's
-    // spawn actually completes — `stub_daemon()` uses a nonexistent
-    // path so spawns error before any argv can be observed.
+    // Use the fixture-backed proc supervisor so the dispatcher's spawn
+    // actually completes. `stub_daemon()` points at a nonexistent
+    // proc_supervisor_sock, so EnsureProc fails before renderer state
+    // can be observed.
     let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
     let daemon = Arc::new(calm_server::state::DaemonClient {
         data_dir: tmp.path().to_path_buf(),
@@ -948,8 +923,9 @@ async fn dispatcher_codex_worker_spawns_with_dark_theme_default() {
 
     // Emit a Wave-scoped CodexJobRequested envelope; the dispatcher
     // picks it up, mints a worker card with `RequestTheme::default_dark()`
-    // on the terminal row, then spawns the daemon. `spawn_terminal_with_parts`
-    // reads the row's theme_fg/_bg and stamps `--terminal-fg/-bg` on argv.
+    // on the terminal row, then ensures the renderer. `spawn_terminal_with_parts`
+    // reads the row's theme_fg/_bg and carries those RGB values into
+    // the renderer config.
     let idem = "dispatcher-theme-default";
     let req = codex_req(idem, "do thing");
     let scope = wave_scope(&wave_id, &cove_id);
@@ -987,10 +963,9 @@ async fn dispatcher_codex_worker_spawns_with_dark_theme_default() {
 //    has nothing to submit; the worker hangs forever. Mirrors the spec
 //    card path (issue #251) for the worker side.
 //
-// We funnel the daemon argv through the same `argv-recorder-daemon`
-// fixture used by the theme test above. `spawn_terminal_with_parts` ends
-// the argv with `-- /bin/sh -c "<program>"`, so the rendered prompt
-// lands as one element starting with `codex `.
+// We inspect the renderer config produced by `spawn_terminal_with_parts`;
+// its shell command is `/bin/sh -c "<program>"`, so the rendered prompt
+// lands inside that program string starting with `codex `.
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn dispatcher_codex_worker_spawn_carries_prompt_argv() {
@@ -1073,12 +1048,12 @@ async fn dispatcher_codex_worker_spawn_carries_prompt_argv() {
 //     daemon ~670ms away from being alive.
 //
 //     The regression guard below subscribes to the bus BEFORE the request
-//     emit, dispatches a codex worker through the recorder daemon fixture
-//     (so daemon spawn actually succeeds), captures the FIRST `CardAdded`
-//     envelope, then queries the matching `terminal_get(...)` row and
-//     asserts:
+//     emit, dispatches a codex worker through the fixture-backed proc
+//     supervisor (so EnsureProc actually succeeds), captures the FIRST
+//     `CardAdded` envelope, then queries the matching `terminal_get(...)`
+//     row and asserts:
 //        - `renderer entry.is_some()`  ← the core ordering contract
-//        - the socket path is connectable (the daemon really is up)
+//        - the renderer persisted a pid (the supervised child really is up)
 //
 //     If anyone reverts the dispatcher back to emitting `CardAdded`
 //     inside the tx (e.g. by routing it through `write_with_event_typed`
@@ -1292,14 +1267,14 @@ async fn dispatcher_terminal_card_added_after_renderer_entry_set_issue_310() {
 //        a) dispatch returns Err → task.failed fires.
 //        b) no card with that idempotency_key remains in the DB.
 //        c) A re-dispatch with the SAME idempotency_key (this time with
-//           a working daemon binary) succeeds — proves the orphan row
+//           a working proc-supervisor fixture) succeeds — proves the orphan row
 //           is not blocking retries.
 //
-//     We provoke spawn failure by pointing `DaemonClient.session_daemon_bin`
-//     at a nonexistent path (same trick `stub_daemon()` uses) — `cmd.spawn()`
-//     returns ENOENT, `spawn_terminal_with_parts` maps it to
-//     `CalmError::Internal`. Then we swap the bin to the argv-recorder
-//     fixture for the retry leg.
+//     We provoke spawn failure by pointing `DaemonClient.proc_supervisor_sock`
+//     at a nonexistent path (same trick `stub_daemon()` uses) — the
+//     proc-supervisor connect returns ENOENT and `spawn_terminal_with_parts`
+//     maps it to `CalmError::Internal`. Then we swap to the fixture-backed
+//     proc supervisor for the retry leg.
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn dispatcher_rolls_back_card_on_codex_daemon_spawn_failure_issue_310() {
@@ -1313,7 +1288,7 @@ async fn dispatcher_rolls_back_card_on_codex_daemon_spawn_failure_issue_310() {
         cache.clone(),
         wcc.clone(),
         codex.clone(),
-        stub_daemon(), // session_daemon_bin = /nonexistent-daemon-bin
+        stub_daemon(), // proc_supervisor_sock = missing socket
         None,
         calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,
@@ -1382,10 +1357,10 @@ async fn dispatcher_rolls_back_card_on_codex_daemon_spawn_failure_issue_310() {
     );
 
     // Leg (c): retry with the SAME idempotency_key against a fresh
-    // dispatcher whose daemon binary actually exists. Pre-rollback, the
-    // orphan row would short-circuit this on `IdempotencyCollision`;
-    // post-rollback, the SELECT inside the tx sees no match and the
-    // spawn proceeds normally.
+    // dispatcher whose proc-supervisor fixture accepts EnsureProc.
+    // Pre-rollback, the orphan row would short-circuit this on
+    // `IdempotencyCollision`; post-rollback, the SELECT inside the tx
+    // sees no match and the spawn proceeds normally.
     //
     // We deliberately spin up a FRESH `EventBus` for the retry leg.
     // `dispatcher_fail`'s background task subscribes to `events` and
@@ -1401,14 +1376,11 @@ async fn dispatcher_rolls_back_card_on_codex_daemon_spawn_failure_issue_310() {
     drop(dispatcher_fail);
     let events_retry = calm_server::event::EventBus::new();
     // Intentionally leak the tempdir (`TempDir::keep()` consumes the
-    // guard without scheduling cleanup) so the recorder daemon's
-    // argv-sidecar writes still find a live directory after the test
-    // fn returns. The dispatcher task we spawn below never observes a
-    // shutdown signal in the test harness, so its child daemon
-    // outlives this scope; without `keep` the `TempDir` drop deletes
-    // the dir and the still-running daemon panics with "create argv
-    // sidecar: Os { code: 2, kind: NotFound }" stderr noise that masks
-    // real failures in adjacent tests.
+    // guard without scheduling cleanup) so dispatcher-owned background
+    // tasks do not race tempdir deletion at the end of the test. The
+    // fixture-backed proc supervisor can outlive this scope under load;
+    // keeping the data dir avoids noisy cleanup failures that mask real
+    // failures in adjacent tests.
     let tmp_path = tempfile::TempDir::new()
         .expect("tempdir for daemon sockets")
         .keep();
@@ -1482,8 +1454,8 @@ async fn dispatcher_rolls_back_card_on_codex_daemon_spawn_failure_issue_310() {
 //        a) dispatch returns Err → task.failed fires.
 //        b) no card with that idempotency_key remains in the DB.
 //        c) A re-dispatch with the SAME idempotency_key (this time
-//           with a working daemon binary) succeeds — proves the orphan
-//           row is not blocking retries.
+//           with a working proc-supervisor fixture) succeeds — proves
+//           the orphan row is not blocking retries.
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310() {
@@ -1559,15 +1531,15 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
     );
 
     // Leg (c): retry with the SAME idempotency_key against a fresh
-    // dispatcher whose daemon binary actually exists. See test 12's
-    // leg (c) doc comment for the full rationale (including why a
-    // fresh `EventBus` is needed to avoid the failing dispatcher
+    // dispatcher whose proc-supervisor fixture accepts EnsureProc. See
+    // test 12's leg (c) doc comment for the full rationale (including
+    // why a fresh `EventBus` is needed to avoid the failing dispatcher
     // racing the success dispatcher on the retry envelope).
     drop(dispatcher_fail);
     let events_retry = calm_server::event::EventBus::new();
     // Intentionally leak the tempdir — see test 12's note for the
-    // rationale (daemon outlives the test fn; tempdir drop deletes
-    // the data dir; daemon panics on next argv-sidecar write).
+    // rationale (dispatcher-owned background work can outlive the test
+    // fn and race tempdir cleanup).
     let tmp_path = tempfile::TempDir::new()
         .expect("tempdir for daemon sockets")
         .keep();
@@ -1627,32 +1599,30 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
 }
 
 // ---------------------------------------------------------------------------
-// 14. Issue #310 followup (codex's P1 escalation) — daemon reap on rollback.
+// 14. Issue #310 followup (codex's P1 escalation) — proc reap on rollback.
 //
 //     Pre-fix: when `spawn_terminal_with_parts` returned Err AFTER it had
-//     already spawned the daemon child + persisted `pid` + persisted
-//     `renderer entry` but before readiness succeeded (real failure mode:
-//     the daemon hangs during setup until the backstop fires),
+//     already issued EnsureProc + persisted `pid` + inserted the renderer
+//     entry but before readiness succeeded (real failure mode: the child
+//     hangs during setup until the backstop fires),
 //     `rollback_orphan_worker` deleted the rows but left the
-//     daemon process + unix socket leaking — the sweeper's SQL excludes
+//     supervised process leaking — the sweeper's SQL excludes
 //     terminals still referenced by a card row, but we just deleted the
 //     card, so the sweeper *also* never sees the orphan. Result: a
-//     daemon process bound to a socket on disk, with no DB row to
-//     anchor cleanup, until the next kernel boot.
+//     proc-supervisor entry with no DB row to anchor cleanup, until the
+//     next kernel boot.
 //
 //     The fix re-fetches the terminal row (to pick up any post-commit
 //     pid / renderer entry writes) and calls `reap_terminal_artifacts`
 //     before the row delete. This test pins that ordering by:
-//        a) Pointing the dispatcher at `never-ready-daemon` — spawns
-//           OK, persists pid via a `.partial-pid` sidecar, then sleeps
-//           without binding the socket or writing ready. The kernel's
-//           hung-daemon backstop returns Err.
+//        a) Pointing the dispatcher at a missing proc-supervisor socket,
+//           so EnsureProc fails and the rollback path runs.
 //        b) Waiting for `task.failed` (proves the rollback path ran
 //           to its end).
 //        c) Asserting the recorded pid is no longer alive
 //           (`kill(pid, 0)` returns ESRCH) — proves the reap fired.
-//        d) Asserting the socket file is gone — proves the unlink
-//           step of `reap_terminal_artifacts` fired.
+//        d) Asserting the renderer entry is gone — proves the renderer
+//           cleanup step of `reap_terminal_artifacts` fired.
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
@@ -1698,10 +1668,10 @@ async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
         .await
         .unwrap();
 
-    // Wait for task.failed — the dispatcher's readiness race in
-    // `spawn_terminal_with_parts` reaches its hung-daemon backstop before
-    // returning the timeout error. The rollback then runs synchronously
-    // before `run_one` emits `task.failed`. Allow a generous deadline.
+    // Wait for task.failed. `spawn_terminal_with_parts` fails while
+    // connecting to the configured proc-supervisor socket; the rollback
+    // then runs synchronously before `run_one` emits `task.failed`.
+    // Allow a generous deadline.
     let mut saw_failed = false;
     let deadline = Instant::now() + Duration::from_secs(15);
     while Instant::now() < deadline {
@@ -1744,26 +1714,22 @@ async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
 // ---------------------------------------------------------------------------
 // 12. Issue #310 fix-loop round 4 — codex caught a regression in the round-3
 //     rollback patch: a fast-exit terminal worker (e.g. `printf done`,
-//     `/bin/true`, `make build`) writes the daemon's `.exit` sidecar AND
-//     exits before the kernel sees `ready\n`.
-//     `spawn_terminal_with_parts` returned Err for this case, and round 3's
-//     unconditional rollback would then DELETE the card + terminal row —
+//     `/bin/true`, `make build`) can exit before late listeners have
+//     observed the renderer's exit state. `spawn_terminal_with_parts`
+//     used to treat that path like a failed spawn, and round 3's
+//     unconditional rollback would then DELETE the card + terminal row,
 //     turning a completed worker into `task.failed` with no card/output
 //     for the user to inspect.
 //
 //     The fix discriminates inside `rollback_orphan_worker`: when the
-//     re-fetched terminal row has `renderer entry = Some(...)` AND a
-//     `<handle>.exit` sidecar exists on disk, the helper persists the
-//     sidecar's exit_code/signal_killed onto the row and returns
-//     `Preserved` (no row delete). The caller then broadcasts
+//     renderer attach reader has persisted a clean exit, the helper
+//     returns `Preserved` (no row delete). The caller then broadcasts
 //     `CardAdded` and returns Ok(()) instead of the spawn Err.
 //
 //     This test pins that preservation contract:
 //
-//        a) Point the dispatcher at `fast-exit-daemon` — spawns OK,
-//           writes `<sock>.exit` with `{"code":0,"signal_killed":false}`,
-//           exits 0 without binding the socket or writing ready. The
-//           kernel's child-exit readiness arm returns Err.
+//        a) Run a fast-exit terminal command through the fixture-backed
+//           proc supervisor and in-process renderer.
 //
 //        b) Subscribe to the bus BEFORE emitting so we capture both
 //           the (would-be) `task.failed` AND the `CardAdded` envelope.
@@ -1773,10 +1739,7 @@ async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
 //           - `TaskFailed` is NOT broadcast for the dispatched key.
 //           - The card row + terminal row both survive.
 //           - The terminal row's `exit_code = Some(0)` and
-//             `signal_killed = false` (persisted by the discriminator
-//             from the sidecar).
-//           - The terminal row's `renderer entry` is still set
-//             (preserved, not nulled by the rollback path).
+//             `signal_killed = false`.
 //
 //     This test would FAIL on the round-3 code (rollback always
 //     deletes), pinning that the discriminator is wired and the
@@ -1786,9 +1749,9 @@ async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
 async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
 
-    // Same intentional leak as the never-ready test: the daemon child
-    // is short-lived (exits immediately), but lingering filesystem
-    // cleanup can race the test tempdir drop.
+    // Same intentional keep-alive pattern as nearby dispatcher tests:
+    // the child is short-lived, but fixture cleanup can race the
+    // tempdir drop under load.
     let tmp_path = tempfile::TempDir::new()
         .expect("tempdir for daemon sockets")
         .keep();
@@ -1813,13 +1776,12 @@ async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
     let idem = "fast-exit-preserve-1";
     // Subscribe BEFORE emitting so we capture every envelope, in
     // particular the discriminator's `CardAdded` broadcast that lands
-    // AFTER the child-exit readiness arm returns Err.
+    // after the renderer has observed the child exit.
     let mut rx = events.subscribe();
 
     let req = Event::TerminalJobRequested {
         idempotency_key: idem.into(),
-        // The cmd string is only used by the real daemon — our fixture
-        // ignores it. We pass a representative string for log clarity.
+        // Fast-exit command for the real supervised shell.
         cmd: "printf done\n".into(),
         cwd: None,
     };
@@ -1828,10 +1790,8 @@ async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
         .await
         .unwrap();
 
-    // Drain the bus. The dispatcher's child-exit readiness arm should
-    // fire quickly; the discriminator's sidecar pickup + CardAdded
-    // broadcast happens after. Allow a generous deadline so the
-    // negative TaskFailed assertion still observes late failures.
+    // Drain the bus. Allow a generous deadline so the negative
+    // TaskFailed assertion still observes late failures.
     let mut saw_card_added: Option<calm_server::ids::CardId> = None;
     let mut saw_task_failed = false;
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -1870,7 +1830,7 @@ async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
     assert!(
         !saw_task_failed,
         "task.failed must NOT be emitted for a fast-exit success — the worker \
-         actually completed (exit_code = 0 in `.exit` sidecar); pre-fix this \
+         actually completed (exit_code = 0); pre-fix this \
          fired because spawn_terminal_with_parts's readiness error \
          propagated unconditionally to `run_one`",
     );
@@ -1889,9 +1849,8 @@ async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
         Some(idem),
     );
 
-    // Terminal row survives, has renderer entry preserved, and the
-    // discriminator persisted exit_code = 0 / signal_killed = false
-    // from the sidecar.
+    // Terminal row survives and the renderer attach reader persisted
+    // exit_code = 0 / signal_killed = false.
     let terminal_id = card_row
         .payload
         .get("terminal_id")

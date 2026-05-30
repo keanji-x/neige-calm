@@ -3,8 +3,8 @@
 //!
 //! Twin of `tests/terminal_card_endpoint.rs`. Boots a real Axum router
 //! (in-memory `SqlxRepo`) + the actual terminal renderer for
-//! happy paths, and points `DaemonClient::session_daemon_bin` at a
-//! non-existent path for the "spawn failure but rows persisted" case.
+//! happy paths, and points `DaemonClient::proc_supervisor_sock` at a
+//! non-existent socket for the "spawn failure but rows persisted" case.
 //!
 //! Test taxonomy:
 //!   * `post_codex_card_atomic_returns_card_with_linked_payload` — 201,

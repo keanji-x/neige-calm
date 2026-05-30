@@ -10,19 +10,15 @@
 //! PR #193 had already fixed the user-created codex-card path but
 //! missed the spec-card spawn — this test is the regression guard.
 //!
-//! Strategy: point `DaemonClient::session_daemon_bin` at the
-//! `argv-recorder-daemon` fixture which records its argv to a sidecar,
-//! binds the unix socket, and writes `ready\n`. Fire the wave-create
-//! POST with a `theme` body, wait for the argv file to land
-//! (background `seed_and_spawn_spec_daemon` task is fire-and-forget),
-//! and assert `--terminal-fg` / `--terminal-bg` are present with the
-//! exact RGB.
+//! Strategy: use the fixture-backed proc supervisor so the renderer
+//! receives the terminal row's theme during EnsureProc. Fire the
+//! wave-create POST with a `theme` body, wait for the renderer entry
+//! to land, and assert its startup config carries the exact RGB.
 
 #![cfg(unix)]
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -135,40 +131,9 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value, 
     (status, json, text)
 }
 
-/// Wait up to `timeout` for any `*.argv` file under `data_dir`. The
-/// daemon-spawn background task is fire-and-forget so we poll for the
-/// sidecar to land. Returns the contents (lines).
-#[allow(dead_code)]
-async fn wait_for_argv_file(data_dir: &PathBuf, timeout: Duration) -> Vec<String> {
-    let start = Instant::now();
-    loop {
-        if let Ok(read) = std::fs::read_dir(data_dir) {
-            for entry in read.flatten() {
-                let p = entry.path();
-                if p.extension().and_then(|s| s.to_str()) == Some("argv") {
-                    // Give the recorder a moment to finish writing. It
-                    // writes argv before binding the socket and emitting
-                    // `ready\n`, so by the time the kernel sees ready the
-                    // file is complete.
-                    let content = std::fs::read_to_string(&p).expect("read argv file");
-                    return content.lines().map(String::from).collect();
-                }
-            }
-        }
-        if start.elapsed() > timeout {
-            panic!(
-                "no *.argv file landed under {data_dir:?} within {timeout:?} — \
-                 spec-card daemon spawn never ran (or recorder fixture failed)"
-            );
-        }
-        tokio::time::sleep(Duration::from_millis(40)).await;
-    }
-}
-
 /// Happy path: wave-create body carries `theme: { fg, bg }` — the
-/// spec card's daemon argv must contain `--terminal-fg=216,219,226`
-/// + `--terminal-bg=15,20,24` (the dark-theme RGB the web client
-/// stamps for a dark host browser).
+/// spec card's renderer config must carry the dark-theme RGB the web
+/// client stamps for a dark host browser.
 #[tokio::test]
 async fn wave_create_with_theme_stamps_terminal_fg_bg_args() {
     let boot = boot().await;
