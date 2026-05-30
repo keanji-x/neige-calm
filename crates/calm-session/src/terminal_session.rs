@@ -562,11 +562,9 @@ impl TerminalSessionState {
                 }
                 vec![Effect::TerminalThemeUpdate { fg, bg }]
             }
-            // Chat-mode frames received in terminal mode are silently
-            // dropped (parity with v1 behaviour).
-            ClientMsg::ChatUserMessage { .. }
-            | ClientMsg::ChatStop
-            | ClientMsg::AnswerQuestion { .. } => vec![],
+            // Question-answer frames are consumed by higher-level agent
+            // plumbing and have no terminal-session side effect.
+            ClientMsg::AnswerQuestion { .. } => vec![],
         }
     }
 

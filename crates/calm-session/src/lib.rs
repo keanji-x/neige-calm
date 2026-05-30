@@ -20,7 +20,7 @@
 //!
 //! Cell-grid diff encoding is a follow-up; not in this PR.
 //!
-//! Framing: `[magic (4) = b"NEIG"] [version (u16 BE) = 2] [length (u32 BE)]
+//! Framing: `[magic (4) = b"NEIG"] [version (u16 BE) = 4] [length (u32 BE)]
 //! [payload (bincode)]`.
 //!
 //! Magic + version were added in issue #45 so a daemon binary built against
@@ -29,7 +29,6 @@
 //! instead of silently misinterpreting the bincode discriminants that follow.
 
 pub mod control;
-pub mod stream_json;
 pub mod terminal_model;
 pub mod terminal_session;
 
@@ -63,13 +62,15 @@ pub const FRAME_MAGIC: [u8; 4] = *b"NEIG";
 /// will silently misread. `FRAME_VERSION` and `PROTOCOL_VERSION` move in
 /// lockstep on every breaking enum change so the magic+version preamble
 /// rejects skewed peers before bincode parses garbage.
-pub const FRAME_VERSION: u16 = 3;
+///
+/// v4 (#388): drop chat-mode variants alongside daemon binary retirement.
+pub const FRAME_VERSION: u16 = 4;
 
 /// Application-layer protocol version carried in [`ClientMsg::ClientHello`]
 /// and [`DaemonMsg::ServerHello`]. Distinct from [`FRAME_VERSION`] because
 /// the wire envelope and the payload schema can move independently; today
-/// they happen to be in lockstep at 3/3 (#177 bump).
-pub const PROTOCOL_VERSION: u16 = 3;
+/// they happen to be in lockstep at 4/4 (#388 bump).
+pub const PROTOCOL_VERSION: u16 = 4;
 
 /// Typed errors from the framing layer. The kernel↔daemon WS bridge in
 /// `calm-server` matches on [`FrameError::BadMagic`] /
@@ -373,20 +374,9 @@ pub enum ClientMsg {
         render_rev: u32,
         pty_seq: Option<u32>,
     },
-    /// Ask the daemon to terminate the child (SIGHUP). Owner-only in
-    /// terminal mode; in chat mode this still routes through the
-    /// chat-specific handler (closes the runner stdin so the SDK loop
-    /// exits cleanly).
+    /// Ask the terminal session to terminate the child (SIGHUP).
+    /// Owner-only.
     Kill,
-    /// Chat-mode user message. The daemon serializes this onto the Node
-    /// runner's stdin as `{"kind":"user_message","content":"..."}`. The
-    /// runner feeds it into `@anthropic-ai/claude-agent-sdk`'s `query()`.
-    /// Ignored in terminal mode.
-    ChatUserMessage { content: String },
-    /// Interrupt an in-flight chat turn. Daemon writes
-    /// `{"kind":"stop"}` to the runner's stdin; the runner calls the SDK
-    /// interrupt API. Ignored in terminal mode.
-    ChatStop,
     /// Resolve an `AskUserQuestion` posed by the SDK's `canUseTool`
     /// callback. Bridges WS frontend → daemon → runner stdin so the
     /// runner-side `canUseTool` promise can resolve and the agent loop
@@ -543,15 +533,6 @@ pub enum DaemonMsg {
     /// Browser clients leave `input_seq` at 0 and don't observe this
     /// frame.
     InputAck { input_seq: u64 },
-    /// Sent once right after the chat-mode handshake. `replay` is a list
-    /// of already-serialized NeigeEvent JSON strings so a re-attaching
-    /// client can rebuild conversation state without re-running the model.
-    HelloChat { replay: Vec<String> },
-    /// One serialized NeigeEvent JSON line emitted by the chat runner.
-    ChatEvent { json: String },
-    /// Chat-mode child exited; daemon is about to shut down. Terminal
-    /// mode uses [`Self::TerminalExited`] instead.
-    ChildExited { code: Option<i32> },
 }
 
 fn bincode_config() -> bincode::config::Configuration {

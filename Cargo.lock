@@ -418,9 +418,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bincode",
- "clap",
- "libc",
- "nix 0.29.0",
  "portable-pty",
  "serde",
  "serde_json",
@@ -428,7 +425,6 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "ts-rs",
  "uuid",
  "vte",
