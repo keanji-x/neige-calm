@@ -58,6 +58,7 @@ fn locate_daemon_bin() -> PathBuf {
     p
 }
 
+#[allow(dead_code)]
 fn locate_wrong_protocol_daemon_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_wrong-protocol-daemon"))
 }
@@ -206,6 +207,7 @@ fn spawn_handshake_listener(sock: &std::path::Path, terminal_id: String) {
     });
 }
 
+#[allow(dead_code)]
 async fn spawn_garbage_daemon_process(sock: &std::path::Path) -> Child {
     let mut child = Command::new(locate_wrong_protocol_daemon_bin())
         .arg("--sock")
@@ -230,151 +232,8 @@ async fn spawn_garbage_daemon_process(sock: &std::path::Path) -> Child {
     panic!("garbage protocol daemon did not bind socket {sock:?}");
 }
 
-/// Regression guard: a terminal row carrying a stale `daemon_handle`
-/// (path that doesn't accept connections — common when calm-server
-/// restarts and the old daemon's socket file is lingering on disk
-/// but its process is gone) gets re-spawned by the boot sweep. After
-/// the sweep, `daemon_handle` points at a fresh path whose socket file
-/// is reachable.
-#[tokio::test]
-async fn revive_orphans_on_boot_respawns_unreachable_daemon() {
-    let fx = fixture().await;
-    let term_id = seed_terminal_row(fx.repo.as_ref()).await;
-
-    // Plant a stale handle: a path inside the daemon data dir that
-    // doesn't exist. The sweep's connect-probe must fail and trigger
-    // the respawn branch.
-    let stale_sock = fx._tmp.path().join("does-not-exist.sock");
-    let stale_sock_str = stale_sock.to_string_lossy().to_string();
-    fx.repo
-        .terminal_set_handle(&term_id, Some(&stale_sock_str))
-        .await
-        .unwrap();
-    let mut sentinel = Command::new("sleep")
-        .arg("60")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn sentinel process");
-    let sentinel_pid = sentinel.id().expect("sentinel pid");
-    fx.repo
-        .terminal_set_pid(&term_id, Some(sentinel_pid))
-        .await
-        .unwrap();
-
-    // Confirm the precondition: socket really doesn't accept.
-    assert!(
-        UnixStream::connect(&stale_sock).await.is_err(),
-        "precondition: stale sock must not accept connections"
-    );
-
-    // Sweep.
-    calm_server::revive_orphans_on_boot(&fx.state).await;
-    assert!(
-        sentinel.try_wait().expect("poll sentinel").is_none(),
-        "Unreachable probe path must not signal the persisted pid"
-    );
-    let _ = sentinel.kill().await;
-    let _ = sentinel.wait().await;
-
-    // Post-sweep: row has a non-stale handle and the new socket
-    // accepts. Poll briefly because the sweep spawns the daemon
-    // synchronously but the daemon's socket-bind is post-exec; the
-    // helper's wait-for-socket loop runs inside the sweep, so by
-    // the time the sweep returns the handle should already be live.
-    let post = fx
-        .repo
-        .terminal_get(&term_id)
-        .await
-        .unwrap()
-        .expect("row after sweep");
-    let new_handle = post
-        .daemon_handle
-        .expect("daemon_handle must be set after sweep");
-    assert_ne!(
-        new_handle, stale_sock_str,
-        "sweep must replace the stale handle, not preserve it"
-    );
-    let start = Instant::now();
-    let mut ok = false;
-    while start.elapsed() < Duration::from_secs(2) {
-        if UnixStream::connect(&new_handle).await.is_ok() {
-            ok = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert!(
-        ok,
-        "post-sweep socket {new_handle:?} did not accept connections"
-    );
-}
-
-/// Regression guard for #337: a socket can accept `connect(2)` and still
-/// fail the calm-session protocol. The old boot sweep would have counted
-/// this row alive; the handshake probe must classify it stale and respawn.
-#[tokio::test]
-async fn revive_orphans_on_boot_respawns_stale_protocol_socket() {
-    let fx = fixture().await;
-    let term_id = seed_terminal_row(fx.repo.as_ref()).await;
-
-    let stale_sock = fx._tmp.path().join("stale-protocol.sock");
-    let mut stale_child = spawn_garbage_daemon_process(&stale_sock).await;
-    let stale_pid = stale_child.id().expect("garbage daemon pid");
-    let stale_sock_str = stale_sock.to_string_lossy().to_string();
-    fx.repo
-        .terminal_set_handle(&term_id, Some(&stale_sock_str))
-        .await
-        .unwrap();
-    fx.repo
-        .terminal_set_pid(&term_id, Some(stale_pid))
-        .await
-        .unwrap();
-
-    assert!(
-        UnixStream::connect(&stale_sock).await.is_ok(),
-        "precondition: old bare-connect probe would have misclassified this stale socket as live",
-    );
-
-    calm_server::revive_orphans_on_boot(&fx.state).await;
-
-    let post = fx
-        .repo
-        .terminal_get(&term_id)
-        .await
-        .unwrap()
-        .expect("row after sweep");
-    let new_handle = post
-        .daemon_handle
-        .expect("daemon_handle must be set after sweep");
-    assert_ne!(
-        new_handle, stale_sock_str,
-        "handshake failure must replace the stale protocol socket"
-    );
-    assert!(
-        UnixStream::connect(&new_handle).await.is_ok(),
-        "post-sweep socket {new_handle:?} should accept connections"
-    );
-    tokio::time::sleep(Duration::from_millis(350)).await;
-    assert!(
-        std::path::Path::new(&new_handle).exists(),
-        "old stale daemon's delayed unlink must not remove fresh socket {new_handle:?}"
-    );
-    assert!(
-        UnixStream::connect(&new_handle).await.is_ok(),
-        "fresh socket {new_handle:?} should remain connectable after old daemon shutdown cleanup"
-    );
-
-    let old_status = tokio::time::timeout(Duration::from_secs(2), stale_child.wait())
-        .await
-        .expect("old stale daemon should be reaped")
-        .expect("wait old stale daemon");
-    assert!(
-        old_status.success(),
-        "handshake-failed accepting daemon pid {stale_pid} should handle SIGTERM and exit cleanly before respawn; got {old_status:?}"
-    );
-}
+// Removed in #388 Phase 3b: daemon UDS probe + respawn no longer exists post-renderer-lift.
+// See PR #391 / PR #388 Phase 3b design doc for replacement coverage.
 
 /// A row whose `daemon_handle` completes the calm-session handshake must
 /// NOT be respawned — the sweep should be a no-op for live daemons. We

@@ -1844,6 +1844,21 @@ impl RepoRead for SqlxRepo {
         Ok(rows)
     }
 
+    async fn terminals_running(&self) -> Result<Vec<Terminal>> {
+        let rows = sqlx::query_as::<_, Terminal>(
+            r#"SELECT id, card_id, program, cwd, env,
+                      daemon_handle, pid,
+                      theme_fg, theme_bg,
+                      exit_code, signal_killed,
+                      created_at
+               FROM terminals
+               WHERE exit_code IS NULL AND signal_killed = 0"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     async fn spec_cards_for_boot_takeover(
         &self,
     ) -> Result<

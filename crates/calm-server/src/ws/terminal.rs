@@ -19,6 +19,7 @@ use crate::db::{RepoOutOfDomain, RouteRepo};
 use crate::error::Result;
 use crate::state::AppState;
 use crate::terminal_probe::{TerminalProbe, probe_terminal_daemon};
+use crate::terminal_renderer::{ClientPumpContext, RendererEntry, run_client_pump};
 use axum::{
     Router,
     extract::{
@@ -34,7 +35,7 @@ use std::path::{Path as StdPath, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UnixStream;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 // `tokio::time::Instant` (not `std::time::Instant`) so `tokio::time::pause()`
 // in tests virtual-advances `elapsed()` along with `interval` ticks. In
 // production this is a thin wrapper over `std::time::Instant`.
@@ -72,32 +73,209 @@ async fn upgrade(
     Path(id): Path<String>,
     State(s): State<AppState>,
 ) -> impl IntoResponse {
-    // Resolve the socket path *before* the upgrade so a missing terminal
-    // returns a proper HTTP error instead of a 101 + immediate close.
-    // If the daemon for an existing row has died (shell exited, OS killed
-    // it, calm-server restart unhooked it, …), respawn here so the client
-    // re-attach feels seamless.
-    match resolve_live_sock(&s, &id).await {
-        Ok(LiveSock::Alive(sock)) => {
-            let repo = s.repo.clone();
-            ws.on_upgrade(move |socket| handle(socket, sock, id, repo))
-                .into_response()
-        }
-        // Row exists, daemon was spawned, but its socket is now gone:
-        // overwhelmingly the "child exited cleanly between row creation
-        // and the browser WS attach" race (one-shot worker terminals).
-        // Accept the upgrade and immediately emit (optionally) a JSON
-        // `TerminalExited` frame followed by Close(1000, "child-exited")
-        // so the JS client renders the exit badge with the real code
-        // instead of falling back to "exit" neutral.
-        Ok(LiveSock::ChildExited { exit_code }) => ws
+    match resolve_live_renderer(&s, &id).await {
+        Ok(LiveRenderer::Alive(entry)) => ws
+            .on_upgrade(move |socket| handle_renderer(socket, entry, id))
+            .into_response(),
+        Ok(LiveRenderer::ChildExited { exit_code }) => ws
             .on_upgrade(move |socket| send_child_exited_close(socket, exit_code))
             .into_response(),
         Err(e) => e.into_response(),
     }
 }
 
+enum LiveRenderer {
+    Alive(Arc<RendererEntry>),
+    ChildExited { exit_code: Option<i32> },
+}
+
+async fn resolve_live_renderer(s: &AppState, id: &str) -> Result<LiveRenderer> {
+    let term = s
+        .repo
+        .terminal_get(id)
+        .await?
+        .ok_or_else(|| crate::error::CalmError::NotFound(format!("terminal {id}")))?;
+
+    if let Some(entry) = s.terminal_renderer.get(&term.id) {
+        return Ok(LiveRenderer::Alive(entry));
+    }
+
+    if term.exit_code.is_some() {
+        tracing::info!(
+            terminal_id = %term.id,
+            exit_code = ?term.exit_code,
+            "terminal has no live renderer entry and row is exited",
+        );
+        return Ok(LiveRenderer::ChildExited {
+            exit_code: term.exit_code,
+        });
+    }
+
+    // #388 Phase 3b: probe the supervisor before reattaching. If the
+    // supervisor doesn't know about this proc_id, there's no live PTY
+    // child to reattach to — calling spawn_terminal_for would SPAWN a
+    // fresh child (violating the "stale handle does not respawn"
+    // invariant the daemon-binary world enforced). Only call
+    // spawn_terminal_for when the supervisor confirms the proc is
+    // running; EnsureProc's idempotent fast-path then makes it a true
+    // reattach.
+    match crate::probe_supervisor_for_terminal(s, &term.id).await {
+        Ok(true) => {
+            tracing::info!(
+                terminal_id = %term.id,
+                "supervisor confirms live PTY; attempting lazy renderer reattach",
+            );
+            match crate::routes::terminal::spawn_terminal_for(
+                s,
+                &term,
+                &term.program,
+                &term.cwd,
+                &term.env,
+            )
+            .await
+            {
+                Ok(entry) => Ok(LiveRenderer::Alive(entry)),
+                Err(e) => {
+                    tracing::warn!(
+                        terminal_id = %term.id,
+                        error = %e,
+                        "ws upgrade: lazy renderer reattach failed; surfacing child-exit",
+                    );
+                    Ok(LiveRenderer::ChildExited { exit_code: None })
+                }
+            }
+        }
+        Ok(false) => {
+            tracing::info!(
+                terminal_id = %term.id,
+                "no live PTY at supervisor and no exit recorded; surfacing child-exit without respawn",
+            );
+            Ok(LiveRenderer::ChildExited { exit_code: None })
+        }
+        Err(e) => {
+            tracing::warn!(
+                terminal_id = %term.id,
+                error = %e,
+                "supervisor probe failed; surfacing child-exit",
+            );
+            Ok(LiveRenderer::ChildExited { exit_code: None })
+        }
+    }
+}
+
+async fn handle_renderer(socket: WebSocket, entry: Arc<RendererEntry>, terminal_id: String) {
+    let (incoming_tx, incoming_rx) = mpsc::channel::<ClientMsg>(64);
+    let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<DaemonMsg>(256);
+    let event_rx = entry.subscribe();
+    let ctx = ClientPumpContext {
+        event_rx,
+        event_tx: entry.handle.event_tx.clone(),
+        render_plane: entry.handle.render_plane.clone(),
+        exit: entry.exit.clone(),
+        supervisor_tx: entry.handle.supervisor_tx.clone(),
+        owner_registry: entry.handle.owner_registry.clone(),
+        session_id: entry.handle.session_id,
+        terminal_id: terminal_id.clone(),
+    };
+    let pump_task = tokio::spawn(async move {
+        if let Err(e) = run_client_pump(incoming_rx, outgoing_tx, ctx).await {
+            tracing::warn!(error = %e, "terminal renderer client pump ended with error");
+        }
+    });
+
+    let (ws_tx, mut ws_rx) = socket.split();
+    let ws_tx = Arc::new(Mutex::new(ws_tx));
+    let last_seen = Arc::new(Mutex::new(Instant::now()));
+
+    let last_seen_up = last_seen.clone();
+    let up_terminal_id = terminal_id.clone();
+    let up = async move {
+        while let Some(Ok(msg)) = ws_rx.next().await {
+            *last_seen_up.lock().await = Instant::now();
+            match msg {
+                Message::Text(text) => {
+                    let mut parsed: ClientMsg = match serde_json::from_str(&text) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "unparseable ClientMsg JSON; dropping");
+                            continue;
+                        }
+                    };
+                    sanitize_client_msg(&mut parsed);
+                    if incoming_tx.send(parsed).await.is_err() {
+                        break;
+                    }
+                }
+                Message::Close(_) => break,
+                Message::Binary(_) => {}
+                _ => {}
+            }
+        }
+        tracing::debug!(terminal_id = %up_terminal_id, "terminal WS upstream ended");
+    };
+
+    let ws_tx_down = ws_tx.clone();
+    let down = async move {
+        while let Some(msg) = outgoing_rx.recv().await {
+            let exit = matches!(
+                msg,
+                DaemonMsg::TerminalExited { .. } | DaemonMsg::ChildExited { .. }
+            );
+            let text = match serde_json::to_string(&msg) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(error = %e, "serialize DaemonMsg failed");
+                    continue;
+                }
+            };
+            if ws_tx_down
+                .lock()
+                .await
+                .send(Message::Text(text.into()))
+                .await
+                .is_err()
+            {
+                break;
+            }
+            if exit {
+                break;
+            }
+        }
+        let _ = ws_tx_down
+            .lock()
+            .await
+            .send(Message::Close(Some(CloseFrame {
+                code: 1000,
+                reason: CLOSE_REASON_CHILD_EXITED.into(),
+            })))
+            .await;
+    };
+
+    let heartbeat = run_heartbeat(ws_tx.clone(), last_seen, PING_INTERVAL, PONG_TIMEOUT);
+    tokio::select! {
+        _ = up => {}
+        _ = down => {}
+        _ = heartbeat => {}
+    }
+    pump_task.abort();
+}
+
+fn sanitize_client_msg(parsed: &mut ClientMsg) {
+    if let ClientMsg::ClientHello {
+        capabilities,
+        terminal_id,
+        ..
+    } = parsed
+    {
+        capabilities.kernel_originated_input = false;
+        if let Ok(uuid) = uuid::Uuid::parse_str(terminal_id) {
+            *terminal_id = uuid.simple().to_string();
+        }
+    }
+}
+
 /// Outcome of [`resolve_live_sock`].
+#[allow(dead_code)]
 enum LiveSock {
     /// Daemon socket responded to a probe — hand back its path so the
     /// caller can hand off to [`handle`].
@@ -149,6 +327,7 @@ enum LiveSock {
 /// enforce this on the reader — the repo writes whatever was on disk and
 /// the frontend renders whichever field is present.
 #[derive(serde::Deserialize)]
+#[allow(dead_code)]
 struct ExitSidecar {
     code: Option<i32>,
     #[serde(default)]
@@ -166,6 +345,7 @@ struct ExitSidecar {
 /// returned `Option<ExitSidecar>` is `Some` iff the file existed and
 /// parsed cleanly — persist-failure still yields `Some` because the
 /// in-memory payload is still good enough to send to the client.
+#[allow(dead_code)]
 async fn persist_exit_sidecar(
     s: &AppState,
     terminal_id: &str,
@@ -226,6 +406,7 @@ async fn persist_exit_sidecar(
     Some(parsed)
 }
 
+#[allow(dead_code)]
 async fn resolve_live_sock(s: &AppState, id: &str) -> Result<LiveSock> {
     let term = s
         .repo
@@ -354,6 +535,7 @@ async fn send_child_exited_close(mut socket: WebSocket, exit_code: Option<i32>) 
         .await;
 }
 
+#[allow(dead_code)]
 async fn handle(socket: WebSocket, sock: PathBuf, terminal_id: String, repo: Arc<dyn RouteRepo>) {
     let stream = match UnixStream::connect(&sock).await {
         Ok(s) => s,

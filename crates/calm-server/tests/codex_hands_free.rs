@@ -81,6 +81,7 @@ async fn boot_full() -> (
     std::net::SocketAddr,
     axum::Router,
     String,
+    AppState,
     Arc<DaemonClient>,
     TempDir,
 ) {
@@ -140,7 +141,7 @@ async fn boot_full() -> (
     let app = axum::Router::new()
         .merge(rest)
         .merge(ws::router())
-        .with_state(state);
+        .with_state(state.clone());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -155,7 +156,7 @@ async fn boot_full() -> (
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    (addr, app, wave.id.to_string(), daemon, tmp)
+    (addr, app, wave.id.to_string(), state, daemon, tmp)
 }
 
 async fn rest_post(app: axum::Router, uri: String, body: Value) -> (StatusCode, Value) {
@@ -194,7 +195,7 @@ async fn recv_daemon_frame(
 
 #[tokio::test]
 async fn inject_stdin_writes_bytes_and_awaits_input_ack() {
-    let (addr, app, wave_id, daemon, _tmp) = boot_full().await;
+    let (addr, app, wave_id, state, daemon, _tmp) = boot_full().await;
 
     // Spawn a real PTY child that:
     //   1. emits an initial banner ("READY\n") so the daemon's
@@ -282,12 +283,11 @@ async fn inject_stdin_writes_bytes_and_awaits_input_ack() {
     // `<data_dir>/<simple>.sock`. The hyphenated form is what we put
     // into `ClientHello.terminal_id` for the daemon's identity match
     // — `inject_stdin` handles that normalization internally.
-    let sock = daemon.sock_path(&raw_terminal_id);
     let _ = hyphenated_terminal_id; // confirmed parses as UUID; not used directly
     tokio::time::timeout(
         STEP_TIMEOUT,
-        daemon.inject_stdin(
-            &sock,
+        daemon.inject_stdin_renderer(
+            &state.terminal_renderer,
             &raw_terminal_id, // simple form — inject_stdin normalizes
             b"HELLO\r",
             Duration::from_secs(4),
@@ -476,14 +476,13 @@ async fn route_to_subscriber_chain_skips_auto_submit_for_empty_or_absent_prompt(
         .await
         .unwrap();
 
-    // Bogus daemon binary so spawn fails fast; data_dir is a tempdir
-    // so we control where `sock_path` resolves.
-    let bad_bin = std::env::temp_dir().join("definitely-not-a-real-daemon-binary-hf");
-    let _ = std::fs::remove_file(&bad_bin);
+    // Bogus supervisor socket so renderer spawn fails fast; data_dir is a
+    // tempdir so every attempted renderer id is isolated to this test.
+    let bad_sock = tmp.path().join("missing-proc-supervisor.sock");
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin: bad_bin,
-        proc_supervisor_sock: None,
+        session_daemon_bin: locate_daemon_bin(),
+        proc_supervisor_sock: Some(bad_sock),
     });
     let events = EventBus::new();
     let state = AppState::from_parts(
@@ -508,7 +507,7 @@ async fn route_to_subscriber_chain_skips_auto_submit_for_empty_or_absent_prompt(
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
         ))
-        .with_state(state);
+        .with_state(state.clone());
 
     // Wire up the real subscriber against the same bus + daemon + repo
     // the route will write to. This is the chain we're locking down.
@@ -523,7 +522,7 @@ async fn route_to_subscriber_chain_skips_auto_submit_for_empty_or_absent_prompt(
         let wave_id = wave.id.clone();
         let events = events.clone();
         let repo = repo.clone();
-        let daemon = daemon.clone();
+        let state = state.clone();
         async move {
             let (status, resp) =
                 rest_post(app, format!("/api/waves/{wave_id}/codex-cards"), body).await;
@@ -552,21 +551,9 @@ async fn route_to_subscriber_chain_skips_auto_submit_for_empty_or_absent_prompt(
                 .expect("payload.terminal_id stamped")
                 .to_string();
 
-            // Bind a listener at the exact socket path the subscriber
-            // would dial. If `codex_auto_submit` mistakenly called
-            // `inject_stdin`, our `accept()` would complete; the
-            // assertion below proves it stays pending.
-            let sock_path = daemon.sock_path(&terminal_id);
-            if let Some(parent) = sock_path.parent() {
-                std::fs::create_dir_all(parent).expect("mkdir data_dir for sock listener");
-            }
-            let _ = std::fs::remove_file(&sock_path);
-            let listener = tokio::net::UnixListener::bind(&sock_path)
-                .unwrap_or_else(|e| panic!("{label}: bind sock listener at {sock_path:?}: {e}"));
-
             // Emit the trigger event. With no prompt on the card, the
             // subscriber's gate should short-circuit before touching
-            // the socket.
+            // the renderer.
             events.emit(
                 ActorId::AiCodex(CardId::from("test")),
                 Event::CodexHook {
@@ -576,23 +563,11 @@ async fn route_to_subscriber_chain_skips_auto_submit_for_empty_or_absent_prompt(
                 },
             );
 
-            // Tight window — the subscriber's fire-and-forget task
-            // would complete its connect attempt well inside 200ms on
-            // any reasonable test host. If `accept()` *does* fire,
-            // that's a regression: prompt-less card auto-submitted.
-            let observed = tokio::time::timeout(Duration::from_millis(200), listener.accept())
-                .await
-                .ok();
+            tokio::time::sleep(Duration::from_millis(200)).await;
             assert!(
-                observed.is_none(),
-                "{label}: subscriber must NOT connect to the daemon socket when prompt is empty/absent; observed connection from auto-submit path"
+                state.terminal_renderer.get(&terminal_id).is_none(),
+                "{label}: prompt-less card must not trigger renderer-backed auto-submit"
             );
-
-            // Clean up so the next sub-case starts from a known state.
-            // (Card stays in the DB — the next case will find its own
-            // card via the same `prompt is None` predicate.)
-            drop(listener);
-            let _ = std::fs::remove_file(&sock_path);
         }
     };
 

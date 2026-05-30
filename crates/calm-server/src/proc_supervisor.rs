@@ -16,6 +16,7 @@ use tokio::net::UnixStream;
 /// it aborts before waiting for readiness. Best-effort persistence
 /// (e.g. pid that the sweeper can fall back without) should log + drop
 /// the error inside the closure.
+#[allow(dead_code)]
 pub(crate) async fn ensure_proc<F, Fut>(
     control_sock: Option<&Path>,
     request: EnsureProcRequest,
@@ -85,4 +86,5 @@ pub(crate) async fn resolve_control_sock(control_sock: Option<&Path>) -> Result<
         .ok_or_else(|| CalmError::Internal("proc-supervisor socket is not configured".into()))
 }
 
+#[allow(dead_code)]
 pub(crate) const DEFAULT_READY_TIMEOUT: Duration = Duration::from_secs(10);

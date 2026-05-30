@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
+use crate::db::RouteRepo;
 use calm_session::control::{
     AttachRequest, Attached, ControlMsg, ControlReply, EnsureProcRequest, IoMode, ProcSignal,
     SignalRequest,
@@ -46,6 +47,7 @@ pub enum SupervisorControl {
     Signal(ProcSignal),
 }
 
+#[derive(Clone)]
 pub struct RendererConfig {
     pub terminal_id: String,
     pub cols: u16,
@@ -81,6 +83,7 @@ pub struct RendererEntry {
     pub proc_id: String,
     pub supervisor_sock: PathBuf,
     pub handle: RendererHandle,
+    config: RendererConfig,
     /// Set exactly once when the supervisor's attach stream delivers
     /// `Exited`. Late client pumps replay this immediately after
     /// `ServerHello` because broadcast receivers do not retain history.
@@ -91,6 +94,10 @@ pub struct RendererEntry {
 }
 
 impl RendererEntry {
+    pub fn config(&self) -> &RendererConfig {
+        &self.config
+    }
+
     pub fn take_initial_event_rx(&self) -> Option<broadcast::Receiver<DaemonMsg>> {
         self.initial_event_rx
             .lock()
@@ -136,12 +143,21 @@ pub struct RendererSpawnError(#[from] anyhow::Error);
 
 pub struct TerminalRendererRegistry {
     entries: StdMutex<HashMap<String, Arc<RendererEntry>>>,
+    repo: Option<Arc<dyn RouteRepo>>,
 }
 
 impl TerminalRendererRegistry {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             entries: StdMutex::new(HashMap::new()),
+            repo: None,
+        })
+    }
+
+    pub fn new_with_repo(repo: Arc<dyn RouteRepo>) -> Arc<Self> {
+        Arc::new(Self {
+            entries: StdMutex::new(HashMap::new()),
+            repo: Some(repo),
         })
     }
 
@@ -155,7 +171,7 @@ impl TerminalRendererRegistry {
             return Ok(existing);
         }
 
-        let entry = Arc::new(ensure_entry(cfg).await?);
+        let entry = Arc::new(ensure_entry(cfg, self.repo.clone()).await?);
         let mut entries = self
             .entries
             .lock()
@@ -164,6 +180,10 @@ impl TerminalRendererRegistry {
             entry.abort_tasks();
             Ok(existing.clone())
         } else {
+            tracing::info!(
+                terminal_id = %entry.terminal_id,
+                "terminal renderer registry inserted entry"
+            );
             entries.insert(entry.terminal_id.clone(), entry.clone());
             Ok(entry)
         }
@@ -175,6 +195,13 @@ impl TerminalRendererRegistry {
             .lock()
             .ok()
             .and_then(|entries| entries.get(terminal_id).cloned())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries
+            .lock()
+            .map(|entries| entries.is_empty())
+            .unwrap_or(false)
     }
 
     /// Tear down a renderer: drop the broadcast, signal Term/Kill to
@@ -189,6 +216,7 @@ impl TerminalRendererRegistry {
             return;
         };
 
+        tracing::info!(terminal_id, "terminal renderer registry dropping entry");
         entry.shutdown_signal(ProcSignal::Term).await;
         tokio::time::sleep(Duration::from_millis(200)).await;
         entry.shutdown_signal(ProcSignal::Kill).await;
@@ -196,7 +224,10 @@ impl TerminalRendererRegistry {
     }
 }
 
-async fn ensure_entry(cfg: RendererConfig) -> anyhow::Result<RendererEntry> {
+async fn ensure_entry(
+    cfg: RendererConfig,
+    repo: Option<Arc<dyn RouteRepo>>,
+) -> anyhow::Result<RendererEntry> {
     let proc_id = format!("term:{}", cfg.terminal_id);
     let mut control_conn = UnixStream::connect(&cfg.supervisor_sock)
         .await
@@ -210,10 +241,10 @@ async fn ensure_entry(cfg: RendererConfig) -> anyhow::Result<RendererEntry> {
         &mut control_conn,
         &ControlMsg::EnsureProc(EnsureProcRequest {
             proc_id: proc_id.clone(),
-            program: cfg.program,
-            args: cfg.args,
-            envs: cfg.envs,
-            cwd: cfg.cwd,
+            program: cfg.program.clone(),
+            args: cfg.args.clone(),
+            envs: cfg.envs.clone(),
+            cwd: cfg.cwd.clone(),
             ready_timeout_ms: 0,
             io_mode: IoMode::Pty {
                 cols: cfg.cols,
@@ -224,7 +255,18 @@ async fn ensure_entry(cfg: RendererConfig) -> anyhow::Result<RendererEntry> {
     )
     .await?;
     match read_frame(&mut control_conn).await? {
-        ControlReply::Spawned { .. } => {}
+        ControlReply::Spawned { pid } => {
+            if let Some(repo) = repo.as_ref()
+                && let Err(e) = repo.terminal_set_pid(&cfg.terminal_id, Some(pid)).await
+            {
+                tracing::warn!(
+                    terminal_id = %cfg.terminal_id,
+                    pid,
+                    error = %e,
+                    "failed to persist terminal pid after supervisor spawn"
+                );
+            }
+        }
         ControlReply::SpawnFailed { error, .. } => anyhow::bail!("{error}"),
         other => anyhow::bail!("unexpected proc-supervisor spawn reply: {other:?}"),
     }
@@ -295,13 +337,15 @@ async fn ensure_entry(cfg: RendererConfig) -> anyhow::Result<RendererEntry> {
         event_tx.clone(),
         supervisor_tx.clone(),
         exited_tx,
+        repo,
+        cfg.terminal_id.clone(),
     );
     let ready_task = child_ready::spawn_child_ready_poller(render_plane.clone(), event_tx.clone());
 
     Ok(RendererEntry {
-        terminal_id: cfg.terminal_id,
+        terminal_id: cfg.terminal_id.clone(),
         proc_id,
-        supervisor_sock: cfg.supervisor_sock,
+        supervisor_sock: cfg.supervisor_sock.clone(),
         handle: RendererHandle {
             session_id,
             event_rx,
@@ -310,6 +354,7 @@ async fn ensure_entry(cfg: RendererConfig) -> anyhow::Result<RendererEntry> {
             owner_registry,
             supervisor_tx,
         },
+        config: cfg,
         exit,
         initial_event_rx: StdMutex::new(Some(initial_event_rx)),
         exited_rx: StdMutex::new(Some(exited_rx)),

@@ -474,7 +474,7 @@ pub(crate) async fn delete_card(
     // `terminals` table with no role-specific cleanup divergence.
     let term = s.repo.terminal_get_by_card(card_id.as_str()).await?;
     if let Some(t) = term.as_ref() {
-        reap_terminal_artifacts(t).await;
+        reap_terminal_artifacts(&s, t).await;
     }
     let terminal_id = term.map(|t| t.id);
 

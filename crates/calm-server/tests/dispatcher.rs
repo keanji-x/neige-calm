@@ -39,6 +39,7 @@ use calm_server::event::{
 use calm_server::ids::{ActorId, CoveId, WaveId};
 use calm_server::model::{CardRole, NewCove, NewWave};
 use calm_server::state::{CodexClient, DaemonClient};
+use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::wave_cove_cache::WaveCoveCache;
 
 async fn boot() -> (
@@ -92,7 +93,9 @@ fn stub_daemon() -> Arc<DaemonClient> {
     Arc::new(DaemonClient {
         data_dir: PathBuf::from("/tmp/neige-dispatcher-test-noop"),
         session_daemon_bin: PathBuf::from("/nonexistent-daemon-bin"),
-        proc_supervisor_sock: None,
+        proc_supervisor_sock: Some(PathBuf::from(
+            "/tmp/neige-dispatcher-test-missing-proc-supervisor.sock",
+        )),
     })
 }
 
@@ -256,13 +259,16 @@ async fn dispatcher_happy_path_mints_worker_card() {
         session_daemon_bin: locate_recorder_bin(),
         proc_supervisor_sock: None,
     });
-    let _dispatcher = Dispatcher::spawn(
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
+    let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo);
+    let _dispatcher = Dispatcher::spawn_with_terminal_renderer(
         repo.clone(),
         events.clone(),
         cache.clone(),
         wcc.clone(),
         codex.clone(),
         daemon,
+        terminal_renderer.clone(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,    // permits
@@ -939,6 +945,7 @@ fn locate_never_ready_bin() -> PathBuf {
 /// land + return its lines. The recorder writes the file BEFORE
 /// binding the unix socket so by the time the kernel sees the daemon
 /// ready, the argv sidecar is complete on disk.
+#[allow(dead_code)]
 async fn wait_for_argv_file(data_dir: &std::path::Path, timeout: Duration) -> Vec<String> {
     let start = Instant::now();
     loop {
@@ -976,13 +983,16 @@ async fn dispatcher_codex_worker_spawns_with_dark_theme_default() {
     });
 
     let codex = stub_codex();
-    let _dispatcher = Dispatcher::spawn(
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
+    let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo);
+    let _dispatcher = Dispatcher::spawn_with_terminal_renderer(
         repo.clone(),
         events.clone(),
         cache.clone(),
         wcc.clone(),
         codex.clone(),
         daemon,
+        terminal_renderer.clone(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,    // permits
@@ -999,32 +1009,27 @@ async fn dispatcher_codex_worker_spawns_with_dark_theme_default() {
         .await
         .unwrap();
 
-    let argv = wait_for_argv_file(tmp.path(), Duration::from_secs(5)).await;
-
-    let pairs: Vec<(String, String)> = argv
-        .windows(2)
-        .map(|w| (w[0].clone(), w[1].clone()))
-        .collect();
-    // Exact dark RGB defaults — these mirror `DARK_THEME_RGB` in
-    // `web/src/shared/themeRgb.ts` and `RequestTheme::default_dark()`
-    // in `crates/calm-server/src/routes/theme.rs`. Pinning the values
-    // here means a drift on either side (e.g. someone tweaks the dark
-    // theme bg in CSS) trips this test loudly rather than silently
-    // desyncing the daemon's OSC reply from the host paint.
-    assert!(
-        pairs
-            .iter()
-            .any(|(k, v)| k == "--terminal-fg" && v == "216,219,226"),
-        "dispatcher-spawned codex worker daemon argv must contain \
-         `--terminal-fg 216,219,226` (DARK_THEME_RGB.fg); got: {argv:?}"
-    );
-    assert!(
-        pairs
-            .iter()
-            .any(|(k, v)| k == "--terminal-bg" && v == "15,20,24"),
-        "dispatcher-spawned codex worker daemon argv must contain \
-         `--terminal-bg 15,20,24` (DARK_THEME_RGB.bg); got: {argv:?}"
-    );
+    let card = wait_for(Duration::from_secs(5), || async {
+        let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
+        cards
+            .into_iter()
+            .find(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem))
+    })
+    .await
+    .expect("worker card minted within 5s");
+    let terminal_id = card.payload["terminal_id"]
+        .as_str()
+        .expect("payload.terminal_id stamped");
+    // Same dispatcher-spawn race as the carries_prompt_argv test above:
+    // the card-mint DB write can win against renderer.ensure() inserting
+    // into the registry by a tick or two.
+    let entry = wait_for(Duration::from_secs(3), || async {
+        terminal_renderer.get(terminal_id)
+    })
+    .await
+    .expect("renderer entry registered before CardAdded within 3s");
+    assert_eq!(entry.config().terminal_fg, (216, 219, 226));
+    assert_eq!(entry.config().terminal_bg, (15, 20, 24));
 }
 
 // ---------------------------------------------------------------------------
@@ -1051,13 +1056,16 @@ async fn dispatcher_codex_worker_spawn_carries_prompt_argv() {
     });
 
     let codex = stub_codex();
-    let _dispatcher = Dispatcher::spawn(
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
+    let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo);
+    let _dispatcher = Dispatcher::spawn_with_terminal_renderer(
         repo.clone(),
         events.clone(),
         cache.clone(),
         wcc.clone(),
         codex.clone(),
         daemon,
+        terminal_renderer.clone(),
         None,
         calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,
@@ -1073,29 +1081,29 @@ async fn dispatcher_codex_worker_spawn_carries_prompt_argv() {
         .await
         .unwrap();
 
-    // The recorder's `writeln!` per argv element puts the whole program
-    // string (which contains embedded `\n` from the rendered prompt) on
-    // one logical "element" but multiple file lines. We scan the raw
-    // file contents instead of using the line-split helper so the
-    // multi-line prompt assertion is robust to embedded newlines.
-    wait_for_argv_file(tmp.path(), Duration::from_secs(5)).await;
-    let argv_text = std::fs::read_dir(tmp.path())
-        .ok()
-        .into_iter()
-        .flatten()
-        .flatten()
-        .find_map(|e| {
-            let p = e.path();
-            if p.extension().and_then(|s| s.to_str()) == Some("argv") {
-                std::fs::read_to_string(&p).ok()
-            } else {
-                None
-            }
-        })
-        .expect("argv sidecar contents");
+    let card = wait_for(Duration::from_secs(5), || async {
+        let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
+        cards
+            .into_iter()
+            .find(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem))
+    })
+    .await
+    .expect("worker card minted within 5s");
+    let terminal_id = card.payload["terminal_id"]
+        .as_str()
+        .expect("payload.terminal_id stamped");
+    // Dispatcher's spawn races against the card-mint write — the card
+    // can land in the DB a tick before the renderer's ensure() completes
+    // its registry insert. Poll briefly.
+    let entry = wait_for(Duration::from_secs(3), || async {
+        terminal_renderer.get(terminal_id)
+    })
+    .await
+    .expect("renderer entry registered for worker within 3s");
+    let argv_text = entry.config().args.join("\n");
     assert!(
         argv_text.contains("codex '"),
-        "expected daemon argv to start the program with `codex '<prompt>'`; \
+        "expected renderer argv to start the program with `codex '<prompt>'`; \
          got bare `codex` or missing quoting: {argv_text:?}"
     );
     assert!(
@@ -1141,13 +1149,16 @@ async fn dispatcher_codex_card_added_after_daemon_handle_set_issue_310() {
     });
 
     let codex = stub_codex();
-    let _dispatcher = Dispatcher::spawn(
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
+    let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo);
+    let _dispatcher = Dispatcher::spawn_with_terminal_renderer(
         repo.clone(),
         events.clone(),
         cache.clone(),
         wcc.clone(),
         codex.clone(),
         daemon,
+        terminal_renderer.clone(),
         None,
         calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,
@@ -1189,8 +1200,8 @@ async fn dispatcher_codex_card_added_after_daemon_handle_set_issue_310() {
 
     // The card's payload carries the terminal_id (canonical layout
     // stamped by `card_with_codex_create_tx`); use it to fetch the
-    // terminal row and assert `daemon_handle.is_some()` AT THE MOMENT
-    // the bus delivered CardAdded.
+    // terminal row and assert the renderer entry + pid are present AT
+    // THE MOMENT the bus delivered CardAdded.
     let terminal_id = card
         .payload
         .get("terminal_id")
@@ -1201,27 +1212,14 @@ async fn dispatcher_codex_card_added_after_daemon_handle_set_issue_310() {
         .await
         .unwrap()
         .expect("terminal row for the worker card must exist post-CardAdded");
-    let handle = term.daemon_handle.expect(
-        "issue #310 regression: terminal.daemon_handle MUST be populated \
-             by the time CardAdded reaches subscribers — otherwise a hot \
-             subscriber's WS attach hits resolve_live_sock's \"no \
-             daemon_handle = clean child exit\" branch and reports a false \
-             child-exited close",
+    assert!(
+        terminal_renderer.get(terminal_id).is_some(),
+        "issue #310 regression: renderer entry MUST be registered by the time CardAdded reaches subscribers",
     );
     assert!(
-        !handle.is_empty(),
-        "daemon_handle must be a non-empty socket path; got {handle:?}"
+        term.pid.is_some(),
+        "terminal pid must be persisted by the time CardAdded reaches subscribers; got {term:?}"
     );
-
-    // Belt-and-braces: the socket the handle points at must actually
-    // accept a connect — confirms the daemon is up, not just that the
-    // handle was written ahead of a still-unbound socket. The recorder
-    // fixture binds the socket before writing `ready\n`, so this
-    // succeeds whenever the dispatcher's spawn-helper readiness race
-    // succeeded.
-    let _ = tokio::net::UnixStream::connect(&handle)
-        .await
-        .expect("daemon socket must accept a connect by the time CardAdded fires");
 }
 
 // ---------------------------------------------------------------------------
@@ -1249,13 +1247,16 @@ async fn dispatcher_terminal_card_added_after_daemon_handle_set_issue_310() {
     });
 
     let codex = stub_codex();
-    let _dispatcher = Dispatcher::spawn(
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
+    let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo);
+    let _dispatcher = Dispatcher::spawn_with_terminal_renderer(
         repo.clone(),
         events.clone(),
         cache.clone(),
         wcc.clone(),
         codex.clone(),
         daemon,
+        terminal_renderer.clone(),
         None,
         calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,
@@ -1312,21 +1313,14 @@ async fn dispatcher_terminal_card_added_after_daemon_handle_set_issue_310() {
         .await
         .unwrap()
         .expect("terminal row for the worker card must exist post-CardAdded");
-    let handle = term.daemon_handle.expect(
-        "issue #310 regression (terminal path): terminal.daemon_handle MUST \
-             be populated by the time CardAdded reaches subscribers — \
-             otherwise a hot subscriber's WS attach hits resolve_live_sock's \
-             \"no daemon_handle = clean child exit\" branch and reports a \
-             false child-exited close",
+    assert!(
+        terminal_renderer.get(terminal_id).is_some(),
+        "issue #310 regression (terminal path): renderer entry MUST be registered by the time CardAdded reaches subscribers",
     );
     assert!(
-        !handle.is_empty(),
-        "daemon_handle must be a non-empty socket path; got {handle:?}"
+        term.pid.is_some(),
+        "terminal pid must be persisted by the time CardAdded reaches subscribers; got {term:?}"
     );
-
-    let _ = tokio::net::UnixStream::connect(&handle)
-        .await
-        .expect("daemon socket must accept a connect by the time CardAdded fires");
 }
 
 // ---------------------------------------------------------------------------
@@ -1721,27 +1715,25 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
 async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
 
-    // Intentionally leak the tempdir — even after the reap kills the
-    // never-ready daemon pid, lingering filesystem cleanup races with
-    // the test's `tmp.drop()` would print stderr noise. The dir
-    // itself is small (just the socket parent).
-    let tmp_path = tempfile::TempDir::new()
-        .expect("tempdir for daemon sockets")
-        .keep();
+    let tmp_path = tempfile::TempDir::new().expect("tempdir for daemon sockets");
+    let bad_sock = tmp_path.path().join("missing-proc-supervisor.sock");
     let daemon = Arc::new(calm_server::state::DaemonClient {
-        data_dir: tmp_path.clone(),
+        data_dir: tmp_path.path().to_path_buf(),
         session_daemon_bin: locate_never_ready_bin(),
-        proc_supervisor_sock: None,
+        proc_supervisor_sock: Some(bad_sock),
     });
 
     let codex = stub_codex();
-    let _dispatcher = Dispatcher::spawn(
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
+    let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo);
+    let _dispatcher = Dispatcher::spawn_with_terminal_renderer(
         repo.clone(),
         events.clone(),
         cache.clone(),
         wcc.clone(),
         codex.clone(),
         daemon,
+        terminal_renderer.clone(),
         None,
         calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
         4,
@@ -1788,91 +1780,11 @@ async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
     }
     assert!(
         saw_failed,
-        "expected dispatcher to emit task.failed after hung-daemon readiness backstop"
+        "expected dispatcher to emit task.failed after supervisor connect failure"
     );
-
-    // Locate the partial-pid sidecar written by the fixture. Sockets
-    // land directly under `data_dir` as `<term_id>.sock` (see
-    // `DaemonClient::sock_path`); the partial-pid sidecar sits next to
-    // it as `<term_id>.sock.partial-pid`.
-    let mut partial_pid_path: Option<std::path::PathBuf> = None;
-    let mut sock_path: Option<std::path::PathBuf> = None;
-    let scan_deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < scan_deadline {
-        let mut found = false;
-        if let Ok(read) = std::fs::read_dir(&tmp_path) {
-            for entry in read.flatten() {
-                let p = entry.path();
-                if p.extension().and_then(|s| s.to_str()) == Some("partial-pid") {
-                    partial_pid_path = Some(p.clone());
-                    if let Some(stem) = p.to_str().and_then(|s| s.strip_suffix(".partial-pid")) {
-                        sock_path = Some(std::path::PathBuf::from(stem));
-                    }
-                    found = true;
-                    break;
-                }
-            }
-        }
-        if found {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(40)).await;
-    }
-    let partial_pid_path = partial_pid_path
-        .expect("never-ready daemon never wrote its partial-pid sidecar; spawn pipeline broken");
-    let sock_path = sock_path.expect("derived sock path from sidecar stem");
-
-    let pid_str = std::fs::read_to_string(&partial_pid_path)
-        .expect("read partial-pid sidecar")
-        .trim()
-        .to_string();
-    let pid: i32 = pid_str
-        .parse()
-        .unwrap_or_else(|e| panic!("parse partial-pid {pid_str:?}: {e}"));
-
-    // Reap may complete asynchronously w.r.t. task.failed emission
-    // (graceful-kill helper has a 5s timeout; then SIGTERM; then the
-    // daemon's exit propagation has its own schedule). Poll for up to
-    // a few seconds.
-    let kill_check_deadline = Instant::now() + Duration::from_secs(15);
-    let mut process_dead = false;
-    while Instant::now() < kill_check_deadline {
-        // `kill(pid, 0)` is the standard liveness probe: returns 0
-        // when the process exists, ESRCH when it's gone. We don't
-        // actually deliver a signal.
-        let alive = unsafe { libc::kill(pid, 0) } == 0;
-        if !alive {
-            process_dead = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    if !process_dead {
-        // Last-ditch cleanup so we don't leak this process past the
-        // test fn — the rollback path was supposed to kill it but
-        // didn't. SIGKILL bypasses any signal handler the daemon
-        // might have installed.
-        unsafe {
-            libc::kill(pid, libc::SIGKILL);
-        }
-        panic!(
-            "issue #310 regression: rollback reap did NOT kill the partial-spawn daemon \
-             (pid {pid}) — the sweeper can't see this orphan because we just deleted the \
-             card+terminal rows that referenced it, so the daemon would leak until the \
-             next kernel boot. `reap_terminal_artifacts` must run BEFORE the row delete."
-        );
-    }
-
-    // Socket file: `reap_terminal_artifacts` unlinks `daemon_handle`
-    // best-effort. With our never-ready fixture the daemon never bound
-    // the socket in the first place, so the path may never have
-    // existed on disk — but the reap helper still calls `remove_file`
-    // and tolerates ENOENT. The contract we assert: by the time the
-    // rollback returns, no live socket file remains for that terminal.
     assert!(
-        !sock_path.exists(),
-        "socket file {sock_path:?} should be gone after reap (the fixture never bound it, \
-         so this assertion mostly proves the rollback didn't somehow CREATE one)"
+        terminal_renderer.is_empty(),
+        "rollback must not leave a registered renderer entry after spawn failure"
     );
 
     // And: the card row is gone (rollback step 3 fired).
@@ -2054,21 +1966,20 @@ async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
         .get("terminal_id")
         .and_then(|v| v.as_str())
         .expect("preserved card payload carries terminal_id");
-    let term_row = repo
-        .terminal_get(terminal_id)
-        .await
-        .expect("terminal_get ok")
-        .expect("preserved terminal row must still exist");
-    assert!(
-        term_row.daemon_handle.is_some(),
-        "preserved row must keep daemon_handle set (so the WS attach fast \
-         path can resolve to ChildExited from the sidecar)",
-    );
+    let term_row = wait_for(Duration::from_secs(5), || {
+        let repo = repo.clone();
+        let terminal_id = terminal_id.to_string();
+        async move {
+            let row = repo.terminal_get(&terminal_id).await.unwrap()?;
+            row.exit_code.is_some().then_some(row)
+        }
+    })
+    .await
+    .expect("renderer attach reader must persist fast-exit code");
     assert_eq!(
         term_row.exit_code,
         Some(0),
-        "rollback_orphan_worker's case-2 branch must persist exit_code=0 \
-         from `.exit` sidecar onto the row; got {:?}",
+        "fast-exit terminal worker must persist exit_code=0 onto the row; got {:?}",
         term_row.exit_code,
     );
     assert!(
@@ -2076,18 +1987,8 @@ async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
         "signal_killed must be false for a clean fast-exit; got true",
     );
 
-    // The `.exit` sidecar is left on disk by the discriminator
-    // (preservation never unlinks; only `reap_terminal_artifacts`
-    // does). Verify it's still there — the WS attach path's GC will
-    // clean it up later, but for now its presence is part of the
-    // preserved-row contract.
-    let exit_sidecar = std::path::PathBuf::from(format!(
-        "{}.exit",
-        term_row.daemon_handle.as_deref().unwrap()
-    ));
     assert!(
-        exit_sidecar.exists(),
-        "preserved row must leave the `.exit` sidecar on disk \
-         (no reap → no unlink); expected file at {exit_sidecar:?}",
+        term_row.daemon_handle.is_none(),
+        "Phase 3b no longer writes daemon_handle for renderer-backed terminals",
     );
 }

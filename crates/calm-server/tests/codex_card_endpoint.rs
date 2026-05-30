@@ -139,6 +139,74 @@ async fn boot_happy() -> Boot {
     boot_with_daemon(locate_daemon_bin()).await
 }
 
+/// #388 Phase 3b: drive a deliberate spawn failure by pointing
+/// `proc_supervisor_sock` at a path no supervisor is listening on. The
+/// renderer's connect-to-supervisor returns NotFound and propagates
+/// the error through the route as 500.
+async fn boot_with_bad_supervisor(bad_sock: PathBuf) -> Boot {
+    let tmp = TempDir::new().expect("tempdir for daemon sockets");
+    let repo: Arc<dyn Repo> = Arc::new(
+        SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite"),
+    );
+    let cove = repo
+        .cove_create(NewCove {
+            name: "endpoint-test".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo
+        .wave_create(NewWave {
+            cove_id: cove.id,
+            title: "endpoint-test".into(),
+            sort: None,
+            cwd: String::new(),
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let daemon = Arc::new(DaemonClient {
+        data_dir: tmp.path().to_path_buf(),
+        session_daemon_bin: locate_daemon_bin(),
+        proc_supervisor_sock: Some(bad_sock),
+    });
+    let events = EventBus::new();
+    let state = AppState::from_parts(
+        repo.clone(),
+        events.clone(),
+        daemon,
+        Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            repo.clone(),
+            PathBuf::new(),
+            std::env::temp_dir().join("calm-plugins-data"),
+            Vec::new(),
+            EventBus::new(),
+            calm_server::card_role_cache::CardRoleCache::new(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
+        )),
+        Arc::new(CodexClient::new_stub()),
+        None,
+        None,
+    );
+    let app = routes::router()
+        .layer(axum::middleware::from_fn(
+            calm_server::actor::actor_middleware,
+        ))
+        .with_state(state);
+    Boot {
+        app,
+        wave_id: wave.id.to_string(),
+        events,
+        repo,
+        _tmp: tmp,
+    }
+}
+
 async fn post(app: axum::Router, uri: String, body: Value) -> (StatusCode, Value) {
     let resp = app
         .oneshot(
@@ -265,13 +333,14 @@ async fn post_codex_card_atomic_emits_single_card_added_event() {
 
 #[tokio::test]
 async fn post_codex_card_atomic_returns_500_on_daemon_spawn_failure_but_persists_row() {
-    // Point the daemon binary at a path that definitely doesn't exist —
-    // `spawn_daemon_for` returns Internal. The handler must:
-    //   (a) propagate the 500 to the caller, AND
-    //   (b) NOT roll back the card+terminal txn (the sweeper cleans up).
-    let bad_bin = std::env::temp_dir().join("definitely-not-a-real-daemon-binary-xyz");
-    let _ = std::fs::remove_file(&bad_bin);
-    let boot = boot_with_daemon(bad_bin).await;
+    // #388 Phase 3b: production spawn now goes through
+    // `calm-proc-supervisor` over a control UDS instead of forking the
+    // `calm-session-daemon` binary directly. To deliberately fail spawn,
+    // point `proc_supervisor_sock` at a non-existent path so the
+    // renderer's connect to the supervisor fails with NotFound.
+    let bad_sock = std::env::temp_dir().join("definitely-not-a-real-proc-supervisor-sock-xyz");
+    let _ = std::fs::remove_file(&bad_sock);
+    let boot = boot_with_bad_supervisor(bad_sock).await;
 
     let (status, body) = post(
         boot.app.clone(),

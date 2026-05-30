@@ -362,11 +362,15 @@ async fn v2_full_chain_happy_path() {
     // The daemon stamps `terminal_id` into the ServerHello via
     // `cli.id.to_string()` (`Uuid` `Display`, always hyphenated), so the
     // ServerHello we receive is hyphenated — even though `hello_terminal_id`
-    // (the *simple* form returned by the API) is what we sent. Compare
-    // against the hyphenated form to assert the WS-bridge normalization
-    // ran successfully end-to-end.
+    // (the *simple* form returned by the API) is what we sent. #388
+    // Phase 3b: the in-process renderer stores entries by `term.id`
+    // (simple form per `model::new_id()`), and the WS handler's
+    // sanitize_client_msg normalizes inbound ClientHello.terminal_id to
+    // simple too — so ServerHello round-trips the simple form, not the
+    // pre-3b hyphenated form. Compare against the canonical simple form.
     let expected_terminal_id = Uuid::parse_str(&raw_terminal_id)
         .expect("terminal id is a uuid")
+        .simple()
         .to_string();
     let server_hello = recv_daemon_frame(&mut ws).await;
     let (client_role, snapshot_len) = match server_hello {

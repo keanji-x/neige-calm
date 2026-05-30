@@ -159,6 +159,8 @@ async fn await_child_killed(child: &mut std::process::Child) {
 
 #[tokio::test]
 async fn card_delete_reaps_daemon_and_unlinks_socket() {
+    // Removed in #388 Phase 3b: daemon socket unlink no longer exists post-renderer-lift.
+    // See PR #391 / PR #388 Phase 3b design doc for replacement coverage.
     let state = fresh_state().await;
     let raw = state.raw_repo();
 
@@ -243,10 +245,6 @@ async fn card_delete_reaps_daemon_and_unlinks_socket() {
 
     // Post-delete: process gone, socket unlinked, row removed.
     await_child_killed(&mut child).await;
-    assert!(
-        !sock.exists(),
-        "socket file must be unlinked after card delete (still at {sock:?})"
-    );
     assert!(
         state.repo.terminal_get(&term.id).await.unwrap().is_none(),
         "terminal row must be deleted with the card"
@@ -381,12 +379,10 @@ async fn wave_delete_reaps_every_terminal_under_wave() {
         "wave delete should return 204"
     );
 
-    // Post-delete: both processes gone, both sockets unlinked, both
+    // Post-delete: both processes gone, both
     // terminal rows + both card rows + the wave row removed.
     await_child_killed(&mut child_a).await;
     await_child_killed(&mut child_b).await;
-    assert!(!sock_a.exists(), "socket A must be unlinked");
-    assert!(!sock_b.exists(), "socket B must be unlinked");
     assert!(state.repo.terminal_get(&term_a.id).await.unwrap().is_none());
     assert!(state.repo.terminal_get(&term_b.id).await.unwrap().is_none());
     assert!(
@@ -505,13 +501,9 @@ async fn cove_delete_reaps_every_terminal_under_cove() {
         "cove delete should return 204"
     );
 
-    // Post-delete: child process gone, socket unlinked, and every row
+    // Post-delete: child process gone and every row
     // in the terminal/card/wave/cove subtree removed.
     await_child_killed(&mut child).await;
-    assert!(
-        !sock.exists(),
-        "socket file must be unlinked after cove delete (still at {sock:?})"
-    );
     assert!(
         state.repo.terminal_get(&term.id).await.unwrap().is_none(),
         "terminal row must be deleted with the cove"

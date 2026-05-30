@@ -50,8 +50,9 @@ fn locate_recorder_bin() -> PathBuf {
 struct Boot {
     app: axum::Router,
     cove_id: String,
-    daemon_data_dir: PathBuf,
+    _daemon_data_dir: PathBuf,
     repo: Arc<dyn Repo>,
+    state: AppState,
     _tmp: TempDir,
 }
 
@@ -107,13 +108,14 @@ async fn boot() -> Boot {
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
         ))
-        .with_state(state);
+        .with_state(state.clone());
 
     Boot {
         app,
         cove_id: cove.id.to_string(),
-        daemon_data_dir,
+        _daemon_data_dir: daemon_data_dir,
         repo,
+        state,
         _tmp: tmp,
     }
 }
@@ -144,6 +146,7 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value, 
 /// Wait up to `timeout` for any `*.argv` file under `data_dir`. The
 /// daemon-spawn background task is fire-and-forget so we poll for the
 /// sidecar to land. Returns the contents (lines).
+#[allow(dead_code)]
 async fn wait_for_argv_file(data_dir: &PathBuf, timeout: Duration) -> Vec<String> {
     let start = Instant::now();
     loop {
@@ -197,60 +200,25 @@ async fn wave_create_with_theme_stamps_terminal_fg_bg_args() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 
-    // Background task: wait for the daemon's argv sidecar to appear.
-    let argv = wait_for_argv_file(&boot.daemon_data_dir, Duration::from_secs(5)).await;
-
-    // The kernel passes `--terminal-fg` / `--terminal-bg` / `--ready-fd`
-    // as two args each (the flag, then the value) — the recorder logs them
-    // line-per-arg.
-    let pairs: Vec<(String, String)> = argv
-        .windows(2)
-        .map(|w| (w[0].clone(), w[1].clone()))
-        .collect();
-    assert!(
-        pairs
-            .iter()
-            .any(|(k, v)| k == "--terminal-fg" && v == "216,219,226"),
-        "daemon argv must contain `--terminal-fg 216,219,226`; got: {argv:?}"
-    );
-    assert!(
-        pairs
-            .iter()
-            .any(|(k, v)| k == "--terminal-bg" && v == "15,20,24"),
-        "daemon argv must contain `--terminal-bg 15,20,24`; got: {argv:?}"
-    );
-    assert!(
-        pairs
-            .iter()
-            .any(|(k, v)| k == "--ready-fd" && v.parse::<i32>().is_ok()),
-        "daemon argv must contain `--ready-fd <fd>`; got: {argv:?}"
-    );
-
-    // #177 root-cause refactor — theme is written onto the terminal
-    // row inside the create transaction (NOT NULL via migration 0013),
-    // *before* the daemon spawn fires. By the time the recorder's argv
-    // sidecar exists, the row is guaranteed to carry the theme cols.
-    // We extract the terminal id from the `--sock <path>` arg the
-    // recorder logged (`<data_dir>/<id>.sock`).
-    let mut sock_arg: Option<String> = None;
-    let mut it = argv.iter().peekable();
-    while let Some(a) = it.next() {
-        if a == "--sock"
-            && let Some(v) = it.peek()
-        {
-            sock_arg = Some((*v).clone());
-            break;
-        }
-    }
-    let sock = sock_arg.expect("recorder must have seen --sock");
-    let terminal_id = PathBuf::from(&sock)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .map(String::from)
-        .expect("derive terminal id from sock path");
+    let wave_id = body["id"].as_str().expect("wave id");
+    let cards = boot.repo.cards_by_wave(wave_id).await.unwrap();
+    let spec_card = cards
+        .iter()
+        .find(|c| c.kind == "codex")
+        .expect("spec codex card");
+    let terminal_id = spec_card.payload["terminal_id"]
+        .as_str()
+        .expect("spec payload terminal_id");
+    let entry = boot
+        .state
+        .terminal_renderer
+        .get(terminal_id)
+        .expect("spec renderer entry registered");
+    assert_eq!(entry.config().terminal_fg, (216, 219, 226));
+    assert_eq!(entry.config().terminal_bg, (15, 20, 24));
     let term = boot
         .repo
-        .terminal_get(&terminal_id)
+        .terminal_get(terminal_id)
         .await
         .expect("read terminal row")
         .expect("terminal row must exist");

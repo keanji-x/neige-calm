@@ -301,14 +301,12 @@ pub trait RepoRead: Send + Sync + 'static {
     /// terminal-card create race (see `web/src/app/eventBridge.tsx:60-70`).
     /// Used exclusively by the `terminal_sweeper` background task.
     async fn terminals_orphaned(&self, grace_seconds: i64) -> Result<Vec<Terminal>>;
-    /// #177 — return every terminal row that has a non-NULL
-    /// `daemon_handle`, i.e. every row that *thinks* it has a live
-    /// daemon. Used exclusively by [`crate::revive_orphans_on_boot`]
-    /// during server startup: it probes each socket and respawns the
-    /// daemon for rows whose socket is unreachable (the legitimate
-    /// auto-revive case, where calm-server restarted while daemons
-    /// were still running and their sockets are stale on disk).
+    /// Legacy daemon-socket boot sweep input. Kept for backward-compatible
+    /// tests and migrations; production 3b uses [`Self::terminals_running`].
     async fn terminals_with_daemon_handle(&self) -> Result<Vec<Terminal>>;
+    /// Return every terminal row whose child has not recorded an exit yet.
+    /// Used by boot-time supervisor reconciliation after #388 Phase 3b.
+    async fn terminals_running(&self) -> Result<Vec<Terminal>>;
 
     /// #313 problem #1 (boot takeover) — return every spec card whose
     /// payload carries a `codex_thread_id` whose parent wave is not in a

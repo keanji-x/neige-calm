@@ -47,7 +47,6 @@
 //! hit Enter manually.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -56,6 +55,7 @@ use tokio::sync::Mutex;
 use crate::db::RepoRead;
 use crate::event::{Event, EventBus};
 use crate::state::DaemonClient;
+use crate::terminal_renderer::TerminalRendererRegistry;
 
 /// Backstop budget for the whole inject_stdin round-trip (connect → hello →
 /// child-ready → input → ack). PR #110 used a 5s budget for the post-write
@@ -70,10 +70,20 @@ const INJECT_STDIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// fire-and-forget tokio tasks so a slow daemon socket can't backpressure
 /// the bus reader.
 pub fn spawn(repo: Arc<dyn RepoRead>, daemon: Arc<DaemonClient>, bus: EventBus) {
+    spawn_with_terminal_renderer(repo, daemon, TerminalRendererRegistry::new(), bus);
+}
+
+pub fn spawn_with_terminal_renderer(
+    repo: Arc<dyn RepoRead>,
+    daemon: Arc<DaemonClient>,
+    terminal_renderer: Arc<TerminalRendererRegistry>,
+    bus: EventBus,
+) {
     let mut rx = bus.subscribe();
     let inner = Arc::new(Inner {
         repo,
         daemon,
+        terminal_renderer,
         submitted: Mutex::new(HashSet::new()),
     });
     tokio::spawn(async move {
@@ -108,6 +118,7 @@ pub fn spawn(repo: Arc<dyn RepoRead>, daemon: Arc<DaemonClient>, bus: EventBus) 
 struct Inner {
     repo: Arc<dyn RepoRead>,
     daemon: Arc<DaemonClient>,
+    terminal_renderer: Arc<TerminalRendererRegistry>,
     /// Card ids we've already submitted on. Guards against codex's
     /// session_start re-firing on TUI reconnect.
     submitted: Mutex<HashSet<String>>,
@@ -183,18 +194,21 @@ impl Inner {
             }
         };
 
-        let sock_path: PathBuf = self.daemon.sock_path(&terminal_id);
         if let Err(e) = self
             .daemon
-            .inject_stdin(&sock_path, &terminal_id, b"\r", INJECT_STDIN_TIMEOUT)
+            .inject_stdin_renderer(
+                self.terminal_renderer.as_ref(),
+                &terminal_id,
+                b"\r",
+                INJECT_STDIN_TIMEOUT,
+            )
             .await
         {
             tracing::warn!(
                 card_id,
                 terminal_id,
-                sock = %sock_path.display(),
                 error = %e,
-                "auto_submit: inject_stdin failed; user can hit Enter manually"
+                "auto_submit: inject_stdin_renderer failed; user can hit Enter manually"
             );
         } else {
             tracing::info!(
