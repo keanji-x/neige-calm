@@ -200,7 +200,7 @@ impl TestFixture {
                 terminal_fg: (216, 219, 226),
                 terminal_bg: (15, 20, 24),
                 program: "/bin/sh".into(),
-                args: vec!["-c".into(), "sleep 30".into()],
+                args: vec!["-c".into(), "echo ready; sleep 30".into()],
                 envs: std::env::vars().collect(),
                 cwd: workspace_root().display().to_string(),
                 supervisor_sock,
