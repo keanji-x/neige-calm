@@ -958,8 +958,8 @@ export interface components {
          *          injected stdin lands on the composer instead of a modal, and
          *       3. stamps `prompt` onto the card payload — the
          *          `codex_auto_submit` subscriber reads it and, once codex emits
-         *          `hook.codex.session_start`, opens a kernel-private connection
-         *          to the daemon and injects a `\r` so the composer auto-submits.
+         *          `hook.codex.session_start`, routes `\r` through the renderer so
+         *          the composer auto-submits.
          *
          *     Empty / absent `prompt` reverts to the user-initiated flow: codex
          *     boots, the composer is empty, the user types and hits Enter.
@@ -972,9 +972,9 @@ export interface components {
          *     callers should be putting text now.
          *
          *     `theme` is required end-to-end (#177): callers MUST send the host
-         *     browser's current foreground/background RGB. The kernel stamps it
-         *     onto the `terminal renderer` argv so codex's OSC 10/11 startup
-         *     probe gets matching colors. Forcing it at the type layer means a
+         *     browser's current foreground/background RGB. The renderer uses it so
+         *     codex's OSC 10/11 startup probe gets matching colors. Forcing it at
+         *     the type layer means a
          *     caller that forgets — the exact bug that motivated this refactor —
          *     fails at compile time (TS) or at the deserialize step (Rust/JSON,
          *     422). No `Option`, no `#[serde(default)]`, no implicit fallback.
@@ -1002,10 +1002,8 @@ export interface components {
              */
             sort?: number | null;
             /**
-             * @description Host browser's current theme RGB (#177). Required — the kernel
-             *     stamps `--terminal-fg=r,g,b --terminal-bg=r,g,b` onto the
-             *     `terminal renderer` argv so the terminal model
-             *     answers codex's OSC 10/11 startup probe with colors matching
+             * @description Host browser's current theme RGB (#177). Required so the terminal
+             *     model answers codex's OSC 10/11 startup probe with colors matching
              *     the host theme. A caller that omits this field gets 422.
              */
             theme: components["schemas"]["RequestTheme"];
@@ -1090,10 +1088,9 @@ export interface components {
             /** Format: double */
             sort?: number | null;
             /**
-             * @description Host browser's current theme RGB (#177). Required end-to-end —
-             *     the kernel stamps `--terminal-fg=r,g,b --terminal-bg=r,g,b`
-             *     onto the auto-minted spec card's `terminal renderer` argv so
-             *     codex's OSC 10/11 startup probe gets matching colors. A body
+             * @description Host browser's current theme RGB (#177). Required end-to-end so
+             *     the auto-minted spec card's terminal renderer answers codex's
+             *     OSC 10/11 startup probe with matching colors. A body
              *     missing this field is rejected at the deserialize layer (422):
              *     the spec card is invisible to the user and a silent fallback
              *     would mean every wave-from-the-UI spawned with a mis-tinted
@@ -1267,10 +1264,9 @@ export interface components {
             id: string;
             /**
              * Format: int64
-             * @description Daemon process id, captured by `spawn_daemon_for` after `cmd.spawn()`.
-             *     Used by the orphan-terminal sweeper (`terminal_sweeper`) as the
-             *     SIGTERM fallback target when the graceful `ClientMsg::Kill` path
-             *     fails. `None` for rows that predate Scope C or for which the spawn
+             * @description Child process id, captured after supervisor spawn. Used by the
+             *     orphan-terminal sweeper (`terminal_sweeper`) as the SIGTERM fallback
+             *     target. `None` for rows that predate Scope C or for which the spawn
              *     returned no pid (kernel-level edge case).
              */
             pid?: number | null;
@@ -1292,11 +1288,9 @@ export interface components {
             theme_bg: string;
             /**
              * @description #177 — host browser's foreground RGB at row-creation time, as
-             *     comma-decimal `r,g,b` (the daemon CLI's `--terminal-fg` arg
-             *     format). NOT NULL after migration 0017: every spawn path reads
-             *     these columns and stamps the daemon argv from them, so the
-             *     auto-revive in `ws::terminal` can no longer race a themed spawn
-             *     with an un-themed one (both candidates carry identical argv).
+             *     comma-decimal `r,g,b` format). NOT NULL after migration 0017:
+             *     every spawn path reads these columns so renderer startup observes
+             *     the browser theme.
              */
             theme_fg: string;
         };
