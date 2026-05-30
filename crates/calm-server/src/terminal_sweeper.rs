@@ -74,8 +74,8 @@ use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, WaveId};
 use crate::model::Terminal;
 use crate::state::AppState;
-use crate::terminal_renderer::TerminalRendererRegistry;
 use crate::terminal_probe::probe_client_hello;
+use crate::terminal_renderer::TerminalRendererRegistry;
 use calm_session::control::ProcSignal;
 use calm_session::{ClientMsg, write_frame};
 
@@ -248,8 +248,11 @@ pub async fn reap_terminal_artifacts_with_renderer(
     // uses a fresh supervisor UDS connection so it bypasses any queued PTY
     // writes that might be stuck behind backpressure.
     if let Some((renderer, entry)) = renderer.and_then(|r| r.get(&term.id).map(|e| (r, e))) {
-        match tokio::time::timeout(GRACEFUL_KILL_TIMEOUT, entry.shutdown_signal(ProcSignal::Term))
-            .await
+        match tokio::time::timeout(
+            GRACEFUL_KILL_TIMEOUT,
+            entry.shutdown_signal(ProcSignal::Term),
+        )
+        .await
         {
             Ok(()) => {
                 tracing::debug!(terminal_id = %term.id, "renderer shutdown signal delivered");
@@ -284,7 +287,6 @@ pub async fn reap_terminal_artifacts_with_renderer(
             "SIGTERM failed (likely already exited)"
         );
     }
-
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -100,13 +100,34 @@ async fn resolve_live_renderer(s: &AppState, id: &str) -> Result<LiveRenderer> {
         return Ok(LiveRenderer::Alive(entry));
     }
 
+    if term.exit_code.is_some() {
+        tracing::info!(
+            terminal_id = %term.id,
+            exit_code = ?term.exit_code,
+            "terminal has no live renderer entry and row is exited",
+        );
+        return Ok(LiveRenderer::ChildExited {
+            exit_code: term.exit_code,
+        });
+    }
+
     tracing::info!(
         terminal_id = %term.id,
-        "terminal has no live renderer entry — treating as child exit",
+        "terminal has no live renderer entry; attempting lazy supervisor reattach",
     );
-    Ok(LiveRenderer::ChildExited {
-        exit_code: term.exit_code,
-    })
+    match crate::routes::terminal::spawn_terminal_for(s, &term, &term.program, &term.cwd, &term.env)
+        .await
+    {
+        Ok(entry) => Ok(LiveRenderer::Alive(entry)),
+        Err(e) => {
+            tracing::warn!(
+                terminal_id = %term.id,
+                error = %e,
+                "ws upgrade: lazy renderer reattach failed; surfacing child-exit",
+            );
+            Ok(LiveRenderer::ChildExited { exit_code: None })
+        }
+    }
 }
 
 async fn handle_renderer(socket: WebSocket, entry: Arc<RendererEntry>, terminal_id: String) {

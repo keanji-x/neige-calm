@@ -59,7 +59,11 @@ pub async fn reconcile_supervisor_on_boot(state: &state::AppState) {
                     terminal_id = %term.id,
                     "terminal row is running in DB but supervisor has no live PTY; marking exited",
                 );
-                if let Err(e) = state.repo.terminal_set_exit(&term.id, Some(-1), false).await {
+                if let Err(e) = state
+                    .repo
+                    .terminal_set_exit(&term.id, Some(-1), false)
+                    .await
+                {
                     tracing::warn!(
                         terminal_id = %term.id,
                         error = %e,
@@ -83,7 +87,10 @@ pub async fn revive_orphans_on_boot(state: &state::AppState) {
     reconcile_supervisor_on_boot(state).await;
 }
 
-async fn probe_supervisor_for_terminal(state: &state::AppState, terminal_id: &str) -> anyhow::Result<bool> {
+async fn probe_supervisor_for_terminal(
+    state: &state::AppState,
+    terminal_id: &str,
+) -> anyhow::Result<bool> {
     use calm_session::control::{ControlMsg, ControlReply, ProbeRequest};
     use calm_session::{read_frame, write_frame};
     use tokio::net::UnixStream;

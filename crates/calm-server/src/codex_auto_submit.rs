@@ -208,7 +208,7 @@ impl Inner {
                 card_id,
                 terminal_id,
                 error = %e,
-                "auto_submit: inject_stdin failed; user can hit Enter manually"
+                "auto_submit: inject_stdin_renderer failed; user can hit Enter manually"
             );
         } else {
             tracing::info!(

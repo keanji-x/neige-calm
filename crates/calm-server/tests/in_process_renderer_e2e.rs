@@ -169,6 +169,83 @@ async fn late_client_attach_receives_sticky_terminal_exited() {
     let _ = supervisor.wait().await;
 }
 
+#[tokio::test]
+async fn registry_ensure_lazily_reattaches_when_registry_is_empty() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let control_sock = temp.path().join("proc-supervisor.sock");
+    let mut supervisor = spawn_proc_supervisor(&control_sock).await;
+
+    let terminal_id = Uuid::new_v4().to_string();
+    let cfg = RendererConfig {
+        terminal_id: terminal_id.clone(),
+        cols: 80,
+        rows: 24,
+        buffer_bytes: 1 << 20,
+        terminal_fg: (216, 219, 226),
+        terminal_bg: (15, 20, 24),
+        program: "/bin/sh".into(),
+        args: vec!["-c".into(), "cat".into()],
+        envs: std::env::vars().collect(),
+        cwd: workspace_root().display().to_string(),
+        supervisor_sock: control_sock.clone(),
+    };
+
+    let registry_a = TerminalRendererRegistry::new();
+    let entry_a = registry_a
+        .ensure(cfg.clone())
+        .await
+        .expect("ensure initial renderer");
+    assert!(
+        registry_a.get(&terminal_id).is_some(),
+        "initial registry should contain renderer entry"
+    );
+    drop(entry_a);
+    drop(registry_a);
+
+    let registry_b = TerminalRendererRegistry::new();
+    let entry_b = registry_b
+        .ensure(cfg)
+        .await
+        .expect("reattach renderer after registry drop");
+    assert!(
+        registry_b.get(&terminal_id).is_some(),
+        "fresh registry should contain reattached renderer entry"
+    );
+
+    let mut events = entry_b.subscribe();
+    assert_no_terminal_exited(&mut events, Duration::from_secs(1)).await;
+
+    let (client_tx, mut daemon_rx, pump) = spawn_client_pump(entry_b.clone());
+    send_client_hello(&client_tx, &terminal_id).await;
+    let hello = timeout(Duration::from_secs(2), daemon_rx.recv())
+        .await
+        .expect("server hello timeout")
+        .expect("server hello channel closed");
+    assert!(
+        matches!(hello, DaemonMsg::ServerHello { .. }),
+        "expected ServerHello, got {hello:?}"
+    );
+
+    client_tx
+        .send(ClientMsg::Input {
+            data: b"lazy-reattach\n".to_vec(),
+            input_seq: 7,
+        })
+        .await
+        .expect("send input through reattached renderer");
+    wait_for_input_ack(&mut daemon_rx, 7).await;
+
+    registry_b.drop_entry(&terminal_id).await;
+    drop(client_tx);
+    timeout(Duration::from_secs(2), pump)
+        .await
+        .expect("pump join timeout")
+        .expect("pump join")
+        .expect("pump result");
+    let _ = supervisor.kill().await;
+    let _ = supervisor.wait().await;
+}
+
 fn spawn_client_pump(
     entry: Arc<RendererEntry>,
 ) -> (
@@ -285,6 +362,27 @@ async fn wait_for_terminal_exited(rx: &mut tokio::sync::broadcast::Receiver<Daem
             .expect("event channel closed");
         if matches!(msg, DaemonMsg::TerminalExited { .. }) {
             return;
+        }
+    }
+}
+
+async fn assert_no_terminal_exited(
+    rx: &mut tokio::sync::broadcast::Receiver<DaemonMsg>,
+    duration: Duration,
+) {
+    let deadline = tokio::time::Instant::now() + duration;
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match timeout(remaining, rx.recv()).await {
+            Ok(Ok(DaemonMsg::TerminalExited { .. })) => {
+                panic!("reattached live renderer unexpectedly emitted TerminalExited");
+            }
+            Ok(Ok(_)) => {}
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                panic!("reattached renderer event channel closed");
+            }
+            Err(_) => return,
         }
     }
 }
