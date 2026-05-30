@@ -239,7 +239,6 @@ fn run_git(cwd: &Path, args: &[&str]) -> anyhow::Result<()> {
 fn required_bins(source_dir: &Path) -> Vec<NamedPath> {
     [
         "calm-server",
-        "calm-session-daemon",
         "neige-codex-bridge",
         "neige-mcp-stdio-shim",
         // Issue #388 Phase 1 — calm-server connects to this binary over a

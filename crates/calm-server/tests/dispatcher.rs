@@ -92,7 +92,6 @@ async fn boot() -> (
 fn stub_daemon() -> Arc<DaemonClient> {
     Arc::new(DaemonClient {
         data_dir: PathBuf::from("/tmp/neige-dispatcher-test-noop"),
-        session_daemon_bin: PathBuf::from("/nonexistent-daemon-bin"),
         proc_supervisor_sock: Some(PathBuf::from(
             "/tmp/neige-dispatcher-test-missing-proc-supervisor.sock",
         )),
@@ -256,7 +255,6 @@ async fn dispatcher_happy_path_mints_worker_card() {
     let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
     let daemon = Arc::new(calm_server::state::DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin: locate_recorder_bin(),
         proc_supervisor_sock: None,
     });
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
@@ -337,7 +335,6 @@ async fn dispatcher_role_is_worker_via_role_cache() {
     let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
     let daemon = Arc::new(calm_server::state::DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin: locate_recorder_bin(),
         proc_supervisor_sock: None,
     });
     let _dispatcher = Dispatcher::spawn(
@@ -406,7 +403,6 @@ async fn dispatcher_dedup_does_not_double_emit_task_failed() {
     let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
     let daemon = Arc::new(calm_server::state::DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin: locate_recorder_bin(),
         proc_supervisor_sock: None,
     });
     let _dispatcher = Dispatcher::spawn(
@@ -492,7 +488,6 @@ async fn dispatcher_dedupes_same_idempotency_key() {
     let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
     let daemon = Arc::new(calm_server::state::DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin: locate_recorder_bin(),
         proc_supervisor_sock: None,
     });
     let _dispatcher = Dispatcher::spawn(
@@ -566,7 +561,6 @@ async fn dispatcher_semaphore_caps_concurrent_spawns() {
     let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
     let daemon = Arc::new(calm_server::state::DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin: locate_recorder_bin(),
         proc_supervisor_sock: None,
     });
     let dispatcher = Arc::new(Dispatcher::spawn(
@@ -736,7 +730,6 @@ async fn dispatcher_card_added_emit_passes_role_gate() {
     let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
     let daemon = Arc::new(calm_server::state::DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin: locate_recorder_bin(),
         proc_supervisor_sock: None,
     });
     let _dispatcher = Dispatcher::spawn(
@@ -801,7 +794,6 @@ async fn dispatcher_dedupes_under_real_concurrent_race() {
     let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
     let daemon = Arc::new(calm_server::state::DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin: locate_recorder_bin(),
         proc_supervisor_sock: None,
     });
     let _dispatcher = Dispatcher::spawn(
@@ -978,7 +970,6 @@ async fn dispatcher_codex_worker_spawns_with_dark_theme_default() {
     let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
     let daemon = Arc::new(calm_server::state::DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin: locate_recorder_bin(),
         proc_supervisor_sock: None,
     });
 
@@ -1051,7 +1042,6 @@ async fn dispatcher_codex_worker_spawn_carries_prompt_argv() {
     let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
     let daemon = Arc::new(calm_server::state::DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin: locate_recorder_bin(),
         proc_supervisor_sock: None,
     });
 
@@ -1144,7 +1134,6 @@ async fn dispatcher_codex_card_added_after_daemon_handle_set_issue_310() {
     let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
     let daemon = Arc::new(calm_server::state::DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin: locate_recorder_bin(),
         proc_supervisor_sock: None,
     });
 
@@ -1242,7 +1231,6 @@ async fn dispatcher_terminal_card_added_after_daemon_handle_set_issue_310() {
     let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
     let daemon = Arc::new(calm_server::state::DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin: locate_recorder_bin(),
         proc_supervisor_sock: None,
     });
 
@@ -1469,7 +1457,6 @@ async fn dispatcher_rolls_back_card_on_codex_daemon_spawn_failure_issue_310() {
         .keep();
     let daemon_ok = Arc::new(calm_server::state::DaemonClient {
         data_dir: tmp_path,
-        session_daemon_bin: locate_recorder_bin(),
         proc_supervisor_sock: None,
     });
     let _dispatcher_ok = Dispatcher::spawn(
@@ -1629,7 +1616,6 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
         .keep();
     let daemon_ok = Arc::new(calm_server::state::DaemonClient {
         data_dir: tmp_path,
-        session_daemon_bin: locate_recorder_bin(),
         proc_supervisor_sock: None,
     });
     let _dispatcher_ok = Dispatcher::spawn(
@@ -1719,7 +1705,6 @@ async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
     let bad_sock = tmp_path.path().join("missing-proc-supervisor.sock");
     let daemon = Arc::new(calm_server::state::DaemonClient {
         data_dir: tmp_path.path().to_path_buf(),
-        session_daemon_bin: locate_never_ready_bin(),
         proc_supervisor_sock: Some(bad_sock),
     });
 
@@ -1862,7 +1847,6 @@ async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
         .keep();
     let daemon = Arc::new(calm_server::state::DaemonClient {
         data_dir: tmp_path.clone(),
-        session_daemon_bin: locate_fast_exit_bin(),
         proc_supervisor_sock: None,
     });
 

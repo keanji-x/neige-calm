@@ -95,7 +95,6 @@ async fn boot_with_daemon(session_daemon_bin: PathBuf) -> Boot {
 
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin,
         proc_supervisor_sock: None,
     });
     let events = EventBus::new();
@@ -166,7 +165,6 @@ async fn boot_with_bad_supervisor(bad_sock: PathBuf) -> Boot {
 
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin: locate_daemon_bin(),
         proc_supervisor_sock: Some(bad_sock),
     });
     let events = EventBus::new();

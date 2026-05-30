@@ -211,7 +211,6 @@ async fn build_state(tmp: &TempDir, codex_bin: &Path) -> (AppState, Arc<dyn Repo
     // subdir under.
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().join("terminals"),
-        session_daemon_bin: locate_recorder_bin(),
         proc_supervisor_sock: None,
     });
     // Real codex bin for the app-server; everything else stubbed.

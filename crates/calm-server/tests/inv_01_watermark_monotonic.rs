@@ -115,7 +115,6 @@ async fn inv1_stranded_envelope_must_be_observable() {
     let repo: Arc<dyn Repo> = typed.clone();
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin: stub_session_daemon_bin(),
         proc_supervisor_sock: None,
     });
     let events = EventBus::new();

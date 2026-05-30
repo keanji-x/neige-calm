@@ -14,7 +14,7 @@ use crate::plugin_host::{PluginHost, PluginRegistry};
 use crate::spec_appserver::SpecPushRegistry;
 use crate::terminal_renderer::TerminalRendererRegistry;
 use crate::wave_cove_cache::WaveCoveCache;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -449,29 +449,17 @@ impl AppState {
 }
 
 // ---------------------------------------------------------------------------
-// DaemonClient — owned by Track D.
-//
-// Wraps the connection / spawning logic for `calm-session-daemon` so REST
-// + WS terminal handlers can talk to PTYs without leaking the framed-binary
-// protocol details into the rest of the codebase.
+// DaemonClient — terminal support paths shared by renderer-backed flows.
 // ---------------------------------------------------------------------------
 
-/// Lightweight handle the REST + WS halves both consult. The handle is
-/// "lightweight" because the daemon is its own long-lived process — we don't
-/// pool stream connections through here; instead WS handlers connect on
-/// demand using the stored socket path. All `DaemonClient` needs to do is
-/// (a) know where to put per-terminal sockets and (b) know which binary to
-/// spawn.
+/// Lightweight handle the REST + WS halves both consult. It owns the
+/// per-terminal data paths and the optional proc-supervisor socket used by
+/// renderer-backed sessions.
 pub struct DaemonClient {
     /// Per-terminal sockets live under this directory as `<terminal_id>.sock`.
     /// Created on first use by `routes::terminal::create`. Defaults to
     /// `<config.data_dir>/terminals`.
     pub data_dir: PathBuf,
-    /// Path to the `calm-session-daemon` binary. Resolved at startup to be
-    /// a sibling of the running `calm-server` exe (so `cargo run` /
-    /// `target/release` layouts work without an install step); falls back to
-    /// `calm-session-daemon` and lets `$PATH` lookup happen at spawn.
-    pub session_daemon_bin: PathBuf,
     /// Control socket for `calm-proc-supervisor`. Production config resolves
     /// this to `<CALM_DATA_DIR>/proc-supervisor.sock`; fixture tests may leave
     /// it unset to use an in-process framed supervisor.
@@ -479,19 +467,17 @@ pub struct DaemonClient {
 }
 
 impl DaemonClient {
-    /// Real constructor. Pulls `data_dir` from the resolved config and
-    /// locates the daemon binary next to the current executable.
+    /// Real constructor. Pulls terminal data paths from the resolved config.
     pub fn new(cfg: &Config) -> Self {
         let data_dir = cfg.data_dir_resolved().join("terminals");
         Self {
             data_dir,
-            session_daemon_bin: PathBuf::from("calm-session-daemon"),
             proc_supervisor_sock: Some(cfg.proc_supervisor_sock_resolved()),
         }
     }
 
     /// Placeholder for tests / dev paths that don't have a full `Config`.
-    /// Sockets land in a per-uid tempdir; binary lookup falls back to `$PATH`.
+    /// Sockets land in a per-uid tempdir.
     pub fn new_stub() -> Self {
         let tmp = std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
@@ -499,7 +485,6 @@ impl DaemonClient {
             .join("calm-terminals");
         Self {
             data_dir: tmp,
-            session_daemon_bin: PathBuf::from("calm-session-daemon"),
             proc_supervisor_sock: None,
         }
     }
@@ -571,135 +556,6 @@ impl DaemonClient {
         .map_err(|_| anyhow::anyhow!("inject_stdin to {terminal_id} timed out after {timeout:?}"))?
     }
 
-    /// Legacy daemon-UDS injection retained for daemon-binary tests until
-    /// Phase 3c deletes that binary and its tests. Production code uses
-    /// [`Self::inject_stdin_renderer`].
-    #[allow(dead_code)]
-    pub async fn inject_stdin(
-        &self,
-        sock_path: &Path,
-        terminal_id: &str,
-        bytes: &[u8],
-        timeout: Duration,
-    ) -> anyhow::Result<()> {
-        use calm_session::{
-            ClientCapabilities, ClientMsg, DaemonMsg, InitialScrollback, PROTOCOL_VERSION, PtySize,
-            RenderEncoding, Role, read_frame, write_frame,
-        };
-        use tokio::net::UnixStream;
-
-        let normalized = match uuid::Uuid::parse_str(terminal_id) {
-            Ok(u) => u.to_string(),
-            Err(_) => terminal_id.to_string(),
-        };
-
-        tokio::time::timeout(timeout, async move {
-            let mut stream = UnixStream::connect(sock_path).await.map_err(|e| {
-                anyhow::anyhow!("connect daemon socket {}: {e}", sock_path.display())
-            })?;
-            let (mut rd, mut wr) = stream.split();
-
-            let hello = ClientMsg::ClientHello {
-                protocol_version: PROTOCOL_VERSION,
-                terminal_id: normalized,
-                client_id: uuid::Uuid::new_v4(),
-                desired_size: PtySize {
-                    cols: 80,
-                    rows: 24,
-                    pixel_width: None,
-                    pixel_height: None,
-                },
-                cell_size: None,
-                initial_scrollback: InitialScrollback::None,
-                resume_from: None,
-                role_hint: Some(Role::Observer),
-                capabilities: ClientCapabilities {
-                    render_encodings: vec![RenderEncoding::Vt],
-                    supports_scrollback: false,
-                    supports_sixel: false,
-                    supports_images: false,
-                    kernel_originated_input: true,
-                },
-            };
-            write_frame(&mut wr, &hello).await?;
-
-            let server_hello: DaemonMsg = read_frame(&mut rd).await?;
-            let child_ready = match server_hello {
-                DaemonMsg::ServerHello { is_child_ready, .. } => is_child_ready,
-                DaemonMsg::ProtocolError {
-                    code,
-                    message,
-                    expected_version,
-                } => {
-                    return Err(anyhow::anyhow!(
-                        "daemon ProtocolError {code:?}: {message} (expected_version={expected_version:?})"
-                    ));
-                }
-                other => {
-                    return Err(anyhow::anyhow!(
-                        "expected ServerHello as first frame, got {other:?}"
-                    ));
-                }
-            };
-
-            if !child_ready {
-                loop {
-                    let msg: DaemonMsg = read_frame(&mut rd).await?;
-                    match msg {
-                        DaemonMsg::ChildReady { .. } => break,
-                        DaemonMsg::TerminalExited { code, .. } => {
-                            return Err(anyhow::anyhow!(
-                                "daemon TerminalExited (code={code:?}) before ChildReady"
-                            ));
-                        }
-                        DaemonMsg::ProtocolError { code, message, .. } => {
-                            return Err(anyhow::anyhow!(
-                                "daemon ProtocolError {code:?}: {message}"
-                            ));
-                        }
-                        _ => continue,
-                    }
-                }
-            }
-
-            write_frame(
-                &mut wr,
-                &ClientMsg::Input {
-                    data: bytes.to_vec(),
-                    input_seq: 1,
-                },
-            )
-            .await?;
-
-            loop {
-                let msg: DaemonMsg = read_frame(&mut rd).await?;
-                match msg {
-                    DaemonMsg::InputAck { input_seq: 1 } => break,
-                    DaemonMsg::TerminalExited { code, .. } => {
-                        return Err(anyhow::anyhow!(
-                            "daemon TerminalExited (code={code:?}) before InputAck"
-                        ));
-                    }
-                    DaemonMsg::ProtocolError { code, message, .. } => {
-                        return Err(anyhow::anyhow!(
-                            "daemon ProtocolError {code:?}: {message}"
-                        ));
-                    }
-                    _ => continue,
-                }
-            }
-
-            Ok::<(), anyhow::Error>(())
-        })
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "inject_stdin to {} timed out after {:?}",
-                sock_path.display(),
-                timeout
-            )
-        })?
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -862,7 +718,6 @@ mod tests {
         let data_dir = PathBuf::from("/home/u/.local/share/neige-calm");
         let daemon = DaemonClient {
             data_dir: data_dir.join("terminals"),
-            session_daemon_bin: PathBuf::from("calm-session-daemon"),
             proc_supervisor_sock: None,
         };
 

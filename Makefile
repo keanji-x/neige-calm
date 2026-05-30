@@ -111,7 +111,6 @@ $(error WORKTREE=$(WORKTREE) is not a valid neige-calm checkout (no Cargo.toml))
 endif
 
 BIN      := $(WORKTREE)/target/release/calm-server
-DAEMON   := $(WORKTREE)/target/release/calm-session-daemon
 BRIDGE   := $(WORKTREE)/target/release/neige-codex-bridge
 APP      := $(WORKTREE)/target/release/neige-app
 # Issue #236 followup — kernel-as-MCP-server stdio bridge. Codex inside
@@ -121,7 +120,7 @@ APP      := $(WORKTREE)/target/release/neige-app
 # /usr/local/bin/.
 MCP_SHIM := $(WORKTREE)/target/release/neige-mcp-stdio-shim
 # Issue #388 Phase 1 — fork-broker between neige-app and calm-server's
-# per-PTY `calm-session-daemon` spawns. calm-server connects to the
+# per-terminal supervisor operations. calm-server connects to the
 # control UDS at `proc_supervisor_sock` for every terminal spawn; without
 # this binary the first spawn fails with `connect calm-proc-supervisor …
 # No such file or directory`. neige-app peer-supervises it.
@@ -137,7 +136,6 @@ LOCAL_NEIGE_CLI ?= $(LOCAL_BIN_DIR)/neige
 # the right binaries + web bundle. The `${VAR:-default}` form in
 # docker-compose.yml uses these when set, falls back to ./… otherwise.
 export CALM_BIN := $(BIN)
-export CALM_DAEMON_BIN := $(DAEMON)
 export CALM_CODEX_BRIDGE_BIN := $(BRIDGE)
 export CALM_MCP_SHIM_BIN := $(MCP_SHIM)
 export CALM_PROC_SUPERVISOR_BIN := $(PROC_SUP)
@@ -176,15 +174,15 @@ help: ## Show this help.
 # ---- build (on host, not in docker) -------------------------------------
 
 .PHONY: build
-build: $(BIN) $(DAEMON) $(BRIDGE) $(APP) $(MCP_SHIM) $(PROC_SUP) $(NEIGE_CLI) $(DIST) ## Build server, daemon, app shell, codex bridge, mcp-stdio shim, proc-supervisor, neige CLI, web bundle.
+build: $(BIN) $(BRIDGE) $(APP) $(MCP_SHIM) $(PROC_SUP) $(NEIGE_CLI) $(DIST) ## Build server, app shell, codex bridge, mcp-stdio shim, proc-supervisor, neige CLI, web bundle.
 
 # Single cargo invocation builds all binaries — cheaper than separate
 # calls because deps overlap. Touch every output so the rule re-fires
 # only when sources change. Issue #236 followup added `neige-mcp-stdio-shim`;
 # issue #388 Phase 1 added `calm-proc-supervisor` (peer-supervised by
 # neige-app and contacted by calm-server for every terminal spawn).
-$(BIN) $(DAEMON) $(BRIDGE) $(APP) $(MCP_SHIM) $(PROC_SUP) $(NEIGE_CLI) &: $(shell find $(WORKTREE)/crates -name '*.rs' -o -name 'Cargo.toml' 2>/dev/null) $(WORKTREE)/Cargo.toml $(WORKTREE)/Cargo.lock
-	cargo build --manifest-path $(WORKTREE)/Cargo.toml --release -p calm-server -p calm-session -p calm-codex-bridge -p neige-app -p neige-mcp-stdio-shim -p calm-proc-supervisor -p neige-cli --bin calm-server --bin calm-session-daemon --bin neige-codex-bridge --bin neige-app --bin neige-mcp-stdio-shim --bin calm-proc-supervisor --bin neige
+$(BIN) $(BRIDGE) $(APP) $(MCP_SHIM) $(PROC_SUP) $(NEIGE_CLI) &: $(shell find $(WORKTREE)/crates -name '*.rs' -o -name 'Cargo.toml' 2>/dev/null) $(WORKTREE)/Cargo.toml $(WORKTREE)/Cargo.lock
+	cargo build --manifest-path $(WORKTREE)/Cargo.toml --release -p calm-server -p calm-codex-bridge -p neige-app -p neige-mcp-stdio-shim -p calm-proc-supervisor -p neige-cli --bin calm-server --bin neige-codex-bridge --bin neige-app --bin neige-mcp-stdio-shim --bin calm-proc-supervisor --bin neige
 
 # npm rewrites node_modules/.package-lock.json after npm ci/install, so use
 # it as the dependency stamp for lockfile-driven web installs. Match CI's

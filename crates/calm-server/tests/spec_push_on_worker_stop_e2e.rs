@@ -153,7 +153,6 @@ async fn build_state(tmp: &TempDir, codex_bin: &Path) -> (AppState, Arc<SqlxRepo
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().join("terminals"),
-        session_daemon_bin: locate_recorder_bin(),
         proc_supervisor_sock: None,
     });
     let mut codex = CodexClient::new_stub();

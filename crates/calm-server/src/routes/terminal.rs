@@ -309,7 +309,6 @@ mod tests {
             .unwrap();
         let daemon = Arc::new(DaemonClient {
             data_dir: tmp.path().to_path_buf(),
-            session_daemon_bin: locate_recorder_bin(),
             proc_supervisor_sock: None,
         });
         (repo, daemon, tmp, term.id)
@@ -372,7 +371,6 @@ mod tests {
         let (repo, daemon, _tmp, term_id) = boot().await;
         let daemon = DaemonClient {
             data_dir: daemon.data_dir.clone(),
-            session_daemon_bin: locate_ready_exit_bin(),
             proc_supervisor_sock: None,
         };
         let term = repo.terminal_get(&term_id).await.unwrap().expect("row");
@@ -465,7 +463,6 @@ mod tests {
         };
         let daemon = Arc::new(DaemonClient {
             data_dir: tmp.path().to_path_buf(),
-            session_daemon_bin: true_bin,
             proc_supervisor_sock: None,
         });
 

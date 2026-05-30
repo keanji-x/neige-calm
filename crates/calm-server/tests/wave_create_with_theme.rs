@@ -75,7 +75,6 @@ async fn boot() -> Boot {
     let daemon_data_dir = tmp.path().to_path_buf();
     let daemon = Arc::new(DaemonClient {
         data_dir: daemon_data_dir.clone(),
-        session_daemon_bin: locate_recorder_bin(),
         proc_supervisor_sock: None,
     });
     let events = EventBus::new();

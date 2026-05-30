@@ -258,7 +258,6 @@ async fn spec_card_codex_daemon_env_contains_mcp_vars() {
 
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin: locate_daemon_bin(),
         proc_supervisor_sock: None,
     });
     let events = EventBus::new();

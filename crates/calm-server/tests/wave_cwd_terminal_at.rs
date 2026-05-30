@@ -84,7 +84,6 @@ async fn boot() -> Boot {
     // state instead.
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin: PathBuf::from("/nonexistent-daemon-bin-cwd-test"),
         proc_supervisor_sock: None,
     });
     let events = EventBus::new();

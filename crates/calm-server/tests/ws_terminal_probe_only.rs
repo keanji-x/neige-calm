@@ -114,7 +114,6 @@ async fn boot_with_terminal_row() -> Boot {
 
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin: locate_daemon_bin(),
         proc_supervisor_sock: None,
     });
     let state = AppState::from_parts(
