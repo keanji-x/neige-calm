@@ -85,6 +85,20 @@ enum LiveRenderer {
     ChildExited { exit_code: Option<i32> },
 }
 
+#[cfg(feature = "fixtures")]
+pub enum TestLiveRenderer {
+    Alive(Arc<RendererEntry>),
+    ChildExited { exit_code: Option<i32> },
+}
+
+#[cfg(feature = "fixtures")]
+pub async fn resolve_live_renderer_for_test(s: &AppState, id: &str) -> Result<TestLiveRenderer> {
+    match resolve_live_renderer(s, id).await? {
+        LiveRenderer::Alive(entry) => Ok(TestLiveRenderer::Alive(entry)),
+        LiveRenderer::ChildExited { exit_code } => Ok(TestLiveRenderer::ChildExited { exit_code }),
+    }
+}
+
 async fn resolve_live_renderer(s: &AppState, id: &str) -> Result<LiveRenderer> {
     let term = s
         .repo

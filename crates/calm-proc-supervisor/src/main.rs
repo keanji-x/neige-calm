@@ -1,5 +1,5 @@
 use anyhow::Context;
-use calm_proc_supervisor::{ProcRegistry, serve_control_socket};
+use calm_proc_supervisor::{ProcRegistry, bind_control_listener, serve_with_listener};
 use clap::Parser;
 use std::path::PathBuf;
 use tokio::sync::oneshot;
@@ -26,7 +26,9 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let registry = ProcRegistry::new();
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let serve_task = tokio::spawn(serve_control_socket(
+    let listener = bind_control_listener(&args.control_sock)?;
+    let serve_task = tokio::spawn(serve_with_listener(
+        listener,
         args.control_sock,
         registry.clone(),
         shutdown_rx,
