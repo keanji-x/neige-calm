@@ -1,9 +1,7 @@
 #![cfg(unix)]
 
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
@@ -13,17 +11,15 @@ use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes::theme::RequestTheme;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::terminal_renderer::RendererConfig;
-use calm_server::ws::terminal::{TestLiveRenderer, resolve_live_renderer_for_test};
-use calm_session::DaemonMsg;
+use calm_server::ws::terminal::{
+    TestLiveRenderer, resolve_live_renderer_for_test, resolve_live_renderer_from_terminal_for_test,
+};
 use serde_json::json;
 use tempfile::TempDir;
-use tokio::net::UnixStream;
-use tokio::process::{Child, Command};
-use tokio::time::timeout;
 
 #[tokio::test]
 async fn stale_row_no_supervisor_proc_returns_child_exited() {
-    let fixture = TestFixture::boot_with_supervisor().await;
+    let fixture = TestFixture::boot_with_missing_supervisor().await;
     let term = fixture.seed_terminal().await;
 
     let live = resolve_live_renderer_for_test(&fixture.state, &term.id)
@@ -38,14 +34,10 @@ async fn stale_row_no_supervisor_proc_returns_child_exited() {
 }
 
 #[tokio::test]
-async fn live_renderer_entry_returned_when_supervisor_confirms() {
-    let fixture = TestFixture::boot_with_supervisor().await;
+async fn live_renderer_entry_returned_when_registry_has_entry() {
+    let fixture = TestFixture::boot_with_missing_supervisor().await;
     let term = fixture.seed_terminal().await;
-    let entry = fixture.ensure_live_renderer(&term).await;
-    let mut events = entry
-        .take_initial_event_rx()
-        .expect("initial renderer event receiver");
-    wait_for_child_ready(&mut events).await;
+    fixture.insert_live_renderer_entry(&term);
 
     let live = resolve_live_renderer_for_test(&fixture.state, &term.id)
         .await
@@ -58,7 +50,6 @@ async fn live_renderer_entry_returned_when_supervisor_confirms() {
         }
     }
     assert!(fixture.state.terminal_renderer.get(&term.id).is_some());
-    fixture.state.terminal_renderer.drop_entry(&term.id).await;
 }
 
 #[tokio::test]
@@ -76,32 +67,50 @@ async fn probe_failure_returns_child_exited_not_panic() {
     ));
 }
 
+#[tokio::test]
+async fn persisted_exit_code_propagates_through_resolve_live_renderer() {
+    let fixture = TestFixture::boot_with_missing_supervisor().await;
+    let term = fixture.seed_terminal().await;
+    fixture
+        .state
+        .repo
+        .terminal_set_exit(&term.id, Some(137), false)
+        .await
+        .unwrap();
+    let term = fixture
+        .state
+        .repo
+        .terminal_get(&term.id)
+        .await
+        .unwrap()
+        .expect("terminal row");
+
+    let live = resolve_live_renderer_from_terminal_for_test(&fixture.state, term)
+        .await
+        .expect("resolve live renderer");
+
+    assert!(matches!(
+        live,
+        TestLiveRenderer::ChildExited {
+            exit_code: Some(137)
+        }
+    ));
+}
+
 struct TestFixture {
     _tmp: TempDir,
     repo: Arc<dyn Repo>,
     state: AppState,
-    supervisor: Option<Child>,
 }
 
 impl TestFixture {
-    async fn boot_with_supervisor() -> Self {
-        let tmp = TempDir::new().expect("tempdir");
-        let control_sock = tmp.path().join("proc-supervisor.sock");
-        let supervisor = spawn_real_supervisor(&control_sock).await;
-        Self::boot(tmp, Some(control_sock), Some(supervisor)).await
-    }
-
     async fn boot_with_missing_supervisor() -> Self {
         let tmp = TempDir::new().expect("tempdir");
         let control_sock = tmp.path().join("missing-proc-supervisor.sock");
-        Self::boot(tmp, Some(control_sock), None).await
+        Self::boot(tmp, Some(control_sock)).await
     }
 
-    async fn boot(
-        tmp: TempDir,
-        proc_supervisor_sock: Option<PathBuf>,
-        supervisor: Option<Child>,
-    ) -> Self {
+    async fn boot(tmp: TempDir, proc_supervisor_sock: Option<PathBuf>) -> Self {
         let repo: Arc<dyn Repo> = Arc::new(
             SqlxRepo::open("sqlite::memory:")
                 .await
@@ -133,7 +142,6 @@ impl TestFixture {
             _tmp: tmp,
             repo,
             state,
-            supervisor,
         }
     }
 
@@ -181,10 +189,7 @@ impl TestFixture {
             .expect("create terminal")
     }
 
-    async fn ensure_live_renderer(
-        &self,
-        term: &Terminal,
-    ) -> Arc<calm_server::terminal_renderer::RendererEntry> {
+    fn insert_live_renderer_entry(&self, term: &Terminal) {
         let supervisor_sock = self
             .state
             .daemon
@@ -193,7 +198,7 @@ impl TestFixture {
             .expect("supervisor sock");
         self.state
             .terminal_renderer
-            .ensure(RendererConfig {
+            .insert_test_entry(RendererConfig {
                 terminal_id: term.id.clone(),
                 cols: 80,
                 rows: 24,
@@ -205,100 +210,8 @@ impl TestFixture {
                 envs: std::env::vars().collect(),
                 cwd: workspace_root().display().to_string(),
                 supervisor_sock,
-            })
-            .await
-            .expect("ensure renderer")
+            });
     }
-}
-
-impl Drop for TestFixture {
-    fn drop(&mut self) {
-        if let Some(supervisor) = self.supervisor.as_mut() {
-            let _ = supervisor.start_kill();
-        }
-    }
-}
-
-async fn wait_for_child_ready(rx: &mut tokio::sync::broadcast::Receiver<DaemonMsg>) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(4);
-    loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        assert!(!remaining.is_zero(), "timed out waiting for ChildReady");
-        let msg = timeout(remaining, rx.recv())
-            .await
-            .expect("child ready timeout")
-            .expect("event channel closed");
-        if matches!(msg, DaemonMsg::ChildReady { .. }) {
-            return;
-        }
-    }
-}
-
-async fn spawn_real_supervisor(control_sock: &Path) -> Child {
-    let mut child = Command::new(locate_bin("calm-proc-supervisor"))
-        .arg("--control-sock")
-        .arg(control_sock)
-        .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .kill_on_drop(true)
-        .spawn()
-        .expect("spawn supervisor");
-    wait_until_listening(control_sock, &mut child).await;
-    assert!(child.id().is_some(), "supervisor exited before listening");
-    child
-}
-
-async fn wait_until_listening(sock: &Path, child: &mut Child) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    while tokio::time::Instant::now() < deadline {
-        if UnixStream::connect(sock).await.is_ok() {
-            return;
-        }
-        if let Some(status) = child.try_wait().expect("poll supervisor child") {
-            panic!(
-                "supervisor exited before listening on {}: {status}",
-                sock.display()
-            );
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    panic!("supervisor never listened on {}", sock.display());
-}
-
-fn locate_bin(name: &str) -> PathBuf {
-    let env_key = format!("CARGO_BIN_EXE_{name}");
-    if let Ok(path) = std::env::var(env_key) {
-        return PathBuf::from(path);
-    }
-    let me = std::env::current_exe().expect("current_exe");
-    let target_profile = me
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("test bin parent");
-    let candidate = target_profile.join(name);
-    if candidate.exists() {
-        return candidate;
-    }
-    let status = std::process::Command::new("cargo")
-        .args([
-            "build",
-            "-p",
-            "calm-proc-supervisor",
-            "--bin",
-            "calm-proc-supervisor",
-            "--locked",
-        ])
-        .status()
-        .expect("run cargo build for calm-proc-supervisor");
-    assert!(
-        status.success(),
-        "cargo build for calm-proc-supervisor failed with {status}"
-    );
-    if candidate.exists() {
-        return candidate;
-    }
-    panic!("{name} binary not found at {}", candidate.display());
 }
 
 fn workspace_root() -> PathBuf {

@@ -502,9 +502,7 @@ pub enum DaemonMsg {
     /// remained stable for `CHILD_READY_QUIESCENT_MS` AND at least one
     /// PTY chunk has been observed. See
     /// [`crate::terminal_session::RenderPlane::detect_ready`] for the
-    /// timing constants. Terminal mode only — chat mode never emits this
-    /// (the chat runner has its own ready signal via its first stream
-    /// event).
+    /// timing constants. Terminal mode only.
     ChildReady { pty_seq: u32, render_rev: u32 },
     /// Per-connection delivery acknowledgement for a previously-sent
     /// [`ClientMsg::Input`]. Emitted to the originating connection — not

@@ -1,11 +1,11 @@
 //! Pure, IO-free terminal-mode protocol state machine (v2).
 //!
-//! This module is the testable core of the per-client protocol that lives in
-//! `src/bin/daemon.rs`. The daemon binary is the IO shell: it owns the PTY,
-//! the Unix socket, the tokio runtime, and the broadcast channels. Each
-//! [`ClientMsg`] it reads off a socket — and each PTY chunk / child-exit
-//! event it observes — is fed into one of the types here, which decide what
-//! to do and emit a list of [`Effect`]s for the shell to enact.
+//! This module is the testable core of the per-client protocol that runs in
+//! calm-server's terminal renderer. The renderer's IO shell owns the PTY
+//! attachment, WebSocket bridge, tokio tasks, and broadcast channels. Each
+//! [`ClientMsg`] it reads off a client connection — and each PTY chunk /
+//! child-exit event it observes — is fed into one of the types here, which
+//! decide what to do and emit a list of [`Effect`]s for the shell to enact.
 //!
 //! Keeping the protocol layer free of tokio / sockets / fds lets us assert
 //! on its transitions in plain unit tests instead of by forking the real
@@ -29,8 +29,7 @@
 //! - [`PtyBroadcaster`] — legacy single global instance per daemon.
 //!   Replaced by [`RenderPlane`] for terminal-mode daemons in PR-2.
 //!   Retained as the test fixture for the protocol state machine
-//!   (`tests/v2_protocol.rs`); chat mode also still uses a parallel
-//!   buffer (`EventBuffer` in `bin/daemon.rs`).
+//!   (`tests/v2_protocol.rs`).
 //! - [`ByteRing`] — chunk-granular ring of recent PTY output, sized in
 //!   bytes. Drops whole chunks (never splits an escape sequence) from the
 //!   front when over budget.
@@ -392,7 +391,7 @@ impl TerminalSessionState {
     /// - `OwnerRelease` → registry clear; mirror role to Observer.
     /// - `RenderAck` → update `last_render_acked_rev` (no other effect).
     /// - `Kill` → owner: `KillChild`; observer: `NotOwner`.
-    /// - chat-mode frames → silent no-op (terminal mode ignores them).
+    /// - unknown / forward-compatibility variants → silent no-op.
     pub fn on_client_frame(
         &mut self,
         msg: ClientMsg,
@@ -812,8 +811,8 @@ impl PtyBroadcaster {
 
 /// Server-side render plane: owns the [`TerminalModel`] (VT-driven grid +
 /// scrollback) plus the byte-passthrough transcript ring. Replaces
-/// [`PtyBroadcaster`] for terminal-mode daemons in PR-2; chat mode and
-/// the existing protocol unit tests keep using `PtyBroadcaster`.
+/// [`PtyBroadcaster`] for terminal-mode daemons in PR-2; the existing
+/// protocol unit tests keep using `PtyBroadcaster`.
 ///
 /// ## `pty_seq` vs `render_rev` (PR-2 divergence)
 ///

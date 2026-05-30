@@ -16,6 +16,7 @@
 //! Calm-server just shuttles frames.
 
 use crate::error::Result;
+use crate::model::Terminal;
 use crate::state::AppState;
 use crate::terminal_renderer::{ClientPumpContext, RendererEntry, run_client_pump};
 use axum::{
@@ -99,6 +100,17 @@ pub async fn resolve_live_renderer_for_test(s: &AppState, id: &str) -> Result<Te
     }
 }
 
+#[cfg(feature = "fixtures")]
+pub async fn resolve_live_renderer_from_terminal_for_test(
+    s: &AppState,
+    term: Terminal,
+) -> Result<TestLiveRenderer> {
+    match resolve_live_renderer_from_terminal(s, term).await? {
+        LiveRenderer::Alive(entry) => Ok(TestLiveRenderer::Alive(entry)),
+        LiveRenderer::ChildExited { exit_code } => Ok(TestLiveRenderer::ChildExited { exit_code }),
+    }
+}
+
 async fn resolve_live_renderer(s: &AppState, id: &str) -> Result<LiveRenderer> {
     let term = s
         .repo
@@ -106,6 +118,10 @@ async fn resolve_live_renderer(s: &AppState, id: &str) -> Result<LiveRenderer> {
         .await?
         .ok_or_else(|| crate::error::CalmError::NotFound(format!("terminal {id}")))?;
 
+    resolve_live_renderer_from_terminal(s, term).await
+}
+
+async fn resolve_live_renderer_from_terminal(s: &AppState, term: Terminal) -> Result<LiveRenderer> {
     if let Some(entry) = s.terminal_renderer.get(&term.id) {
         return Ok(LiveRenderer::Alive(entry));
     }
@@ -1075,9 +1091,10 @@ mod pump_tests {
     }
 
     /// Daemon socket EOFs *before* emitting any `TerminalExited` /
-    /// `ChildExited` frame — the common case when the daemon child wait
-    /// returns and the daemon shuts down without getting to write the JSON
-    /// exit frame (server logs show `error=io: early eof`). The pump must
+    /// `ChildExited` frame — the common case when the renderer's attach
+    /// reader observes the supervisor `Exited` frame and shuts down without
+    /// getting to write the JSON exit frame (server logs show
+    /// `error=io: early eof`). The pump must
     /// still close with `Close(1000, "child-exited")`, not `Close(None)`
     /// (which the browser surfaces as code 1005 and would conflate with a
     /// generic abnormal close). Regression test for the 1005 close-code
