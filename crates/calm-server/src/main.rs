@@ -26,10 +26,9 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cfg = Config::parse();
-    if cfg.emit_version_json {
-        let info =
-            calm_server::routes::version::current_version_info(uuid::Uuid::new_v4().to_string());
-        println!("{}", serde_json::to_string_pretty(&info)?);
+    if cfg.emit_kernel_compatibility_json {
+        let compatibility = calm_server::routes::version::current_kernel_compatibility();
+        println!("{}", serde_json::to_string_pretty(&compatibility)?);
         return Ok(());
     }
     warn_if_worker_hook_callback_is_not_loopback(&cfg);

@@ -11,6 +11,20 @@ This page documents the legacy schemaVersion 1 package shape. The
 schemaVersion 2 model, per-crate units, installed-state file, and verdict
 preflight algorithm are documented in `docs/upgrade-pipeline.md`.
 
+## Build-time Configuration
+
+The v2 packager reads these build-time values while producing
+`manifest.json`:
+
+- `NEIGE_PRODUCT_MAJOR=<u32>` sets manifest `productMajor`. The default is
+  `0`. Bump it for releases that intentionally break product-level
+  compatibility.
+- `NEIGE_DB_MIGRATION_POLICY=none|additive|forwardOnly|destructive` sets the
+  `calmServer` unit's `dbMigrationPolicy`. The default is `forwardOnly`.
+- `calm-server --emit-kernel-compatibility-json` is the packager helper. It
+  prints the 9-field v2 `Compatibility` JSON object to stdout and exits before
+  opening storage or sockets.
+
 ## Shape
 
 ```json

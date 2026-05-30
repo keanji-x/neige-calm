@@ -6,7 +6,6 @@ use anyhow::{Context, anyhow};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{AppConfig, SourceConfig};
-use crate::manifest::CompatibilityV1;
 use crate::package::{NamedPath, PackageConfig};
 use crate::preflight::PreflightMode;
 
@@ -40,19 +39,8 @@ pub(crate) fn build_source_package_from_source(
         release_dir,
         out: None,
         release_id,
-        app_version: None,
         app_bin: Some(source_dir.join("target").join("release").join("neige-app")),
         web_dist: Some(source_dir.join("web").join("dist")),
-        web_version: None,
-        calm_server_version: None,
-        db_migration_policy: crate::manifest::DbMigrationPolicy::ForwardOnly,
-        compatibility: CompatibilityV1 {
-            api_version: String::new(),
-            sync_event_version: 0,
-            mcp_protocol_version: String::new(),
-            web_compat_version: 0,
-            min_web_compat_version: 0,
-        },
         bins: required_bins(&source_dir),
     })
 }
@@ -322,8 +310,8 @@ mod tests {
             &release.join("calm-server"),
             r#"case "$1" in
   --version) printf 'calm-server 1.0.0\n'; exit 0 ;;
-  --emit-version-json) cat <<'JSON'
-{"kernelVersion":"1.0.0","terminalFrameVersion":4,"terminalProtocolVersion":4,"apiVersion":"1","syncEventVersion":1,"mcpProtocolVersion":"2024-11-05","pluginMcpProtocolVersion":"2025-11-25","webCompatVersion":2,"minWebCompatVersion":2,"supervisorControlVersion":1,"buildSha":null,"dbInstanceId":"test"}
+  --emit-kernel-compatibility-json) cat <<'JSON'
+{"terminalFrameVersion":4,"terminalProtocolVersion":4,"apiVersion":"1","syncEventVersion":1,"mcpProtocolVersion":"2024-11-05","pluginMcpProtocolVersion":"2025-11-25","webCompatVersion":2,"minWebCompatVersion":2,"supervisorControlVersion":1}
 JSON
     exit 0 ;;
 esac

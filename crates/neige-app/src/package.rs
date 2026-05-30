@@ -10,8 +10,8 @@ use sha2::{Digest, Sha256};
 
 use crate::identity::parse_version_output;
 use crate::manifest::{
-    Compatibility, CompatibilityV1, DbMigrationPolicy, FileManifest, FileUnit, ReleaseManifestV2,
-    ReleaseUnit, RestartPolicy, UnitName,
+    Compatibility, DbMigrationPolicy, FileManifest, FileUnit, ReleaseManifestV2, ReleaseUnit,
+    RestartPolicy, UnitName,
 };
 
 #[derive(Debug, Clone)]
@@ -21,18 +21,12 @@ pub(crate) struct NamedPath {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub(crate) struct PackageConfig {
     pub release_dir: PathBuf,
     pub out: Option<PathBuf>,
     pub release_id: String,
-    pub app_version: Option<String>,
     pub app_bin: Option<PathBuf>,
     pub web_dist: Option<PathBuf>,
-    pub web_version: Option<String>,
-    pub calm_server_version: Option<String>,
-    pub db_migration_policy: DbMigrationPolicy,
-    pub compatibility: CompatibilityV1,
     pub bins: Vec<NamedPath>,
 }
 
@@ -285,20 +279,21 @@ fn version_from_binary(bin: &Path) -> anyhow::Result<String> {
 }
 
 fn compatibility_from_kernel(calm_server: &Path) -> anyhow::Result<Compatibility> {
+    const FLAG: &str = "--emit-kernel-compatibility-json";
     let output = StdCommand::new(calm_server)
-        .arg("--emit-version-json")
+        .arg(FLAG)
         .output()
-        .with_context(|| format!("run {} --emit-version-json", calm_server.display()))?;
+        .with_context(|| format!("run {} {FLAG}", calm_server.display()))?;
     if !output.status.success() {
         return Err(anyhow!(
-            "{} --emit-version-json failed: {}",
+            "{} {FLAG} failed: {}",
             calm_server.display(),
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
     serde_json::from_slice(&output.stdout).with_context(|| {
         format!(
-            "parse compatibility fields from {} --emit-version-json",
+            "parse compatibility fields from {} {FLAG}",
             calm_server.display()
         )
     })
@@ -461,7 +456,7 @@ fn copy_file_with_hash(
         fs::create_dir_all(parent).with_context(|| format!("create dir {}", parent.display()))?;
     }
     fs::copy(src, dst).with_context(|| format!("copy {} to {}", src.display(), dst.display()))?;
-    let (sha256, bytes) = sha256_file(dst)?;
+    let (sha256, bytes) = hash_and_measure_file(dst)?;
     Ok(FileManifest {
         path: relative_path,
         sha256,
@@ -470,7 +465,7 @@ fn copy_file_with_hash(
     })
 }
 
-pub(crate) fn sha256_file(path: &Path) -> anyhow::Result<(String, u64)> {
+pub(crate) fn hash_and_measure_file(path: &Path) -> anyhow::Result<(String, u64)> {
     let mut file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
@@ -503,9 +498,22 @@ mod tests {
     use super::*;
     use crate::manifest::{ReleaseManifestV2, RestartPolicy, UnitName};
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn package_directory_contains_v2_manifest_and_hashes() {
+        let _env_guard = ENV_LOCK.lock().expect("env lock");
+        with_env_removed("NEIGE_PRODUCT_MAJOR", || {
+            with_env_removed(
+                "NEIGE_DB_MIGRATION_POLICY",
+                package_directory_contains_v2_manifest_and_hashes_inner,
+            )
+        });
+    }
+
+    fn package_directory_contains_v2_manifest_and_hashes_inner() {
         let tmp = test_temp_dir("package-smoke");
         let src = fake_build_output(&tmp);
 
@@ -513,13 +521,8 @@ mod tests {
             release_dir: tmp.join("pkg"),
             out: None,
             release_id: "smoke".into(),
-            app_version: None,
             app_bin: Some(src.join("neige-app")),
             web_dist: Some(src.join("web").join("dist")),
-            web_version: None,
-            calm_server_version: None,
-            db_migration_policy: DbMigrationPolicy::ForwardOnly,
-            compatibility: compat_v1(),
             bins: required_bins(&src),
         })
         .expect("package");
@@ -561,6 +564,10 @@ mod tests {
             RestartPolicy::RestartViaAdminApi
         );
         assert_eq!(
+            manifest.units[&UnitName::CalmServer].db_migration_policy,
+            Some(DbMigrationPolicy::ForwardOnly)
+        );
+        assert_eq!(
             manifest.units[&UnitName::CalmProcSupervisor].restart_policy,
             RestartPolicy::DeferUntilFullReboot
         );
@@ -596,6 +603,57 @@ mod tests {
     }
 
     #[test]
+    fn package_uses_env_product_major_override() {
+        let _env_guard = ENV_LOCK.lock().expect("env lock");
+        with_env_var("NEIGE_PRODUCT_MAJOR", "7", || {
+            with_env_removed("NEIGE_DB_MIGRATION_POLICY", || {
+                let tmp = test_temp_dir("package-product-major");
+                let src = fake_build_output(&tmp);
+                let package_dir = build_package(&PackageConfig {
+                    release_dir: tmp.join("pkg"),
+                    out: None,
+                    release_id: "product-major".into(),
+                    app_bin: Some(src.join("neige-app")),
+                    web_dist: Some(src.join("web").join("dist")),
+                    bins: required_bins(&src),
+                })
+                .expect("package");
+                let manifest: ReleaseManifestV2 = serde_json::from_slice(
+                    &fs::read(package_dir.join("manifest.json")).expect("read manifest"),
+                )
+                .expect("parse manifest");
+                assert_eq!(manifest.product_major, 7);
+            });
+        });
+    }
+
+    #[test]
+    fn calm_server_db_migration_policy_defaults_to_forward_only() {
+        let _env_guard = ENV_LOCK.lock().expect("env lock");
+        with_env_removed("NEIGE_DB_MIGRATION_POLICY", || {
+            let tmp = test_temp_dir("package-db-policy");
+            let src = fake_build_output(&tmp);
+            let package_dir = build_package(&PackageConfig {
+                release_dir: tmp.join("pkg"),
+                out: None,
+                release_id: "db-policy".into(),
+                app_bin: Some(src.join("neige-app")),
+                web_dist: Some(src.join("web").join("dist")),
+                bins: required_bins(&src),
+            })
+            .expect("package");
+            let manifest: ReleaseManifestV2 = serde_json::from_slice(
+                &fs::read(package_dir.join("manifest.json")).expect("read manifest"),
+            )
+            .expect("parse manifest");
+            assert_eq!(
+                manifest.units[&UnitName::CalmServer].db_migration_policy,
+                Some(DbMigrationPolicy::ForwardOnly)
+            );
+        });
+    }
+
+    #[test]
     fn parse_named_path_requires_name_and_path() {
         assert!(parse_named_path("calm-server=/tmp/calm-server").is_ok());
         assert!(parse_named_path("calm-server").is_err());
@@ -618,13 +676,8 @@ mod tests {
             release_dir: tmp.join("pkg"),
             out: None,
             release_id: "../outside".into(),
-            app_version: None,
             app_bin: Some(src.join("neige-app")),
             web_dist: Some(src.join("web").join("dist")),
-            web_version: None,
-            calm_server_version: None,
-            db_migration_policy: DbMigrationPolicy::None,
-            compatibility: compat_v1(),
             bins: required_bins(&src),
         })
         .expect_err("unsafe release_id must fail");
@@ -643,13 +696,8 @@ mod tests {
             release_dir: tmp.join("pkg"),
             out: None,
             release_id: "missing".into(),
-            app_version: None,
             app_bin: Some(src.join("neige-app")),
             web_dist: Some(src.join("web").join("dist")),
-            web_version: None,
-            calm_server_version: None,
-            db_migration_policy: DbMigrationPolicy::None,
-            compatibility: compat_v1(),
             bins,
         })
         .expect_err("missing bin must be refused");
@@ -671,13 +719,8 @@ mod tests {
             release_dir: tmp.join("pkg"),
             out: None,
             release_id: "duplicate".into(),
-            app_version: None,
             app_bin: Some(src.join("neige-app")),
             web_dist: Some(src.join("web").join("dist")),
-            web_version: None,
-            calm_server_version: None,
-            db_migration_policy: DbMigrationPolicy::None,
-            compatibility: compat_v1(),
             bins,
         })
         .expect_err("duplicate bin path must be refused");
@@ -698,8 +741,8 @@ mod tests {
             &src.join("calm-server"),
             r#"case "$1" in
   --version) printf 'calm-server 0.1.0\n'; exit 0 ;;
-  --emit-version-json) cat <<'JSON'
-{"kernelVersion":"0.1.0","terminalFrameVersion":4,"terminalProtocolVersion":4,"apiVersion":"1","syncEventVersion":1,"mcpProtocolVersion":"2024-11-05","pluginMcpProtocolVersion":"2025-11-25","webCompatVersion":2,"minWebCompatVersion":2,"supervisorControlVersion":1,"buildSha":null,"dbInstanceId":"test"}
+  --emit-kernel-compatibility-json) cat <<'JSON'
+{"terminalFrameVersion":4,"terminalProtocolVersion":4,"apiVersion":"1","syncEventVersion":1,"mcpProtocolVersion":"2024-11-05","pluginMcpProtocolVersion":"2025-11-25","webCompatVersion":2,"minWebCompatVersion":2,"supervisorControlVersion":1}
 JSON
     exit 0 ;;
 esac
@@ -751,13 +794,24 @@ exit 2
         fs::set_permissions(path, permissions).expect("chmod script");
     }
 
-    fn compat_v1() -> CompatibilityV1 {
-        CompatibilityV1 {
-            api_version: "1".into(),
-            sync_event_version: 1,
-            mcp_protocol_version: "2024-11-05".into(),
-            web_compat_version: 2,
-            min_web_compat_version: 2,
+    fn with_env_var(key: &str, value: &str, f: impl FnOnce()) {
+        let old = std::env::var_os(key);
+        unsafe { std::env::set_var(key, value) };
+        f();
+        restore_env(key, old);
+    }
+
+    fn with_env_removed(key: &str, f: impl FnOnce()) {
+        let old = std::env::var_os(key);
+        unsafe { std::env::remove_var(key) };
+        f();
+        restore_env(key, old);
+    }
+
+    fn restore_env(key: &str, value: Option<std::ffi::OsString>) {
+        match value {
+            Some(value) => unsafe { std::env::set_var(key, value) },
+            None => unsafe { std::env::remove_var(key) },
         }
     }
 

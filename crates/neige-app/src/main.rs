@@ -34,7 +34,7 @@ mod upgrade;
 
 use config::{AppConfig, ServeOverrides, default_config_path, init_config};
 use identity::SpawnIdentity;
-use manifest::{CompatibilityV1, CurrentVersion, DbMigrationPolicy, ReleaseManifest};
+use manifest::{CurrentVersion, ReleaseManifest};
 use package::{NamedPath, PackageConfig};
 use preflight::PreflightMode;
 
@@ -870,19 +870,8 @@ fn run_package_cli(args: SystemPackageArgs) -> anyhow::Result<()> {
         release_dir: args.release_dir,
         out: args.out,
         release_id: args.release_id,
-        app_version: None,
         app_bin: Some(args.app_bin),
         web_dist: Some(args.web_dist),
-        web_version: None,
-        calm_server_version: None,
-        db_migration_policy: DbMigrationPolicy::ForwardOnly,
-        compatibility: CompatibilityV1 {
-            api_version: String::new(),
-            sync_event_version: 0,
-            mcp_protocol_version: String::new(),
-            web_compat_version: 0,
-            min_web_compat_version: 0,
-        },
         bins: args.bins,
     })?;
     println!(

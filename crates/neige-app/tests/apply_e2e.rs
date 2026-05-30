@@ -801,9 +801,8 @@ import http.server, json, os, socketserver, sys
 if len(sys.argv) > 1 and sys.argv[1] == "--version":
     print("calm-server {version}")
     sys.exit(0)
-if len(sys.argv) > 1 and sys.argv[1] == "--emit-version-json":
+if len(sys.argv) > 1 and sys.argv[1] == "--emit-kernel-compatibility-json":
     print(json.dumps({{
-        "kernelVersion": "{version}",
         "terminalFrameVersion": 4,
         "terminalProtocolVersion": 4,
         "apiVersion": "1",
@@ -812,9 +811,7 @@ if len(sys.argv) > 1 and sys.argv[1] == "--emit-version-json":
         "pluginMcpProtocolVersion": "2025-11-25",
         "webCompatVersion": 2,
         "minWebCompatVersion": 2,
-        "supervisorControlVersion": 1,
-        "buildSha": None,
-        "dbInstanceId": "test"
+        "supervisorControlVersion": 1
     }}))
     sys.exit(0)
 listen = os.environ.get("CALM_LISTEN", "127.0.0.1:4040")

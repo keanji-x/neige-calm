@@ -123,8 +123,6 @@ pub fn router() -> Router<AppState> {
 #[serde(rename_all = "camelCase")]
 pub struct VersionInfo {
     pub kernel_version: String,
-    pub terminal_frame_version: u16,
-    pub terminal_protocol_version: u16,
     /// REST contract version. Diagnostic-only on the wire — the frontend
     /// gates compatibility on `min_web_compat_version` (whole bundle) and
     /// `sync_event_version` (per-event-frame). See `API_VERSION` for the
@@ -145,8 +143,6 @@ pub fn current_version_info(db_instance_id: String) -> VersionInfo {
     let compatibility = current_kernel_compatibility();
     VersionInfo {
         kernel_version: env!("CARGO_PKG_VERSION").to_string(),
-        terminal_frame_version: compatibility.terminal_frame_version,
-        terminal_protocol_version: compatibility.terminal_protocol_version,
         api_version: compatibility.api_version,
         sync_event_version: compatibility.sync_event_version,
         mcp_protocol_version: compatibility.mcp_protocol_version,
@@ -186,8 +182,6 @@ mod tests {
     fn min_web_compat_version_matches_constant() {
         let body = VersionInfo {
             kernel_version: env!("CARGO_PKG_VERSION").to_string(),
-            terminal_frame_version: calm_session::FRAME_VERSION,
-            terminal_protocol_version: calm_session::PROTOCOL_VERSION,
             api_version: API_VERSION.to_string(),
             sync_event_version: SYNC_EVENT_VERSION,
             mcp_protocol_version: KERNEL_MCP_PROTOCOL_VERSION.to_string(),
