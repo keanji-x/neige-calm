@@ -21,11 +21,6 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
-
-fn locate_recorder_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_argv-recorder-daemon"))
-}
-
 struct Boot {
     app: axum::Router,
     wave_id: String,
@@ -63,7 +58,6 @@ async fn boot_happy() -> Boot {
 
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin: locate_recorder_bin(),
         proc_supervisor_sock: None,
     });
     let mut codex = CodexClient::new_stub();

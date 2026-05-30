@@ -73,7 +73,6 @@ async fn boot() -> Boot {
     // `cards_deletable.rs` so future contributors recognize the shape.
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin: PathBuf::from("/dev/null"),
         proc_supervisor_sock: None,
     });
     let events = EventBus::new();

@@ -14,15 +14,15 @@
 //!    `payload=null` flash for the renderer's "Codex is starting…"
 //!    placeholder to react to.
 //! 2. After commit, the handler seeds the per-card `CODEX_HOME` and
-//!    spawns `calm-session-daemon` via the same `spawn_daemon_for`
+//!    starts the terminal renderer via the same `spawn_terminal_for`
 //!    helper the terminal-card endpoint uses. Hooks come from
 //!    `/etc/codex/requirements.toml` (policy-managed, bind-mounted via
-//!    docker-compose) — no per-card `hooks.json` is written. A daemon-
-//!    spawn failure returns 500 to the client but does NOT roll back the
+//!    docker-compose) — no per-card `hooks.json` is written. A renderer-
+//!    start failure returns 500 to the client but does NOT roll back the
 //!    persisted rows: the orphan-terminal sweeper reaps them within ~60s.
 //!
 //! Why a pre-minted card_id (design option C)? The `CODEX_HOME` path is
-//! `<codex_homes_dir>/<card_id>/` — keyed on the card id so the daemon
+//! `<codex_homes_dir>/<card_id>/` — keyed on the card id so the renderer
 //! sees the same auth.json / state across container restarts. Pre-minting
 //! the id lets us derive that path *before* the row hits the DB and
 //! propagate it into the env map without a post-commit "stamp env" round
@@ -38,7 +38,7 @@ use crate::event::Event;
 use crate::model::{Card, new_id};
 use crate::routes::cards::card_scope;
 use crate::routes::settings::load_settings;
-use crate::routes::terminal::spawn_daemon_for;
+use crate::routes::terminal::spawn_terminal_for;
 use crate::state::AppState;
 use axum::{
     Json, Router,
@@ -69,8 +69,8 @@ pub fn router() -> Router<AppState> {
 ///      injected stdin lands on the composer instead of a modal, and
 ///   3. stamps `prompt` onto the card payload — the
 ///      `codex_auto_submit` subscriber reads it and, once codex emits
-///      `hook.codex.session_start`, opens a kernel-private connection
-///      to the daemon and injects a `\r` so the composer auto-submits.
+///      `hook.codex.session_start`, routes `\r` through the renderer so
+///      the composer auto-submits.
 ///
 /// Empty / absent `prompt` reverts to the user-initiated flow: codex
 /// boots, the composer is empty, the user types and hits Enter.
@@ -83,9 +83,9 @@ pub fn router() -> Router<AppState> {
 /// callers should be putting text now.
 ///
 /// `theme` is required end-to-end (#177): callers MUST send the host
-/// browser's current foreground/background RGB. The kernel stamps it
-/// onto the `calm-session-daemon` argv so codex's OSC 10/11 startup
-/// probe gets matching colors. Forcing it at the type layer means a
+/// browser's current foreground/background RGB. The renderer uses it so
+/// codex's OSC 10/11 startup probe gets matching colors. Forcing it at
+/// the type layer means a
 /// caller that forgets — the exact bug that motivated this refactor —
 /// fails at compile time (TS) or at the deserialize step (Rust/JSON,
 /// 422). No `Option`, no `#[serde(default)]`, no implicit fallback.
@@ -111,10 +111,8 @@ pub struct NewCodexCardBody {
     /// Optional card-head logo foreground CSS color. Empty string is ignored.
     #[serde(default)]
     pub icon_fg: Option<String>,
-    /// Host browser's current theme RGB (#177). Required — the kernel
-    /// stamps `--terminal-fg=r,g,b --terminal-bg=r,g,b` onto the
-    /// `calm-session-daemon` argv so the daemon's `TerminalModel`
-    /// answers codex's OSC 10/11 startup probe with colors matching
+    /// Host browser's current theme RGB (#177). Required so the terminal
+    /// model answers codex's OSC 10/11 startup probe with colors matching
     /// the host theme. A caller that omits this field gets 422.
     pub theme: crate::routes::theme::RequestTheme,
 }
@@ -344,7 +342,7 @@ pub(crate) async fn create_codex_card(
     }
 
     // 7. Fetch the persisted terminal row so we can hand it to
-    //    `spawn_daemon_for`. Guaranteed to exist: the transaction above
+    //    `spawn_terminal_for`. Guaranteed to exist: the transaction above
     //    committed both card and terminal as one unit.
     let term = s
         .repo
@@ -357,7 +355,7 @@ pub(crate) async fn create_codex_card(
             ))
         })?;
 
-    // 8. Build the codex command. `spawn_daemon_for` passes
+    // 8. Build the codex command. `spawn_terminal_for` passes
     //    whatever we hand here to `sh -c`, so for hands-free spawns we
     //    append the prompt as codex's positional `[PROMPT]` arg,
     //    shell-single-quoted so any user payload (including single
@@ -373,7 +371,7 @@ pub(crate) async fn create_codex_card(
     //    within its grace window. Matches the prior endpoint's semantics:
     //    a 500 tells the client the spawn failed, but the card/terminal
     //    pair is still in the DB until the sweeper runs.
-    spawn_daemon_for(&s, &term, &command_line, &cwd, &env).await?;
+    spawn_terminal_for(&s, &term, &command_line, &cwd, &env).await?;
 
     tracing::info!(
         card_id = %card.id,

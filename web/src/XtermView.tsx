@@ -60,7 +60,7 @@ export interface ExitChange {
 }
 
 interface XtermViewProps {
-  /** `Terminal.id` from the kernel — addresses the daemon socket on the server. */
+  /** `Terminal.id` from the kernel. */
   terminalId: string;
   theme?: 'light' | 'dark';
   /**
@@ -76,7 +76,7 @@ interface XtermViewProps {
    * #306 — lift child-exit info out to the parent card so the header can
    * render a small badge (`exit 0` / `exit 137` / `signal`) without
    * overlaying the terminal buffer. Fired with `{ exit_code, signal_killed }`
-   * when the daemon emits `TerminalExited` / `ChildExited` or the WS
+   * when the terminal emits `TerminalExited` or the WS
    * closes with `1000 + reason=child-exited`, and with `null` on
    * reconnect to clear any prior badge. Idempotent: the parent may
    * receive the same payload twice (once from the JSON frame, once
@@ -101,8 +101,11 @@ interface CloseInfo {
  *  via `DaemonMsg::ProtocolError(UnsupportedVersion)` and the overlay below.
  *  Bumped 2 → 3 in #177 for the `ClientMsg::TerminalThemeUpdate` variant
  *  the daemon uses to update its OSC 10/11 defaults and nudge a
- *  focus-aware TUI to re-query on host theme toggles. */
-const PROTOCOL_VERSION = 3;
+ *  focus-aware TUI to re-query on host theme toggles.
+ *  Bumped 3 → 4 in #388 (Phase 3c): chat-mode wire variants removed
+ *  alongside daemon binary retirement; the bincode discriminants shift
+ *  so `FRAME_VERSION` + `PROTOCOL_VERSION` move in lockstep. */
+const PROTOCOL_VERSION = 4;
 
 /**
  * UI status for the v2 terminal protocol. Slimmed-down state machine
@@ -606,20 +609,6 @@ export function XtermView({
         );
         return;
       }
-      if ('ChildExited' in msg) {
-        // #306 — chat-mode close path. We don't render chat in
-        // XtermView today (it lives on a separate card builtin) but
-        // forwards-compatibility against a stray frame is cheap.
-        const c = msg.ChildExited;
-        exitInfoRef.current = { code: c.code };
-        setExitInfo({ code: c.code });
-        setStatus('exited');
-        onExitChangeRef.current?.({
-          exit_code: c.code,
-          signal_killed: false,
-        });
-        return;
-      }
       if ('ProtocolError' in msg) {
         setProtocolError({
           code: msg.ProtocolError.code,
@@ -646,10 +635,6 @@ export function XtermView({
         dlog('XtermView', 'Backpressure', msg.Backpressure);
         return;
       }
-      // Chat-mode variants (`HelloChat`, `ChatEvent`, `ChildExited`) never
-      // reach the terminal card path — the kernel routes them through the
-      // codex card instead. We ignore them silently here for forwards-
-      // compatibility against a misconfigured backend.
     };
 
     ws.onclose = (e) => {
@@ -683,7 +668,7 @@ export function XtermView({
         return 'closed';
       });
       // #306 — backstop for the parent's exit badge. Fires ONLY when no
-      // prior `TerminalExited` / `ChildExited` JSON frame already
+      // prior `TerminalExited` JSON frame already
       // delivered an exit code on this connection. The parent's
       // `onExitChange` callback (terminal.tsx) is a plain setState
       // with no dedupe / no "fill-if-null" semantic, so firing

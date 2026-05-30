@@ -2,7 +2,7 @@
 //! bridge (`pump`). Mounts the public [`calm_server::ws::terminal::pump`]
 //! function under a minimal axum router and drives it with one end of a
 //! `tokio::io::duplex` pair playing the role of the daemon socket. No
-//! `calm-session-daemon` subprocess is forked — every byte of the
+//! terminal renderer is started — every byte of the
 //! JSON↔bincode bridge is exercised in-process.
 
 use std::net::SocketAddr;

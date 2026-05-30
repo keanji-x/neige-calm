@@ -4,7 +4,7 @@
 //! calendar window query `GET /api/waves?since&until&cove_id`.
 //!
 //! These tests boot a stub-daemon router (no real codex / no real
-//! `calm-session-daemon`) so the spec-push app-server boot fails on
+//! terminal renderer) so the spec-push app-server boot fails on
 //! `POST /api/waves`. Issue #293 / PR #311 made that boot NON-FATAL —
 //! the route now returns 201 (inert wave) on that branch rather than
 //! 500 — and the wave + cards + (optional) cove_folder rows land at
@@ -84,7 +84,6 @@ async fn boot() -> Boot {
     // state instead.
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin: PathBuf::from("/nonexistent-daemon-bin-cwd-test"),
         proc_supervisor_sock: None,
     });
     let events = EventBus::new();

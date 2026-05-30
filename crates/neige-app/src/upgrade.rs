@@ -794,7 +794,6 @@ mod tests {
         fs::create_dir_all(src.join("web")).expect("create web");
         for name in [
             "calm-server",
-            "calm-session-daemon",
             "neige-codex-bridge",
             "neige-mcp-stdio-shim",
             "neige",
@@ -868,7 +867,6 @@ mod tests {
         fs::create_dir_all(&src).expect("create src");
         for name in [
             "calm-server",
-            "calm-session-daemon",
             "neige-codex-bridge",
             "neige-mcp-stdio-shim",
             "neige",
@@ -1298,7 +1296,6 @@ mod tests {
         fs::create_dir_all(src.join("web")).expect("create web");
         for name in [
             "calm-server",
-            "calm-session-daemon",
             "neige-codex-bridge",
             "neige-mcp-stdio-shim",
             "neige",
@@ -1336,7 +1333,6 @@ mod tests {
         fs::create_dir_all(src.join("web")).expect("create web");
         for name in [
             "calm-server",
-            "calm-session-daemon",
             "neige-codex-bridge",
             "neige-mcp-stdio-shim",
             "neige",
@@ -1377,7 +1373,6 @@ mod tests {
         fs::create_dir_all(src.join("web")).expect("create web");
         for name in [
             "calm-server",
-            "calm-session-daemon",
             "neige-codex-bridge",
             "neige-mcp-stdio-shim",
             "neige",
@@ -1511,7 +1506,6 @@ mod tests {
     fn required_bins(src: &Path) -> Vec<NamedPath> {
         [
             "calm-server",
-            "calm-session-daemon",
             "neige-codex-bridge",
             "neige-mcp-stdio-shim",
             "neige",
@@ -1529,7 +1523,6 @@ mod tests {
         fs::create_dir_all(src.join("web")).expect("create web");
         for name in [
             "calm-server",
-            "calm-session-daemon",
             "neige-codex-bridge",
             "neige-mcp-stdio-shim",
             "neige",

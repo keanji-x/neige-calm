@@ -638,8 +638,6 @@ async fn terminal_create_rejects_duplicate_card_id() {
         })
         .await
         .unwrap();
-    assert!(t.daemon_handle.is_none());
-
     let err = repo
         .terminal_create(NewTerminal {
             card_id: card.id.clone(),
@@ -652,20 +650,12 @@ async fn terminal_create_rejects_duplicate_card_id() {
         .unwrap_err();
     assert!(matches!(err, CalmError::Conflict(_)));
 
-    repo.terminal_set_handle(&t.id, Some("handle-1"))
-        .await
-        .unwrap();
-    let got = repo.terminal_get(&t.id).await.unwrap().unwrap();
-    assert_eq!(got.daemon_handle.as_deref(), Some("handle-1"));
     let by_card = repo
         .terminal_get_by_card(card.id.as_str())
         .await
         .unwrap()
         .unwrap();
     assert_eq!(by_card.id, t.id);
-
-    let err = repo.terminal_set_handle("no-such", None).await.unwrap_err();
-    assert!(matches!(err, CalmError::NotFound(_)));
 
     // Issue #197 — `terminals.card_id` is `ON DELETE RESTRICT` so the
     // schema refuses a card delete that would orphan the terminal row.
@@ -1360,7 +1350,7 @@ async fn terminal_set_exit_round_trip_all_branches() {
     assert_eq!(r.exit_code, None);
     assert!(!r.signal_killed);
 
-    // Missing id → NotFound, mirroring `terminal_set_pid` / `_set_handle`.
+    // Missing id → NotFound, mirroring `terminal_set_pid`.
     let err = repo
         .terminal_set_exit("no-such-id", Some(0), false)
         .await

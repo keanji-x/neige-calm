@@ -291,7 +291,6 @@ fn require_web_files(manifest: &ReleaseManifest) -> Result<(), String> {
 fn require_bundle_files(manifest: &ReleaseManifest, bundle: &BundleUnit) -> Result<(), String> {
     let required = [
         "calm-server",
-        "calm-session-daemon",
         "neige-codex-bridge",
         "neige-mcp-stdio-shim",
         "neige",
@@ -478,7 +477,6 @@ mod tests {
     fn bundle_binaries() -> Vec<BinaryUnit> {
         [
             "calm-server",
-            "calm-session-daemon",
             "neige-codex-bridge",
             "neige-mcp-stdio-shim",
             "neige",
@@ -494,7 +492,6 @@ mod tests {
     fn bundle_files() -> Vec<FileManifest> {
         vec![
             server_file(),
-            file(FileUnit::Bundle, "bin/calm-session-daemon"),
             file(FileUnit::Bundle, "bin/neige-codex-bridge"),
             file(FileUnit::Bundle, "bin/neige-mcp-stdio-shim"),
             file(FileUnit::Bundle, "bin/neige"),
@@ -805,8 +802,8 @@ mod tests {
         let mut binaries = bundle_binaries();
         binaries
             .iter_mut()
-            .find(|binary| binary.name == "calm-session-daemon")
-            .expect("session daemon binary")
+            .find(|binary| binary.name == "neige-codex-bridge")
+            .expect("codex bridge binary")
             .path = "web/dist/index.html".into();
 
         let result = run_preflight(
@@ -828,11 +825,7 @@ mod tests {
 
         assert!(!result.allowed);
         assert_eq!(result.required_action, "provide-bundle-files");
-        assert!(
-            result
-                .reason
-                .contains("must map to bin/calm-session-daemon")
-        );
+        assert!(result.reason.contains("must map to bin/neige-codex-bridge"));
     }
 
     #[test]
@@ -840,8 +833,8 @@ mod tests {
         let mut files = bundle_files();
         files
             .iter_mut()
-            .find(|file| file.path == "bin/calm-session-daemon")
-            .expect("session daemon file")
+            .find(|file| file.path == "bin/neige-codex-bridge")
+            .expect("codex bridge file")
             .unit = FileUnit::Web;
 
         let result = run_preflight(

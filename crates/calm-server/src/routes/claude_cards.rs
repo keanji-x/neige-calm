@@ -15,7 +15,7 @@ use crate::model::{Card, CardRole, new_id};
 use crate::routes::cards::card_scope;
 use crate::routes::codex_cards::{default_cwd, normalize_optional_css_color, shell_single_quote};
 use crate::routes::settings::load_settings;
-use crate::routes::terminal::spawn_daemon_for;
+use crate::routes::terminal::spawn_terminal_for;
 use crate::state::AppState;
 use axum::{
     Json, Router,
@@ -237,7 +237,7 @@ pub(crate) async fn create_claude_card(
             ))
         })?;
 
-    spawn_daemon_for(&s, &term, &command_line, &cwd, &env).await?;
+    spawn_terminal_for(&s, &term, &command_line, &cwd, &env).await?;
 
     tracing::info!(
         card_id = %card.id,

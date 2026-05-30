@@ -18,7 +18,7 @@
 //!      turn #1, and persisted the thread,
 //!   b. the **PTY daemon argv** is `codex resume <tid> --remote
 //!      unix://<sock>` (captured via the `argv-recorder-daemon` fixture
-//!      standing in for `calm-session-daemon`), and
+//!      standing in for the terminal renderer), and
 //!   c. **turn #1 started** — the kernel's app-server client observed a
 //!      `turn/started` (a precondition for the 201, per DECISION A) and the
 //!      parked [`SpecPushHandle`] reflects a running turn.
@@ -88,28 +88,6 @@ fn resolve_codex_bin() -> Option<PathBuf> {
     }
     Some(expanded)
 }
-
-/// Locate the `argv-recorder-daemon` fixture bin (stands in for the real
-/// `calm-session-daemon`). Same resolver `routes::terminal`'s unit tests
-/// use: `CARGO_BIN_EXE_*` if present, else the sibling target dir.
-fn locate_recorder_bin() -> PathBuf {
-    if let Ok(p) = std::env::var("CARGO_BIN_EXE_argv-recorder-daemon") {
-        return PathBuf::from(p);
-    }
-    let me = std::env::current_exe().expect("current_exe");
-    let target_profile = me
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("test bin parent");
-    let candidate = target_profile.join("argv-recorder-daemon");
-    assert!(
-        candidate.exists(),
-        "argv-recorder-daemon not found at {candidate:?}; build with \
-         `cargo build --tests -p calm-server`"
-    );
-    candidate
-}
-
 macro_rules! skip {
     ($($arg:tt)*) => {{
         eprintln!("[spec-push-e2e] SKIP: {}", format!($($arg)*));
@@ -211,7 +189,6 @@ async fn build_state(tmp: &TempDir, codex_bin: &Path) -> (AppState, Arc<dyn Repo
     // subdir under.
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().join("terminals"),
-        session_daemon_bin: locate_recorder_bin(),
         proc_supervisor_sock: None,
     });
     // Real codex bin for the app-server; everything else stubbed.

@@ -115,7 +115,6 @@ async fn dispatcher_for(repo: Arc<SqlxRepo>) -> Dispatcher {
     let codex = Arc::new(CodexClient::new_stub());
     let daemon = Arc::new(DaemonClient {
         data_dir: std::path::PathBuf::from("/tmp/neige-inv3-noop"),
-        session_daemon_bin: std::path::PathBuf::from("/nonexistent-daemon-bin"),
         proc_supervisor_sock: None,
     });
     let spec_push = SpecPushRegistry::new();

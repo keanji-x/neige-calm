@@ -116,17 +116,9 @@ jobs:
       # no-op rather than a cold compile that may bump up against the 60s
       # READY_TIMEOUT_MS banner-wait. --locked matches the `rust` job.
       #
-      # Also build `calm-session-daemon`: post-#236 `POST /api/waves` spawns
-      # the spec card's codex daemon **synchronously** and returns 500 if
-      # the spawn fails. The replay binary's `boot_in_memory` resolves the
-      # daemon binary as a sibling of its own exe (see
-      # state.rs::resolve_session_daemon_bin), so without this build step
-      # the daemon binary is absent from `target/debug/` and every
-      # `createWaveInCove` call in the a11y suite (web/e2e/helpers/reset.ts)
-      # would 500.
-      - name: cargo build --bin replay + calm-session-daemon
+      - name: cargo build --bin replay
         working-directory: .
-        run: cargo build -p calm-server -p calm-session --bin replay --bin calm-session-daemon --locked
+        run: cargo build -p calm-server --bin replay --locked
 
       # Playwright browsers aren't bundled with `@playwright/test`; the
       # binary must be downloaded once per runner. `--with-deps` also
@@ -181,8 +173,8 @@ jobs:
 
       # Reuse the shared workspace cargo cache populated by the `rust` job.
       # The rust job builds debug; this job needs release binaries (`make
-      # dev` runs `cargo build --release` for calm-server / calm-session-daemon
-      # / neige-codex-bridge). Sharing the registry + git index across debug
+      # dev` runs `cargo build --release` for calm-server /
+      # neige-codex-bridge). Sharing the registry + git index across debug
       # and release is still a substantial speedup vs. cold cache.
       - uses: Swatinem/rust-cache@v2
         with:
@@ -208,13 +200,13 @@ jobs:
       # chromium-e2e specs don't exercise codex today, but the docker
       # compose `up` step uses the same compose file as `make dev` and
       # will fail trying to bind-mount a non-existent host path.
-      - name: cargo build --release (server + daemon + codex bridge + mcp-stdio shim + proc-supervisor)
+      - name: cargo build --release (server + codex bridge + mcp-stdio shim + proc-supervisor)
         # Issue #388 Phase 1 — `calm-proc-supervisor` is bind-mounted by
         # docker-compose.yml into the calm-server container so calm-server can
         # talk to it over a control UDS for every terminal spawn. Without it
         # in the release build, docker-compose mounts a non-existent host path
         # and the container shell aborts before `calm-server listening`.
-        run: cargo build --release -p calm-server -p calm-session -p calm-codex-bridge -p neige-mcp-stdio-shim -p calm-proc-supervisor --bin calm-server --bin calm-session-daemon --bin neige-codex-bridge --bin neige-mcp-stdio-shim --bin calm-proc-supervisor --locked
+        run: cargo build --release -p calm-server -p calm-codex-bridge -p neige-mcp-stdio-shim -p calm-proc-supervisor --bin calm-server --bin neige-codex-bridge --bin neige-mcp-stdio-shim --bin calm-proc-supervisor --locked
 
       - name: npm run build (web bundle for nginx)
         working-directory: web

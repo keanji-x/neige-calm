@@ -7,9 +7,9 @@ use tokio::net::UnixStream;
 
 /// Two-phase call: invokes `on_spawned(pid)` between the supervisor's
 /// `Spawned` frame and its `Ready`/`ReadyFailed` frame so the caller can
-/// persist pid + daemon_handle BEFORE readiness — the pre-#388 ordering
+/// persist pid + renderer entry BEFORE readiness — the pre-#388 ordering
 /// the dispatcher's fast-exit-preserve discriminator and partial-spawn
-/// reap path both depend on (the rollback path reads daemon_handle to
+/// reap path both depend on (the rollback path reads renderer entry to
 /// find `.exit` sidecars and reads pid to SIGTERM hung daemons).
 ///
 /// `on_spawned` returning Err is treated as a fatal persistence failure;

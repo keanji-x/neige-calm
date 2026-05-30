@@ -9,7 +9,7 @@
 //
 // What's locked here:
 //   - On WebSocket open, the component sends a `ClientHello` frame with
-//     protocol_version=3, terminal_id, a `client_id` UUID, the local
+//     protocol_version=4, terminal_id, a `client_id` UUID, the local
 //     viewport, `role_hint: 'Owner'`, and capabilities advertising `Vt`
 //     encoding + scrollback support but no images.
 //   - On `ServerHello`, the snapshot bytes are written to the term and
@@ -205,7 +205,7 @@ afterEach(() => {
 function serverHello(over: Record<string, unknown> = {}): unknown {
   return {
     ServerHello: {
-      protocol_version: 3,
+      protocol_version: 4,
       terminal_id: 'term_test',
       session_id: '11111111-1111-4111-8111-111111111111',
       client_role: 'Owner',
@@ -230,8 +230,8 @@ function serverHello(over: Record<string, unknown> = {}): unknown {
   };
 }
 
-describe('XtermView v3 handshake', () => {
-  it('sends ClientHello with protocol_version=3 and role_hint Owner on open', () => {
+describe('XtermView v4 handshake', () => {
+  it('sends ClientHello with protocol_version=4 and role_hint Owner on open', () => {
     render(<XtermView terminalId="term_test" />);
     const ws = currentWs();
     act(() => {
@@ -246,7 +246,7 @@ describe('XtermView v3 handshake', () => {
     const frame = JSON.parse(ws.sentFrames[0]!);
     expect(frame).toHaveProperty('ClientHello');
     const hello = frame.ClientHello;
-    expect(hello.protocol_version).toBe(3);
+    expect(hello.protocol_version).toBe(4);
     expect(hello.terminal_id).toBe('term_test');
     expect(typeof hello.client_id).toBe('string');
     expect(hello.role_hint).toBe('Owner');

@@ -33,7 +33,7 @@ use std::path::PathBuf;
 
 use crate::error::{CalmError, Result};
 use crate::routes::codex_cards::{copy_dir_recursive, host_codex_dir, shell_single_quote};
-use crate::routes::terminal::spawn_daemon_for;
+use crate::routes::terminal::spawn_terminal_for;
 use crate::state::{AppState, CodexClient};
 
 /// Minimal spec-agent system prompt template. PR6 ships a placeholder
@@ -547,7 +547,7 @@ impl SeededCardRole {
 /// would re-arm the "Hooks need review" startup modal.
 ///
 /// Returns the resolved `CODEX_HOME` path so the caller can build the
-/// env map (`CODEX_HOME = <path>`) for `spawn_daemon_for`.
+/// env map (`CODEX_HOME = <path>`) for `spawn_terminal_for`.
 ///
 /// `wave_id` is threaded in so the system prompt substitution can
 /// reference the wave the card is bound to.
@@ -666,7 +666,7 @@ impl SpecPushDaemonArgs {
 ///
 /// Issue #236 (closes): this used to be invoked from `tokio::spawn`
 /// off the response hot path. That opened a TOCTOU race against
-/// `ws::terminal::resolve_live_sock` (frontend WS attach between
+/// `ws::terminal::resolve_live_renderer` (frontend WS attach between
 /// commit and background task → respawn from baked terminal-row env
 /// missing MCP vars → two daemons racing on one socket). The
 /// `create_wave` handler now awaits this inline; the return type is
@@ -770,11 +770,11 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
     //    `[PROMPT]` arg and `codex_auto_submit` is skipped on the
     //    `codex_thread_id` payload (no `\r` is injected into the resumed TUI).
     //
-    //    `spawn_daemon_for` waits for deterministic daemon readiness on the
+    //    `spawn_terminal_for` waits for deterministic daemon readiness on the
     //    response hot path. Since #236, that synchronous wait is intentional:
     //    it is the acceptable cost vs. the correctness bug it closes.
     let command_line = push.command_line();
-    if let Err(e) = spawn_daemon_for(&state, &term, &command_line, &cwd, &env).await {
+    if let Err(e) = spawn_terminal_for(&state, &term, &command_line, &cwd, &env).await {
         tracing::warn!(
             card_id = %spec_card_id,
             wave_id = %wave_id,

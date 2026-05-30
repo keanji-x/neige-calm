@@ -197,6 +197,49 @@ impl TerminalRendererRegistry {
             .and_then(|entries| entries.get(terminal_id).cloned())
     }
 
+    #[cfg(feature = "fixtures")]
+    pub fn insert_test_entry(&self, cfg: RendererConfig) -> Arc<RendererEntry> {
+        let render_plane: SharedRenderPlane = Arc::new(StdMutex::new(RenderPlane::with_colors(
+            cfg.cols,
+            cfg.rows,
+            cfg.buffer_bytes,
+            SCROLLBACK_MAX_LINES,
+            Some(cfg.terminal_fg),
+            Some(cfg.terminal_bg),
+        )));
+        let owner_registry: SharedOwnerRegistry = Arc::new(StdMutex::new(OwnerRegistry::new()));
+        let exit = Arc::new(StdMutex::new(None));
+        let session_id = Uuid::new_v4();
+        let (event_tx, initial_event_rx) = broadcast::channel::<DaemonMsg>(2048);
+        let event_rx = event_tx.subscribe();
+        let (supervisor_tx, _supervisor_rx) = mpsc::unbounded_channel::<SupervisorControl>();
+        let (_exited_tx, exited_rx) = oneshot::channel::<Option<i32>>();
+        let entry = Arc::new(RendererEntry {
+            terminal_id: cfg.terminal_id.clone(),
+            proc_id: format!("term:{}", cfg.terminal_id),
+            supervisor_sock: cfg.supervisor_sock.clone(),
+            handle: RendererHandle {
+                session_id,
+                event_rx,
+                event_tx,
+                render_plane,
+                owner_registry,
+                supervisor_tx,
+            },
+            config: cfg,
+            exit,
+            initial_event_rx: StdMutex::new(Some(initial_event_rx)),
+            exited_rx: StdMutex::new(Some(exited_rx)),
+            tasks: StdMutex::new(Vec::new()),
+        });
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("terminal renderer registry mutex");
+        entries.insert(entry.terminal_id.clone(), entry.clone());
+        entry
+    }
+
     pub fn is_empty(&self) -> bool {
         self.entries
             .lock()

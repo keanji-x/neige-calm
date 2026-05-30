@@ -407,15 +407,15 @@ async fn smuggled_card_id_in_args_is_ignored() {
 //
 // History: this test originally asserted the buggy pre-#310 behavior —
 // that the dispatcher's `card_with_codex_create_tx` committed a worker
-// card row BEFORE the daemon spawn was attempted, so even with a bogus
-// `/nonexistent-daemon-bin` the orphan card would land in `cards_by_wave`
+// card row BEFORE the terminal spawn was attempted, so even with a bogus
+// proc-supervisor socket the orphan card would land in `cards_by_wave`
 // and be observable. PR #312 (which fixes #310) flips that ordering:
-// the two-stage spawn defers `CardAdded` emission until after the daemon
-// handle is in hand, AND `rollback_orphan_worker` actively DELETEs the
-// pre-committed card row when the spawn errors out at the OS level.
+// the two-stage spawn defers `CardAdded` emission until after the
+// renderer entry is registered, AND `rollback_orphan_worker` actively
+// DELETEs the pre-committed card row when the spawn errors out.
 //
-// Under the new semantics, driving `calm.dispatch_request[codex]` against
-// a stub daemon binary must:
+// Under the new semantics, driving `calm.dispatch_request[codex]`
+// against a missing proc-supervisor socket must:
 //   (a) return success from the MCP tool (the spec just enqueued a
 //       `codex.job_requested` event — the failure is downstream),
 //   (b) emit a `TaskFailed` event with the dispatch's `idempotency_key`
@@ -434,8 +434,8 @@ async fn smuggled_card_id_in_args_is_ignored() {
 async fn dispatch_request_drives_dispatcher_rollback_on_stub_daemon() {
     let b = boot_with_role(CardRole::Spec).await;
 
-    // Stand up the dispatcher on the same bus + repo with a bogus
-    // daemon binary so every spawn attempt fails at the OS level.
+    // Stand up the dispatcher on the same bus + repo with a missing
+    // proc-supervisor socket so every EnsureProc attempt fails.
     let cache = CardRoleCache::new();
     b.repo.seed_card_role_cache(&cache).await.unwrap();
     let wcc = calm_server::wave_cove_cache::WaveCoveCache::new();
@@ -453,7 +453,6 @@ async fn dispatch_request_drives_dispatcher_rollback_on_stub_daemon() {
         codex.clone(),
         Arc::new(calm_server::state::DaemonClient {
             data_dir: PathBuf::from("/tmp/neige-mcp-e2e-noop"),
-            session_daemon_bin: PathBuf::from("/nonexistent-daemon-bin"),
             proc_supervisor_sock: Some(PathBuf::from(
                 "/tmp/neige-mcp-e2e-missing-proc-supervisor.sock",
             )),

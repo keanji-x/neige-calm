@@ -12,15 +12,15 @@
 //!      row lands in the `events` table; bus envelope carries the right
 //!      variant.
 //!   4. **Idempotent against dead daemon / missing socket.** A row whose
-//!      `daemon_handle` points at nothing still gets reaped cleanly (no
+//!      `renderer entry` points at nothing still gets reaped cleanly (no
 //!      panic, no error, audit event emitted).
 //!   5. **Non-orphans survive sweep cycles.** A card → terminal pair with
 //!      a healthy `payload.terminal_id` is never targeted; multiple sweep
 //!      calls leave it intact.
 //!
 //! Daemon-process killing is exercised at the unit level only — the
-//! integration tests don't spawn `calm-session-daemon`. The graceful-kill
-//! path is tested by aiming `daemon_handle` at a path that doesn't exist
+//! integration tests don't start a terminal renderer. The graceful-kill
+//! path is tested by aiming `renderer entry` at a path that doesn't exist
 //! (connect fails → fall through), and the SIGTERM path is bypassed by
 //! leaving `pid` as `None` on the seeded row. The full end-to-end with a
 //! live daemon is left to the broader CI suite (where the binary is
@@ -272,28 +272,19 @@ async fn sweep_emits_terminal_deleted_with_kernel_actor() {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Idempotent against missing daemon / socket.
+// 4. Idempotent against missing renderer / pid.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn cleanup_safe_when_daemon_already_dead() {
     let (state, concrete) = fresh_state().await;
     let (card_id, terminal_id) = seed_linked_pair(&state).await;
-    // Aim daemon_handle at a non-existent socket so the graceful-Kill path
-    // fails immediately. Don't set a pid → SIGTERM path is also a no-op.
-    state
-        .repo
-        .terminal_set_handle(
-            &terminal_id,
-            Some("/tmp/calm-sweeper-test-nonexistent.sock"),
-        )
-        .await
-        .unwrap();
+    // No renderer entry and no pid: cleanup should still delete the row.
     unlink_card(&state, &card_id).await;
     age_all_terminals_past_grace(&concrete).await;
 
-    // Sweep should still complete: graceful Kill fails → SIGTERM skipped
-    // (no pid) → socket already gone → row delete works.
+    // Sweep should still complete: renderer shutdown misses → SIGTERM
+    // skipped (no pid) → row delete works.
     terminal_sweeper::sweep(&state).await.unwrap();
 
     assert!(
@@ -363,12 +354,7 @@ async fn linked_pair_survives_multiple_sweeps() {
 
 // ---------------------------------------------------------------------------
 // 6. `reap_terminal_pid_only` (issue #310 followup): pid-only partial-spawn
-//    SIGTERM helper. The dispatcher's `rollback_orphan_worker` case-1b path
-//    invokes this when `terminal_set_pid` succeeded but the subsequent
-//    `terminal_set_handle` failed — the daemon process is alive but the row
-//    has `daemon_handle = None`, so the usual `reap_terminal_artifacts`
-//    graceful path no-ops. Without this direct kill, the daemon would leak
-//    once the row is deleted.
+//    SIGTERM helper.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]

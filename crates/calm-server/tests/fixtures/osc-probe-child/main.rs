@@ -1,5 +1,5 @@
 //! Test fixture (#177): a stand-in for the `codex` CLI that runs inside
-//! a `calm-session-daemon` PTY, performs the same OSC 11 (default
+//! a terminal PTY, performs the same OSC 11 (default
 //! background color) startup probe the real codex client does, and
 //! writes the outcome to a sidecar result file so the test driver can
 //! assert.

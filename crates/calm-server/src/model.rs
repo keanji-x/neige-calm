@@ -409,10 +409,9 @@ pub struct NewWave {
     /// conflict.
     #[serde(default)]
     pub attach_folder: bool,
-    /// Host browser's current theme RGB (#177). Required end-to-end —
-    /// the kernel stamps `--terminal-fg=r,g,b --terminal-bg=r,g,b`
-    /// onto the auto-minted spec card's `calm-session-daemon` argv so
-    /// codex's OSC 10/11 startup probe gets matching colors. A body
+    /// Host browser's current theme RGB (#177). Required end-to-end so
+    /// the auto-minted spec card's terminal renderer answers codex's
+    /// OSC 10/11 startup probe with matching colors. A body
     /// missing this field is rejected at the deserialize layer (422):
     /// the spec card is invisible to the user and a silent fallback
     /// would mean every wave-from-the-UI spawned with a mis-tinted
@@ -572,19 +571,15 @@ pub struct Terminal {
     #[sqlx(json)]
     #[schema(value_type = Object)]
     pub env: serde_json::Value,
-    pub daemon_handle: Option<String>,
-    /// Daemon process id, captured by `spawn_daemon_for` after `cmd.spawn()`.
-    /// Used by the orphan-terminal sweeper (`terminal_sweeper`) as the
-    /// SIGTERM fallback target when the graceful `ClientMsg::Kill` path
-    /// fails. `None` for rows that predate Scope C or for which the spawn
+    /// Child process id, captured after supervisor spawn. Used by the
+    /// orphan-terminal sweeper (`terminal_sweeper`) as the SIGTERM fallback
+    /// target. `None` for rows that predate Scope C or for which the spawn
     /// returned no pid (kernel-level edge case).
     pub pid: Option<i64>,
     /// #177 — host browser's foreground RGB at row-creation time, as
-    /// comma-decimal `r,g,b` (the daemon CLI's `--terminal-fg` arg
-    /// format). NOT NULL after migration 0017: every spawn path reads
-    /// these columns and stamps the daemon argv from them, so the
-    /// auto-revive in `ws::terminal` can no longer race a themed spawn
-    /// with an un-themed one (both candidates carry identical argv).
+    /// comma-decimal `r,g,b` format). NOT NULL after migration 0017:
+    /// every spawn path reads these columns so renderer startup observes
+    /// the browser theme.
     pub theme_fg: String,
     /// #177 — host browser's background RGB at row-creation time.
     /// Mirrors `theme_fg` semantics; both columns are written together
@@ -628,7 +623,7 @@ pub struct NewTerminal {
     /// transaction. Required so the `terminals.theme_fg/_bg` NOT NULL
     /// columns always get a value at the same instant the row mints,
     /// closing the WS auto-revive race (see `ws::terminal::
-    /// resolve_live_sock` for the read side).
+    /// resolve_live_renderer` for the read side).
     pub theme: crate::routes::theme::RequestTheme,
 }
 

@@ -147,21 +147,12 @@ pub type WriteWithEventsFn<'a> = Box<
 /// Issue #310 — event-less counterpart to [`WriteWithEventFn`]. Closure
 /// runs in one sqlx transaction and returns nothing; no event row is
 /// appended to the `events` log, no broadcast is sent. Used by the
-/// dispatcher's two-stage worker spawn, where the `card.added` event
-/// must be deferred until *after* `daemon_handle` is written
-/// post-`spawn_daemon_with_parts` (see `dispatcher.rs::spawn_codex_worker`
-/// and `spawn_terminal_worker`). Without this surface, the event lands
-/// inside the row-creation tx and a subscriber that mounts an `XtermView`
-/// on `CardAdded` immediately attempts a WS attach and hits the "no
-/// daemon_handle = clean child exit" branch in `ws::terminal::resolve_live_sock`,
-/// producing a spurious `Close(1000, "child-exited")` for a daemon that
-/// is in fact ~670ms away from being alive.
+/// dispatcher's two-stage worker spawn, where the `card.added` event is
+/// deferred until the renderer/supervisor entry has been established.
 ///
 /// **Caveat — crash-window orphan.** The window between the row-creation
 /// tx commit and the post-spawn `log_pure_event(CardAdded)` is on the
-/// order of microseconds (the daemon spawn + ready-fd/child-exit
-/// readiness race sits inside it, so it's actually closer to ~700ms
-/// in the codex case),
+/// order of microseconds, but it is real.
 /// but it's real. If the kernel process dies mid-window (SIGKILL,
 /// OOM, panic that escapes the tokio task supervisor), the durable
 /// state on next boot is:
@@ -301,9 +292,6 @@ pub trait RepoRead: Send + Sync + 'static {
     /// terminal-card create race (see `web/src/app/eventBridge.tsx:60-70`).
     /// Used exclusively by the `terminal_sweeper` background task.
     async fn terminals_orphaned(&self, grace_seconds: i64) -> Result<Vec<Terminal>>;
-    /// Legacy daemon-socket boot sweep input. Kept for backward-compatible
-    /// tests and migrations; production 3b uses [`Self::terminals_running`].
-    async fn terminals_with_daemon_handle(&self) -> Result<Vec<Terminal>>;
     /// Return every terminal row whose child has not recorded an exit yet.
     /// Used by boot-time supervisor reconciliation after #388 Phase 3b.
     async fn terminals_running(&self) -> Result<Vec<Terminal>>;
@@ -541,14 +529,11 @@ pub trait RepoEventWrite: RepoRead {
     /// `log_pure_event` after this returns.
     ///
     /// The dispatcher uses this for the first stage of its two-stage
-    /// worker-spawn pipeline: the tx mints the worker card + terminal row
-    /// (with `daemon_handle = NULL`), commits, and only *then* runs
-    /// `spawn_daemon_with_parts` to write `daemon_handle` and probe
-    /// readiness. The `card.added` event is then emitted via
-    /// `log_pure_event` post-spawn-success so subscribers (spec cards
-    /// already mounted on the same wave page) never see a `CardAdded`
-    /// frame whose backing terminal has no `daemon_handle` yet —
-    /// closing the TOCTOU window described in #310.
+    /// worker-spawn pipeline: the tx mints the worker card + terminal row,
+    /// commits, and only then establishes the renderer/supervisor entry.
+    /// The `card.added` event is emitted via `log_pure_event`
+    /// post-spawn-success so subscribers never see a `CardAdded` frame
+    /// whose backing terminal is not yet attachable.
     ///
     /// **Why a separate method instead of passing a no-op event to
     /// `write_with_event`**: the broadcast bus is hard-coded into
@@ -690,16 +675,11 @@ pub trait RepoSyncDomainRaw: RepoRead {
 pub trait RepoOutOfDomain: RepoRead {
     // ---- terminals (writes)
     async fn terminal_create(&self, p: NewTerminal) -> Result<Terminal>;
-    async fn terminal_set_handle(&self, id: &str, handle: Option<&str>) -> Result<()>;
-    /// Persist the daemon PID captured by `routes::terminal::spawn_daemon_for`
-    /// (and the WS-side revive path). The orphan-terminal sweeper uses this
-    /// as a SIGTERM fallback target when graceful `ClientMsg::Kill` fails.
+    /// Persist the child PID captured by the renderer/supervisor path. The
+    /// orphan-terminal sweeper uses this as a SIGTERM fallback target.
     async fn terminal_set_pid(&self, id: &str, pid: Option<u32>) -> Result<()>;
-    /// #306 — record the child's exit info captured by the daemon. The
-    /// kernel calls this from the WS upgrade path after reading the
-    /// daemon's `.exit` sidecar file (see
-    /// `crates/calm-server/src/ws/terminal.rs::resolve_live_sock`). The
-    /// two arguments are mutually exclusive at the writer: a signal-
+    /// #306 — record the child's exit info. The two arguments are mutually
+    /// exclusive at the writer: a signal-
     /// killed child writes `exit_code = None, signal_killed = true`, an
     /// `exit()` child writes `exit_code = Some(_), signal_killed = false`.
     /// Callers must respect that invariant; the repo enforces neither.
@@ -1102,10 +1082,9 @@ where
 /// the closure. The free function below does that capture so callers
 /// can stay on the ergonomic `(R) → typed-R out` shape.
 ///
-/// Used by the dispatcher to mint a worker card + terminal row in
-/// one tx without broadcasting `CardAdded`; the post-spawn
-/// `log_pure_event(CardAdded)` then carries the row to subscribers
-/// after `daemon_handle` is populated.
+/// Used by the dispatcher to mint a worker card + terminal row in one tx
+/// without broadcasting `CardAdded`; the post-spawn `log_pure_event(CardAdded)`
+/// then carries the row to subscribers after the renderer is attachable.
 pub async fn write_in_tx_typed<R, F>(repo: &dyn RepoEventWrite, f: F) -> Result<R>
 where
     R: Send + 'static,

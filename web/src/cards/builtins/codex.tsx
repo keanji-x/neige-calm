@@ -1,7 +1,7 @@
 // Codex (OpenAI) agent card — interactive TUI variant.
 //
 // Architecture:
-//   - The backend spawns the codex CLI under our `calm-session-daemon`
+//   - The backend spawns the codex CLI under the terminal renderer
 //     PTY infrastructure (same path Terminal cards use). Its TUI renders
 //     into the embedded xterm.js view below.
 //   - Hook events (PreToolUse / PostToolUse / Stop / ...) stream over the

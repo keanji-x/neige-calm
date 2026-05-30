@@ -1,17 +1,17 @@
 //! Shared `RequestTheme` type for routes that forward the host browser's
-//! current theme RGB onto the `calm-session-daemon` argv (#177).
+//! current theme RGB onto terminal startup (#177).
 //!
 //! Originally lived in `routes::codex_cards` since the codex-card create
 //! endpoint was the first call site. Lifted here so the wave-create
 //! endpoint (`routes::waves`) can reuse the same wire shape — both routes
-//! render `(r, g, b)` tuples as `"r,g,b"` for the daemon CLI.
+//! render `(r, g, b)` tuples as `"r,g,b"` for terminal startup.
 //!
 //! After the #177 root-cause refactor the value lands on the
 //! `terminals.theme_fg / .theme_bg` columns (NOT NULL via migration
 //! 0013) inside the row-creation transaction. The spawn helper
-//! (`routes::terminal::spawn_daemon_for`) reads the row at every
+//! (`routes::terminal::spawn_terminal_for`) reads the row at every
 //! spawn — there is no separate `SpawnDaemonOpts` carry between
-//! transaction commit and daemon spawn anymore.
+//! transaction commit and terminal startup anymore.
 
 use serde::Deserialize;
 use utoipa::ToSchema;

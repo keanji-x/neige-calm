@@ -101,7 +101,7 @@ export interface PluginCardData {
 
 /**
  * Codex (OpenAI) agent card. Interactive variant: the kernel binds a
- * `calm-session-daemon` PTY running `codex` to this card and stamps the
+ * terminal PTY running `codex` to this card and stamps the
  * `terminal_id` into the payload. `CodexCard` then renders the live TUI
  * via `XtermView` and overlays a status bar fed from `codex.hook` events
  * on the WS bus.

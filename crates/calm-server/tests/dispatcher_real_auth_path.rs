@@ -101,7 +101,6 @@ async fn boot() -> Boot {
         // post-commit on the codex / terminal write paths, but the
         // routes under test (`/internal/codex/hook`) don't spawn
         // anything — the failure path is irrelevant here.
-        session_daemon_bin: PathBuf::from("/nonexistent-daemon-bin-auth-path"),
         proc_supervisor_sock: None,
     });
     let events = EventBus::new();

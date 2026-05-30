@@ -117,22 +117,6 @@ fn env_guard() -> std::sync::MutexGuard<'static, ()> {
 /// Per-step budget. Matches `theme_osc_roundtrip.rs` — generous enough
 /// to absorb daemon-readiness polling + PTY init under CI contention.
 const STEP_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Locate the real `calm-session-daemon` binary built by the workspace.
-fn locate_daemon_bin() -> PathBuf {
-    let mut p = std::env::current_exe().expect("current_exe");
-    p.pop(); // strip test name
-    p.pop(); // strip "deps/"
-    p.push("calm-session-daemon");
-    assert!(
-        p.exists(),
-        "calm-session-daemon not found at {p:?}; run \
-         `cargo build -p calm-session --bin calm-session-daemon` first, or \
-         use `cargo test --workspace` which builds workspace bins"
-    );
-    p
-}
-
 /// Locate the `cooked-shell-child` test fixture bin. Cargo populates
 /// `CARGO_BIN_EXE_cooked-shell-child` for integration test crates.
 fn locate_cooked_bin() -> PathBuf {
@@ -169,7 +153,6 @@ async fn boot_full() -> Boot {
 
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin: locate_daemon_bin(),
         proc_supervisor_sock: None,
     });
     let card_role_cache = CardRoleCache::new();

@@ -52,25 +52,6 @@ fn resolve_codex_bin() -> Option<PathBuf> {
     }
     Some(expanded)
 }
-
-fn locate_recorder_bin() -> PathBuf {
-    if let Ok(p) = std::env::var("CARGO_BIN_EXE_argv-recorder-daemon") {
-        return PathBuf::from(p);
-    }
-    let me = std::env::current_exe().expect("current_exe");
-    let target_profile = me
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("test bin parent");
-    let candidate = target_profile.join("argv-recorder-daemon");
-    assert!(
-        candidate.exists(),
-        "argv-recorder-daemon not found at {candidate:?}; build with \
-         `cargo build --tests -p calm-server`"
-    );
-    candidate
-}
-
 macro_rules! skip {
     ($($arg:tt)*) => {{
         eprintln!("[spec-push-worker-stop-e2e] SKIP: {}", format!($($arg)*));
@@ -153,7 +134,6 @@ async fn build_state(tmp: &TempDir, codex_bin: &Path) -> (AppState, Arc<SqlxRepo
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().join("terminals"),
-        session_daemon_bin: locate_recorder_bin(),
         proc_supervisor_sock: None,
     });
     let mut codex = CodexClient::new_stub();

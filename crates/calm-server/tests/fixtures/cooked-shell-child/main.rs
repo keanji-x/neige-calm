@@ -1,6 +1,6 @@
 //! Test fixture (fix B, shell direction): a stand-in for an interactive
 //! shell (`zsh` / `fish`) sitting at its prompt inside a
-//! `calm-session-daemon` PTY.
+//! terminal PTY.
 //!
 //! ## Why this fixture exists — complements `osc-probe-child`
 //!

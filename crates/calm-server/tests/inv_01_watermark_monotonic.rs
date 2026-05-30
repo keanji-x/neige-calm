@@ -61,17 +61,6 @@ use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::wave_cove_cache::WaveCoveCache;
 use serde_json::json;
 use tempfile::TempDir;
-
-/// Stub path for [`DaemonClient::session_daemon_bin`]. Boot takeover
-/// (`takeover_spec_appservers_on_boot`) never spawns the session
-/// daemon — it only touches the `appserver_sock_path` /
-/// `appserver_sock_dir` helpers on `DaemonClient`, which derive paths
-/// from `data_dir` only. The bin field just needs to be a path-shaped
-/// value to construct `DaemonClient`.
-fn stub_session_daemon_bin() -> PathBuf {
-    PathBuf::from("/nonexistent/session-daemon-stub-never-spawned")
-}
-
 /// Drain the broadcast bus for up to `budget`, collecting every
 /// `SpecPushAbandoned` envelope.
 async fn collect_spec_push_abandoned(
@@ -115,7 +104,6 @@ async fn inv1_stranded_envelope_must_be_observable() {
     let repo: Arc<dyn Repo> = typed.clone();
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin: stub_session_daemon_bin(),
         proc_supervisor_sock: None,
     });
     let events = EventBus::new();

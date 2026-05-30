@@ -1,7 +1,7 @@
 //! Full-chain e2e for terminal protocol v2.
 //!
 //! Boots a real axum server (in-memory SqlxRepo) → spawns the real
-//! `calm-session-daemon` binary backing `/bin/sh` → drives a tokio-tungstenite
+//! terminal renderer backing `/bin/sh` → drives a tokio-tungstenite
 //! client through the v2 happy path:
 //!   ClientHello → ServerHello → Input → RenderPatch → ResizeCommit
 //!   → ResizeApplied → Kill → TerminalExited.
@@ -44,7 +44,7 @@ use tokio_tungstenite::tungstenite::Message as TMessage;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-/// Per-step budget. Generous because `spawn_daemon_for` itself polls the
+/// Per-step budget. Generous because `spawn_terminal_for` itself polls the
 /// daemon socket for up to ~3s (75 × 40ms) before returning, and a cold
 /// PTY init under load can push close to that.
 const STEP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -57,24 +57,6 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(5);
 /// `TerminalExited` makes it through. Bound is still well under the
 /// issue's <10s total budget.
 const EXIT_TIMEOUT: Duration = Duration::from_secs(8);
-
-/// Locate the `calm-session-daemon` binary built by the workspace. Test
-/// binaries live at `target/<profile>/deps/<test_name>`, so two `pop`s
-/// land us in `target/<profile>/` where the daemon binary sits.
-fn locate_daemon_bin() -> PathBuf {
-    let mut p = std::env::current_exe().expect("current_exe");
-    p.pop(); // strip test name (e.g. ws_terminal_e2e-<hash>)
-    p.pop(); // strip "deps/"
-    p.push("calm-session-daemon");
-    assert!(
-        p.exists(),
-        "calm-session-daemon not found at {p:?}; run \
-         `cargo build -p calm-session --bin calm-session-daemon` first, or \
-         use `cargo test --workspace` which builds workspace bins"
-    );
-    p
-}
-
 /// Boot: in-memory repo + cove + wave seeded; AppState wired with a real
 /// `DaemonClient` pointed at a fresh `TempDir` (so sockets from concurrent
 /// tests don't race in /tmp); both REST and WS routers merged and bound to
@@ -120,7 +102,6 @@ async fn boot_full() -> (std::net::SocketAddr, axum::Router, String, TempDir) {
 
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin: locate_daemon_bin(),
         proc_supervisor_sock: None,
     });
     let state = AppState::from_parts(

@@ -28,7 +28,7 @@ use tokio::process::Command;
 ///   * the daemon's `PR_SET_PDEATHSIG` is correctly anchored to the
 ///     supervisor and not calm-server (it is, by construction — the
 ///     supervisor is now the spawn-parent — but this test doesn't put
-///     a real `calm-session-daemon` in the loop to confirm);
+///     the terminal renderer in the loop to confirm);
 ///   * neige-app's peer-supervision ordering (calm-proc-supervisor up
 ///     before calm-server) and `/admin/restart` scope.
 ///

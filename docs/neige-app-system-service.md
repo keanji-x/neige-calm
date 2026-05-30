@@ -173,7 +173,6 @@ neige-app system package \
   --min-web-compat-version 2 \
   --db-migration-policy forwardOnly \
   --bin calm-server=./target/release/calm-server \
-  --bin calm-session-daemon=./target/release/calm-session-daemon \
   --bin neige-codex-bridge=./target/release/neige-codex-bridge \
   --bin neige-mcp-stdio-shim=./target/release/neige-mcp-stdio-shim \
   --bin neige=./target/release/neige

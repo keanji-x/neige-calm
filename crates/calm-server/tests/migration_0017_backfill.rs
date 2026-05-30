@@ -143,7 +143,7 @@ async fn pool_staged_at_0016() -> SqlitePool {
 }
 
 /// At the 0016 schema, a `terminals` row needs `id, card_id, program,
-/// cwd, env, daemon_handle, pid, theme_fg, theme_bg, created_at`. The
+/// cwd, env, pid, theme_fg, theme_bg, created_at`. The
 /// `card_id` is a `NOT NULL UNIQUE REFERENCES cards(id)`, so we have
 /// to mint a cove → wave → card before we can mint the terminal.
 async fn seed_terminal_with_null_theme(pool: &SqlitePool) -> String {
@@ -176,10 +176,9 @@ async fn seed_terminal_with_null_theme(pool: &SqlitePool) -> String {
     .unwrap();
     sqlx::query(
         r#"INSERT INTO terminals
-               (id, card_id, program, cwd, env, daemon_handle, pid,
-                theme_fg, theme_bg, created_at)
+               (id, card_id, program, cwd, env, pid, theme_fg, theme_bg, created_at)
            VALUES ('term-1', 'card-1', '/bin/sh', '/tmp', '{}',
-                   NULL, NULL, NULL, NULL, 0)"#,
+                   NULL, NULL, NULL, 0)"#,
     )
     .execute(pool)
     .await
@@ -240,10 +239,9 @@ async fn post_0017_schema_rejects_null_theme_inserts() {
     // row that leaves them NULL must fail at the sqlite layer.
     let res = sqlx::query(
         r#"INSERT INTO terminals
-               (id, card_id, program, cwd, env, daemon_handle, pid,
-                theme_fg, theme_bg, created_at)
+               (id, card_id, program, cwd, env, pid, theme_fg, theme_bg, created_at)
            VALUES ('term-2', 'card-1', '/bin/sh', '/tmp', '{}',
-                   NULL, NULL, NULL, NULL, 0)"#,
+                   NULL, NULL, NULL, 0)"#,
     )
     .execute(&pool)
     .await;
@@ -261,10 +259,9 @@ async fn post_0017_schema_rejects_null_theme_inserts() {
     // proves the rebuild didn't break the happy path.
     sqlx::query(
         r#"INSERT INTO terminals
-               (id, card_id, program, cwd, env, daemon_handle, pid,
-                theme_fg, theme_bg, created_at)
+               (id, card_id, program, cwd, env, pid, theme_fg, theme_bg, created_at)
            VALUES ('term-3', 'card-1', '/bin/sh', '/tmp', '{}',
-                   NULL, NULL, '216,219,226', '15,20,24', 0)"#,
+                   NULL, '216,219,226', '15,20,24', 0)"#,
     )
     .execute(&pool)
     .await

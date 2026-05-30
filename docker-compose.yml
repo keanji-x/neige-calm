@@ -98,11 +98,8 @@ services:
       # we never see the /hooks trust prompt. User-level hooks.json would
       # otherwise require manual approval the first time codex sees them.
       - ./docker/codex-requirements.toml:/etc/codex/requirements.toml:ro
-      # The release binaries. Built on the host by `make build`. calm-server
-      # looks for calm-session-daemon as a sibling of its own exe (see
-      # state.rs::resolve_session_daemon_bin), so both land in /usr/local/bin.
+      # The release binaries. Built on the host by `make build`.
       - ${CALM_BIN:-./target/release/calm-server}:/usr/local/bin/calm-server:ro
-      - ${CALM_DAEMON_BIN:-./target/release/calm-session-daemon}:/usr/local/bin/calm-session-daemon:ro
       # Codex hook bridge. calm-server's CodexClient looks for it next
       # to its own binary (see state.rs::resolve_codex_bridge_bin) so it
       # lands at the same /usr/local/bin path.
@@ -117,8 +114,8 @@ services:
       # narrow #236 sync-spawn fix doesn't surface that because it only
       # awaits the daemon socket, not the codex MCP handshake.
       - ${CALM_MCP_SHIM_BIN:-./target/release/neige-mcp-stdio-shim}:/usr/local/bin/neige-mcp-stdio-shim:ro
-      # Issue #388 Phase 1 — the proc-supervisor that calm-server now talks
-      # to over a control UDS for every `calm-session-daemon` spawn.
+      # Issue #388 Phase 1 — the proc-supervisor that calm-server talks
+      # to over a control UDS for every terminal spawn.
       # neige-app peer-supervises it; calm-server's first terminal spawn
       # fails with `connect calm-proc-supervisor … No such file or directory`
       # if the binary isn't reachable inside the container.
@@ -149,8 +146,8 @@ services:
       - ${CALM_CONTAINER_STATE_DIR:-/var/lib/neige-calm}:uid=${UID:-1000},gid=${GID:-1000},mode=700
     # No host port mapping: nginx is the only published entrypoint.
     #
-    # Issue #388 Phase 1 — calm-server forks `calm-session-daemon` via
-    # `calm-proc-supervisor` over a control UDS. Production has neige-app
+    # Issue #388 Phase 1 — calm-server uses `calm-proc-supervisor` over a
+    # control UDS for terminal processes. Production has neige-app
     # peer-supervising both; in the docker dev stack we just background the
     # supervisor before exec'ing calm-server so the first terminal spawn
     # has someone listening. `init: true` (above) reaps the supervisor when

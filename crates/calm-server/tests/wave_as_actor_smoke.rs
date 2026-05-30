@@ -85,7 +85,6 @@ async fn boot() -> Boot {
     // (AiSpec → CodexJobRequested → worker card mint).
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin: PathBuf::from(env!("CARGO_BIN_EXE_argv-recorder-daemon")),
         proc_supervisor_sock: None,
     });
     let events = EventBus::new();

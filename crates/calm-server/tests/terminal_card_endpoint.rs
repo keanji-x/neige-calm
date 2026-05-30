@@ -2,9 +2,9 @@
 //! the atomic terminal-card endpoint introduced in #13 PR2.
 //!
 //! Boots a real Axum router (in-memory `SqlxRepo`) + the actual
-//! `calm-session-daemon` binary for the happy paths, and points
-//! `DaemonClient::session_daemon_bin` at a non-existent path for the
-//! "spawn failure but row persisted" case.
+//! terminal renderer for the happy paths, and points
+//! `DaemonClient::proc_supervisor_sock` at a non-existent socket for
+//! the "spawn failure but row persisted" case.
 //!
 //! Test taxonomy:
 //!   * `post_terminal_card_atomic_returns_card_with_linked_payload` — 201,
@@ -39,25 +39,6 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
-
-/// Locate the `calm-session-daemon` binary the workspace built. Matches the
-/// pattern in `ws_terminal_e2e.rs`: test binaries live at
-/// `target/<profile>/deps/<test_name>`, so two `pop`s land us in
-/// `target/<profile>/` where the daemon binary sits.
-fn locate_daemon_bin() -> PathBuf {
-    let mut p = std::env::current_exe().expect("current_exe");
-    p.pop(); // strip test name
-    p.pop(); // strip "deps/"
-    p.push("calm-session-daemon");
-    assert!(
-        p.exists(),
-        "calm-session-daemon not found at {p:?}; run \
-         `cargo build -p calm-session --bin calm-session-daemon` first, or \
-         use `cargo test --workspace` which builds workspace bins"
-    );
-    p
-}
-
 struct Boot {
     app: axum::Router,
     wave_id: String,
@@ -66,7 +47,7 @@ struct Boot {
     _tmp: TempDir,
 }
 
-async fn boot_with_daemon(session_daemon_bin: PathBuf) -> Boot {
+async fn boot() -> Boot {
     let tmp = TempDir::new().expect("tempdir for daemon sockets");
     let repo: Arc<dyn Repo> = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -95,7 +76,6 @@ async fn boot_with_daemon(session_daemon_bin: PathBuf) -> Boot {
 
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin,
         proc_supervisor_sock: None,
     });
     let events = EventBus::new();
@@ -134,7 +114,7 @@ async fn boot_with_daemon(session_daemon_bin: PathBuf) -> Boot {
 }
 
 async fn boot_happy() -> Boot {
-    boot_with_daemon(locate_daemon_bin()).await
+    boot().await
 }
 
 async fn boot_with_bad_supervisor(bad_sock: PathBuf) -> Boot {
@@ -166,7 +146,6 @@ async fn boot_with_bad_supervisor(bad_sock: PathBuf) -> Boot {
 
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        session_daemon_bin: locate_daemon_bin(),
         proc_supervisor_sock: Some(bad_sock),
     });
     let events = EventBus::new();
@@ -386,7 +365,7 @@ async fn post_terminal_card_atomic_returns_500_on_daemon_spawn_failure_but_persi
 #[tokio::test]
 async fn post_terminal_card_atomic_404_on_unknown_wave() {
     // No daemon spawn happens on the 404 path, so the stub binary is fine.
-    let boot = boot_with_daemon(PathBuf::from("calm-session-daemon")).await;
+    let boot = boot().await;
 
     let (status, body) = post(
         boot.app.clone(),

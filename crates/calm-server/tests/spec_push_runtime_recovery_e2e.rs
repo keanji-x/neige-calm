@@ -37,18 +37,6 @@ const RECOVERY_DEADLINE: Duration = Duration::from_secs(20);
 fn fake_codex_bin() -> String {
     env!("CARGO_BIN_EXE_osc-probe-child").to_string()
 }
-
-fn locate_recorder_bin() -> PathBuf {
-    if let Ok(p) = std::env::var("CARGO_BIN_EXE_argv-recorder-daemon") {
-        return PathBuf::from(p);
-    }
-    let me = std::env::current_exe().expect("current_exe");
-    me.parent()
-        .and_then(|p| p.parent())
-        .expect("test bin parent")
-        .join("argv-recorder-daemon")
-}
-
 struct RuntimeHarness {
     _tmp: TempDir,
     repo: Arc<dyn Repo>,
@@ -79,7 +67,6 @@ impl RuntimeHarness {
             events.clone(),
             Arc::new(DaemonClient {
                 data_dir: tmp.path().join("data").join("terminals"),
-                session_daemon_bin: locate_recorder_bin(),
                 proc_supervisor_sock: None,
             }),
             Arc::new(PluginHost::new_full(

@@ -56,51 +56,8 @@ path = "tests/fixtures/stub-plugin-caller/main.rs"
 name = "plugin-host-stub-toolcall"
 path = "tests/fixtures/stub-plugin-toolcall/main.rs"
 
-# #177 PR2 — fake calm-session-daemon that records its argv to a sidecar
-# file and binds the unix socket the kernel polls for readiness. Used
-# by `tests/spawn_daemon_argv.rs` to assert that `spawn_daemon_with_parts`
-# threads `term.theme_fg/_bg` onto the daemon CLI as
-# `--terminal-fg=r,g,b --terminal-bg=r,g,b`.
-[[bin]]
-name = "argv-recorder-daemon"
-path = "tests/fixtures/argv-recorder-daemon/main.rs"
-
-# #337 review followup — accepts calm-session probe connections but
-# deliberately replies with non-protocol bytes. Used by boot revive tests
-# to verify stale accepting daemons are killed before respawn.
-[[bin]]
-name = "wrong-protocol-daemon"
-path = "tests/fixtures/wrong-protocol-daemon/main.rs"
-
-# #310 followup — fake calm-session-daemon that deliberately fails the
-# kernel's readiness probe by never binding the socket. Persists its
-# pid to `<sock>.partial-pid` so the rollback-reap test can verify the
-# dispatcher's reap path actually killed the daemon process before
-# deleting the row. Used by `tests/dispatcher.rs::
-# dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310`.
-[[bin]]
-name = "never-ready-daemon"
-path = "tests/fixtures/never-ready-daemon/main.rs"
-
-# #310 fix-loop round 4 — fast-exit fixture: writes `<sock>.exit` with
-# `{"code":0,"signal_killed":false}` then exits 0 without binding the
-# socket. Drives the dispatcher's rollback discriminator into the
-# `Preserved` branch (case 2). Used by `tests/dispatcher.rs::
-# dispatcher_preserves_fast_exit_terminal_card_issue_310`.
-[[bin]]
-name = "fast-exit-daemon"
-path = "tests/fixtures/fast-exit-daemon/main.rs"
-
-# #349 review followup — fake daemon that writes `ready\n` to
-# `--ready-fd` then exits immediately without binding. Pins that the
-# kernel prefers an already-buffered ready signal over a simultaneous
-# child exit.
-[[bin]]
-name = "ready-exit-daemon"
-path = "tests/fixtures/ready-exit-daemon/main.rs"
-
-# #177 PR3 — e2e OSC roundtrip child: runs inside a real calm-session-daemon
-# PTY, performs the OSC 11 (default background) startup probe codex does,
+# #177 PR3 — e2e OSC roundtrip child: runs inside a real PTY, performs
+# the OSC 11 (default background) startup probe codex does,
 # and writes "OK" / "FAIL" to a sidecar result file the test driver polls.
 # Used by `tests/theme_osc_roundtrip.rs` — the only test that exercises the
 # full byte-level chain from `--terminal-fg/bg` argv through the daemon's
