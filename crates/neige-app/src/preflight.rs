@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use clap::ValueEnum;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::installed::{InstalledState, InstalledUnit};
 use crate::manifest::{
@@ -28,7 +28,7 @@ impl PreflightMode {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PreflightResult {
     pub allowed: bool,
@@ -110,7 +110,7 @@ impl PreflightResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub(crate) enum Verdict {
     Noop,
@@ -126,7 +126,7 @@ pub(crate) enum Verdict {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum BreakingReason {
     ProductMajorChanged,

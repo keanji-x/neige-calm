@@ -328,7 +328,7 @@ Installed-state schema:
 
 Writes are atomic at the file level.
 
-The writer serializes JSON to `installed.json.tmp.<pid>`.
+The writer serializes JSON to `installed.json.tmp.<pid>.<counter>`.
 
 It fsyncs the temp file.
 
@@ -337,6 +337,8 @@ It renames the temp file over `installed.json`.
 It best-effort fsyncs the parent directory.
 
 If the rename fails, the temp file is removed.
+
+Future installed-state migrations bump `schemaVersion`. A newer `neige-app` reading an older `installed.json` migrates it in place; an older `neige-app` refuses to read a newer file. Downgrades are not supported. The migration chain is single and forward-only, mirroring the SQL migration policy in `upgrade-stability.md`.
 
 ## 10. Installed State Lifecycle
 

@@ -100,6 +100,9 @@ neige-calm exposes several version numbers, each tracking a distinct compatibili
 - **`syncEventVersion`** — Tier A. The persisted `event_version` stamped onto every sync envelope. `SYNC_EVENT_VERSION` constant at `event.rs:254`, mirrored by migration `0006_events_version.sql`.
 - **`mcpProtocolVersion`** — Tier B. The MCP spec date the kernel-as-MCP-server advertises to Codex clients. Sourced from `KERNEL_MCP_PROTOCOL_VERSION` in `mcp_server/transport.rs`.
 - **`pluginMcpProtocolVersion`** — Tier B. The MCP spec date the plugin host advertises to plugin processes. Sourced from `KERNEL_PROTOCOL_VERSION` at `plugin_host/mcp.rs:47` so the response payload and the handshake compare never drift.
+
+PR 1 of #396 split `mcpProtocolVersion` into two MCP boundaries. The existing wire field's value changed from the plugin-host protocol date (`2025-11-25`) to the kernel-MCP-server protocol date (`2024-11-05`). The plugin-host value moved to the new `pluginMcpProtocolVersion` field. Both fields are diagnostic only; the frontend must not hard-gate on either value.
+
 - **`webCompatVersion` / `minWebCompatVersion`** — Tier B. The current and minimum frontend `WEB_COMPAT_VERSION` the kernel considers wire-compatible. Frontends below the minimum hard-refresh. `WEB_COMPAT_VERSION` constant at `routes/version.rs:65`.
 - **`supervisorControlVersion`** — Tier B. The control-wire version between `calm-server` and `calm-proc-supervisor`. Sourced from `calm_session::SUPERVISOR_CONTROL_VERSION`.
 

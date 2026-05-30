@@ -1,11 +1,14 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 use crate::manifest::{Compatibility, ReleaseManifestV2, UnitName};
+
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -83,7 +86,8 @@ where
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
-    let temp = path.with_extension(format!("json.tmp.{}", std::process::id()));
+    let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp = path.with_extension(format!("json.tmp.{}.{}", std::process::id(), counter));
     if temp.exists() {
         fs::remove_file(&temp).with_context(|| format!("remove {}", temp.display()))?;
     }
@@ -201,11 +205,12 @@ mod tests {
 
         assert!(err.to_string().contains("rename"));
         assert!(target.is_dir());
-        let tmp = target.with_extension(format!("json.tmp.{}", std::process::id()));
-        assert!(
-            !tmp.exists(),
-            "temporary file must be cleaned after failure"
-        );
+        let leftovers = fs::read_dir(target.parent().expect("state parent"))
+            .expect("read state parent")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp."))
+            .count();
+        assert_eq!(leftovers, 0, "temporary file must be cleaned after failure");
     }
 
     fn test_temp_dir(name: &str) -> PathBuf {

@@ -5,12 +5,12 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::installed::write_json_atomic;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SpawnIdentity {
     pub binary_path: PathBuf,
@@ -126,7 +126,11 @@ fn parse_version_output(output: &str) -> Option<String> {
 }
 
 fn looks_like_semver(value: &str) -> bool {
-    let core = value.split_once('-').map(|(core, _)| core).unwrap_or(value);
+    let without_build = value.split_once('+').map(|(core, _)| core).unwrap_or(value);
+    let core = without_build
+        .split_once('-')
+        .map(|(core, _)| core)
+        .unwrap_or(without_build);
     let mut parts = core.split('.');
     let Some(major) = parts.next() else {
         return false;
@@ -160,6 +164,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_version_output_accepts_build_metadata() {
+        assert_eq!(
+            parse_version_output("calm-server 0.1.0+sha.deadbeef\n"),
+            Some("0.1.0+sha.deadbeef".into())
+        );
+        assert_eq!(
+            parse_version_output("calm-server 0.1.0-rc.1+sha.deadbeef\n"),
+            Some("0.1.0-rc.1+sha.deadbeef".into())
+        );
+    }
+
+    #[test]
     fn capture_parses_version_from_executable() {
         let root = test_temp_dir("identity-version");
         let bin = root.join("calm-server");
@@ -173,6 +189,57 @@ mod tests {
         );
         assert_eq!(identity.crate_version, Some("0.1.0".into()));
         assert_eq!(identity.binary_sha256.len(), 64);
+    }
+
+    #[test]
+    fn capture_returns_none_when_version_output_unparseable() {
+        let root = test_temp_dir("identity-version-unparseable");
+        let bin = root.join("calm-server");
+        write_script(&bin, "printf 'garbage\\n'\nexit 0\n");
+
+        let identity = capture(&bin).expect("capture still succeeds");
+
+        assert_eq!(
+            identity.binary_path,
+            fs::canonicalize(&bin).expect("canonicalize")
+        );
+        assert_eq!(identity.crate_version, None);
+        assert_eq!(identity.binary_sha256.len(), 64);
+    }
+
+    #[test]
+    fn capture_returns_none_when_version_times_out() {
+        let root = test_temp_dir("identity-version-timeout");
+        let bin = root.join("calm-server");
+        write_script(&bin, "sleep 2\nprintf 'calm-server 0.1.0\\n'\nexit 0\n");
+
+        let started = Instant::now();
+        let identity = capture(&bin).expect("capture still succeeds");
+
+        assert!(started.elapsed() < Duration::from_millis(1000));
+        assert_eq!(identity.crate_version, None);
+        assert_eq!(identity.binary_sha256.len(), 64);
+    }
+
+    #[test]
+    fn capture_returns_err_when_binary_path_does_not_exist() {
+        let err = capture(Path::new("/no/such/binary")).expect_err("missing path must fail");
+
+        assert!(err.to_string().contains("canonicalize"));
+    }
+
+    #[tokio::test]
+    async fn capture_is_callable_from_spawn_blocking_inside_tokio() {
+        let root = test_temp_dir("identity-spawn-blocking");
+        let bin = root.join("calm-server");
+        write_script(&bin, "printf 'calm-server 0.1.0\\n'\nexit 0\n");
+
+        let identity = tokio::task::spawn_blocking(move || capture(&bin))
+            .await
+            .expect("spawn_blocking")
+            .expect("capture");
+
+        assert_eq!(identity.crate_version, Some("0.1.0".into()));
     }
 
     #[test]

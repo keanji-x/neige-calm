@@ -524,13 +524,16 @@ impl Supervisor {
         }
         self.changed.notify_waiters();
 
-        let identity = match identity::capture(&self.cfg.child_bin) {
+        let child_bin = self.cfg.child_bin.clone();
+        let persist_identity_to = self.cfg.persist_identity_to.clone();
+        let process_name = self.cfg.name.clone();
+        let identity = tokio::task::spawn_blocking(move || match identity::capture(&child_bin) {
             Ok(identity) => {
-                if let Some(data_dir) = &self.cfg.persist_identity_to
+                if let Some(data_dir) = &persist_identity_to
                     && let Err(err) = identity::write_supervisor_identity(data_dir, &identity)
                 {
                     tracing::warn!(
-                        process = %self.cfg.name,
+                        process = %process_name,
                         error = %err,
                         "failed to persist supervisor identity"
                     );
@@ -539,14 +542,16 @@ impl Supervisor {
             }
             Err(err) => {
                 tracing::warn!(
-                    process = %self.cfg.name,
-                    child_bin = %self.cfg.child_bin.display(),
+                    process = %process_name,
+                    child_bin = %child_bin.display(),
                     error = %err,
                     "failed to capture spawn identity"
                 );
                 None
             }
-        };
+        })
+        .await
+        .context("identity capture task panicked")?;
         {
             let mut state = self.state.lock().await;
             state.identity = identity;

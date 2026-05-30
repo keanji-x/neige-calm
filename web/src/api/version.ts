@@ -67,7 +67,24 @@ export type ServerVersionInfo = {
    * `SYNC_EVENT_VERSION` on the backend.
    */
   syncEventVersion: number;
+  /**
+   * Diagnostic-only MCP spec date for the kernel-as-MCP-server surface.
+   * PR 1 of #396 moved the plugin-host MCP date to
+   * `pluginMcpProtocolVersion`; do NOT use either MCP date as a frontend
+   * hard gate.
+   */
   mcpProtocolVersion: string;
+  /**
+   * Diagnostic-only MCP spec date advertised by the plugin host to plugin
+   * processes. Split from `mcpProtocolVersion` in #396 PR 1.
+   */
+  pluginMcpProtocolVersion: string;
+  /**
+   * Frontend `WEB_COMPAT_VERSION` this server was built with. This is
+   * diagnostic context; `minWebCompatVersion` remains the load-bearing
+   * whole-bundle compatibility gate.
+   */
+  webCompatVersion: number;
   /**
    * Minimum frontend `WEB_COMPAT_VERSION` the running kernel still
    * considers wire-compatible. A frontend below this value is hard-blocked
@@ -76,6 +93,11 @@ export type ServerVersionInfo = {
    * `syncEventVersion` for per-frame gating).
    */
   minWebCompatVersion: number;
+  /**
+   * Diagnostic control-wire version between `calm-server` and
+   * `calm-proc-supervisor`.
+   */
+  supervisorControlVersion: number;
   buildSha: string | null;
   dbInstanceId: string;
 };
