@@ -176,21 +176,6 @@ fn parse_rgb(s: &str) -> std::result::Result<(u8, u8, u8), String> {
 }
 
 #[cfg(test)]
-async fn spawn_daemon_with_parts(
-    daemon: &DaemonClient,
-    repo: &dyn RouteRepo,
-    term: &Terminal,
-    program: &str,
-    cwd: &str,
-    env: &serde_json::Value,
-) -> Result<()> {
-    let renderer = TerminalRendererRegistry::new();
-    let _ = spawn_terminal_with_parts(daemon, renderer.as_ref(), repo, term, program, cwd, env)
-        .await?;
-    Ok(())
-}
-
-#[cfg(test)]
 mod tests {
     //! #177 PR2 — exercise the spawn-time theme plumbing.
     //!
@@ -344,8 +329,10 @@ mod tests {
         assert_eq!(term.theme_fg, "216,219,226");
         assert_eq!(term.theme_bg, "15,20,24");
 
-        spawn_daemon_with_parts(
+        let renderer = TerminalRendererRegistry::new();
+        let _entry = spawn_terminal_with_parts(
             daemon.as_ref(),
+            renderer.as_ref(),
             repo.as_ref(),
             &term,
             "codex",
@@ -390,8 +377,10 @@ mod tests {
         };
         let term = repo.terminal_get(&term_id).await.unwrap().expect("row");
 
-        spawn_daemon_with_parts(
+        let renderer = TerminalRendererRegistry::new();
+        let _entry = spawn_terminal_with_parts(
             &daemon,
+            renderer.as_ref(),
             repo.as_ref(),
             &term,
             "true",
@@ -481,8 +470,10 @@ mod tests {
         });
 
         // Drive the spawn — must return Err (child exit before ready).
-        let res = spawn_daemon_with_parts(
+        let renderer = TerminalRendererRegistry::new();
+        let res = spawn_terminal_with_parts(
             daemon.as_ref(),
+            renderer.as_ref(),
             repo.as_ref(),
             &term,
             "true",
@@ -492,7 +483,7 @@ mod tests {
         .await;
         assert!(
             res.is_err(),
-            "expected spawn to fail readiness, but got {res:?}",
+            "expected spawn to fail readiness, but got Ok(_)",
         );
 
         // Phase 1 contract: handle is persisted BEFORE readiness via the
@@ -523,8 +514,10 @@ mod tests {
         let (repo, daemon, _tmp, term_id) = boot().await;
         let term = repo.terminal_get(&term_id).await.unwrap().expect("row");
 
-        spawn_daemon_with_parts(
+        let renderer = TerminalRendererRegistry::new();
+        let _entry = spawn_terminal_with_parts(
             daemon.as_ref(),
+            renderer.as_ref(),
             repo.as_ref(),
             &term,
             "codex",

@@ -18,8 +18,8 @@
 use crate::db::{RepoOutOfDomain, RouteRepo};
 use crate::error::Result;
 use crate::state::AppState;
-use crate::terminal_renderer::{ClientPumpContext, RendererEntry, run_client_pump};
 use crate::terminal_probe::{TerminalProbe, probe_terminal_daemon};
+use crate::terminal_renderer::{ClientPumpContext, RendererEntry, run_client_pump};
 use axum::{
     Router,
     extract::{
@@ -112,9 +112,7 @@ async fn resolve_live_renderer(s: &AppState, id: &str) -> Result<LiveRenderer> {
 async fn handle_renderer(socket: WebSocket, entry: Arc<RendererEntry>, terminal_id: String) {
     let (incoming_tx, incoming_rx) = mpsc::channel::<ClientMsg>(64);
     let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<DaemonMsg>(256);
-    let event_rx = entry
-        .take_initial_event_rx()
-        .unwrap_or_else(|| entry.subscribe());
+    let event_rx = entry.subscribe();
     let ctx = ClientPumpContext {
         event_rx,
         event_tx: entry.handle.event_tx.clone(),
@@ -217,7 +215,7 @@ fn sanitize_client_msg(parsed: &mut ClientMsg) {
     {
         capabilities.kernel_originated_input = false;
         if let Ok(uuid) = uuid::Uuid::parse_str(terminal_id) {
-            *terminal_id = uuid.to_string();
+            *terminal_id = uuid.simple().to_string();
         }
     }
 }

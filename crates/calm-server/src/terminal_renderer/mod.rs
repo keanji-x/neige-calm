@@ -180,6 +180,10 @@ impl TerminalRendererRegistry {
             entry.abort_tasks();
             Ok(existing.clone())
         } else {
+            tracing::info!(
+                terminal_id = %entry.terminal_id,
+                "terminal renderer registry inserted entry"
+            );
             entries.insert(entry.terminal_id.clone(), entry.clone());
             Ok(entry)
         }
@@ -212,6 +216,7 @@ impl TerminalRendererRegistry {
             return;
         };
 
+        tracing::info!(terminal_id, "terminal renderer registry dropping entry");
         entry.shutdown_signal(ProcSignal::Term).await;
         tokio::time::sleep(Duration::from_millis(200)).await;
         entry.shutdown_signal(ProcSignal::Kill).await;
@@ -219,7 +224,10 @@ impl TerminalRendererRegistry {
     }
 }
 
-async fn ensure_entry(cfg: RendererConfig, repo: Option<Arc<dyn RouteRepo>>) -> anyhow::Result<RendererEntry> {
+async fn ensure_entry(
+    cfg: RendererConfig,
+    repo: Option<Arc<dyn RouteRepo>>,
+) -> anyhow::Result<RendererEntry> {
     let proc_id = format!("term:{}", cfg.terminal_id);
     let mut control_conn = UnixStream::connect(&cfg.supervisor_sock)
         .await
