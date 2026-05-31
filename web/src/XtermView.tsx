@@ -636,6 +636,18 @@ export function XtermView({
         if (newOwnerId === clientId) {
           onRoleChangeRef.current?.('Owner');
           setProtocolError(null);
+          // A ResizeCommit sent while we were Observer may have been
+          // rejected, leaving the PTY at the previous owner's geometry.
+          // Our local terminal is already fitted, so resend its current
+          // dimensions when ownership transfers to this client.
+          resizeEpoch += 1;
+          send({
+            ResizeCommit: {
+              epoch: resizeEpoch,
+              cols: term.cols,
+              rows: term.rows,
+            },
+          });
         } else {
           onRoleChangeRef.current?.('Observer');
         }

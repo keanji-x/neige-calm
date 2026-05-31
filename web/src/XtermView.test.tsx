@@ -369,11 +369,17 @@ describe('XtermView owner recovery', () => {
       });
     });
     expect(screen.getByRole('alert')).toBeInTheDocument();
+    mockTerm.cols = 100;
+    mockTerm.rows = 30;
+    ws.sentFrames.length = 0;
     act(() => {
       ws.push({ OwnerChanged: { owner_client_id: clientId } });
     });
     expect(roleChanges).toContain('Owner');
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(ws.sentFrames.map((s) => JSON.parse(s))).toContainEqual({
+      ResizeCommit: { epoch: 1, cols: 100, rows: 30 },
+    });
   });
 });
 
