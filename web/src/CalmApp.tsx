@@ -23,7 +23,7 @@
 // (Light/Dark/System radio), reachable via the Sidebar avatar menu.
 // See issue #22.
 
-import { Suspense, useMemo } from 'react';
+import { Suspense, useMemo, useRef } from 'react';
 import { Outlet, useRouterState } from '@tanstack/react-router';
 import { useQueries } from '@tanstack/react-query';
 import { Sidebar } from './shared/components/Sidebar';
@@ -41,11 +41,14 @@ import {
 } from './api/queries';
 import { useGo } from './app/navigation';
 import { logout } from './api/auth';
+import { useWheelRouter } from './input/useWheelRouter';
 import type { KernelOverlay } from './api/wire';
 import type { Cove, Route as AppRoute, Wave } from './types';
 
 export function CalmApp() {
   const go = useGo();
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  useWheelRouter(scrollRef);
 
   // Derive the current AppRoute shape from the router's location so the
   // Sidebar's "highlight active" logic keeps working without props on
@@ -188,7 +191,7 @@ export function CalmApp() {
           onSignOut={handleSignOut}
         />
         <main className="page">
-          <div className="scroll">
+          <div className="scroll" ref={scrollRef}>
             {error && <ErrorBanner err={error} />}
             {loading ? (
               <LoadingShell />

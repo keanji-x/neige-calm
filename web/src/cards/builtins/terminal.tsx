@@ -9,8 +9,9 @@ import { CardHead } from '../CardHead';
 import { CardStatusDot } from '../../shared/components/CardStatusDot';
 import { CardExitBadge } from '../../shared/components/CardExitBadge';
 import type { Role } from '../../api/generated-terminal';
-import type { ExitChange } from '../../XtermView';
+import type { ExitChange, XtermViewHandle } from '../../XtermView';
 import { getTerminalForCard } from '../../api/calm';
+import { useXtermWheelTargetRef } from '../../input/useXtermWheelTarget';
 import {
   TERMINAL_PAYLOAD_SCHEMA_VERSION,
   payloadSchemaVersion,
@@ -48,6 +49,7 @@ function TerminalCard({
 }) {
   const { id: cardId, title, lines, terminalId, unsupportedVersion } = card;
   const { resolved: theme } = useTheme();
+  const [, setXtermRef] = useXtermWheelTargetRef<XtermViewHandle>();
   // Daemon-assigned role lifted out of `<XtermView>` so the head can render
   // an "observing" pill in its status slot when this client doesn't hold
   // write. `null` until handshake completes, and reset to `null` on
@@ -158,6 +160,7 @@ function TerminalCard({
         {live ? (
           <Suspense fallback={<div className="term-line k-cursor">Loading terminal…</div>}>
             <XtermView
+              ref={setXtermRef}
               terminalId={terminalId!}
               theme={theme}
               onRoleChange={setRole}

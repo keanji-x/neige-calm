@@ -50,6 +50,7 @@ import { UnknownCard } from './cards/UnknownCard';
 import { dlog } from './util/debug';
 import { useUpdateCardMutation } from './api/queries';
 import type { WaveCardSlot } from './types';
+import { handleWheelCardPointerDown } from './input/cardShell';
 
 // Card identity for keys. Mirrors `WaveGrid.slotKey` — we share the same
 // stable key shape so list/grid toggles don't unmount and remount cards
@@ -234,6 +235,8 @@ export function WaveList({
               key={key}
               ref={props.ref}
               tabIndex={props.tabIndex}
+              data-wheel-card
+              onPointerDownCapture={handleWheelCardPointerDown}
               onKeyDown={onKeyDown}
               aria-label={name}
               aria-posinset={i + 1}

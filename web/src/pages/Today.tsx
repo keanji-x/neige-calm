@@ -1,4 +1,9 @@
-import { lazy, Suspense, useEffect, useMemo } from 'react';
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useMemo,
+} from 'react';
 import { useState } from '../shared/state';
 import { coveOf } from '../shared/components/helpers';
 import { useTheme } from '../app/theme';
@@ -7,6 +12,8 @@ import { isRunning, waveNeedsUserAttention } from '../shared/lifecycle';
 import { lifecycleLabel } from '../shared/components/WaveLifecycleBadge';
 import { waveDisplayTitle } from '../shared/waveTitle';
 import type { Cove, Route, Wave } from '../types';
+import { handleWheelCardPointerDown } from '../input/cardShell';
+import { useXtermWheelTargetRef } from '../input/useXtermWheelTarget';
 
 // xterm.js is heavy and only mounts when the Today home panel resolves a
 // live terminal. Splitting it lets Today's calendar / clock render before
@@ -14,7 +21,6 @@ import type { Cove, Route, Wave } from '../types';
 const XtermView = lazy(() =>
   import('../XtermView').then((m) => ({ default: m.XtermView })),
 );
-
 // ============================================================
 // Calendar helpers.
 //
@@ -300,7 +306,12 @@ function TodayTerminalPanel({
   onReset?: () => void;
 }) {
   return (
-    <div className="today-term">
+    <div
+      className="today-term"
+      tabIndex={-1}
+      data-wheel-card
+      onPointerDownCapture={handleWheelCardPointerDown}
+    >
       <CardHead
         className="today-term-head"
         title="~ / neige · today"
@@ -358,10 +369,11 @@ function TodayTerminalPanel({
 
 function LiveTerminalSlot({ terminalId }: { terminalId: string }) {
   const { resolved: theme } = useTheme();
+  const [, setXtermRef] = useXtermWheelTargetRef();
   return (
     <div style={{ minHeight: 360 }}>
       <Suspense fallback={<div className="synth">Loading terminal…</div>}>
-        <XtermView terminalId={terminalId} theme={theme} />
+        <XtermView ref={setXtermRef} terminalId={terminalId} theme={theme} />
       </Suspense>
     </div>
   );
