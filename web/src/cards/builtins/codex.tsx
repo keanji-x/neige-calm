@@ -25,10 +25,11 @@ import type { ExitChange, XtermViewHandle } from '../../XtermView';
 import { sharedEventStream } from '../../api/events';
 import { CardStatusDot } from '../../shared/components/CardStatusDot';
 import { CardExitBadge } from '../../shared/components/CardExitBadge';
-import { getTerminalForCard } from '../../api/calm';
+import { getTerminalForCard, resetSpecCard } from '../../api/calm';
 import { useTheme } from '../../app/theme';
 import { Icon } from '../../Icon';
 import { IconButton } from '../../pages/_shared';
+import { ConfirmDialog } from '../../ui/ConfirmDialog/ConfirmDialog';
 import { CardHead } from '../CardHead';
 import type { CardEntry } from '../registry';
 import {
@@ -181,6 +182,23 @@ function CodexCardImpl({
   // XtermView callback re-emits on every state transition.
   const [role, setRole] = useState<Role | null>(null);
   const xtermRef = useRef<XtermViewHandle | null>(null);
+  // `card.id` is typed `string | undefined` in the kernel wire model, but a
+  // mounted card always has one — gate the Reset button on its presence so
+  // TS knows the API call site is safe, matching the `if (!cardId) return`
+  // pattern the rest of this component already uses (see line ~200).
+  const canResetSpecSession =
+    provider === 'codex' && deletable === false && !!cardId;
+  const [resetOpen, setResetOpen] = useState(false);
+  const resetOpenRef = useRef(false);
+  const [resetPending, setResetPending] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
+  useEffect(() => {
+    resetOpenRef.current = resetOpen;
+    if (!resetOpen) {
+      setResetPending(false);
+      setResetError(null);
+    }
+  }, [resetOpen]);
   // #306 — exit info for the header badge. Codex cards arguably need this
   // MORE than terminal cards (codex shouldn't ever exit cleanly during a
   // session; an unexpected exit is the kind of thing the user needs to
@@ -263,6 +281,23 @@ function CodexCardImpl({
     };
   }, [cardId, provider]);
 
+  const onConfirmReset = async () => {
+    if (!cardId) return; // gated by canResetSpecSession above; defensive
+    setResetPending(true);
+    setResetError(null);
+    try {
+      await resetSpecCard(cardId);
+      xtermRef.current?.refresh();
+      setResetOpen(false);
+    } catch (err) {
+      if (resetOpenRef.current) {
+        setResetError(err instanceof Error ? err.message : 'Reset failed');
+      }
+    } finally {
+      setResetPending(false);
+    }
+  };
+
   return (
     <div className="codex-card">
       <CardHead
@@ -280,14 +315,26 @@ function CodexCardImpl({
         // which is the kind of churn that confuses some AT.
         status={
           <>
-            {provider === 'codex' && deletable === false && (
-              <IconButton
-                glyph={<Icon n="refresh" s={14} />}
-                label="Refresh terminal"
-                title="Refresh terminal (reconnect)"
-                tone="neutral"
-                onClick={() => xtermRef.current?.refresh()}
-              />
+            {canResetSpecSession && (
+              <>
+                <IconButton
+                  glyph={<Icon n="refresh" s={14} />}
+                  label="Refresh terminal"
+                  title="Refresh terminal (reconnect)"
+                  tone="neutral"
+                  onClick={() => xtermRef.current?.refresh()}
+                />
+                <IconButton
+                  glyph={<Icon n="reset" s={14} />}
+                  label="Reset spec session"
+                  title="Reset spec session (kill daemon, new thread)"
+                  tone="danger"
+                  onClick={() => {
+                    setResetError(null);
+                    setResetOpen(true);
+                  }}
+                />
+              </>
             )}
             {role === 'Observer' && (
               <span className="card-head-observing-pill">observing</span>
@@ -328,6 +375,33 @@ function CodexCardImpl({
           </div>
         )}
       </div>
+      <ConfirmDialog
+        open={resetOpen}
+        title="Reset spec session?"
+        description={
+          <>
+            <p>
+              This kills the current codex daemon and starts a new conversation. The wave&apos;s
+              report and observation history are preserved, but the codex conversation transcript
+              will be discarded. This cannot be undone.
+            </p>
+            {resetError && (
+              <p role="alert" style={{ color: 'var(--warn)', marginTop: 8 }}>
+                {resetError}
+              </p>
+            )}
+          </>
+        }
+        confirmLabel="Reset session"
+        cancelLabel="Cancel"
+        destructive
+        confirmDisabled={resetPending}
+        onConfirm={onConfirmReset}
+        onCancel={() => {
+          setResetOpen(false);
+          setResetError(null);
+        }}
+      />
     </div>
   );
 }

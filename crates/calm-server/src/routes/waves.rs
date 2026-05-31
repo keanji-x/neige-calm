@@ -60,8 +60,9 @@
 use crate::actor::Actor;
 use crate::auth::Principal;
 use crate::db::sqlite::{
-    card_create_with_id_tx, card_update_tx, card_with_codex_create_tx, cove_folder_create_tx,
-    overlay_upsert_tx, terminal_delete_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
+    card_create_with_id_tx, card_mcp_token_set_tx, card_update_tx, card_with_codex_create_tx,
+    cove_folder_create_tx, overlay_upsert_tx, spec_card_set_appserver_after_reset_tx,
+    terminal_delete_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
 };
 use crate::db::{write_with_event_typed, write_with_events_typed};
 use crate::error::{CalmError, ErrorBody, Result};
@@ -746,6 +747,7 @@ pub(crate) async fn create_wave(
         &env_for_spawn,
         &settings,
         mcp_token.as_deref(),
+        SpawnPushAppserverMode::CreateWave,
     )
     .await
     {
@@ -829,13 +831,20 @@ pub(crate) async fn create_wave(
 /// that error as **non-fatal** (issue #293 / PR #311): it logs a warning,
 /// skips the daemon spawn, and returns 201 with an inert wave — the
 /// persisted rows survive and the sweeper reaps the orphan terminal.
-async fn spawn_push_appserver(
+#[derive(Debug, Clone)]
+pub(crate) enum SpawnPushAppserverMode {
+    CreateWave,
+    ResetExisting { mcp_token: String },
+}
+
+pub(crate) async fn spawn_push_appserver(
     s: &AppState,
     spec_card_id: &str,
     wave: &Wave,
     env_for_spawn: &serde_json::Value,
     settings: &Settings,
     mcp_token: Option<&str>,
+    mode: SpawnPushAppserverMode,
 ) -> Result<SpecPushDaemonArgs> {
     // Seed the spec card's `$CODEX_HOME` FIRST. The kernel-owned
     // `app-server` is spawned with `CODEX_HOME = <codex_homes_dir>/<card_id>`
@@ -930,6 +939,7 @@ async fn spawn_push_appserver(
     let card_id_for_tx = spec_card_id.to_string();
     let thread_id_for_tx = thread_id.clone();
     let sock_str = sock_for_args.to_string_lossy().to_string();
+    let mode_for_tx = mode.clone();
     let (_card, _id) = write_with_event_typed(
         s.repo.as_ref(),
         ActorId::Kernel,
@@ -940,6 +950,23 @@ async fn spawn_push_appserver(
         &s.wave_cove_cache,
         move |tx| {
             Box::pin(async move {
+                if let SpawnPushAppserverMode::ResetExisting { mcp_token } = mode_for_tx {
+                    let hashed = crate::mcp_server::auth::hash_token(&mcp_token);
+                    card_mcp_token_set_tx(tx, &card_id_for_tx, &hashed).await?;
+                    let card = spec_card_set_appserver_after_reset_tx(
+                        tx,
+                        &card_id_for_tx,
+                        &thread_id_for_tx,
+                        pgid,
+                        &sock_str,
+                        start_time,
+                        boot_id.as_deref(),
+                        needs_initial_prompt,
+                    )
+                    .await?;
+                    return Ok((card.clone(), Event::CardUpdated(card)));
+                }
+
                 // Read current payload, merge the push fields, write back.
                 // N1: a spec card's payload must be a JSON object — the
                 // push fields can only be inserted into one. If it isn't

@@ -213,6 +213,11 @@ export const updateCard = (id: string, b: CardPatchBody) =>
   request<KernelCard>('PATCH', `/api/cards/${encodeURIComponent(id)}`, b);
 export const deleteCard = (id: string) =>
   request<void>('DELETE', `/api/cards/${encodeURIComponent(id)}`);
+export const resetSpecCard = (id: string) =>
+  request<{ card_id: string; terminal_id: string; new_thread_id: string }>(
+    'POST',
+    `/api/cards/${encodeURIComponent(id)}/spec/reset`,
+  );
 
 // ---------------- overlays ----------------
 

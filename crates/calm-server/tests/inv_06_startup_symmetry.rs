@@ -115,11 +115,11 @@ mod behavioral {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use calm_server::card_role_cache::CardRoleCache;
-    use calm_server::db::prelude::Repo;
-    use calm_server::db::sqlite::SqlxRepo;
+    use calm_server::db::prelude::*;
+    use calm_server::db::sqlite::{SqlxRepo, card_with_codex_create_tx};
     use calm_server::event::EventBus;
     use calm_server::ids::WaveId;
-    use calm_server::model::NewCove;
+    use calm_server::model::{CardRole, NewCove, NewWave, new_id};
     use calm_server::plugin_host::{PluginHost, PluginRegistry};
     use calm_server::routes;
     use calm_server::spec_appserver::SpecPushRegistry;
@@ -141,8 +141,8 @@ mod behavioral {
     /// `common::fake_codex_client`), so both `POST /api/waves` (Path A)
     /// and `takeover_spec_appservers_on_boot` (Path B) drive a real
     /// JSON-RPC handshake without needing a real codex binary.
-    async fn build_state(tmp: &Path, db_url: &str) -> (AppState, Arc<dyn Repo>) {
-        let repo: Arc<dyn Repo> = Arc::new(
+    async fn build_state(tmp: &Path, db_url: &str) -> (AppState, Arc<SqlxRepo>) {
+        let repo = Arc::new(
             SqlxRepo::open(db_url)
                 .await
                 .expect("open sqlite db for inv6 behavioral test"),
@@ -214,6 +214,81 @@ mod behavioral {
              state.dispatcher.watermark_sink_for(card_key))` before the \
              registry insert."
         );
+    }
+
+    fn stage_fake_codex_on_path(tmp: &TempDir) -> String {
+        let bin_dir = tmp.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).expect("create fake codex bin dir");
+        let dest = bin_dir.join("codex");
+        if dest.exists() {
+            std::fs::remove_file(&dest).expect("remove old fake codex symlink");
+        }
+        std::os::unix::fs::symlink(common::fake_codex_bin(), &dest)
+            .expect("symlink fake codex fixture");
+        let prev = std::env::var("PATH").unwrap_or_default();
+        format!("{}:{prev}", bin_dir.display())
+    }
+
+    async fn seed_resettable_spec_card(
+        state: &AppState,
+        repo: &Arc<SqlxRepo>,
+        tmp: &TempDir,
+        wave_id: WaveId,
+    ) -> String {
+        let card_id = new_id();
+        let mut env = serde_json::Map::new();
+        env.insert(
+            "CODEX_HOME".into(),
+            json!(
+                tmp.path()
+                    .join("codex-home")
+                    .join(&card_id)
+                    .to_string_lossy()
+            ),
+        );
+        env.insert("NEIGE_CARD_ID".into(), json!(card_id.as_str()));
+        env.insert("NEIGE_CALM_BASE_URL".into(), json!("http://127.0.0.1:0"));
+        env.insert(
+            "NEIGE_OSC_RESULT_PATH".into(),
+            json!(tmp.path().join("reset-path-c-osc.txt").to_string_lossy()),
+        );
+        env.insert("NEIGE_OSC_EXPECTED_BG".into(), json!("15,20,24"));
+        env.insert("PATH".into(), json!(stage_fake_codex_on_path(tmp)));
+
+        let mut tx = repo.pool().begin().await.expect("begin spec card tx");
+        let (card, _terminal, _token) = card_with_codex_create_tx(
+            &mut tx,
+            card_id.clone(),
+            wave_id,
+            None,
+            "/tmp/inv6-reset-path".into(),
+            Value::Object(env),
+            None,
+            None,
+            None,
+            CardRole::Spec,
+            false,
+            &state.card_role_cache,
+            calm_server::routes::theme::RequestTheme::default_dark(),
+        )
+        .await
+        .expect("create resettable spec card");
+        tx.commit().await.expect("commit spec card tx");
+        repo.spec_card_set_appserver_after_reset(
+            card.id.as_str(),
+            "thread-old",
+            12345,
+            "/tmp/old-appserver.sock",
+            Some(67890),
+            Some("boot-old"),
+            false,
+        )
+        .await
+        .expect("seed old appserver fields");
+        repo.spec_card_set_push_watermark(card.id.as_str(), 0)
+            .await
+            .expect("seed watermark");
+        card.id.to_string()
     }
 
     #[tokio::test]
@@ -298,5 +373,49 @@ mod behavioral {
         calm_server::terminal_sweeper::reap_spec_push(&state_b, &wave_id).await;
         tokio::time::sleep(Duration::from_millis(200)).await;
         eprintln!("[inv6-behavioral] ALL PASS");
+    }
+
+    #[tokio::test]
+    async fn inv6_reset_path_installs_sink() {
+        let tmp = TempDir::new().expect("tempdir");
+        let db_path = tmp.path().join("inv6-reset.sqlite");
+        let db_url = format!("sqlite://{}?mode=rwc", db_path.display());
+        let (state, repo) = build_state(tmp.path(), &db_url).await;
+        let cove = repo
+            .cove_create(NewCove {
+                name: "inv6-reset".into(),
+                color: "#000".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let wave = repo
+            .wave_create(NewWave {
+                cove_id: cove.id,
+                title: "inv6 reset path".into(),
+                sort: None,
+                cwd: "/tmp/inv6-reset-path".into(),
+                attach_folder: false,
+                theme: calm_server::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        let wave_id = wave.id.clone();
+        let card_id = seed_resettable_spec_card(&state, &repo, &tmp, wave_id.clone()).await;
+        let app = routes::router()
+            .layer(axum::middleware::from_fn(
+                calm_server::actor::actor_middleware,
+            ))
+            .with_state(state.clone());
+
+        let (status, body) =
+            post_json(app, &format!("/api/cards/{card_id}/spec/reset"), json!({})).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "Path C reset must succeed with the fake codex fixture; body={body}"
+        );
+        assert_sink_installed(&state.spec_push, &wave_id, "reset-created handle (Path C)").await;
+        calm_server::terminal_sweeper::reap_spec_push(&state, &wave_id).await;
     }
 }

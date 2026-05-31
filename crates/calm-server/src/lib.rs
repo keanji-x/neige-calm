@@ -1504,7 +1504,6 @@ async fn register_and_catch_up(
     // (un-delivered) envelope_ids are returned for the catch-up
     // dedup skip-set.
     let rehydrated_ids = handle.rehydrate_queue_from_persist(watermark).await;
-    let rehydrated_skip: std::collections::HashSet<i64> = rehydrated_ids.iter().copied().collect();
     let rehydrated_count = rehydrated_ids.len();
     if rehydrated_count > 0 {
         tracing::info!(
@@ -1579,97 +1578,106 @@ async fn register_and_catch_up(
                 .park(wave_id.clone(), handle, state.aspects.as_ref())
                 .await;
 
-            // Read catch-up rows UNDER the lock (see CRITICAL above).
-            let rows = match state.repo.events_since(watermark, None).await {
-                Ok(rows) => rows,
-                Err(e) => {
-                    tracing::warn!(
-                        card_id, wave_id = %wave_id, watermark, error = %e,
-                        "takeover: events_since(catch-up) failed; spec thread will only see new live events from here",
-                    );
-                    return;
-                }
-            };
-            let mut replayed = 0usize;
-            let mut skipped_rehydrated = 0usize;
-            for (id, _ver, scope, ev) in rows {
-                // Only events scoped to (or under) this wave count; only
-                // events the dispatcher would live-push to the spec are
-                // replayed. That includes task results, user-authored report
-                // edits, and worker stop hooks. The worker-role gate uses the
-                // boot-seeded role cache, populated before spec app-server
-                // takeover starts.
-                let Some(ev_wave) = scope.wave_id() else {
-                    continue;
-                };
-                if ev_wave != wave_id {
-                    continue;
-                }
-                if !dispatcher::event_warrants_spec_push(&ev, &state.card_role_cache) {
-                    continue;
-                }
-                // #325 fix — skip envelopes whose row is already sitting in
-                // the rehydrated in-memory queue. Without this skip, the
-                // very first un-skipped catch-up call on the resumed
-                // (Idle) handle triggers `StartTurnNow`, drains the
-                // rehydrated row AND appends this catch-up envelope as a
-                // SECOND copy of the same observation — both ride one
-                // `turn/start`, codex sees the same wave event twice, and
-                // the `Enqueue` arm persists ANOTHER `spec_push_queue` row
-                // for the duplicate. The rehydrated rows themselves still
-                // deliver via the normal drain path (the first non-skipped
-                // catch-up envelope's `StartTurnNow` drains the queue; if
-                // no catch-up envelope remains after dedup, the explicit
-                // `flush_pending` below drains them).
-                if rehydrated_skip.contains(&id) {
-                    skipped_rehydrated += 1;
-                    continue;
-                }
-                // Run the dedup-check-and-deliver body WITHOUT re-taking
-                // the per-wave lock (we already hold it). Same shape as a
-                // live push, sans lock acquisition.
-                state
-                    .dispatcher
-                    .catch_up_push_under_lock(wave_id.clone(), ev, id)
-                    .await;
-                replayed += 1;
-            }
-            if replayed > 0 || skipped_rehydrated > 0 {
-                tracing::info!(
-                    card_id, wave_id = %wave_id, replayed, skipped_rehydrated, watermark,
-                    "takeover: catch-up replay pushed events to resumed spec thread",
-                );
-            } else {
-                tracing::debug!(
-                    card_id, wave_id = %wave_id, watermark,
-                    "takeover: no catch-up events above watermark",
-                );
-            }
-
-            // #325 fix — when rehydrate restocked the queue but every
-            // catch-up envelope was skipped as already-rehydrated, no
-            // `StartTurnNow` fired during the loop above, so the
-            // rehydrated rows are still sitting in the in-memory queue.
-            // Explicitly drive a `flush_push_queue` on the handle to
-            // deliver them now (idempotent — no-op when the queue is
-            // empty or another issuer already claimed the cycle). This
-            // keeps the boot-takeover path's "rehydrated items deliver
-            // promptly" semantics symmetric with the steady-state path
-            // (consumer task's `turn/completed` flush always drains).
-            //
-            // We resolve the handle through the registry to share the
-            // same `Arc`-wrapped components the dispatcher will see for
-            // live pushes; `pusher().push_observation` and `flush_pending`
-            // both operate on those slots, so this nudge is identical to
-            // a steady-state flush.
-            if rehydrated_count > 0
-                && replayed == 0
-                && let Some(pusher) = state.spec_push.pusher(wave_id)
-            {
-                pusher.flush_pending().await;
-            }
+            replay_spec_push_catch_up_under_lock(
+                state,
+                card_id,
+                wave_id,
+                watermark,
+                rehydrated_ids,
+            )
+            .await;
         })
         .await;
+}
+
+/// Rehydrate durable queue rows and replay event-log rows for a reset-created,
+/// already-parked spec push handle. The caller must hold the per-wave push
+/// lock; this helper intentionally uses `catch_up_push_under_lock`.
+pub(crate) async fn rehydrate_and_catch_up_parked_spec_push_under_lock(
+    state: &state::AppState,
+    card_id: &str,
+    wave_id: &crate::ids::WaveId,
+    watermark: i64,
+) {
+    let card_key: crate::ids::CardId = card_id.to_string().into();
+    let rehydrated_ids = state
+        .spec_push
+        .rehydrate_queue_from_persist(wave_id, watermark)
+        .await;
+    let rehydrated_count = rehydrated_ids.len();
+    if rehydrated_count > 0 {
+        tracing::info!(
+            card_id,
+            wave_id = %wave_id,
+            count = rehydrated_count,
+            "reset: rehydrated spec push queue from durable rows",
+        );
+    }
+    state
+        .dispatcher
+        .reset_push_cursor_to_watermark(card_key, watermark);
+    replay_spec_push_catch_up_under_lock(state, card_id, wave_id, watermark, rehydrated_ids).await;
+}
+
+async fn replay_spec_push_catch_up_under_lock(
+    state: &state::AppState,
+    card_id: &str,
+    wave_id: &crate::ids::WaveId,
+    watermark: i64,
+    rehydrated_ids: Vec<i64>,
+) {
+    let rehydrated_skip: std::collections::HashSet<i64> = rehydrated_ids.iter().copied().collect();
+    let rehydrated_count = rehydrated_ids.len();
+    let rows = match state.repo.events_since(watermark, None).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(
+                card_id, wave_id = %wave_id, watermark, error = %e,
+                "spec push catch-up: events_since failed; spec thread will only see new live events from here",
+            );
+            return;
+        }
+    };
+    let mut replayed = 0usize;
+    let mut skipped_rehydrated = 0usize;
+    for (id, _ver, scope, ev) in rows {
+        let Some(ev_wave) = scope.wave_id() else {
+            continue;
+        };
+        if ev_wave != wave_id {
+            continue;
+        }
+        if !dispatcher::event_warrants_spec_push(&ev, &state.card_role_cache) {
+            continue;
+        }
+        if rehydrated_skip.contains(&id) {
+            skipped_rehydrated += 1;
+            continue;
+        }
+        state
+            .dispatcher
+            .catch_up_push_under_lock(wave_id.clone(), ev, id)
+            .await;
+        replayed += 1;
+    }
+    if replayed > 0 || skipped_rehydrated > 0 {
+        tracing::info!(
+            card_id, wave_id = %wave_id, replayed, skipped_rehydrated, watermark,
+            "spec push catch-up: replay pushed events to spec thread",
+        );
+    } else {
+        tracing::debug!(
+            card_id, wave_id = %wave_id, watermark,
+            "spec push catch-up: no events above watermark",
+        );
+    }
+
+    if rehydrated_count > 0
+        && replayed == 0
+        && let Some(pusher) = state.spec_push.pusher(wave_id)
+    {
+        pusher.flush_pending().await;
+    }
 }
 
 pub mod card_fsm;

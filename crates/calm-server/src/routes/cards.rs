@@ -12,17 +12,21 @@
 use crate::actor::Actor;
 use crate::db::RepoRead;
 use crate::db::sqlite::{
-    card_create_with_id_tx, card_delete_tx, card_update_tx, terminal_delete_tx,
+    card_create_with_id_tx, card_delete_tx, card_mcp_token_set_tx, card_update_tx,
+    terminal_delete_tx,
 };
-use crate::db::write_with_event_typed;
+use crate::db::{write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::new_id;
 use crate::model::{Card, CardPatch, CardRole, NewCard};
 use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
+use crate::routes::settings::load_settings;
+use crate::routes::waves::{SpawnPushAppserverMode, spawn_push_appserver};
+use crate::spec_card::seed_and_spawn_spec_daemon;
 use crate::state::AppState;
-use crate::terminal_sweeper::reap_terminal_artifacts;
+use crate::terminal_sweeper::{reap_spec_push, reap_terminal_artifacts};
 use crate::validation::validate_card_payload;
 
 use axum::{
@@ -30,9 +34,9 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use utoipa::ToSchema;
 
@@ -67,6 +71,7 @@ pub fn router() -> Router<AppState> {
             "/api/cards/{id}",
             axum::routing::patch(update_card).delete(delete_card),
         )
+        .route("/api/cards/{id}/spec/reset", post(reset_spec_card))
 }
 
 #[utoipa::path(
@@ -418,6 +423,160 @@ pub(crate) async fn update_card(
     )
     .await?;
     Ok(Json(card))
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ResetSpecCardResponse {
+    #[schema(value_type = String)]
+    pub card_id: CardId,
+    pub terminal_id: String,
+    pub new_thread_id: String,
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/cards/{id}/spec/reset",
+    tag = "cards",
+    params(("id" = String, Path, description = "Spec card id")),
+    responses(
+        (status = 200, description = "Spec session reset", body = ResetSpecCardResponse),
+        (status = 403, description = "Card is not a spec codex card", body = ErrorBody),
+        (status = 404, description = "Card not found", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn reset_spec_card(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<ResetSpecCardResponse>> {
+    let card = s
+        .repo
+        .card_get(&id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
+    let role = s
+        .card_role_cache
+        .get(&card.id)
+        .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
+    if card.kind != "codex" || role != CardRole::Spec {
+        return Err(CalmError::Forbidden(format!(
+            "card {id} is not a spec codex card",
+        )));
+    }
+
+    let terminal = s
+        .repo
+        .terminal_get_by_card(card.id.as_str())
+        .await?
+        .ok_or_else(|| {
+            CalmError::Internal(format!("spec terminal row missing for card {}", card.id))
+        })?;
+    let wave = s
+        .repo
+        .wave_get(card.wave_id.as_str())
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("wave {}", card.wave_id)))?;
+    let settings = load_settings(s.repo.as_ref()).await?;
+    let mcp_token = crate::mcp_server::auth::CardMcpToken::generate().into_inner();
+    if s.mcp_server.is_some() {
+        let card_id_for_tx = card.id.to_string();
+        let hashed = crate::mcp_server::auth::hash_token(&mcp_token);
+        write_in_tx_typed(s.repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                card_mcp_token_set_tx(tx, &card_id_for_tx, &hashed).await?;
+                Ok(())
+            })
+        })
+        .await?;
+    }
+    let mut env_for_spawn = terminal.env.clone();
+    if let (Some(server), Some(map)) = (s.mcp_server.as_ref(), env_for_spawn.as_object_mut()) {
+        map.insert(
+            "NEIGE_MCP_TOKEN".into(),
+            serde_json::Value::String(mcp_token.clone()),
+        );
+        map.insert(
+            "NEIGE_MCP_SOCKET".into(),
+            serde_json::Value::String(server.shim_config.socket_path.to_string_lossy().to_string()),
+        );
+    }
+
+    let card_id = card.id.clone();
+    let wave_id = card.wave_id.clone();
+    let terminal_id = terminal.id.clone();
+    let dispatcher = s.dispatcher.clone();
+    let reset = dispatcher
+        .with_push_lock(&wave_id, async {
+            reap_spec_push(&s, &wave_id).await;
+            reap_terminal_artifacts(&s, &terminal).await;
+            s.repo.terminal_set_pid(&terminal.id, None).await?;
+            s.repo.terminal_set_exit(&terminal.id, None, false).await?;
+            let card_at_lock = s
+                .repo
+                .card_get(card_id.as_str())
+                .await?
+                .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
+            let watermark = push_watermark_from_payload(&card_at_lock.payload);
+
+            let push_args = spawn_push_appserver(
+                &s,
+                card_id.as_str(),
+                &wave,
+                &env_for_spawn,
+                &settings,
+                Some(mcp_token.as_str()),
+                SpawnPushAppserverMode::ResetExisting {
+                    mcp_token: mcp_token.clone(),
+                },
+            )
+            .await?;
+
+            crate::rehydrate_and_catch_up_parked_spec_push_under_lock(
+                &s,
+                card_id.as_str(),
+                &wave_id,
+                watermark,
+            )
+            .await;
+
+            if let Err(e) = seed_and_spawn_spec_daemon(
+                s.clone(),
+                card_id.to_string(),
+                wave_id.to_string(),
+                wave.cwd.clone(),
+                env_for_spawn,
+                Some(mcp_token),
+                push_args.clone(),
+            )
+            .await
+            {
+                reap_spec_push(&s, &wave_id).await;
+                if let Err(clear_err) = s.repo.spec_card_clear_runtime_after_reset_failure(card_id.as_str()).await {
+                    tracing::warn!(
+                        card_id = %card_id,
+                        error = %clear_err,
+                        "spec reset: failed to clear reset-created appserver fields after terminal daemon spawn failure",
+                    );
+                }
+                return Err(e);
+            }
+
+            Ok::<_, CalmError>(push_args.thread_id)
+        })
+        .await?;
+
+    Ok(Json(ResetSpecCardResponse {
+        card_id,
+        terminal_id,
+        new_thread_id: reset,
+    }))
+}
+
+fn push_watermark_from_payload(payload: &serde_json::Value) -> i64 {
+    payload
+        .get("push_watermark")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0)
 }
 
 #[utoipa::path(

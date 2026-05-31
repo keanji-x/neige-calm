@@ -1470,6 +1470,63 @@ pub async fn card_mcp_token_set_tx(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+pub async fn spec_card_set_appserver_after_reset_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card_id: &str,
+    thread_id: &str,
+    pgid: i32,
+    sock: &str,
+    start_time: Option<u64>,
+    boot_id: Option<&str>,
+    needs_initial_prompt: bool,
+) -> Result<Card> {
+    let now = now_ms();
+    let st_i64 = start_time.and_then(|v| i64::try_from(v).ok());
+    let payload_expr = if needs_initial_prompt {
+        r#"json_set(
+              COALESCE(payload, '{}'),
+              '$.codex_thread_id', ?1,
+              '$.appserver_pgid', ?2,
+              '$.appserver_sock', ?3,
+              '$.appserver_start_time', ?4,
+              '$.appserver_boot_id', ?5,
+              '$.appserver_needs_initial_prompt', 1
+           )"#
+    } else {
+        r#"json_remove(
+              json_set(
+                COALESCE(payload, '{}'),
+                '$.codex_thread_id', ?1,
+                '$.appserver_pgid', ?2,
+                '$.appserver_sock', ?3,
+                '$.appserver_start_time', ?4,
+                '$.appserver_boot_id', ?5
+              ),
+              '$.appserver_needs_initial_prompt'
+           )"#
+    };
+    let sql = format!(
+        r#"UPDATE cards
+              SET payload = {payload_expr},
+                  updated_at = ?6
+            WHERE id = ?7
+            RETURNING id, wave_id, kind, sort, payload, deletable, created_at, updated_at"#
+    );
+    let card = sqlx::query_as::<_, Card>(&sql)
+        .bind(thread_id)
+        .bind(pgid)
+        .bind(sock)
+        .bind(st_i64)
+        .bind(boot_id)
+        .bind(now)
+        .bind(card_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
+    Ok(card)
+}
+
 pub async fn overlay_upsert_tx(tx: &mut Transaction<'_, Sqlite>, p: NewOverlay) -> Result<Overlay> {
     let now = now_ms();
     let new_id_str = new_id();
@@ -1746,6 +1803,14 @@ impl RepoRead for SqlxRepo {
         .fetch_optional(&self.pool)
         .await?;
         Ok(row)
+    }
+
+    async fn card_role_get(&self, id: &str) -> Result<Option<CardRole>> {
+        let row: Option<(CardRole,)> = sqlx::query_as("SELECT role FROM cards WHERE id = ?1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|(role,)| role))
     }
 
     // -------------------------------------------------------------- overlays
@@ -2503,6 +2568,33 @@ impl RepoOutOfDomain for SqlxRepo {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn spec_card_set_appserver_after_reset(
+        &self,
+        card_id: &str,
+        thread_id: &str,
+        pgid: i32,
+        sock: &str,
+        start_time: Option<u64>,
+        boot_id: Option<&str>,
+        needs_initial_prompt: bool,
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        let _ = spec_card_set_appserver_after_reset_tx(
+            &mut tx,
+            card_id,
+            thread_id,
+            pgid,
+            sock,
+            start_time,
+            boot_id,
+            needs_initial_prompt,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     async fn spec_card_clear_push_state(&self, card_id: &str) -> Result<()> {
         // Remove the six push-related fields so the next boot doesn't
         // re-attempt the stale thread/resume. Leaves everything else in
@@ -2524,6 +2616,29 @@ impl RepoOutOfDomain for SqlxRepo {
                                        '$.appserver_start_time',
                                        '$.appserver_boot_id',
                                        '$.push_watermark',
+                                       '$.appserver_needs_initial_prompt'
+                                   ),
+                      updated_at = ?1
+                WHERE id = ?2"#,
+        )
+        .bind(now)
+        .bind(card_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn spec_card_clear_runtime_after_reset_failure(&self, card_id: &str) -> Result<()> {
+        let now = now_ms();
+        let _ = sqlx::query(
+            r#"UPDATE cards
+                  SET payload    = json_remove(
+                                       COALESCE(payload, '{}'),
+                                       '$.codex_thread_id',
+                                       '$.appserver_sock',
+                                       '$.appserver_pgid',
+                                       '$.appserver_start_time',
+                                       '$.appserver_boot_id',
                                        '$.appserver_needs_initial_prompt'
                                    ),
                       updated_at = ?1
