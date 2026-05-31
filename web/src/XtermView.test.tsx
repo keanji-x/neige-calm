@@ -78,6 +78,8 @@ interface MockTerm {
 }
 
 let mockTerm: MockTerm;
+let terminalConstructCount = 0;
+let mockFitSize: { cols: number; rows: number } | null = null;
 
 vi.mock('@xterm/xterm', () => {
   class Terminal {
@@ -115,6 +117,7 @@ vi.mock('@xterm/xterm', () => {
       return { dispose: () => {} };
     }
     constructor() {
+      terminalConstructCount += 1;
       mockTerm = this as unknown as MockTerm;
     }
   }
@@ -123,7 +126,11 @@ vi.mock('@xterm/xterm', () => {
 
 vi.mock('@xterm/addon-fit', () => {
   class FitAddon {
-    fit = vi.fn();
+    fit = vi.fn(() => {
+      if (!mockFitSize) return;
+      mockTerm.cols = mockFitSize.cols;
+      mockTerm.rows = mockFitSize.rows;
+    });
   }
   return { FitAddon };
 });
@@ -194,6 +201,51 @@ function currentWs(): FakeWS {
   return w;
 }
 
+// ---- ResizeObserver / layout mocks -----------------------------------
+
+let mockOffsetWidth = 800;
+let mockOffsetHeight = 400;
+
+class MockResizeObserver {
+  static instances: MockResizeObserver[] = [];
+  callback: ResizeObserverCallback;
+  observe = vi.fn();
+  disconnect = vi.fn();
+  unobserve = vi.fn();
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback;
+    MockResizeObserver.instances.push(this);
+  }
+  trigger(): void {
+    this.callback([], this as unknown as ResizeObserver);
+  }
+}
+
+function setMockLayout(width: number, height: number): void {
+  mockOffsetWidth = width;
+  mockOffsetHeight = height;
+}
+
+const originalOffsetWidthDescriptor = Object.getOwnPropertyDescriptor(
+  HTMLElement.prototype,
+  'offsetWidth',
+);
+const originalOffsetHeightDescriptor = Object.getOwnPropertyDescriptor(
+  HTMLElement.prototype,
+  'offsetHeight',
+);
+
+function restoreHTMLElementDescriptor(
+  name: 'offsetWidth' | 'offsetHeight',
+  descriptor: PropertyDescriptor | undefined,
+): void {
+  if (descriptor) {
+    Object.defineProperty(HTMLElement.prototype, name, descriptor);
+    return;
+  }
+  delete (HTMLElement.prototype as unknown as Record<string, unknown>)[name];
+}
+
 // ---- import after mocks ------------------------------------------------
 
 import { XtermView, type XtermViewHandle } from './XtermView';
@@ -201,15 +253,23 @@ import { XtermView, type XtermViewHandle } from './XtermView';
 beforeEach(() => {
   wsInstances = [];
   stateMocks.statusSetCalls.length = 0;
+  terminalConstructCount = 0;
+  mockFitSize = null;
+  MockResizeObserver.instances = [];
+  setMockLayout(800, 400);
   (globalThis as { WebSocket: typeof WebSocket }).WebSocket =
     FakeWebSocketCtor as unknown as typeof WebSocket;
   // jsdom doesn't have ResizeObserver; the component installs one.
   (globalThis as { ResizeObserver: typeof ResizeObserver }).ResizeObserver =
-    class {
-      observe() {}
-      disconnect() {}
-      unobserve() {}
-    } as unknown as typeof ResizeObserver;
+    MockResizeObserver as unknown as typeof ResizeObserver;
+  Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
+    configurable: true,
+    get: () => mockOffsetWidth,
+  });
+  Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+    configurable: true,
+    get: () => mockOffsetHeight,
+  });
   // jsdom doesn't have crypto.randomUUID by default in older versions.
   if (!('randomUUID' in (globalThis.crypto ?? {}))) {
     Object.defineProperty(globalThis.crypto, 'randomUUID', {
@@ -220,6 +280,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  restoreHTMLElementDescriptor('offsetWidth', originalOffsetWidthDescriptor);
+  restoreHTMLElementDescriptor('offsetHeight', originalOffsetHeightDescriptor);
   wsInstances = [];
 });
 
@@ -317,6 +379,95 @@ describe('XtermView v4 handshake', () => {
     expect(roleChanges.at(-1)).toBe('Owner');
     expect(roleChanges.filter((role) => role === null)).toHaveLength(1);
     expect(stateMocks.statusSetCalls).toEqual([]);
+  });
+
+  it.each([
+    { width: 0, height: 400 },
+    { width: 800, height: 0 },
+  ])(
+    'defers mount for tiny container geometry width=$width height=$height',
+    ({ width, height }) => {
+      setMockLayout(width, height);
+
+      render(<XtermView terminalId="term_test" />);
+
+      expect(terminalConstructCount).toBe(0);
+      expect(wsInstances).toHaveLength(0);
+      expect(screen.getByText(/loading terminal/i)).toBeInTheDocument();
+      expect(MockResizeObserver.instances).toHaveLength(1);
+    },
+  );
+
+  it('mounts normally after deferred ResizeObserver reports usable geometry', async () => {
+    setMockLayout(0, 400);
+    render(<XtermView terminalId="term_test" />);
+
+    expect(terminalConstructCount).toBe(0);
+    expect(wsInstances).toHaveLength(0);
+
+    setMockLayout(800, 400);
+    act(() => {
+      MockResizeObserver.instances[0]!.trigger();
+    });
+
+    await waitFor(() => {
+      expect(terminalConstructCount).toBe(1);
+      expect(wsInstances).toHaveLength(1);
+    });
+    expect(screen.queryByText(/loading terminal/i)).not.toBeInTheDocument();
+  });
+
+  it('defers after fit produces degenerate terminal geometry', () => {
+    mockFitSize = { cols: 2, rows: 2 };
+
+    render(<XtermView terminalId="term_test" />);
+
+    expect(terminalConstructCount).toBe(1);
+    expect(mockTerm.dispose).toHaveBeenCalledTimes(1);
+    expect(wsInstances).toHaveLength(0);
+    expect(screen.getByText(/loading terminal/i)).toBeInTheDocument();
+    expect(MockResizeObserver.instances).toHaveLength(1);
+  });
+
+  it('does not retry post-fit deferral when ResizeObserver reports the same failed size', () => {
+    setMockLayout(100, 80);
+    mockFitSize = { cols: 2, rows: 2 };
+
+    render(<XtermView terminalId="term_test" />);
+
+    expect(terminalConstructCount).toBe(1);
+    expect(wsInstances).toHaveLength(0);
+    expect(MockResizeObserver.instances).toHaveLength(1);
+
+    act(() => {
+      MockResizeObserver.instances[0]!.trigger();
+    });
+
+    expect(terminalConstructCount).toBe(1);
+    expect(wsInstances).toHaveLength(0);
+    expect(MockResizeObserver.instances).toHaveLength(1);
+  });
+
+  it('retries post-fit deferral after ResizeObserver reports a changed usable size', async () => {
+    setMockLayout(100, 80);
+    mockFitSize = { cols: 2, rows: 2 };
+
+    render(<XtermView terminalId="term_test" />);
+
+    expect(terminalConstructCount).toBe(1);
+    expect(wsInstances).toHaveLength(0);
+
+    setMockLayout(400, 300);
+    mockFitSize = null;
+    act(() => {
+      MockResizeObserver.instances[0]!.trigger();
+    });
+
+    await waitFor(() => {
+      expect(terminalConstructCount).toBe(2);
+      expect(wsInstances).toHaveLength(1);
+    });
+    expect(screen.queryByText(/loading terminal/i)).not.toBeInTheDocument();
   });
 
   it('sends ClientHello with protocol_version=4 and role_hint Owner on open', () => {
@@ -457,8 +608,8 @@ describe('XtermView owner recovery', () => {
       });
     });
     expect(screen.getByRole('alert')).toBeInTheDocument();
-    mockTerm.cols = 100;
-    mockTerm.rows = 30;
+    mockTerm.cols = 80;
+    mockTerm.rows = 24;
     ws.sentFrames.length = 0;
     act(() => {
       ws.push({ OwnerChanged: { owner_client_id: clientId } });
@@ -466,8 +617,30 @@ describe('XtermView owner recovery', () => {
     expect(roleChanges).toContain('Owner');
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(ws.sentFrames.map((s) => JSON.parse(s))).toContainEqual({
-      ResizeCommit: { epoch: 1, cols: 100, rows: 30 },
+      ResizeCommit: { epoch: 1, cols: 80, rows: 24 },
     });
+  });
+
+  it('suppresses owner-claim ResizeCommit when local geometry is degenerate', () => {
+    render(<XtermView terminalId="term_test" />);
+    const ws = currentWs();
+    act(() => {
+      ws.fireOpen();
+    });
+    const clientId = JSON.parse(ws.sentFrames[0]!).ClientHello.client_id;
+    mockTerm.cols = 4;
+    mockTerm.rows = 2;
+    ws.sentFrames.length = 0;
+
+    act(() => {
+      ws.push({ OwnerChanged: { owner_client_id: clientId } });
+    });
+
+    expect(
+      ws.sentFrames
+        .map((s) => JSON.parse(s))
+        .some((frame) => typeof frame === 'object' && 'ResizeCommit' in frame),
+    ).toBe(false);
   });
 });
 

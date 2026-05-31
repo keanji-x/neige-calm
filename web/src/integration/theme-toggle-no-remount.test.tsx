@@ -194,6 +194,14 @@ beforeEach(() => {
       disconnect() {}
       unobserve() {}
     } as unknown as typeof ResizeObserver;
+  Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
+    configurable: true,
+    get: () => 800,
+  });
+  Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+    configurable: true,
+    get: () => 400,
+  });
 });
 
 afterEach(() => {
