@@ -12,7 +12,14 @@
 // needs to NOT advertise a dialog role — it's not modal.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { DirectoryBrowser, DirectoryPicker } from './DirectoryPicker';
 import { Dialog } from '../../ui/Dialog/Dialog';
@@ -24,6 +31,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -48,7 +56,7 @@ function activeOption() {
 }
 
 function pathInput() {
-  return screen.getByRole('textbox', { name: /directory path/i }) as HTMLInputElement;
+  return screen.getByRole('combobox', { name: /directory path/i }) as HTMLInputElement;
 }
 
 function focusEnd(input: HTMLInputElement) {
@@ -199,6 +207,42 @@ describe('DirectoryBrowser ARIA shape', () => {
     expect(screen.queryByRole('option', { name: /src/i })).toBeNull();
   });
 
+  it('does not get stuck loading when a parent mismatch is canceled before debounce fires', async () => {
+    const listDir = vi.spyOn(api, 'listDir').mockResolvedValue({
+      path: '/home/u',
+      parent: '/home',
+      entries: [{ name: 'projects', is_dir: true }],
+    });
+    render(
+      <DirectoryBrowser
+        initialPath="/home/u"
+        onCancel={() => {}}
+        onSelect={() => {}}
+      />,
+    );
+
+    await screen.findByRole('option', { name: /projects/i });
+    expect(listDir).toHaveBeenCalledTimes(1);
+    vi.useFakeTimers();
+
+    const path = pathInput();
+    const select = screen.getByRole('button', { name: /select this directory/i });
+    expect(select).toBeEnabled();
+
+    act(() => {
+      fireEvent.change(path, { target: { value: '/home/u' } });
+    });
+    act(() => {
+      fireEvent.change(path, { target: { value: '/home/u/' } });
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(120);
+    });
+
+    expect(listDir).toHaveBeenCalledTimes(1);
+    expect(select).toBeEnabled();
+  });
+
   it('moves the keyboard highlight with ArrowDown and ArrowUp without wrapping', async () => {
     vi.spyOn(api, 'listDir').mockResolvedValue({
       path: '/home/u',
@@ -276,6 +320,45 @@ describe('DirectoryBrowser ARIA shape', () => {
       expect(pathInput()).toHaveValue('/home/u/calm/');
     });
     expect(screen.getByRole('option', { name: /src/i })).toBeTruthy();
+  });
+
+  it('returns focus to the path input after click-to-descend loads', async () => {
+    const listDir = vi.spyOn(api, 'listDir').mockImplementation(async (path?: string) => {
+      if (path === '/home/u/calm') {
+        return {
+          path: '/home/u/calm',
+          parent: '/home/u',
+          entries: [{ name: 'src', is_dir: true }],
+        };
+      }
+      return {
+        path: '/home/u',
+        parent: null,
+        entries: [{ name: 'calm', is_dir: true }],
+      };
+    });
+    const user = userEvent.setup();
+    render(
+      <DirectoryBrowser
+        initialPath="/home/u"
+        onCancel={() => {}}
+        onSelect={() => {}}
+      />,
+    );
+
+    await screen.findByRole('option', { name: /calm/i });
+    await user.click(screen.getByRole('option', { name: /calm/i }));
+    await waitFor(() => {
+      expect(listDir).toHaveBeenCalledWith('/home/u/calm');
+    });
+    await screen.findByRole('option', { name: /src/i });
+
+    await waitFor(
+      () => {
+        expect(document.activeElement).toBe(pathInput());
+      },
+      { timeout: 200 },
+    );
   });
 
   it('backspacing past the last slash returns to the parent listing', async () => {
@@ -450,6 +533,31 @@ describe('DirectoryBrowser ARIA shape', () => {
     await waitFor(() => {
       expect(listDir).toHaveBeenCalledWith('/home/u/calm');
     });
+  });
+
+  it("lets '/' replace selected path text instead of descending into the highlighted folder", async () => {
+    const listDir = vi.spyOn(api, 'listDir').mockResolvedValue({
+      path: '/home/u',
+      parent: null,
+      entries: [{ name: 'projects', is_dir: true }],
+    });
+    const user = userEvent.setup();
+    render(
+      <DirectoryBrowser
+        initialPath="/home/u"
+        onCancel={() => {}}
+        onSelect={() => {}}
+      />,
+    );
+
+    const path = pathInput();
+    await screen.findByRole('option', { name: /projects/i });
+    path.focus();
+    path.setSelectionRange(0, path.value.length);
+    await user.keyboard('/');
+
+    expect(path).toHaveValue('/');
+    expect(listDir).toHaveBeenCalledTimes(1);
   });
 
   it('Enter on a highlighted file selects the joined path in file mode', async () => {

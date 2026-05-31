@@ -228,6 +228,8 @@ export function DirectoryBrowser({
   );
   const activeOptionId =
     activeEntry && activeIndex !== null ? optionIdFor(activeIndex) : undefined;
+  const hasVisibleInteractiveOptions =
+    !loading && !error && visibleEntries.some(isInteractive);
 
   useEffect(() => {
     pathTextRef.current = pathText;
@@ -338,9 +340,10 @@ export function DirectoryBrowser({
     }
 
     const targetParent = pathParts.parentPath;
-    setLoading(true);
     setError(null);
     const timeout = window.setTimeout(() => {
+      // Only show loading once the debounced fetch actually fires.
+      setLoading(true);
       fetchListing(targetParent, {
         guardParent: targetParent,
         syncPathText: 'canonical-parent',
@@ -420,9 +423,20 @@ export function DirectoryBrowser({
       return;
     }
 
-    if (event.key === '/' && activeEntry?.is_dir) {
-      event.preventDefault();
-      activateEntry(activeEntry);
+    if (event.key === '/') {
+      const input = event.currentTarget;
+      const selectionStart = input.selectionStart;
+      const selectionEnd = input.selectionEnd;
+      const canDescend =
+        selectionStart !== null &&
+        selectionEnd !== null &&
+        selectionStart === selectionEnd &&
+        selectionStart === input.value.length &&
+        activeEntry?.is_dir;
+      if (canDescend) {
+        event.preventDefault();
+        activateEntry(activeEntry);
+      }
       return;
     }
 
@@ -464,6 +478,9 @@ export function DirectoryBrowser({
             onKeyDown={handlePathKeyDown}
             placeholder="Absolute path"
             aria-label="Directory path"
+            role="combobox"
+            aria-expanded={hasVisibleInteractiveOptions}
+            aria-haspopup="listbox"
             aria-controls={listboxId}
             aria-activedescendant={activeOptionId}
             autoComplete="off"
