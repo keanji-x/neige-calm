@@ -3983,6 +3983,7 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 .wave-list-item > .plan-card,
 .wave-list-item > .note,
 .wave-list-item > .codex-card,
+.wave-list-item > .iframe-card,
 .wave-list-item > .plugin-iframe-card,
 .wave-list-item > .card-unknown {
   margin: var(--space-0);
@@ -4004,6 +4005,7 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
    a comfortable column for a reading-focused plugin while still
    letting an iframe that wants to be wider stretch the wave page
    width itself. */
+.wave-list-item > .iframe-card,
 .wave-list-item > .plugin-iframe-card {
   max-width: 800px;
   height: 400px;
