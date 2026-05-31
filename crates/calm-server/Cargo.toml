@@ -138,6 +138,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # CLI / config
 clap = { version = "4", features = ["derive", "env"] }
+toml_edit = "0.22"
 
 # Plugin manifest parsing — validates `version` + `min_kernel_version`.
 # `jsonschema` was considered (per design doc §1) but skipped for Slice A: the

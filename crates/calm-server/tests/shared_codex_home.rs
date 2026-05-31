@@ -16,15 +16,18 @@ mod shared_codex_home {
         std::fs::read_to_string(home.path().join("config.toml")).expect("read config.toml")
     }
 
-    fn escaped(path: &Path) -> String {
-        path.to_string_lossy()
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
+    fn parsed_config(home: &SharedCodexHome) -> toml::Value {
+        let config = read_config(home);
+        toml::from_str(&config).expect("config.toml must be valid TOML")
     }
 
-    fn count_project_blocks(config: &str, cwd: &Path) -> usize {
-        let header = format!(r#"[projects."{}"]"#, escaped(cwd));
-        config.matches(&header).count()
+    fn project_trust_level(config: &toml::Value, cwd: &Path) -> Option<String> {
+        config
+            .get("projects")
+            .and_then(|v| v.get(cwd.to_string_lossy().as_ref()))
+            .and_then(|v| v.get("trust_level"))
+            .and_then(|v| v.as_str())
+            .map(ToOwned::to_owned)
     }
 
     #[test]
@@ -36,8 +39,11 @@ mod shared_codex_home {
         home.ensure_config_for_cwd(&cwd).expect("first write");
         home.ensure_config_for_cwd(&cwd).expect("second write");
 
-        let config = read_config(&home);
-        assert_eq!(count_project_blocks(&config, &cwd), 1);
+        let config = parsed_config(&home);
+        assert_eq!(
+            project_trust_level(&config, &cwd).as_deref(),
+            Some("trusted")
+        );
     }
 
     #[test]
@@ -55,9 +61,26 @@ args = ["--bar"]
         home.ensure_config_for_cwd(&root.path().join("work"))
             .expect("ensure config");
 
-        let config = read_config(&home);
-        assert!(config.contains("[mcp_servers.foo]\ncommand = \"/bin/foo\"\nargs = [\"--bar\"]\n"));
-        assert!(config.contains(r#"approval_policy = "never""#));
+        let config = parsed_config(&home);
+        let foo = config
+            .get("mcp_servers")
+            .and_then(|v| v.get("foo"))
+            .expect("mcp_servers.foo");
+        assert_eq!(
+            foo.get("command").and_then(|v| v.as_str()),
+            Some("/bin/foo")
+        );
+        assert_eq!(
+            foo.get("args")
+                .and_then(|v| v.as_array())
+                .and_then(|v| v.first())
+                .and_then(|v| v.as_str()),
+            Some("--bar")
+        );
+        assert_eq!(
+            config.get("approval_policy").and_then(|v| v.as_str()),
+            Some("never")
+        );
     }
 
     #[test]
@@ -70,9 +93,15 @@ args = ["--bar"]
         home.ensure_config_for_cwd(&cwd_a).expect("write cwd a");
         home.ensure_config_for_cwd(&cwd_b).expect("write cwd b");
 
-        let config = read_config(&home);
-        assert_eq!(count_project_blocks(&config, &cwd_a), 1);
-        assert_eq!(count_project_blocks(&config, &cwd_b), 1);
+        let config = parsed_config(&home);
+        assert_eq!(
+            project_trust_level(&config, &cwd_a).as_deref(),
+            Some("trusted")
+        );
+        assert_eq!(
+            project_trust_level(&config, &cwd_b).as_deref(),
+            Some("trusted")
+        );
     }
 
     #[test]
@@ -134,10 +163,12 @@ args = ["--bar"]
         let home = shared_home(&root);
         std::fs::create_dir_all(home.path()).expect("mkdir home");
         let cwd = root.path().join("work");
-        let header = format!(r#"[projects."{}"]"#, escaped(&cwd));
         std::fs::write(
             home.path().join("config.toml"),
-            format!("{header}\n# user note inside project table\n"),
+            format!(
+                "[projects.{:?}]\n# user note inside project table\n",
+                cwd.to_string_lossy()
+            ),
         )
         .expect("write existing project table");
 
@@ -145,10 +176,13 @@ args = ["--bar"]
         home.ensure_config_for_cwd(&cwd)
             .expect("ensure config again");
 
-        let config = read_config(&home);
-        assert_eq!(config.matches(&header).count(), 1);
-        assert_eq!(config.matches(r#"trust_level = "trusted""#).count(), 1);
-        assert!(config.contains("# user note inside project table\n"));
+        let text = read_config(&home);
+        let config: toml::Value = toml::from_str(&text).expect("must be valid TOML");
+        assert_eq!(
+            project_trust_level(&config, &cwd).as_deref(),
+            Some("trusted")
+        );
+        assert!(text.contains("# user note inside project table\n"));
     }
 
     #[test]
@@ -165,9 +199,15 @@ args = ["--bar"]
         home.ensure_config_for_cwd(&root.path().join("work"))
             .expect("ensure config");
 
-        let config = read_config(&home);
-        assert_eq!(config.matches("approval_policy =").count(), 1);
-        assert_eq!(config.matches("sandbox_mode =").count(), 1);
+        let config = parsed_config(&home);
+        assert_eq!(
+            config.get("approval_policy").and_then(|v| v.as_str()),
+            Some("never")
+        );
+        assert_eq!(
+            config.get("sandbox_mode").and_then(|v| v.as_str()),
+            Some("workspace-write")
+        );
     }
 
     #[test]
@@ -198,8 +238,11 @@ args = ["--bar"]
 
         home.ensure_config_for_cwd(&cwd).expect("ensure config");
 
-        let config = read_config(&home);
-        assert!(config.contains(&format!(r#"[projects."{}"]"#, escaped(&cwd))));
+        let config = parsed_config(&home);
+        assert_eq!(
+            project_trust_level(&config, &cwd).as_deref(),
+            Some("trusted")
+        );
     }
 
     #[test]
@@ -220,8 +263,11 @@ args = ["--bar"]
         home.ensure_config_for_cwd(&root.path().join("work"))
             .expect("ensure config");
 
-        let config = read_config(&home);
-        assert!(config.contains("[sandbox_workspace_write]\nnetwork_access = true\n"));
+        let config = parsed_config(&home);
+        assert_eq!(
+            config["sandbox_workspace_write"]["network_access"].as_bool(),
+            Some(true)
+        );
     }
 
     #[test]
@@ -270,7 +316,11 @@ args = ["--bar"]
             .expect("ensure config");
 
         let text = read_config(&home);
-        assert!(text.contains("[sandbox_workspace_write]"));
+        let parsed: toml::Value = toml::from_str(&text).expect("must be valid TOML");
+        assert_eq!(
+            parsed["sandbox_workspace_write"]["network_access"].as_bool(),
+            Some(true)
+        );
     }
 
     #[test]
@@ -296,6 +346,82 @@ args = ["--bar"]
         assert_eq!(
             block.get("network_access").and_then(|v| v.as_bool()),
             Some(true)
+        );
+    }
+
+    #[test]
+    fn ensure_config_for_cwd_handles_inline_comment_on_table_header() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let home = shared_home(&root);
+        std::fs::create_dir_all(home.path()).expect("mkdir home");
+        std::fs::write(
+            home.path().join("config.toml"),
+            "[mcp_servers.foo] # local server\ncommand = \"local-mcp\"\n",
+        )
+        .expect("write existing config");
+
+        home.ensure_config_for_cwd(&root.path().join("work"))
+            .expect("ensure config");
+
+        let text = read_config(&home);
+        let parsed: toml::Value = toml::from_str(&text).expect("must be valid TOML");
+        assert_eq!(
+            parsed.get("approval_policy").and_then(|v| v.as_str()),
+            Some("never")
+        );
+        let foo = parsed
+            .get("mcp_servers")
+            .and_then(|v| v.get("foo"))
+            .expect("mcp_servers.foo");
+        assert!(
+            foo.get("approval_policy").is_none(),
+            "must NOT inherit approval_policy: {text}"
+        );
+        assert_eq!(
+            foo.get("command").and_then(|v| v.as_str()),
+            Some("local-mcp")
+        );
+    }
+
+    #[test]
+    fn ensure_config_for_cwd_preserves_user_comments() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let home = shared_home(&root);
+        std::fs::create_dir_all(home.path()).expect("mkdir home");
+        std::fs::write(
+            home.path().join("config.toml"),
+            "# User says hello\n[mcp_servers.foo]\ncommand = \"x\"  # important\n",
+        )
+        .expect("write existing config");
+
+        home.ensure_config_for_cwd(&root.path().join("work"))
+            .expect("ensure config");
+
+        let text = read_config(&home);
+        assert!(text.contains("# User says hello"));
+        assert!(text.contains("# important"));
+    }
+
+    #[test]
+    fn ensure_config_for_cwd_does_not_overwrite_user_top_level_value() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let home = shared_home(&root);
+        std::fs::create_dir_all(home.path()).expect("mkdir home");
+        std::fs::write(
+            home.path().join("config.toml"),
+            "approval_policy = \"on-failure\"\n",
+        )
+        .expect("write existing config");
+
+        home.ensure_config_for_cwd(&root.path().join("work"))
+            .expect("ensure config");
+
+        let text = read_config(&home);
+        let parsed: toml::Value = toml::from_str(&text).expect("must be valid TOML");
+        assert_eq!(
+            parsed.get("approval_policy").and_then(|v| v.as_str()),
+            Some("on-failure"),
+            "must preserve user override: {text}",
         );
     }
 }
