@@ -66,12 +66,16 @@ describe('IframeEntry.fromKernel', () => {
 });
 
 describe('IframeCard rendering', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
   beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.mocked(api.updateCard).mockResolvedValue(makeKernelCard());
   });
 
   afterEach(() => {
     vi.clearAllMocks();
+    warnSpy.mockRestore();
   });
 
   it('renders the iframe with the initial URL', () => {
@@ -84,6 +88,24 @@ describe('IframeCard rendering', () => {
 
     const frame = screen.getByTitle('Embedded page: https://example.com');
     expect(frame).toHaveAttribute('src', 'https://example.com');
+  });
+
+  it('sandboxes the iframe without same-origin access', () => {
+    const Component = IframeEntry.Component;
+    render(
+      <Component
+        card={{ type: 'iframe', id: 'iframe_1', url: 'https://example.com' }}
+      />,
+    );
+
+    const frame = screen.getByTitle('Embedded page: https://example.com');
+    const sandbox = frame.getAttribute('sandbox');
+    expect(sandbox).toBeTruthy();
+    expect(sandbox).toContain('allow-scripts');
+    expect(sandbox).toContain('allow-popups');
+    expect(sandbox).toContain('allow-forms');
+    expect(sandbox).toContain('allow-popups-to-escape-sandbox');
+    expect(sandbox).not.toContain('allow-same-origin');
   });
 
   it('URL bar reflects current URL', () => {
@@ -121,6 +143,112 @@ describe('IframeCard rendering', () => {
     await waitFor(() => {
       expect(api.updateCard).toHaveBeenCalledWith('iframe_1', {
         payload: { url: 'https://docs.mintlify.com/' },
+      });
+    });
+  });
+
+  it('rejects javascript: URLs on submit', () => {
+    const Component = IframeEntry.Component;
+    render(
+      <Component
+        card={{ type: 'iframe', id: 'iframe_1', url: 'https://example.com' }}
+      />,
+    );
+
+    const input = screen.getByLabelText('Web page URL');
+    fireEvent.change(input, { target: { value: 'javascript:alert(1)' } });
+    fireEvent.submit(input.closest('form')!);
+
+    const frame = screen.getByTitle('Embedded page: https://example.com');
+    expect(frame).toHaveAttribute('src', 'https://example.com');
+    expect(input).toHaveValue('javascript:alert(1)');
+    expect(api.updateCard).not.toHaveBeenCalled();
+  });
+
+  it('rejects data: URLs on submit', () => {
+    const Component = IframeEntry.Component;
+    render(
+      <Component
+        card={{ type: 'iframe', id: 'iframe_1', url: 'https://example.com' }}
+      />,
+    );
+
+    const input = screen.getByLabelText('Web page URL');
+    fireEvent.change(input, {
+      target: { value: 'data:text/html,<script>alert(1)</script>' },
+    });
+    fireEvent.submit(input.closest('form')!);
+
+    const frame = screen.getByTitle('Embedded page: https://example.com');
+    expect(frame).toHaveAttribute('src', 'https://example.com');
+    expect(input).toHaveValue('data:text/html,<script>alert(1)</script>');
+    expect(api.updateCard).not.toHaveBeenCalled();
+  });
+
+  it('syncs local state when card.url changes externally', () => {
+    const Component = IframeEntry.Component;
+    const { rerender } = render(
+      <Component
+        card={{ type: 'iframe', id: 'iframe_1', url: 'https://a.com' }}
+      />,
+    );
+
+    rerender(
+      <Component
+        card={{ type: 'iframe', id: 'iframe_1', url: 'https://b.com' }}
+      />,
+    );
+
+    const frame = screen.getByTitle('Embedded page: https://b.com');
+    expect(frame).toHaveAttribute('src', 'https://b.com');
+    expect(screen.getByLabelText('Web page URL')).toHaveValue('https://b.com');
+  });
+
+  it('keeps pending local state when the server echoes the submitted URL', () => {
+    const Component = IframeEntry.Component;
+    const { rerender } = render(
+      <Component
+        card={{ type: 'iframe', id: 'iframe_1', url: 'https://a.com' }}
+      />,
+    );
+
+    const input = screen.getByLabelText('Web page URL');
+    fireEvent.change(input, { target: { value: 'https://b.com' } });
+    fireEvent.submit(input.closest('form')!);
+
+    expect(input).toHaveValue('https://b.com');
+    expect(
+      screen.getByTitle('Embedded page: https://b.com'),
+    ).toHaveAttribute('src', 'https://b.com');
+
+    rerender(
+      <Component
+        card={{ type: 'iframe', id: 'iframe_1', url: 'https://b.com' }}
+      />,
+    );
+
+    expect(screen.getByLabelText('Web page URL')).toHaveValue('https://b.com');
+    expect(
+      screen.getByTitle('Embedded page: https://b.com'),
+    ).toHaveAttribute('src', 'https://b.com');
+  });
+
+  it('trims whitespace before persisting submitted URLs', async () => {
+    const Component = IframeEntry.Component;
+    render(
+      <Component
+        card={{ type: 'iframe', id: 'iframe_1', url: 'https://example.com' }}
+      />,
+    );
+
+    const input = screen.getByLabelText('Web page URL');
+    fireEvent.change(input, { target: { value: '  https://example.com  ' } });
+    fireEvent.submit(input.closest('form')!);
+
+    expect(input).toHaveValue('https://example.com');
+    await waitFor(() => {
+      expect(api.updateCard).toHaveBeenCalledWith('iframe_1', {
+        payload: { url: 'https://example.com' },
       });
     });
   });

@@ -57,6 +57,7 @@ import { queryClient } from './providers';
 import { dlog } from '../util/debug';
 import type { Cove, Wave, WaveCardSlot } from '../types';
 import type { AddPanelKind } from '../shared/components/AddPanel';
+import { isAllowedIframeUrl } from '../cards/builtins/iframe';
 
 // Per-route page components are loaded on demand so the entry chunk only
 // carries the shell + routing wiring; each page's code ships as its own
@@ -463,6 +464,10 @@ async function addCardWithValues(
     return;
   }
   if (type === 'iframe') {
+    if (!isAllowedIframeUrl(values.url)) {
+      console.warn('[Calm] iframe create rejected invalid URL:', values.url);
+      return;
+    }
     try {
       await api.createCard(waveId, {
         kind: 'iframe',

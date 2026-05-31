@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { z } from 'zod';
 import * as api from '../../api/calm';
 import type { IframeCardData } from '../../types';
@@ -6,8 +6,17 @@ import { useState } from '../../shared/state';
 import { CardHead } from '../CardHead';
 import type { CardEntry } from '../registry';
 
+export function isAllowedIframeUrl(raw: string): boolean {
+  try {
+    const u = new URL(raw, window.location.href);
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 const iframePayloadSchema = z.object({
-  url: z.string().min(1),
+  url: z.string().min(1).refine(isAllowedIframeUrl),
 });
 
 const warnedInvalidPayloads = new Set<string>();
@@ -21,17 +30,29 @@ function IframeCard({
 }) {
   const [currentUrl, setCurrentUrl] = useState(card.url);
   const [draftUrl, setDraftUrl] = useState(card.url);
+  const pendingUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
+    if (pendingUrlRef.current !== null && pendingUrlRef.current === card.url) {
+      pendingUrlRef.current = null;
+      return;
+    }
     setCurrentUrl(card.url);
     setDraftUrl(card.url);
-  }, [card.id, card.url]);
+    pendingUrlRef.current = null;
+  }, [card.url]);
 
   const submitUrl = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const nextUrl = draftUrl.trim();
     if (!nextUrl) return;
+    if (!isAllowedIframeUrl(nextUrl)) {
+      // eslint-disable-next-line no-console
+      console.warn(`[cards] iframe URL rejected for ${card.id}:`, nextUrl);
+      return;
+    }
 
+    pendingUrlRef.current = nextUrl;
     setCurrentUrl(nextUrl);
     setDraftUrl(nextUrl);
     void api.updateCard(card.id, { payload: { url: nextUrl } }).catch((err: unknown) => {
@@ -61,11 +82,14 @@ function IframeCard({
           Go
         </button>
       </form>
+      {/* No allow-same-origin: forces an opaque origin even on same-origin URLs,
+          so an /api/plugins/... target can't read parent cookies. */}
       <iframe
         className="iframe-frame"
         src={currentUrl}
         title={`Embedded page: ${currentUrl}`}
         referrerPolicy="no-referrer"
+        sandbox="allow-scripts allow-popups allow-forms allow-popups-to-escape-sandbox"
       />
     </div>
   );
