@@ -53,6 +53,18 @@ impl SharedCodexHome {
             return Ok(());
         }
 
+        // Defense against recursive self-copy: if CALM_DATA_DIR is configured
+        // under host ~/.codex, the shared CODEX_HOME can be read back as a
+        // source entry and recurse into codex-home/codex-home/...
+        if is_nested_or_same(&self.home, host_codex_dir) {
+            tracing::warn!(
+                host = %host_codex_dir.display(),
+                home = %self.home.display(),
+                "shared CODEX_HOME is inside host ~/.codex tree; skipping recursive seed to avoid self-copy"
+            );
+            return Ok(());
+        }
+
         copy_dir_recursive_excluding_top_auth(host_codex_dir, &self.home)?;
 
         let src_auth = host_codex_dir.join("auth.json");
@@ -124,6 +136,19 @@ impl SharedCodexHome {
         })
         .collect()
     }
+}
+
+fn is_nested_or_same(child: &Path, parent: &Path) -> bool {
+    if let (Ok(child), Ok(parent)) = (child.canonicalize(), parent.canonicalize()) {
+        return child == parent || child.starts_with(parent);
+    }
+
+    let child = child.components().collect::<Vec<_>>();
+    let parent = parent.components().collect::<Vec<_>>();
+    if parent.len() > child.len() {
+        return false;
+    }
+    parent.iter().zip(child.iter()).all(|(a, b)| a == b)
 }
 
 struct ConfigLock {

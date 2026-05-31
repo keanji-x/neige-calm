@@ -158,6 +158,50 @@ args = ["--bar"]
     }
 
     #[test]
+    fn seed_skips_copy_when_shared_home_is_nested_under_host_codex_dir() {
+        let host_root = tempfile::tempdir().expect("tempdir");
+        let host_codex = host_root.path().to_path_buf();
+        let nested_home = host_codex.join("calm").join("codex-home");
+        let legacy = host_codex.join("calm").join("codex-homes");
+        std::fs::create_dir_all(&legacy).expect("mkdir legacy");
+
+        let home = SharedCodexHome::new(nested_home.clone(), legacy);
+
+        std::fs::write(host_codex.join("marker.txt"), b"hello").expect("write marker");
+
+        home.seed_from(Some(&host_codex))
+            .expect("seed should not panic or infinite-recurse");
+
+        assert!(nested_home.is_dir());
+        assert!(
+            !nested_home.join("marker.txt").exists(),
+            "seed must skip recursive copy when home is nested under host_codex_dir"
+        );
+        assert!(
+            !nested_home.join("codex-home").exists(),
+            "must not start copying self into self"
+        );
+    }
+
+    #[test]
+    fn seed_skips_copy_when_shared_home_equals_host_codex_dir() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let host_codex = root.path().join("codex-home");
+        let legacy = root.path().join("codex-homes");
+        std::fs::create_dir_all(&host_codex).expect("mkdir host");
+        std::fs::create_dir_all(&legacy).expect("mkdir legacy");
+        std::fs::write(host_codex.join("auth.json"), b"{}").expect("write auth");
+
+        let home = SharedCodexHome::new(host_codex.clone(), legacy);
+        home.seed_from(Some(&host_codex))
+            .expect("seed should be no-op");
+
+        let auth = std::fs::read(host_codex.join("auth.json")).expect("read auth");
+        assert_eq!(auth, b"{}");
+        assert!(!host_codex.join("codex-home").exists());
+    }
+
+    #[test]
     fn shared_config_writer_fills_existing_project_table_without_duplicate_header() {
         let root = tempfile::tempdir().expect("tempdir");
         let home = shared_home(&root);
