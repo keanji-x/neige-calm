@@ -71,6 +71,7 @@ export interface CreateSchema {
 export interface CardComponentProps<T extends WaveCardData = WaveCardData> {
   card: T;
   onClose?: () => void;
+  deletable?: boolean;
 }
 
 export interface CardEntry<T extends WaveCardData = WaveCardData> {
@@ -116,7 +117,7 @@ export function registerCard<T extends WaveCardData>(entry: CardEntry<T>): void 
 
 export function renderCard(
   card: WaveCardData,
-  opts: { onClose?: () => void } = {},
+  opts: { onClose?: () => void; deletable?: boolean } = {},
 ): ReactNode {
   const entry = REGISTRY.get(card.type);
   if (!entry) {
@@ -131,6 +132,7 @@ export function renderCard(
   return createElement(entry.Component as FC<CardComponentProps>, {
     card,
     onClose: opts.onClose,
+    deletable: opts.deletable,
   });
 }
 

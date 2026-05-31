@@ -265,7 +265,11 @@ export function WaveGrid({
             return (
               <div key={slotKey(slot, i)} className="wave-card">
                 {slot.kind === 'card' ? (
-                  <WaveCard card={slot.card} onClose={onClose} />
+                  <WaveCard
+                    card={slot.card}
+                    onClose={onClose}
+                    deletable={slot.deletable}
+                  />
                 ) : (
                   <UnknownCard kernelKind={slot.kernelKind} onClose={onClose} />
                 )}

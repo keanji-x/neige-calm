@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import { useState } from './shared/state';
 import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -88,6 +88,10 @@ interface XtermViewProps {
   onExitChange?: (exit: ExitChange | null) => void;
 }
 
+export interface XtermViewHandle {
+  refresh(): void;
+}
+
 /** Last close info, surfaced in the gray "disconnected" overlay so the user
  *  (and we) can tell at a glance whether it was a proxy cut (1006), a
  *  server-side heartbeat trip (1011), a clean server close (1001), etc. */
@@ -152,12 +156,12 @@ interface ExitInfo {
  * `kernel_originated_input` would never apply to a browser tab so we leave
  * it out of the capability set.
  */
-export function XtermView({
+export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function XtermView({
   terminalId,
   theme = 'light',
   onRoleChange,
   onExitChange,
-}: XtermViewProps) {
+}, ref) {
   // #177 — Playwright instrumentation. Gated on `?testMounts=1` so
   // production users never carry the side effect. A real mount bumps
   // `window.__xtermMounts__` by 1; unmount decrements. The e2e
@@ -228,14 +232,18 @@ export function XtermView({
   // re-runs the WS effect (rebuilding the WS + xterm.js Terminal +
   // re-attaching to the daemon). The pre-#306 build called the
   // setter from the in-XtermView Restart / Reconnect buttons; those
-  // overlays were removed in v1, so the helper that wraps the setter
-  // is gone too. The setter itself is exported via a `void`-suppressed
-  // declaration so it's still callable from a future parent-driven
-  // remount path (e.g. a header Restart button on the card) without
-  // re-introducing UI state inside XtermView. The deps array below
-  // still references `reconnectKey` so the effect re-runs on bump.
+  // overlays were removed in v1, so the parent-facing path is now the
+  // imperative handle below: card heads can call `refresh()` without
+  // re-introducing UI state inside XtermView. The deps array below still
+  // references `reconnectKey` so the effect re-runs on bump.
   const [reconnectKey, setReconnectKey] = useState(0);
-  void setReconnectKey;
+  useImperativeHandle(
+    ref,
+    () => ({
+      refresh: () => setReconnectKey((k) => k + 1),
+    }),
+    [],
+  );
 
   // #177 — live `send` from the WS-mount effect, captured so the
   // theme-effect can post `TerminalThemeUpdate` without owning the
@@ -781,6 +789,10 @@ export function XtermView({
     return () => {
       ro.disconnect();
       dataSub.dispose();
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onclose = null;
+      ws.onerror = null;
       try {
         ws.close();
       } catch {
@@ -908,4 +920,4 @@ export function XtermView({
       )}
     </div>
   );
-}
+});

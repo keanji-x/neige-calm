@@ -257,7 +257,7 @@ export function WaveList({
                 <CloseIcon />
               </button>
               {slot.kind === 'card' ? (
-                <WaveCard card={slot.card} />
+                <WaveCard card={slot.card} deletable={slot.deletable} />
               ) : (
                 <UnknownCard kernelKind={slot.kernelKind} />
               )}

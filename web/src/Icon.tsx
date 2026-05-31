@@ -1,6 +1,14 @@
 // Tiny shared icon set — match the design's `<I n="name" s={size} sw={stroke}/>`.
 
-export type IconName = 'home' | 'arrow' | 'back' | 'send' | 'moon' | 'sun' | 'gear';
+export type IconName =
+  | 'home'
+  | 'arrow'
+  | 'back'
+  | 'send'
+  | 'moon'
+  | 'sun'
+  | 'gear'
+  | 'refresh';
 
 interface IconProps {
   n: IconName;
@@ -64,6 +72,15 @@ export function Icon({ n, s = 16, sw = 1.6 }: IconProps) {
         <svg {...common}>
           <circle cx="12" cy="12" r="3" />
           <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.55V21a2 2 0 0 1-4 0v-.09a1.7 1.7 0 0 0-1.11-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1.03H3a2 2 0 0 1 0-4h.09a1.7 1.7 0 0 0 1.55-1.11 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h0a1.7 1.7 0 0 0 1.03-1.55V3a2 2 0 0 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.55h0a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v0a1.7 1.7 0 0 0 1.55 1.03H21a2 2 0 0 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1.03z" />
+        </svg>
+      );
+    case 'refresh':
+      return (
+        <svg {...common}>
+          <path d="M20 6v5h-5" />
+          <path d="M4 18v-5h5" />
+          <path d="M18.5 9A7 7 0 0 0 6.3 6.8L4 9" />
+          <path d="M5.5 15a7 7 0 0 0 12.2 2.2L20 15" />
         </svg>
       );
     default:

@@ -23,22 +23,50 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, waitFor, cleanup, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
+import { ThemeProvider } from './app/theme';
 
 vi.mock('./api/calm', () => ({
   listOverlays: vi.fn(),
   upsertOverlay: vi.fn(),
   updateCard: vi.fn(),
+  getTerminalForCard: vi.fn().mockRejectedValue(new Error('no terminal seed')),
 }));
+
+vi.mock('./api/events', () => ({
+  sharedEventStream: vi.fn(() => ({
+    addTopic: () => {},
+    on: () => () => {},
+  })),
+}));
+
+vi.mock('./XtermView', async () => {
+  const React = await vi.importActual<typeof import('react')>('react');
+  const XtermView = React.forwardRef(
+    (
+      props: { terminalId: string },
+      ref: React.Ref<{ refresh(): void }>,
+    ) => {
+      React.useImperativeHandle(ref, () => ({ refresh: () => {} }), []);
+      return React.createElement('div', {
+        'data-testid': 'xterm-view-stub',
+        'data-terminal-id': props.terminalId,
+      });
+    },
+  );
+  return { XtermView };
+});
 
 // xterm.js + the codex / terminal card components pull in heavy modules
 // (XtermView) at lazy-import time. WaveList renders WaveCards directly,
-// and the bundled terminal card's <XtermView> only mounts when
-// `terminalId` is set — which our fixture cards don't have. So we don't
-// need to stub anything below the WaveCard surface.
+// and the spec-card fixture below mounts the codex terminal surface, so
+// we stub XtermView at the module boundary.
 
 import * as api from './api/calm';
+import { registerBuiltins } from './cards/builtins';
 import { WaveList } from './WaveList';
 import type { WaveCardSlot, WaveCardData } from './types';
+
+registerBuiltins();
 
 function slot(
   id: string,
@@ -68,7 +96,11 @@ function Wrapper({
   client: QueryClient;
   children: ReactNode;
 }) {
-  return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  return (
+    <ThemeProvider>
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    </ThemeProvider>
+  );
 }
 
 beforeEach(() => {
@@ -139,6 +171,33 @@ describe('WaveList — rendering + accessibility', () => {
     expect(ks).toMatch(/Home/);
     expect(ks).toMatch(/End/);
     expect(ks).toMatch(/Delete/);
+  });
+
+  it('forwards slot.deletable so a kernel-owned spec card shows Refresh terminal', async () => {
+    render(
+      <Wrapper client={makeClient()}>
+        <WaveList
+          waveId="w1"
+          cards={[
+            {
+              kind: 'card',
+              card: {
+                type: 'codex',
+                id: 'card_spec',
+                terminalId: 'term_spec',
+              },
+              sort: 10,
+              deletable: false,
+            },
+          ]}
+          onRemoveCard={() => {}}
+        />
+      </Wrapper>,
+    );
+
+    expect(
+      await screen.findByRole('button', { name: 'Refresh terminal' }),
+    ).toBeInTheDocument();
   });
 });
 
