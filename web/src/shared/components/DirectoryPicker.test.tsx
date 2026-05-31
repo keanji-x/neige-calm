@@ -41,6 +41,12 @@ function activeOptionIndex() {
     .findIndex((option) => option.getAttribute('aria-selected') === 'true');
 }
 
+function activeOption() {
+  return screen
+    .getAllByRole('option')
+    .find((option) => option.getAttribute('aria-selected') === 'true');
+}
+
 describe('DirectoryBrowser ARIA shape', () => {
   it('does not advertise its own role="dialog" — the outer Dialog owns it', async () => {
     stubListDir();
@@ -190,6 +196,111 @@ describe('DirectoryBrowser ARIA shape', () => {
     expect(activeOptionIndex()).toBe(0);
     await user.keyboard('{ArrowUp}');
     expect(activeOptionIndex()).toBe(0);
+  });
+
+  it('clears the filter after descending into a directory', async () => {
+    const listDir = vi.spyOn(api, 'listDir').mockImplementation(async (path?: string) => {
+      if (path === '/home/u/calm') {
+        return {
+          path: '/home/u/calm',
+          parent: '/home/u',
+          entries: [{ name: 'src', is_dir: true }],
+        };
+      }
+      return {
+        path: '/home/u',
+        parent: null,
+        entries: [
+          { name: 'calm', is_dir: true },
+          { name: 'notes.txt', is_dir: false },
+        ],
+      };
+    });
+    const user = userEvent.setup();
+    render(
+      <DirectoryBrowser
+        initialPath="/home/u"
+        onCancel={() => {}}
+        onSelect={() => {}}
+      />,
+    );
+
+    const filter = screen.getByRole('textbox', { name: /filter directory entries/i });
+    await screen.findByRole('option', { name: /calm/i });
+    filter.focus();
+    await user.type(filter, 'ca');
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => {
+      expect(listDir).toHaveBeenCalledWith('/home/u/calm');
+    });
+    await waitFor(() => {
+      expect(filter).toHaveValue('');
+    });
+  });
+
+  it('skips disabled file rows with ArrowDown and ArrowUp in directory mode', async () => {
+    vi.spyOn(api, 'listDir').mockResolvedValue({
+      path: '/home/u',
+      parent: null,
+      entries: [
+        { name: 'dir1', is_dir: true },
+        { name: 'file1.txt', is_dir: false },
+        { name: 'dir2', is_dir: true },
+      ],
+    });
+    const user = userEvent.setup();
+    render(
+      <DirectoryBrowser
+        initialPath="/home/u"
+        onCancel={() => {}}
+        onSelect={() => {}}
+      />,
+    );
+
+    const filter = screen.getByRole('textbox', { name: /filter directory entries/i });
+    await screen.findByRole('option', { name: /dir1/i });
+    filter.focus();
+
+    await waitFor(() => {
+      expect(activeOption()).toHaveTextContent('dir1');
+    });
+    await user.keyboard('{ArrowDown}{ArrowDown}');
+    expect(activeOption()).toHaveTextContent('dir2');
+    expect(activeOption()).not.toHaveTextContent('file1.txt');
+
+    await user.keyboard('{ArrowUp}');
+    expect(activeOption()).toHaveTextContent('dir1');
+    expect(activeOption()).not.toHaveTextContent('file1.txt');
+  });
+
+  it('does not paint disabled file rows as active in directory mode', async () => {
+    vi.spyOn(api, 'listDir').mockResolvedValue({
+      path: '/home/u',
+      parent: null,
+      entries: [
+        { name: 'dir1', is_dir: true },
+        { name: 'file1.txt', is_dir: false },
+        { name: 'dir2', is_dir: true },
+      ],
+    });
+    const user = userEvent.setup();
+    render(
+      <DirectoryBrowser
+        initialPath="/home/u"
+        onCancel={() => {}}
+        onSelect={() => {}}
+      />,
+    );
+
+    const filter = screen.getByRole('textbox', { name: /filter directory entries/i });
+    await screen.findByRole('option', { name: /dir1/i });
+    filter.focus();
+    await user.keyboard('{ArrowDown}{ArrowUp}');
+
+    expect(
+      document.querySelector('.dirpicker-entry-file.dirpicker-entry-active'),
+    ).toBeNull();
   });
 
   it('Enter on a highlighted folder descends into that folder', async () => {

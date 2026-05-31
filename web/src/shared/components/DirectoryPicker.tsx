@@ -23,7 +23,7 @@
 // list. Promoting the browser into the modal body sidesteps that whole
 // class of layout bugs.
 
-import { useEffect, useId, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef } from 'react';
 import type { KeyboardEvent } from 'react';
 import { useState } from '../state';
 import * as api from '../../api/calm';
@@ -131,6 +131,8 @@ export interface DirectoryBrowserProps {
   selectLabel?: string;
 }
 
+type DirEntry = ListdirResponse['entries'][number];
+
 /**
  * Stateful directory walker. Owns the current path / listing / loading
  * / error state; emits Cancel + Select back to the parent picker. Lives
@@ -159,19 +161,59 @@ export function DirectoryBrowser({
   const refocusAfterLoadRef = useRef(false);
   const optionIdPrefix = useId();
 
+  const isInteractive = useCallback(
+    (entry: DirEntry) => entry.is_dir || mode === 'file',
+    [mode],
+  );
+
   const visibleEntries = useMemo(() => {
     if (!filterText) return entries;
     const needle = filterText.toLowerCase();
     return entries.filter((entry) => entry.name.toLowerCase().startsWith(needle));
   }, [entries, filterText]);
 
-  const activeEntry =
+  const findFirstInteractiveIndex = useCallback(
+    (candidateEntries: DirEntry[]) => {
+      const index = candidateEntries.findIndex(isInteractive);
+      return index === -1 ? null : index;
+    },
+    [isInteractive],
+  );
+
+  const findNextInteractiveIndex = useCallback(
+    (current: number | null, direction: 1 | -1) => {
+      if (visibleEntries.length === 0) return null;
+      if (current === null || current < 0 || current >= visibleEntries.length) {
+        return findFirstInteractiveIndex(visibleEntries);
+      }
+
+      for (
+        let index = current + direction;
+        index >= 0 && index < visibleEntries.length;
+        index += direction
+      ) {
+        if (isInteractive(visibleEntries[index])) return index;
+      }
+
+      return isInteractive(visibleEntries[current])
+        ? current
+        : findFirstInteractiveIndex(visibleEntries);
+    },
+    [findFirstInteractiveIndex, isInteractive, visibleEntries],
+  );
+
+  const activeCandidate =
     loading || error || activeIndex === null
       ? null
       : (visibleEntries[activeIndex] ?? null);
+  const activeEntry =
+    activeCandidate && isInteractive(activeCandidate) ? activeCandidate : null;
 
   const listboxId = `dirpicker-list-${optionIdPrefix}`;
-  const optionIdFor = (index: number) => `dirpicker-opt-${optionIdPrefix}-${index}`;
+  const optionIdFor = useCallback(
+    (index: number) => `dirpicker-opt-${optionIdPrefix}-${index}`,
+    [optionIdPrefix],
+  );
   const activeOptionId =
     activeEntry && activeIndex !== null ? optionIdFor(activeIndex) : undefined;
 
@@ -208,6 +250,7 @@ export function DirectoryBrowser({
 
   useEffect(() => {
     let secondRaf = 0;
+    // Dialog runs its own first-rAF focus pass; our second rAF wins focus back to the filter.
     const firstRaf = requestAnimationFrame(() => {
       secondRaf = requestAnimationFrame(() => {
         filterInputRef.current?.focus();
@@ -225,8 +268,15 @@ export function DirectoryBrowser({
 
   useEffect(() => {
     if (loading) return;
-    setActiveIndex(visibleEntries.length === 0 ? null : 0);
-  }, [loading, visibleEntries]);
+    setActiveIndex(findFirstInteractiveIndex(visibleEntries));
+  }, [findFirstInteractiveIndex, loading, visibleEntries]);
+
+  useEffect(() => {
+    if (activeIndex === null) return;
+    const activeOption = document.getElementById(optionIdFor(activeIndex));
+    if (typeof activeOption?.scrollIntoView !== 'function') return;
+    activeOption.scrollIntoView({ block: 'nearest' });
+  }, [activeIndex, optionIdFor]);
 
   useEffect(() => {
     if (loading || !refocusAfterLoadRef.current) return;
@@ -260,21 +310,13 @@ export function DirectoryBrowser({
 
     if (event.key === 'ArrowDown') {
       event.preventDefault();
-      setActiveIndex((current) => {
-        if (visibleEntries.length === 0) return null;
-        if (current === null) return 0;
-        return Math.min(current + 1, visibleEntries.length - 1);
-      });
+      setActiveIndex((current) => findNextInteractiveIndex(current, 1));
       return;
     }
 
     if (event.key === 'ArrowUp') {
       event.preventDefault();
-      setActiveIndex((current) => {
-        if (visibleEntries.length === 0) return null;
-        if (current === null) return 0;
-        return Math.max(current - 1, 0);
-      });
+      setActiveIndex((current) => findNextInteractiveIndex(current, -1));
       return;
     }
 
@@ -317,6 +359,7 @@ export function DirectoryBrowser({
     if (event.key === 'Escape') {
       event.preventDefault();
       onCancel();
+      return;
     }
   };
 
@@ -377,7 +420,8 @@ export function DirectoryBrowser({
           <li className="dirpicker-status">No matches</li>
         ) : (
           visibleEntries.map((ent, index) => {
-            const active = index === activeIndex;
+            const interactive = isInteractive(ent);
+            const active = interactive && index === activeIndex;
             const className = `dirpicker-entry${ent.is_dir ? '' : ' dirpicker-entry-file'}${
               active ? ' dirpicker-entry-active' : ''
             }`;
@@ -389,7 +433,7 @@ export function DirectoryBrowser({
                   role="option"
                   aria-selected={active}
                   className={className}
-                  disabled={!ent.is_dir && mode === 'directory'}
+                  disabled={!interactive}
                   onClick={() => {
                     activateEntry(ent);
                   }}
