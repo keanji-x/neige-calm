@@ -11,6 +11,58 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+#[test]
+fn system_install_bakes_child_process_path_into_unit() -> anyhow::Result<()> {
+    let root = test_root("install-unit-path")?;
+    let fake_bin = root.join("fake-bin");
+    let config_path = root.join("config.toml");
+    let unit_path = root.join("neige-app.service");
+    let token_path = root.join("admin.token");
+    fs::create_dir_all(&fake_bin)?;
+    fs::write(
+        &config_path,
+        format!(
+            r#"[admin]
+token_file = "{token_path}"
+
+[systemd]
+unit_path = "{unit_path}"
+bin = "/usr/local/bin/neige-app"
+"#,
+            token_path = token_path.display(),
+            unit_path = unit_path.display()
+        ),
+    )?;
+
+    let path_env = fake_bin.display().to_string();
+    let output = Command::new(locate_neige_app())
+        .arg("system")
+        .arg("install")
+        .arg("--config")
+        .arg(&config_path)
+        .env("PATH", &path_env)
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "install failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let unit = fs::read_to_string(&unit_path)?;
+    assert!(unit.contains(&format!("Environment=PATH={path_env}\n")));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for tool in ["codex", "claude", "git"] {
+        assert!(
+            stderr.contains(&format!("warning: {tool} not found on PATH ({path_env})")),
+            "missing warning for {tool}; stderr:\n{stderr}"
+        );
+    }
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
 struct Harness {
     root: PathBuf,
     data_dir: PathBuf,
@@ -1265,6 +1317,19 @@ fn make_symlink(target: &Path, link: &Path) -> anyhow::Result<()> {
     let _ = fs::remove_file(link);
     std::os::unix::fs::symlink(target, link)?;
     Ok(())
+}
+
+fn test_root(name: &str) -> anyhow::Result<PathBuf> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_nanos();
+    let path =
+        std::env::temp_dir().join(format!("neige-app-{name}-{}-{nanos}", std::process::id()));
+    if path.exists() {
+        fs::remove_dir_all(&path)?;
+    }
+    fs::create_dir_all(&path)?;
+    Ok(path)
 }
 
 fn locate_neige_app() -> PathBuf {
