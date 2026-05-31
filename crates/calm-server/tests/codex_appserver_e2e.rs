@@ -171,7 +171,7 @@ async fn appserver_client_drives_live_turn_and_second_client_resumes() {
     );
 
     // --- thread/start ---
-    let thread = client.thread_start().await.expect("thread/start");
+    let thread = client.thread_start(None).await.expect("thread/start");
     let thread_id = thread
         .thread_id()
         .expect("thread/start result carries thread.id")

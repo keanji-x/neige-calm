@@ -69,7 +69,7 @@ async fn main() -> ExitCode {
 
     // Resolve the UDS path from the env. Codex sets this from the
     // `[mcp_servers.calm].env` block the kernel writes into the per-card
-    // config.toml — see `spec_card::build_codex_config_toml_with_prompt`.
+    // config.toml — see `spec_card::build_role_codex_config_toml`.
     let socket = match env::var(ENV_SOCKET) {
         Ok(v) if !v.is_empty() => v,
         _ => {

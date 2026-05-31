@@ -81,7 +81,7 @@ pub struct AppState {
     /// socket under `<data_dir>/mcp/kernel.sock`; per-card codex daemons
     /// connect through `neige-mcp-stdio-shim` and authenticate via the
     /// per-card token in `card_mcp_tokens`. The handle's `shim_config`
-    /// is read by `spec_card::build_codex_config_toml_with_prompt` so
+    /// is read by `spec_card::build_role_codex_config_toml` so
     /// the per-card `$CODEX_HOME/config.toml` carries a matching
     /// `[mcp_servers.calm]` block.
     ///
