@@ -464,14 +464,15 @@ async function addCardWithValues(
     return;
   }
   if (type === 'iframe') {
-    if (!isAllowedIframeUrl(values.url)) {
-      console.warn('[Calm] iframe create rejected invalid URL:', values.url);
+    const url = values.url.trim();
+    if (!isAllowedIframeUrl(url)) {
+      console.warn('[Calm] iframe create rejected invalid URL:', url);
       return;
     }
     try {
       await api.createCard(waveId, {
         kind: 'iframe',
-        payload: { url: values.url },
+        payload: { url },
       });
     } catch (err) {
       console.warn('[Calm] iframe create failed:', err);

@@ -204,7 +204,7 @@ describe('IframeCard rendering', () => {
     expect(screen.getByLabelText('Web page URL')).toHaveValue('https://b.com');
   });
 
-  it('keeps pending local state when the server echoes the submitted URL', () => {
+  it('keeps optimistic URL when a stale card.url prop arrives mid-PATCH', () => {
     const Component = IframeEntry.Component;
     const { rerender } = render(
       <Component
@@ -223,7 +223,7 @@ describe('IframeCard rendering', () => {
 
     rerender(
       <Component
-        card={{ type: 'iframe', id: 'iframe_1', url: 'https://b.com' }}
+        card={{ type: 'iframe', id: 'iframe_1', url: 'https://a.com' }}
       />,
     );
 
