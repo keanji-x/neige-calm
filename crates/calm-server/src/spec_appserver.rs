@@ -570,6 +570,17 @@ pub type QueuePersistListFn = Arc<
 /// test-path posture, matching [`WatermarkSinkSlot`].
 type QueuePersistSlot = Arc<Mutex<Option<Arc<QueuePersist>>>>;
 
+/// Callback installed on a [`SpecPushHandle`] so the notification consumer
+/// can clear the empty-goal bootstrap marker once a turn lifecycle proves
+/// codex has created a resumable rollout for the thread.
+pub type InitialPromptClearSink =
+    Arc<dyn Fn() -> futures_util::future::BoxFuture<'static, ()> + Send + Sync>;
+
+/// `Arc<Mutex<Option<InitialPromptClearSink>>>` mirrors the watermark sink
+/// install pattern: construction is transport-only, then the boot/create
+/// site installs the repo-backed side effect before parking the handle.
+type InitialPromptClearSinkSlot = Arc<Mutex<Option<InitialPromptClearSink>>>;
+
 /// Callback the dispatcher installs on a [`SpecPushHandle`] so the
 /// queue-flush path (which runs from the consumer task on `turn/completed`)
 /// can persist the durable `push_watermark` for envelope ids that were
@@ -704,6 +715,11 @@ pub struct SpecPushHandle {
     /// Installed via [`install_queue_persist`](Self::install_queue_persist)
     /// at the same sites that install the watermark sink.
     queue_persist: QueuePersistSlot,
+    /// Clears `appserver_needs_initial_prompt` after the first observed
+    /// turn lifecycle on this thread. This is intentionally independent
+    /// from push watermark advancement because manual TUI input creates a
+    /// rollout without touching the push channel.
+    initial_prompt_clear_sink: InitialPromptClearSinkSlot,
 }
 
 /// PR3b — a cheaply-cloneable handle onto just the parts of a
@@ -1065,6 +1081,12 @@ impl SpecPushHandle {
     /// pre-fix behavior, intentional only on test paths).
     pub async fn has_queue_persist(&self) -> bool {
         self.queue_persist.lock().await.is_some()
+    }
+
+    /// Install the marker-clear callback used by the notification consumer
+    /// when it observes the first turn lifecycle for this thread.
+    pub async fn install_initial_prompt_clear_sink(&self, sink: InitialPromptClearSink) {
+        *self.initial_prompt_clear_sink.lock().await = Some(sink);
     }
 
     /// #318 INV-3 — rehydrate the in-memory `VecDeque` from the durable
@@ -2462,10 +2484,12 @@ fn park_handle(
     // #318 INV-3 — queue persist slot is empty here; the same dispatcher
     // sites that install the watermark sink also install this.
     let queue_persist: QueuePersistSlot = Arc::new(Mutex::new(None));
+    let initial_prompt_clear_sink: InitialPromptClearSinkSlot = Arc::new(Mutex::new(None));
     let consumer_status = status.clone();
     let consumer_thread = thread_id.clone();
     let consumer_sink = watermark_sink.clone();
     let consumer_persist = queue_persist.clone();
+    let consumer_initial_prompt_clear = initial_prompt_clear_sink.clone();
     let consumer = tokio::spawn(consume_notifications(
         notifs,
         consumer_thread,
@@ -2474,6 +2498,7 @@ fn park_handle(
         queue.clone(),
         consumer_sink,
         consumer_persist,
+        consumer_initial_prompt_clear,
         watchdog,
         recovery_signal,
     ));
@@ -2494,6 +2519,7 @@ fn park_handle(
         queue,
         watermark_sink,
         queue_persist,
+        initial_prompt_clear_sink,
     }
 }
 
@@ -2607,6 +2633,7 @@ async fn consume_notifications(
     queue: PushQueue,
     watermark_sink: WatermarkSinkSlot,
     queue_persist: QueuePersistSlot,
+    initial_prompt_clear_sink: InitialPromptClearSinkSlot,
     watchdog: TurnWatchdogConfig,
     recovery_signal: Option<SpecRecoverySignal>,
 ) {
@@ -2618,9 +2645,11 @@ async fn consume_notifications(
         queue,
         watermark_sink,
         queue_persist,
+        initial_prompt_clear_sink,
         watchdog,
         recovery_signal,
         active_turn: None,
+        initial_prompt_marker_clear_attempted: false,
     };
     state.seed_watchdog_from_status().await;
     state.run().await;
@@ -2634,9 +2663,11 @@ struct NotificationConsumer {
     queue: PushQueue,
     watermark_sink: WatermarkSinkSlot,
     queue_persist: QueuePersistSlot,
+    initial_prompt_clear_sink: InitialPromptClearSinkSlot,
     watchdog: TurnWatchdogConfig,
     recovery_signal: Option<SpecRecoverySignal>,
     active_turn: Option<ActiveTurnWatchdog>,
+    initial_prompt_marker_clear_attempted: bool,
 }
 
 impl NotificationConsumer {
@@ -2841,6 +2872,8 @@ impl NotificationConsumer {
     async fn process_notification(&mut self, n: Notification) {
         warn_on_approval(&n);
         record(&self.status, &n).await;
+        self.clear_initial_prompt_marker_after_rollout_observed(&n)
+            .await;
         match &n {
             Notification::TurnStarted { thread_id, turn }
                 if thread_id.is_empty() || thread_id == &self.thread_id =>
@@ -2880,6 +2913,34 @@ impl NotificationConsumer {
             )
             .await;
         }
+    }
+
+    async fn clear_initial_prompt_marker_after_rollout_observed(&mut self, n: &Notification) {
+        if self.initial_prompt_marker_clear_attempted {
+            return;
+        }
+        let lifecycle_for_thread = matches!(
+            n,
+            Notification::TurnStarted { thread_id, .. }
+                | Notification::TurnCompleted { thread_id, .. }
+                if thread_id.is_empty() || thread_id == &self.thread_id
+        );
+        if !lifecycle_for_thread {
+            return;
+        }
+        let rollout_observed = self.status.lock().await.last_turn_id.is_some();
+        if !rollout_observed {
+            return;
+        }
+        let Some(sink) = self.initial_prompt_clear_sink.lock().await.clone() else {
+            tracing::debug!(
+                thread_id = %self.thread_id,
+                "spec push: observed turn lifecycle before initial-prompt clear sink was installed"
+            );
+            return;
+        };
+        sink().await;
+        self.initial_prompt_marker_clear_attempted = true;
     }
 
     async fn arm_watchdog(&mut self, turn_id: String, source: &'static str) {
@@ -3193,6 +3254,7 @@ mod tests {
         let queue: PushQueue = Arc::new(Mutex::new(VecDeque::new()));
         let watermark_sink: WatermarkSinkSlot = Arc::new(Mutex::new(None));
         let queue_persist: QueuePersistSlot = Arc::new(Mutex::new(None));
+        let initial_prompt_clear_sink: InitialPromptClearSinkSlot = Arc::new(Mutex::new(None));
         let client = Arc::new(client);
         let consumer = tokio::spawn(consume_notifications(
             notifs,
@@ -3202,6 +3264,7 @@ mod tests {
             queue.clone(),
             watermark_sink.clone(),
             queue_persist.clone(),
+            initial_prompt_clear_sink.clone(),
             TurnWatchdogConfig::default(),
             None,
         ));
@@ -3219,6 +3282,7 @@ mod tests {
             queue,
             watermark_sink,
             queue_persist,
+            initial_prompt_clear_sink,
         };
         (handle, server)
     }
@@ -3404,6 +3468,115 @@ mod tests {
         assert_eq!(g.phase, SpecPushPhase::TurnCompleted);
         assert_eq!(g.last_turn_id.as_deref(), Some("turn-1"));
         let _ = child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn consumer_turn_lifecycle_clears_initial_prompt_marker() {
+        use crate::card_role_cache::CardRoleCache;
+        use crate::db::prelude::*;
+        use crate::db::sqlite::SqlxRepo;
+        use crate::model::{CardRole, NewCard, NewCove, NewWave};
+
+        let repo = Arc::new(
+            SqlxRepo::open("sqlite::memory:")
+                .await
+                .expect("open in-memory repo"),
+        );
+        let cove = repo
+            .cove_create(NewCove {
+                name: "lifecycle-clear".into(),
+                color: "#abcdef".into(),
+                sort: None,
+            })
+            .await
+            .expect("create cove");
+        let wave = repo
+            .wave_create(NewWave {
+                cove_id: cove.id,
+                title: "".into(),
+                sort: None,
+                cwd: String::new(),
+                attach_folder: false,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .expect("create wave");
+        let cache = CardRoleCache::new();
+        let mut tx = repo.pool().begin().await.expect("begin tx");
+        let spec = crate::db::sqlite::card_create_with_id_tx(
+            &mut tx,
+            crate::model::new_id(),
+            NewCard {
+                wave_id: wave.id,
+                kind: "codex".into(),
+                sort: None,
+                payload: serde_json::json!({
+                    "codex_thread_id": "thread-test",
+                    "appserver_needs_initial_prompt": true,
+                    "push_watermark": 0,
+                }),
+            },
+            CardRole::Spec,
+            false,
+            &cache,
+        )
+        .await
+        .expect("create spec card");
+        tx.commit().await.expect("commit");
+
+        let (client, notifs, _server) = CodexAppServer::connect_pair_for_test().await;
+        let status: SharedStatus = Arc::new(Mutex::new(SpecPushStatus {
+            last_thread_id: Some("thread-test".into()),
+            ..Default::default()
+        }));
+        let initial_prompt_clear_sink: InitialPromptClearSinkSlot = Arc::new(Mutex::new(None));
+        {
+            let repo = Arc::clone(&repo);
+            let card_id = spec.id.clone();
+            *initial_prompt_clear_sink.lock().await = Some(Arc::new(move || {
+                let repo = Arc::clone(&repo);
+                let card_id = card_id.clone();
+                Box::pin(async move {
+                    repo.spec_card_clear_needs_initial_prompt(card_id.as_str())
+                        .await
+                        .expect("clear initial-prompt marker");
+                })
+            }));
+        }
+        let mut consumer = NotificationConsumer {
+            notifs,
+            thread_id: "thread-test".to_string(),
+            status: status.clone(),
+            client: Arc::new(client),
+            queue: Arc::new(Mutex::new(VecDeque::new())),
+            watermark_sink: Arc::new(Mutex::new(None)),
+            queue_persist: Arc::new(Mutex::new(None)),
+            initial_prompt_clear_sink,
+            watchdog: TurnWatchdogConfig::default(),
+            recovery_signal: None,
+            active_turn: None,
+            initial_prompt_marker_clear_attempted: false,
+        };
+
+        consumer
+            .process_notification(Notification::TurnStarted {
+                thread_id: "thread-test".to_string(),
+                turn: serde_json::json!({ "id": "turn-1" }),
+            })
+            .await;
+
+        let g = status.lock().await;
+        assert_eq!(g.last_turn_id.as_deref(), Some("turn-1"));
+        drop(g);
+        let got = repo
+            .card_get(spec.id.as_str())
+            .await
+            .unwrap()
+            .expect("spec card");
+        assert!(
+            got.payload.get("appserver_needs_initial_prompt").is_none(),
+            "first observed turn lifecycle must clear the bootstrap marker"
+        );
     }
 
     #[tokio::test]
@@ -4813,12 +4986,14 @@ mod tests {
             queue: Arc::new(Mutex::new(VecDeque::new())),
             watermark_sink: Arc::new(Mutex::new(None)),
             queue_persist: Arc::new(Mutex::new(None)),
+            initial_prompt_clear_sink: Arc::new(Mutex::new(None)),
             watchdog: TurnWatchdogConfig::default(),
             recovery_signal: Some(signal),
             active_turn: Some(ActiveTurnWatchdog {
                 turn_id: "turn-wedged".to_string(),
                 deadline: TokioInstant::now(),
             }),
+            initial_prompt_marker_clear_attempted: false,
         };
 
         consumer
@@ -4859,6 +5034,7 @@ mod tests {
             queue: Arc::new(Mutex::new(VecDeque::new())),
             watermark_sink: Arc::new(Mutex::new(None)),
             queue_persist: Arc::new(Mutex::new(None)),
+            initial_prompt_clear_sink: Arc::new(Mutex::new(None)),
             watchdog: TurnWatchdogConfig {
                 max_turn_duration: Duration::from_secs(30),
                 interrupt_completion_budget: Duration::from_secs(5),
@@ -4868,6 +5044,7 @@ mod tests {
                 turn_id: "turn-race".to_string(),
                 deadline: TokioInstant::now() + Duration::from_secs(30),
             }),
+            initial_prompt_marker_clear_attempted: false,
         };
 
         let server_task = tokio::spawn(async move {

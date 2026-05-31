@@ -738,6 +738,12 @@ pub trait RepoOutOfDomain: RepoRead {
     // card payload into it. Acceptable short-term per #315 review.
     async fn spec_card_set_push_watermark(&self, card_id: &str, watermark: i64) -> Result<()>;
 
+    /// Clear the empty-goal bootstrap marker once any observed turn
+    /// lifecycle proves the codex side has created a resumable rollout.
+    /// Idempotent and eventless: this is kernel-private runtime
+    /// bookkeeping, same as `spec_card_set_push_watermark`.
+    async fn spec_card_clear_needs_initial_prompt(&self, card_id: &str) -> Result<()>;
+
     /// #313 problem #1 — clear a spec card's `codex_thread_id` (and the
     /// related push fields) when boot takeover finds the persisted thread
     /// can no longer be resumed (`-32600 "no rollout found"` from

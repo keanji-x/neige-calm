@@ -2359,24 +2359,55 @@ impl RepoOutOfDomain for SqlxRepo {
         // that boot catch-up would then mistake for "we never delivered
         // ids in [old, new]" and re-push.
         //
-        // The `WHERE … json_extract(payload,'$.push_watermark') < ?1`
-        // (coalesced to 0 for the never-persisted case) makes the UPDATE
-        // a no-op when the stored watermark is already at-or-above the
-        // proposed one. SQLite's WHERE evaluates atomically with the
-        // UPDATE under the same row lock, so the read-modify-write race
-        // is closed.
+        // The `CASE` preserves the stored watermark when it is already
+        // at-or-above the proposed one; the `WHERE` still allows a write
+        // in that case only when it needs to remove
+        // `appserver_needs_initial_prompt`. SQLite evaluates the WHERE
+        // and CASE atomically under the same row lock, so the
+        // read-modify-write race is closed without blocking the lifecycle
+        // marker cleanup.
         let now = now_ms();
         let _ = sqlx::query(
             r#"UPDATE cards
                   SET payload    = json_remove(
-                                      json_set(COALESCE(payload, '{}'), '$.push_watermark', ?1),
+                                      json_set(
+                                          COALESCE(payload, '{}'),
+                                          '$.push_watermark',
+                                          CASE
+                                              WHEN COALESCE(json_extract(payload, '$.push_watermark'), 0) < ?1
+                                              THEN ?1
+                                              ELSE COALESCE(json_extract(payload, '$.push_watermark'), 0)
+                                          END
+                                      ),
                                       '$.appserver_needs_initial_prompt'
                                    ),
                       updated_at = ?2
                 WHERE id = ?3
-                  AND COALESCE(json_extract(payload, '$.push_watermark'), 0) < ?1"#,
+                  AND (
+                      COALESCE(json_extract(payload, '$.push_watermark'), 0) < ?1
+                      OR COALESCE(json_extract(payload, '$.appserver_needs_initial_prompt'), 0) = 1
+                  )"#,
         )
         .bind(watermark)
+        .bind(now)
+        .bind(card_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn spec_card_clear_needs_initial_prompt(&self, card_id: &str) -> Result<()> {
+        let now = now_ms();
+        let _ = sqlx::query(
+            r#"UPDATE cards
+                  SET payload    = json_remove(
+                                      COALESCE(payload, '{}'),
+                                      '$.appserver_needs_initial_prompt'
+                                   ),
+                      updated_at = ?1
+                WHERE id = ?2
+                  AND COALESCE(json_extract(payload, '$.appserver_needs_initial_prompt'), 0) = 1"#,
+        )
         .bind(now)
         .bind(card_id)
         .execute(&self.pool)
@@ -2406,7 +2437,7 @@ impl RepoOutOfDomain for SqlxRepo {
                                     '$.appserver_start_time', ?4,
                                     '$.appserver_boot_id', ?5,
                                     '$.push_watermark', ?6,
-                                    '$.appserver_needs_initial_prompt', json('true')
+                                    '$.appserver_needs_initial_prompt', 1
                                 ),
                       updated_at = ?7
                 WHERE id = ?8"#,
@@ -2491,7 +2522,8 @@ impl RepoOutOfDomain for SqlxRepo {
                                        '$.appserver_pgid',
                                        '$.appserver_start_time',
                                        '$.appserver_boot_id',
-                                       '$.push_watermark'
+                                       '$.push_watermark',
+                                       '$.appserver_needs_initial_prompt'
                                    ),
                       updated_at = ?1
                 WHERE id = ?2"#,

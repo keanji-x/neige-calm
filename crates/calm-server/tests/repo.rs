@@ -1537,15 +1537,15 @@ async fn spec_cards_for_boot_takeover_excludes_initial_prompt_cards() {
     assert_eq!(sock.as_deref(), Some("/tmp/calm-empty.sock"));
     assert_eq!(*watermark, 0);
 
-    repo.spec_card_set_push_watermark(spec.id.as_str(), 10)
+    repo.spec_card_clear_needs_initial_prompt(spec.id.as_str())
         .await
-        .expect("first real push clears initial-prompt flag");
+        .expect("first observed turn lifecycle clears initial-prompt flag");
     assert!(
         repo.spec_cards_for_initial_prompt_bootstrap()
             .await
             .expect("initial-prompt query after clear")
             .is_empty(),
-        "first delivered push must clear the initial-prompt bootstrap marker"
+        "first observed turn lifecycle must clear the initial-prompt bootstrap marker"
     );
     assert_eq!(
         repo.spec_cards_for_boot_takeover()
@@ -1554,6 +1554,156 @@ async fn spec_cards_for_boot_takeover_excludes_initial_prompt_cards() {
             .len(),
         1,
         "after a real turn creates a rollout, the existing thread is resumable again"
+    );
+}
+
+#[tokio::test]
+async fn spec_card_set_push_watermark_clears_initial_prompt_marker() {
+    use calm_server::card_role_cache::CardRoleCache;
+    use calm_server::model::{CardRole, NewCard};
+
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "initial-prompt-watermark-clear").await;
+    let w = make_wave(&repo, c.id.as_str(), "").await;
+    let cache = CardRoleCache::new();
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    let spec = calm_server::db::sqlite::card_create_with_id_tx(
+        &mut tx,
+        calm_server::model::new_id(),
+        NewCard {
+            wave_id: w.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({
+                "codex_thread_id": "thread-empty-no-rollout",
+                "appserver_needs_initial_prompt": true,
+                "push_watermark": 0,
+            }),
+        },
+        CardRole::Spec,
+        false,
+        &cache,
+    )
+    .await
+    .expect("create initial-prompt spec card");
+    tx.commit().await.unwrap();
+
+    repo.spec_card_set_push_watermark(spec.id.as_str(), 0)
+        .await
+        .expect("watermark path clears initial-prompt flag even without an advance");
+    let got = repo
+        .card_get(spec.id.as_str())
+        .await
+        .unwrap()
+        .expect("spec card");
+    assert!(
+        got.payload.get("appserver_needs_initial_prompt").is_none(),
+        "watermark persistence should defensively clear the bootstrap marker"
+    );
+    assert_eq!(
+        got.payload
+            .get("push_watermark")
+            .and_then(serde_json::Value::as_i64),
+        Some(0),
+        "same-watermark clear must not regress the persisted watermark"
+    );
+}
+
+#[tokio::test]
+async fn spec_card_set_empty_goal_bootstrap_state_replaces_runtime_state() {
+    use calm_server::card_role_cache::CardRoleCache;
+    use calm_server::model::{CardRole, NewCard};
+
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "initial-prompt-bootstrap-replace").await;
+    let w = make_wave(&repo, c.id.as_str(), "").await;
+    let cache = CardRoleCache::new();
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    let spec = calm_server::db::sqlite::card_create_with_id_tx(
+        &mut tx,
+        calm_server::model::new_id(),
+        NewCard {
+            wave_id: w.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({
+                "codex_thread_id": "thread-old",
+                "appserver_needs_initial_prompt": true,
+                "appserver_pgid": 111,
+                "appserver_sock": "/tmp/old.sock",
+                "appserver_start_time": 222,
+                "appserver_boot_id": "boot-old",
+                "push_watermark": 3,
+            }),
+        },
+        CardRole::Spec,
+        false,
+        &cache,
+    )
+    .await
+    .expect("create initial-prompt spec card");
+    tx.commit().await.unwrap();
+
+    repo.spec_card_set_empty_goal_bootstrap_state(
+        spec.id.as_str(),
+        "thread-new",
+        333,
+        "/tmp/new.sock",
+        Some(444),
+        Some("boot-new"),
+        9,
+    )
+    .await
+    .expect("replace empty-goal bootstrap state");
+
+    let got = repo
+        .card_get(spec.id.as_str())
+        .await
+        .unwrap()
+        .expect("spec card");
+    assert_eq!(
+        got.payload
+            .get("codex_thread_id")
+            .and_then(serde_json::Value::as_str),
+        Some("thread-new")
+    );
+    assert_eq!(
+        got.payload
+            .get("appserver_pgid")
+            .and_then(serde_json::Value::as_i64),
+        Some(333)
+    );
+    assert_eq!(
+        got.payload
+            .get("appserver_sock")
+            .and_then(serde_json::Value::as_str),
+        Some("/tmp/new.sock")
+    );
+    assert_eq!(
+        got.payload
+            .get("appserver_start_time")
+            .and_then(serde_json::Value::as_i64),
+        Some(444)
+    );
+    assert_eq!(
+        got.payload
+            .get("appserver_boot_id")
+            .and_then(serde_json::Value::as_str),
+        Some("boot-new")
+    );
+    assert_eq!(
+        got.payload
+            .get("push_watermark")
+            .and_then(serde_json::Value::as_i64),
+        Some(9)
+    );
+    assert_eq!(
+        got.payload
+            .get("appserver_needs_initial_prompt")
+            .and_then(serde_json::Value::as_i64),
+        Some(1)
     );
 }
 

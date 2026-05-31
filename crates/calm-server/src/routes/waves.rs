@@ -1053,6 +1053,10 @@ async fn spawn_push_appserver(
          a future refactor split the install from the assert; queued-then-\
          flushed envelopes would silently fail to persist their watermark"
     );
+    let initial_prompt_clear = s.dispatcher.initial_prompt_clear_sink_for(card_key.clone());
+    handle
+        .install_initial_prompt_clear_sink(initial_prompt_clear)
+        .await;
 
     // #318 INV-3 (R2-B1) — install the durable queue-persist callbacks
     // BEFORE parking the handle in the registry, symmetric with the

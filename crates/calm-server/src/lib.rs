@@ -484,6 +484,23 @@ async fn bootstrap_empty_goal_spec_appserver(
             {
                 spec_appserver::signal_process_group(pgid, libc::SIGKILL);
             }
+        } else if pgid > 1 {
+            let cause = SkipKillCause::classify(
+                persisted_start_time,
+                persisted_boot_id,
+                identity_ok,
+                socket_live,
+            );
+            cause.emit(
+                card_id,
+                wave_id,
+                pgid,
+                sock,
+                identity_ok,
+                socket_live,
+                persisted_start_time,
+                persisted_boot_id,
+            );
         }
         spec_appserver::cleanup_sock_dir(sock_path);
     }
@@ -1428,6 +1445,12 @@ async fn register_and_catch_up(
         "register_and_catch_up: install_watermark_sink did not take effect — \
          queued-then-flushed envelopes would silently fail to persist their watermark"
     );
+    let initial_prompt_clear = state
+        .dispatcher
+        .initial_prompt_clear_sink_for(card_key.clone());
+    handle
+        .install_initial_prompt_clear_sink(initial_prompt_clear)
+        .await;
 
     // #318 INV-3 (R2-B1) — install the durable queue-persist callbacks
     // alongside the watermark sink, then rehydrate the in-memory queue
