@@ -216,7 +216,7 @@ function FileViewerCard({
     : 'Collapse file tree';
 
   return (
-    <div className="file-viewer-card">
+    <div className="file-viewer-card" data-wheel-file-viewer-tab={tab}>
       <CardHead
         className="card-drag-handle"
         title="file"
@@ -241,7 +241,7 @@ function FileViewerCard({
                 {listing?.path ?? folderPath}
               </span>
             </div>
-            <div className="file-viewer-tree-list">
+            <div className="file-viewer-tree-list" data-wheel-pane="tree">
               {listingLoading ? (
                 <div className="file-viewer-state">Loading…</div>
               ) : listingError ? (
@@ -401,7 +401,11 @@ function DiffTab({
 }) {
   return (
     <div className="file-viewer-diff">
-      <div className="file-viewer-changes" aria-label="Changed files">
+      <div
+        className="file-viewer-changes"
+        data-wheel-pane="changes"
+        aria-label="Changed files"
+      >
         {listState === 'loading' ? (
           <div className="file-viewer-state">Loading changes…</div>
         ) : files.length === 0 ? (

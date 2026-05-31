@@ -59,6 +59,7 @@ export function DiffPane({ path, headText, workingText, theme }: DiffPaneProps) 
     <div
       ref={ref}
       className={`file-viewer-merge file-viewer-merge-${theme}`}
+      data-wheel-pane="merge"
       data-empty-left={headText === null ? 'true' : undefined}
       data-empty-right={workingText === null ? 'true' : undefined}
     />

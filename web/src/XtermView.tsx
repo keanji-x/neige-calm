@@ -6,6 +6,10 @@ import '@xterm/xterm/css/xterm.css';
 import { dlog } from './util/debug';
 import { makeUuid } from './util/uuid';
 import { MONO_STACK } from './font-stack';
+import {
+  createXtermWheelTarget,
+  type XtermWheelTarget,
+} from './input/xtermAdapter';
 import type {
   ClientMsg,
   DaemonMsg,
@@ -90,6 +94,7 @@ interface XtermViewProps {
 
 export interface XtermViewHandle {
   refresh(): void;
+  getWheelTarget(): XtermWheelTarget;
 }
 
 /** Last close info, surfaced in the gray "disconnected" overlay so the user
@@ -192,6 +197,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     };
   }, []);
 
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   // Live ref to the active xterm.js Terminal instance so a sibling effect
   // can re-apply the theme without tearing down the WebSocket + replay
@@ -254,6 +260,15 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     ref,
     () => ({
       refresh: () => setReconnectKey((k) => k + 1),
+      getWheelTarget: () => {
+        if (!rootRef.current) {
+          throw new Error('XtermView root is not mounted');
+        }
+        return createXtermWheelTarget({
+          root: rootRef.current,
+          terminalRef: termRef,
+        });
+      },
     }),
     [],
   );
@@ -940,7 +955,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
   }, [terminalId, reconnectKey, layoutRetryKey]);
 
   return (
-    <div className="xterm-view" data-terminal-id={terminalId}>
+    <div ref={rootRef} className="xterm-view" data-terminal-id={terminalId}>
       {/* The xterm container is the canvas-style render surface xterm.js
        *  paints into — `.xterm-rows` / `.xterm-fg-*` spans the library
        *  emits per-cell are presentational decoration, not navigable

@@ -1,4 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+} from 'react';
 import {
   GridLayout,
   useContainerWidth,
@@ -15,11 +20,11 @@ import { dlog } from './util/debug';
 import type { WaveCardSlot } from './types';
 import { useOverlayState } from './hooks/useOverlayState';
 import { OVERLAY_LAYOUT_SCHEMA_VERSION } from './cards/builtins/schemaVersions';
+import { handleWheelCardPointerDown } from './input/cardShell';
 
 const COLS = 12;
 const ROW_HEIGHT = 40;
 const MARGIN: readonly [number, number] = [14, 14];
-
 // Card identity: kernel id if we have it, otherwise positional fallback.
 // Stable across reorders so RGL keys + persisted layout don't drift.
 // Works uniformly across `card` slots (id from WaveCardData) and `unknown`
@@ -263,7 +268,13 @@ export function WaveGrid({
             const closable = slot.deletable !== false;
             const onClose = closable ? () => onRemoveCard(i) : undefined;
             return (
-              <div key={slotKey(slot, i)} className="wave-card">
+              <div
+                key={slotKey(slot, i)}
+                className="wave-card"
+                tabIndex={-1}
+                data-wheel-card
+                onPointerDownCapture={handleWheelCardPointerDown}
+              >
                 {slot.kind === 'card' ? (
                   <WaveCard
                     card={slot.card}

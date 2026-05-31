@@ -32,6 +32,7 @@ import { IconButton } from '../../pages/_shared';
 import { ConfirmDialog } from '../../ui/ConfirmDialog/ConfirmDialog';
 import { CardHead } from '../CardHead';
 import type { CardEntry } from '../registry';
+import { useXtermWheelTargetRef } from '../../input/useXtermWheelTarget';
 import {
   CLAUDE_PAYLOAD_SCHEMA_VERSION,
   CODEX_PAYLOAD_SCHEMA_VERSION,
@@ -181,7 +182,7 @@ function CodexCardImpl({
   // "observing" pill in the head status slot. Cleared on disconnect — the
   // XtermView callback re-emits on every state transition.
   const [role, setRole] = useState<Role | null>(null);
-  const xtermRef = useRef<XtermViewHandle | null>(null);
+  const [xtermRef, setXtermRef] = useXtermWheelTargetRef<XtermViewHandle>();
   // `card.id` is typed `string | undefined` in the kernel wire model, but a
   // mounted card always has one — gate the Reset button on its presence so
   // TS knows the API call site is safe, matching the `if (!cardId) return`
@@ -362,7 +363,7 @@ function CodexCardImpl({
         {terminalId ? (
           <Suspense fallback={<div className="codex-card-empty">Loading terminal…</div>}>
             <XtermView
-              ref={xtermRef}
+              ref={setXtermRef}
               terminalId={terminalId}
               theme={theme}
               onRoleChange={setRole}

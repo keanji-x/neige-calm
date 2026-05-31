@@ -50,6 +50,7 @@ import { UnknownCard } from './cards/UnknownCard';
 import { dlog } from './util/debug';
 import { useUpdateCardMutation } from './api/queries';
 import type { WaveCardSlot } from './types';
+import { handleWheelCardPointerDown } from './input/cardShell';
 
 // Card identity for keys. Mirrors `WaveGrid.slotKey` — we share the same
 // stable key shape so list/grid toggles don't unmount and remount cards
@@ -119,9 +120,18 @@ export function WaveList({
   // list item here is "enter the card to drive its inner UI", which is
   // simply the next Tab keystroke. Mapping Enter to a synthetic activate
   // would conflict with terminal cards that need raw key passes.
-  const { activeIndex, getItemProps } = useRovingTabindex<HTMLLIElement>({
-    itemCount: items.length,
-  });
+  const { activeIndex, getItemProps, setActiveIndex } =
+    useRovingTabindex<HTMLLIElement>({
+      itemCount: items.length,
+    });
+
+  const onShellPointerDown = useCallback(
+    (i: number) => (ev: React.PointerEvent<HTMLLIElement>) => {
+      setActiveIndex(i);
+      handleWheelCardPointerDown(ev);
+    },
+    [setActiveIndex],
+  );
 
   // Ref the active card id at swap time so the mutation that runs across
   // a re-render still references the same card. Without this, a slow
@@ -234,6 +244,8 @@ export function WaveList({
               key={key}
               ref={props.ref}
               tabIndex={props.tabIndex}
+              data-wheel-card
+              onPointerDownCapture={onShellPointerDown(i)}
               onKeyDown={onKeyDown}
               aria-label={name}
               aria-posinset={i + 1}
