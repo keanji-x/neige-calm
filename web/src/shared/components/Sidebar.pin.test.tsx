@@ -226,6 +226,6 @@ describe('Sidebar WaveRow cove-name span', () => {
     // No .side-wave-cove span rendered when cove is not found.
     expect(document.querySelector('.side-wave-cove')).toBeNull();
     // The wave nav button is still present.
-    expect(screen.getByRole('button', { name: (name) => name === 'My wave' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /My wave/i })).toBeTruthy();
   });
 });

@@ -232,7 +232,7 @@ export function Sidebar({
                 title={cove ? `${cove.name} · ${displayTitle}` : displayTitle}
                 onGo={() => onGo({ name: 'wave', id: w.id })}
                 onPinWave={onPinWave}
-                onDeleteWave={openDeleteWaveDialog}
+                onDeleteWave={onDeleteWave ? openDeleteWaveDialog : undefined}
                 rowRef={active ? setActiveWaveRowRef : undefined}
               />
             );
@@ -256,7 +256,7 @@ export function Sidebar({
                 title={cove ? `${cove.name} · ${displayTitle}` : displayTitle}
                 onGo={() => onGo({ name: 'wave', id: w.id })}
                 onPinWave={onPinWave}
-                onDeleteWave={openDeleteWaveDialog}
+                onDeleteWave={onDeleteWave ? openDeleteWaveDialog : undefined}
                 rowRef={active ? setActiveWaveRowRef : undefined}
               />
             );
@@ -358,7 +358,7 @@ export function Sidebar({
                         title={displayTitle}
                         onGo={() => onGo({ name: 'wave', id: w.id })}
                         onPinWave={onPinWave}
-                        onDeleteWave={openDeleteWaveDialog}
+                        onDeleteWave={onDeleteWave ? openDeleteWaveDialog : undefined}
                         rowRef={waveActive ? setActiveWaveRowRef : undefined}
                       />
                     );

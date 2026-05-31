@@ -683,6 +683,7 @@ input, textarea { font: inherit; color: inherit; }
   left: var(--space-3);
   right: auto;
   top: 50%;
+  z-index: var(--z-raised);
   transform: translateY(-50%);
   width: 20px; height: 20px;
   display: grid; place-items: center;
@@ -715,6 +716,7 @@ input, textarea { font: inherit; color: inherit; }
   transform: translateY(-50%);
   width: 20px; height: 20px;
   display: flex; align-items: center; justify-content: center;
+  padding: var(--space-0);
   background: transparent;
   border: none;
   border-radius: var(--radius-sm);
