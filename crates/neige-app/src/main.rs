@@ -1509,11 +1509,8 @@ fn validate_systemd_path_env(path_env: &str) -> anyhow::Result<()> {
             "PATH for systemd unit must not be empty (set $PATH in the shell that runs `system install`, or pass --path explicitly)"
         );
     }
-    if path_env.contains('\0') {
-        anyhow::bail!("PATH for systemd unit must not contain NUL bytes");
-    }
-    if path_env.contains('\n') || path_env.contains('\r') {
-        anyhow::bail!("PATH for systemd unit must not contain newlines");
+    if path_env.chars().any(|c| c.is_ascii_control()) {
+        anyhow::bail!("PATH for systemd unit must not contain ASCII control characters");
     }
     if path_env.contains('%') {
         anyhow::bail!("PATH for systemd unit must not contain % systemd specifiers");
@@ -1522,12 +1519,8 @@ fn validate_systemd_path_env(path_env: &str) -> anyhow::Result<()> {
 }
 
 fn escape_systemd_environment_value(value: &str) -> String {
-    // systemd.exec(5) Environment= quoted values use backslash escapes, and "$"
-    // starts variable expansion unless doubled.
-    value
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('$', "$$")
+    // systemd.exec(5) Environment= takes a quoted, C-style-escaped value. "$" is literal in Environment= (no variable expansion), only specifier "%" expansion happens — and we reject "%" upstream.
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn warn_missing_spawn_tools(path_env: &str) {
@@ -1828,7 +1821,7 @@ mod tests {
     }
 
     #[test]
-    fn systemd_unit_escapes_dollar_in_path() {
+    fn systemd_unit_preserves_literal_dollar_in_path() {
         let unit = render_systemd_unit(
             "neige-app",
             &PathBuf::from("/opt/neige/bin/neige-app"),
@@ -1837,7 +1830,36 @@ mod tests {
         )
         .expect("render unit");
 
-        assert!(unit.contains("Environment=\"PATH=/opt/x$$y/bin\"\n"));
+        assert!(
+            unit.lines()
+                .any(|line| line == "Environment=\"PATH=/opt/x$y/bin\"")
+        );
+    }
+
+    #[test]
+    fn systemd_unit_escapes_backslash_in_path() {
+        let unit = render_systemd_unit(
+            "neige-app",
+            &PathBuf::from("/opt/neige/bin/neige-app"),
+            &PathBuf::from("/home/me/.config/neige-app/config.toml"),
+            "/a\\b/bin",
+        )
+        .expect("render unit");
+
+        assert!(unit.contains("Environment=\"PATH=/a\\\\b/bin\"\n"));
+    }
+
+    #[test]
+    fn systemd_unit_escapes_double_quote_in_path() {
+        let unit = render_systemd_unit(
+            "neige-app",
+            &PathBuf::from("/opt/neige/bin/neige-app"),
+            &PathBuf::from("/home/me/.config/neige-app/config.toml"),
+            "/a\"b/bin",
+        )
+        .expect("render unit");
+
+        assert!(unit.contains("Environment=\"PATH=/a\\\"b/bin\"\n"));
     }
 
     #[test]
@@ -1861,7 +1883,19 @@ mod tests {
             "/foo/bin\n/usr/bin",
         )
         .expect_err("newline in PATH must fail");
-        assert!(err.to_string().contains("newlines"));
+        assert!(err.to_string().contains("control"));
+    }
+
+    #[test]
+    fn systemd_unit_rejects_tab_in_path() {
+        let err = render_systemd_unit(
+            "neige-app",
+            &PathBuf::from("/opt/neige/bin/neige-app"),
+            &PathBuf::from("/home/me/.config/neige-app/config.toml"),
+            "/foo/bin\t/usr/bin",
+        )
+        .expect_err("tab in PATH must fail");
+        assert!(err.to_string().contains("control"));
     }
 
     #[test]
@@ -1885,7 +1919,7 @@ mod tests {
             "/foo/bin\0/usr/bin",
         )
         .expect_err("NUL in PATH must fail");
-        assert!(err.to_string().contains("NUL"));
+        assert!(err.to_string().contains("control"));
     }
 
     #[test]
