@@ -47,6 +47,15 @@ function activeOption() {
     .find((option) => option.getAttribute('aria-selected') === 'true');
 }
 
+function pathInput() {
+  return screen.getByRole('textbox', { name: /directory path/i }) as HTMLInputElement;
+}
+
+function focusEnd(input: HTMLInputElement) {
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
 describe('DirectoryBrowser ARIA shape', () => {
   it('does not advertise its own role="dialog" — the outer Dialog owns it', async () => {
     stubListDir();
@@ -127,7 +136,7 @@ describe('DirectoryBrowser ARIA shape', () => {
     expect(dir).not.toBeDisabled();
   });
 
-  it('filters visible options by case-insensitive name prefix', async () => {
+  it('typing into the path input filters visible options by case-insensitive basename prefix', async () => {
     const listDir = vi.spyOn(api, 'listDir').mockResolvedValue({
       path: '/home/u',
       parent: null,
@@ -149,13 +158,45 @@ describe('DirectoryBrowser ARIA shape', () => {
     await waitFor(() => {
       expect(screen.getAllByRole('option')).toHaveLength(3);
     });
-    const filter = screen.getByRole('textbox', { name: /filter directory entries/i });
-    await userEvent.type(filter, 'CAL');
+    const path = pathInput();
+    focusEnd(path);
+    await userEvent.type(path, 'CAL');
 
+    expect(path).toHaveValue('/home/u/CAL');
     expect(screen.getByRole('option', { name: /calm$/i })).toBeTruthy();
     expect(screen.getByRole('option', { name: /calm\.md/i })).toBeTruthy();
     expect(screen.queryByRole('option', { name: /src/i })).toBeNull();
     expect(listDir).toHaveBeenCalledTimes(1);
+  });
+
+  it('typing extends the existing path and uses the typed suffix as the filter', async () => {
+    vi.spyOn(api, 'listDir').mockResolvedValue({
+      path: '/home/u',
+      parent: null,
+      entries: [
+        { name: 'projects', is_dir: true },
+        { name: 'private', is_dir: true },
+        { name: 'src', is_dir: true },
+      ],
+    });
+    const user = userEvent.setup();
+    render(
+      <DirectoryBrowser
+        initialPath="/home/u"
+        onCancel={() => {}}
+        onSelect={() => {}}
+      />,
+    );
+
+    await screen.findByRole('option', { name: /projects/i });
+    const path = pathInput();
+    focusEnd(path);
+    await user.type(path, 'pr');
+
+    expect(path).toHaveValue('/home/u/pr');
+    expect(screen.getByRole('option', { name: /projects/i })).toBeTruthy();
+    expect(screen.getByRole('option', { name: /private/i })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: /src/i })).toBeNull();
   });
 
   it('moves the keyboard highlight with ArrowDown and ArrowUp without wrapping', async () => {
@@ -177,9 +218,9 @@ describe('DirectoryBrowser ARIA shape', () => {
       />,
     );
 
-    const filter = screen.getByRole('textbox', { name: /filter directory entries/i });
+    const path = pathInput();
     await screen.findByRole('option', { name: /alpha/i });
-    filter.focus();
+    path.focus();
 
     await waitFor(() => {
       expect(activeOptionIndex()).toBe(0);
@@ -198,7 +239,7 @@ describe('DirectoryBrowser ARIA shape', () => {
     expect(activeOptionIndex()).toBe(0);
   });
 
-  it('clears the filter after descending into a directory', async () => {
+  it('clicking a folder populates the input with its canonical path and loads it', async () => {
     const listDir = vi.spyOn(api, 'listDir').mockImplementation(async (path?: string) => {
       if (path === '/home/u/calm') {
         return {
@@ -225,18 +266,96 @@ describe('DirectoryBrowser ARIA shape', () => {
       />,
     );
 
-    const filter = screen.getByRole('textbox', { name: /filter directory entries/i });
     await screen.findByRole('option', { name: /calm/i });
-    filter.focus();
-    await user.type(filter, 'ca');
-    await user.keyboard('{Enter}');
+    await user.click(screen.getByRole('option', { name: /calm/i }));
 
     await waitFor(() => {
       expect(listDir).toHaveBeenCalledWith('/home/u/calm');
     });
     await waitFor(() => {
-      expect(filter).toHaveValue('');
+      expect(pathInput()).toHaveValue('/home/u/calm/');
     });
+    expect(screen.getByRole('option', { name: /src/i })).toBeTruthy();
+  });
+
+  it('backspacing past the last slash returns to the parent listing', async () => {
+    const listDir = vi.spyOn(api, 'listDir').mockImplementation(async (path?: string) => {
+      if (path === '/home') {
+        return {
+          path: '/home',
+          parent: '/',
+          entries: [
+            { name: 'u', is_dir: true },
+            { name: 'other', is_dir: true },
+          ],
+        };
+      }
+      return {
+        path: '/home/u',
+        parent: '/home',
+        entries: [{ name: 'projects', is_dir: true }],
+      };
+    });
+    const user = userEvent.setup();
+    render(
+      <DirectoryBrowser
+        initialPath="/home/u"
+        onCancel={() => {}}
+        onSelect={() => {}}
+      />,
+    );
+
+    const path = pathInput();
+    await screen.findByRole('option', { name: /projects/i });
+    focusEnd(path);
+    await user.type(path, 'pr');
+    await user.keyboard('{Backspace}{Backspace}{Backspace}');
+
+    await waitFor(() => {
+      expect(listDir).toHaveBeenCalledWith('/home');
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('option', { name: /^u$/i })).toBeTruthy();
+    });
+    expect(screen.queryByRole('option', { name: /other/i })).toBeNull();
+  });
+
+  it('editing the input to another clean directory path lists that directory', async () => {
+    const listDir = vi.spyOn(api, 'listDir').mockImplementation(async (path?: string) => {
+      if (path === '/some/other/dir') {
+        return {
+          path: '/some/other/dir',
+          parent: '/some/other',
+          entries: [{ name: 'child', is_dir: true }],
+        };
+      }
+      return {
+        path: '/home/u',
+        parent: null,
+        entries: [{ name: 'projects', is_dir: true }],
+      };
+    });
+    const user = userEvent.setup();
+    render(
+      <DirectoryBrowser
+        initialPath="/home/u"
+        onCancel={() => {}}
+        onSelect={() => {}}
+      />,
+    );
+
+    const path = pathInput();
+    await screen.findByRole('option', { name: /projects/i });
+    await user.clear(path);
+    await user.type(path, '/some/other/dir/');
+
+    await waitFor(() => {
+      expect(listDir).toHaveBeenCalledWith('/some/other/dir');
+    });
+    await waitFor(() => {
+      expect(path).toHaveValue('/some/other/dir/');
+    });
+    expect(screen.getByRole('option', { name: /child/i })).toBeTruthy();
   });
 
   it('skips disabled file rows with ArrowDown and ArrowUp in directory mode', async () => {
@@ -258,9 +377,9 @@ describe('DirectoryBrowser ARIA shape', () => {
       />,
     );
 
-    const filter = screen.getByRole('textbox', { name: /filter directory entries/i });
+    const path = pathInput();
     await screen.findByRole('option', { name: /dir1/i });
-    filter.focus();
+    path.focus();
 
     await waitFor(() => {
       expect(activeOption()).toHaveTextContent('dir1');
@@ -293,9 +412,9 @@ describe('DirectoryBrowser ARIA shape', () => {
       />,
     );
 
-    const filter = screen.getByRole('textbox', { name: /filter directory entries/i });
+    const path = pathInput();
     await screen.findByRole('option', { name: /dir1/i });
-    filter.focus();
+    path.focus();
     await user.keyboard('{ArrowDown}{ArrowUp}');
 
     expect(
@@ -323,9 +442,9 @@ describe('DirectoryBrowser ARIA shape', () => {
       />,
     );
 
-    const filter = screen.getByRole('textbox', { name: /filter directory entries/i });
+    const path = pathInput();
     await screen.findByRole('option', { name: /calm/i });
-    filter.focus();
+    path.focus();
     await user.keyboard('{Enter}');
 
     await waitFor(() => {
@@ -350,15 +469,15 @@ describe('DirectoryBrowser ARIA shape', () => {
       />,
     );
 
-    const filter = screen.getByRole('textbox', { name: /filter directory entries/i });
+    const path = pathInput();
     await screen.findByRole('option', { name: /notes\.txt/i });
-    filter.focus();
+    path.focus();
     await user.keyboard('{Enter}');
 
     expect(onSelect).toHaveBeenCalledWith('/home/u/notes.txt');
   });
 
-  it('Enter with an empty filter and no highlight commits the current directory', async () => {
+  it('Enter with no highlight and a clean path commits the current directory', async () => {
     vi.spyOn(api, 'listDir').mockResolvedValue({
       path: '/home/u',
       parent: null,
@@ -374,15 +493,15 @@ describe('DirectoryBrowser ARIA shape', () => {
       />,
     );
 
-    const filter = screen.getByRole('textbox', { name: /filter directory entries/i });
+    const path = pathInput();
     await screen.findByText('Empty directory');
-    filter.focus();
+    path.focus();
     await user.keyboard('{Enter}');
 
     expect(onSelect).toHaveBeenCalledWith('/home/u');
   });
 
-  it('Escape from the focused filter cancels the browser', async () => {
+  it('Escape from the focused path input cancels the browser', async () => {
     vi.spyOn(api, 'listDir').mockResolvedValue({
       path: '/home/u',
       parent: null,
@@ -398,9 +517,9 @@ describe('DirectoryBrowser ARIA shape', () => {
       />,
     );
 
-    const filter = screen.getByRole('textbox', { name: /filter directory entries/i });
+    const path = pathInput();
     await screen.findByText('Empty directory');
-    filter.focus();
+    path.focus();
     await user.keyboard('{Escape}');
 
     expect(onCancel).toHaveBeenCalledOnce();

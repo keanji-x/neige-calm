@@ -150,16 +150,28 @@ export function DirectoryBrowser({
   // server with no path argument and the server canonicalizes to $HOME.
   // We seed it with `initialPath` (the field's current value, if any)
   // so reopening the browser lands where the user left off.
-  const [browsePath, setBrowsePath] = useState<string | null>(initialPath);
+  const [browsePath, setBrowsePath] = useState<string | null>(
+    initialPath ? normalizeDirectoryPath(initialPath) : null,
+  );
   const [parent, setParent] = useState<string | null>(null);
   const [entries, setEntries] = useState<ListdirResponse['entries']>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [filterText, setFilterText] = useState('');
+  const [pathText, setPathText] = useState(() =>
+    initialPath ? seedPath(initialPath) : '',
+  );
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
-  const filterInputRef = useRef<HTMLInputElement | null>(null);
+  const pathInputRef = useRef<HTMLInputElement | null>(null);
+  const pathTextRef = useRef(pathText);
+  const requestSeqRef = useRef(0);
   const refocusAfterLoadRef = useRef(false);
   const optionIdPrefix = useId();
+  const pathParts = useMemo(() => splitPathText(pathText), [pathText]);
+  const basenameFilter = pathParts.basename;
+  const updatePathText = useCallback((nextPathText: string) => {
+    pathTextRef.current = nextPathText;
+    setPathText(nextPathText);
+  }, []);
 
   const isInteractive = useCallback(
     (entry: DirEntry) => entry.is_dir || mode === 'file',
@@ -167,10 +179,10 @@ export function DirectoryBrowser({
   );
 
   const visibleEntries = useMemo(() => {
-    if (!filterText) return entries;
-    const needle = filterText.toLowerCase();
+    if (!basenameFilter) return entries;
+    const needle = basenameFilter.toLowerCase();
     return entries.filter((entry) => entry.name.toLowerCase().startsWith(needle));
-  }, [entries, filterText]);
+  }, [basenameFilter, entries]);
 
   const findFirstInteractiveIndex = useCallback(
     (candidateEntries: DirEntry[]) => {
@@ -218,42 +230,91 @@ export function DirectoryBrowser({
     activeEntry && activeIndex !== null ? optionIdFor(activeIndex) : undefined;
 
   useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    api
-      .listDir(browsePath ?? undefined)
-      .then((res) => {
-        if (cancelled) return;
-        setBrowsePath(res.path);
-        setParent(res.parent ?? null);
-        setEntries(res.entries);
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        const msg =
-          err instanceof CalmApiError
-            ? `${err.code === 'forbidden' ? 'Permission denied' : err.message}`
-            : err instanceof Error
-              ? err.message
-              : 'Failed to list directory';
-        setError(msg);
-        setEntries([]);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [browsePath]);
+    pathTextRef.current = pathText;
+  }, [pathText]);
+
+  const fetchListing = useCallback(
+    (
+      path: string | null,
+      options: {
+        guardParent?: string | null;
+        syncPathText?: 'empty' | 'canonical-parent';
+        focusAfterLoad?: boolean;
+      } = {},
+    ) => {
+      const requestSeq = ++requestSeqRef.current;
+      const requestPath = path ? normalizeDirectoryPath(path) : null;
+      if (options.focusAfterLoad) refocusAfterLoadRef.current = true;
+
+      setLoading(true);
+      setError(null);
+      api
+        .listDir(requestPath ?? undefined)
+        .then((res) => {
+          if (requestSeq !== requestSeqRef.current) return;
+
+          if (options.guardParent !== undefined) {
+            const currentParent = splitPathText(pathTextRef.current).parentPath;
+            if (currentParent !== options.guardParent) return;
+          } else if (path === null && pathTextRef.current !== '') {
+            return;
+          }
+
+          const currentParts = splitPathText(pathTextRef.current);
+          setBrowsePath(res.path);
+          setParent(res.parent ?? null);
+          setEntries(res.entries);
+          setError(null);
+
+          if (options.syncPathText === 'empty' && pathTextRef.current === '') {
+            updatePathText(seedPath(res.path));
+          } else if (options.syncPathText === 'canonical-parent') {
+            const suffix =
+              currentParts.parentPath === requestPath ? currentParts.basename : '';
+            updatePathText(`${seedPath(res.path)}${suffix}`);
+          }
+        })
+        .catch((err: unknown) => {
+          if (requestSeq !== requestSeqRef.current) return;
+          if (options.guardParent !== undefined) {
+            const currentParent = splitPathText(pathTextRef.current).parentPath;
+            if (currentParent !== options.guardParent) return;
+          }
+
+          const msg =
+            err instanceof CalmApiError
+              ? `${err.code === 'forbidden' ? 'Permission denied' : err.message}`
+              : err instanceof Error
+                ? err.message
+                : 'Failed to list directory';
+          setError(msg);
+          setEntries([]);
+        })
+        .finally(() => {
+          if (requestSeq === requestSeqRef.current) setLoading(false);
+        });
+    },
+    [updatePathText],
+  );
+
+  useEffect(() => {
+    fetchListing(browsePath, {
+      guardParent: browsePath,
+      syncPathText: initialPath ? 'canonical-parent' : 'empty',
+    });
+    // Initial listing only. Subsequent parent changes are driven by `pathText`
+    // edits or explicit navigation clicks.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     let secondRaf = 0;
-    // Dialog runs its own first-rAF focus pass; our second rAF wins focus back to the filter.
+    // Dialog runs its own first-rAF focus pass; our second rAF wins focus back to the path input.
     const firstRaf = requestAnimationFrame(() => {
       secondRaf = requestAnimationFrame(() => {
-        filterInputRef.current?.focus();
+        const input = pathInputRef.current;
+        input?.focus();
+        if (input) input.setSelectionRange(input.value.length, input.value.length);
       });
     });
     return () => {
@@ -263,8 +324,31 @@ export function DirectoryBrowser({
   }, []);
 
   useEffect(() => {
-    setFilterText('');
-  }, [browsePath]);
+    if (pathText === '' && browsePath === null) return;
+    if (!pathParts.parentPath) {
+      requestSeqRef.current += 1;
+      setLoading(false);
+      setError('Enter an absolute path');
+      return;
+    }
+
+    if (pathParts.parentPath === browsePath) {
+      setError(null);
+      return;
+    }
+
+    const targetParent = pathParts.parentPath;
+    setLoading(true);
+    setError(null);
+    const timeout = window.setTimeout(() => {
+      fetchListing(targetParent, {
+        guardParent: targetParent,
+        syncPathText: 'canonical-parent',
+      });
+    }, 120);
+
+    return () => window.clearTimeout(timeout);
+  }, [browsePath, fetchListing, pathParts.parentPath, pathText]);
 
   useEffect(() => {
     if (loading) return;
@@ -282,14 +366,22 @@ export function DirectoryBrowser({
     if (loading || !refocusAfterLoadRef.current) return;
     refocusAfterLoadRef.current = false;
     const raf = requestAnimationFrame(() => {
-      filterInputRef.current?.focus();
+      const input = pathInputRef.current;
+      input?.focus();
+      if (input) input.setSelectionRange(input.value.length, input.value.length);
     });
     return () => cancelAnimationFrame(raf);
   }, [browsePath, loading]);
 
   const goTo = (path: string) => {
-    refocusAfterLoadRef.current = true;
-    setBrowsePath(path);
+    const normalizedPath = normalizeDirectoryPath(path);
+    updatePathText(seedPath(normalizedPath));
+    setBrowsePath(normalizedPath);
+    fetchListing(normalizedPath, {
+      guardParent: normalizedPath,
+      syncPathText: 'canonical-parent',
+      focusAfterLoad: true,
+    });
   };
 
   const activateEntry = (entry: ListdirResponse['entries'][number]) => {
@@ -305,9 +397,7 @@ export function DirectoryBrowser({
     if (browsePath) onSelect(browsePath);
   };
 
-  const handleFilterKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    const input = event.currentTarget;
-
+  const handlePathKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'ArrowDown') {
       event.preventDefault();
       setActiveIndex((current) => findNextInteractiveIndex(current, 1));
@@ -324,19 +414,8 @@ export function DirectoryBrowser({
       event.preventDefault();
       if (activeEntry) {
         activateEntry(activeEntry);
-      } else if (!filterText && browsePath) {
+      } else if (browsePath && pathText === seedPath(browsePath)) {
         onSelect(browsePath);
-      }
-      return;
-    }
-
-    if (event.key === 'ArrowRight') {
-      const caretAtEnd =
-        input.selectionStart === input.value.length &&
-        input.selectionEnd === input.value.length;
-      if (caretAtEnd && activeEntry?.is_dir) {
-        event.preventDefault();
-        activateEntry(activeEntry);
       }
       return;
     }
@@ -344,15 +423,6 @@ export function DirectoryBrowser({
     if (event.key === '/' && activeEntry?.is_dir) {
       event.preventDefault();
       activateEntry(activeEntry);
-      return;
-    }
-
-    if (event.key === 'ArrowLeft') {
-      const caretAtStart = input.selectionStart === 0 && input.selectionEnd === 0;
-      if (caretAtStart && parent) {
-        event.preventDefault();
-        goTo(parent);
-      }
       return;
     }
 
@@ -384,25 +454,22 @@ export function DirectoryBrowser({
         >
           ↑
         </button>
-        <span className="dirpicker-cwd" title={browsePath ?? ''}>
-          {browsePath ?? '…'}
-        </span>
-      </div>
-      <div className="dirpicker-filter">
-        <input
-          ref={filterInputRef}
-          type="text"
-          className="dirpicker-filter-input"
-          value={filterText}
-          onChange={(event) => setFilterText(event.currentTarget.value)}
-          onKeyDown={handleFilterKeyDown}
-          placeholder="Filter"
-          aria-label="Filter directory entries"
-          aria-controls={listboxId}
-          aria-activedescendant={activeOptionId}
-          autoComplete="off"
-          spellCheck={false}
-        />
+        <div className="dirpicker-path">
+          <input
+            ref={pathInputRef}
+            type="text"
+            className="dirpicker-path-input"
+            value={pathText}
+            onChange={(event) => updatePathText(event.currentTarget.value)}
+            onKeyDown={handlePathKeyDown}
+            placeholder="Absolute path"
+            aria-label="Directory path"
+            aria-controls={listboxId}
+            aria-activedescendant={activeOptionId}
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </div>
       </div>
       <ul
         id={listboxId}
@@ -476,4 +543,30 @@ function joinPath(base: string, name: string): string {
   if (!base) return name;
   if (base.endsWith('/')) return base + name;
   return base + '/' + name;
+}
+
+function seedPath(path: string): string {
+  const normalized = normalizeDirectoryPath(path);
+  return normalized === '/' ? '/' : `${normalized}/`;
+}
+
+function normalizeDirectoryPath(path: string): string {
+  if (path === '/') return '/';
+  const trimmed = path.replace(/\/+$/, '');
+  return trimmed || '/';
+}
+
+function splitPathText(path: string): { parentPath: string | null; basename: string } {
+  const slashIndex = path.lastIndexOf('/');
+  if (slashIndex === -1) return { parentPath: null, basename: path };
+
+  const parentText = path.slice(0, slashIndex + 1);
+  if (!parentText.startsWith('/')) {
+    return { parentPath: null, basename: path.slice(slashIndex + 1) };
+  }
+
+  return {
+    parentPath: normalizeDirectoryPath(parentText),
+    basename: path.slice(slashIndex + 1),
+  };
 }

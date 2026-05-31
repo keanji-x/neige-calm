@@ -2085,39 +2085,25 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 .dirpicker-up:hover:not(:disabled) { background: var(--overlay-hover); }
 [data-theme="dark"] .dirpicker-up:hover:not(:disabled) { background: var(--overlay-hover); }
 .dirpicker-up:disabled { opacity: 0.4; cursor: not-allowed; }
-.dirpicker-cwd {
-  flex: 1; min-width: 0;
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  color: var(--text-2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  /* RTL keeps the deepest segment of the path visible when truncated,
-     which is the bit users actually care about. */
-  direction: rtl;
-  text-align: left;
+.dirpicker-path {
+  flex: 1 1 auto;
+  min-width: 0;
 }
-.dirpicker-filter {
-  flex: 0 0 auto;
-  padding: var(--space-3) var(--space-7);
-  border-bottom: 1px solid var(--hairline);
-  background: var(--paper);
-}
-.dirpicker-filter-input {
+.dirpicker-path-input {
   width: 100%;
   height: 32px;
   padding: var(--space-0) var(--space-4);
-  font: inherit;
+  font-family: var(--font-mono);
   font-size: var(--text-sm);
+  font-feature-settings: "tnum";
   border: 1px solid var(--hairline-strong);
   border-radius: var(--radius-sm);
-  background: var(--surface-card);
+  background: var(--paper);
   color: var(--text);
   outline: none;
 }
-.dirpicker-filter-input::placeholder { color: var(--text-3); }
-.dirpicker-filter-input:focus {
+.dirpicker-path-input::placeholder { color: var(--text-3); }
+.dirpicker-path-input:focus {
   border-color: var(--text-3);
   box-shadow: 0 0 0 2px oklch(60% 0.04 245 / 0.14);
 }
