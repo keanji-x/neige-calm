@@ -69,16 +69,18 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
 use crate::card_role_cache::CardRoleCache;
-use crate::db::sqlite::{card_with_codex_create_tx, card_with_terminal_rollback_tx};
-use crate::db::write_in_tx_typed;
+use crate::db::sqlite::{
+    card_update_tx, card_with_codex_create_tx, card_with_terminal_rollback_tx,
+};
 use crate::db::{Repo, RouteRepo};
+use crate::db::{write_in_tx_typed, write_with_event_typed};
 use crate::error::CalmError;
 use crate::event::{
     BroadcastEnvelope, EditAuthor, Event, EventBus, EventScope, SubscribeFilter, SubscribeScope,
 };
 use crate::event_cursor::EventCursorCache;
 use crate::ids::{ActorId, CardId, CoveId, WaveId};
-use crate::model::CardRole;
+use crate::model::{CardPatch, CardRole};
 use crate::routes::codex_cards::shell_single_quote;
 use crate::routes::settings::load_settings;
 use crate::routes::terminal::spawn_terminal_with_parts;
@@ -273,12 +275,107 @@ impl Dispatcher {
     /// codex turn notifications rather than dispatcher pushes, so manual
     /// remote-TUI input can clear the empty-goal bootstrap marker as soon
     /// as a rollout exists.
+    pub fn initial_prompt_ready_sink_for(
+        &self,
+        spec_card_id: CardId,
+        wave_id: WaveId,
+        cove_id: CoveId,
+    ) -> crate::spec_appserver::InitialPromptReadySink {
+        let repo = Arc::clone(&self.inner.repo);
+        let events = self.inner.events.clone();
+        let card_role_cache = self.inner.card_role_cache.clone();
+        let wave_cove_cache = self.inner.wave_cove_cache.clone();
+        Arc::new(move |thread_id: String| {
+            let repo = Arc::clone(&repo);
+            let spec_card_id = spec_card_id.clone();
+            let wave_id = wave_id.clone();
+            let cove_id = cove_id.clone();
+            let events = events.clone();
+            let card_role_cache = card_role_cache.clone();
+            let wave_cove_cache = wave_cove_cache.clone();
+            Box::pin(async move {
+                let scope = EventScope::Card {
+                    card: spec_card_id.clone(),
+                    wave: wave_id,
+                    cove: cove_id,
+                };
+                let card_id_for_tx = spec_card_id.clone();
+                let thread_id_for_tx = thread_id.clone();
+                let result = write_with_event_typed(
+                    repo.as_ref(),
+                    ActorId::Kernel,
+                    scope,
+                    None,
+                    &events,
+                    &card_role_cache,
+                    &wave_cove_cache,
+                    move |tx| {
+                        Box::pin(async move {
+                            let payload_text: Option<(String,)> =
+                                sqlx::query_as("SELECT payload FROM cards WHERE id = ?1")
+                                    .bind(card_id_for_tx.as_str())
+                                    .fetch_optional(&mut **tx)
+                                    .await?;
+                            let payload_text = payload_text
+                                .ok_or_else(|| {
+                                    CalmError::NotFound(format!("card {card_id_for_tx}"))
+                                })?
+                                .0;
+                            let mut payload: serde_json::Value =
+                                serde_json::from_str(&payload_text).map_err(|e| {
+                                    CalmError::Internal(format!(
+                                        "card {card_id_for_tx} payload is not valid JSON: {e}"
+                                    ))
+                                })?;
+                            let Some(map) = payload.as_object_mut() else {
+                                return Err(CalmError::Internal(format!(
+                                    "spec card {card_id_for_tx} payload is not a JSON object; \
+                                     cannot persist TUI-created codex_thread_id"
+                                )));
+                            };
+                            map.insert(
+                                "codex_thread_id".into(),
+                                serde_json::Value::String(thread_id_for_tx),
+                            );
+                            map.remove("appserver_needs_initial_prompt");
+                            let card = card_update_tx(
+                                tx,
+                                card_id_for_tx.as_str(),
+                                CardPatch {
+                                    kind: None,
+                                    sort: None,
+                                    payload: Some(payload),
+                                    deletable: None,
+                                },
+                            )
+                            .await?;
+                            Ok((card.clone(), Event::CardUpdated(card)))
+                        })
+                    },
+                )
+                .await;
+                if let Err(e) = result {
+                    tracing::warn!(
+                        spec_card_id = %spec_card_id,
+                        thread_id = %thread_id,
+                        error = %e,
+                        "spec push lifecycle: persist TUI-created thread id failed; \
+                         next boot may fresh-spawn instead of resuming this rollout"
+                    );
+                }
+            })
+        })
+    }
+
+    /// Boot-recovery compatibility sink for the existing initial-prompt
+    /// bootstrap path. PR 1/2 only changes the create-wave hot path; PR 2/2
+    /// will move boot recovery onto the eventized thread-id backfill contract.
     pub fn initial_prompt_clear_sink_for(
         &self,
         spec_card_id: CardId,
-    ) -> crate::spec_appserver::InitialPromptClearSink {
+    ) -> crate::spec_appserver::InitialPromptReadySink {
         let repo = Arc::clone(&self.inner.repo);
-        Arc::new(move || {
+        Arc::new(move |_thread_id: String| {
             let repo = Arc::clone(&repo);
             let spec_card_id = spec_card_id.clone();
             Box::pin(async move {

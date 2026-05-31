@@ -58,10 +58,19 @@ use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::ws;
+use calm_session::{
+    ClientCapabilities, ClientMsg, DaemonMsg, InitialScrollback, PROTOCOL_VERSION, PtySize,
+    RenderEncoding, Role,
+};
+use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tempfile::TempDir;
+use tokio::net::TcpListener;
+use tokio_tungstenite::tungstenite::Message as TMessage;
 use tower::ServiceExt;
+use uuid::Uuid;
 
 const DEFAULT_CODEX_BIN: &str = "~/.nvm/versions/node/v24.4.1/bin/codex";
 const DEFAULT_PROXY: &str = "http://127.0.0.1:2080";
@@ -136,6 +145,103 @@ async fn get_cards(app: axum::Router, wave_id: &str) -> Value {
         .unwrap();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null)
+}
+
+async fn serve_app_for_ws(app: axum::Router) -> std::io::Result<std::net::SocketAddr> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    Ok(addr)
+}
+
+fn terminal_hello(terminal_id: &str) -> ClientMsg {
+    ClientMsg::ClientHello {
+        protocol_version: PROTOCOL_VERSION,
+        terminal_id: terminal_id.to_string(),
+        client_id: Uuid::new_v4(),
+        desired_size: PtySize {
+            cols: 100,
+            rows: 30,
+            pixel_width: None,
+            pixel_height: None,
+        },
+        cell_size: None,
+        initial_scrollback: InitialScrollback::None,
+        resume_from: None,
+        role_hint: Some(Role::Observer),
+        capabilities: ClientCapabilities {
+            render_encodings: vec![RenderEncoding::Vt],
+            supports_scrollback: true,
+            supports_sixel: false,
+            supports_images: false,
+            kernel_originated_input: false,
+        },
+    }
+}
+
+fn daemon_msg_text(msg: &DaemonMsg) -> String {
+    match msg {
+        DaemonMsg::ServerHello { snapshot, .. } => {
+            String::from_utf8_lossy(&snapshot.data).into_owned()
+        }
+        DaemonMsg::RenderPatch(patch) => String::from_utf8_lossy(&patch.data).into_owned(),
+        DaemonMsg::RenderSnapshot(snapshot) => String::from_utf8_lossy(&snapshot.data).into_owned(),
+        other => format!("{other:?}"),
+    }
+}
+
+async fn assert_terminal_attach_has_no_resume_error(addr: std::net::SocketAddr, terminal_id: &str) {
+    let ws_url = format!("ws://{addr}/api/terminals/{terminal_id}");
+    let (mut ws, _) = tokio::time::timeout(
+        Duration::from_secs(3),
+        tokio_tungstenite::connect_async(&ws_url),
+    )
+    .await
+    .expect("terminal ws connect timed out")
+    .expect("terminal ws connect failed");
+    ws.send(TMessage::Text(
+        serde_json::to_string(&terminal_hello(terminal_id)).unwrap(),
+    ))
+    .await
+    .expect("send ClientHello");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut saw_frame = false;
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline - tokio::time::Instant::now();
+        let next = match tokio::time::timeout(remaining, ws.next()).await {
+            Ok(Some(Ok(TMessage::Text(text)))) => text,
+            Ok(Some(Ok(_))) => continue,
+            Ok(Some(Err(e))) => panic!("terminal ws read error: {e}"),
+            Ok(None) => break,
+            Err(_) => break,
+        };
+        saw_frame = true;
+        let msg: DaemonMsg = serde_json::from_str(&next).expect("decode terminal daemon msg");
+        if matches!(msg, DaemonMsg::ProtocolError { .. }) {
+            panic!("terminal attach returned protocol error: {msg:?}");
+        }
+        let text = daemon_msg_text(&msg);
+        let lower = text.to_ascii_lowercase();
+        assert!(
+            !lower.contains("failed to resume session")
+                && !lower.contains("no rollout")
+                && !lower.contains("-32600"),
+            "terminal attach surfaced a resume failure banner/frame: {text:?}"
+        );
+    }
+    assert!(
+        saw_frame,
+        "terminal attach produced no frames within budget"
+    );
 }
 
 /// Find the spec card on a fresh wave; returns `(card_id, payload)`.
@@ -402,11 +508,17 @@ async fn spec_push_empty_title_boots_idle_without_initial_turn() {
         })
         .await
         .unwrap();
-    let app = routes::router()
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
+    let rest = routes::router().layer(axum::middleware::from_fn(
+        calm_server::actor::actor_middleware,
+    ));
+    let app = axum::Router::new()
+        .merge(rest)
+        .merge(ws::router())
         .with_state(state.clone());
+    let ws_addr = match serve_app_for_ws(app.clone()).await {
+        Ok(addr) => addr,
+        Err(e) => skip!("cannot bind local WS listener in this sandbox: {e}"),
+    };
 
     let (status, body) = post(
         app.clone(),
@@ -429,10 +541,10 @@ async fn spec_push_empty_title_boots_idle_without_initial_turn() {
     let Some(initial_status) = state.spec_push.status(&wave_key).await else {
         skip!("empty-title wave created but no spec push handle was parked; body={body}");
     };
-    assert_eq!(initial_status.phase, SpecPushPhase::Idle);
+    assert_eq!(initial_status.phase, SpecPushPhase::PendingThreadStart);
     assert!(
-        initial_status.last_thread_id.is_some(),
-        "empty-title boot still starts a codex thread"
+        initial_status.last_thread_id.is_none(),
+        "empty-title boot must not start a kernel-owned codex thread"
     );
     assert_eq!(
         initial_status.last_turn_id, None,
@@ -449,7 +561,7 @@ async fn spec_push_empty_title_boots_idle_without_initial_turn() {
         .status(&wave_key)
         .await
         .expect("handle remains parked");
-    assert_eq!(settled_status.phase, SpecPushPhase::Idle);
+    assert_eq!(settled_status.phase, SpecPushPhase::PendingThreadStart);
     assert_eq!(
         settled_status.last_turn_id, None,
         "empty-title boot must stay turnless until a later push/user turn"
@@ -457,12 +569,17 @@ async fn spec_push_empty_title_boots_idle_without_initial_turn() {
 
     let cards = get_cards(app, &wave_id).await;
     let (_spec_id, payload) = find_spec_card(&cards);
+    let terminal_id = payload
+        .get("terminal_id")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("spec payload missing terminal_id: {payload}"))
+        .to_string();
     assert!(
         payload
             .get("codex_thread_id")
             .and_then(Value::as_str)
-            .is_some_and(|id| !id.is_empty()),
-        "spec card payload should persist codex_thread_id for empty-title boot; payload={payload}"
+            .is_none(),
+        "spec card payload must not persist codex_thread_id before the TUI-created first turn; payload={payload}"
     );
     assert_eq!(
         payload
@@ -475,6 +592,8 @@ async fn spec_push_empty_title_boots_idle_without_initial_turn() {
         payload.get("prompt").and_then(Value::as_str).is_none(),
         "empty title should not persist an auto-submit prompt; payload={payload}"
     );
+
+    assert_terminal_attach_has_no_resume_error(ws_addr, &terminal_id).await;
 
     let _ = state.spec_push.remove(&wave_key);
     tokio::time::sleep(Duration::from_millis(800)).await;
