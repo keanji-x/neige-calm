@@ -5,6 +5,8 @@ use std::net::SocketAddr;
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
 #[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
@@ -66,6 +68,7 @@ enum SystemCommand {
     /// Run the supervisor and local admin API.
     Serve(SystemServeArgs),
     /// Print a systemd unit that runs `neige-app system serve`.
+    #[command(alias = "print-unit")]
     Unit(SystemUnitArgs),
     /// Create a starter config.toml.
     InitConfig(SystemInitConfigArgs),
@@ -160,6 +163,10 @@ struct SystemUnitArgs {
     /// Unit name used in Description.
     #[arg(long)]
     name: Option<String>,
+
+    /// PATH baked into the generated systemd unit. Defaults to this process' PATH.
+    #[arg(long)]
+    path: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -178,6 +185,10 @@ struct SystemInstallArgs {
     /// Overwrite an existing user systemd unit file.
     #[arg(long)]
     force: bool,
+
+    /// PATH baked into the generated systemd unit. Defaults to this process' PATH.
+    #[arg(long)]
+    path: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -753,7 +764,11 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|| cfg.config_path.clone());
             let bin = args.bin.unwrap_or_else(|| cfg.systemd.bin.clone());
             let name = args.name.unwrap_or_else(|| cfg.systemd.unit_name.clone());
-            print!("{}", render_systemd_unit(&name, &bin, &config_path)?);
+            let path_env = resolve_systemd_path_env(args.path.as_deref())?;
+            print!(
+                "{}",
+                render_systemd_unit(&name, &bin, &config_path, &path_env)?
+            );
             Ok(())
         }
         CommandMode::System(SystemCommand::InitConfig(args)) => run_init_config(args),
@@ -795,8 +810,15 @@ fn run_install(args: SystemInstallArgs) -> anyhow::Result<()> {
             cfg.systemd.unit_path.display()
         );
     }
+    let path_env = resolve_systemd_path_env(args.path.as_deref())?;
+    warn_missing_spawn_tools(&path_env);
     let token_created = ensure_admin_token_file(cfg.admin.token_file.as_ref())?;
-    let unit = render_systemd_unit(&cfg.systemd.unit_name, &cfg.systemd.bin, &config_path)?;
+    let unit = render_systemd_unit(
+        &cfg.systemd.unit_name,
+        &cfg.systemd.bin,
+        &config_path,
+        &path_env,
+    )?;
     std::fs::write(&cfg.systemd.unit_path, unit)
         .with_context(|| format!("write {}", cfg.systemd.unit_path.display()))?;
     println!(
@@ -1437,9 +1459,16 @@ impl IntoResponse for ApiError {
     }
 }
 
-fn render_systemd_unit(name: &str, bin: &Path, config_path: &Path) -> anyhow::Result<String> {
+fn render_systemd_unit(
+    name: &str,
+    bin: &Path,
+    config_path: &Path,
+    path_env: &str,
+) -> anyhow::Result<String> {
     validate_systemd_exec_path(bin, "systemd.bin")?;
     validate_systemd_exec_path(config_path, "config path")?;
+    validate_systemd_path_env(path_env)?;
+    let escaped_path_env = escape_systemd_environment_value(path_env);
     Ok(format!(
         "\
 [Unit]
@@ -1450,6 +1479,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 # M1 is system-only: the user systemd manager supervises neige-app; neige-app supervises calm-server.
+# PATH must include user-local bin dirs (~/.local/bin etc.) so calm-server can spawn codex/claude.
+Environment=\"PATH={escaped_path_env}\"
 ExecStart={bin} system serve --config {config_path}
 Restart=always
 RestartSec=2
@@ -1460,7 +1491,66 @@ WantedBy=default.target
         name = name,
         bin = bin.display(),
         config_path = config_path.display(),
+        escaped_path_env = escaped_path_env,
     ))
+}
+
+fn resolve_systemd_path_env(override_path: Option<&str>) -> anyhow::Result<String> {
+    let path_env = override_path
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
+    validate_systemd_path_env(&path_env)?;
+    Ok(path_env)
+}
+
+fn validate_systemd_path_env(path_env: &str) -> anyhow::Result<()> {
+    if path_env.is_empty() {
+        anyhow::bail!(
+            "PATH for systemd unit must not be empty (set $PATH in the shell that runs `system install`, or pass --path explicitly)"
+        );
+    }
+    if path_env.chars().any(|c| c.is_ascii_control()) {
+        anyhow::bail!("PATH for systemd unit must not contain ASCII control characters");
+    }
+    if path_env.contains('%') {
+        anyhow::bail!("PATH for systemd unit must not contain % systemd specifiers");
+    }
+    Ok(())
+}
+
+fn escape_systemd_environment_value(value: &str) -> String {
+    // systemd.exec(5) Environment= takes a quoted, C-style-escaped value. "$" is literal in Environment= (no variable expansion), only specifier "%" expansion happens — and we reject "%" upstream.
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn warn_missing_spawn_tools(path_env: &str) {
+    for tool in ["codex", "claude", "git"] {
+        if !path_has_executable(path_env, tool) {
+            eprintln!(
+                "warning: {tool} not found on PATH ({path_env}); waves using {tool} will fail to start"
+            );
+        }
+    }
+}
+
+fn path_has_executable(path_env: &str, tool: &str) -> bool {
+    path_env
+        .split(':')
+        .map(|dir| Path::new(dir).join(tool))
+        .any(|candidate| is_executable_file(&candidate))
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
 }
 
 fn validate_systemd_exec_path(path: &Path, label: &str) -> anyhow::Result<()> {
@@ -1659,6 +1749,7 @@ mod tests {
             "neige-app",
             &PathBuf::from("/opt/neige/bin/neige-app"),
             &PathBuf::from("/home/me/.config/neige-app/config.toml"),
+            "/usr/local/bin:/usr/bin",
         )
         .expect("render unit");
 
@@ -1676,6 +1767,7 @@ mod tests {
             "neige-app",
             &PathBuf::from("/opt/neige app/neige-app"),
             &PathBuf::from("/home/me/.config/neige-app/config.toml"),
+            "/usr/local/bin:/usr/bin",
         )
         .expect_err("unsafe path must fail");
         assert!(err.to_string().contains("whitespace"));
@@ -1687,9 +1779,147 @@ mod tests {
             "neige-app",
             &PathBuf::from("/opt/neige%h/neige-app"),
             &PathBuf::from("/home/me/.config/neige-app/config.toml"),
+            "/usr/local/bin:/usr/bin",
         )
         .expect_err("percent path must fail");
         assert!(err.to_string().contains("%"));
+    }
+
+    #[test]
+    fn systemd_unit_includes_path_env() {
+        let unit = render_systemd_unit(
+            "neige-app",
+            &PathBuf::from("/opt/neige/bin/neige-app"),
+            &PathBuf::from("/home/me/.config/neige-app/config.toml"),
+            "/foo/bin:/usr/bin",
+        )
+        .expect("render unit");
+
+        assert_eq!(
+            unit.matches("Environment=\"PATH=/foo/bin:/usr/bin\"")
+                .count(),
+            1
+        );
+        let env_pos = unit
+            .find("Environment=\"PATH=/foo/bin:/usr/bin\"")
+            .expect("PATH environment line");
+        let exec_pos = unit.find("ExecStart=").expect("ExecStart line");
+        assert!(env_pos < exec_pos);
+    }
+
+    #[test]
+    fn systemd_unit_quotes_space_in_path() {
+        let unit = render_systemd_unit(
+            "neige-app",
+            &PathBuf::from("/opt/neige/bin/neige-app"),
+            &PathBuf::from("/home/me/.config/neige-app/config.toml"),
+            "/opt/ai tools/bin:/usr/bin",
+        )
+        .expect("render unit");
+
+        assert!(unit.contains("Environment=\"PATH=/opt/ai tools/bin:/usr/bin\"\n"));
+    }
+
+    #[test]
+    fn systemd_unit_preserves_literal_dollar_in_path() {
+        let unit = render_systemd_unit(
+            "neige-app",
+            &PathBuf::from("/opt/neige/bin/neige-app"),
+            &PathBuf::from("/home/me/.config/neige-app/config.toml"),
+            "/opt/x$y/bin",
+        )
+        .expect("render unit");
+
+        assert!(
+            unit.lines()
+                .any(|line| line == "Environment=\"PATH=/opt/x$y/bin\"")
+        );
+    }
+
+    #[test]
+    fn systemd_unit_escapes_backslash_in_path() {
+        let unit = render_systemd_unit(
+            "neige-app",
+            &PathBuf::from("/opt/neige/bin/neige-app"),
+            &PathBuf::from("/home/me/.config/neige-app/config.toml"),
+            "/a\\b/bin",
+        )
+        .expect("render unit");
+
+        assert!(unit.contains("Environment=\"PATH=/a\\\\b/bin\"\n"));
+    }
+
+    #[test]
+    fn systemd_unit_escapes_double_quote_in_path() {
+        let unit = render_systemd_unit(
+            "neige-app",
+            &PathBuf::from("/opt/neige/bin/neige-app"),
+            &PathBuf::from("/home/me/.config/neige-app/config.toml"),
+            "/a\"b/bin",
+        )
+        .expect("render unit");
+
+        assert!(unit.contains("Environment=\"PATH=/a\\\"b/bin\"\n"));
+    }
+
+    #[test]
+    fn systemd_unit_rejects_empty_path() {
+        let err = render_systemd_unit(
+            "neige-app",
+            &PathBuf::from("/opt/neige/bin/neige-app"),
+            &PathBuf::from("/home/me/.config/neige-app/config.toml"),
+            "",
+        )
+        .expect_err("empty PATH must fail");
+        assert!(err.to_string().contains("pass --path explicitly"));
+    }
+
+    #[test]
+    fn systemd_unit_rejects_newline_in_path() {
+        let err = render_systemd_unit(
+            "neige-app",
+            &PathBuf::from("/opt/neige/bin/neige-app"),
+            &PathBuf::from("/home/me/.config/neige-app/config.toml"),
+            "/foo/bin\n/usr/bin",
+        )
+        .expect_err("newline in PATH must fail");
+        assert!(err.to_string().contains("control"));
+    }
+
+    #[test]
+    fn systemd_unit_rejects_tab_in_path() {
+        let err = render_systemd_unit(
+            "neige-app",
+            &PathBuf::from("/opt/neige/bin/neige-app"),
+            &PathBuf::from("/home/me/.config/neige-app/config.toml"),
+            "/foo/bin\t/usr/bin",
+        )
+        .expect_err("tab in PATH must fail");
+        assert!(err.to_string().contains("control"));
+    }
+
+    #[test]
+    fn systemd_unit_rejects_percent_in_path() {
+        let err = render_systemd_unit(
+            "neige-app",
+            &PathBuf::from("/opt/neige/bin/neige-app"),
+            &PathBuf::from("/home/me/.config/neige-app/config.toml"),
+            "/foo/%h/bin:/usr/bin",
+        )
+        .expect_err("percent in PATH must fail");
+        assert!(err.to_string().contains("%"));
+    }
+
+    #[test]
+    fn systemd_unit_rejects_nul_in_path() {
+        let err = render_systemd_unit(
+            "neige-app",
+            &PathBuf::from("/opt/neige/bin/neige-app"),
+            &PathBuf::from("/home/me/.config/neige-app/config.toml"),
+            "/foo/bin\0/usr/bin",
+        )
+        .expect_err("NUL in PATH must fail");
+        assert!(err.to_string().contains("control"));
     }
 
     #[test]
@@ -1704,6 +1934,10 @@ mod tests {
     #[test]
     fn cli_shape_is_system_only() {
         assert!(Cli::try_parse_from(["neige-app", "system", "unit"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["neige-app", "system", "print-unit", "--path", "/usr/bin"])
+                .is_ok()
+        );
         assert!(Cli::try_parse_from(["neige-app", "desktop", "serve"]).is_err());
         assert!(Cli::try_parse_from(["neige-app", "container", "serve"]).is_err());
     }
@@ -1838,6 +2072,7 @@ bin = "/usr/local/bin/neige-app"
         let err = run_install(SystemInstallArgs {
             config: Some(config_path),
             force: false,
+            path: Some("/usr/local/bin:/usr/bin".into()),
         })
         .expect_err("existing unit must fail");
 
@@ -1871,6 +2106,7 @@ bin = "/usr/local/bin/neige-app"
         run_install(SystemInstallArgs {
             config: Some(config_path),
             force: false,
+            path: Some("/usr/local/bin:/usr/bin".into()),
         })
         .expect("install");
 

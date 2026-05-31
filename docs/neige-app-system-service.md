@@ -68,6 +68,10 @@ systemctl --user daemon-reload
 systemctl --user enable --now neige-app.service
 ```
 
+`system install` bakes the caller's `$PATH` into the unit; pass `--path "$PATH"`
+if the install shell has the wrong PATH. `warning: <tool> not found on PATH`
+for `codex` / `claude` / `git` means matching waves will be inert.
+
 `system install` creates the config if missing, creates `admin.token_file` if
 missing, and writes the user unit to the configured `systemd.unit_path`. It
 refuses to overwrite an existing unit unless `--force` is passed. It does not
