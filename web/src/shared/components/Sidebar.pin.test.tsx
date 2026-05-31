@@ -76,6 +76,17 @@ describe('Sidebar pinned section', () => {
     expect(screen.getByText('My wave')).toBeTruthy();
   });
 
+  it('renders the fallback label for a pinned wave with an empty title', () => {
+    const wave = makeWave({
+      title: '',
+      lifecycle: 'draft',
+      anyCardNeedsInput: false,
+      pinnedAt: 1000,
+    });
+    render(wrap(<Sidebar {...sidebarProps([wave])} />));
+    expect(screen.getByRole('region', { name: 'Pinned' })).toHaveTextContent('Untitled wave');
+  });
+
   it('pinned wave appears in both Pinned and Waiting on you', () => {
     const wave = makeWave({ lifecycle: 'blocked', pinnedAt: 1000 });
     render(wrap(<Sidebar {...sidebarProps([wave])} />));

@@ -5,6 +5,7 @@ import { useTheme } from '../app/theme';
 import { CardHead } from '../cards/CardHead';
 import { isRunning, waveNeedsUserAttention } from '../shared/lifecycle';
 import { lifecycleLabel } from '../shared/components/WaveLifecycleBadge';
+import { waveDisplayTitle } from '../shared/waveTitle';
 import type { Cove, Route, Wave } from '../types';
 
 // xterm.js is heavy and only mounts when the Today home panel resolves a
@@ -219,12 +220,13 @@ function CalEventRow({
   // The dot flags are visual; the full lifecycle state goes into the
   // button's aria-label so screen readers and axe checks see the same
   // information whether or not the lifecycle text line is shown.
+  const displayTitle = waveDisplayTitle(wave.title);
   const stateBits: string[] = [];
   if (isWaiting) stateBits.push('waiting on you');
   if (eventRunning) stateBits.push('running');
   const coveName = c?.name ?? 'Unknown cove';
   const label =
-    `Wave ${wave.title}` +
+    `Wave ${displayTitle}` +
     (stateBits.length > 0 ? `, ${stateBits.join(', ')}` : '') +
     `, ${lifecycleText}` +
     `, in cove ${coveName}`;
@@ -251,7 +253,7 @@ function CalEventRow({
       />
       <span className="cal-event-body">
         <span className="cal-event-title-row">
-          <span className="cal-event-title">{wave.title}</span>
+          <span className="cal-event-title">{displayTitle}</span>
           {isWaiting && (
             <span className="cal-event-flag warn" aria-hidden="true" />
           )}

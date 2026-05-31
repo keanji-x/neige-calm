@@ -65,17 +65,21 @@ afterEach(() => {
 });
 
 describe('NewTaskForm — initial render', () => {
-  it('renders title, cwd, and cove fields with required labels', () => {
+  it('renders title, cwd, and cove fields with only cwd required', () => {
     vi.spyOn(api, 'listCoves').mockResolvedValue([]);
     renderForm();
-    expect(screen.getByLabelText(/task description/i)).toBeTruthy();
-    expect(screen.getByLabelText(/working directory/i)).toBeTruthy();
+    const title = screen.getByLabelText(/task description/i) as HTMLTextAreaElement;
+    const cwd = screen.getByLabelText(/working directory/i) as HTMLInputElement;
+    expect(title).toBeTruthy();
+    expect(title.required).toBe(false);
+    expect(cwd).toBeTruthy();
+    expect(cwd.required).toBe(true);
     // Heading is "New task"; the wrapping section is role=form for
     // a11y lookup.
     expect(screen.getByRole('form', { name: /new task/i })).toBeTruthy();
   });
 
-  it('disables Create when no title/cwd entered', () => {
+  it('disables Create when no cwd entered', () => {
     vi.spyOn(api, 'listCoves').mockResolvedValue([]);
     renderForm();
     expect(screen.getByRole('button', { name: /create task/i })).toBeDisabled();
@@ -188,6 +192,44 @@ describe('NewTaskForm — submit', () => {
     expect(body.attach_folder).toBe(true);
     expect(body.title).toBe('do the thing');
     expect(body.theme).toMatchObject({ fg: expect.any(Array), bg: expect.any(Array) });
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+  });
+
+  it('posts createWave with an empty title when task description is blank', async () => {
+    vi.spyOn(api, 'listCoves').mockResolvedValue([
+      { id: 'cove-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
+    ]);
+    vi.spyOn(api, 'resolveCovePath').mockResolvedValue(null);
+    const createSpy = vi.spyOn(api, 'createWave').mockResolvedValue({
+      id: 'w-empty',
+      cove_id: 'cove-1',
+      title: '',
+      cwd: '/Users/me/code/blank',
+      lifecycle: 'draft',
+      sort: 0,
+      archived_at: null,
+      terminal_at: null,
+      updated_at: 0,
+    } as unknown as Awaited<ReturnType<typeof api.createWave>>);
+
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const { onCreated } = renderForm({ defaultCoveId: 'cove-1' });
+
+    await user.type(screen.getByLabelText(/working directory/i), '/Users/me/code/blank');
+    await act(async () => {
+      vi.advanceTimersByTime(400);
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('radiogroup', { name: /cove selection/i })).toBeTruthy();
+    });
+
+    await user.click(screen.getByRole('button', { name: /create task/i }));
+    await waitFor(() => expect(createSpy).toHaveBeenCalled());
+    const body = createSpy.mock.calls[0][0];
+    expect(body.cove_id).toBe('cove-1');
+    expect(body.cwd).toBe('/Users/me/code/blank');
+    expect(body.attach_folder).toBe(true);
+    expect(body.title).toBe('');
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
   });
 

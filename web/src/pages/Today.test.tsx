@@ -195,6 +195,22 @@ describe('TodayPage CalendarCard — wave activity dots & agenda', () => {
     expect(onGo).toHaveBeenCalledWith({ name: 'wave', id: 'w-target' });
   });
 
+  it('uses the shared fallback label for active waves with empty titles', () => {
+    const atlas = makeCove({ id: 'cove-atlas', name: 'Atlas', color: '#5a9' });
+    const w = makeWave({
+      id: 'w-untitled',
+      title: '',
+      coveId: atlas.id,
+      createdAt: PINNED_NOW - DAY_MS,
+      terminalAt: null,
+    });
+    renderTodayWith({ waves: [w], coves: [atlas] });
+
+    const chip = screen.getByRole('button', { name: /Untitled wave/i });
+    expect(chip).toHaveTextContent('Untitled wave');
+    expect(chip.getAttribute('aria-label')).toContain('Wave Untitled wave');
+  });
+
   it('renders waiting / running state as a dot flag and folds it into aria-label', () => {
     const atlas = makeCove({ id: 'cove-atlas', name: 'Atlas', color: '#5a9' });
     const waiting = makeWave({

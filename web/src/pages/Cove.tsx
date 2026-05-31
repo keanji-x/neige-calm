@@ -5,6 +5,7 @@ import { NewTaskForm } from '../shared/components/NewTaskForm';
 import type { NewTaskFormResult } from '../shared/components/NewTaskForm';
 import { PlusIcon } from '../shared/components/PlusIcon';
 import { sortByLifecycleRank } from '../shared/lifecycle';
+import { waveDisplayTitle } from '../shared/waveTitle';
 import type { Cove, Route, Wave } from '../types';
 import { ConfirmDialog } from '../ui/ConfirmDialog/ConfirmDialog';
 import { Dialog } from '../ui/Dialog/Dialog';
@@ -196,7 +197,7 @@ export function CovePage({
         title="Delete wave?"
         description={
           pendingDeleteWave
-            ? `Delete wave "${pendingDeleteWave.title}"? Its cards (including any terminals) go too. This cannot be undone.`
+            ? `Delete wave "${waveDisplayTitle(pendingDeleteWave.title)}"? Its cards (including any terminals) go too. This cannot be undone.`
             : null
         }
         confirmLabel="Delete wave"

@@ -4,6 +4,7 @@ import { Menu, type MenuItem } from '../../ui/Menu/Menu';
 import { useSession } from '../../app/SessionProvider';
 import type { Cove, Route, Wave } from '../../types';
 import { isRunning, sortByLifecycleRank, waveNeedsUserAttention } from '../lifecycle';
+import { waveDisplayTitle } from '../waveTitle';
 import { ConfirmDialog } from '../../ui/ConfirmDialog/ConfirmDialog';
 import { ChevronIcon } from './ChevronIcon';
 import { CloseIcon } from './CloseIcon';
@@ -205,13 +206,14 @@ export function Sidebar({
           {waitingWaves.map((w) => {
             const cove = coves.find((c) => c.id === w.coveId);
             const active = route.name === 'wave' && route.id === w.id;
+            const displayTitle = waveDisplayTitle(w.title);
             return (
               <WaveRow
                 key={w.id}
                 wave={w}
                 active={active}
                 cove={cove ?? null}
-                title={(cove?.name ?? '') + ' · ' + w.title}
+                title={cove ? `${cove.name} · ${displayTitle}` : displayTitle}
                 onGo={() => onGo({ name: 'wave', id: w.id })}
                 onPinWave={onPinWave}
                 rowRef={active ? setActiveWaveRowRef : undefined}
@@ -227,13 +229,14 @@ export function Sidebar({
           {pinnedWaves.map((w) => {
             const cove = coves.find((c) => c.id === w.coveId);
             const active = route.name === 'wave' && route.id === w.id;
+            const displayTitle = waveDisplayTitle(w.title);
             return (
               <WaveRow
                 key={w.id}
                 wave={w}
                 active={active}
                 cove={cove ?? null}
-                title={(cove?.name ?? '') + ' · ' + w.title}
+                title={cove ? `${cove.name} · ${displayTitle}` : displayTitle}
                 onGo={() => onGo({ name: 'wave', id: w.id })}
                 onPinWave={onPinWave}
                 rowRef={active ? setActiveWaveRowRef : undefined}
@@ -327,13 +330,14 @@ export function Sidebar({
                 >
                   {inlineWaves.map((w) => {
                     const waveActive = route.name === 'wave' && route.id === w.id;
+                    const displayTitle = waveDisplayTitle(w.title);
                     return (
                       <WaveRow
                         key={w.id}
                         wave={w}
                         active={waveActive}
                         cove={null}
-                        title={w.title}
+                        title={displayTitle}
                         onGo={() => onGo({ name: 'wave', id: w.id })}
                         onPinWave={onPinWave}
                         rowRef={waveActive ? setActiveWaveRowRef : undefined}
@@ -535,6 +539,7 @@ function WaveRow({
 }) {
   const pinned = wave.pinnedAt != null;
   const attention = waveNeedsUserAttention(wave);
+  const displayTitle = waveDisplayTitle(wave.title);
   return (
     <div
       ref={rowRef}
@@ -546,7 +551,7 @@ function WaveRow({
         onClick={onGo}
         title={title}
       >
-        <span className="side-wave-title">{wave.title}</span>
+        <span className="side-wave-title">{displayTitle}</span>
         {cove && <span className="side-wave-cove">{cove.name}</span>}
       </button>
       {onPinWave && (
