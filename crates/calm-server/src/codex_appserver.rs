@@ -478,9 +478,12 @@ impl CodexAppServer {
     /// `thread/start` — create a fresh thread. Note (from the spike): a
     /// brand-new thread has NO rollout on disk until a turn runs, so a
     /// second connection cannot `thread/resume` it until then.
-    pub async fn thread_start(&self) -> Result<ThreadResult> {
-        // All `thread/start` params are optional; `{}` is accepted.
-        self.request("thread/start", json!({})).await
+    pub async fn thread_start(&self, developer_instructions: Option<&str>) -> Result<ThreadResult> {
+        let params = match developer_instructions {
+            Some(prompt) => json!({ "developerInstructions": prompt }),
+            None => json!({}),
+        };
+        self.request("thread/start", params).await
     }
 
     /// `thread/resume` — attach to an existing thread by id. Fails with a
@@ -952,6 +955,76 @@ mod tests {
         let h = harness().await;
         let client = h.client.with_request_timeout(Duration::from_millis(5));
         assert_eq!(client.request_timeout(), Duration::from_millis(5));
+    }
+
+    #[tokio::test]
+    async fn thread_start_sends_developer_instructions_when_present() {
+        let mut h = harness().await;
+        let client = h.client.with_request_timeout(Duration::from_secs(5));
+        let req_fut = client.thread_start(Some("role prompt"));
+
+        let server_task = tokio::spawn(async move {
+            let req = server_recv_json(&mut h.server).await;
+            assert_eq!(
+                req.get("method").and_then(Value::as_str),
+                Some("thread/start")
+            );
+            assert_eq!(
+                req.get("params")
+                    .and_then(|params| params.get("developerInstructions"))
+                    .and_then(Value::as_str),
+                Some("role prompt")
+            );
+
+            let id = req.get("id").cloned().unwrap();
+            server_send_json(
+                &mut h.server,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "thread": { "id": "with-prompt" }, "model": "m" },
+                }),
+            )
+            .await;
+            h.server
+        });
+        assert_eq!(req_fut.await.unwrap().thread_id(), Some("with-prompt"));
+        let _server = server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn thread_start_omits_developer_instructions_when_absent() {
+        let mut h = harness().await;
+        let client = h.client.with_request_timeout(Duration::from_secs(5));
+        let req_fut = client.thread_start(None);
+
+        let server_task = tokio::spawn(async move {
+            let req = server_recv_json(&mut h.server).await;
+            assert_eq!(
+                req.get("method").and_then(Value::as_str),
+                Some("thread/start")
+            );
+            assert!(
+                !req.get("params")
+                    .and_then(Value::as_object)
+                    .is_some_and(|params| params.contains_key("developerInstructions")),
+                "developerInstructions must be omitted when absent; got: {req}"
+            );
+
+            let id = req.get("id").cloned().unwrap();
+            server_send_json(
+                &mut h.server,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "thread": { "id": "without-prompt" }, "model": "m" },
+                }),
+            )
+            .await;
+            h.server
+        });
+        assert_eq!(req_fut.await.unwrap().thread_id(), Some("without-prompt"));
+        let _server = server_task.await.unwrap();
     }
 
     /// Fix #1: a request whose response never arrives times out, returns the

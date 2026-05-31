@@ -489,11 +489,10 @@ pub(crate) async fn create_wave(
                 //      arg so the TUI mounts with the goal already in
                 //      the composer (the same hands-free shape plain
                 //      codex cards use).
-                // The system prompt itself still lives in
-                // `$CODEX_HOME/config.toml`'s `instructions` field
-                // (seeded by `seed_codex_home_for_card`); the prompt
-                // arg is the user-facing goal that the spec agent's
-                // loop ("Read the wave's goal…") reads.
+                // The system prompt itself is sent through the app-server
+                // `thread/start` call; the prompt arg is the user-facing
+                // goal that the spec agent's loop ("Read the wave's goal…")
+                // reads.
                 let spec_prompt = wave.title.trim().to_string();
                 let spec_prompt_for_tx = if spec_prompt.is_empty() {
                     None
@@ -872,11 +871,16 @@ async fn spawn_push_appserver(
     // as codex's positional `[PROMPT]`.
     let recovery_signal =
         crate::wire_spec_push_recovery_supervisor(s, settings, spec_card_id, wave.id.clone());
+    let developer_instructions = crate::spec_card::render_system_prompt(
+        crate::spec_card::SeededCardRole::Spec.prompt_template(),
+        wave.id.as_str(),
+    );
     let handle = spawn_spec_appserver_with_watchdog_config_and_recovery(
         &s.codex.codex_bin,
         env_for_spawn,
         &wave.title,
         &sock,
+        Some(&developer_instructions),
         TurnWatchdogConfig::default(),
         Some(recovery_signal),
     )
