@@ -35,6 +35,7 @@ import {
   useCovesQuery,
   useCreateCoveMutation,
   useDeleteCoveMutation,
+  useDeleteWaveMutation,
   useOverlaysByKindQuery,
   useUpdateWaveMutation,
 } from './api/queries';
@@ -124,6 +125,7 @@ export function CalmApp() {
 
   const createCove = useCreateCoveMutation();
   const deleteCove = useDeleteCoveMutation();
+  const deleteWave = useDeleteWaveMutation();
   const updateWave = useUpdateWaveMutation();
 
   // Sign-out (issue #189). POSTs `/api/auth/logout` which drops the
@@ -162,6 +164,18 @@ export function CalmApp() {
               }
             } catch (err) {
               console.warn('[Calm] cove delete failed:', err);
+            }
+          }}
+          onDeleteWave={async (waveId) => {
+            const wave = waves.find((w) => w.id === waveId);
+            if (!wave) return;
+            try {
+              await deleteWave.mutateAsync({ id: waveId, coveId: wave.coveId });
+              if (route.name === 'wave' && route.id === waveId) {
+                go({ name: 'cove', coveId: wave.coveId });
+              }
+            } catch (err) {
+              console.warn('[Calm] wave delete failed:', err);
             }
           }}
           onPinWave={async (waveId, pin) => {

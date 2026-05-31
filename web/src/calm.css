@@ -643,8 +643,9 @@ input, textarea { font: inherit; color: inherit; }
 }
 .side .side-wave-row .side-wave {
   border-radius: var(--radius-md);
+  padding-left: calc(var(--space-3) + 20px + var(--space-3));
   /* Reserve space on the right so the title never ellipsizes under the
-     absolutely-positioned pin button. */
+     absolutely-positioned delete button. */
   padding-right: calc(var(--space-5) + 20px + var(--space-3));
 }
 /* Cove-name plain-text label — inline after the wave title inside the nav button. */
@@ -675,11 +676,12 @@ input, textarea { font: inherit; color: inherit; }
    the click navigates) so selection feels instant. */
 .side .side-wave-row .side-wave:active { background: var(--overlay-active); color: var(--text); }
 /* Pin button: hidden by default; revealed on row hover or when pinned.
-   Sits absolutely at the same x column as .cove-row-delete and the
-   Coves-header `+` so all three right-edge slots line up vertically. */
+   Sits absolutely at the same x column as .cove-row-chevron so the
+   left-edge wave and cove controls line up vertically. */
 .side .side-wave-pin {
   position: absolute;
-  right: var(--space-5);
+  left: var(--space-3);
+  right: auto;
   top: 50%;
   transform: translateY(-50%);
   width: 20px; height: 20px;
@@ -698,12 +700,41 @@ input, textarea { font: inherit; color: inherit; }
   transition: opacity var(--motion-quick), background var(--motion-quick), color var(--motion-quick);
 }
 .side .side-wave-row:hover .side-wave-pin,
+.side .side-wave-row:focus-within .side-wave-pin,
 .side .side-wave-pin.pinned { opacity: 1; }
 .side .side-wave-pin:hover { background: var(--overlay-hover); color: var(--text); }
 .side .side-wave-pin:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
   opacity: 1;
+}
+.side .side-wave-delete {
+  position: absolute;
+  right: var(--space-5);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px; height: 20px;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-3);
+  font: inherit;
+  font-size: 14px;
+  line-height: var(--leading-none);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--motion-quick), color var(--motion-quick), background var(--motion-quick);
+}
+.side .side-wave-row:hover .side-wave-delete,
+.side .side-wave-row:focus-within .side-wave-delete { opacity: 1; }
+.side .side-wave-delete:hover {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.side .side-wave-delete:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 /* ===== Sidebar user menu =====
    The avatar row is a single <button> that opens a popover menu
@@ -922,10 +953,12 @@ input, textarea { font: inherit; color: inherit; }
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  /* Align wave-title text with the cove name column above:
+  padding-left: var(--space-0);
+}
+.side .side-coves-waves .side-wave {
+  /* Align inline wave-title text with the cove name column above:
      cove-nav padding-left (--space-3 + 22px) + swatch (12px)
-     + gap (--space-3) = 46px. side-wave padding-left adds
-     var(--space-5), so side-coves-waves starts at 36px. */
+     + gap (--space-3). */
   padding-left: calc(var(--space-3) + 20px + var(--space-5));
 }
 

@@ -90,6 +90,7 @@ export function Sidebar({
   onGo,
   onCreateCove,
   onDeleteCove,
+  onDeleteWave,
   onPinWave,
   onOpenSettings,
   onSignOut,
@@ -109,6 +110,9 @@ export function Sidebar({
    *  WaveRow delete pattern. Optional so tests can render the sidebar
    *  without wiring deletion. */
   onDeleteCove?: (coveId: string) => void | Promise<void>;
+  /** Per-row delete on each wave. When provided, every wave row reveals a
+   *  hover `×` that opens a single shared ConfirmDialog. */
+  onDeleteWave?: (waveId: string) => void | Promise<void>;
   /** Pin or unpin a wave. Optional so tests / sub-trees that render the
    *  sidebar without a mutation hook don't have to wire it up. When
    *  provided, every wave row renders a hover-revealed pin button. */
@@ -124,6 +128,7 @@ export function Sidebar({
   // carries the cove being confirmed so the dialog text reflects the
   // actual cove name. Mirrors Cove.tsx's `pendingDeleteWave` pattern.
   const [pendingDelete, setPendingDelete] = useState<Cove | null>(null);
+  const [pendingDeleteWave, setPendingDeleteWave] = useState<Wave | null>(null);
   const [activeWaveRowEl, setActiveWaveRowEl] = useState<HTMLDivElement | null>(
     null,
   );
@@ -159,6 +164,17 @@ export function Sidebar({
     setPendingDelete(null);
     if (!c || !onDeleteCove) return;
     await onDeleteCove(c.id);
+  };
+  const openDeleteWaveDialog = (w: Wave) => {
+    if (!onDeleteWave) return;
+    setPendingDeleteWave(w);
+  };
+  const cancelDeleteWave = () => setPendingDeleteWave(null);
+  const confirmDeleteWave = () => {
+    const w = pendingDeleteWave;
+    setPendingDeleteWave(null);
+    if (!w || !onDeleteWave) return;
+    void onDeleteWave(w.id);
   };
   // Pinned waves sorted by the timestamp they were pinned, oldest first
   // so the order is stable and user-determined (first pin = top).
@@ -216,6 +232,7 @@ export function Sidebar({
                 title={cove ? `${cove.name} · ${displayTitle}` : displayTitle}
                 onGo={() => onGo({ name: 'wave', id: w.id })}
                 onPinWave={onPinWave}
+                onDeleteWave={openDeleteWaveDialog}
                 rowRef={active ? setActiveWaveRowRef : undefined}
               />
             );
@@ -239,6 +256,7 @@ export function Sidebar({
                 title={cove ? `${cove.name} · ${displayTitle}` : displayTitle}
                 onGo={() => onGo({ name: 'wave', id: w.id })}
                 onPinWave={onPinWave}
+                onDeleteWave={openDeleteWaveDialog}
                 rowRef={active ? setActiveWaveRowRef : undefined}
               />
             );
@@ -340,6 +358,7 @@ export function Sidebar({
                         title={displayTitle}
                         onGo={() => onGo({ name: 'wave', id: w.id })}
                         onPinWave={onPinWave}
+                        onDeleteWave={openDeleteWaveDialog}
                         rowRef={waveActive ? setActiveWaveRowRef : undefined}
                       />
                     );
@@ -365,6 +384,19 @@ export function Sidebar({
         cancelLabel="Cancel"
         onConfirm={confirmDelete}
         onCancel={cancelDelete}
+      />
+      <ConfirmDialog
+        open={pendingDeleteWave !== null}
+        title="Delete wave?"
+        description={
+          pendingDeleteWave
+            ? `Delete wave "${waveDisplayTitle(pendingDeleteWave.title)}"? Its cards (including any terminals) go too. This cannot be undone.`
+            : null
+        }
+        confirmLabel="Delete wave"
+        cancelLabel="Cancel"
+        onConfirm={confirmDeleteWave}
+        onCancel={cancelDeleteWave}
       />
     </aside>
   );
@@ -515,10 +547,10 @@ function CovesHeader({
 // ---------------- WaveRow ----------------
 //
 // A single wave entry in the Pinned, Waiting-on-you, or inline cove list.
-// Rendered as `<div role="group">` containing two sibling `<button>`s
-// to avoid nested-button a11y violations: one for navigation, one for
-// pin/unpin. The pin button is hover-revealed but always visible when
-// the wave is already pinned so unpin is discoverable on touch.
+// Rendered as `<div role="group">` containing sibling `<button>`s to
+// avoid nested-button a11y violations: pin, navigation, and delete.
+// The pin button is hover-revealed but always visible when the wave is
+// already pinned so unpin is discoverable on touch.
 
 function WaveRow({
   wave,
@@ -527,6 +559,7 @@ function WaveRow({
   title,
   onGo,
   onPinWave,
+  onDeleteWave,
   rowRef,
 }: {
   wave: Wave;
@@ -535,6 +568,7 @@ function WaveRow({
   title: string;
   onGo: () => void;
   onPinWave?: (waveId: string, pin: boolean) => void | Promise<void>;
+  onDeleteWave?: (wave: Wave) => void;
   rowRef?: (node: HTMLDivElement | null) => void;
 }) {
   const pinned = wave.pinnedAt != null;
@@ -546,14 +580,6 @@ function WaveRow({
       className={'side-wave-row' + (active ? ' active' : '') + (attention ? ' attention' : '')}
       role="group"
     >
-      <button
-        className={'side-wave' + (active ? ' active' : '')}
-        onClick={onGo}
-        title={title}
-      >
-        <span className="side-wave-title">{displayTitle}</span>
-        {cove && <span className="side-wave-cove">{cove.name}</span>}
-      </button>
       {onPinWave && (
         <button
           type="button"
@@ -565,6 +591,28 @@ function WaveRow({
           aria-label={pinned ? 'Unpin wave' : 'Pin wave'}
         >
           <PinIcon down={pinned} />
+        </button>
+      )}
+      <button
+        className={'side-wave' + (active ? ' active' : '')}
+        onClick={onGo}
+        title={title}
+      >
+        <span className="side-wave-title">{displayTitle}</span>
+        {cove && <span className="side-wave-cove">{cove.name}</span>}
+      </button>
+      {onDeleteWave && (
+        <button
+          type="button"
+          className="side-wave-delete"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDeleteWave(wave);
+          }}
+          title={`Delete wave "${displayTitle}"`}
+          aria-label={`Delete wave "${displayTitle}"`}
+        >
+          <CloseIcon />
         </button>
       )}
     </div>
