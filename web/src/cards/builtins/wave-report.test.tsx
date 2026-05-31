@@ -159,9 +159,7 @@ describe('WaveReportCard rendering', () => {
     const Component = WaveReportEntry.Component;
     if (withContext) {
       return render(
-        <WaveContext.Provider
-          value={{ id: 'wave_test', lifecycle, title: 'Test Wave' }}
-        >
+        <WaveContext.Provider value={{ id: 'wave_test', lifecycle }}>
           <Component card={card} onClose={onClose} />
         </WaveContext.Provider>,
       );
@@ -320,9 +318,7 @@ describe('WaveReportCard edit mode (#247 PR4)', () => {
   function renderEditable(card: WaveReportCardData) {
     const Component = WaveReportEntry.Component;
     return render(
-      <WaveContext.Provider
-        value={{ id: 'wave_edit_test', lifecycle: 'planning', title: 'Test' }}
-      >
+      <WaveContext.Provider value={{ id: 'wave_edit_test', lifecycle: 'planning' }}>
         <Component card={card} />
       </WaveContext.Provider>,
     );

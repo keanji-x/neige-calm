@@ -184,7 +184,7 @@ export function WavePage({
     // lifecycle for its header badge without prop-drilling. Other
     // cards ignore the context.
     <WaveContext.Provider
-      value={{ id: wave.id, lifecycle: wave.lifecycle, title: wave.title }}
+      value={{ id: wave.id, lifecycle: wave.lifecycle }}
     >
     <div className="workbench">
       <header className="wave-header">

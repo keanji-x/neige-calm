@@ -866,10 +866,10 @@ async fn spawn_push_appserver(
         ))
     })?;
 
-    // DECISION A's blocking sequence (boot → connect → initialize →
-    // thread/start → turn/start(goal) → await initial lifecycle). The wave
-    // title is the agent's goal — the same value the legacy path passes
-    // as codex's positional `[PROMPT]`.
+    // DECISION A's boot sequence (boot → connect → initialize →
+    // thread/start → optional turn/start(goal) → optional initial
+    // lifecycle wait). A non-empty wave title is the agent's initial goal;
+    // an empty title parks the push handle without an auto-submitted prompt.
     let recovery_signal =
         crate::wire_spec_push_recovery_supervisor(s, settings, spec_card_id, wave.id.clone());
     let handle = spawn_spec_appserver_with_watchdog_config_and_recovery(

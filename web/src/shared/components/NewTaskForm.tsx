@@ -434,9 +434,10 @@ export function NewTaskForm({
         />
 
         {/* cwd — absolute path. Submit-on-Enter lives here because the
-            common path is "type the cwd, press Enter" once title is
-            filled. The inline error sits directly under the input so
-            it pairs visually with the field that triggered it. */}
+            common path is "type the cwd, press Enter"; cwd is the
+            required field that gates submit. The inline error sits
+            directly under the input so it pairs visually with the
+            field that triggered it. */}
         <label htmlFor={cwdId} className="new-task-form-label">
           Working directory<span className="new-task-form-required"> *</span>
         </label>

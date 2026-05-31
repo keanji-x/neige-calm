@@ -23,8 +23,8 @@
 //! ## What this PR (3a) does and does NOT do
 //!
 //! This module gives the kernel the ability to **own** the `app-server`
-//! child and drive turn #1 on the create-wave hot path. Push is the only
-//! path (#293 cutover — no flag, no pull coexistence). The
+//! child and optionally drive turn #1 on the create-wave hot path. Push is
+//! the only path (#293 cutover — no flag, no pull coexistence). The
 //! [`SpecPushHandle`] is parked in a [`SpecPushRegistry`] keyed by
 //! [`WaveId`] (one spec card per wave) so the dispatcher can resolve a
 //! wave's app-server client and push observations onto it.
@@ -71,13 +71,17 @@
 //!   boot `app-server` → poll socket ready → [`CodexAppServer::connect`] →
 //!   [`initialize`](CodexAppServer::initialize) →
 //!   [`thread_start`](CodexAppServer::thread_start) →
-//!   [`turn_start`](CodexAppServer::turn_start)`([text(goal)])` →
-//!   **await the initial `turn/started` or `turn/completed` notification**
+//!   when `goal.trim()` is non-empty,
+//!   [`turn_start`](CodexAppServer::turn_start)`([text(goal.trim())])` →
+//!   **await the initial `turn/started` or `turn/completed` notification**.
+//!   Empty goals skip `turn/start` and park the handle idle.
 //!
-//! Awaiting the first lifecycle notification guarantees a *rollout exists
-//! on disk* (the spike's hard constraint) so the `--remote` TUI's
-//! `thread/resume` can rejoin the same thread. `turn/started` is the
-//! normal signal; `turn/completed` is also accepted if it arrives first.
+//! For non-empty goals, awaiting the first lifecycle notification
+//! guarantees a *rollout exists on disk* (the spike's hard constraint) so
+//! the `--remote` TUI's `thread/resume` can rejoin the same thread.
+//! `turn/started` is the normal signal; `turn/completed` is also accepted
+//! if it arrives first. Empty-goal boots intentionally create no rollout;
+//! they rely on the parked kernel handle for the first later `turn/start`.
 //! There is no per-notification lifecycle budget: EOF/reader exit,
 //! JSON-RPC errors, and child exit are the deterministic failure signals.
 //! The generous overall boot backstop only catches an alive child that
@@ -1572,8 +1576,8 @@ impl SpecPushRegistry {
     }
 }
 
-/// Boot a `codex app-server` for a spec card, drive turn #1, and return
-/// the live handle — DECISION A's blocking sequence.
+/// Boot a `codex app-server` for a spec card, optionally drive turn #1, and
+/// return the live handle — DECISION A's blocking sequence.
 ///
 /// Steps (each `?`-propagates a [`CalmError::CodexAppServer`] /
 /// [`CalmError::Internal`] on failure so the create-wave route can map it
@@ -1587,11 +1591,15 @@ impl SpecPushRegistry {
 ///   3. [`connect`](CodexAppServer::connect) +
 ///      [`initialize`](CodexAppServer::initialize) +
 ///      [`thread_start`](CodexAppServer::thread_start),
-///   4. [`turn_start`](CodexAppServer::turn_start) with the goal text,
-///   5. **await `turn/started` or `turn/completed`** on the notification
-///      stream (rollout now on disk),
+///   4. when the trimmed goal is non-empty,
+///      [`turn_start`](CodexAppServer::turn_start) with that goal text,
+///   5. for a non-empty goal, **await `turn/started` or `turn/completed`**
+///      on the notification stream (rollout now on disk),
 ///   6. spawn the status-tracking consumer task over the rest of the
 ///      stream and return everything as [`SpecPushHandle`].
+///
+/// Empty goals still run through initialize + `thread/start`, then park an
+/// idle handle without issuing `turn/start`.
 ///
 /// `codex_bin` is the resolved `codex` CLI path (`CodexClient::codex_bin`).
 /// `env_map` is the `serde_json` object map of env vars (string values
@@ -2106,8 +2114,9 @@ pub async fn socket_owned_by_appserver(sock: &Path) -> bool {
 }
 
 /// The fallible post-spawn sequence (connect → initialize → thread/start →
-/// turn/start → await initial lifecycle → spawn consumer). Split out so the
-/// [`SpawnRollback`] guard in [`spawn_spec_appserver`] wraps every `?`.
+/// optional turn/start → optional initial lifecycle wait → spawn consumer).
+/// Split out so the [`SpawnRollback`] guard in [`spawn_spec_appserver`]
+/// wraps every `?`.
 #[allow(clippy::too_many_arguments)]
 async fn build_handle_after_spawn(
     mut child: Child,
@@ -2122,10 +2131,43 @@ async fn build_handle_after_spawn(
     // 2. Poll the socket for readiness, bailing early if the child dies
     //    during boot (the common no-auth / bad-env failure mode).
     let connected = poll_connect(&mut child, sock).await?;
-    let (client, mut notifs) = connected;
+    let (client, notifs) = connected;
+
+    build_handle_after_connect(
+        child,
+        pgid,
+        start_time,
+        boot_id,
+        client,
+        notifs,
+        goal_text,
+        sock,
+        watchdog,
+        recovery_signal,
+    )
+    .await
+}
+
+/// The fallible post-connect boot sequence. Kept separate from
+/// [`build_handle_after_spawn`] so tests can drive a fake JSON-RPC peer and
+/// assert the exact `turn/start` behavior without spawning a real codex
+/// binary.
+#[allow(clippy::too_many_arguments)]
+async fn build_handle_after_connect(
+    mut child: Child,
+    pgid: i32,
+    start_time: Option<u64>,
+    boot_id: Option<String>,
+    client: CodexAppServer,
+    mut notifs: NotificationStream,
+    goal_text: &str,
+    sock: &Path,
+    watchdog: TurnWatchdogConfig,
+    recovery_signal: Option<SpecRecoverySignal>,
+) -> Result<SpecPushHandle> {
     let client = Arc::new(client);
 
-    // 3. initialize + thread/start + turn/start ack. The caller wraps this
+    // 3. initialize + thread/start + optional turn/start ack. The caller wraps this
     //    whole build future in `OVERALL_BOOT_BUDGET`; individual progress is
     //    still determined by JSON-RPC success/error and child/stream liveness.
     client
@@ -2143,6 +2185,31 @@ async fn build_handle_after_spawn(
         .to_string();
     tracing::info!(thread_id = %thread_id, "spec push: thread started");
 
+    let status: SharedStatus = Arc::new(Mutex::new(SpecPushStatus {
+        last_thread_id: Some(thread_id.clone()),
+        ..Default::default()
+    }));
+    let goal_text = goal_text.trim();
+    if goal_text.is_empty() {
+        tracing::info!(
+            thread_id = %thread_id,
+            "spec push: empty goal — booted without initial turn"
+        );
+        return Ok(park_handle(
+            child,
+            pgid,
+            start_time,
+            boot_id,
+            client,
+            thread_id,
+            sock,
+            notifs,
+            status,
+            watchdog,
+            recovery_signal,
+        ));
+    }
+
     let turn = client
         .turn_start(&thread_id, vec![InputItem::text(goal_text)])
         .await?;
@@ -2159,10 +2226,6 @@ async fn build_handle_after_spawn(
     //    Nothing is buffered or replayed — we simply hand the still-open
     //    receiver to the consumer task afterwards, so no notification is
     //    lost (anything not yet consumed is still queued on the mpsc).
-    let status: SharedStatus = Arc::new(Mutex::new(SpecPushStatus {
-        last_thread_id: Some(thread_id.clone()),
-        ..Default::default()
-    }));
     await_initial_turn_lifecycle(&mut child, &mut notifs, &thread_id, &status).await?;
 
     // 6. Spawn the consumer task and park the live handle (see
@@ -3141,6 +3204,107 @@ mod tests {
             .kill_on_drop(true)
             .spawn()
             .expect("spawn dummy child")
+    }
+
+    #[tokio::test]
+    async fn empty_goal_boot_parks_handle_without_turn_start() {
+        use futures_util::{SinkExt, StreamExt};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let (client, notifs, mut server) = CodexAppServer::connect_pair_for_test().await;
+        let saw_turn_start = Arc::new(AtomicBool::new(false));
+        let saw_turn_start_for_task = Arc::clone(&saw_turn_start);
+        let server_task = tokio::spawn(async move {
+            let mut thread_started = false;
+            let deadline = TokioInstant::now() + Duration::from_millis(300);
+            while TokioInstant::now() < deadline {
+                let remaining = deadline.saturating_duration_since(TokioInstant::now());
+                let frame = match tokio::time::timeout(remaining, server.next()).await {
+                    Ok(Some(Ok(Message::Text(text)))) => text,
+                    Ok(Some(Ok(_))) => continue,
+                    Ok(None) | Ok(Some(Err(_))) | Err(_) => break,
+                };
+                let req: Value = serde_json::from_str(&frame).expect("json-rpc request");
+                let id = req.get("id").cloned().unwrap_or(Value::Null);
+                match req.get("method").and_then(Value::as_str) {
+                    Some("initialize") => {
+                        server
+                            .send(Message::Text(
+                                serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id,
+                                    "result": {
+                                        "userAgent": "fake-codex-app-server/empty-goal",
+                                        "codexHome": "",
+                                        "platformFamily": "unix",
+                                        "platformOs": "linux"
+                                    }
+                                })
+                                .to_string(),
+                            ))
+                            .await
+                            .expect("send initialize response");
+                    }
+                    Some("thread/start") => {
+                        thread_started = true;
+                        server
+                            .send(Message::Text(
+                                serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id,
+                                    "result": {
+                                        "thread": { "id": "thread-empty-goal" },
+                                        "model": "test-model"
+                                    }
+                                })
+                                .to_string(),
+                            ))
+                            .await
+                            .expect("send thread/start response");
+                    }
+                    Some("turn/start") => {
+                        saw_turn_start_for_task.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                    other => panic!("unexpected method during empty-goal boot: {other:?}"),
+                }
+                if thread_started {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+            server
+        });
+
+        let child = fake_child();
+        let pgid = i32::try_from(child.id().expect("dummy child pid")).expect("pid fits i32");
+        let handle = build_handle_after_connect(
+            child,
+            pgid,
+            read_proc_start_time(pgid),
+            read_boot_id(),
+            client,
+            notifs,
+            " \n\t ",
+            Path::new("/tmp/test-empty-goal/app.sock"),
+            TurnWatchdogConfig::default(),
+            None,
+        )
+        .await
+        .expect("empty goal boot should park a handle");
+
+        assert_eq!(handle.thread_id, "thread-empty-goal");
+        let status = handle.status().await;
+        assert_eq!(status.phase, SpecPushPhase::Idle);
+        assert_eq!(status.last_thread_id.as_deref(), Some("thread-empty-goal"));
+        assert_eq!(status.last_turn_id, None);
+
+        let _server = server_task.await.expect("server task");
+        assert!(
+            !saw_turn_start.load(Ordering::SeqCst),
+            "empty trimmed goal must not issue turn/start"
+        );
+        drop(handle);
     }
 
     #[tokio::test]

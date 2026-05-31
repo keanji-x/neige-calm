@@ -1,6 +1,6 @@
-// React context exposing the current wave's row-level state (lifecycle,
-// id, title) to descendant card components without threading props
-// through every layer.
+// React context exposing the current wave's row-level state (id,
+// lifecycle) to descendant card components without threading props through
+// every layer.
 //
 // Why: built-in cards (terminal, codex, plugin iframe) only need to
 // know about *their* card row. The wave-report card (#229 PR B) is
@@ -24,9 +24,6 @@ export interface WaveContextValue {
   id: string;
   /** Wave's current lifecycle, fed straight from the kernel row. */
   lifecycle: WaveLifecycle;
-  /** Wave title — exposed so cards can show "[Wave Title]" in their
-   *  own header without a second prop chain. */
-  title: string;
 }
 
 /**
