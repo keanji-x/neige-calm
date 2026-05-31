@@ -655,7 +655,7 @@ impl SpecPushDaemonArgs {
     /// thread id and the socket path shell-quoted (the command is handed
     /// to `sh -c`, so any metacharacters must land in codex's argv
     /// verbatim — same contract as the legacy `codex '<title>'` build).
-    fn command_line(&self) -> String {
+    pub(crate) fn command_line(&self) -> String {
         let remote = format!("unix://{}", self.sock.display());
         format!(
             "codex resume {} --remote {}",
@@ -663,6 +663,32 @@ impl SpecPushDaemonArgs {
             shell_single_quote(&remote),
         )
     }
+}
+
+pub(crate) async fn spawn_spec_daemon_for_existing_seed(
+    state: &AppState,
+    spec_card_id: &str,
+    wave_id: &str,
+    cwd: &str,
+    env: &serde_json::Value,
+    push: &SpecPushDaemonArgs,
+) -> Result<()> {
+    let term = state
+        .repo
+        .terminal_get_by_card(spec_card_id)
+        .await?
+        .ok_or_else(|| {
+            CalmError::Internal(format!("spec terminal row missing for card {spec_card_id}"))
+        })?;
+    let command_line = push.command_line();
+    crate::routes::terminal::spawn_terminal_for(state, &term, &command_line, cwd, env).await?;
+    tracing::info!(
+        card_id = %spec_card_id,
+        wave_id = %wave_id,
+        terminal_id = %term.id,
+        "spec card daemon spawned for existing empty-goal wave",
+    );
+    Ok(())
 }
 
 /// Seed `$CODEX_HOME` for the spec card, then spawn the codex daemon

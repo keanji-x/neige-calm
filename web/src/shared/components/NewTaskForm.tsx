@@ -8,12 +8,13 @@
 // well-formed `NewWave` body — every other entrypoint must reuse it
 // (not re-implement the cwd/cove inference).
 //
-// Field semantics (decided across #255 + #250 PR 2):
-//   * task description (required) → posted as `wave.title`. The kernel
-//     injects it as `{user_prompt}` into the spec daemon's system
-//     prompt template (PR 2 work). We deliberately do not surface a
-//     separate "prompt" field — title-as-prompt keeps the wave-row
-//     label and the prompt in lock-step.
+// Field semantics (decided across #255 + #250 PR 2, updated by #409):
+//   * task description (optional) → posted as `wave.title`. The kernel
+//     threads a non-empty title into the spec daemon as the initial
+//     prompt; an empty title boots the spec daemon without an
+//     auto-submitted prompt. We deliberately do not surface a separate
+//     "prompt" field — title-as-prompt keeps the wave-row label and the
+//     prompt in lock-step when a prompt exists.
 //   * cwd (required) → absolute path the spec daemon spawns under.
 //     The form refuses to submit a non-`/`-prefixed value; the server
 //     would 400 anyway, but inline rejection is cheaper than a round
@@ -279,7 +280,6 @@ export function NewTaskForm({
     : null;
 
   const canSubmit = canSubmitForm({
-    title,
     cwd,
     cwdError,
     coveChoice,
@@ -417,9 +417,11 @@ export function NewTaskForm({
         {/* Task description ↔ wave.title. Textarea so the user can
             paste a multi-line ask without us truncating. Enter is
             *not* submit here — newlines in the description are
-            valid; submit is the explicit "Create task" button. */}
+            valid; submit is the explicit "Create task" button.
+            Empty is also valid: the spec daemon boots with no
+            auto-submitted prompt. */}
         <label htmlFor={titleId} className="new-task-form-label">
-          Task description<span className="new-task-form-required"> *</span>
+          Task description
         </label>
         <textarea
           id={titleId}
@@ -429,13 +431,13 @@ export function NewTaskForm({
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           placeholder="What should the agent do?"
-          required
         />
 
         {/* cwd — absolute path. Submit-on-Enter lives here because the
-            common path is "type the cwd, press Enter" once title is
-            filled. The inline error sits directly under the input so
-            it pairs visually with the field that triggered it. */}
+            common path is "type the cwd, press Enter"; cwd is the
+            required field that gates submit. The inline error sits
+            directly under the input so it pairs visually with the
+            field that triggered it. */}
         <label htmlFor={cwdId} className="new-task-form-label">
           Working directory<span className="new-task-form-required"> *</span>
         </label>
@@ -739,20 +741,17 @@ function pickPaletteColor(seed: number): string {
 }
 
 function canSubmitForm({
-  title,
   cwd,
   cwdError,
   coveChoice,
   submitting,
 }: {
-  title: string;
   cwd: string;
   cwdError: string | null;
   coveChoice: CoveChoice;
   submitting: boolean;
 }): boolean {
   if (submitting) return false;
-  if (!title.trim()) return false;
   if (!isAbsolutePath(cwd.trim())) return false;
   if (cwdError) return false;
   if (coveChoice.mode === 'existing' && !coveChoice.coveId) return false;

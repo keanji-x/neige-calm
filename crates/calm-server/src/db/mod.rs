@@ -340,6 +340,25 @@ pub trait RepoRead: Send + Sync + 'static {
         )>,
     >;
 
+    /// Empty-goal spec cards whose app-server created a thread but
+    /// intentionally issued no initial `turn/start`. They cannot be
+    /// recovered with `thread/resume` because no rollout exists yet; boot
+    /// should spawn a fresh idle app-server and replace the runtime fields.
+    async fn spec_cards_for_initial_prompt_bootstrap(
+        &self,
+    ) -> Result<
+        Vec<(
+            String,
+            String,
+            String,
+            Option<i32>,
+            Option<String>,
+            Option<u64>,
+            Option<String>,
+            i64,
+        )>,
+    >;
+
     // ---- plugins (read-only)
     async fn plugins_list(&self) -> Result<Vec<Plugin>>;
     async fn plugins_list_all(&self) -> Result<Vec<Plugin>>;
@@ -719,6 +738,12 @@ pub trait RepoOutOfDomain: RepoRead {
     // card payload into it. Acceptable short-term per #315 review.
     async fn spec_card_set_push_watermark(&self, card_id: &str, watermark: i64) -> Result<()>;
 
+    /// Clear the empty-goal bootstrap marker once any observed turn
+    /// lifecycle proves the codex side has created a resumable rollout.
+    /// Idempotent and eventless: this is kernel-private runtime
+    /// bookkeeping, same as `spec_card_set_push_watermark`.
+    async fn spec_card_clear_needs_initial_prompt(&self, card_id: &str) -> Result<()>;
+
     /// #313 problem #1 — clear a spec card's `codex_thread_id` (and the
     /// related push fields) when boot takeover finds the persisted thread
     /// can no longer be resumed (`-32600 "no rollout found"` from
@@ -747,6 +772,21 @@ pub trait RepoOutOfDomain: RepoRead {
         sock: &str,
         start_time: Option<u64>,
         boot_id: Option<&str>,
+    ) -> Result<()>;
+
+    /// Persist the fresh runtime state for an empty-goal bootstrap. Unlike
+    /// normal takeover this replaces `codex_thread_id`, because the previous
+    /// thread had no rollout and must never be resumed.
+    #[allow(clippy::too_many_arguments)]
+    async fn spec_card_set_empty_goal_bootstrap_state(
+        &self,
+        card_id: &str,
+        thread_id: &str,
+        pgid: i32,
+        sock: &str,
+        start_time: Option<u64>,
+        boot_id: Option<&str>,
+        watermark: i64,
     ) -> Result<()>;
 
     // ---- spec push queue (#318 INV-3 / R2-B1)

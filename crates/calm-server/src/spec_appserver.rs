@@ -23,8 +23,8 @@
 //! ## What this PR (3a) does and does NOT do
 //!
 //! This module gives the kernel the ability to **own** the `app-server`
-//! child and drive turn #1 on the create-wave hot path. Push is the only
-//! path (#293 cutover — no flag, no pull coexistence). The
+//! child and optionally drive turn #1 on the create-wave hot path. Push is
+//! the only path (#293 cutover — no flag, no pull coexistence). The
 //! [`SpecPushHandle`] is parked in a [`SpecPushRegistry`] keyed by
 //! [`WaveId`] (one spec card per wave) so the dispatcher can resolve a
 //! wave's app-server client and push observations onto it.
@@ -71,13 +71,17 @@
 //!   boot `app-server` → poll socket ready → [`CodexAppServer::connect`] →
 //!   [`initialize`](CodexAppServer::initialize) →
 //!   [`thread_start`](CodexAppServer::thread_start) →
-//!   [`turn_start`](CodexAppServer::turn_start)`([text(goal)])` →
-//!   **await the initial `turn/started` or `turn/completed` notification**
+//!   when `goal.trim()` is non-empty,
+//!   [`turn_start`](CodexAppServer::turn_start)`([text(goal.trim())])` →
+//!   **await the initial `turn/started` or `turn/completed` notification**.
+//!   Empty goals skip `turn/start` and park the handle idle.
 //!
-//! Awaiting the first lifecycle notification guarantees a *rollout exists
-//! on disk* (the spike's hard constraint) so the `--remote` TUI's
-//! `thread/resume` can rejoin the same thread. `turn/started` is the
-//! normal signal; `turn/completed` is also accepted if it arrives first.
+//! For non-empty goals, awaiting the first lifecycle notification
+//! guarantees a *rollout exists on disk* (the spike's hard constraint) so
+//! the `--remote` TUI's `thread/resume` can rejoin the same thread.
+//! `turn/started` is the normal signal; `turn/completed` is also accepted
+//! if it arrives first. Empty-goal boots intentionally create no rollout;
+//! they rely on the parked kernel handle for the first later `turn/start`.
 //! There is no per-notification lifecycle budget: EOF/reader exit,
 //! JSON-RPC errors, and child exit are the deterministic failure signals.
 //! The generous overall boot backstop only catches an alive child that
@@ -566,6 +570,17 @@ pub type QueuePersistListFn = Arc<
 /// test-path posture, matching [`WatermarkSinkSlot`].
 type QueuePersistSlot = Arc<Mutex<Option<Arc<QueuePersist>>>>;
 
+/// Callback installed on a [`SpecPushHandle`] so the notification consumer
+/// can clear the empty-goal bootstrap marker once a turn lifecycle proves
+/// codex has created a resumable rollout for the thread.
+pub type InitialPromptClearSink =
+    Arc<dyn Fn() -> futures_util::future::BoxFuture<'static, ()> + Send + Sync>;
+
+/// `Arc<Mutex<Option<InitialPromptClearSink>>>` mirrors the watermark sink
+/// install pattern: construction is transport-only, then the boot/create
+/// site installs the repo-backed side effect before parking the handle.
+type InitialPromptClearSinkSlot = Arc<Mutex<Option<InitialPromptClearSink>>>;
+
 /// Callback the dispatcher installs on a [`SpecPushHandle`] so the
 /// queue-flush path (which runs from the consumer task on `turn/completed`)
 /// can persist the durable `push_watermark` for envelope ids that were
@@ -700,6 +715,11 @@ pub struct SpecPushHandle {
     /// Installed via [`install_queue_persist`](Self::install_queue_persist)
     /// at the same sites that install the watermark sink.
     queue_persist: QueuePersistSlot,
+    /// Clears `appserver_needs_initial_prompt` after the first observed
+    /// turn lifecycle on this thread. This is intentionally independent
+    /// from push watermark advancement because manual TUI input creates a
+    /// rollout without touching the push channel.
+    initial_prompt_clear_sink: InitialPromptClearSinkSlot,
 }
 
 /// PR3b — a cheaply-cloneable handle onto just the parts of a
@@ -1061,6 +1081,12 @@ impl SpecPushHandle {
     /// pre-fix behavior, intentional only on test paths).
     pub async fn has_queue_persist(&self) -> bool {
         self.queue_persist.lock().await.is_some()
+    }
+
+    /// Install the marker-clear callback used by the notification consumer
+    /// when it observes the first turn lifecycle for this thread.
+    pub async fn install_initial_prompt_clear_sink(&self, sink: InitialPromptClearSink) {
+        *self.initial_prompt_clear_sink.lock().await = Some(sink);
     }
 
     /// #318 INV-3 — rehydrate the in-memory `VecDeque` from the durable
@@ -1572,8 +1598,8 @@ impl SpecPushRegistry {
     }
 }
 
-/// Boot a `codex app-server` for a spec card, drive turn #1, and return
-/// the live handle — DECISION A's blocking sequence.
+/// Boot a `codex app-server` for a spec card, optionally drive turn #1, and
+/// return the live handle — DECISION A's blocking sequence.
 ///
 /// Steps (each `?`-propagates a [`CalmError::CodexAppServer`] /
 /// [`CalmError::Internal`] on failure so the create-wave route can map it
@@ -1587,11 +1613,15 @@ impl SpecPushRegistry {
 ///   3. [`connect`](CodexAppServer::connect) +
 ///      [`initialize`](CodexAppServer::initialize) +
 ///      [`thread_start`](CodexAppServer::thread_start),
-///   4. [`turn_start`](CodexAppServer::turn_start) with the goal text,
-///   5. **await `turn/started` or `turn/completed`** on the notification
-///      stream (rollout now on disk),
+///   4. when the trimmed goal is non-empty,
+///      [`turn_start`](CodexAppServer::turn_start) with that goal text,
+///   5. for a non-empty goal, **await `turn/started` or `turn/completed`**
+///      on the notification stream (rollout now on disk),
 ///   6. spawn the status-tracking consumer task over the rest of the
 ///      stream and return everything as [`SpecPushHandle`].
+///
+/// Empty goals still run through initialize + `thread/start`, then park an
+/// idle handle without issuing `turn/start`.
 ///
 /// `codex_bin` is the resolved `codex` CLI path (`CodexClient::codex_bin`).
 /// `env_map` is the `serde_json` object map of env vars (string values
@@ -1641,6 +1671,30 @@ pub async fn spawn_spec_appserver_with_watchdog_config_and_recovery(
     developer_instructions: Option<&str>,
     watchdog: TurnWatchdogConfig,
     recovery_signal: Option<SpecRecoverySignal>,
+) -> Result<SpecPushHandle> {
+    spawn_spec_appserver_with_watchdog_config_and_recovery_for_wave(
+        codex_bin,
+        env_map,
+        goal_text,
+        sock,
+        developer_instructions,
+        watchdog,
+        recovery_signal,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn spawn_spec_appserver_with_watchdog_config_and_recovery_for_wave(
+    codex_bin: &str,
+    env_map: &Value,
+    goal_text: &str,
+    sock: &Path,
+    developer_instructions: Option<&str>,
+    watchdog: TurnWatchdogConfig,
+    recovery_signal: Option<SpecRecoverySignal>,
+    wave_id: Option<&crate::ids::WaveId>,
 ) -> Result<SpecPushHandle> {
     // The server `chmod 0700`s the socket's PARENT dir, so the parent must
     // be a user-owned dir (not bare sticky /tmp). The caller creates the
@@ -1741,6 +1795,7 @@ pub async fn spawn_spec_appserver_with_watchdog_config_and_recovery(
             pgid,
             start_time,
             boot_id,
+            wave_id.cloned(),
             goal_text,
             sock,
             developer_instructions,
@@ -2110,14 +2165,16 @@ pub async fn socket_owned_by_appserver(sock: &Path) -> bool {
 }
 
 /// The fallible post-spawn sequence (connect → initialize → thread/start →
-/// turn/start → await initial lifecycle → spawn consumer). Split out so the
-/// [`SpawnRollback`] guard in [`spawn_spec_appserver`] wraps every `?`.
+/// optional turn/start → optional initial lifecycle wait → spawn consumer).
+/// Split out so the [`SpawnRollback`] guard in [`spawn_spec_appserver`]
+/// wraps every `?`.
 #[allow(clippy::too_many_arguments)]
 async fn build_handle_after_spawn(
     mut child: Child,
     pgid: i32,
     start_time: Option<u64>,
     boot_id: Option<String>,
+    wave_id: Option<crate::ids::WaveId>,
     goal_text: &str,
     sock: &Path,
     developer_instructions: Option<&str>,
@@ -2127,10 +2184,47 @@ async fn build_handle_after_spawn(
     // 2. Poll the socket for readiness, bailing early if the child dies
     //    during boot (the common no-auth / bad-env failure mode).
     let connected = poll_connect(&mut child, sock).await?;
-    let (client, mut notifs) = connected;
+    let (client, notifs) = connected;
+
+    build_handle_after_connect(
+        child,
+        pgid,
+        start_time,
+        boot_id,
+        client,
+        notifs,
+        wave_id,
+        goal_text,
+        sock,
+        developer_instructions,
+        watchdog,
+        recovery_signal,
+    )
+    .await
+}
+
+/// The fallible post-connect boot sequence. Kept separate from
+/// [`build_handle_after_spawn`] so tests can drive a fake JSON-RPC peer and
+/// assert the exact `turn/start` behavior without spawning a real codex
+/// binary.
+#[allow(clippy::too_many_arguments)]
+async fn build_handle_after_connect(
+    mut child: Child,
+    pgid: i32,
+    start_time: Option<u64>,
+    boot_id: Option<String>,
+    client: CodexAppServer,
+    mut notifs: NotificationStream,
+    wave_id: Option<crate::ids::WaveId>,
+    goal_text: &str,
+    sock: &Path,
+    developer_instructions: Option<&str>,
+    watchdog: TurnWatchdogConfig,
+    recovery_signal: Option<SpecRecoverySignal>,
+) -> Result<SpecPushHandle> {
     let client = Arc::new(client);
 
-    // 3. initialize + thread/start + turn/start ack. The caller wraps this
+    // 3. initialize + thread/start + optional turn/start ack. The caller wraps this
     //    whole build future in `OVERALL_BOOT_BUDGET`; individual progress is
     //    still determined by JSON-RPC success/error and child/stream liveness.
     client
@@ -2148,6 +2242,32 @@ async fn build_handle_after_spawn(
         .to_string();
     tracing::info!(thread_id = %thread_id, "spec push: thread started");
 
+    let status: SharedStatus = Arc::new(Mutex::new(SpecPushStatus {
+        last_thread_id: Some(thread_id.clone()),
+        ..Default::default()
+    }));
+    let goal_text = goal_text.trim();
+    if goal_text.is_empty() {
+        tracing::info!(
+            wave_id = wave_id.as_ref().map(|id| id.as_str()),
+            thread_id = %thread_id,
+            "spec push: empty goal — booted without initial turn"
+        );
+        return Ok(park_handle(
+            child,
+            pgid,
+            start_time,
+            boot_id,
+            client,
+            thread_id,
+            sock,
+            notifs,
+            status,
+            watchdog,
+            recovery_signal,
+        ));
+    }
+
     let turn = client
         .turn_start(&thread_id, vec![InputItem::text(goal_text)])
         .await?;
@@ -2164,10 +2284,6 @@ async fn build_handle_after_spawn(
     //    Nothing is buffered or replayed — we simply hand the still-open
     //    receiver to the consumer task afterwards, so no notification is
     //    lost (anything not yet consumed is still queued on the mpsc).
-    let status: SharedStatus = Arc::new(Mutex::new(SpecPushStatus {
-        last_thread_id: Some(thread_id.clone()),
-        ..Default::default()
-    }));
     await_initial_turn_lifecycle(&mut child, &mut notifs, &thread_id, &status).await?;
 
     // 6. Spawn the consumer task and park the live handle (see
@@ -2379,10 +2495,12 @@ fn park_handle(
     // #318 INV-3 — queue persist slot is empty here; the same dispatcher
     // sites that install the watermark sink also install this.
     let queue_persist: QueuePersistSlot = Arc::new(Mutex::new(None));
+    let initial_prompt_clear_sink: InitialPromptClearSinkSlot = Arc::new(Mutex::new(None));
     let consumer_status = status.clone();
     let consumer_thread = thread_id.clone();
     let consumer_sink = watermark_sink.clone();
     let consumer_persist = queue_persist.clone();
+    let consumer_initial_prompt_clear = initial_prompt_clear_sink.clone();
     let consumer = tokio::spawn(consume_notifications(
         notifs,
         consumer_thread,
@@ -2391,6 +2509,7 @@ fn park_handle(
         queue.clone(),
         consumer_sink,
         consumer_persist,
+        consumer_initial_prompt_clear,
         watchdog,
         recovery_signal,
     ));
@@ -2411,6 +2530,7 @@ fn park_handle(
         queue,
         watermark_sink,
         queue_persist,
+        initial_prompt_clear_sink,
     }
 }
 
@@ -2524,6 +2644,7 @@ async fn consume_notifications(
     queue: PushQueue,
     watermark_sink: WatermarkSinkSlot,
     queue_persist: QueuePersistSlot,
+    initial_prompt_clear_sink: InitialPromptClearSinkSlot,
     watchdog: TurnWatchdogConfig,
     recovery_signal: Option<SpecRecoverySignal>,
 ) {
@@ -2535,9 +2656,11 @@ async fn consume_notifications(
         queue,
         watermark_sink,
         queue_persist,
+        initial_prompt_clear_sink,
         watchdog,
         recovery_signal,
         active_turn: None,
+        initial_prompt_marker_clear_attempted: false,
     };
     state.seed_watchdog_from_status().await;
     state.run().await;
@@ -2551,9 +2674,11 @@ struct NotificationConsumer {
     queue: PushQueue,
     watermark_sink: WatermarkSinkSlot,
     queue_persist: QueuePersistSlot,
+    initial_prompt_clear_sink: InitialPromptClearSinkSlot,
     watchdog: TurnWatchdogConfig,
     recovery_signal: Option<SpecRecoverySignal>,
     active_turn: Option<ActiveTurnWatchdog>,
+    initial_prompt_marker_clear_attempted: bool,
 }
 
 impl NotificationConsumer {
@@ -2758,6 +2883,8 @@ impl NotificationConsumer {
     async fn process_notification(&mut self, n: Notification) {
         warn_on_approval(&n);
         record(&self.status, &n).await;
+        self.clear_initial_prompt_marker_after_rollout_observed(&n)
+            .await;
         match &n {
             Notification::TurnStarted { thread_id, turn }
                 if thread_id.is_empty() || thread_id == &self.thread_id =>
@@ -2797,6 +2924,34 @@ impl NotificationConsumer {
             )
             .await;
         }
+    }
+
+    async fn clear_initial_prompt_marker_after_rollout_observed(&mut self, n: &Notification) {
+        if self.initial_prompt_marker_clear_attempted {
+            return;
+        }
+        let lifecycle_for_thread = matches!(
+            n,
+            Notification::TurnStarted { thread_id, .. }
+                | Notification::TurnCompleted { thread_id, .. }
+                if thread_id.is_empty() || thread_id == &self.thread_id
+        );
+        if !lifecycle_for_thread {
+            return;
+        }
+        let rollout_observed = self.status.lock().await.last_turn_id.is_some();
+        if !rollout_observed {
+            return;
+        }
+        let Some(sink) = self.initial_prompt_clear_sink.lock().await.clone() else {
+            tracing::debug!(
+                thread_id = %self.thread_id,
+                "spec push: observed turn lifecycle before initial-prompt clear sink was installed"
+            );
+            return;
+        };
+        sink().await;
+        self.initial_prompt_marker_clear_attempted = true;
     }
 
     async fn arm_watchdog(&mut self, turn_id: String, source: &'static str) {
@@ -3110,6 +3265,7 @@ mod tests {
         let queue: PushQueue = Arc::new(Mutex::new(VecDeque::new()));
         let watermark_sink: WatermarkSinkSlot = Arc::new(Mutex::new(None));
         let queue_persist: QueuePersistSlot = Arc::new(Mutex::new(None));
+        let initial_prompt_clear_sink: InitialPromptClearSinkSlot = Arc::new(Mutex::new(None));
         let client = Arc::new(client);
         let consumer = tokio::spawn(consume_notifications(
             notifs,
@@ -3119,6 +3275,7 @@ mod tests {
             queue.clone(),
             watermark_sink.clone(),
             queue_persist.clone(),
+            initial_prompt_clear_sink.clone(),
             TurnWatchdogConfig::default(),
             None,
         ));
@@ -3136,6 +3293,7 @@ mod tests {
             queue,
             watermark_sink,
             queue_persist,
+            initial_prompt_clear_sink,
         };
         (handle, server)
     }
@@ -3147,6 +3305,115 @@ mod tests {
             .kill_on_drop(true)
             .spawn()
             .expect("spawn dummy child")
+    }
+
+    #[tokio::test]
+    async fn empty_goal_boot_parks_handle_without_turn_start() {
+        use futures_util::{SinkExt, StreamExt};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let (client, notifs, mut server) = CodexAppServer::connect_pair_for_test().await;
+        let saw_turn_start = Arc::new(AtomicBool::new(false));
+        let saw_turn_start_for_task = Arc::clone(&saw_turn_start);
+        let (sut_returned_tx, mut sut_returned_rx) = tokio::sync::oneshot::channel::<()>();
+        let server_task = tokio::spawn(async move {
+            let mut thread_started = false;
+            let watchdog = tokio::time::sleep(Duration::from_secs(1));
+            tokio::pin!(watchdog);
+            loop {
+                let frame = tokio::select! {
+                    _ = &mut sut_returned_rx, if thread_started => break,
+                    _ = &mut watchdog => panic!("SUT did not return after empty-goal thread/start"),
+                    next = server.next() => match next {
+                        Some(Ok(Message::Text(text))) => text,
+                        Some(Ok(_)) => continue,
+                        None | Some(Err(_)) => break,
+                    },
+                };
+                let req: Value = serde_json::from_str(&frame).expect("json-rpc request");
+                let id = req.get("id").cloned().unwrap_or(Value::Null);
+                match req.get("method").and_then(Value::as_str) {
+                    Some("initialize") => {
+                        server
+                            .send(Message::Text(
+                                serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id,
+                                    "result": {
+                                        "userAgent": "fake-codex-app-server/empty-goal",
+                                        "codexHome": "",
+                                        "platformFamily": "unix",
+                                        "platformOs": "linux"
+                                    }
+                                })
+                                .to_string(),
+                            ))
+                            .await
+                            .expect("send initialize response");
+                    }
+                    Some("thread/start") => {
+                        thread_started = true;
+                        server
+                            .send(Message::Text(
+                                serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id,
+                                    "result": {
+                                        "thread": { "id": "thread-empty-goal" },
+                                        "model": "test-model"
+                                    }
+                                })
+                                .to_string(),
+                            ))
+                            .await
+                            .expect("send thread/start response");
+                    }
+                    Some("turn/start") => {
+                        saw_turn_start_for_task.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                    other => panic!("unexpected method during empty-goal boot: {other:?}"),
+                }
+                if thread_started {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+            server
+        });
+
+        let child = fake_child();
+        let pgid = i32::try_from(child.id().expect("dummy child pid")).expect("pid fits i32");
+        let handle = build_handle_after_connect(
+            child,
+            pgid,
+            read_proc_start_time(pgid),
+            read_boot_id(),
+            client,
+            notifs,
+            None,
+            " \n\t ",
+            Path::new("/tmp/test-empty-goal/app.sock"),
+            None,
+            TurnWatchdogConfig::default(),
+            None,
+        )
+        .await
+        .expect("empty goal boot should park a handle");
+        sut_returned_tx.send(()).expect("server task still waiting");
+
+        assert_eq!(handle.thread_id, "thread-empty-goal");
+        let status = handle.status().await;
+        assert_eq!(status.phase, SpecPushPhase::Idle);
+        assert_eq!(status.last_thread_id.as_deref(), Some("thread-empty-goal"));
+        assert_eq!(status.last_turn_id, None);
+
+        let _server = server_task.await.expect("server task");
+        assert!(
+            !saw_turn_start.load(Ordering::SeqCst),
+            "empty trimmed goal must not issue turn/start"
+        );
+        drop(handle);
     }
 
     #[tokio::test]
@@ -3213,6 +3480,115 @@ mod tests {
         assert_eq!(g.phase, SpecPushPhase::TurnCompleted);
         assert_eq!(g.last_turn_id.as_deref(), Some("turn-1"));
         let _ = child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn consumer_turn_lifecycle_clears_initial_prompt_marker() {
+        use crate::card_role_cache::CardRoleCache;
+        use crate::db::prelude::*;
+        use crate::db::sqlite::SqlxRepo;
+        use crate::model::{CardRole, NewCard, NewCove, NewWave};
+
+        let repo = Arc::new(
+            SqlxRepo::open("sqlite::memory:")
+                .await
+                .expect("open in-memory repo"),
+        );
+        let cove = repo
+            .cove_create(NewCove {
+                name: "lifecycle-clear".into(),
+                color: "#abcdef".into(),
+                sort: None,
+            })
+            .await
+            .expect("create cove");
+        let wave = repo
+            .wave_create(NewWave {
+                cove_id: cove.id,
+                title: "".into(),
+                sort: None,
+                cwd: String::new(),
+                attach_folder: false,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .expect("create wave");
+        let cache = CardRoleCache::new();
+        let mut tx = repo.pool().begin().await.expect("begin tx");
+        let spec = crate::db::sqlite::card_create_with_id_tx(
+            &mut tx,
+            crate::model::new_id(),
+            NewCard {
+                wave_id: wave.id,
+                kind: "codex".into(),
+                sort: None,
+                payload: serde_json::json!({
+                    "codex_thread_id": "thread-test",
+                    "appserver_needs_initial_prompt": true,
+                    "push_watermark": 0,
+                }),
+            },
+            CardRole::Spec,
+            false,
+            &cache,
+        )
+        .await
+        .expect("create spec card");
+        tx.commit().await.expect("commit");
+
+        let (client, notifs, _server) = CodexAppServer::connect_pair_for_test().await;
+        let status: SharedStatus = Arc::new(Mutex::new(SpecPushStatus {
+            last_thread_id: Some("thread-test".into()),
+            ..Default::default()
+        }));
+        let initial_prompt_clear_sink: InitialPromptClearSinkSlot = Arc::new(Mutex::new(None));
+        {
+            let repo = Arc::clone(&repo);
+            let card_id = spec.id.clone();
+            *initial_prompt_clear_sink.lock().await = Some(Arc::new(move || {
+                let repo = Arc::clone(&repo);
+                let card_id = card_id.clone();
+                Box::pin(async move {
+                    repo.spec_card_clear_needs_initial_prompt(card_id.as_str())
+                        .await
+                        .expect("clear initial-prompt marker");
+                })
+            }));
+        }
+        let mut consumer = NotificationConsumer {
+            notifs,
+            thread_id: "thread-test".to_string(),
+            status: status.clone(),
+            client: Arc::new(client),
+            queue: Arc::new(Mutex::new(VecDeque::new())),
+            watermark_sink: Arc::new(Mutex::new(None)),
+            queue_persist: Arc::new(Mutex::new(None)),
+            initial_prompt_clear_sink,
+            watchdog: TurnWatchdogConfig::default(),
+            recovery_signal: None,
+            active_turn: None,
+            initial_prompt_marker_clear_attempted: false,
+        };
+
+        consumer
+            .process_notification(Notification::TurnStarted {
+                thread_id: "thread-test".to_string(),
+                turn: serde_json::json!({ "id": "turn-1" }),
+            })
+            .await;
+
+        let g = status.lock().await;
+        assert_eq!(g.last_turn_id.as_deref(), Some("turn-1"));
+        drop(g);
+        let got = repo
+            .card_get(spec.id.as_str())
+            .await
+            .unwrap()
+            .expect("spec card");
+        assert!(
+            got.payload.get("appserver_needs_initial_prompt").is_none(),
+            "first observed turn lifecycle must clear the bootstrap marker"
+        );
     }
 
     #[tokio::test]
@@ -4622,12 +4998,14 @@ mod tests {
             queue: Arc::new(Mutex::new(VecDeque::new())),
             watermark_sink: Arc::new(Mutex::new(None)),
             queue_persist: Arc::new(Mutex::new(None)),
+            initial_prompt_clear_sink: Arc::new(Mutex::new(None)),
             watchdog: TurnWatchdogConfig::default(),
             recovery_signal: Some(signal),
             active_turn: Some(ActiveTurnWatchdog {
                 turn_id: "turn-wedged".to_string(),
                 deadline: TokioInstant::now(),
             }),
+            initial_prompt_marker_clear_attempted: false,
         };
 
         consumer
@@ -4668,6 +5046,7 @@ mod tests {
             queue: Arc::new(Mutex::new(VecDeque::new())),
             watermark_sink: Arc::new(Mutex::new(None)),
             queue_persist: Arc::new(Mutex::new(None)),
+            initial_prompt_clear_sink: Arc::new(Mutex::new(None)),
             watchdog: TurnWatchdogConfig {
                 max_turn_duration: Duration::from_secs(30),
                 interrupt_completion_budget: Duration::from_secs(5),
@@ -4677,6 +5056,7 @@ mod tests {
                 turn_id: "turn-race".to_string(),
                 deadline: TokioInstant::now() + Duration::from_secs(30),
             }),
+            initial_prompt_marker_clear_attempted: false,
         };
 
         let server_task = tokio::spawn(async move {

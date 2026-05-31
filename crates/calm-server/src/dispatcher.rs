@@ -268,6 +268,35 @@ impl Dispatcher {
         })
     }
 
+    /// Build the lifecycle-observation sink installed on each spec
+    /// app-server handle. Unlike `watermark_sink_for`, this is driven by
+    /// codex turn notifications rather than dispatcher pushes, so manual
+    /// remote-TUI input can clear the empty-goal bootstrap marker as soon
+    /// as a rollout exists.
+    pub fn initial_prompt_clear_sink_for(
+        &self,
+        spec_card_id: CardId,
+    ) -> crate::spec_appserver::InitialPromptClearSink {
+        let repo = Arc::clone(&self.inner.repo);
+        Arc::new(move || {
+            let repo = Arc::clone(&repo);
+            let spec_card_id = spec_card_id.clone();
+            Box::pin(async move {
+                if let Err(e) = repo
+                    .spec_card_clear_needs_initial_prompt(spec_card_id.as_str())
+                    .await
+                {
+                    tracing::warn!(
+                        spec_card_id = %spec_card_id,
+                        error = %e,
+                        "spec push lifecycle: clear initial-prompt marker failed; \
+                         next boot may fresh-spawn instead of resuming this rollout"
+                    );
+                }
+            })
+        })
+    }
+
     /// #318 INV-3 (R2-B1) — build the [`crate::spec_appserver::QueuePersist`]
     /// the `SpecPushHandle` uses to mirror its in-memory `VecDeque` into the
     /// durable `spec_push_queue` table. Captures `repo` + the spec card id;

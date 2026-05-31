@@ -74,7 +74,7 @@ use crate::model::{
 use crate::routes::cove_folders::{is_descendant_of, normalize_path};
 use crate::routes::settings::{Settings, load_settings};
 use crate::spec_appserver::{
-    TurnWatchdogConfig, spawn_spec_appserver_with_watchdog_config_and_recovery,
+    TurnWatchdogConfig, spawn_spec_appserver_with_watchdog_config_and_recovery_for_wave,
 };
 use crate::spec_card::{SpecPushDaemonArgs, build_codex_env_map, seed_and_spawn_spec_daemon};
 use crate::state::AppState;
@@ -812,12 +812,15 @@ pub(crate) async fn create_wave(
 }
 
 /// PR3a (#293) — DECISION A's create-wave blocking sequence for the push
-/// path. Boots the kernel-owned `codex app-server`, runs turn #1 with the
-/// wave's title as the goal, awaits `turn/started` (so a rollout exists on
-/// disk for the `--remote` TUI to resume), persists `codex_thread_id` +
-/// `appserver_sock` on the spec card payload (eventized — same audited
-/// `write_with_event_typed` path every other write uses), parks the
-/// handle in `state.spec_push`, and returns the
+/// path. Boots the kernel-owned `codex app-server`, starts a codex thread,
+/// and, when the wave title is non-empty, runs turn #1 with that title as
+/// the goal and awaits `turn/started` (so a rollout exists on disk for the
+/// `--remote` TUI to resume). Empty titles are marked
+/// `appserver_needs_initial_prompt` so boot recovery will fresh-start
+/// instead of resuming a rollout-less thread. The function persists
+/// `codex_thread_id` + `appserver_sock` on the spec card payload
+/// (eventized — same audited `write_with_event_typed` path every other
+/// write uses), parks the handle in `state.spec_push`, and returns the
 /// [`SpecPushDaemonArgs`] the PTY daemon spawn needs.
 ///
 /// On any failure the `SpawnRollback` guard in `spawn_spec_appserver`
@@ -865,17 +868,17 @@ async fn spawn_push_appserver(
         ))
     })?;
 
-    // DECISION A's blocking sequence (boot → connect → initialize →
-    // thread/start → turn/start(goal) → await initial lifecycle). The wave
-    // title is the agent's goal — the same value the legacy path passes
-    // as codex's positional `[PROMPT]`.
+    // DECISION A's boot sequence (boot → connect → initialize →
+    // thread/start → optional turn/start(goal) → optional initial
+    // lifecycle wait). A non-empty wave title is the agent's initial goal;
+    // an empty title parks the push handle without an auto-submitted prompt.
     let recovery_signal =
         crate::wire_spec_push_recovery_supervisor(s, settings, spec_card_id, wave.id.clone());
     let developer_instructions = crate::spec_card::render_system_prompt(
         crate::spec_card::SeededCardRole::Spec.prompt_template(),
         wave.id.as_str(),
     );
-    let handle = spawn_spec_appserver_with_watchdog_config_and_recovery(
+    let handle = spawn_spec_appserver_with_watchdog_config_and_recovery_for_wave(
         &s.codex.codex_bin,
         env_for_spawn,
         &wave.title,
@@ -883,6 +886,7 @@ async fn spawn_push_appserver(
         Some(&developer_instructions),
         TurnWatchdogConfig::default(),
         Some(recovery_signal),
+        Some(&wave.id),
     )
     .await?;
     let thread_id = handle.thread_id.clone();
@@ -898,6 +902,7 @@ async fn spawn_push_appserver(
     // recovery treats an absent stamp as "skip the kill" (conservative).
     let start_time = handle.start_time;
     let boot_id = handle.boot_id.clone();
+    let needs_initial_prompt = wave.title.trim().is_empty();
 
     // Persist `codex_thread_id` + `appserver_sock` + `appserver_pgid` on
     // the spec card payload (merge into the existing payload —
@@ -954,6 +959,14 @@ async fn spawn_push_appserver(
                     "codex_thread_id".into(),
                     serde_json::Value::String(thread_id_for_tx),
                 );
+                if needs_initial_prompt {
+                    map.insert(
+                        "appserver_needs_initial_prompt".into(),
+                        serde_json::Value::Bool(true),
+                    );
+                } else {
+                    map.remove("appserver_needs_initial_prompt");
+                }
                 map.insert("appserver_sock".into(), serde_json::Value::String(sock_str));
                 map.insert(
                     "appserver_pgid".into(),
@@ -1044,6 +1057,10 @@ async fn spawn_push_appserver(
          a future refactor split the install from the assert; queued-then-\
          flushed envelopes would silently fail to persist their watermark"
     );
+    let initial_prompt_clear = s.dispatcher.initial_prompt_clear_sink_for(card_key.clone());
+    handle
+        .install_initial_prompt_clear_sink(initial_prompt_clear)
+        .await;
 
     // #318 INV-3 (R2-B1) — install the durable queue-persist callbacks
     // BEFORE parking the handle in the registry, symmetric with the

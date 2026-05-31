@@ -5,6 +5,7 @@ import { PinIcon } from './PinIcon';
 import { ProgressBar } from './ProgressBar';
 import { WaveGlyph } from './WaveGlyph';
 import { WaveLifecycleBadge } from './WaveLifecycleBadge';
+import { waveDisplayTitle } from '../waveTitle';
 
 // ---------------- WaveRow ----------------
 
@@ -38,6 +39,7 @@ export function WaveRow({
   const running = isRunning(wave.lifecycle);
   const showProgress = running && wave.progress > 0;
   const pinned = wave.pinnedAt != null;
+  const displayTitle = waveDisplayTitle(wave.title);
 
   // The row is a real <button> so Enter/Space activation and focus
   // semantics come for free. The hover-reveal × delete is a SIBLING
@@ -63,7 +65,7 @@ export function WaveRow({
       >
         <WaveGlyph lifecycle={wave.lifecycle} />
         <div className="body">
-          <div className="t">{wave.title}</div>
+          <div className="t">{displayTitle}</div>
           {(showCoveTag || showNow) && (
             <div className="s">
               {showCoveTag && (
@@ -109,8 +111,8 @@ export function WaveRow({
             e.stopPropagation();
             onDelete();
           }}
-          title={`Delete "${wave.title}"`}
-          aria-label={`Delete "${wave.title}"`}
+          title={`Delete "${displayTitle}"`}
+          aria-label={`Delete "${displayTitle}"`}
         >
           <CloseIcon />
         </button>

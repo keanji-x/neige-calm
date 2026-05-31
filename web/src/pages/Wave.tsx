@@ -12,6 +12,7 @@ import { WaveContext } from '../shared/components/WaveContext';
 import { DeleteButton } from './_shared';
 import { useOverlayState } from '../hooks/useOverlayState';
 import { OVERLAY_VIEW_MODE_SCHEMA_VERSION } from '../cards/builtins/schemaVersions';
+import { waveDisplayTitle } from '../shared/waveTitle';
 
 // WaveGrid pulls in `react-grid-layout` (~50 KB minified) and is the
 // heaviest single dependency on this page. Loading it lazily keeps the
@@ -81,6 +82,7 @@ export function WavePage({
 }) {
   const pct = Math.round(wave.progress * 100);
   const cards: WaveCardSlot[] = wave.cards || [];
+  const displayTitle = waveDisplayTitle(wave.title);
   // Schema-driven AddPanel selections open a modal SchemaForm — kept in
   // local state, never reaches the kernel until submit.
   const [modalItem, setModalItem] = useState<AddPanelMenuItem | null>(null);
@@ -182,7 +184,7 @@ export function WavePage({
     // lifecycle for its header badge without prop-drilling. Other
     // cards ignore the context.
     <WaveContext.Provider
-      value={{ id: wave.id, lifecycle: wave.lifecycle, title: wave.title }}
+      value={{ id: wave.id, lifecycle: wave.lifecycle }}
     >
     <div className="workbench">
       <header className="wave-header">
@@ -245,10 +247,10 @@ export function WavePage({
                 title={onRenameWave ? 'Click to rename' : undefined}
                 role={onRenameWave ? 'button' : undefined}
                 tabIndex={onRenameWave ? 0 : undefined}
-                aria-label={onRenameWave ? wave.title : undefined}
+                aria-label={onRenameWave ? displayTitle : undefined}
                 aria-describedby={onRenameWave ? renameHintId : undefined}
               >
-                {wave.title}
+                {displayTitle}
               </span>
               {onRenameWave && (
                 <span id={renameHintId} className="sr-only">
@@ -299,10 +301,10 @@ export function WavePage({
           {showPct && <span className="wave-percent num">{pct}%</span>}
           {onDeleteWave && (
             <DeleteButton
-              label={`Delete wave "${wave.title}"`}
+              label={`Delete wave "${displayTitle}"`}
               confirmTitle="Delete wave?"
               confirmLabel="Delete wave"
-              confirmMessage={`Delete wave "${wave.title}"? Its cards (including any terminals) go too. This cannot be undone.`}
+              confirmMessage={`Delete wave "${displayTitle}"? Its cards (including any terminals) go too. This cannot be undone.`}
               onDelete={() => onDeleteWave(wave.id)}
             />
           )}

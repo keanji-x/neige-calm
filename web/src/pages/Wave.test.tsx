@@ -114,6 +114,24 @@ describe('WavePage rename keyboard entry', () => {
     expect(title).toHaveAccessibleDescription('Rename wave');
   });
 
+  it('renders the fallback label when the wave title is empty', () => {
+    render(
+      withClient(
+        <WavePage
+          wave={makeWave({ title: '' })}
+          cove={makeCove()}
+          onGo={() => {}}
+          onAddCard={() => {}}
+          onRemoveCard={() => {}}
+          onRenameWave={() => {}}
+        />,
+      ),
+    );
+    const title = screen.getByRole('button', { name: 'Untitled wave' });
+    expect(title).toHaveTextContent('Untitled wave');
+    expect(title).toHaveAccessibleDescription('Rename wave');
+  });
+
   it('drops the keyboard affordance entirely when onRenameWave is absent', () => {
     render(
       withClient(

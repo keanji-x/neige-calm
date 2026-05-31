@@ -252,9 +252,10 @@ mod claude_boot_revive_tests {
 ///      hard-crash → systemd reparenting), else freshly respawned (graceful
 ///      teardown / `kill_on_drop` reaped it on the way down).
 ///   2. `initialize` + `thread/resume(<codex_thread_id>)` on that server —
-///      based on the on-disk rollout (so the first round-trip from the
-///      original boot has to have completed; otherwise resume returns
-///      `-32600 "no rollout found"` and we leave the wave inert, see below).
+///      based on the on-disk rollout. Empty-goal waves that intentionally
+///      skipped the first turn carry `appserver_needs_initial_prompt` and
+///      are excluded from this resume path; boot starts a fresh idle thread
+///      for them instead.
 ///   3. A fresh [`SpecPushHandle`] registered in [`SpecPushRegistry`]
 ///      keyed by [`crate::ids::WaveId`], identical to what
 ///      [`crate::routes::waves::create_wave`] would have inserted.
@@ -269,8 +270,8 @@ mod claude_boot_revive_tests {
 /// Every failure mode is **non-fatal at boot** (boot stays best-effort,
 /// matching `create_wave`'s 201-when-spec-fails posture):
 ///
-///   * `thread/resume` returns `-32600 "no rollout found"` (the prior boot
-///     persisted `codex_thread_id` but the wave never completed turn #1) →
+///   * `thread/resume` returns `-32600 "no rollout found"` (a legacy or
+///     malformed row is resumable in SQL but has no rollout on disk) →
 ///     log warn, clear the stale push fields (`codex_thread_id`, sock,
 ///     pgid, watermark) so the next boot doesn't retry, leave the wave
 ///     inert. Matches the "lazy wave" state from issue #313 problem #2
@@ -315,12 +316,23 @@ pub async fn takeover_spec_appservers_on_boot(state: &state::AppState) {
             return;
         }
     };
-    if cards.is_empty() {
+    let initial_prompt_cards = match state.repo.spec_cards_for_initial_prompt_bootstrap().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "takeover_spec_appservers_on_boot: initial-prompt query failed; skipping"
+            );
+            Vec::new()
+        }
+    };
+    if cards.is_empty() && initial_prompt_cards.is_empty() {
         tracing::info!("takeover_spec_appservers_on_boot: no in-flight spec waves to take over");
         return;
     }
     tracing::info!(
         candidates = cards.len(),
+        initial_prompt_candidates = initial_prompt_cards.len(),
         "takeover_spec_appservers_on_boot: starting boot takeover"
     );
     // Settings drive the proxy env handed to a respawned app-server (same
@@ -341,6 +353,7 @@ pub async fn takeover_spec_appservers_on_boot(state: &state::AppState) {
     };
 
     let mut respawned = 0usize;
+    let mut initial_prompt_respawned = 0usize;
     let mut inert = 0usize;
     for (
         card_id,
@@ -374,8 +387,39 @@ pub async fn takeover_spec_appservers_on_boot(state: &state::AppState) {
             TakeoverOutcome::Inert => inert += 1,
         }
     }
+    for (
+        card_id,
+        wave_id,
+        cwd,
+        persisted_pgid,
+        persisted_sock,
+        persisted_start_time,
+        persisted_boot_id,
+        watermark,
+    ) in initial_prompt_cards
+    {
+        let wave_key: crate::ids::WaveId = wave_id.clone().into();
+        let outcome = bootstrap_empty_goal_spec_appserver(
+            state,
+            &settings,
+            &card_id,
+            &wave_key,
+            &cwd,
+            persisted_pgid,
+            persisted_sock.as_deref(),
+            persisted_start_time,
+            persisted_boot_id.as_deref(),
+            watermark,
+        )
+        .await;
+        match outcome {
+            TakeoverOutcome::Respawned => initial_prompt_respawned += 1,
+            TakeoverOutcome::Inert => inert += 1,
+        }
+    }
     tracing::info!(
         respawned,
+        initial_prompt_respawned,
         inert,
         "takeover_spec_appservers_on_boot: complete"
     );
@@ -402,6 +446,159 @@ enum TakeoverOutcome {
     /// spawn/connect/handshake errored. The dispatcher's missing-handle
     /// path will warn on the next live event and move on.
     Inert,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn bootstrap_empty_goal_spec_appserver(
+    state: &state::AppState,
+    settings: &crate::routes::settings::Settings,
+    card_id: &str,
+    wave_id: &crate::ids::WaveId,
+    cwd: &str,
+    persisted_pgid: Option<i32>,
+    persisted_sock: Option<&str>,
+    persisted_start_time: Option<u64>,
+    persisted_boot_id: Option<&str>,
+    watermark: i64,
+) -> TakeoverOutcome {
+    if let (Some(pgid), Some(sock)) = (persisted_pgid, persisted_sock) {
+        let sock_path = std::path::Path::new(sock);
+        let identity_ok = match (persisted_start_time, persisted_boot_id) {
+            (Some(st), Some(boot)) => spec_appserver::verify_owned_pid(pgid, st, boot),
+            _ => false,
+        };
+        let socket_live = if identity_ok && pgid > 1 {
+            spec_appserver::socket_owned_by_appserver(sock_path).await
+        } else {
+            false
+        };
+        if pgid > 1 && identity_ok && socket_live {
+            tracing::debug!(
+                card_id, wave_id = %wave_id, pgid, sock,
+                "initial-prompt bootstrap: reaping stale rollout-less app-server before fresh spawn",
+            );
+            spec_appserver::signal_process_group(pgid, libc::SIGTERM);
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            if let (Some(st), Some(boot)) = (persisted_start_time, persisted_boot_id)
+                && spec_appserver::verify_owned_pid(pgid, st, boot)
+            {
+                spec_appserver::signal_process_group(pgid, libc::SIGKILL);
+            }
+        } else if pgid > 1 {
+            let cause = SkipKillCause::classify(
+                persisted_start_time,
+                persisted_boot_id,
+                identity_ok,
+                socket_live,
+            );
+            cause.emit(
+                card_id,
+                wave_id,
+                pgid,
+                sock,
+                identity_ok,
+                socket_live,
+                persisted_start_time,
+                persisted_boot_id,
+            );
+        }
+        spec_appserver::cleanup_sock_dir(sock_path);
+    }
+
+    let env_map = crate::spec_card::build_codex_env_map(
+        state.codex.as_ref(),
+        card_id,
+        settings.http_proxy.as_deref(),
+        settings.https_proxy.as_deref(),
+        None,
+        None,
+    );
+    let sock = state.daemon.appserver_sock_path(card_id);
+    let sock_dir = state.daemon.appserver_sock_dir(card_id);
+    if let Err(e) = std::fs::create_dir_all(&sock_dir) {
+        tracing::warn!(
+            card_id, wave_id = %wave_id, error = %e,
+            "initial-prompt bootstrap: mkdir appserver sock dir failed; leaving wave retryable",
+        );
+        return TakeoverOutcome::Inert;
+    }
+    let recovery_signal =
+        wire_spec_push_recovery_supervisor(state, settings, card_id, wave_id.clone());
+    // Empty-goal bootstrap respawns a fresh app-server (the prior thread had
+    // no rollout and must never be resumed). thread/start runs again here, so
+    // the spec system prompt must be re-supplied via developerInstructions
+    // (same shape as `routes::waves::spawn_push_appserver` for fresh creates).
+    let developer_instructions = crate::spec_card::render_system_prompt(
+        crate::spec_card::SeededCardRole::Spec.prompt_template(),
+        wave_id.as_str(),
+    );
+    let handle =
+        match spec_appserver::spawn_spec_appserver_with_watchdog_config_and_recovery_for_wave(
+            &state.codex.codex_bin,
+            &env_map,
+            "",
+            &sock,
+            Some(&developer_instructions),
+            spec_appserver::TurnWatchdogConfig::default(),
+            Some(recovery_signal),
+            Some(wave_id),
+        )
+        .await
+        {
+            Ok(handle) => handle,
+            Err(e) => {
+                tracing::warn!(
+                    card_id, wave_id = %wave_id, error = %e,
+                    "initial-prompt bootstrap: fresh app-server spawn failed; leaving wave retryable",
+                );
+                return TakeoverOutcome::Inert;
+            }
+        };
+    let thread_id = handle.thread_id.clone();
+    if let Err(e) = state
+        .repo
+        .spec_card_set_empty_goal_bootstrap_state(
+            card_id,
+            &thread_id,
+            handle.pgid,
+            &handle.sock.to_string_lossy(),
+            handle.start_time,
+            handle.boot_id.as_deref(),
+            watermark,
+        )
+        .await
+    {
+        tracing::warn!(
+            card_id, wave_id = %wave_id, thread_id = %thread_id, error = %e,
+            "initial-prompt bootstrap: persist fresh runtime state failed; leaving wave retryable",
+        );
+        return TakeoverOutcome::Inert;
+    }
+    let push = crate::spec_card::SpecPushDaemonArgs {
+        thread_id: thread_id.clone(),
+        sock: handle.sock.clone(),
+    };
+    register_and_catch_up(state, card_id, wave_id, watermark, handle, false).await;
+    if let Err(e) = crate::spec_card::spawn_spec_daemon_for_existing_seed(
+        state,
+        card_id,
+        wave_id.as_str(),
+        cwd,
+        &env_map,
+        &push,
+    )
+    .await
+    {
+        tracing::warn!(
+            card_id, wave_id = %wave_id, thread_id = %thread_id, error = %e,
+            "initial-prompt bootstrap: app-server parked but TUI daemon spawn failed",
+        );
+    }
+    tracing::info!(
+        card_id, wave_id = %wave_id, thread_id = %thread_id,
+        "initial-prompt bootstrap: fresh idle app-server registered without thread/resume",
+    );
+    TakeoverOutcome::Respawned
 }
 
 const RUNTIME_RECOVERY_MAX_RESTARTS: u32 = 3;
@@ -1257,6 +1454,12 @@ async fn register_and_catch_up(
         "register_and_catch_up: install_watermark_sink did not take effect — \
          queued-then-flushed envelopes would silently fail to persist their watermark"
     );
+    let initial_prompt_clear = state
+        .dispatcher
+        .initial_prompt_clear_sink_for(card_key.clone());
+    handle
+        .install_initial_prompt_clear_sink(initial_prompt_clear)
+        .await;
 
     // #318 INV-3 (R2-B1) — install the durable queue-persist callbacks
     // alongside the watermark sink, then rehydrate the in-memory queue

@@ -369,6 +369,124 @@ async fn spec_push_dispatch_pushes_turn_and_dedups() {
     eprintln!("[spec-push-dispatch-e2e] ALL PASS");
 }
 
+#[tokio::test]
+async fn spec_push_empty_title_boots_idle_without_initial_turn() {
+    use calm_server::spec_appserver::SpecPushPhase;
+
+    let Some(codex_bin) = resolve_codex_bin() else {
+        skip!("codex binary not found (set NEIGE_CODEX_BIN); push path needs it");
+    };
+    eprintln!("[spec-push-dispatch-e2e] using codex at {codex_bin:?}");
+
+    let servers_before = count_codex_app_servers();
+    eprintln!("[spec-push-dispatch-e2e] codex app-server count BEFORE: {servers_before}");
+
+    let proxy = std::env::var("NEIGE_CODEX_PROXY").unwrap_or_else(|_| DEFAULT_PROXY.to_string());
+    if !proxy.is_empty() {
+        // SAFETY: single-threaded test.
+        unsafe {
+            std::env::set_var("HTTP_PROXY", &proxy);
+            std::env::set_var("HTTPS_PROXY", &proxy);
+            std::env::set_var("http_proxy", &proxy);
+            std::env::set_var("https_proxy", &proxy);
+        }
+    }
+
+    let tmp = TempDir::new().expect("tempdir");
+    let (state, repo) = build_state(&tmp, &codex_bin).await;
+    let cove = repo
+        .cove_create(NewCove {
+            name: "empty-title".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let app = routes::router()
+        .layer(axum::middleware::from_fn(
+            calm_server::actor::actor_middleware,
+        ))
+        .with_state(state.clone());
+
+    let (status, body) = post(
+        app.clone(),
+        "/api/waves",
+        json!({
+            "cove_id": cove.id,
+            "title": "",
+            "cwd": "/tmp/empty-title",
+            "attach_folder": true,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]}
+        }),
+    )
+    .await;
+    if status != StatusCode::CREATED {
+        skip!("wave create returned {status} (likely no codex auth / network); body={body}");
+    }
+    let wave_id = body.get("id").and_then(Value::as_str).unwrap().to_string();
+    let wave_key: WaveId = wave_id.clone().into();
+
+    let Some(initial_status) = state.spec_push.status(&wave_key).await else {
+        skip!("empty-title wave created but no spec push handle was parked; body={body}");
+    };
+    assert_eq!(initial_status.phase, SpecPushPhase::Idle);
+    assert!(
+        initial_status.last_thread_id.is_some(),
+        "empty-title boot still starts a codex thread"
+    );
+    assert_eq!(
+        initial_status.last_turn_id, None,
+        "empty-title boot must not observe an initial turn"
+    );
+    assert!(
+        state.spec_push.pusher(&wave_key).is_some(),
+        "empty-title boot must park a pusher for later turns"
+    );
+
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let settled_status = state
+        .spec_push
+        .status(&wave_key)
+        .await
+        .expect("handle remains parked");
+    assert_eq!(settled_status.phase, SpecPushPhase::Idle);
+    assert_eq!(
+        settled_status.last_turn_id, None,
+        "empty-title boot must stay turnless until a later push/user turn"
+    );
+
+    let cards = get_cards(app, &wave_id).await;
+    let (_spec_id, payload) = find_spec_card(&cards);
+    assert!(
+        payload
+            .get("codex_thread_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty()),
+        "spec card payload should persist codex_thread_id for empty-title boot; payload={payload}"
+    );
+    assert_eq!(
+        payload
+            .get("appserver_needs_initial_prompt")
+            .and_then(Value::as_bool),
+        Some(true),
+        "empty-title boot must be marked fresh-bootable instead of resumable; payload={payload}"
+    );
+    assert!(
+        payload.get("prompt").and_then(Value::as_str).is_none(),
+        "empty title should not persist an auto-submit prompt; payload={payload}"
+    );
+
+    let _ = state.spec_push.remove(&wave_key);
+    tokio::time::sleep(Duration::from_millis(800)).await;
+
+    let servers_after = count_codex_app_servers();
+    eprintln!("[spec-push-dispatch-e2e] codex app-server count AFTER: {servers_after}");
+    assert!(
+        servers_after <= servers_before,
+        "leaked codex app-server: before={servers_before} after={servers_after}"
+    );
+}
+
 /// The push scenario body, returning `Result` so the caller can run
 /// teardown (reap + no-leak) regardless of pass/fail, then surface the
 /// outcome. Self-skips (returns Ok) if the second client can't resume.
