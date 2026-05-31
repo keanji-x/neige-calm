@@ -60,12 +60,13 @@ jobs:
           echo "OK: no raw_repo escape in production"
 
       - name: cargo clippy --workspace --all-targets -- -D warnings
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings
 
       - name: cargo build --workspace --locked
-        run: cargo build --workspace --locked
+        run: cargo build --workspace --locked --features calm-server/codex-e2e
 
       - name: cargo test --workspace --locked
+        # Feature enabled for compile-check coverage; codex-e2e tests self-skip when no codex binary is discoverable, the default in GHA runners.
         run: cargo test --workspace --locked --features calm-server/codex-e2e
 
   web:
