@@ -109,16 +109,16 @@ test('Browse… picks a directory from disk and writes it into the cwd input', a
   await expect(browserDialog).toBeVisible();
 
   // Step 4 — the listdir endpoint defaults to $HOME (server-side), so
-  // the browser opens on $HOME with our pre-created directory listed.
-  // We just click into the unique entry and confirm.
-  const cwdLabel = browserDialog.locator('.dirpicker-cwd');
-  await expect(cwdLabel).toHaveText(home, { timeout: 5_000 });
+  // the browser opens on $HOME with our pre-created directory listed
+  // and reflected in the editable path input.
+  const pathInput = browserDialog.getByLabel('Directory path');
+  await expect(pathInput).toHaveValue(`${home}/`, { timeout: 5_000 });
 
   // Click into our pre-created directory. The listbox option's
   // accessible name is its `<button>` text; we use exact match so we
   // don't pick a sibling whose name happens to share a prefix.
   await browserDialog.getByRole('option', { name: dirName, exact: true }).click();
-  await expect(cwdLabel).toHaveText(dirPath, { timeout: 5_000 });
+  await expect(pathInput).toHaveValue(`${dirPath}/`, { timeout: 5_000 });
 
   // Step 5 — confirm with "Select this directory". The browser view
   // pops; the dialog title swaps back to "New wave" and the cwd input
