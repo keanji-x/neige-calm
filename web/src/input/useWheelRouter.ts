@@ -1,6 +1,9 @@
 import { useEffect, type RefObject } from 'react';
-import { getActiveCardShell, resolveWheelRoute } from './wheelRouter';
-import { isSyntheticWheel } from './xtermAdapter';
+import {
+  getActiveCardShell,
+  pixelDelta,
+  resolveWheelRoute,
+} from './wheelRouter';
 
 const MODAL_SELECTOR = '.modal-overlay, .modal-panel';
 const WHEEL_CARD_SELECTOR = '[data-wheel-card]';
@@ -15,8 +18,6 @@ export function useWheelRouter(scrollRef: RefObject<HTMLElement | null>): void {
     if (!scrollRoot) return;
 
     const handleWheel = (event: WheelEvent) => {
-      if (isSyntheticWheel(event)) return;
-
       const activeCard = getActiveCardShell(scrollRoot, document);
       const route = resolveWheelRoute({
         scrollRoot,
@@ -25,15 +26,17 @@ export function useWheelRouter(scrollRef: RefObject<HTMLElement | null>): void {
         deltaY: event.deltaY,
       });
 
-      if (route.kind === 'page') return;
+      if (route.kind === 'page' || route.kind === 'xterm-passthrough') return;
 
       event.preventDefault();
       if (route.kind === 'native-scroll') {
-        route.target.scrollTop += event.deltaY;
+        const { x, y } = pixelDelta(event);
+        route.target.scrollLeft += x;
+        route.target.scrollTop += y;
         return;
       }
-      if (route.kind === 'xterm') {
-        route.target.routeWheel(event);
+      if (route.kind === 'xterm-scrollback') {
+        route.target.scrollback(event.deltaY, event.deltaMode);
       }
     };
 

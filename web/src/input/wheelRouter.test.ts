@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   getActiveCardShell,
+  pixelDelta,
   resolveWheelRoute,
   type WheelRoute,
 } from './wheelRouter';
@@ -33,6 +34,47 @@ function fixture() {
 
 afterEach(() => {
   document.body.replaceChildren();
+});
+
+describe('pixelDelta', () => {
+  it('keeps pixel-mode wheel deltas unchanged on both axes', () => {
+    const event = new WheelEvent('wheel', {
+      deltaX: 4,
+      deltaY: -8,
+      deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+    });
+
+    expect(pixelDelta(event)).toEqual({ x: 4, y: -8 });
+  });
+
+  it('normalizes line-mode wheel deltas to pixels on both axes', () => {
+    const event = new WheelEvent('wheel', {
+      deltaX: 2,
+      deltaY: -3,
+      deltaMode: WheelEvent.DOM_DELTA_LINE,
+    });
+
+    expect(pixelDelta(event)).toEqual({ x: 32, y: -48 });
+  });
+
+  it('normalizes page-mode wheel deltas from the current target height', () => {
+    const root = document.createElement('div');
+    setScrollSize(root, 1000, 250);
+    let delta: { x: number; y: number } | null = null;
+    root.addEventListener('wheel', (event) => {
+      delta = pixelDelta(event);
+    });
+
+    root.dispatchEvent(
+      new WheelEvent('wheel', {
+        deltaX: 1,
+        deltaY: -2,
+        deltaMode: WheelEvent.DOM_DELTA_PAGE,
+      }),
+    );
+
+    expect(delta).toEqual({ x: 250, y: -500 });
+  });
 });
 
 describe('resolveWheelRoute', () => {
@@ -103,8 +145,8 @@ describe('resolveWheelRoute', () => {
     const { scrollRoot, activeCard } = fixture();
     const xtermTarget: XtermWheelTarget = {
       root: document.createElement('div'),
-      canHandleWheel: () => true,
-      routeWheel: () => undefined,
+      mode: () => 'scrollback',
+      scrollback: () => undefined,
     };
     registerXtermShell(activeCard, xtermTarget);
 
@@ -115,7 +157,27 @@ describe('resolveWheelRoute', () => {
       deltaY: 120,
     });
 
-    expect(route).toEqual({ kind: 'xterm', target: xtermTarget });
+    expect(route).toEqual({ kind: 'xterm-scrollback', target: xtermTarget });
+    unregisterXtermShell(activeCard);
+  });
+
+  it('routes xterm passthrough when xterm should handle wheel natively', () => {
+    const { scrollRoot, activeCard } = fixture();
+    const xtermTarget: XtermWheelTarget = {
+      root: document.createElement('div'),
+      mode: () => 'passthrough',
+      scrollback: () => undefined,
+    };
+    registerXtermShell(activeCard, xtermTarget);
+
+    const route: WheelRoute = resolveWheelRoute({
+      scrollRoot,
+      activeCard,
+      eventTarget: scrollRoot,
+      deltaY: 120,
+    });
+
+    expect(route).toEqual({ kind: 'xterm-passthrough', target: xtermTarget });
     unregisterXtermShell(activeCard);
   });
 

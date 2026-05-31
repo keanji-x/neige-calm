@@ -4,7 +4,8 @@ import { getXtermForShell } from './wheelTargets';
 export type WheelRoute =
   | { kind: 'page' }
   | { kind: 'native-scroll'; target: HTMLElement }
-  | { kind: 'xterm'; target: XtermWheelTarget }
+  | { kind: 'xterm-scrollback'; target: XtermWheelTarget }
+  | { kind: 'xterm-passthrough'; target: XtermWheelTarget }
   | { kind: 'sink' };
 
 const MODAL_SELECTOR = '.modal-overlay, .modal-panel';
@@ -13,6 +14,7 @@ const XTERM_ROOT_SELECTOR = '.xterm-view';
 const FILE_VIEWER_CARD_SELECTOR = '.file-viewer-card';
 const FILE_VIEWER_PANE_SELECTOR =
   '.cm-scroller, .file-viewer-tree-list, .file-viewer-changes, .file-viewer-merge';
+const LINE_HEIGHT_PX = 16;
 
 function asElement(target: EventTarget | null): Element | null {
   return target instanceof Element ? target : null;
@@ -39,6 +41,24 @@ function isScrollableY(el: HTMLElement): boolean {
     (overflowY === 'auto' || overflowY === 'scroll') &&
     el.scrollHeight > el.clientHeight
   );
+}
+
+export function pixelDelta(event: WheelEvent): { x: number; y: number } {
+  if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) {
+    return {
+      x: event.deltaX * LINE_HEIGHT_PX,
+      y: event.deltaY * LINE_HEIGHT_PX,
+    };
+  }
+  if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+    const root =
+      event.currentTarget instanceof HTMLElement
+        ? event.currentTarget
+        : document.documentElement;
+    const page = root.clientHeight || 400;
+    return { x: event.deltaX * page, y: event.deltaY * page };
+  }
+  return { x: event.deltaX, y: event.deltaY };
 }
 
 function fileViewerPaneFor(
@@ -102,8 +122,14 @@ export function resolveWheelRoute(args: {
   }
 
   const xtermTarget = getXtermForShell(activeCard);
-  if (xtermTarget?.canHandleWheel()) {
-    return { kind: 'xterm', target: xtermTarget };
+  if (xtermTarget) {
+    return {
+      kind:
+        xtermTarget.mode() === 'passthrough'
+          ? 'xterm-passthrough'
+          : 'xterm-scrollback',
+      target: xtermTarget,
+    };
   }
   if (activeCard.querySelector<HTMLElement>(XTERM_ROOT_SELECTOR)) {
     return { kind: 'sink' };

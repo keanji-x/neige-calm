@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  createXtermWheelTarget,
+  deltaYToLines,
   shouldPassThroughToXterm,
-  wheelDeltaToLines,
+  type XtermScrollTerminal,
   type XtermWheelState,
 } from './xtermAdapter';
 
@@ -35,21 +37,64 @@ describe('shouldPassThroughToXterm', () => {
   });
 });
 
-describe('wheelDeltaToLines', () => {
+describe('deltaYToLines', () => {
   it('converts pixel deltas to signed scroll lines', () => {
-    const down = new WheelEvent('wheel', { deltaY: 120 });
-    const up = new WheelEvent('wheel', { deltaY: -40 });
-
-    expect(wheelDeltaToLines(down)).toBe(3);
-    expect(wheelDeltaToLines(up)).toBe(-1);
+    expect(deltaYToLines(120, WheelEvent.DOM_DELTA_PIXEL)).toBe(8);
+    expect(deltaYToLines(-16, WheelEvent.DOM_DELTA_PIXEL)).toBe(-1);
   });
 
-  it('preserves line-mode wheel direction', () => {
-    const ev = new WheelEvent('wheel', {
-      deltaY: -2,
-      deltaMode: WheelEvent.DOM_DELTA_LINE,
+  it('converts line-mode deltas directly to lines', () => {
+    expect(deltaYToLines(-2, WheelEvent.DOM_DELTA_LINE)).toBe(-2);
+    expect(deltaYToLines(0.2, WheelEvent.DOM_DELTA_LINE)).toBe(1);
+  });
+
+  it('converts page-mode deltas to larger line chunks', () => {
+    expect(deltaYToLines(1, WheelEvent.DOM_DELTA_PAGE)).toBe(10);
+    expect(deltaYToLines(-2, WheelEvent.DOM_DELTA_PAGE)).toBe(-20);
+  });
+});
+
+describe('createXtermWheelTarget', () => {
+  function terminal(state: XtermWheelState = {}): XtermScrollTerminal {
+    return {
+      ...state,
+      scrollLines: () => undefined,
+    };
+  }
+
+  it('reports passthrough mode when mouse reporting is enabled', () => {
+    const target = createXtermWheelTarget({
+      root: document.createElement('div'),
+      terminalRef: {
+        current: terminal({ modes: { mouseTrackingMode: 'any' } }),
+      },
     });
 
-    expect(wheelDeltaToLines(ev)).toBe(-2);
+    expect(target.mode()).toBe('passthrough');
+  });
+
+  it('reports passthrough mode when the alternate buffer is active', () => {
+    const target = createXtermWheelTarget({
+      root: document.createElement('div'),
+      terminalRef: {
+        current: terminal({ buffer: { active: { type: 'alternate' } } }),
+      },
+    });
+
+    expect(target.mode()).toBe('passthrough');
+  });
+
+  it('reports scrollback mode otherwise', () => {
+    const target = createXtermWheelTarget({
+      root: document.createElement('div'),
+      terminalRef: {
+        current: terminal({
+          modes: { mouseTrackingMode: 'none' },
+          buffer: { active: { type: 'normal' } },
+        }),
+      },
+    });
+
+    expect(target.mode()).toBe('scrollback');
   });
 });
