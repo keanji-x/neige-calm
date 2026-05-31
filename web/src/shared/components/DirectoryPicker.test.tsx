@@ -12,7 +12,7 @@
 // needs to NOT advertise a dialog role — it's not modal.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { DirectoryBrowser, DirectoryPicker } from './DirectoryPicker';
 import { Dialog } from '../../ui/Dialog/Dialog';
@@ -33,6 +33,12 @@ function stubListDir() {
     parent: null,
     entries: [{ name: 'projects', is_dir: true }],
   });
+}
+
+function activeOptionIndex() {
+  return screen
+    .getAllByRole('option')
+    .findIndex((option) => option.getAttribute('aria-selected') === 'true');
 }
 
 describe('DirectoryBrowser ARIA shape', () => {
@@ -113,6 +119,180 @@ describe('DirectoryBrowser ARIA shape', () => {
 
     const dir = screen.getByRole('option', { name: /projects/i });
     expect(dir).not.toBeDisabled();
+  });
+
+  it('filters visible options by case-insensitive name prefix', async () => {
+    const listDir = vi.spyOn(api, 'listDir').mockResolvedValue({
+      path: '/home/u',
+      parent: null,
+      entries: [
+        { name: 'calm', is_dir: true },
+        { name: 'Calm.md', is_dir: false },
+        { name: 'src', is_dir: true },
+      ],
+    });
+    render(
+      <DirectoryBrowser
+        initialPath="/home/u"
+        onCancel={() => {}}
+        onSelect={() => {}}
+        mode="file"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('option')).toHaveLength(3);
+    });
+    const filter = screen.getByRole('textbox', { name: /filter directory entries/i });
+    await userEvent.type(filter, 'CAL');
+
+    expect(screen.getByRole('option', { name: /calm$/i })).toBeTruthy();
+    expect(screen.getByRole('option', { name: /calm\.md/i })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: /src/i })).toBeNull();
+    expect(listDir).toHaveBeenCalledTimes(1);
+  });
+
+  it('moves the keyboard highlight with ArrowDown and ArrowUp without wrapping', async () => {
+    vi.spyOn(api, 'listDir').mockResolvedValue({
+      path: '/home/u',
+      parent: null,
+      entries: [
+        { name: 'alpha', is_dir: true },
+        { name: 'beta', is_dir: true },
+        { name: 'gamma', is_dir: true },
+      ],
+    });
+    const user = userEvent.setup();
+    render(
+      <DirectoryBrowser
+        initialPath="/home/u"
+        onCancel={() => {}}
+        onSelect={() => {}}
+      />,
+    );
+
+    const filter = screen.getByRole('textbox', { name: /filter directory entries/i });
+    await screen.findByRole('option', { name: /alpha/i });
+    filter.focus();
+
+    await waitFor(() => {
+      expect(activeOptionIndex()).toBe(0);
+    });
+    await user.keyboard('{ArrowDown}');
+    expect(activeOptionIndex()).toBe(1);
+    await user.keyboard('{ArrowDown}');
+    expect(activeOptionIndex()).toBe(2);
+    await user.keyboard('{ArrowDown}');
+    expect(activeOptionIndex()).toBe(2);
+    await user.keyboard('{ArrowUp}');
+    expect(activeOptionIndex()).toBe(1);
+    await user.keyboard('{ArrowUp}');
+    expect(activeOptionIndex()).toBe(0);
+    await user.keyboard('{ArrowUp}');
+    expect(activeOptionIndex()).toBe(0);
+  });
+
+  it('Enter on a highlighted folder descends into that folder', async () => {
+    const listDir = vi.spyOn(api, 'listDir').mockImplementation(async (path?: string) => {
+      if (path === '/home/u/calm') {
+        return { path: '/home/u/calm', parent: '/home/u', entries: [] };
+      }
+      return {
+        path: '/home/u',
+        parent: null,
+        entries: [{ name: 'calm', is_dir: true }],
+      };
+    });
+    const user = userEvent.setup();
+    render(
+      <DirectoryBrowser
+        initialPath="/home/u"
+        onCancel={() => {}}
+        onSelect={() => {}}
+      />,
+    );
+
+    const filter = screen.getByRole('textbox', { name: /filter directory entries/i });
+    await screen.findByRole('option', { name: /calm/i });
+    filter.focus();
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => {
+      expect(listDir).toHaveBeenCalledWith('/home/u/calm');
+    });
+  });
+
+  it('Enter on a highlighted file selects the joined path in file mode', async () => {
+    vi.spyOn(api, 'listDir').mockResolvedValue({
+      path: '/home/u',
+      parent: null,
+      entries: [{ name: 'notes.txt', is_dir: false }],
+    });
+    const onSelect = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <DirectoryBrowser
+        initialPath="/home/u"
+        onCancel={() => {}}
+        onSelect={onSelect}
+        mode="file"
+      />,
+    );
+
+    const filter = screen.getByRole('textbox', { name: /filter directory entries/i });
+    await screen.findByRole('option', { name: /notes\.txt/i });
+    filter.focus();
+    await user.keyboard('{Enter}');
+
+    expect(onSelect).toHaveBeenCalledWith('/home/u/notes.txt');
+  });
+
+  it('Enter with an empty filter and no highlight commits the current directory', async () => {
+    vi.spyOn(api, 'listDir').mockResolvedValue({
+      path: '/home/u',
+      parent: null,
+      entries: [],
+    });
+    const onSelect = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <DirectoryBrowser
+        initialPath="/home/u"
+        onCancel={() => {}}
+        onSelect={onSelect}
+      />,
+    );
+
+    const filter = screen.getByRole('textbox', { name: /filter directory entries/i });
+    await screen.findByText('Empty directory');
+    filter.focus();
+    await user.keyboard('{Enter}');
+
+    expect(onSelect).toHaveBeenCalledWith('/home/u');
+  });
+
+  it('Escape from the focused filter cancels the browser', async () => {
+    vi.spyOn(api, 'listDir').mockResolvedValue({
+      path: '/home/u',
+      parent: null,
+      entries: [],
+    });
+    const onCancel = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <DirectoryBrowser
+        initialPath="/home/u"
+        onCancel={onCancel}
+        onSelect={() => {}}
+      />,
+    );
+
+    const filter = screen.getByRole('textbox', { name: /filter directory entries/i });
+    await screen.findByText('Empty directory');
+    filter.focus();
+    await user.keyboard('{Escape}');
+
+    expect(onCancel).toHaveBeenCalledOnce();
   });
 });
 

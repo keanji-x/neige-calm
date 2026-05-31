@@ -2098,6 +2098,29 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   direction: rtl;
   text-align: left;
 }
+.dirpicker-filter {
+  flex: 0 0 auto;
+  padding: var(--space-3) var(--space-7);
+  border-bottom: 1px solid var(--hairline);
+  background: var(--paper);
+}
+.dirpicker-filter-input {
+  width: 100%;
+  height: 32px;
+  padding: var(--space-0) var(--space-4);
+  font: inherit;
+  font-size: var(--text-sm);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-card);
+  color: var(--text);
+  outline: none;
+}
+.dirpicker-filter-input::placeholder { color: var(--text-3); }
+.dirpicker-filter-input:focus {
+  border-color: var(--text-3);
+  box-shadow: 0 0 0 2px oklch(60% 0.04 245 / 0.14);
+}
 .dirpicker-list {
   flex: 1 1 0;                  /* grows + shrinks */
   min-height: 0;                /* required: default min-height:auto would force list to its content size and push actions out */
@@ -2118,6 +2141,7 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 }
 .dirpicker-entry:hover:not(:disabled) { background: var(--overlay-hover); }
 [data-theme="dark"] .dirpicker-entry:hover:not(:disabled) { background: var(--overlay-hover); }
+.dirpicker-entry-active { background: var(--overlay-hover); }
 .dirpicker-entry:disabled { color: var(--text-3); cursor: default; }
 .dirpicker-entry-file { color: var(--text-3); }
 .dirpicker-entry-icon { flex: none; font-size: var(--text-base); opacity: 0.8; }
