@@ -252,6 +252,8 @@ impl AppState {
     /// surface it: that's a hard misconfiguration the operator needs to fix.
     /// Per-plugin parse failures (and per-plugin spawn failures) are already
     /// downgraded to `tracing::warn!` so one broken plugin can't block boot.
+    /// Shared CODEX_HOME seeding stays here because it is colocated with the
+    /// CodexClient owner and `AppState::new` is the boot-time-only path.
     pub async fn new(cfg: &Config, repo: Arc<dyn Repo>) -> anyhow::Result<Self> {
         let plugins_dir = cfg.plugins_dir_resolved();
         if !plugins_dir.exists() {

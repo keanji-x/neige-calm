@@ -184,6 +184,9 @@ fn copy_entry_recursive(src: &Path, dst: &Path) -> io::Result<()> {
 }
 
 fn escape_toml_basic_string(value: &str) -> String {
+    // Note: a cwd containing `]` would produce a TOML header that table-header
+    // detection mis-parses; we accept this since (a) such cwds are exotic and
+    // (b) it matches the existing `build_codex_config_toml` escape rule.
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
@@ -198,8 +201,10 @@ fn ensure_table_key(text: &mut String, table: &str, key: &str, line: &str) {
     if has_key_in_section(text, Some(table), key) {
         return;
     }
-    if has_table(text, table) {
+    if has_bracket_header(text, table) {
         insert_line_at_table_end(text, table, line);
+    } else if has_table(text, table) {
+        insert_top_level_line(text, &format!("{table}.{line}"));
     } else {
         append_table(text, table, line);
     }
@@ -216,9 +221,20 @@ fn has_key_in_section(text: &str, target: Option<&str>, key: &str) -> bool {
             section = Some(name.to_string());
             continue;
         }
+        if line.starts_with('[') {
+            section = Some(String::new());
+            continue;
+        }
         if section.as_deref() == target
             && let Some((lhs, _)) = line.split_once('=')
             && lhs.trim() == key
+        {
+            return true;
+        }
+        if let Some(table) = target
+            && section.is_none()
+            && let Some((lhs, _)) = line.split_once('=')
+            && dotted_key_matches(lhs.trim(), table, key)
         {
             return true;
         }
@@ -226,10 +242,71 @@ fn has_key_in_section(text: &str, target: Option<&str>, key: &str) -> bool {
     false
 }
 
+/// Returns true if `text` already declares the table `table` either as a
+/// bracket header (`[table]`) or via a dotted key (`table.foo = ...`).
+/// Both forms are valid TOML and emit the same table; treating them
+/// equivalently is the load-bearing invariant the shared writer relies
+/// on.
 fn has_table(text: &str, table: &str) -> bool {
+    has_bracket_header(text, table) || has_dotted_key_under(text, table)
+}
+
+fn has_bracket_header(text: &str, table: &str) -> bool {
     text.lines()
         .filter_map(|line| table_header_name(line.trim()))
         .any(|name| name == table)
+}
+
+fn has_dotted_key_under(text: &str, table: &str) -> bool {
+    if !is_bare_toml_key(table) {
+        return false;
+    }
+
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') {
+            return false;
+        }
+        let Some((lhs, _)) = line.split_once('=') else {
+            continue;
+        };
+        if root_dotted_key(lhs.trim()) == Some(table) {
+            return true;
+        }
+    }
+    false
+}
+
+fn root_dotted_key(lhs: &str) -> Option<&str> {
+    let (root, rest) = lhs.split_once('.')?;
+    if root.is_empty() || rest.trim().is_empty() {
+        return None;
+    }
+    let root = root.trim();
+    if is_bare_toml_key(root) {
+        Some(root)
+    } else {
+        None
+    }
+}
+
+fn dotted_key_matches(lhs: &str, table: &str, key: &str) -> bool {
+    let Some((root, rest)) = lhs.split_once('.') else {
+        return false;
+    };
+    let root = root.trim();
+    let key = key.trim();
+    is_bare_toml_key(root) && root == table && rest.trim() == key
+}
+
+fn is_bare_toml_key(key: &str) -> bool {
+    !key.is_empty()
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 fn table_header_name(line: &str) -> Option<&str> {
@@ -308,4 +385,34 @@ fn first_table_byte_offset(text: &str) -> Option<usize> {
         offset += raw.len();
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_table;
+
+    #[test]
+    fn has_table_detects_top_level_dotted_key() {
+        assert!(has_table("foo.bar = 1\n", "foo"));
+    }
+
+    #[test]
+    fn has_table_detects_bracket_header() {
+        assert!(has_table("[foo]\nbar = 1\n", "foo"));
+    }
+
+    #[test]
+    fn has_table_ignores_nested_dotted_key_under_other_table() {
+        assert!(!has_table("[other]\nfoo.bar = 1\n", "foo"));
+    }
+
+    #[test]
+    fn has_table_does_not_match_prefix_substring() {
+        assert!(!has_table("foobar.x = 1\n", "foo"));
+    }
+
+    #[test]
+    fn has_table_ignores_dotted_key_inside_comment() {
+        assert!(!has_table("# foo.bar = 1\n", "foo"));
+    }
 }

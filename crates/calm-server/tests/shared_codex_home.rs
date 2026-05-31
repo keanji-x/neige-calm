@@ -223,4 +223,79 @@ args = ["--bar"]
         let config = read_config(&home);
         assert!(config.contains("[sandbox_workspace_write]\nnetwork_access = true\n"));
     }
+
+    #[test]
+    fn ensure_config_for_cwd_detects_dotted_table_form() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let home = shared_home(&root);
+        std::fs::create_dir_all(home.path()).expect("mkdir home");
+        std::fs::write(
+            home.path().join("config.toml"),
+            "sandbox_workspace_write.network_access = true\n",
+        )
+        .expect("write existing config");
+
+        home.ensure_config_for_cwd(&root.path().join("work"))
+            .expect("ensure config");
+
+        let text = read_config(&home);
+        let parsed: toml::Value = toml::from_str(&text).expect("must remain valid TOML");
+        let block = parsed
+            .get("sandbox_workspace_write")
+            .and_then(|v| v.as_table())
+            .expect("section present");
+        assert_eq!(
+            block.get("network_access").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        let header_count = text.matches("[sandbox_workspace_write]").count();
+        assert!(
+            header_count <= 1,
+            "must not duplicate bracket header alongside dotted key: {text}"
+        );
+    }
+
+    #[test]
+    fn ensure_config_for_cwd_does_not_false_positive_on_prefix() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let home = shared_home(&root);
+        std::fs::create_dir_all(home.path()).expect("mkdir home");
+        std::fs::write(
+            home.path().join("config.toml"),
+            "sandbox_workspace_writer.foo = 1\n",
+        )
+        .expect("write existing config");
+
+        home.ensure_config_for_cwd(&root.path().join("work"))
+            .expect("ensure config");
+
+        let text = read_config(&home);
+        assert!(text.contains("[sandbox_workspace_write]"));
+    }
+
+    #[test]
+    fn ensure_config_for_cwd_ignores_dotted_key_inside_comment() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let home = shared_home(&root);
+        std::fs::create_dir_all(home.path()).expect("mkdir home");
+        std::fs::write(
+            home.path().join("config.toml"),
+            "# sandbox_workspace_write.network_access = true (disabled comment)\n",
+        )
+        .expect("write existing config");
+
+        home.ensure_config_for_cwd(&root.path().join("work"))
+            .expect("ensure config");
+
+        let text = read_config(&home);
+        let parsed: toml::Value = toml::from_str(&text).expect("must be valid TOML");
+        let block = parsed
+            .get("sandbox_workspace_write")
+            .and_then(|v| v.as_table())
+            .expect("section present");
+        assert_eq!(
+            block.get("network_access").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+    }
 }
