@@ -148,6 +148,7 @@ async fn serve_conn(stream: tokio::net::UnixStream, control: WedgeControl) -> Re
             Ok(v) => v,
             Err(_) => continue,
         };
+        record_request(&req);
         let id = req.get("id").cloned();
         let method = req
             .get("method")
@@ -260,6 +261,24 @@ fn env_delay(name: &str) -> Option<std::time::Duration> {
     let raw = std::env::var(name).ok()?;
     let ms = raw.parse::<u64>().ok()?;
     Some(std::time::Duration::from_millis(ms))
+}
+
+fn record_request(req: &Value) {
+    let Ok(path) = std::env::var("FAKE_CODEX_CAPTURE_REQUESTS") else {
+        return;
+    };
+    let path = std::path::PathBuf::from(path);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        use std::io::Write;
+        let _ = writeln!(file, "{req}");
+    }
 }
 
 async fn send_result<S>(write: &mut S, id: &Value, result: Value) -> Result<(), String>

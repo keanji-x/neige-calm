@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use calm_server::spec_appserver::{
     SpecPushPhase, TurnWatchdogConfig, spawn_spec_appserver,
     spawn_spec_appserver_with_watchdog_config,
+    spawn_spec_appserver_with_watchdog_config_and_recovery,
 };
 use serde_json::json;
 
@@ -50,6 +51,71 @@ async fn wait_for_path(path: &std::path::Path) {
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+async fn wait_for_capture_containing(path: &std::path::Path, method: &str) -> serde_json::Value {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if let Ok(raw) = std::fs::read_to_string(path) {
+            for line in raw.lines() {
+                let req: serde_json::Value =
+                    serde_json::from_str(line).expect("captured request json");
+                if req.get("method").and_then(serde_json::Value::as_str) == Some(method) {
+                    return req;
+                }
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for captured {method} in {}",
+            path.display()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn spec_spawn_sends_developer_instructions_as_camel_case() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let sock = tmp
+        .path()
+        .join("appserver")
+        .join("card-developer-instructions")
+        .join("sock");
+    let capture = tmp.path().join("requests.ndjson");
+    let prompt = "rendered spec prompt";
+    let env = json!({
+        "FAKE_CODEX_CAPTURE_REQUESTS": capture.display().to_string()
+    });
+
+    let handle = spawn_spec_appserver_with_watchdog_config_and_recovery(
+        &fake_codex_bin(),
+        &env,
+        "goal",
+        &sock,
+        Some(prompt),
+        TurnWatchdogConfig::default(),
+        None,
+    )
+    .await
+    .expect("fake app-server should boot with developer instructions");
+
+    let req = wait_for_capture_containing(&capture, "thread/start").await;
+    assert_eq!(
+        req.get("params")
+            .and_then(|params| params.get("developerInstructions"))
+            .and_then(serde_json::Value::as_str),
+        Some(prompt),
+        "thread/start must send Codex's camelCase developerInstructions key"
+    );
+    let ignored_snake_case_key = ["developer", "instructions"].join("_");
+    assert!(
+        !req.get("params")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|params| params.contains_key(&ignored_snake_case_key)),
+        "thread/start must not send the ignored snake_case key: {req}"
+    );
+    drop(handle);
 }
 
 #[tokio::test]

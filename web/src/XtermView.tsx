@@ -218,6 +218,8 @@ export function XtermView({
   // parent shouldn't tear down the WebSocket.
   const onRoleChangeRef = useRef<XtermViewProps['onRoleChange']>(onRoleChange);
   onRoleChangeRef.current = onRoleChange;
+  // Matches the hardcoded `role_hint: 'Owner'` in ClientHello.
+  const wantedOwnerRef = useRef<boolean>(true);
   // #306 — same ref-capture pattern as `onRoleChange`: a parent identity
   // flip on the callback shouldn't tear down the WebSocket effect.
   const onExitChangeRef = useRef<XtermViewProps['onExitChange']>(onExitChange);
@@ -526,6 +528,11 @@ export function XtermView({
         const sh = msg.ServerHello;
         onRoleChangeRef.current?.(sh.client_role);
         setStatus('connected');
+        if (wantedOwnerRef.current && sh.client_role === 'Observer') {
+          // Previous owner's pump may not have released yet; claim eagerly
+          // instead of waiting for the first owner-gated frame to fail.
+          send('OwnerClaim');
+        }
         // Snapshot may be bigger or smaller than the viewport we opened
         // with; resize the local terminal to match before writing the
         // replay so the cursor lines up.
@@ -618,14 +625,32 @@ export function XtermView({
         return;
       }
       if ('OwnerChanged' in msg) {
-        // Single-user mode only: role is set on ServerHello and never
-        // flips mid-session, so we just log for debug. When multi-client
-        // handoff lands, this is the dispatch point to call
-        // onRoleChangeRef.current?.(newRole) — but the daemon's payload
-        // here only carries `owner_client_id`, so we'd need to compare
-        // against our own clientId to derive the new role for THIS
-        // client. Defer wiring until that semantic is validated.
+        const { owner_client_id: newOwnerId } = msg.OwnerChanged;
         dlog('XtermView', 'OwnerChanged', msg.OwnerChanged);
+        if (newOwnerId === null) {
+          if (wantedOwnerRef.current) {
+            send('OwnerClaim');
+          }
+          return;
+        }
+        if (newOwnerId === clientId) {
+          onRoleChangeRef.current?.('Owner');
+          setProtocolError(null);
+          // A ResizeCommit sent while we were Observer may have been
+          // rejected, leaving the PTY at the previous owner's geometry.
+          // Our local terminal is already fitted, so resend its current
+          // dimensions when ownership transfers to this client.
+          resizeEpoch += 1;
+          send({
+            ResizeCommit: {
+              epoch: resizeEpoch,
+              cols: term.cols,
+              rows: term.rows,
+            },
+          });
+        } else {
+          onRoleChangeRef.current?.('Observer');
+        }
         return;
       }
       if ('Backpressure' in msg) {

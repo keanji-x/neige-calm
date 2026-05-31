@@ -1653,7 +1653,9 @@ pub async fn spawn_spec_appserver_with_watchdog_config(
     watchdog: TurnWatchdogConfig,
 ) -> Result<SpecPushHandle> {
     spawn_spec_appserver_with_watchdog_config_and_recovery(
-        codex_bin, env_map, goal_text, sock, watchdog, None,
+        codex_bin, env_map, goal_text, sock,
+        // Test-only: production callers go through the `_recovery` variant which threads the spec prompt.
+        None, watchdog, None,
     )
     .await
 }
@@ -1666,6 +1668,7 @@ pub async fn spawn_spec_appserver_with_watchdog_config_and_recovery(
     env_map: &Value,
     goal_text: &str,
     sock: &Path,
+    developer_instructions: Option<&str>,
     watchdog: TurnWatchdogConfig,
     recovery_signal: Option<SpecRecoverySignal>,
 ) -> Result<SpecPushHandle> {
@@ -1674,6 +1677,7 @@ pub async fn spawn_spec_appserver_with_watchdog_config_and_recovery(
         env_map,
         goal_text,
         sock,
+        developer_instructions,
         watchdog,
         recovery_signal,
         None,
@@ -1681,11 +1685,13 @@ pub async fn spawn_spec_appserver_with_watchdog_config_and_recovery(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn spawn_spec_appserver_with_watchdog_config_and_recovery_for_wave(
     codex_bin: &str,
     env_map: &Value,
     goal_text: &str,
     sock: &Path,
+    developer_instructions: Option<&str>,
     watchdog: TurnWatchdogConfig,
     recovery_signal: Option<SpecRecoverySignal>,
     wave_id: Option<&crate::ids::WaveId>,
@@ -1792,6 +1798,7 @@ pub async fn spawn_spec_appserver_with_watchdog_config_and_recovery_for_wave(
             wave_id.cloned(),
             goal_text,
             sock,
+            developer_instructions,
             watchdog,
             recovery_signal,
         ),
@@ -2170,6 +2177,7 @@ async fn build_handle_after_spawn(
     wave_id: Option<crate::ids::WaveId>,
     goal_text: &str,
     sock: &Path,
+    developer_instructions: Option<&str>,
     watchdog: TurnWatchdogConfig,
     recovery_signal: Option<SpecRecoverySignal>,
 ) -> Result<SpecPushHandle> {
@@ -2188,6 +2196,7 @@ async fn build_handle_after_spawn(
         wave_id,
         goal_text,
         sock,
+        developer_instructions,
         watchdog,
         recovery_signal,
     )
@@ -2209,6 +2218,7 @@ async fn build_handle_after_connect(
     wave_id: Option<crate::ids::WaveId>,
     goal_text: &str,
     sock: &Path,
+    developer_instructions: Option<&str>,
     watchdog: TurnWatchdogConfig,
     recovery_signal: Option<SpecRecoverySignal>,
 ) -> Result<SpecPushHandle> {
@@ -2223,7 +2233,7 @@ async fn build_handle_after_connect(
             version: env!("CARGO_PKG_VERSION").into(),
         })
         .await?;
-    let thread = client.thread_start().await?;
+    let thread = client.thread_start(developer_instructions).await?;
     let thread_id = thread
         .thread_id()
         .ok_or_else(|| {
@@ -2332,6 +2342,7 @@ async fn build_handle_after_spawn_resume(
                 version: env!("CARGO_PKG_VERSION").into(),
             })
             .await?;
+        // Codex persists developer_instructions in the rollout; resume must NOT re-supply or codex rejects with "override ignored while running".
         client.thread_resume(thread_id).await?
     };
     // Defensive: the server should echo back the same id on a successful
@@ -2612,7 +2623,7 @@ async fn await_initial_turn_lifecycle(
 /// shared state for the dispatcher to read, warn loudly if an
 /// approval-shaped notification ever arrives (it should not — the spec
 /// cards run with `approval_policy = "never"` per
-/// `build_codex_config_toml_with_prompt`), and — PR3b — **flush the push
+/// [`crate::spec_card::build_role_codex_config_toml`]), and — PR3b — **flush the push
 /// queue on each `turn/completed`**: drain any buffered observations into a
 /// single coalesced `turn/start`.
 ///
@@ -3383,6 +3394,7 @@ mod tests {
             None,
             " \n\t ",
             Path::new("/tmp/test-empty-goal/app.sock"),
+            None,
             TurnWatchdogConfig::default(),
             None,
         )

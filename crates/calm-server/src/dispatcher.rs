@@ -1555,6 +1555,8 @@ impl Inner {
         //      block. Without it, codex's MCP client never tries to
         //      connect and the worker can't call `calm.task_completed`
         //      / `calm.task_failed`.
+        // NOTE(#410, PR2+): worker still bakes instructions into config.toml;
+        // migrate when worker gains an app-server seam.
         //
         //   2. Fold `NEIGE_MCP_TOKEN` + `NEIGE_MCP_SOCKET` into the
         //      env handed to `spawn_terminal_with_parts`. The codex

@@ -524,12 +524,21 @@ async fn bootstrap_empty_goal_spec_appserver(
     }
     let recovery_signal =
         wire_spec_push_recovery_supervisor(state, settings, card_id, wave_id.clone());
+    // Empty-goal bootstrap respawns a fresh app-server (the prior thread had
+    // no rollout and must never be resumed). thread/start runs again here, so
+    // the spec system prompt must be re-supplied via developerInstructions
+    // (same shape as `routes::waves::spawn_push_appserver` for fresh creates).
+    let developer_instructions = crate::spec_card::render_system_prompt(
+        crate::spec_card::SeededCardRole::Spec.prompt_template(),
+        wave_id.as_str(),
+    );
     let handle =
         match spec_appserver::spawn_spec_appserver_with_watchdog_config_and_recovery_for_wave(
             &state.codex.codex_bin,
             &env_map,
             "",
             &sock,
+            Some(&developer_instructions),
             spec_appserver::TurnWatchdogConfig::default(),
             Some(recovery_signal),
             Some(wave_id),

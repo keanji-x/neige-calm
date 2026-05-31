@@ -164,6 +164,7 @@ impl RuntimeHarness {
             &env,
             "goal",
             &sock,
+            None,
             WATCHDOG,
             Some(signal),
         )

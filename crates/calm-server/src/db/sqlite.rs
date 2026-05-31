@@ -2415,6 +2415,7 @@ impl RepoOutOfDomain for SqlxRepo {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn spec_card_set_empty_goal_bootstrap_state(
         &self,
         card_id: &str,
