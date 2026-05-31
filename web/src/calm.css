@@ -958,10 +958,9 @@ input, textarea { font: inherit; color: inherit; }
   padding-left: var(--space-0);
 }
 .side .side-coves-waves .side-wave {
-  /* Align inline wave-title text with the cove name column above:
-     cove-nav padding-left (--space-3 + 22px) + swatch (12px)
-     + gap (--space-3). */
-  padding-left: calc(var(--space-3) + 20px + var(--space-5));
+  /* Match the .cove-nav text column above:
+     padding-left (var(--space-3) + 22px) + swatch (12px) + gap (var(--space-3)) = 46px */
+  padding-left: calc(var(--space-3) + 22px + var(--space-3) + 12px);
 }
 
 /* Inline-edit state — same row geometry as `.cove-nav` but with a text
