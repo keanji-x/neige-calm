@@ -151,7 +151,7 @@ describe('Sidebar pinned section', () => {
     const w2 = makeWave({ id: 'w2', title: 'Second', pinnedAt: 500 });
     render(wrap(<Sidebar {...sidebarProps([w1, w2])} />));
     const pinned = screen.getByRole('region', { name: 'Pinned' });
-    const buttons = within(pinned).getAllByRole('button', { name: /First|Second/ });
+    const buttons = Array.from(pinned.querySelectorAll<HTMLButtonElement>('button.side-wave'));
     // "Second" (pinnedAt=500) must come before "First" (pinnedAt=1000)
     expect(buttons[0]).toHaveTextContent('Second');
     expect(buttons[1]).toHaveTextContent('First');

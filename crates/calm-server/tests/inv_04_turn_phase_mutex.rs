@@ -80,6 +80,8 @@ use calm_server::spec_appserver::{PushAction, SpecPushPhase, decide};
 /// * `Idle` / `TurnCompleted` on the create-wave path (where the server
 ///   really is between turns, by construction — we just sent
 ///   `thread/start`) must decide `StartTurnNow`.
+/// * `PendingThreadStart` must decide `Enqueue` because empty-goal waves do
+///   not have a codex thread id until the remote TUI fresh-starts one.
 /// * `TurnRunning` / `Issuing` must decide `Enqueue`.
 #[test]
 fn inv4_decision_table_regression_guard() {
@@ -107,6 +109,10 @@ fn inv4_decision_table_regression_guard() {
     );
 
     // A turn is in flight (or being issued): enqueue.
+    assert_eq!(
+        decide(SpecPushPhase::PendingThreadStart),
+        PushAction::Enqueue
+    );
     assert_eq!(decide(SpecPushPhase::TurnRunning), PushAction::Enqueue);
     assert_eq!(decide(SpecPushPhase::Issuing), PushAction::Enqueue);
 }

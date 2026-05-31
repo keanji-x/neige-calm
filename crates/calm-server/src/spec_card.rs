@@ -371,10 +371,9 @@ pub(crate) fn build_codex_env_map(
 ///
 /// Same shape as `routes::codex_cards::build_codex_config_toml` but with
 /// three additions:
-///   * Optional `instructions = ...` baking. `Some` is still used for
-///     workers because they launch through `spawn_terminal_with_parts`;
-///     spec passes `None` because PR1 moves spec instructions to
-///     app-server `thread/start.developerInstructions`.
+///   * Optional `developer_instructions = ...` baking. Spec cards need
+///     this for empty-goal fresh-starts where the remote TUI creates the
+///     thread; worker cards use the same channel for their role prompt.
 ///   * `[mcp_servers.calm]` + `[mcp_servers.calm.env]` (PR7a, #236
 ///     followup) — points codex at the `neige-mcp-stdio-shim` binary
 ///     which bridges stdio JSON-RPC to the kernel's UDS, and bakes
@@ -390,9 +389,8 @@ pub(crate) fn build_codex_env_map(
 ///   * Plain `[projects."<cwd>"] trust_level = "trusted"` matches the
 ///     Plain helper.
 ///
-/// `baked_instructions` controls only the legacy config.toml prompt
-/// channel. Pass `None` for spec cards; pass the rendered worker prompt
-/// until workers also gain an app-server `thread/start` seam.
+/// `baked_instructions` controls the config.toml developer-instructions
+/// channel used by remote TUI-created threads.
 ///
 /// `mcp_block` pairs the shim config with the per-card raw MCP token:
 /// both are required together (a token without a socket is unusable,
@@ -444,7 +442,7 @@ pub(crate) fn build_role_codex_config_toml(
     if let Some(prompt) = baked_instructions {
         let escaped_prompt = escape_toml_basic_string(prompt);
         let one_line_prompt = escaped_prompt.replace('\n', "\\n");
-        out.push_str(&format!("instructions = \"{one_line_prompt}\"\n"));
+        out.push_str(&format!("developer_instructions = \"{one_line_prompt}\"\n"));
     }
 
     out.push_str(&format!(
@@ -620,12 +618,11 @@ pub(crate) fn seed_codex_home_with_parts(
 
     // config.toml — role-typed. Plain cards are unrepresentable at this
     // seam by construction (see [`SeededCardRole`]).
-    let rendered_worker_prompt;
+    let rendered_prompt;
     let baked_instructions = match role {
-        SeededCardRole::Spec => None,
-        SeededCardRole::Worker => {
-            rendered_worker_prompt = render_system_prompt(role.prompt_template(), wave_id);
-            Some(rendered_worker_prompt.as_str())
+        SeededCardRole::Spec | SeededCardRole::Worker => {
+            rendered_prompt = render_system_prompt(role.prompt_template(), wave_id);
+            Some(rendered_prompt.as_str())
         }
     };
     let cfg_text = build_role_codex_config_toml(cwd, baked_instructions, mcp_block);
@@ -637,31 +634,35 @@ pub(crate) fn seed_codex_home_with_parts(
 }
 
 /// PR3a (#293) — push-mode PTY daemon arguments for
-/// [`seed_and_spawn_spec_daemon`]. Carries the codex thread id the kernel
-/// already created + drove turn #1 on, and the `app-server` listen socket
-/// the `--remote` TUI rejoins. Built by `create_wave` from the
-/// [`crate::spec_appserver::SpecPushHandle`].
+/// [`seed_and_spawn_spec_daemon`]. Carries the `app-server` listen socket
+/// and, for non-empty goals, the codex thread id the kernel already created
+/// and drove turn #1 on. Empty-goal waves intentionally leave the thread id
+/// absent so the `--remote` TUI fresh-starts and the kernel observes the
+/// first `turn/started`.
 #[derive(Debug, Clone)]
 pub(crate) struct SpecPushDaemonArgs {
     /// `codex_thread_id` — the shared thread; `codex resume <thread_id>`.
-    pub thread_id: String,
+    /// `None` means empty-goal fresh start: `codex --remote <sock>`.
+    pub thread_id: Option<String>,
     /// The `app-server` listen socket; `--remote unix://<sock>`.
     pub sock: PathBuf,
 }
 
 impl SpecPushDaemonArgs {
-    /// Build the PTY daemon command line for push mode:
-    /// `codex resume <thread_id> --remote unix://<sock>`, with both the
-    /// thread id and the socket path shell-quoted (the command is handed
-    /// to `sh -c`, so any metacharacters must land in codex's argv
-    /// verbatim — same contract as the legacy `codex '<title>'` build).
+    /// Build the PTY daemon command line for push mode. Non-empty goals use
+    /// `codex resume <thread_id> --remote unix://<sock>` byte-for-byte as
+    /// before. Empty goals use `codex --remote unix://<sock>` so the TUI
+    /// fresh-starts instead of trying to resume a rollout-less thread.
     pub(crate) fn command_line(&self) -> String {
         let remote = format!("unix://{}", self.sock.display());
-        format!(
-            "codex resume {} --remote {}",
-            shell_single_quote(&self.thread_id),
-            shell_single_quote(&remote),
-        )
+        match &self.thread_id {
+            Some(thread_id) => format!(
+                "codex resume {} --remote {}",
+                shell_single_quote(thread_id),
+                shell_single_quote(&remote),
+            ),
+            None => format!("codex --remote {}", shell_single_quote(&remote)),
+        }
     }
 }
 
@@ -671,8 +672,26 @@ pub(crate) async fn spawn_spec_daemon_for_existing_seed(
     wave_id: &str,
     cwd: &str,
     env: &serde_json::Value,
+    mcp_token: Option<&str>,
     push: &SpecPushDaemonArgs,
 ) -> Result<()> {
+    if let Err(e) = seed_codex_home_for_card(
+        state,
+        spec_card_id,
+        cwd,
+        wave_id,
+        SeededCardRole::Spec,
+        mcp_token,
+    ) {
+        tracing::warn!(
+            card_id = %spec_card_id,
+            wave_id = %wave_id,
+            error = %e,
+            "spec card CODEX_HOME re-seed failed during empty-goal boot recovery",
+        );
+        return Err(e);
+    }
+
     let term = state
         .repo
         .terminal_get_by_card(spec_card_id)
@@ -738,12 +757,13 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
     cwd: String,
     env: serde_json::Value,
     mcp_token: Option<String>,
-    // #293 — push-mode arguments. `create_wave` has already booted the
-    // kernel-owned `codex app-server`, run turn #1, and persisted the thread
-    // id; the PTY daemon runs `codex resume <thread_id> --remote
-    // unix://<sock>` to *rejoin* the kernel's thread (sharing it with the
-    // kernel's programmatic client). Push is the only path — there is no
-    // legacy bare-`codex '<title>'` fallback.
+    // #293/#419 — push-mode arguments. Non-empty goals use the original
+    // resume path: `create_wave` has already booted the kernel-owned
+    // `codex app-server`, run turn #1, and persisted the thread id; the
+    // PTY daemon runs `codex resume <thread_id> --remote unix://<sock>` to
+    // rejoin the kernel's thread. Empty goals use `codex --remote
+    // unix://<sock>`; the TUI fresh-starts and the kernel backfills the
+    // thread id after observing the first turn lifecycle.
     push: SpecPushDaemonArgs,
 ) -> Result<()> {
     // 1. Seed `$CODEX_HOME` for the spec card. Filesystem-only — fast,
@@ -790,15 +810,16 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
         }
     };
 
-    // 3. Spawn the daemon. The spec agent's system prompt was already sent
-    //    through the kernel-owned app-server thread/start call.
+    // 3. Spawn the daemon. For non-empty goals, the spec agent's prompt was
+    //    already sent through the kernel-owned app-server thread/start call.
+    //    For empty goals, the TUI fresh-start path creates the thread using
+    //    the developer_instructions baked into this card's config.toml, and
+    //    the kernel observes the resulting lifecycle.
     //
-    //    #293 — push is the only path: the TUI runs `codex resume
-    //    <thread_id> --remote unix://<sock>` to rejoin the thread the kernel
-    //    already created and started turn #1 on. The wave goal was already
-    //    submitted by the kernel's `turn/start`, so there is no positional
-    //    `[PROMPT]` arg and `codex_auto_submit` is skipped on the
-    //    `codex_thread_id` payload (no `\r` is injected into the resumed TUI).
+    //    #293/#419 — push is the only path. Non-empty goals still resume
+    //    the thread the kernel already created and started turn #1 on.
+    //    Empty goals omit `resume` and let the TUI create the thread, while
+    //    queued spec pushes wait for the observed thread id.
     //
     //    `spawn_terminal_for` waits for deterministic daemon readiness on the
     //    response hot path. Since #236, that synchronous wait is intentional:
@@ -826,6 +847,15 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use crate::card_role_cache::CardRoleCache;
+    use crate::db::prelude::Repo;
+    use crate::db::sqlite::SqlxRepo;
+    use crate::event::EventBus;
+    use crate::plugin_host::{PluginHost, PluginRegistry};
+    use crate::state::DaemonClient;
+    use crate::wave_cove_cache::WaveCoveCache;
 
     /// PR3a (#293) — push-mode command is `codex resume <tid> --remote
     /// unix://<sock>`, with both the thread id and the `unix://` URI
@@ -833,7 +863,7 @@ mod tests {
     #[test]
     fn push_mode_command_line_is_codex_resume_remote() {
         let args = SpecPushDaemonArgs {
-            thread_id: "thread-abc123".into(),
+            thread_id: Some("thread-abc123".into()),
             sock: PathBuf::from("/home/u/.local/share/neige-calm/appserver/card-9/app.sock"),
         };
         assert_eq!(
@@ -849,7 +879,7 @@ mod tests {
     #[test]
     fn push_mode_command_line_quotes_metacharacters() {
         let args = SpecPushDaemonArgs {
-            thread_id: "a b; rm -rf /".into(),
+            thread_id: Some("a b; rm -rf /".into()),
             sock: PathBuf::from("/tmp/has space/app.sock"),
         };
         let line = args.command_line();
@@ -858,6 +888,18 @@ mod tests {
                 "codex resume 'a b; rm -rf /' --remote 'unix:///tmp/has space/app.sock'"
             ),
             "metacharacters must be single-quoted; got: {line}"
+        );
+    }
+
+    #[test]
+    fn empty_goal_command_line_is_codex_remote_fresh_start() {
+        let args = SpecPushDaemonArgs {
+            thread_id: None,
+            sock: PathBuf::from("/tmp/has space/app.sock"),
+        };
+        assert_eq!(
+            args.command_line(),
+            "codex --remote 'unix:///tmp/has space/app.sock'",
         );
     }
 
@@ -1154,21 +1196,106 @@ mod tests {
     }
 
     #[test]
-    fn spec_role_config_toml_has_no_instructions_block() {
-        let shim = crate::mcp_server::McpShimConfig {
-            shim_bin: std::path::PathBuf::from("/usr/local/bin/neige-mcp-stdio-shim"),
-            socket_path: std::path::PathBuf::from("/var/lib/neige/mcp/kernel.sock"),
-        };
-        let without_mcp = build_role_codex_config_toml("/workspace", None, None);
-        let with_mcp =
-            build_role_codex_config_toml("/workspace", None, Some((&shim, "tok-abc123")));
+    fn spec_role_seed_bakes_developer_instructions_for_remote_fresh_start() {
+        let codex = CodexClient::new_stub();
+        let home = seed_codex_home_with_parts(
+            &codex,
+            "spec-card-1",
+            "/workspace",
+            "wave-abc",
+            SeededCardRole::Spec,
+            None,
+        )
+        .expect("seed spec CODEX_HOME");
+        let config = std::fs::read_to_string(home.join("config.toml")).expect("read config.toml");
         assert!(
-            !without_mcp.contains("instructions"),
-            "spec role config must not contain instructions; got:\n{without_mcp}"
+            config.contains("developer_instructions = \""),
+            "spec role config must bake developer_instructions for remote fresh-start threads; got:\n{config}"
         );
         assert!(
-            !with_mcp.contains("instructions"),
-            "spec role config with MCP must not contain instructions; got:\n{with_mcp}"
+            config.contains("You are the spec agent for wave `wave-abc`."),
+            "spec baked developer_instructions must include rendered wave id; got:\n{config}"
+        );
+        assert!(
+            config.contains("calm.update_wave_state"),
+            "spec baked developer_instructions must include the wave-state contract; got:\n{config}"
+        );
+    }
+
+    #[tokio::test]
+    async fn existing_seed_spawn_reseeds_legacy_spec_config_with_developer_instructions() {
+        let card_id = "legacy-spec-card";
+        let wave_id = "legacy-wave";
+        let cwd = "/workspace";
+        let codex = CodexClient::new_stub();
+        let codex_home = codex.codex_homes_dir.join(card_id);
+        std::fs::create_dir_all(&codex_home).expect("create legacy CODEX_HOME");
+        let cfg_path = codex_home.join("config.toml");
+        std::fs::write(
+            &cfg_path,
+            "# legacy pre-#419 seed\napproval_policy = \"never\"\n",
+        )
+        .expect("write legacy config.toml");
+
+        let typed: Arc<SqlxRepo> = Arc::new(
+            SqlxRepo::open("sqlite::memory:")
+                .await
+                .expect("open in-memory sqlite"),
+        );
+        let repo: Arc<dyn Repo> = typed;
+        let card_role_cache = CardRoleCache::new();
+        let wave_cove_cache = WaveCoveCache::new();
+        let state = AppState::from_parts(
+            repo.clone(),
+            EventBus::new(),
+            Arc::new(DaemonClient::new_stub()),
+            Arc::new(PluginHost::new_full(
+                Arc::new(PluginRegistry::empty()),
+                repo,
+                PathBuf::new(),
+                std::env::temp_dir().join("calm-plugins-data-existing-seed-reseed"),
+                Vec::new(),
+                EventBus::new(),
+                card_role_cache.clone(),
+                wave_cove_cache.clone(),
+            )),
+            Arc::new(codex),
+            Some(card_role_cache),
+            Some(wave_cove_cache),
+        );
+
+        let push = SpecPushDaemonArgs {
+            thread_id: None,
+            sock: PathBuf::from("/tmp/reseed-existing-spec/app.sock"),
+        };
+        let err = spawn_spec_daemon_for_existing_seed(
+            &state,
+            card_id,
+            wave_id,
+            cwd,
+            &serde_json::json!({}),
+            None,
+            &push,
+        )
+        .await
+        .expect_err("terminal lookup should fail after re-seed in this focused test");
+        assert!(
+            matches!(&err, CalmError::Internal(_)),
+            "expected missing-terminal error after re-seed, got: {err}"
+        );
+
+        let config = std::fs::read_to_string(&cfg_path).expect("read re-seeded config.toml");
+        assert!(
+            config.contains("developer_instructions = \""),
+            "existing-seed spawn must re-seed legacy config.toml with developer_instructions; got:\n{config}"
+        );
+        assert!(
+            config.contains("You are the spec agent for wave `legacy-wave`."),
+            "re-seeded developer_instructions must include rendered wave id; got:\n{config}"
+        );
+        assert!(
+            config.contains("calm.update_wave_state"),
+            "re-seeded developer_instructions must include the wave-state contract; got:\n{config}"
         );
     }
 
@@ -1180,8 +1307,8 @@ mod tests {
             None,
         );
         assert!(
-            s.contains("instructions = \""),
-            "worker role config must bake instructions into config.toml; got:\n{s}"
+            s.contains("developer_instructions = \""),
+            "worker role config must bake developer_instructions into config.toml; got:\n{s}"
         );
         assert!(
             s.contains("calm.task_completed"),

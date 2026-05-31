@@ -37,7 +37,7 @@ use calm_server::event::{
     ArtifactRef, Event, EventBus, EventScope, SubscribeFilter, SubscribeScope,
 };
 use calm_server::ids::{ActorId, CoveId, WaveId};
-use calm_server::model::{CardRole, NewCove, NewWave};
+use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
 use calm_server::state::{CodexClient, DaemonClient};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::wave_cove_cache::WaveCoveCache;
@@ -116,6 +116,135 @@ fn wave_scope(wave: &WaveId, cove: &CoveId) -> EventScope {
         wave: wave.clone(),
         cove: cove.clone(),
     }
+}
+
+#[tokio::test]
+async fn dispatcher_initial_prompt_ready_sink_persists_thread_id_and_broadcasts_card_updated() {
+    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
+    let spec_card = repo
+        .card_create(NewCard {
+            wave_id: wave_id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: serde_json::json!({
+                "appserver_needs_initial_prompt": true,
+                "push_watermark": 0,
+            }),
+        })
+        .await
+        .expect("create spec card");
+    let codex = stub_codex();
+    let dispatcher = Dispatcher::spawn(
+        repo.clone(),
+        events.clone(),
+        cache.clone(),
+        wcc.clone(),
+        codex,
+        stub_daemon(),
+        None,
+        calm_server::spec_appserver::SpecPushRegistry::new(),
+        4,
+    );
+    let mut rx = events.subscribe();
+    let sink = dispatcher.initial_prompt_ready_sink_for(
+        spec_card.id.clone(),
+        wave_id.clone(),
+        cove_id.clone(),
+    );
+
+    sink("thread-tui-created".to_string()).await;
+
+    let updated = repo
+        .card_get(spec_card.id.as_str())
+        .await
+        .expect("card_get")
+        .expect("spec card still exists");
+    assert_eq!(
+        updated
+            .payload
+            .get("codex_thread_id")
+            .and_then(serde_json::Value::as_str),
+        Some("thread-tui-created")
+    );
+    assert!(
+        updated
+            .payload
+            .get("appserver_needs_initial_prompt")
+            .is_none(),
+        "initial prompt marker must be cleared after backfill"
+    );
+
+    let envelope = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let envelope = rx.recv().await.expect("event bus open");
+            if matches!(envelope.event, Event::CardUpdated(_)) {
+                break envelope;
+            }
+        }
+    })
+    .await
+    .expect("CardUpdated broadcast");
+    match envelope.event {
+        Event::CardUpdated(card) => {
+            assert_eq!(card.id, spec_card.id);
+            assert_eq!(
+                card.payload
+                    .get("codex_thread_id")
+                    .and_then(serde_json::Value::as_str),
+                Some("thread-tui-created")
+            );
+        }
+        other => panic!("expected CardUpdated, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn dispatcher_initial_prompt_ready_sink_failure_does_not_broadcast_or_mutate() {
+    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
+    let spec_card = repo
+        .card_create(NewCard {
+            wave_id: wave_id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: serde_json::json!(["corrupt-payload-shape"]),
+        })
+        .await
+        .expect("create malformed spec card");
+    let codex = stub_codex();
+    let dispatcher = Dispatcher::spawn(
+        repo.clone(),
+        events.clone(),
+        cache.clone(),
+        wcc.clone(),
+        codex,
+        stub_daemon(),
+        None,
+        calm_server::spec_appserver::SpecPushRegistry::new(),
+        4,
+    );
+    let mut rx = events.subscribe();
+    let sink = dispatcher.initial_prompt_ready_sink_for(
+        spec_card.id.clone(),
+        wave_id.clone(),
+        cove_id.clone(),
+    );
+
+    sink("thread-that-cannot-persist".to_string()).await;
+
+    let unchanged = repo
+        .card_get(spec_card.id.as_str())
+        .await
+        .expect("card_get")
+        .expect("spec card still exists");
+    assert_eq!(
+        unchanged.payload,
+        serde_json::json!(["corrupt-payload-shape"])
+    );
+    let no_event = tokio::time::timeout(Duration::from_millis(150), rx.recv()).await;
+    assert!(
+        no_event.is_err(),
+        "failed initial-prompt backfill must not broadcast CardUpdated; got {no_event:?}"
+    );
 }
 
 /// Poll a predicate every 20ms until it returns Some(...) or the

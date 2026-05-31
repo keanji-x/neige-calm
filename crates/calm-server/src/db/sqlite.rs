@@ -2480,11 +2480,9 @@ impl RepoOutOfDomain for SqlxRepo {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn spec_card_set_empty_goal_bootstrap_state(
+    async fn spec_card_set_empty_goal_bootstrap_pending_state(
         &self,
         card_id: &str,
-        thread_id: &str,
         pgid: i32,
         sock: &str,
         start_time: Option<u64>,
@@ -2495,20 +2493,21 @@ impl RepoOutOfDomain for SqlxRepo {
         let st_i64 = start_time.and_then(|v| i64::try_from(v).ok());
         let _ = sqlx::query(
             r#"UPDATE cards
-                  SET payload = json_set(
-                                    COALESCE(payload, '{}'),
-                                    '$.codex_thread_id', ?1,
-                                    '$.appserver_pgid', ?2,
-                                    '$.appserver_sock', ?3,
-                                    '$.appserver_start_time', ?4,
-                                    '$.appserver_boot_id', ?5,
-                                    '$.push_watermark', ?6,
-                                    '$.appserver_needs_initial_prompt', 1
+                  SET payload = json_remove(
+                                    json_set(
+                                        COALESCE(payload, '{}'),
+                                        '$.appserver_pgid', ?1,
+                                        '$.appserver_sock', ?2,
+                                        '$.appserver_start_time', ?3,
+                                        '$.appserver_boot_id', ?4,
+                                        '$.push_watermark', ?5,
+                                        '$.appserver_needs_initial_prompt', 1
+                                    ),
+                                    '$.codex_thread_id'
                                 ),
-                      updated_at = ?7
-                WHERE id = ?8"#,
+                      updated_at = ?6
+                WHERE id = ?7"#,
         )
-        .bind(thread_id)
         .bind(pgid)
         .bind(sock)
         .bind(st_i64)

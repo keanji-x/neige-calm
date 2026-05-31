@@ -561,7 +561,22 @@ pub(crate) async fn reset_spec_card(
                 return Err(e);
             }
 
-            Ok::<_, CalmError>(push_args.thread_id)
+            // #421 + #424 reconciliation: `SpecPushDaemonArgs.thread_id`
+            // is `Option<String>` post-#424 to cover empty-goal recovery
+            // (no rollout yet → TUI fresh-starts and the notification
+            // consumer backfills). Reset's contract is the inverse: it
+            // destroys the existing conversation and mints a fresh one,
+            // so a missing `thread_id` here means the path was driven
+            // for an empty-goal wave that shouldn't be reset. Surface
+            // an Internal error; the matching guard inside
+            // `spawn_push_appserver`'s ResetExisting branch fails
+            // earlier with the same shape.
+            let new_thread_id = push_args.thread_id.ok_or_else(|| {
+                CalmError::Internal(
+                    "reset succeeded without a thread_id; empty-goal waves cannot be reset before their first turn".to_string(),
+                )
+            })?;
+            Ok::<_, CalmError>(new_thread_id)
         })
         .await?;
 

@@ -111,6 +111,19 @@ interface CloseInfo {
  *  so `FRAME_VERSION` + `PROTOCOL_VERSION` move in lockstep. */
 const PROTOCOL_VERSION = 4;
 
+// Four-plus rows/cols worth of host surface avoids xterm/FitAddon
+// bootstrapping against a collapsed card body.
+const MIN_MOUNT_WIDTH_PX = 80;
+const MIN_MOUNT_HEIGHT_PX = 24;
+// Below 8x4 is not a usable PTY viewport; suppress owner-claim commits
+// from transient or failed fits so they cannot poison the shared model.
+const MIN_COMMIT_COLS = 8;
+const MIN_COMMIT_ROWS = 4;
+
+function isNonDegenerateMountSize(width: number, height: number): boolean {
+  return width >= MIN_MOUNT_WIDTH_PX && height >= MIN_MOUNT_HEIGHT_PX;
+}
+
 /**
  * UI status for the v2 terminal protocol. Slimmed-down state machine
  * compared to v1: a clean break is fine (compat is gated by
@@ -244,6 +257,9 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     }),
     [],
   );
+  const [layoutRetryKey, setLayoutRetryKey] = useState(0);
+  const [geometryDeferred, setGeometryDeferred] = useState(false);
+  const lastFailedMountSizeRef = useRef<{ w: number; h: number } | null>(null);
 
   // #177 — live `send` from the WS-mount effect, captured so the
   // theme-effect can post `TerminalThemeUpdate` without owning the
@@ -310,10 +326,50 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+    const deferUntilUsableGeometry = () => {
+      setGeometryDeferred(true);
+      const ro = new ResizeObserver(() => {
+        const nextWidth = container.offsetWidth;
+        const nextHeight = container.offsetHeight;
+        const lastFailedMountSize = lastFailedMountSizeRef.current;
+        if (
+          lastFailedMountSize &&
+          nextWidth === lastFailedMountSize.w &&
+          nextHeight === lastFailedMountSize.h
+        ) {
+          return;
+        }
+        if (!isNonDegenerateMountSize(nextWidth, nextHeight)) return;
+        ro.disconnect();
+        setLayoutRetryKey((k) => k + 1);
+      });
+      ro.observe(container);
+      return () => {
+        ro.disconnect();
+      };
+    };
+    const removeTestDumpHook = () => {
+      if (typeof window === 'undefined') return;
+      const w = window as unknown as {
+        __xtermDumps__?: Record<string, () => string>;
+      };
+      if (w.__xtermDumps__) delete w.__xtermDumps__[terminalId];
+    };
+    const mountWidth = container.offsetWidth;
+    const mountHeight = container.offsetHeight;
+    if (!isNonDegenerateMountSize(mountWidth, mountHeight)) {
+      dlog('XtermView', 'mount DEFERRED tiny container', {
+        w: mountWidth,
+        h: mountHeight,
+      });
+      lastFailedMountSizeRef.current = { w: mountWidth, h: mountHeight };
+      return deferUntilUsableGeometry();
+    }
+    setGeometryDeferred(false);
     dlog('XtermView', 'mount START', {
       terminalId,
-      containerW: container.offsetWidth,
-      containerH: container.offsetHeight,
+      containerW: mountWidth,
+      containerH: mountHeight,
     });
 
     const term = new Terminal({
@@ -405,6 +461,21 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       dlog('XtermView', 'fit FAILED (initial)', e);
       /* container may not be laid out yet on first frame */
     }
+    if (term.cols < MIN_COMMIT_COLS || term.rows < MIN_COMMIT_ROWS) {
+      dlog('XtermView', 'mount DEFERRED post-fit degenerate', {
+        cols: term.cols,
+        rows: term.rows,
+      });
+      lastFailedMountSizeRef.current = {
+        w: container.offsetWidth,
+        h: container.offsetHeight,
+      };
+      term.dispose();
+      removeTestDumpHook();
+      if (termRef.current === term) termRef.current = null;
+      return deferUntilUsableGeometry();
+    }
+    lastFailedMountSizeRef.current = null;
 
     const wsUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${
       location.host
@@ -647,15 +718,27 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
           // A ResizeCommit sent while we were Observer may have been
           // rejected, leaving the PTY at the previous owner's geometry.
           // Our local terminal is already fitted, so resend its current
-          // dimensions when ownership transfers to this client.
-          resizeEpoch += 1;
-          send({
-            ResizeCommit: {
-              epoch: resizeEpoch,
-              cols: term.cols,
-              rows: term.rows,
-            },
-          });
+          // dimensions when ownership transfers to this client, unless
+          // the current geometry is clearly too small to be a real PTY.
+          if (term.cols >= MIN_COMMIT_COLS && term.rows >= MIN_COMMIT_ROWS) {
+            resizeEpoch += 1;
+            send({
+              ResizeCommit: {
+                epoch: resizeEpoch,
+                cols: term.cols,
+                rows: term.rows,
+              },
+            });
+          } else {
+            dlog(
+              'XtermView',
+              'OwnerChanged ResizeCommit suppressed: degenerate geometry',
+              {
+                cols: term.cols,
+                rows: term.rows,
+              },
+            );
+          }
         } else {
           onRoleChangeRef.current?.('Observer');
         }
@@ -802,12 +885,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       // Tear down this terminal's test-only buffer-dump hook (only
       // present under `?testMounts=1`). Keyed by `terminalId` so we only
       // remove our own entry, never a sibling card's.
-      if (typeof window !== 'undefined') {
-        const w = window as unknown as {
-          __xtermDumps__?: Record<string, () => string>;
-        };
-        if (w.__xtermDumps__) delete w.__xtermDumps__[terminalId];
-      }
+      removeTestDumpHook();
       // Only clear the ref if it's still pointing at *this* term. A
       // strict-mode double-invoke teardown can run after the next mount
       // has already installed its own term; without this guard we'd null
@@ -859,7 +937,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     // that the child is gone. The `setStatus` calls inside the WS
     // handlers above feed the local protocol-error overlay branch only
     // — they intentionally don't re-arm this effect.
-  }, [terminalId, reconnectKey]);
+  }, [terminalId, reconnectKey, layoutRetryKey]);
 
   return (
     <div className="xterm-view" data-terminal-id={terminalId}>
@@ -890,10 +968,15 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         aria-hidden="true"
         role="presentation"
       />
-      {status === 'connecting' && (
+      {/* While waiting for usable layout, keep only a neutral loading state;
+       *  the terminal bridge has not opened a WebSocket yet. */}
+      {geometryDeferred && (
+        <div className="xterm-status">Loading terminal…</div>
+      )}
+      {!geometryDeferred && status === 'connecting' && (
         <div className="xterm-status">connecting…</div>
       )}
-      {status === 'handshaking' && (
+      {!geometryDeferred && status === 'handshaking' && (
         <div className="xterm-status">handshaking…</div>
       )}
       {/*

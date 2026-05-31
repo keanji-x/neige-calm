@@ -1798,9 +1798,8 @@ async fn spec_card_set_empty_goal_bootstrap_state_replaces_runtime_state() {
     .expect("create initial-prompt spec card");
     tx.commit().await.unwrap();
 
-    repo.spec_card_set_empty_goal_bootstrap_state(
+    repo.spec_card_set_empty_goal_bootstrap_pending_state(
         spec.id.as_str(),
-        "thread-new",
         333,
         "/tmp/new.sock",
         Some(444),
@@ -1819,7 +1818,7 @@ async fn spec_card_set_empty_goal_bootstrap_state_replaces_runtime_state() {
         got.payload
             .get("codex_thread_id")
             .and_then(serde_json::Value::as_str),
-        Some("thread-new")
+        None
     );
     assert_eq!(
         got.payload

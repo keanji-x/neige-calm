@@ -170,7 +170,10 @@ impl RuntimeHarness {
         )
         .await
         .expect("fake app-server should boot");
-        let thread_id = handle.thread_id.clone();
+        let thread_id = handle
+            .thread_id
+            .clone()
+            .expect("non-empty fake app-server should return a thread id");
         let initial_pgid = handle.pgid;
         let sock_str = handle.sock.to_string_lossy().to_string();
         let start_time = handle.start_time;

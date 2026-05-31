@@ -796,14 +796,13 @@ pub trait RepoOutOfDomain: RepoRead {
         needs_initial_prompt: bool,
     ) -> Result<()>;
 
-    /// Persist the fresh runtime state for an empty-goal bootstrap. Unlike
-    /// normal takeover this replaces `codex_thread_id`, because the previous
-    /// thread had no rollout and must never be resumed.
-    #[allow(clippy::too_many_arguments)]
-    async fn spec_card_set_empty_goal_bootstrap_state(
+    /// Persist fresh runtime state for an empty-goal bootstrap while keeping
+    /// `codex_thread_id` absent. The TUI will fresh-start over `--remote`,
+    /// and the notification consumer backfills the created thread id after
+    /// the first turn lifecycle proves a rollout exists.
+    async fn spec_card_set_empty_goal_bootstrap_pending_state(
         &self,
         card_id: &str,
-        thread_id: &str,
         pgid: i32,
         sock: &str,
         start_time: Option<u64>,
