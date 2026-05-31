@@ -637,31 +637,35 @@ pub(crate) fn seed_codex_home_with_parts(
 }
 
 /// PR3a (#293) — push-mode PTY daemon arguments for
-/// [`seed_and_spawn_spec_daemon`]. Carries the codex thread id the kernel
-/// already created + drove turn #1 on, and the `app-server` listen socket
-/// the `--remote` TUI rejoins. Built by `create_wave` from the
-/// [`crate::spec_appserver::SpecPushHandle`].
+/// [`seed_and_spawn_spec_daemon`]. Carries the `app-server` listen socket
+/// and, for non-empty goals, the codex thread id the kernel already created
+/// and drove turn #1 on. Empty-goal waves intentionally leave the thread id
+/// absent so the `--remote` TUI fresh-starts and the kernel observes the
+/// first `turn/started`.
 #[derive(Debug, Clone)]
 pub(crate) struct SpecPushDaemonArgs {
     /// `codex_thread_id` — the shared thread; `codex resume <thread_id>`.
-    pub thread_id: String,
+    /// `None` means empty-goal fresh start: `codex --remote <sock>`.
+    pub thread_id: Option<String>,
     /// The `app-server` listen socket; `--remote unix://<sock>`.
     pub sock: PathBuf,
 }
 
 impl SpecPushDaemonArgs {
-    /// Build the PTY daemon command line for push mode:
-    /// `codex resume <thread_id> --remote unix://<sock>`, with both the
-    /// thread id and the socket path shell-quoted (the command is handed
-    /// to `sh -c`, so any metacharacters must land in codex's argv
-    /// verbatim — same contract as the legacy `codex '<title>'` build).
+    /// Build the PTY daemon command line for push mode. Non-empty goals use
+    /// `codex resume <thread_id> --remote unix://<sock>` byte-for-byte as
+    /// before. Empty goals use `codex --remote unix://<sock>` so the TUI
+    /// fresh-starts instead of trying to resume a rollout-less thread.
     pub(crate) fn command_line(&self) -> String {
         let remote = format!("unix://{}", self.sock.display());
-        format!(
-            "codex resume {} --remote {}",
-            shell_single_quote(&self.thread_id),
-            shell_single_quote(&remote),
-        )
+        match &self.thread_id {
+            Some(thread_id) => format!(
+                "codex resume {} --remote {}",
+                shell_single_quote(thread_id),
+                shell_single_quote(&remote),
+            ),
+            None => format!("codex --remote {}", shell_single_quote(&remote)),
+        }
     }
 }
 
@@ -738,12 +742,13 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
     cwd: String,
     env: serde_json::Value,
     mcp_token: Option<String>,
-    // #293 — push-mode arguments. `create_wave` has already booted the
-    // kernel-owned `codex app-server`, run turn #1, and persisted the thread
-    // id; the PTY daemon runs `codex resume <thread_id> --remote
-    // unix://<sock>` to *rejoin* the kernel's thread (sharing it with the
-    // kernel's programmatic client). Push is the only path — there is no
-    // legacy bare-`codex '<title>'` fallback.
+    // #293/#419 — push-mode arguments. Non-empty goals use the original
+    // resume path: `create_wave` has already booted the kernel-owned
+    // `codex app-server`, run turn #1, and persisted the thread id; the
+    // PTY daemon runs `codex resume <thread_id> --remote unix://<sock>` to
+    // rejoin the kernel's thread. Empty goals use `codex --remote
+    // unix://<sock>`; the TUI fresh-starts and the kernel backfills the
+    // thread id after observing the first turn lifecycle.
     push: SpecPushDaemonArgs,
 ) -> Result<()> {
     // 1. Seed `$CODEX_HOME` for the spec card. Filesystem-only — fast,
@@ -790,15 +795,15 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
         }
     };
 
-    // 3. Spawn the daemon. The spec agent's system prompt was already sent
-    //    through the kernel-owned app-server thread/start call.
+    // 3. Spawn the daemon. For non-empty goals, the spec agent's system
+    //    prompt was already sent through the kernel-owned app-server
+    //    thread/start call. For empty goals, the TUI fresh-start path will
+    //    create the thread and the kernel will observe it.
     //
-    //    #293 — push is the only path: the TUI runs `codex resume
-    //    <thread_id> --remote unix://<sock>` to rejoin the thread the kernel
-    //    already created and started turn #1 on. The wave goal was already
-    //    submitted by the kernel's `turn/start`, so there is no positional
-    //    `[PROMPT]` arg and `codex_auto_submit` is skipped on the
-    //    `codex_thread_id` payload (no `\r` is injected into the resumed TUI).
+    //    #293/#419 — push is the only path. Non-empty goals still resume
+    //    the thread the kernel already created and started turn #1 on.
+    //    Empty goals omit `resume` and let the TUI create the thread, while
+    //    queued spec pushes wait for the observed thread id.
     //
     //    `spawn_terminal_for` waits for deterministic daemon readiness on the
     //    response hot path. Since #236, that synchronous wait is intentional:
@@ -833,7 +838,7 @@ mod tests {
     #[test]
     fn push_mode_command_line_is_codex_resume_remote() {
         let args = SpecPushDaemonArgs {
-            thread_id: "thread-abc123".into(),
+            thread_id: Some("thread-abc123".into()),
             sock: PathBuf::from("/home/u/.local/share/neige-calm/appserver/card-9/app.sock"),
         };
         assert_eq!(
@@ -849,7 +854,7 @@ mod tests {
     #[test]
     fn push_mode_command_line_quotes_metacharacters() {
         let args = SpecPushDaemonArgs {
-            thread_id: "a b; rm -rf /".into(),
+            thread_id: Some("a b; rm -rf /".into()),
             sock: PathBuf::from("/tmp/has space/app.sock"),
         };
         let line = args.command_line();
@@ -858,6 +863,18 @@ mod tests {
                 "codex resume 'a b; rm -rf /' --remote 'unix:///tmp/has space/app.sock'"
             ),
             "metacharacters must be single-quoted; got: {line}"
+        );
+    }
+
+    #[test]
+    fn empty_goal_command_line_is_codex_remote_fresh_start() {
+        let args = SpecPushDaemonArgs {
+            thread_id: None,
+            sock: PathBuf::from("/tmp/has space/app.sock"),
+        };
+        assert_eq!(
+            args.command_line(),
+            "codex --remote 'unix:///tmp/has space/app.sock'",
         );
     }
 

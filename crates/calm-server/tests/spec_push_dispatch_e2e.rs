@@ -429,10 +429,10 @@ async fn spec_push_empty_title_boots_idle_without_initial_turn() {
     let Some(initial_status) = state.spec_push.status(&wave_key).await else {
         skip!("empty-title wave created but no spec push handle was parked; body={body}");
     };
-    assert_eq!(initial_status.phase, SpecPushPhase::Idle);
+    assert_eq!(initial_status.phase, SpecPushPhase::PendingThreadStart);
     assert!(
-        initial_status.last_thread_id.is_some(),
-        "empty-title boot still starts a codex thread"
+        initial_status.last_thread_id.is_none(),
+        "empty-title boot must not start a kernel-owned codex thread"
     );
     assert_eq!(
         initial_status.last_turn_id, None,
@@ -449,7 +449,7 @@ async fn spec_push_empty_title_boots_idle_without_initial_turn() {
         .status(&wave_key)
         .await
         .expect("handle remains parked");
-    assert_eq!(settled_status.phase, SpecPushPhase::Idle);
+    assert_eq!(settled_status.phase, SpecPushPhase::PendingThreadStart);
     assert_eq!(
         settled_status.last_turn_id, None,
         "empty-title boot must stay turnless until a later push/user turn"
@@ -461,8 +461,8 @@ async fn spec_push_empty_title_boots_idle_without_initial_turn() {
         payload
             .get("codex_thread_id")
             .and_then(Value::as_str)
-            .is_some_and(|id| !id.is_empty()),
-        "spec card payload should persist codex_thread_id for empty-title boot; payload={payload}"
+            .is_none(),
+        "spec card payload must not persist codex_thread_id before the TUI-created first turn; payload={payload}"
     );
     assert_eq!(
         payload

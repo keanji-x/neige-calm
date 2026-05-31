@@ -708,13 +708,15 @@ pub(crate) async fn create_wave(
     // daemon runs under") and matches the same path the spec card's
     // terminal-row write recorded.
     //
-    // #293 cutover — push is the ONLY path. Every wave drives DECISION A's
-    // blocking sequence: boot the kernel-owned `codex app-server`, run turn
-    // #1, await its initial lifecycle notification, persist
-    // `codex_thread_id` + `appserver_sock` on the spec card payload, park
-    // the handle in `state.spec_push`, then spawn the PTY daemon in
-    // **resume mode** (`codex resume <tid> --remote unix://<sock>`). There
-    // is no legacy bare-`codex '<title>'` path anymore.
+    // #293/#419 cutover — push is the ONLY path. Non-empty waves drive
+    // DECISION A's blocking sequence: boot the kernel-owned `codex
+    // app-server`, run turn #1, await its initial lifecycle notification,
+    // persist `codex_thread_id` + `appserver_sock`, park the handle, then
+    // spawn the PTY daemon in resume mode. Empty-title waves boot only the
+    // app-server, persist runtime fields without `codex_thread_id`, park a
+    // pending handle, and spawn `codex --remote <sock>` so the TUI
+    // fresh-starts the thread. There is no legacy bare-`codex '<title>'`
+    // path anymore.
     //
     // S2 (#293, #311) — SPEC BOOT IS NON-FATAL TO WAVE CREATION.
     // The wave + spec card + report card rows are already committed (and
@@ -765,11 +767,12 @@ pub(crate) async fn create_wave(
         }
     };
 
-    // Only spawn the resume-mode `--remote` TUI daemon when the app-server
-    // actually booted (turn #1 started, thread persisted, handle parked).
+    // Only spawn the `--remote` TUI daemon when the app-server actually
+    // booted (non-empty: turn #1 started and thread persisted; empty:
+    // initialized and pending TUI fresh-start handle parked).
     // If the boot failed above, `push_args` is `None` and the wave is inert
-    // — there is no thread to `codex resume`, so we skip the daemon spawn
-    // entirely and return the created wave.
+    // — there is no socket to attach to, so we skip the daemon spawn entirely
+    // and return the created wave.
     if let Some(push_args) = push_args {
         if let Err(e) = seed_and_spawn_spec_daemon(
             s.clone(),
@@ -812,16 +815,15 @@ pub(crate) async fn create_wave(
 }
 
 /// PR3a (#293) — DECISION A's create-wave blocking sequence for the push
-/// path. Boots the kernel-owned `codex app-server`, starts a codex thread,
-/// and, when the wave title is non-empty, runs turn #1 with that title as
-/// the goal and awaits `turn/started` (so a rollout exists on disk for the
-/// `--remote` TUI to resume). Empty titles are marked
-/// `appserver_needs_initial_prompt` so boot recovery will fresh-start
-/// instead of resuming a rollout-less thread. The function persists
-/// `codex_thread_id` + `appserver_sock` on the spec card payload
-/// (eventized — same audited `write_with_event_typed` path every other
-/// write uses), parks the handle in `state.spec_push`, and returns the
-/// [`SpecPushDaemonArgs`] the PTY daemon spawn needs.
+/// path. Boots the kernel-owned `codex app-server`. Non-empty titles start
+/// a codex thread, run turn #1 with that title, and await `turn/started` so
+/// a rollout exists on disk for the `--remote` TUI to resume. Empty titles
+/// skip `thread/start`; the TUI fresh-starts and the notification consumer
+/// backfills `codex_thread_id` from the first turn lifecycle. The function
+/// persists app-server runtime fields on the spec card payload (eventized —
+/// same audited `write_with_event_typed` path every other write uses), parks
+/// the handle in `state.spec_push`, and returns the [`SpecPushDaemonArgs`]
+/// the PTY daemon spawn needs.
 ///
 /// On any failure the `SpawnRollback` guard in `spawn_spec_appserver`
 /// reaps the failed app-server's process group + socket dir, and this
@@ -868,10 +870,11 @@ async fn spawn_push_appserver(
         ))
     })?;
 
-    // DECISION A's boot sequence (boot → connect → initialize →
-    // thread/start → optional turn/start(goal) → optional initial
-    // lifecycle wait). A non-empty wave title is the agent's initial goal;
-    // an empty title parks the push handle without an auto-submitted prompt.
+    // DECISION A's boot sequence for non-empty goals remains unchanged
+    // (boot → connect → initialize → thread/start → turn/start(goal) →
+    // initial lifecycle wait). Empty goals intentionally stop after
+    // initialize; the remote TUI fresh-starts the thread and this handle
+    // observes the first turn lifecycle before activating push delivery.
     let recovery_signal =
         crate::wire_spec_push_recovery_supervisor(s, settings, spec_card_id, wave.id.clone());
     let developer_instructions = crate::spec_card::render_system_prompt(
@@ -904,12 +907,14 @@ async fn spawn_push_appserver(
     let boot_id = handle.boot_id.clone();
     let needs_initial_prompt = wave.title.trim().is_empty();
 
-    // Persist `codex_thread_id` + `appserver_sock` + `appserver_pgid` on
+    // Persist app-server runtime fields on
     // the spec card payload (merge into the existing payload —
     // `card_update_tx` replaces the whole `payload` column, so we
-    // read-modify-write). `codex_thread_id` is also the
-    // `codex_auto_submit` skip signal: the kernel already drove turn #1,
-    // so no `\r` is injected into the resumed TUI. `appserver_pgid` is the
+    // read-modify-write). For non-empty goals, `codex_thread_id` is also
+    // the `codex_auto_submit` skip signal: the kernel already drove turn
+    // #1, so no `\r` is injected into the resumed TUI. Empty goals do NOT
+    // write `codex_thread_id` yet; the notification consumer backfills the
+    // TUI-created id after the first `turn/started`. `appserver_pgid` is the
     // crash-recovery reuse target — `takeover_spec_appservers_on_boot`
     // reads it to `kill(-pgid, …)` a leaked group after a hard crash.
     //
@@ -928,7 +933,11 @@ async fn spawn_push_appserver(
         cove: wave.cove_id.clone(),
     };
     let card_id_for_tx = spec_card_id.to_string();
-    let thread_id_for_tx = thread_id.clone();
+    let thread_id_for_tx = if needs_initial_prompt {
+        None
+    } else {
+        Some(thread_id.clone())
+    };
     let sock_str = sock_for_args.to_string_lossy().to_string();
     let (_card, _id) = write_with_event_typed(
         s.repo.as_ref(),
@@ -955,10 +964,14 @@ async fn spawn_push_appserver(
                          cannot persist codex_thread_id/appserver_sock/appserver_pgid",
                     )));
                 };
-                map.insert(
-                    "codex_thread_id".into(),
-                    serde_json::Value::String(thread_id_for_tx),
-                );
+                if let Some(thread_id) = thread_id_for_tx {
+                    map.insert(
+                        "codex_thread_id".into(),
+                        serde_json::Value::String(thread_id),
+                    );
+                } else {
+                    map.remove("codex_thread_id");
+                }
                 if needs_initial_prompt {
                     map.insert(
                         "appserver_needs_initial_prompt".into(),
@@ -1057,10 +1070,16 @@ async fn spawn_push_appserver(
          a future refactor split the install from the assert; queued-then-\
          flushed envelopes would silently fail to persist their watermark"
     );
-    let initial_prompt_clear = s.dispatcher.initial_prompt_clear_sink_for(card_key.clone());
-    handle
-        .install_initial_prompt_clear_sink(initial_prompt_clear)
-        .await;
+    if needs_initial_prompt {
+        let initial_prompt_ready = s.dispatcher.initial_prompt_ready_sink_for(
+            card_key.clone(),
+            wave.id.clone(),
+            wave.cove_id.clone(),
+        );
+        handle
+            .install_initial_prompt_ready_sink(initial_prompt_ready)
+            .await;
+    }
 
     // #318 INV-3 (R2-B1) — install the durable queue-persist callbacks
     // BEFORE parking the handle in the registry, symmetric with the
@@ -1098,16 +1117,26 @@ async fn spawn_push_appserver(
         .park(wave.id.clone(), handle, s.aspects.as_ref())
         .await;
 
+    let thread_id_log = if thread_id.is_empty() {
+        "<pending>"
+    } else {
+        thread_id.as_str()
+    };
     tracing::info!(
         card_id = %spec_card_id,
         wave_id = %wave.id,
-        thread_id = %thread_id,
+        thread_id = %thread_id_log,
         sock = %sock_for_args.display(),
-        "spec push: app-server booted, turn #1 started, thread persisted",
+        needs_initial_prompt,
+        "spec push: app-server booted, runtime fields persisted",
     );
 
     Ok(SpecPushDaemonArgs {
-        thread_id,
+        thread_id: if needs_initial_prompt {
+            None
+        } else {
+            Some(thread_id)
+        },
         sock: sock_for_args,
     })
 }

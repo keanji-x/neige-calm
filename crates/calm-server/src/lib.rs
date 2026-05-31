@@ -575,7 +575,7 @@ async fn bootstrap_empty_goal_spec_appserver(
         return TakeoverOutcome::Inert;
     }
     let push = crate::spec_card::SpecPushDaemonArgs {
-        thread_id: thread_id.clone(),
+        thread_id: Some(thread_id.clone()),
         sock: handle.sock.clone(),
     };
     register_and_catch_up(state, card_id, wave_id, watermark, handle, false).await;
@@ -1458,7 +1458,7 @@ async fn register_and_catch_up(
         .dispatcher
         .initial_prompt_clear_sink_for(card_key.clone());
     handle
-        .install_initial_prompt_clear_sink(initial_prompt_clear)
+        .install_initial_prompt_ready_sink(initial_prompt_clear)
         .await;
 
     // #318 INV-3 (R2-B1) — install the durable queue-persist callbacks
