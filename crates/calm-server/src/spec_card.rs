@@ -672,8 +672,26 @@ pub(crate) async fn spawn_spec_daemon_for_existing_seed(
     wave_id: &str,
     cwd: &str,
     env: &serde_json::Value,
+    mcp_token: Option<&str>,
     push: &SpecPushDaemonArgs,
 ) -> Result<()> {
+    if let Err(e) = seed_codex_home_for_card(
+        state,
+        spec_card_id,
+        cwd,
+        wave_id,
+        SeededCardRole::Spec,
+        mcp_token,
+    ) {
+        tracing::warn!(
+            card_id = %spec_card_id,
+            wave_id = %wave_id,
+            error = %e,
+            "spec card CODEX_HOME re-seed failed during empty-goal boot recovery",
+        );
+        return Err(e);
+    }
+
     let term = state
         .repo
         .terminal_get_by_card(spec_card_id)
@@ -829,6 +847,15 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use crate::card_role_cache::CardRoleCache;
+    use crate::db::prelude::Repo;
+    use crate::db::sqlite::SqlxRepo;
+    use crate::event::EventBus;
+    use crate::plugin_host::{PluginHost, PluginRegistry};
+    use crate::state::DaemonClient;
+    use crate::wave_cove_cache::WaveCoveCache;
 
     /// PR3a (#293) — push-mode command is `codex resume <tid> --remote
     /// unix://<sock>`, with both the thread id and the `unix://` URI
@@ -1192,6 +1219,83 @@ mod tests {
         assert!(
             config.contains("calm.update_wave_state"),
             "spec baked developer_instructions must include the wave-state contract; got:\n{config}"
+        );
+    }
+
+    #[tokio::test]
+    async fn existing_seed_spawn_reseeds_legacy_spec_config_with_developer_instructions() {
+        let card_id = "legacy-spec-card";
+        let wave_id = "legacy-wave";
+        let cwd = "/workspace";
+        let codex = CodexClient::new_stub();
+        let codex_home = codex.codex_homes_dir.join(card_id);
+        std::fs::create_dir_all(&codex_home).expect("create legacy CODEX_HOME");
+        let cfg_path = codex_home.join("config.toml");
+        std::fs::write(
+            &cfg_path,
+            "# legacy pre-#419 seed\napproval_policy = \"never\"\n",
+        )
+        .expect("write legacy config.toml");
+
+        let typed: Arc<SqlxRepo> = Arc::new(
+            SqlxRepo::open("sqlite::memory:")
+                .await
+                .expect("open in-memory sqlite"),
+        );
+        let repo: Arc<dyn Repo> = typed;
+        let card_role_cache = CardRoleCache::new();
+        let wave_cove_cache = WaveCoveCache::new();
+        let state = AppState::from_parts(
+            repo.clone(),
+            EventBus::new(),
+            Arc::new(DaemonClient::new_stub()),
+            Arc::new(PluginHost::new_full(
+                Arc::new(PluginRegistry::empty()),
+                repo,
+                PathBuf::new(),
+                std::env::temp_dir().join("calm-plugins-data-existing-seed-reseed"),
+                Vec::new(),
+                EventBus::new(),
+                card_role_cache.clone(),
+                wave_cove_cache.clone(),
+            )),
+            Arc::new(codex),
+            Some(card_role_cache),
+            Some(wave_cove_cache),
+        );
+
+        let push = SpecPushDaemonArgs {
+            thread_id: None,
+            sock: PathBuf::from("/tmp/reseed-existing-spec/app.sock"),
+        };
+        let err = spawn_spec_daemon_for_existing_seed(
+            &state,
+            card_id,
+            wave_id,
+            cwd,
+            &serde_json::json!({}),
+            None,
+            &push,
+        )
+        .await
+        .expect_err("terminal lookup should fail after re-seed in this focused test");
+        assert!(
+            matches!(&err, CalmError::Internal(_)),
+            "expected missing-terminal error after re-seed, got: {err}"
+        );
+
+        let config = std::fs::read_to_string(&cfg_path).expect("read re-seeded config.toml");
+        assert!(
+            config.contains("developer_instructions = \""),
+            "existing-seed spawn must re-seed legacy config.toml with developer_instructions; got:\n{config}"
+        );
+        assert!(
+            config.contains("You are the spec agent for wave `legacy-wave`."),
+            "re-seeded developer_instructions must include rendered wave id; got:\n{config}"
+        );
+        assert!(
+            config.contains("calm.update_wave_state"),
+            "re-seeded developer_instructions must include the wave-state contract; got:\n{config}"
         );
     }
 

@@ -573,12 +573,16 @@ async fn bootstrap_empty_goal_spec_appserver(
         sock: handle.sock.clone(),
     };
     register_and_catch_up(state, card_id, wave_id, watermark, handle, false).await;
+    let mcp_token = env_map
+        .get("NEIGE_MCP_TOKEN")
+        .and_then(serde_json::Value::as_str);
     if let Err(e) = crate::spec_card::spawn_spec_daemon_for_existing_seed(
         state,
         card_id,
         wave_id.as_str(),
         cwd,
         &env_map,
+        mcp_token,
         &push,
     )
     .await
