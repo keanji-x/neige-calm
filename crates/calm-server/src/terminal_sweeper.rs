@@ -346,7 +346,7 @@ pub async fn reap_spec_push(state: &AppState, wave_id: &WaveId) {
     let sock = handle.sock.clone();
     tracing::info!(
         wave_id = %wave_id,
-        thread_id = %handle.thread_id,
+        thread_id = %handle.thread_id.as_deref().unwrap_or("<pending-thread-start>"),
         pgid,
         sock = %sock.display(),
         "spec push: reaping app-server handle on wave/spec-card delete (group SIGTERM→SIGKILL)",

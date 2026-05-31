@@ -371,10 +371,9 @@ pub(crate) fn build_codex_env_map(
 ///
 /// Same shape as `routes::codex_cards::build_codex_config_toml` but with
 /// three additions:
-///   * Optional `instructions = ...` baking. `Some` is still used for
-///     workers because they launch through `spawn_terminal_with_parts`;
-///     spec passes `None` because PR1 moves spec instructions to
-///     app-server `thread/start.developerInstructions`.
+///   * Optional `developer_instructions = ...` baking. Spec cards need
+///     this for empty-goal fresh-starts where the remote TUI creates the
+///     thread; worker cards use the same channel for their role prompt.
 ///   * `[mcp_servers.calm]` + `[mcp_servers.calm.env]` (PR7a, #236
 ///     followup) — points codex at the `neige-mcp-stdio-shim` binary
 ///     which bridges stdio JSON-RPC to the kernel's UDS, and bakes
@@ -390,9 +389,8 @@ pub(crate) fn build_codex_env_map(
 ///   * Plain `[projects."<cwd>"] trust_level = "trusted"` matches the
 ///     Plain helper.
 ///
-/// `baked_instructions` controls only the legacy config.toml prompt
-/// channel. Pass `None` for spec cards; pass the rendered worker prompt
-/// until workers also gain an app-server `thread/start` seam.
+/// `baked_instructions` controls the config.toml developer-instructions
+/// channel used by remote TUI-created threads.
 ///
 /// `mcp_block` pairs the shim config with the per-card raw MCP token:
 /// both are required together (a token without a socket is unusable,
@@ -444,7 +442,7 @@ pub(crate) fn build_role_codex_config_toml(
     if let Some(prompt) = baked_instructions {
         let escaped_prompt = escape_toml_basic_string(prompt);
         let one_line_prompt = escaped_prompt.replace('\n', "\\n");
-        out.push_str(&format!("instructions = \"{one_line_prompt}\"\n"));
+        out.push_str(&format!("developer_instructions = \"{one_line_prompt}\"\n"));
     }
 
     out.push_str(&format!(
@@ -620,12 +618,11 @@ pub(crate) fn seed_codex_home_with_parts(
 
     // config.toml — role-typed. Plain cards are unrepresentable at this
     // seam by construction (see [`SeededCardRole`]).
-    let rendered_worker_prompt;
+    let rendered_prompt;
     let baked_instructions = match role {
-        SeededCardRole::Spec => None,
-        SeededCardRole::Worker => {
-            rendered_worker_prompt = render_system_prompt(role.prompt_template(), wave_id);
-            Some(rendered_worker_prompt.as_str())
+        SeededCardRole::Spec | SeededCardRole::Worker => {
+            rendered_prompt = render_system_prompt(role.prompt_template(), wave_id);
+            Some(rendered_prompt.as_str())
         }
     };
     let cfg_text = build_role_codex_config_toml(cwd, baked_instructions, mcp_block);
@@ -795,10 +792,11 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
         }
     };
 
-    // 3. Spawn the daemon. For non-empty goals, the spec agent's system
-    //    prompt was already sent through the kernel-owned app-server
-    //    thread/start call. For empty goals, the TUI fresh-start path will
-    //    create the thread and the kernel will observe it.
+    // 3. Spawn the daemon. For non-empty goals, the spec agent's prompt was
+    //    already sent through the kernel-owned app-server thread/start call.
+    //    For empty goals, the TUI fresh-start path creates the thread using
+    //    the developer_instructions baked into this card's config.toml, and
+    //    the kernel observes the resulting lifecycle.
     //
     //    #293/#419 — push is the only path. Non-empty goals still resume
     //    the thread the kernel already created and started turn #1 on.
@@ -1171,21 +1169,29 @@ mod tests {
     }
 
     #[test]
-    fn spec_role_config_toml_has_no_instructions_block() {
-        let shim = crate::mcp_server::McpShimConfig {
-            shim_bin: std::path::PathBuf::from("/usr/local/bin/neige-mcp-stdio-shim"),
-            socket_path: std::path::PathBuf::from("/var/lib/neige/mcp/kernel.sock"),
-        };
-        let without_mcp = build_role_codex_config_toml("/workspace", None, None);
-        let with_mcp =
-            build_role_codex_config_toml("/workspace", None, Some((&shim, "tok-abc123")));
+    fn spec_role_seed_bakes_developer_instructions_for_remote_fresh_start() {
+        let codex = CodexClient::new_stub();
+        let home = seed_codex_home_with_parts(
+            &codex,
+            "spec-card-1",
+            "/workspace",
+            "wave-abc",
+            SeededCardRole::Spec,
+            None,
+        )
+        .expect("seed spec CODEX_HOME");
+        let config = std::fs::read_to_string(home.join("config.toml")).expect("read config.toml");
         assert!(
-            !without_mcp.contains("instructions"),
-            "spec role config must not contain instructions; got:\n{without_mcp}"
+            config.contains("developer_instructions = \""),
+            "spec role config must bake developer_instructions for remote fresh-start threads; got:\n{config}"
         );
         assert!(
-            !with_mcp.contains("instructions"),
-            "spec role config with MCP must not contain instructions; got:\n{with_mcp}"
+            config.contains("You are the spec agent for wave `wave-abc`."),
+            "spec baked developer_instructions must include rendered wave id; got:\n{config}"
+        );
+        assert!(
+            config.contains("calm.update_wave_state"),
+            "spec baked developer_instructions must include the wave-state contract; got:\n{config}"
         );
     }
 
@@ -1197,8 +1203,8 @@ mod tests {
             None,
         );
         assert!(
-            s.contains("instructions = \""),
-            "worker role config must bake instructions into config.toml; got:\n{s}"
+            s.contains("developer_instructions = \""),
+            "worker role config must bake developer_instructions into config.toml; got:\n{s}"
         );
         assert!(
             s.contains("calm.task_completed"),

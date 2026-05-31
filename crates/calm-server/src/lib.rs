@@ -525,20 +525,16 @@ async fn bootstrap_empty_goal_spec_appserver(
     let recovery_signal =
         wire_spec_push_recovery_supervisor(state, settings, card_id, wave_id.clone());
     // Empty-goal bootstrap respawns a fresh app-server (the prior thread had
-    // no rollout and must never be resumed). thread/start runs again here, so
-    // the spec system prompt must be re-supplied via developerInstructions
-    // (same shape as `routes::waves::spawn_push_appserver` for fresh creates).
-    let developer_instructions = crate::spec_card::render_system_prompt(
-        crate::spec_card::SeededCardRole::Spec.prompt_template(),
-        wave_id.as_str(),
-    );
+    // no rollout and must never be resumed). The remote TUI will fresh-start
+    // the thread using the spec developer_instructions seeded into this
+    // card's CODEX_HOME/config.toml.
     let handle =
         match spec_appserver::spawn_spec_appserver_with_watchdog_config_and_recovery_for_wave(
             &state.codex.codex_bin,
             &env_map,
             "",
             &sock,
-            Some(&developer_instructions),
+            None,
             spec_appserver::TurnWatchdogConfig::default(),
             Some(recovery_signal),
             Some(wave_id),
@@ -554,12 +550,10 @@ async fn bootstrap_empty_goal_spec_appserver(
                 return TakeoverOutcome::Inert;
             }
         };
-    let thread_id = handle.thread_id.clone();
     if let Err(e) = state
         .repo
-        .spec_card_set_empty_goal_bootstrap_state(
+        .spec_card_set_empty_goal_bootstrap_pending_state(
             card_id,
-            &thread_id,
             handle.pgid,
             &handle.sock.to_string_lossy(),
             handle.start_time,
@@ -569,13 +563,13 @@ async fn bootstrap_empty_goal_spec_appserver(
         .await
     {
         tracing::warn!(
-            card_id, wave_id = %wave_id, thread_id = %thread_id, error = %e,
+            card_id, wave_id = %wave_id, error = %e,
             "initial-prompt bootstrap: persist fresh runtime state failed; leaving wave retryable",
         );
         return TakeoverOutcome::Inert;
     }
     let push = crate::spec_card::SpecPushDaemonArgs {
-        thread_id: Some(thread_id.clone()),
+        thread_id: None,
         sock: handle.sock.clone(),
     };
     register_and_catch_up(state, card_id, wave_id, watermark, handle, false).await;
@@ -590,12 +584,12 @@ async fn bootstrap_empty_goal_spec_appserver(
     .await
     {
         tracing::warn!(
-            card_id, wave_id = %wave_id, thread_id = %thread_id, error = %e,
+            card_id, wave_id = %wave_id, error = %e,
             "initial-prompt bootstrap: app-server parked but TUI daemon spawn failed",
         );
     }
     tracing::info!(
-        card_id, wave_id = %wave_id, thread_id = %thread_id,
+        card_id, wave_id = %wave_id,
         "initial-prompt bootstrap: fresh idle app-server registered without thread/resume",
     );
     TakeoverOutcome::Respawned
@@ -1454,11 +1448,24 @@ async fn register_and_catch_up(
         "register_and_catch_up: install_watermark_sink did not take effect — \
          queued-then-flushed envelopes would silently fail to persist their watermark"
     );
-    let initial_prompt_clear = state
-        .dispatcher
-        .initial_prompt_clear_sink_for(card_key.clone());
+    let initial_prompt_ready = if handle.thread_id.is_none() {
+        match state.wave_cove_cache.cove_of(wave_id) {
+            Some(cove_id) => state.dispatcher.initial_prompt_ready_sink_for(
+                card_key.clone(),
+                wave_id.clone(),
+                cove_id,
+            ),
+            None => state
+                .dispatcher
+                .initial_prompt_clear_sink_for(card_key.clone()),
+        }
+    } else {
+        state
+            .dispatcher
+            .initial_prompt_clear_sink_for(card_key.clone())
+    };
     handle
-        .install_initial_prompt_ready_sink(initial_prompt_clear)
+        .install_initial_prompt_ready_sink(initial_prompt_ready)
         .await;
 
     // #318 INV-3 (R2-B1) — install the durable queue-persist callbacks

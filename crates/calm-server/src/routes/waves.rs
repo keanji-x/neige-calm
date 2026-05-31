@@ -892,7 +892,16 @@ async fn spawn_push_appserver(
         Some(&wave.id),
     )
     .await?;
-    let thread_id = handle.thread_id.clone();
+    let needs_initial_prompt = wave.title.trim().is_empty();
+    let thread_id = if needs_initial_prompt {
+        None
+    } else {
+        Some(handle.thread_id.clone().ok_or_else(|| {
+            CalmError::Internal(
+                "spec app-server returned no thread id for non-empty wave".to_string(),
+            )
+        })?)
+    };
     let sock_for_args = handle.sock.clone();
     let pgid = handle.pgid;
     // #318 INV-5 (R3-B1) — identity stamp captured by
@@ -905,7 +914,6 @@ async fn spawn_push_appserver(
     // recovery treats an absent stamp as "skip the kill" (conservative).
     let start_time = handle.start_time;
     let boot_id = handle.boot_id.clone();
-    let needs_initial_prompt = wave.title.trim().is_empty();
 
     // Persist app-server runtime fields on
     // the spec card payload (merge into the existing payload —
@@ -933,11 +941,7 @@ async fn spawn_push_appserver(
         cove: wave.cove_id.clone(),
     };
     let card_id_for_tx = spec_card_id.to_string();
-    let thread_id_for_tx = if needs_initial_prompt {
-        None
-    } else {
-        Some(thread_id.clone())
-    };
+    let thread_id_for_tx = thread_id.clone();
     let sock_str = sock_for_args.to_string_lossy().to_string();
     let (_card, _id) = write_with_event_typed(
         s.repo.as_ref(),
@@ -1070,16 +1074,18 @@ async fn spawn_push_appserver(
          a future refactor split the install from the assert; queued-then-\
          flushed envelopes would silently fail to persist their watermark"
     );
-    if needs_initial_prompt {
-        let initial_prompt_ready = s.dispatcher.initial_prompt_ready_sink_for(
+    let initial_prompt_ready = if needs_initial_prompt {
+        s.dispatcher.initial_prompt_ready_sink_for(
             card_key.clone(),
             wave.id.clone(),
             wave.cove_id.clone(),
-        );
-        handle
-            .install_initial_prompt_ready_sink(initial_prompt_ready)
-            .await;
-    }
+        )
+    } else {
+        s.dispatcher.initial_prompt_clear_sink_for(card_key.clone())
+    };
+    handle
+        .install_initial_prompt_ready_sink(initial_prompt_ready)
+        .await;
 
     // #318 INV-3 (R2-B1) — install the durable queue-persist callbacks
     // BEFORE parking the handle in the registry, symmetric with the
@@ -1117,11 +1123,7 @@ async fn spawn_push_appserver(
         .park(wave.id.clone(), handle, s.aspects.as_ref())
         .await;
 
-    let thread_id_log = if thread_id.is_empty() {
-        "<pending>"
-    } else {
-        thread_id.as_str()
-    };
+    let thread_id_log = thread_id.as_deref().unwrap_or("<pending>");
     tracing::info!(
         card_id = %spec_card_id,
         wave_id = %wave.id,
@@ -1132,11 +1134,7 @@ async fn spawn_push_appserver(
     );
 
     Ok(SpecPushDaemonArgs {
-        thread_id: if needs_initial_prompt {
-            None
-        } else {
-            Some(thread_id)
-        },
+        thread_id,
         sock: sock_for_args,
     })
 }

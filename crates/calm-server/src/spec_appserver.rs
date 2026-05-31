@@ -689,8 +689,9 @@ pub struct SpecPushHandle {
     /// will call `turn_start`/`turn_steer`/`inject_items` on this.
     pub client: Arc<CodexAppServer>,
     /// The thread id turn #1 ran on. Persisted on the spec card payload as
-    /// `codex_thread_id`; the `--remote` TUI resumes it.
-    pub thread_id: String,
+    /// `codex_thread_id`; the `--remote` TUI resumes it. `None` means an
+    /// empty-goal handle is waiting for the TUI to fresh-start a thread.
+    pub thread_id: Option<String>,
     thread_id_slot: ThreadIdSlot,
     /// The listen socket path (`<data_dir>/appserver/<card_id>/app.sock`).
     pub sock: PathBuf,
@@ -738,10 +739,11 @@ pub struct SpecPushHandle {
     /// Installed via [`install_queue_persist`](Self::install_queue_persist)
     /// at the same sites that install the watermark sink.
     queue_persist: QueuePersistSlot,
-    /// Clears `appserver_needs_initial_prompt` after the first observed
-    /// turn lifecycle on this thread. This is intentionally independent
-    /// from push watermark advancement because manual TUI input creates a
-    /// rollout without touching the push channel.
+    /// Persists the TUI-created thread id and clears
+    /// `appserver_needs_initial_prompt` after the first observed turn
+    /// lifecycle on this thread. This is intentionally independent from
+    /// push watermark advancement because manual TUI input creates a rollout
+    /// without touching the push channel.
     initial_prompt_ready_sink: InitialPromptReadySinkSlot,
 }
 
@@ -1144,7 +1146,8 @@ impl SpecPushHandle {
         self.queue_persist.lock().await.is_some()
     }
 
-    /// Install the marker-clear callback used by the notification consumer
+    /// Install the callback used by the notification consumer to persist
+    /// the TUI-created thread id and clear the empty-goal bootstrap marker
     /// when it observes the first turn lifecycle for this thread.
     pub async fn install_initial_prompt_ready_sink(&self, sink: InitialPromptReadySink) {
         *self.initial_prompt_ready_sink.lock().await = Some(sink);
@@ -1235,7 +1238,7 @@ impl SpecPushHandle {
         }
         if !stale_db_ids.is_empty() {
             tracing::info!(
-                thread_id = %self.thread_id,
+                thread_id = %self.thread_id.as_deref().unwrap_or("<pending-thread-start>"),
                 watermark,
                 stale_count = stale_db_ids.len(),
                 "spec push: rehydrate dropped rows already covered by durable watermark (envelope_id <= watermark); deleting from spec_push_queue so the next boot won't see them again"
@@ -2589,7 +2592,7 @@ fn park_handle(
         start_time,
         boot_id,
         client,
-        thread_id: thread_id.clone().unwrap_or_default(),
+        thread_id: thread_id.clone(),
         thread_id_slot,
         sock: sock.to_path_buf(),
         consumer,
@@ -2769,6 +2772,9 @@ impl NotificationConsumer {
         }
         match self.current_thread_id().await {
             Some(current) => thread_id == current,
+            // Empty-goal fresh-start handles do not know the TUI-created
+            // thread id until the first lifecycle notification; accept that
+            // first notification so it can fill the slot.
             None => true,
         }
     }
@@ -2934,7 +2940,14 @@ impl NotificationConsumer {
     }
 
     async fn signal_process_recovery(&mut self, turn_id: String, reason: SpecRecoveryReason) {
-        let thread_id = self.thread_id_for_log().await;
+        let Some(thread_id) = self.current_thread_id().await else {
+            tracing::debug!(
+                turn_id = %turn_id,
+                ?reason,
+                "spec push: skipping recovery signal before TUI thread id is known"
+            );
+            return;
+        };
         {
             let mut g = self.status.lock().await;
             g.phase = SpecPushPhase::Wedged;
@@ -3425,7 +3438,7 @@ mod tests {
             start_time: read_proc_start_time(pgid),
             boot_id: read_boot_id(),
             client,
-            thread_id: "thread-test".into(),
+            thread_id: Some("thread-test".into()),
             thread_id_slot,
             sock: PathBuf::from("/tmp/test/app.sock"),
             consumer,
@@ -3531,7 +3544,7 @@ mod tests {
         .expect("empty goal boot should park a handle");
         sut_returned_tx.send(()).expect("server task still waiting");
 
-        assert_eq!(handle.thread_id, "");
+        assert_eq!(handle.thread_id, None);
         let status = handle.status().await;
         assert_eq!(status.phase, SpecPushPhase::PendingThreadStart);
         assert_eq!(status.last_thread_id, None);
@@ -4813,7 +4826,7 @@ mod tests {
             g.phase = SpecPushPhase::TurnCompleted;
         }
         flush_push_queue(
-            &handle.thread_id,
+            handle.thread_id.as_deref().expect("fake handle thread id"),
             &handle.status,
             &handle.client,
             &handle.queue,
@@ -5156,7 +5169,7 @@ mod tests {
             let _ = handle.push_observation(2, "B").await;
             // The flush that, pre-fix, issues the second (dropped) turn.
             flush_push_queue(
-                &handle.thread_id,
+                handle.thread_id.as_deref().expect("fake handle thread id"),
                 &handle.status,
                 &handle.client,
                 &handle.queue,
@@ -5190,7 +5203,7 @@ mod tests {
                 let h_flush = Arc::clone(&handle);
                 let flush = tokio::spawn(async move {
                     flush_push_queue(
-                        &h_flush.thread_id,
+                        h_flush.thread_id.as_deref().expect("fake handle thread id"),
                         &h_flush.status,
                         &h_flush.client,
                         &h_flush.queue,
@@ -5819,7 +5832,7 @@ mod tests {
         let budget = Duration::from_secs(5);
         let reconciler = tokio::spawn(resume_reconcile_task(
             budget,
-            handle.thread_id.clone(),
+            handle.thread_id.clone().expect("fake handle thread id"),
             handle.status.clone(),
             handle.client.clone(),
             handle.queue.clone(),
@@ -5925,7 +5938,7 @@ mod tests {
         let budget = Duration::from_secs(5);
         let reconciler = tokio::spawn(resume_reconcile_task(
             budget,
-            handle.thread_id.clone(),
+            handle.thread_id.clone().expect("fake handle thread id"),
             handle.status.clone(),
             handle.client.clone(),
             handle.queue.clone(),
@@ -5939,7 +5952,7 @@ mod tests {
         record(
             &handle.status,
             &Notification::TurnStarted {
-                thread_id: handle.thread_id.clone(),
+                thread_id: handle.thread_id.clone().expect("fake handle thread id"),
                 turn: serde_json::json!({ "id": "u-resume-1" }),
             },
         )
