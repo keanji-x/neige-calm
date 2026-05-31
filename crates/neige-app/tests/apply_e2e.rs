@@ -93,6 +93,54 @@ bin = "/usr/local/bin/neige-app"
     Ok(())
 }
 
+#[test]
+fn system_unit_prints_clean_unit_to_stdout() -> anyhow::Result<()> {
+    let root = test_root("system-unit-clean-stdout")?;
+    let config_path = root.join("config.toml");
+    let data_dir = root.join("data");
+    fs::create_dir_all(&data_dir)?;
+    fs::write(
+        &config_path,
+        format!(
+            r#"[child]
+data_dir = "{data_dir}"
+"#,
+            data_dir = data_dir.display()
+        ),
+    )?;
+
+    let output = Command::new(locate_neige_app())
+        .arg("system")
+        .arg("unit")
+        .arg("--bin")
+        .arg("/opt/neige/bin/neige-app")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("--path")
+        .arg("/usr/bin")
+        .env("RUST_LOG", "info,neige_app=debug")
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "system unit failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.lines().next(), Some("[Unit]"), "stdout:\n{stdout}");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("child.db_url not set; defaulting to <data_dir>/calm.db"),
+        "expected config info log on stderr; stderr:\n{stderr}"
+    );
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
 struct Harness {
     root: PathBuf,
     data_dir: PathBuf,
