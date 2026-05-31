@@ -912,6 +912,16 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       // `TerminalExited` JSON frame is lost on a slow link. Narrow edge
       // today, one line to prevent.
       exitInfoRef.current = null;
+      // #421 followup — mirror `onRoleChange` above: the parent's `exit`
+      // state must also be cleared on teardown so a user-triggered
+      // reconnect (Refresh / Reset) doesn't inherit a `TerminalExited`
+      // badge from the previous daemon attach. Without this, a clean
+      // exit_code=1 delivered just before tear-down (e.g. the old codex
+      // daemon exits when its app-server is reaped during Reset) stays
+      // pinned on the new card head even though the new daemon is up.
+      // Synced here (not via `ws.onclose`) so a strict-mode unmount or a
+      // `reconnectKey` bump always clears it, matching the role pill.
+      onExitChangeRef.current?.(null);
     };
     // `theme` deliberately omitted: a theme flip should NOT rebuild the
     // WebSocket / Terminal. The sibling effect above mutates

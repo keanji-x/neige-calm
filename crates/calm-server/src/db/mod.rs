@@ -275,6 +275,7 @@ pub trait RepoRead: Send + Sync + 'static {
     // ---- cards
     async fn cards_by_wave(&self, wave_id: &str) -> Result<Vec<Card>>;
     async fn card_get(&self, id: &str) -> Result<Option<Card>>;
+    async fn card_role_get(&self, id: &str) -> Result<Option<CardRole>>;
 
     // ---- overlays
     async fn overlays_for(&self, entity_kind: &str, entity_id: &str) -> Result<Vec<Overlay>>;
@@ -753,6 +754,12 @@ pub trait RepoOutOfDomain: RepoRead {
     /// this PR).
     async fn spec_card_clear_push_state(&self, card_id: &str) -> Result<()>;
 
+    /// Clear reset-created runtime fields after a reset partially succeeds
+    /// but the terminal daemon fails to spawn. Preserves `push_watermark`
+    /// and `spec_push_queue` rows so a later recovery can replay from the
+    /// durable floor without misleading boot takeover with a dead app-server.
+    async fn spec_card_clear_runtime_after_reset_failure(&self, card_id: &str) -> Result<()>;
+
     /// #313 problem #1 — after boot takeover RESPAWNS a fresh codex
     /// app-server for a spec card, persist the new launcher pgid + sock
     /// (+ #318 INV-5 `(start_time, boot_id)` identity stamp) so the NEXT
@@ -772,6 +779,21 @@ pub trait RepoOutOfDomain: RepoRead {
         sock: &str,
         start_time: Option<u64>,
         boot_id: Option<&str>,
+    ) -> Result<()>;
+
+    /// Persist a reset-created spec runtime: replace `codex_thread_id`
+    /// plus app-server identity fields while preserving the durable
+    /// `push_watermark` and queued observations.
+    #[allow(clippy::too_many_arguments)]
+    async fn spec_card_set_appserver_after_reset(
+        &self,
+        card_id: &str,
+        thread_id: &str,
+        pgid: i32,
+        sock: &str,
+        start_time: Option<u64>,
+        boot_id: Option<&str>,
+        needs_initial_prompt: bool,
     ) -> Result<()>;
 
     /// Persist fresh runtime state for an empty-goal bootstrap while keeping

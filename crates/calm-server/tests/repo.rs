@@ -1485,6 +1485,158 @@ async fn spec_cards_for_boot_takeover_filters_to_spec_role() {
 }
 
 #[tokio::test]
+async fn spec_card_set_appserver_after_reset_preserves_watermark_and_queue() {
+    use calm_server::card_role_cache::CardRoleCache;
+
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "reset-helper").await;
+    let w = make_wave(&repo, c.id.as_str(), "reset-wave").await;
+    let cache = CardRoleCache::new();
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    let spec = calm_server::db::sqlite::card_create_with_id_tx(
+        &mut tx,
+        calm_server::model::new_id(),
+        NewCard {
+            wave_id: w.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({
+                "terminal_id": "term_spec",
+                "codex_thread_id": "thread_old",
+                "appserver_sock": "/tmp/old.sock",
+                "appserver_pgid": 111,
+                "appserver_start_time": 222,
+                "appserver_boot_id": "boot-old",
+                "push_watermark": 42,
+                "other_field": "preserve-me",
+            }),
+        },
+        CardRole::Spec,
+        false,
+        &cache,
+    )
+    .await
+    .expect("create spec card");
+    tx.commit().await.unwrap();
+
+    let row_id = repo
+        .spec_card_enqueue_observation(spec.id.as_str(), 43, "pending observation")
+        .await
+        .expect("enqueue observation");
+
+    repo.spec_card_set_appserver_after_reset(
+        spec.id.as_str(),
+        "thread_new",
+        333,
+        "/tmp/new.sock",
+        Some(444),
+        Some("boot-new"),
+        false,
+    )
+    .await
+    .expect("persist reset runtime");
+
+    let got = repo
+        .card_get(spec.id.as_str())
+        .await
+        .unwrap()
+        .expect("spec card");
+    assert_eq!(got.id, spec.id);
+    assert_eq!(got.payload["terminal_id"], json!("term_spec"));
+    assert_eq!(got.payload["codex_thread_id"], json!("thread_new"));
+    assert_eq!(got.payload["appserver_sock"], json!("/tmp/new.sock"));
+    assert_eq!(got.payload["appserver_pgid"], json!(333));
+    assert_eq!(got.payload["appserver_start_time"], json!(444));
+    assert_eq!(got.payload["appserver_boot_id"], json!("boot-new"));
+    assert_eq!(got.payload["push_watermark"], json!(42));
+    assert_eq!(got.payload["other_field"], json!("preserve-me"));
+    assert!(got.payload.get("appserver_needs_initial_prompt").is_none());
+
+    let queued = repo
+        .spec_card_queued_observations(spec.id.as_str())
+        .await
+        .expect("queued observations");
+    assert_eq!(
+        queued,
+        vec![(row_id, 43, "pending observation".to_string())],
+        "reset runtime persistence must not delete card-scoped queue rows",
+    );
+}
+
+#[tokio::test]
+async fn spec_card_clear_runtime_after_reset_failure_preserves_watermark_and_queue() {
+    use calm_server::card_role_cache::CardRoleCache;
+
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "reset-failure-helper").await;
+    let w = make_wave(&repo, c.id.as_str(), "reset-failure-wave").await;
+    let cache = CardRoleCache::new();
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    let spec = calm_server::db::sqlite::card_create_with_id_tx(
+        &mut tx,
+        calm_server::model::new_id(),
+        NewCard {
+            wave_id: w.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({
+                "terminal_id": "term_spec",
+                "codex_thread_id": "thread_new_dead",
+                "appserver_sock": "/tmp/dead.sock",
+                "appserver_pgid": 111,
+                "appserver_start_time": 222,
+                "appserver_boot_id": "boot-dead",
+                "appserver_needs_initial_prompt": true,
+                "push_watermark": 42,
+                "other_field": "preserve-me",
+            }),
+        },
+        CardRole::Spec,
+        false,
+        &cache,
+    )
+    .await
+    .expect("create spec card");
+    tx.commit().await.unwrap();
+
+    let row_id = repo
+        .spec_card_enqueue_observation(spec.id.as_str(), 43, "pending observation")
+        .await
+        .expect("enqueue observation");
+
+    repo.spec_card_clear_runtime_after_reset_failure(spec.id.as_str())
+        .await
+        .expect("clear failed reset runtime");
+
+    let got = repo
+        .card_get(spec.id.as_str())
+        .await
+        .unwrap()
+        .expect("spec card");
+    assert!(got.payload.get("codex_thread_id").is_none());
+    assert!(got.payload.get("appserver_sock").is_none());
+    assert!(got.payload.get("appserver_pgid").is_none());
+    assert!(got.payload.get("appserver_start_time").is_none());
+    assert!(got.payload.get("appserver_boot_id").is_none());
+    assert!(got.payload.get("appserver_needs_initial_prompt").is_none());
+    assert_eq!(got.payload["terminal_id"], json!("term_spec"));
+    assert_eq!(got.payload["push_watermark"], json!(42));
+    assert_eq!(got.payload["other_field"], json!("preserve-me"));
+
+    let queued = repo
+        .spec_card_queued_observations(spec.id.as_str())
+        .await
+        .expect("queued observations");
+    assert_eq!(
+        queued,
+        vec![(row_id, 43, "pending observation".to_string())],
+        "failed-reset cleanup must not delete queued observations",
+    );
+}
+
+#[tokio::test]
 async fn spec_cards_for_boot_takeover_excludes_initial_prompt_cards() {
     use calm_server::card_role_cache::CardRoleCache;
     use calm_server::model::{CardRole, NewCard};

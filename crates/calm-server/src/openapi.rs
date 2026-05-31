@@ -17,7 +17,7 @@ use crate::model::{
     FolderConflictKind, NewCard, NewCove, NewCoveFolder, NewOverlay, NewWave, Overlay, Plugin,
     Wave, WaveDetail, WavePatch,
 };
-use crate::routes::cards::{CreateCardBody, ViaToolCall};
+use crate::routes::cards::{CreateCardBody, ResetSpecCardResponse, ViaToolCall};
 use crate::routes::claude_cards::NewClaudeCardBody;
 use crate::routes::codex_cards::NewCodexCardBody;
 use crate::routes::cove_folders::ResolveQuery;
@@ -67,6 +67,7 @@ use utoipa::OpenApi;
         crate::routes::cards::list_cards_by_wave,
         crate::routes::cards::create_card,
         crate::routes::cards::update_card,
+        crate::routes::cards::reset_spec_card,
         crate::routes::cards::delete_card,
         // ---- overlays ----
         crate::routes::overlays::list_overlays,
@@ -126,6 +127,7 @@ use utoipa::OpenApi;
         Card,
         NewCard,
         CardPatch,
+        ResetSpecCardResponse,
         // Issue #229 PR B — wave-report card payload shape (kernel-owned;
         // surfaced in the OpenAPI doc so frontend codegen + external
         // consumers see the v1 contract).

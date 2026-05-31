@@ -1268,6 +1268,53 @@ impl SpecPushHandle {
 }
 
 impl SpecPusher {
+    async fn rehydrate_queue_from_persist(&self, watermark: i64) -> Vec<i64> {
+        let persist = match self.queue_persist.lock().await.clone() {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+        let rows = (persist.list)().await;
+        if rows.is_empty() {
+            return Vec::new();
+        }
+
+        let mut envelope_ids = Vec::with_capacity(rows.len());
+        let mut stale_db_ids: Vec<i64> = Vec::new();
+        {
+            let mut q = self.queue.lock().await;
+            for (db_id, envelope_id, text) in rows {
+                if envelope_id <= watermark {
+                    stale_db_ids.push(db_id);
+                    continue;
+                }
+                envelope_ids.push(envelope_id);
+                q.push_back(QueuedObservation {
+                    envelope_id,
+                    text,
+                    db_id: Some(db_id),
+                });
+            }
+        }
+        if !stale_db_ids.is_empty() {
+            // Extract the awaited thread-id string before the macro
+            // captures it: holding the `Arguments<'_>` constructed inside
+            // `tracing::info!` across the `await` makes the surrounding
+            // future `!Send`, which axum requires for handler futures
+            // (see #421/#424 reconciliation). The pattern matches other
+            // log sites in this file (`thread_id_for_log().await` then
+            // pass the `String` into the macro).
+            let thread_id_log = self.thread_id_for_log().await;
+            tracing::info!(
+                thread_id = %thread_id_log,
+                watermark,
+                stale_count = stale_db_ids.len(),
+                "spec push: rehydrate dropped rows already covered by durable watermark (envelope_id <= watermark); deleting from spec_push_queue so the next boot won't see them again"
+            );
+            (persist.dequeue)(stale_db_ids).await;
+        }
+        envelope_ids
+    }
+
     /// #325 fix — see [`SpecPushHandle::flush_pending`]. Delegated here so
     /// callers holding a [`SpecPusher`] (e.g. the registry) can drive the
     /// boot-takeover post-rehydrate flush without holding a `DashMap`
@@ -1663,6 +1710,17 @@ impl SpecPushRegistry {
         // via the handle.
         let pusher = self.0.get(wave_id).map(|h| h.pusher())?;
         Some(pusher.watermark_sink.lock().await.is_some())
+    }
+
+    /// Rehydrate the durable queue rows into the parked handle for `wave_id`.
+    /// Reset recovery uses this after replacing the handle in the registry;
+    /// boot takeover calls the same handle method before parking.
+    pub async fn rehydrate_queue_from_persist(&self, wave_id: &WaveId, watermark: i64) -> Vec<i64> {
+        let pusher = self.0.get(wave_id).map(|h| h.pusher());
+        match pusher {
+            Some(pusher) => pusher.rehydrate_queue_from_persist(watermark).await,
+            None => Vec::new(),
+        }
     }
 }
 
