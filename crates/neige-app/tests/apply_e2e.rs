@@ -50,9 +50,39 @@ bin = "/usr/local/bin/neige-app"
         String::from_utf8_lossy(&output.stderr)
     );
     let unit = fs::read_to_string(&unit_path)?;
-    assert!(unit.contains(&format!("Environment=PATH={path_env}\n")));
+    assert!(unit.contains(&format!("Environment=\"PATH={path_env}\"\n")));
     let stderr = String::from_utf8_lossy(&output.stderr);
     for tool in ["codex", "claude", "git"] {
+        assert!(
+            stderr.contains(&format!("warning: {tool} not found on PATH ({path_env})")),
+            "missing warning for {tool}; stderr:\n{stderr}"
+        );
+    }
+
+    let codex_path = fake_bin.join("codex");
+    fs::write(&codex_path, "#!/bin/sh\nexit 0\n")?;
+    fs::set_permissions(&codex_path, fs::Permissions::from_mode(0o755))?;
+    let output = Command::new(locate_neige_app())
+        .arg("system")
+        .arg("install")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("--force")
+        .env("PATH", &path_env)
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "install failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains(&format!("warning: codex not found on PATH ({path_env})")),
+        "unexpected codex warning; stderr:\n{stderr}"
+    );
+    for tool in ["claude", "git"] {
         assert!(
             stderr.contains(&format!("warning: {tool} not found on PATH ({path_env})")),
             "missing warning for {tool}; stderr:\n{stderr}"

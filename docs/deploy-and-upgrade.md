@@ -135,6 +135,11 @@ TOML
 `neige-app system install --config ~/.config/neige-app/config.toml`
 writes `~/.config/systemd/user/neige-app.service`. Then:
 
+`system install` bakes the caller's `$PATH` into the unit; use
+`--path "$PATH"` if the install shell has the wrong PATH. Warnings like
+`warning: <tool> not found on PATH` for `codex` / `claude` / `git` mean
+matching waves will be inert until PATH includes those tools.
+
 ```bash
 systemctl --user daemon-reload
 systemctl --user enable --now neige-app.service

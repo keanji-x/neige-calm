@@ -1468,6 +1468,7 @@ fn render_systemd_unit(
     validate_systemd_exec_path(bin, "systemd.bin")?;
     validate_systemd_exec_path(config_path, "config path")?;
     validate_systemd_path_env(path_env)?;
+    let escaped_path_env = escape_systemd_environment_value(path_env);
     Ok(format!(
         "\
 [Unit]
@@ -1479,7 +1480,7 @@ Wants=network-online.target
 Type=simple
 # M1 is system-only: the user systemd manager supervises neige-app; neige-app supervises calm-server.
 # PATH must include user-local bin dirs (~/.local/bin etc.) so calm-server can spawn codex/claude.
-Environment=PATH={path_env}
+Environment=\"PATH={escaped_path_env}\"
 ExecStart={bin} system serve --config {config_path}
 Restart=always
 RestartSec=2
@@ -1490,7 +1491,7 @@ WantedBy=default.target
         name = name,
         bin = bin.display(),
         config_path = config_path.display(),
-        path_env = path_env,
+        escaped_path_env = escaped_path_env,
     ))
 }
 
@@ -1504,7 +1505,9 @@ fn resolve_systemd_path_env(override_path: Option<&str>) -> anyhow::Result<Strin
 
 fn validate_systemd_path_env(path_env: &str) -> anyhow::Result<()> {
     if path_env.is_empty() {
-        anyhow::bail!("PATH for systemd unit must not be empty");
+        anyhow::bail!(
+            "PATH for systemd unit must not be empty (set $PATH in the shell that runs `system install`, or pass --path explicitly)"
+        );
     }
     if path_env.contains('\0') {
         anyhow::bail!("PATH for systemd unit must not contain NUL bytes");
@@ -1516,6 +1519,15 @@ fn validate_systemd_path_env(path_env: &str) -> anyhow::Result<()> {
         anyhow::bail!("PATH for systemd unit must not contain % systemd specifiers");
     }
     Ok(())
+}
+
+fn escape_systemd_environment_value(value: &str) -> String {
+    // systemd.exec(5) Environment= quoted values use backslash escapes, and "$"
+    // starts variable expansion unless doubled.
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('$', "$$")
 }
 
 fn warn_missing_spawn_tools(path_env: &str) {
@@ -1791,14 +1803,41 @@ mod tests {
         .expect("render unit");
 
         assert_eq!(
-            unit.matches("Environment=PATH=/foo/bin:/usr/bin").count(),
+            unit.matches("Environment=\"PATH=/foo/bin:/usr/bin\"")
+                .count(),
             1
         );
         let env_pos = unit
-            .find("Environment=PATH=/foo/bin:/usr/bin")
+            .find("Environment=\"PATH=/foo/bin:/usr/bin\"")
             .expect("PATH environment line");
         let exec_pos = unit.find("ExecStart=").expect("ExecStart line");
         assert!(env_pos < exec_pos);
+    }
+
+    #[test]
+    fn systemd_unit_quotes_space_in_path() {
+        let unit = render_systemd_unit(
+            "neige-app",
+            &PathBuf::from("/opt/neige/bin/neige-app"),
+            &PathBuf::from("/home/me/.config/neige-app/config.toml"),
+            "/opt/ai tools/bin:/usr/bin",
+        )
+        .expect("render unit");
+
+        assert!(unit.contains("Environment=\"PATH=/opt/ai tools/bin:/usr/bin\"\n"));
+    }
+
+    #[test]
+    fn systemd_unit_escapes_dollar_in_path() {
+        let unit = render_systemd_unit(
+            "neige-app",
+            &PathBuf::from("/opt/neige/bin/neige-app"),
+            &PathBuf::from("/home/me/.config/neige-app/config.toml"),
+            "/opt/x$y/bin",
+        )
+        .expect("render unit");
+
+        assert!(unit.contains("Environment=\"PATH=/opt/x$$y/bin\"\n"));
     }
 
     #[test]
@@ -1810,7 +1849,7 @@ mod tests {
             "",
         )
         .expect_err("empty PATH must fail");
-        assert!(err.to_string().contains("empty"));
+        assert!(err.to_string().contains("pass --path explicitly"));
     }
 
     #[test]
