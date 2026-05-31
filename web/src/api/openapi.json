@@ -164,6 +164,67 @@
         }
       }
     },
+    "/api/cards/{id}/spec/reset": {
+      "post": {
+        "tags": [
+          "cards"
+        ],
+        "operationId": "reset_spec_card",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Spec card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Spec session reset",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResetSpecCardResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Card is not a spec codex card",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/coves": {
       "get": {
         "tags": [
@@ -3579,6 +3640,25 @@
           }
         },
         "additionalProperties": false
+      },
+      "ResetSpecCardResponse": {
+        "type": "object",
+        "required": [
+          "card_id",
+          "terminal_id",
+          "new_thread_id"
+        ],
+        "properties": {
+          "card_id": {
+            "type": "string"
+          },
+          "new_thread_id": {
+            "type": "string"
+          },
+          "terminal_id": {
+            "type": "string"
+          }
+        }
       },
       "ResolveQuery": {
         "type": "object",

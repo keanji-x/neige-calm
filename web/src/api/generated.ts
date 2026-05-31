@@ -41,6 +41,22 @@ export interface paths {
         patch: operations["update_card"];
         trace?: never;
     };
+    "/api/cards/{id}/spec/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["reset_spec_card"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/coves": {
         parameters: {
             query?: never;
@@ -1210,6 +1226,11 @@ export interface components {
                 number
             ];
         };
+        ResetSpecCardResponse: {
+            card_id: string;
+            new_thread_id: string;
+            terminal_id: string;
+        };
         ResolveQuery: {
             /**
              * @description Absolute filesystem path to resolve against every cove's folder
@@ -1720,6 +1741,56 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Card"];
+                };
+            };
+            /** @description Card not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    reset_spec_card: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Spec card id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Spec session reset */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResetSpecCardResponse"];
+                };
+            };
+            /** @description Card is not a spec codex card */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             /** @description Card not found */
