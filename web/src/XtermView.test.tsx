@@ -26,7 +26,28 @@
 // Live render tests for real PTYs belong in playwright e2e.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, act } from '@testing-library/react';
+import { createRef } from 'react';
+import { render, screen, act, waitFor } from '@testing-library/react';
+
+const stateMocks = vi.hoisted(() => ({
+  statusSetCalls: [] as unknown[],
+}));
+
+vi.mock('./shared/state', async () => {
+  const React = await vi.importActual<typeof import('react')>('react');
+  return {
+    useState(initialState?: unknown) {
+      const [value, setValue] = React.useState(initialState);
+      if (initialState !== 'connecting') return [value, setValue] as const;
+      const wrappedSetValue: typeof setValue = (next) => {
+        stateMocks.statusSetCalls.push(next);
+        return setValue(next);
+      };
+      return [value, wrappedSetValue] as const;
+    },
+    useReducer: React.useReducer,
+  };
+});
 
 // ---- xterm mock --------------------------------------------------------
 
@@ -175,10 +196,11 @@ function currentWs(): FakeWS {
 
 // ---- import after mocks ------------------------------------------------
 
-import { XtermView } from './XtermView';
+import { XtermView, type XtermViewHandle } from './XtermView';
 
 beforeEach(() => {
   wsInstances = [];
+  stateMocks.statusSetCalls.length = 0;
   (globalThis as { WebSocket: typeof WebSocket }).WebSocket =
     FakeWebSocketCtor as unknown as typeof WebSocket;
   // jsdom doesn't have ResizeObserver; the component installs one.
@@ -231,6 +253,72 @@ function serverHello(over: Record<string, unknown> = {}): unknown {
 }
 
 describe('XtermView v4 handshake', () => {
+  it('exposes an imperative refresh handle', () => {
+    const ref = createRef<XtermViewHandle>();
+    render(<XtermView ref={ref} terminalId="term_test" />);
+    expect(ref.current).not.toBeNull();
+    expect(ref.current?.refresh).toEqual(expect.any(Function));
+  });
+
+  it('refresh() rebuilds the WebSocket against the same terminal endpoint', async () => {
+    const ref = createRef<XtermViewHandle>();
+    render(<XtermView ref={ref} terminalId="term_test" />);
+    const first = currentWs();
+    expect(wsInstances).toHaveLength(1);
+
+    act(() => {
+      ref.current?.refresh();
+    });
+
+    await waitFor(() => expect(wsInstances).toHaveLength(2));
+    const second = currentWs();
+    expect(first.readyState).toBe(FakeWebSocketCtor.CLOSED);
+    expect(second.url).toBe(first.url);
+    expect(second).not.toBe(first);
+  });
+
+  it('ignores stale close callbacks from the pre-refresh WebSocket', async () => {
+    const ref = createRef<XtermViewHandle>();
+    const roleChanges: Array<string | null> = [];
+    render(
+      <XtermView
+        ref={ref}
+        terminalId="term_test"
+        onRoleChange={(role) => roleChanges.push(role)}
+      />,
+    );
+    const first = currentWs();
+    act(() => {
+      first.fireOpen();
+    });
+    act(() => {
+      first.push(serverHello());
+    });
+
+    act(() => {
+      ref.current?.refresh();
+    });
+    await waitFor(() => expect(wsInstances).toHaveLength(2));
+    const second = currentWs();
+    act(() => {
+      second.fireOpen();
+    });
+    act(() => {
+      second.push(serverHello());
+    });
+
+    expect(roleChanges.at(-1)).toBe('Owner');
+    stateMocks.statusSetCalls.length = 0;
+
+    act(() => {
+      first.fireClose(1006, 'stale close');
+    });
+
+    expect(roleChanges.at(-1)).toBe('Owner');
+    expect(roleChanges.filter((role) => role === null)).toHaveLength(1);
+    expect(stateMocks.statusSetCalls).toEqual([]);
+  });
+
   it('sends ClientHello with protocol_version=4 and role_hint Owner on open', () => {
     render(<XtermView terminalId="term_test" />);
     const ws = currentWs();

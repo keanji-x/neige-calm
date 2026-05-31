@@ -11,12 +11,14 @@ import { ConfirmDialog } from '../ui/ConfirmDialog/ConfirmDialog';
 export function IconButton({
   glyph,
   label,
+  title,
   tone = 'neutral',
   onClick,
   fontSize = 14,
 }: {
   glyph: React.ReactNode;
   label: string;
+  title?: string;
   /** `neutral` greys-up on hover; `danger` shifts to warn-red. */
   tone?: 'neutral' | 'danger';
   onClick: () => void;
@@ -34,10 +36,12 @@ export function IconButton({
   const tonal = tone === 'danger' ? dangerStyle : neutralStyle;
   return (
     <button
+      type="button"
       onClick={onClick}
+      onMouseDown={(e) => e.stopPropagation()}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-      title={label}
+      title={title ?? label}
       aria-label={label}
       style={{
         width: 26, height: 26,

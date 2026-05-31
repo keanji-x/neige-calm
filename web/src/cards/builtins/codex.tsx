@@ -16,17 +16,19 @@
 //     local FSM here, so wave-union (the kernel computes it server-side)
 //     and per-card dot agree by construction.
 
-import { lazy, Suspense, useEffect, type CSSProperties } from 'react';
+import { lazy, Suspense, useEffect, useRef, type CSSProperties } from 'react';
 import { useState } from '../../shared/state';
 import { z } from 'zod';
 import type { ClaudeCardData, CodexCardData, FsmState } from '../../types';
 import type { Role } from '../../api/generated-terminal';
-import type { ExitChange } from '../../XtermView';
+import type { ExitChange, XtermViewHandle } from '../../XtermView';
 import { sharedEventStream } from '../../api/events';
 import { CardStatusDot } from '../../shared/components/CardStatusDot';
 import { CardExitBadge } from '../../shared/components/CardExitBadge';
 import { getTerminalForCard } from '../../api/calm';
 import { useTheme } from '../../app/theme';
+import { Icon } from '../../Icon';
+import { IconButton } from '../../pages/_shared';
 import { CardHead } from '../CardHead';
 import type { CardEntry } from '../registry';
 import {
@@ -124,9 +126,11 @@ function UnsupportedCodexCard({
 function CodexCard({
   card,
   onClose,
+  deletable,
 }: {
   card: CodexCardData | ClaudeCardData;
   onClose?: () => void;
+  deletable?: boolean;
 }) {
   // Early bail-out for unsupported versions. Split into its own component
   // so React's rules-of-hooks stay satisfied — the hook calls below only
@@ -140,15 +144,23 @@ function CodexCard({
       />
     );
   }
-  return <CodexCardImpl card={card} onClose={onClose} />;
+  return (
+    <CodexCardImpl
+      card={card}
+      onClose={onClose}
+      deletable={deletable}
+    />
+  );
 }
 
 function CodexCardImpl({
   card,
   onClose,
+  deletable,
 }: {
   card: CodexCardData | ClaudeCardData;
   onClose?: () => void;
+  deletable?: boolean;
 }) {
   const cardId = card.id;
   const provider = card.type;
@@ -168,6 +180,7 @@ function CodexCardImpl({
   // "observing" pill in the head status slot. Cleared on disconnect — the
   // XtermView callback re-emits on every state transition.
   const [role, setRole] = useState<Role | null>(null);
+  const xtermRef = useRef<XtermViewHandle | null>(null);
   // #306 — exit info for the header badge. Codex cards arguably need this
   // MORE than terminal cards (codex shouldn't ever exit cleanly during a
   // session; an unexpected exit is the kind of thing the user needs to
@@ -267,6 +280,15 @@ function CodexCardImpl({
         // which is the kind of churn that confuses some AT.
         status={
           <>
+            {provider === 'codex' && deletable === false && (
+              <IconButton
+                glyph={<Icon n="refresh" s={14} />}
+                label="Refresh terminal"
+                title="Refresh terminal (reconnect)"
+                tone="neutral"
+                onClick={() => xtermRef.current?.refresh()}
+              />
+            )}
             {role === 'Observer' && (
               <span className="card-head-observing-pill">observing</span>
             )}
@@ -293,6 +315,7 @@ function CodexCardImpl({
         {terminalId ? (
           <Suspense fallback={<div className="codex-card-empty">Loading terminal…</div>}>
             <XtermView
+              ref={xtermRef}
               terminalId={terminalId}
               theme={theme}
               onRoleChange={setRole}
