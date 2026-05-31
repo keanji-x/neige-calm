@@ -34,7 +34,7 @@ fn old_shared_path() -> PathBuf {
 }
 
 #[tokio::test]
-async fn new_stub_codex_homes_dir_is_per_instance() {
+async fn codex_homes_dir_cleanup_new_stub_codex_homes_dir_is_per_instance() {
     let a = CodexClient::new_stub();
     let b = CodexClient::new_stub();
     assert_ne!(
@@ -49,12 +49,26 @@ async fn new_stub_codex_homes_dir_is_per_instance() {
          (`{}`); the fix in `state.rs::CodexClient::new_stub` was reverted",
         old_shared_path().display(),
     );
+    assert_ne!(
+        a.codex_home_dir(),
+        b.codex_home_dir(),
+        "two `new_stub()` calls must also produce distinct shared CODEX_HOME paths"
+    );
+    assert!(
+        a.codex_home_dir().starts_with(
+            a.codex_homes_dir
+                .parent()
+                .expect("stub codex_homes_dir has temp root parent")
+        ),
+        "shared CODEX_HOME must live under the same temp root as codex_homes_dir"
+    );
 }
 
 #[tokio::test]
-async fn new_stub_codex_homes_dir_exists_until_drop() {
+async fn codex_homes_dir_cleanup_new_stub_codex_homes_dir_exists_until_drop() {
     let codex = CodexClient::new_stub();
     let path = codex.codex_homes_dir.clone();
+    let shared_path = codex.codex_home_dir().to_path_buf();
     assert!(
         path.exists(),
         "`new_stub()` must create the tempdir eagerly so wave-create / \
@@ -71,9 +85,14 @@ async fn new_stub_codex_homes_dir_exists_until_drop() {
     std::fs::create_dir_all(&card_home).expect("seed per-card codex home");
     std::fs::write(card_home.join("config.toml"), b"# stub\n").expect("seed config.toml");
     assert!(card_home.join("config.toml").exists());
+    codex
+        .shared_codex_home
+        .seed_from(None)
+        .expect("seed stub shared CODEX_HOME");
+    assert!(shared_path.exists());
 
     // Drop the stub — the wrapped `tempfile::TempDir` removes the entire
-    // tree, including our per-card subdir.
+    // tree, including our per-card subdir and the shared CODEX_HOME.
     drop(codex);
     assert!(
         !path.exists(),
@@ -81,10 +100,16 @@ async fn new_stub_codex_homes_dir_exists_until_drop() {
          {} still exists after drop — leak regression",
         path.display(),
     );
+    assert!(
+        !shared_path.exists(),
+        "dropping `CodexClient` must remove its shared CODEX_HOME tempdir; \
+         {} still exists after drop — leak regression",
+        shared_path.display(),
+    );
 }
 
 #[tokio::test]
-async fn appstate_wave_create_subdir_is_under_per_test_tempdir() {
+async fn codex_homes_dir_cleanup_appstate_wave_create_subdir_is_under_per_test_tempdir() {
     // End-to-end: build a full `AppState` the way integration tests do
     // (this is the construction shape `cargo test -p calm-server --test
     // wave_create_with_theme` — the test that triggered the #267
@@ -109,6 +134,7 @@ async fn appstate_wave_create_subdir_is_under_per_test_tempdir() {
     );
     let codex = Arc::new(CodexClient::new_stub());
     let codex_homes_dir = codex.codex_homes_dir.clone();
+    let shared_codex_home = codex.codex_home_dir().to_path_buf();
 
     let daemon = Arc::new(DaemonClient::new_stub());
     let card_role_cache = CardRoleCache::new();
@@ -174,6 +200,17 @@ async fn appstate_wave_create_subdir_is_under_per_test_tempdir() {
         card_home.display(),
         codex_homes_dir.display(),
     );
+    assert!(
+        shared_codex_home.starts_with(
+            codex_homes_dir
+                .parent()
+                .expect("stub codex_homes_dir has temp root parent")
+        ),
+        "shared CODEX_HOME must live under the same per-test temp root; \
+         got {} (codex_homes_dir = {})",
+        shared_codex_home.display(),
+        codex_homes_dir.display(),
+    );
 
     drop(state);
 }
@@ -194,7 +231,7 @@ async fn appstate_wave_create_subdir_is_under_per_test_tempdir() {
 /// strong ref synchronously, the `TempDir` drops, the directory is
 /// removed from disk. This test asserts that property end-to-end.
 #[tokio::test]
-async fn appstate_drop_removes_codex_homes_dir_on_disk() {
+async fn codex_homes_dir_cleanup_appstate_drop_removes_codex_homes_dir_on_disk() {
     let repo: Arc<dyn Repo> = Arc::new(
         SqlxRepo::open("sqlite::memory:")
             .await
@@ -202,9 +239,18 @@ async fn appstate_drop_removes_codex_homes_dir_on_disk() {
     );
     let codex = Arc::new(CodexClient::new_stub());
     let codex_homes_dir = codex.codex_homes_dir.clone();
+    let shared_codex_home = codex.codex_home_dir().to_path_buf();
     assert!(
         codex_homes_dir.exists(),
         "precondition: per-test tempdir must exist before AppState construction"
+    );
+    codex
+        .shared_codex_home
+        .seed_from(None)
+        .expect("seed stub shared CODEX_HOME");
+    assert!(
+        shared_codex_home.exists(),
+        "precondition: shared CODEX_HOME tempdir must exist before AppState construction"
     );
 
     let daemon = Arc::new(DaemonClient::new_stub());
@@ -261,5 +307,9 @@ async fn appstate_drop_removes_codex_homes_dir_on_disk() {
         !card_home.exists(),
         "per-card subdir under codex_homes_dir survived AppState drop — \
          tempdir reap regression"
+    );
+    assert!(
+        !shared_codex_home.exists(),
+        "shared CODEX_HOME survived AppState drop — tempdir reap regression"
     );
 }

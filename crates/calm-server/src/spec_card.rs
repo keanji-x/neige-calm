@@ -402,6 +402,9 @@ pub(crate) fn build_codex_env_map(
 /// Plain cards (the user-facing `POST /codex-cards` route) keep using
 /// `routes::codex_cards::build_codex_config_toml` and pass no
 /// role prompt; this helper handles the role-typed paths.
+/// PR1 (#410): legacy per-card path. Shared replacement is in
+/// `crate::shared_codex_home::SharedCodexHome::ensure_config_for_cwd`,
+/// but callers are not switched until later #410 PRs.
 pub(crate) fn build_role_codex_config_toml(
     cwd: &str,
     baked_instructions: Option<&str>,
@@ -559,6 +562,10 @@ impl SeededCardRole {
 ///
 /// Only [`SeededCardRole`] values are accepted — Plain cards must
 /// route through `routes::codex_cards` instead.
+///
+/// PR1 (#410): this remains the legacy per-card seeder. The shared
+/// CODEX_HOME seeder lives in `crate::shared_codex_home`, but callers are
+/// not switched until later #410 PRs.
 pub(crate) fn seed_codex_home_for_card(
     s: &AppState,
     card_id: &str,
