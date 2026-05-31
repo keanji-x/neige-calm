@@ -1484,6 +1484,79 @@ async fn spec_cards_for_boot_takeover_filters_to_spec_role() {
     );
 }
 
+#[tokio::test]
+async fn spec_cards_for_boot_takeover_excludes_initial_prompt_cards() {
+    use calm_server::card_role_cache::CardRoleCache;
+    use calm_server::model::{CardRole, NewCard};
+
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "initial-prompt-filter").await;
+    let w = make_wave(&repo, c.id.as_str(), "").await;
+    let cache = CardRoleCache::new();
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    let spec = calm_server::db::sqlite::card_create_with_id_tx(
+        &mut tx,
+        calm_server::model::new_id(),
+        NewCard {
+            wave_id: w.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({
+                "codex_thread_id": "thread-empty-no-rollout",
+                "appserver_needs_initial_prompt": true,
+                "appserver_pgid": 99_991,
+                "appserver_sock": "/tmp/calm-empty.sock",
+                "push_watermark": 0,
+            }),
+        },
+        CardRole::Spec,
+        false,
+        &cache,
+    )
+    .await
+    .expect("create initial-prompt spec card");
+    tx.commit().await.unwrap();
+
+    assert!(
+        repo.spec_cards_for_boot_takeover()
+            .await
+            .expect("takeover query")
+            .is_empty(),
+        "empty-goal initial-prompt cards have no rollout and must not reach thread/resume"
+    );
+    let rows = repo
+        .spec_cards_for_initial_prompt_bootstrap()
+        .await
+        .expect("initial-prompt query");
+    assert_eq!(rows.len(), 1);
+    let (card_id, wave_id, cwd, _pgid, sock, _start, _boot, watermark) = &rows[0];
+    assert_eq!(card_id.as_str(), spec.id.as_str());
+    assert_eq!(wave_id.as_str(), w.id.as_str());
+    assert_eq!(cwd.as_str(), w.cwd.as_str());
+    assert_eq!(sock.as_deref(), Some("/tmp/calm-empty.sock"));
+    assert_eq!(*watermark, 0);
+
+    repo.spec_card_set_push_watermark(spec.id.as_str(), 10)
+        .await
+        .expect("first real push clears initial-prompt flag");
+    assert!(
+        repo.spec_cards_for_initial_prompt_bootstrap()
+            .await
+            .expect("initial-prompt query after clear")
+            .is_empty(),
+        "first delivered push must clear the initial-prompt bootstrap marker"
+    );
+    assert_eq!(
+        repo.spec_cards_for_boot_takeover()
+            .await
+            .expect("takeover query after clear")
+            .len(),
+        1,
+        "after a real turn creates a rollout, the existing thread is resumable again"
+    );
+}
+
 /// #318 INV-5 (R3-B1) — positive round-trip for the identity stamp
 /// (`appserver_start_time` + `appserver_boot_id`) on the spec card
 /// payload. Verifies the write side

@@ -74,7 +74,7 @@ use crate::model::{
 use crate::routes::cove_folders::{is_descendant_of, normalize_path};
 use crate::routes::settings::{Settings, load_settings};
 use crate::spec_appserver::{
-    TurnWatchdogConfig, spawn_spec_appserver_with_watchdog_config_and_recovery,
+    TurnWatchdogConfig, spawn_spec_appserver_with_watchdog_config_and_recovery_for_wave,
 };
 use crate::spec_card::{SpecPushDaemonArgs, build_codex_env_map, seed_and_spawn_spec_daemon};
 use crate::state::AppState;
@@ -813,12 +813,15 @@ pub(crate) async fn create_wave(
 }
 
 /// PR3a (#293) — DECISION A's create-wave blocking sequence for the push
-/// path. Boots the kernel-owned `codex app-server`, runs turn #1 with the
-/// wave's title as the goal, awaits `turn/started` (so a rollout exists on
-/// disk for the `--remote` TUI to resume), persists `codex_thread_id` +
-/// `appserver_sock` on the spec card payload (eventized — same audited
-/// `write_with_event_typed` path every other write uses), parks the
-/// handle in `state.spec_push`, and returns the
+/// path. Boots the kernel-owned `codex app-server`, starts a codex thread,
+/// and, when the wave title is non-empty, runs turn #1 with that title as
+/// the goal and awaits `turn/started` (so a rollout exists on disk for the
+/// `--remote` TUI to resume). Empty titles are marked
+/// `appserver_needs_initial_prompt` so boot recovery will fresh-start
+/// instead of resuming a rollout-less thread. The function persists
+/// `codex_thread_id` + `appserver_sock` on the spec card payload
+/// (eventized — same audited `write_with_event_typed` path every other
+/// write uses), parks the handle in `state.spec_push`, and returns the
 /// [`SpecPushDaemonArgs`] the PTY daemon spawn needs.
 ///
 /// On any failure the `SpawnRollback` guard in `spawn_spec_appserver`
@@ -872,13 +875,14 @@ async fn spawn_push_appserver(
     // an empty title parks the push handle without an auto-submitted prompt.
     let recovery_signal =
         crate::wire_spec_push_recovery_supervisor(s, settings, spec_card_id, wave.id.clone());
-    let handle = spawn_spec_appserver_with_watchdog_config_and_recovery(
+    let handle = spawn_spec_appserver_with_watchdog_config_and_recovery_for_wave(
         &s.codex.codex_bin,
         env_for_spawn,
         &wave.title,
         &sock,
         TurnWatchdogConfig::default(),
         Some(recovery_signal),
+        Some(&wave.id),
     )
     .await?;
     let thread_id = handle.thread_id.clone();
@@ -894,6 +898,7 @@ async fn spawn_push_appserver(
     // recovery treats an absent stamp as "skip the kill" (conservative).
     let start_time = handle.start_time;
     let boot_id = handle.boot_id.clone();
+    let needs_initial_prompt = wave.title.trim().is_empty();
 
     // Persist `codex_thread_id` + `appserver_sock` + `appserver_pgid` on
     // the spec card payload (merge into the existing payload —
@@ -950,6 +955,14 @@ async fn spawn_push_appserver(
                     "codex_thread_id".into(),
                     serde_json::Value::String(thread_id_for_tx),
                 );
+                if needs_initial_prompt {
+                    map.insert(
+                        "appserver_needs_initial_prompt".into(),
+                        serde_json::Value::Bool(true),
+                    );
+                } else {
+                    map.remove("appserver_needs_initial_prompt");
+                }
                 map.insert("appserver_sock".into(), serde_json::Value::String(sock_str));
                 map.insert(
                     "appserver_pgid".into(),

@@ -464,6 +464,13 @@ async fn spec_push_empty_title_boots_idle_without_initial_turn() {
             .is_some_and(|id| !id.is_empty()),
         "spec card payload should persist codex_thread_id for empty-title boot; payload={payload}"
     );
+    assert_eq!(
+        payload
+            .get("appserver_needs_initial_prompt")
+            .and_then(Value::as_bool),
+        Some(true),
+        "empty-title boot must be marked fresh-bootable instead of resumable; payload={payload}"
+    );
     assert!(
         payload.get("prompt").and_then(Value::as_str).is_none(),
         "empty title should not persist an auto-submit prompt; payload={payload}"

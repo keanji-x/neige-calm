@@ -1855,7 +1855,11 @@ impl RepoRead for SqlxRepo {
         // #313 problem #1 — boot takeover input. Spec cards whose payload
         // carries `codex_thread_id`, JOINed against `waves` so we can filter
         // out terminal-lifecycle waves in SQL rather than re-querying per
-        // card from Rust. `appserver_pgid` / `appserver_sock` /
+        // card from Rust. Empty-goal rows marked
+        // `appserver_needs_initial_prompt` are excluded because their
+        // thread has no rollout yet and must be fresh-started by
+        // `spec_cards_for_initial_prompt_bootstrap`, never resumed.
+        // `appserver_pgid` / `appserver_sock` /
         // `appserver_start_time` / `appserver_boot_id` are nullable in the
         // projection (defensive — every write that lands `codex_thread_id`
         // today also writes the first two, and #318 added the start_time +
@@ -1913,6 +1917,7 @@ impl RepoRead for SqlxRepo {
                JOIN waves w ON w.id = c.wave_id
                WHERE c.role = 'spec'
                  AND json_extract(c.payload, '$.codex_thread_id') IS NOT NULL
+                 AND COALESCE(json_extract(c.payload, '$.appserver_needs_initial_prompt'), 0) != 1
                  AND w.lifecycle NOT IN ('done', 'canceled', 'failed')"#,
         )
         .fetch_all(&self.pool)
@@ -1932,6 +1937,62 @@ impl RepoRead for SqlxRepo {
                     let watermark = watermark.unwrap_or(0);
                     (
                         card_id, wave_id, thread_id, pgid, sock, start_time, boot_id, watermark,
+                    )
+                },
+            )
+            .collect())
+    }
+
+    async fn spec_cards_for_initial_prompt_bootstrap(
+        &self,
+    ) -> Result<
+        Vec<(
+            String,
+            String,
+            String,
+            Option<i32>,
+            Option<String>,
+            Option<u64>,
+            Option<String>,
+            i64,
+        )>,
+    > {
+        let rows: Vec<(
+            String,
+            String,
+            String,
+            Option<i64>,
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+            Option<i64>,
+        )> = sqlx::query_as(
+            r#"SELECT c.id,
+                      c.wave_id,
+                      w.cwd,
+                      json_extract(c.payload, '$.appserver_pgid'),
+                      json_extract(c.payload, '$.appserver_sock'),
+                      json_extract(c.payload, '$.appserver_start_time'),
+                      json_extract(c.payload, '$.appserver_boot_id'),
+                      json_extract(c.payload, '$.push_watermark')
+               FROM cards c
+               JOIN waves w ON w.id = c.wave_id
+               WHERE c.role = 'spec'
+                 AND COALESCE(json_extract(c.payload, '$.appserver_needs_initial_prompt'), 0) = 1
+                 AND w.lifecycle NOT IN ('done', 'canceled', 'failed')"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(card_id, wave_id, cwd, pgid, sock, start_time, boot_id, watermark)| {
+                    let pgid = pgid.and_then(|v| i32::try_from(v).ok());
+                    let start_time =
+                        start_time.and_then(|v| if v >= 0 { Some(v as u64) } else { None });
+                    let watermark = watermark.unwrap_or(0);
+                    (
+                        card_id, wave_id, cwd, pgid, sock, start_time, boot_id, watermark,
                     )
                 },
             )
@@ -2307,11 +2368,54 @@ impl RepoOutOfDomain for SqlxRepo {
         let now = now_ms();
         let _ = sqlx::query(
             r#"UPDATE cards
-                  SET payload    = json_set(COALESCE(payload, '{}'), '$.push_watermark', ?1),
+                  SET payload    = json_remove(
+                                      json_set(COALESCE(payload, '{}'), '$.push_watermark', ?1),
+                                      '$.appserver_needs_initial_prompt'
+                                   ),
                       updated_at = ?2
                 WHERE id = ?3
                   AND COALESCE(json_extract(payload, '$.push_watermark'), 0) < ?1"#,
         )
+        .bind(watermark)
+        .bind(now)
+        .bind(card_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn spec_card_set_empty_goal_bootstrap_state(
+        &self,
+        card_id: &str,
+        thread_id: &str,
+        pgid: i32,
+        sock: &str,
+        start_time: Option<u64>,
+        boot_id: Option<&str>,
+        watermark: i64,
+    ) -> Result<()> {
+        let now = now_ms();
+        let st_i64 = start_time.and_then(|v| i64::try_from(v).ok());
+        let _ = sqlx::query(
+            r#"UPDATE cards
+                  SET payload = json_set(
+                                    COALESCE(payload, '{}'),
+                                    '$.codex_thread_id', ?1,
+                                    '$.appserver_pgid', ?2,
+                                    '$.appserver_sock', ?3,
+                                    '$.appserver_start_time', ?4,
+                                    '$.appserver_boot_id', ?5,
+                                    '$.push_watermark', ?6,
+                                    '$.appserver_needs_initial_prompt', json('true')
+                                ),
+                      updated_at = ?7
+                WHERE id = ?8"#,
+        )
+        .bind(thread_id)
+        .bind(pgid)
+        .bind(sock)
+        .bind(st_i64)
+        .bind(boot_id)
         .bind(watermark)
         .bind(now)
         .bind(card_id)

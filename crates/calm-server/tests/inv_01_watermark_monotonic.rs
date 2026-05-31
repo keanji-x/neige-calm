@@ -274,6 +274,136 @@ async fn inv1_stranded_envelope_must_be_observable() {
     );
 }
 
+#[tokio::test]
+async fn empty_goal_initial_prompt_bootstrap_does_not_emit_abandoned_or_resume_stale_thread() {
+    let tmp = TempDir::new().expect("tempdir");
+    let typed: Arc<SqlxRepo> = Arc::new(
+        SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite"),
+    );
+    let repo: Arc<dyn Repo> = typed.clone();
+    let daemon = Arc::new(DaemonClient {
+        data_dir: tmp.path().to_path_buf(),
+        proc_supervisor_sock: None,
+    });
+    let events = EventBus::new();
+    let mut codex = CodexClient::new_stub();
+    codex.codex_bin = tmp
+        .path()
+        .join("definitely-not-codex-empty-goal")
+        .to_string_lossy()
+        .to_string();
+
+    let card_role_cache = CardRoleCache::new();
+    let wave_cove_cache = WaveCoveCache::new();
+    let state = AppState::from_parts(
+        repo.clone(),
+        events,
+        daemon,
+        Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            repo.clone(),
+            PathBuf::new(),
+            std::env::temp_dir().join("calm-plugins-data-empty-goal-bootstrap"),
+            Vec::new(),
+            EventBus::new(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+        )),
+        Arc::new(codex),
+        Some(card_role_cache.clone()),
+        Some(wave_cove_cache.clone()),
+    );
+
+    let cove = repo
+        .cove_create(NewCove {
+            name: "empty-goal-bootstrap-cove".into(),
+            color: "#fff".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo
+        .wave_create(NewWave {
+            cove_id: cove.id.clone(),
+            title: "".into(),
+            sort: None,
+            cwd: tmp.path().to_string_lossy().to_string(),
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let card = repo
+        .card_create(NewCard {
+            wave_id: wave.id.clone(),
+            kind: "spec".into(),
+            sort: None,
+            payload: json!({}),
+        })
+        .await
+        .unwrap();
+
+    sqlx::query("UPDATE cards SET role = 'spec', payload = json(?1) WHERE id = ?2")
+        .bind(
+            json!({
+                "codex_thread_id": "stale-thread-without-rollout",
+                "appserver_needs_initial_prompt": true,
+                "appserver_pgid": 999_999,
+                "appserver_sock": tmp.path().join("stale.sock").to_string_lossy(),
+                "push_watermark": 0
+            })
+            .to_string(),
+        )
+        .bind(card.id.as_str())
+        .execute(typed.pool())
+        .await
+        .expect("plant empty-goal spec card");
+    repo.seed_card_role_cache(&card_role_cache).await.unwrap();
+    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+
+    assert!(
+        repo.spec_cards_for_boot_takeover()
+            .await
+            .unwrap()
+            .is_empty(),
+        "initial-prompt cards must be excluded from thread/resume takeover"
+    );
+    assert_eq!(
+        repo.spec_cards_for_initial_prompt_bootstrap()
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "initial-prompt card must remain fresh-bootable"
+    );
+
+    let mut rx = state.events.subscribe();
+    calm_server::takeover_spec_appservers_on_boot(&state).await;
+
+    let abandoned = collect_spec_push_abandoned(&mut rx, Duration::from_millis(300)).await;
+    assert!(
+        abandoned.is_empty(),
+        "empty-goal initial-prompt bootstrap must not emit SpecPushAbandoned"
+    );
+    assert!(
+        repo.spec_cards_for_boot_takeover()
+            .await
+            .unwrap()
+            .is_empty(),
+        "failed bootstrap must still not make the stale thread resumable"
+    );
+    assert_eq!(
+        repo.spec_cards_for_initial_prompt_bootstrap()
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "failed bootstrap must leave payload in retryable fresh-boot state"
+    );
+}
+
 /// INV-1 (b) — **historical pre-#329 sketch**, preserved as an
 /// alternate-angle record.
 ///

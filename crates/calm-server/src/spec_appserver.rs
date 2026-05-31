@@ -1647,6 +1647,27 @@ pub async fn spawn_spec_appserver_with_watchdog_config_and_recovery(
     watchdog: TurnWatchdogConfig,
     recovery_signal: Option<SpecRecoverySignal>,
 ) -> Result<SpecPushHandle> {
+    spawn_spec_appserver_with_watchdog_config_and_recovery_for_wave(
+        codex_bin,
+        env_map,
+        goal_text,
+        sock,
+        watchdog,
+        recovery_signal,
+        None,
+    )
+    .await
+}
+
+pub async fn spawn_spec_appserver_with_watchdog_config_and_recovery_for_wave(
+    codex_bin: &str,
+    env_map: &Value,
+    goal_text: &str,
+    sock: &Path,
+    watchdog: TurnWatchdogConfig,
+    recovery_signal: Option<SpecRecoverySignal>,
+    wave_id: Option<&crate::ids::WaveId>,
+) -> Result<SpecPushHandle> {
     // The server `chmod 0700`s the socket's PARENT dir, so the parent must
     // be a user-owned dir (not bare sticky /tmp). The caller creates the
     // per-card subdir under the user-owned data dir; we only ensure it
@@ -1746,6 +1767,7 @@ pub async fn spawn_spec_appserver_with_watchdog_config_and_recovery(
             pgid,
             start_time,
             boot_id,
+            wave_id.cloned(),
             goal_text,
             sock,
             watchdog,
@@ -2123,6 +2145,7 @@ async fn build_handle_after_spawn(
     pgid: i32,
     start_time: Option<u64>,
     boot_id: Option<String>,
+    wave_id: Option<crate::ids::WaveId>,
     goal_text: &str,
     sock: &Path,
     watchdog: TurnWatchdogConfig,
@@ -2140,6 +2163,7 @@ async fn build_handle_after_spawn(
         boot_id,
         client,
         notifs,
+        wave_id,
         goal_text,
         sock,
         watchdog,
@@ -2160,6 +2184,7 @@ async fn build_handle_after_connect(
     boot_id: Option<String>,
     client: CodexAppServer,
     mut notifs: NotificationStream,
+    wave_id: Option<crate::ids::WaveId>,
     goal_text: &str,
     sock: &Path,
     watchdog: TurnWatchdogConfig,
@@ -2192,6 +2217,7 @@ async fn build_handle_after_connect(
     let goal_text = goal_text.trim();
     if goal_text.is_empty() {
         tracing::info!(
+            wave_id = wave_id.as_ref().map(|id| id.as_str()),
             thread_id = %thread_id,
             "spec push: empty goal — booted without initial turn"
         );
@@ -3215,15 +3241,20 @@ mod tests {
         let (client, notifs, mut server) = CodexAppServer::connect_pair_for_test().await;
         let saw_turn_start = Arc::new(AtomicBool::new(false));
         let saw_turn_start_for_task = Arc::clone(&saw_turn_start);
+        let (sut_returned_tx, mut sut_returned_rx) = tokio::sync::oneshot::channel::<()>();
         let server_task = tokio::spawn(async move {
             let mut thread_started = false;
-            let deadline = TokioInstant::now() + Duration::from_millis(300);
-            while TokioInstant::now() < deadline {
-                let remaining = deadline.saturating_duration_since(TokioInstant::now());
-                let frame = match tokio::time::timeout(remaining, server.next()).await {
-                    Ok(Some(Ok(Message::Text(text)))) => text,
-                    Ok(Some(Ok(_))) => continue,
-                    Ok(None) | Ok(Some(Err(_))) | Err(_) => break,
+            let watchdog = tokio::time::sleep(Duration::from_secs(1));
+            tokio::pin!(watchdog);
+            loop {
+                let frame = tokio::select! {
+                    _ = &mut sut_returned_rx, if thread_started => break,
+                    _ = &mut watchdog => panic!("SUT did not return after empty-goal thread/start"),
+                    next = server.next() => match next {
+                        Some(Ok(Message::Text(text))) => text,
+                        Some(Ok(_)) => continue,
+                        None | Some(Err(_)) => break,
+                    },
                 };
                 let req: Value = serde_json::from_str(&frame).expect("json-rpc request");
                 let id = req.get("id").cloned().unwrap_or(Value::Null);
@@ -3285,6 +3316,7 @@ mod tests {
             read_boot_id(),
             client,
             notifs,
+            None,
             " \n\t ",
             Path::new("/tmp/test-empty-goal/app.sock"),
             TurnWatchdogConfig::default(),
@@ -3292,6 +3324,7 @@ mod tests {
         )
         .await
         .expect("empty goal boot should park a handle");
+        sut_returned_tx.send(()).expect("server task still waiting");
 
         assert_eq!(handle.thread_id, "thread-empty-goal");
         let status = handle.status().await;
