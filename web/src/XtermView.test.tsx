@@ -309,6 +309,72 @@ describe('XtermView v4 handshake', () => {
     });
     expect(mockTerm.resize).toHaveBeenCalledWith(132, 50);
   });
+
+  it('sends OwnerClaim when ServerHello assigns Observer despite Owner hint', () => {
+    render(<XtermView terminalId="term_test" />);
+    const ws = currentWs();
+    act(() => {
+      ws.fireOpen();
+    });
+    ws.sentFrames.length = 0;
+    act(() => {
+      ws.push(
+        serverHello({
+          client_role: 'Observer',
+          owner_client_id: '22222222-2222-4222-8222-222222222222',
+        }),
+      );
+    });
+    expect(ws.sentFrames.map((s) => JSON.parse(s))).toContain('OwnerClaim');
+  });
+});
+
+describe('XtermView owner recovery', () => {
+  it('sends OwnerClaim when OwnerChanged announces no owner', () => {
+    render(<XtermView terminalId="term_test" />);
+    const ws = currentWs();
+    act(() => {
+      ws.fireOpen();
+    });
+    act(() => {
+      ws.push(serverHello());
+    });
+    ws.sentFrames.length = 0;
+    act(() => {
+      ws.push({ OwnerChanged: { owner_client_id: null } });
+    });
+    expect(ws.sentFrames.map((s) => JSON.parse(s))).toContain('OwnerClaim');
+  });
+
+  it('promotes local role and clears protocol-error overlay when this client becomes owner', () => {
+    const roleChanges: Array<string | null> = [];
+    render(
+      <XtermView
+        terminalId="term_test"
+        onRoleChange={(role) => roleChanges.push(role)}
+      />,
+    );
+    const ws = currentWs();
+    act(() => {
+      ws.fireOpen();
+    });
+    const clientId = JSON.parse(ws.sentFrames[0]!).ClientHello.client_id;
+    act(() => {
+      ws.push({
+        ProtocolError: {
+          code: 'NotOwner',
+          message: 'ResizeCommit requires owner role',
+          expected_version: null,
+        },
+      });
+    });
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+    act(() => {
+      ws.push({ OwnerChanged: { owner_client_id: clientId } });
+    });
+    expect(roleChanges).toContain('Owner');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
 });
 
 describe('XtermView v3 streaming', () => {
