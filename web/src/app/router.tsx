@@ -462,6 +462,17 @@ async function addCardWithValues(
     }
     return;
   }
+  if (type === 'iframe') {
+    try {
+      await api.createCard(waveId, {
+        kind: 'iframe',
+        payload: { url: values.url },
+      });
+    } catch (err) {
+      console.warn('[Calm] iframe create failed:', err);
+    }
+    return;
+  }
   if (type !== 'codex' && type !== 'claude') {
     // Falls through to the default "no-config" pathway. The AddPanel
     // shouldn't surface a schema form for kinds without `createSchema`,

@@ -14,9 +14,10 @@ import { TerminalEntry } from './terminal';
 import { ClaudeEntry, CodexEntry } from './codex';
 import { WaveReportEntry } from './wave-report';
 import { FileViewerEntry } from './file-viewer';
+import { IframeEntry } from './iframe';
 import { PluginIframeEntry } from '../plugin-iframe';
 
-export { TerminalEntry, CodexEntry, ClaudeEntry, WaveReportEntry, FileViewerEntry, PluginIframeEntry };
+export { TerminalEntry, CodexEntry, ClaudeEntry, WaveReportEntry, FileViewerEntry, IframeEntry, PluginIframeEntry };
 
 let registered = false;
 
@@ -34,6 +35,7 @@ export function registerBuiltins(): void {
   // another one manually.
   registerCard(WaveReportEntry);
   registerCard(FileViewerEntry);
+  registerCard(IframeEntry);
   // The plugin iframe entry is a built-in for now: it owns the `ui://`
   // kind namespace (the legacy `plugin:` form was deleted in M4). A
   // "plugin entry registers itself at runtime per-mount" model is part

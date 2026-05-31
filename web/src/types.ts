@@ -162,13 +162,20 @@ export interface FileViewerCardData {
   path: string;
 }
 
+export interface IframeCardData {
+  type: 'iframe';
+  id: string;
+  url: string;
+}
+
 export type WaveCardData =
   | TerminalCardData
   | PluginCardData
   | CodexCardData
   | ClaudeCardData
   | WaveReportCardData
-  | FileViewerCardData;
+  | FileViewerCardData
+  | IframeCardData;
 
 /**
  * A position in a Wave's card grid. Either a parsed UI card (the happy
