@@ -230,6 +230,8 @@ export function DirectoryBrowser({
     activeEntry && activeIndex !== null ? optionIdFor(activeIndex) : undefined;
   const hasVisibleInteractiveOptions =
     !loading && !error && visibleEntries.some(isInteractive);
+  const pathMatchesBrowse =
+    browsePath !== null && pathText === seedPath(browsePath);
 
   useEffect(() => {
     pathTextRef.current = pathText;
@@ -541,7 +543,7 @@ export function DirectoryBrowser({
           type="button"
           className="dirpicker-select"
           onClick={selectCurrentDirectory}
-          disabled={!browsePath || loading}
+          disabled={!browsePath || loading || !pathMatchesBrowse}
         >
           {selectLabel}
         </button>

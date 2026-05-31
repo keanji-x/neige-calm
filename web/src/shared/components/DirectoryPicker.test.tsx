@@ -243,6 +243,54 @@ describe('DirectoryBrowser ARIA shape', () => {
     expect(select).toBeEnabled();
   });
 
+  it('disables Select while the path input has a typed basename suffix', async () => {
+    const listDir = vi.spyOn(api, 'listDir').mockImplementation(async (path?: string) => {
+      if (path === '/tmp') {
+        return {
+          path: '/tmp',
+          parent: '/',
+          entries: [{ name: 'other', is_dir: true }],
+        };
+      }
+      return {
+        path: '/home/u',
+        parent: '/home',
+        entries: [{ name: 'projects', is_dir: true }],
+      };
+    });
+    render(
+      <DirectoryBrowser
+        initialPath="/home/u"
+        onCancel={() => {}}
+        onSelect={() => {}}
+      />,
+    );
+
+    await screen.findByRole('option', { name: /projects/i });
+    const path = pathInput();
+    const select = screen.getByRole('button', { name: /select this directory/i });
+    expect(select).toBeEnabled();
+
+    act(() => {
+      fireEvent.change(path, { target: { value: '/tmp/proj' } });
+    });
+
+    await waitFor(() => {
+      expect(listDir).toHaveBeenCalledWith('/tmp');
+    });
+    await waitFor(() => {
+      expect(path).toHaveValue('/tmp/proj');
+    });
+    expect(select).toBeDisabled();
+
+    act(() => {
+      fireEvent.change(path, { target: { value: '/tmp/' } });
+    });
+
+    expect(path).toHaveValue('/tmp/');
+    expect(select).toBeEnabled();
+  });
+
   it('moves the keyboard highlight with ArrowDown and ArrowUp without wrapping', async () => {
     vi.spyOn(api, 'listDir').mockResolvedValue({
       path: '/home/u',
