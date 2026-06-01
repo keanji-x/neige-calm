@@ -31,8 +31,9 @@ use sqlx::Transaction;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
 use super::{
-    CardCodexThreadRow, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, WaveEvent,
-    WriteInTxFn, WriteWithEventFn, WriteWithEventsFn,
+    CardCodexThreadRow, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw,
+    SharedCodexDaemonRecord, SharedCodexDaemonUpdate, WaveEvent, WriteInTxFn, WriteWithEventFn,
+    WriteWithEventsFn,
 };
 use crate::card_role_cache::CardRoleCache;
 use crate::error::{CalmError, Result};
@@ -1923,6 +1924,45 @@ impl RepoRead for SqlxRepo {
             .collect())
     }
 
+    async fn shared_daemon_runtime_get(&self) -> Result<SharedCodexDaemonRecord> {
+        let row = sqlx::query_as::<
+            _,
+            (
+                String,
+                Option<i32>,
+                Option<i32>,
+                Option<String>,
+                Option<String>,
+                Option<i64>,
+                Option<String>,
+                Option<i64>,
+                i64,
+                i64,
+                Option<String>,
+            ),
+        >(
+            r#"SELECT state, pid, pgid, sock_path, codex_home_path, process_start_time,
+                      boot_id, started_at, updated_at, restart_count, last_error
+               FROM shared_codex_daemon
+               WHERE id = 1"#,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(SharedCodexDaemonRecord {
+            state: row.0,
+            pid: row.1,
+            pgid: row.2,
+            sock_path: row.3,
+            codex_home_path: row.4,
+            process_start_time: row.5.and_then(|v| u64::try_from(v).ok()),
+            boot_id: row.6,
+            started_at: row.7,
+            updated_at: row.8,
+            restart_count: row.9,
+            last_error: row.10,
+        })
+    }
+
     // -------------------------------------------------------------- overlays
     async fn overlays_for(&self, entity_kind: &str, entity_id: &str) -> Result<Vec<Overlay>> {
         let rows = sqlx::query_as::<_, Overlay>(
@@ -2650,6 +2690,64 @@ impl RepoOutOfDomain for SqlxRepo {
         let mut tx = self.pool.begin().await?;
         card_codex_thread_delete_by_card_tx(&mut tx, card_id).await?;
         tx.commit().await?;
+        Ok(())
+    }
+
+    async fn shared_daemon_runtime_set(&self, update: SharedCodexDaemonUpdate) -> Result<()> {
+        let now = now_ms();
+        let start_time = update
+            .process_start_time
+            .and_then(|v| i64::try_from(v).ok());
+        sqlx::query(
+            r#"INSERT INTO shared_codex_daemon
+                   (id, state, pid, pgid, sock_path, codex_home_path, process_start_time,
+                    boot_id, started_at, updated_at, restart_count, last_error)
+               VALUES
+                   (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                    CASE WHEN ?10 THEN 1 ELSE 0 END, ?11)
+               ON CONFLICT(id) DO UPDATE SET
+                   state = excluded.state,
+                   pid = excluded.pid,
+                   pgid = excluded.pgid,
+                   sock_path = excluded.sock_path,
+                   codex_home_path = excluded.codex_home_path,
+                   process_start_time = excluded.process_start_time,
+                   boot_id = excluded.boot_id,
+                   started_at = excluded.started_at,
+                   updated_at = excluded.updated_at,
+                   restart_count = shared_codex_daemon.restart_count
+                       + CASE WHEN ?10 THEN 1 ELSE 0 END,
+                   last_error = excluded.last_error"#,
+        )
+        .bind(&update.state)
+        .bind(update.pid)
+        .bind(update.pgid)
+        .bind(&update.sock_path)
+        .bind(&update.codex_home_path)
+        .bind(start_time)
+        .bind(&update.boot_id)
+        .bind(update.started_at)
+        .bind(now)
+        .bind(update.increment_restart_count)
+        .bind(&update.last_error)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn shared_daemon_record_event(&self, action: &str, error: Option<&str>) -> Result<()> {
+        let now = now_ms();
+        let last_error = error.map(|e| format!("{action}: {e}"));
+        sqlx::query(
+            r#"UPDATE shared_codex_daemon
+                  SET updated_at = ?1,
+                      last_error = COALESCE(?2, last_error)
+                WHERE id = 1"#,
+        )
+        .bind(now)
+        .bind(last_error)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 

@@ -126,6 +126,35 @@ pub struct Config {
     /// env/config opt-in only. Production deploys MUST NOT enable this.
     #[arg(long, env = "CALM_DEV_AUTOLOGIN", default_value_t = false)]
     pub auth_dev_autologin: bool,
+
+    /// PR4 (#410) — boot one shared `codex app-server` for future card routes.
+    /// Rollback switch: when false, no shared daemon is started or taken over.
+    #[arg(
+        long,
+        env = "CALM_SHARED_CODEX_APPSERVER_ENABLED",
+        default_value_t = true
+    )]
+    pub shared_codex_appserver_enabled: bool,
+
+    /// Initial delay before restarting the shared codex app-server after a crash.
+    #[arg(
+        long,
+        env = "CALM_SHARED_CODEX_APPSERVER_RESTART_INITIAL_DELAY_MS",
+        default_value_t = 250
+    )]
+    pub shared_codex_appserver_restart_initial_delay_ms: u64,
+
+    /// Maximum exponential-backoff delay for shared app-server restarts.
+    #[arg(
+        long,
+        env = "CALM_SHARED_CODEX_APPSERVER_RESTART_MAX_DELAY_MS",
+        default_value_t = 10_000
+    )]
+    pub shared_codex_appserver_restart_max_delay_ms: u64,
+
+    /// Log directory for the shared codex app-server child.
+    #[arg(long, env = "CALM_SHARED_CODEX_APPSERVER_LOG_DIR")]
+    pub shared_codex_appserver_log_dir: Option<PathBuf>,
 }
 
 impl Config {
@@ -179,5 +208,11 @@ impl Config {
         }
         let listen = self.listen.replacen("0.0.0.0", "127.0.0.1", 1);
         format!("http://{listen}")
+    }
+
+    pub fn shared_codex_appserver_log_dir_resolved(&self) -> PathBuf {
+        self.shared_codex_appserver_log_dir
+            .clone()
+            .unwrap_or_else(|| self.data_dir_resolved().join("logs/shared-codex-appserver"))
     }
 }
