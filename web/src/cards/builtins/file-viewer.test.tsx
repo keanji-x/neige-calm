@@ -157,6 +157,36 @@ describe('FileViewerCard rendering', () => {
     expect(await screen.findByTestId('diff-pane')).toHaveTextContent('old');
   });
 
+  it('renders image files without reading them as UTF-8 text', async () => {
+    vi.mocked(api.listDir).mockImplementation(async (path?: string) => {
+      if (path === '/repo/assets/pixel.png') {
+        throw new api.CalmApiError(400, 'bad_request', 'not a directory');
+      }
+      return {
+        path: '/repo/assets',
+        parent: '/repo',
+        entries: [{ name: 'pixel.png', is_dir: false }],
+      };
+    });
+
+    const Component = FileViewerEntry.Component;
+    render(
+      <Component
+        card={{
+          type: 'file-viewer',
+          id: 'file_1',
+          path: '/repo/assets/pixel.png',
+        }}
+      />,
+    );
+
+    const img = await screen.findByRole('img', {
+      name: '/repo/assets/pixel.png',
+    });
+    expect(api.readFile).not.toHaveBeenCalled();
+    expect(img).toHaveAttribute('src', api.readFileRaw('/repo/assets/pixel.png'));
+  });
+
   it('collapses and expands the file tree from the toolbar', async () => {
     const Component = FileViewerEntry.Component;
     render(

@@ -29,10 +29,13 @@ use crate::state::AppState;
 use axum::{
     Json, Router,
     extract::{Query, State},
+    http::header,
+    response::{IntoResponse, Response},
     routing::get,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
+use std::fs::Metadata;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -40,11 +43,13 @@ use tokio::process::Command;
 use utoipa::ToSchema;
 
 const MAX_READFILE_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_READFILE_RAW_BYTES: u64 = 100 * 1024 * 1024;
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/fs/listdir", get(listdir))
         .route("/api/fs/readfile", get(readfile))
+        .route("/api/fs/readfile-raw", get(readfile_raw))
         .route("/api/fs/gitstatus", get(gitstatus))
         .route("/api/fs/gitdiff", get(gitdiff))
 }
@@ -253,6 +258,26 @@ pub(crate) async fn readfile(
 
 #[utoipa::path(
     get,
+    path = "/api/fs/readfile-raw",
+    tag = "fs",
+    params(("path" = String, Query, description = "Absolute path to an image file")),
+    responses(
+        (status = 200, description = "Read raw image bytes", body = Vec<u8>, content_type = "application/octet-stream"),
+        (status = 400, description = "Path doesn't exist, is not a file, has an unsupported extension, or exceeds the image cap", body = ErrorBody),
+        (status = 403, description = "Read permission denied", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn readfile_raw(
+    State(_s): State<AppState>,
+    Query(q): Query<PathQuery>,
+) -> Result<Response> {
+    let raw = PathBuf::from(q.path.trim());
+    read_file_raw_response(&raw).await
+}
+
+#[utoipa::path(
+    get,
     path = "/api/fs/gitstatus",
     tag = "fs",
     params(("path" = String, Query, description = "Absolute path to a directory inside a git repository")),
@@ -294,7 +319,7 @@ pub(crate) async fn gitdiff(
     Ok(Json(git_diff_response(&raw, q.old_path.as_deref()).await?))
 }
 
-async fn read_file_response(raw: &Path) -> Result<ReadFileResponse> {
+async fn canonicalize_regular_file(raw: &Path) -> Result<(PathBuf, Metadata)> {
     let canon = match tokio::fs::canonicalize(raw).await {
         Ok(p) => p,
         Err(e) => return Err(map_io_err(raw, e)),
@@ -310,6 +335,11 @@ async fn read_file_response(raw: &Path) -> Result<ReadFileResponse> {
         )));
     }
 
+    Ok((canon, meta))
+}
+
+async fn read_file_response(raw: &Path) -> Result<ReadFileResponse> {
+    let (canon, meta) = canonicalize_regular_file(raw).await?;
     let (text, truncated) = read_text_capped(&canon, "binary or non-UTF-8 file").await?;
     Ok(ReadFileResponse {
         path: canon.to_string_lossy().to_string(),
@@ -317,6 +347,43 @@ async fn read_file_response(raw: &Path) -> Result<ReadFileResponse> {
         text,
         truncated,
     })
+}
+
+async fn read_file_raw_response(raw: &Path) -> Result<Response> {
+    let (canon, meta) = canonicalize_regular_file(raw).await?;
+    let content_type = image_content_type(&canon)?;
+    if meta.len() > MAX_READFILE_RAW_BYTES {
+        return Err(CalmError::BadRequest("image exceeds 100 MiB cap".into()));
+    }
+
+    let bytes = tokio::fs::read(&canon)
+        .await
+        .map_err(|e| map_io_err(&canon, e))?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        bytes,
+    )
+        .into_response())
+}
+
+fn image_content_type(path: &Path) -> Result<&'static str> {
+    let ext = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("png") => Ok("image/png"),
+        Some("jpg" | "jpeg") => Ok("image/jpeg"),
+        Some("gif") => Ok("image/gif"),
+        Some("webp") => Ok("image/webp"),
+        Some("bmp") => Ok("image/bmp"),
+        Some("ico") => Ok("image/x-icon"),
+        Some("svg") => Ok("image/svg+xml"),
+        _ => Err(CalmError::BadRequest("unsupported image extension".into())),
+    }
 }
 
 async fn git_status_response(raw: &Path) -> Result<GitStatusResponse> {
@@ -653,7 +720,17 @@ fn map_io_err(path: &std::path::Path, e: std::io::Error) -> CalmError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::StatusCode;
+    use http_body_util::BodyExt;
     use std::process::Command as StdCommand;
+
+    const PNG_1X1: &[u8] = &[
+        0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, b'I', b'H', b'D',
+        b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f,
+        0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0a, b'I', b'D', b'A', b'T', 0x78, 0x9c, 0x63, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, b'I',
+        b'E', b'N', b'D', 0xae, 0x42, 0x60, 0x82,
+    ];
 
     #[tokio::test]
     async fn lists_temp_dir_sorted_dirs_first() {
@@ -761,6 +838,92 @@ mod tests {
         let err = read_file_response(&file).await.unwrap_err();
         assert!(matches!(err, CalmError::BadRequest(_)));
         assert!(err.to_string().contains("binary or non-UTF-8 file"));
+    }
+
+    #[tokio::test]
+    async fn readfile_raw_png_ok() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("pixel.png");
+        std::fs::write(&file, PNG_1X1).unwrap();
+
+        let res = read_file_raw_response(&file).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let (parts, body) = res.into_parts();
+        assert_eq!(
+            parts.headers.get(header::CONTENT_TYPE).unwrap(),
+            "image/png"
+        );
+        assert_eq!(
+            parts.headers.get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        let bytes = body.collect().await.unwrap().to_bytes();
+        assert_eq!(&bytes[..], PNG_1X1);
+    }
+
+    #[tokio::test]
+    async fn readfile_raw_svg_sets_svg_content_type() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("icon.svg");
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg"></svg>"#;
+        std::fs::write(&file, svg).unwrap();
+
+        let res = read_file_raw_response(&file).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let (parts, body) = res.into_parts();
+        assert_eq!(
+            parts.headers.get(header::CONTENT_TYPE).unwrap(),
+            "image/svg+xml"
+        );
+        let bytes = body.collect().await.unwrap().to_bytes();
+        assert_eq!(&bytes[..], svg);
+    }
+
+    #[tokio::test]
+    async fn readfile_raw_extension_is_case_insensitive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("pixel.PNG");
+        std::fs::write(&file, PNG_1X1).unwrap();
+
+        let res = read_file_raw_response(&file).await.unwrap();
+        let (parts, _) = res.into_parts();
+        assert_eq!(
+            parts.headers.get(header::CONTENT_TYPE).unwrap(),
+            "image/png"
+        );
+    }
+
+    #[tokio::test]
+    async fn readfile_raw_rejects_non_image_extension() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("notes.txt");
+        std::fs::write(&file, "hello\n").unwrap();
+
+        let err = read_file_raw_response(&file).await.unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(_)));
+        assert!(err.to_string().contains("unsupported image extension"));
+    }
+
+    #[tokio::test]
+    async fn readfile_raw_rejects_oversize_image() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("huge.png");
+        let f = std::fs::File::create(&file).unwrap();
+        f.set_len(MAX_READFILE_RAW_BYTES + 1).unwrap();
+
+        let err = read_file_raw_response(&file).await.unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(_)));
+        assert!(err.to_string().contains("image exceeds 100 MiB cap"));
+    }
+
+    #[tokio::test]
+    async fn readfile_raw_rejects_missing_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = read_file_raw_response(&tmp.path().join("missing.png"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(_)));
+        assert!(err.to_string().contains("not found"));
     }
 
     #[tokio::test]
