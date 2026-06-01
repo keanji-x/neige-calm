@@ -1,4 +1,4 @@
-//! MCP `initialize` handshake — per-connection identity binding.
+//! MCP `initialize` handshake — daemon-level trust.
 //!
 //! PR7a (#136). The codex daemon's MCP client opens a UDS connection to
 //! the kernel via [`crate::mcp_server::transport`] and immediately sends
@@ -8,15 +8,13 @@
 //!      (matching the slot the codex CLI populates from
 //!      `NEIGE_MCP_TOKEN` — see [`crate::spec_card::build_codex_env_map`]).
 //!   2. Hashes it (SHA-256 hex) and looks the hash up in
-//!      `card_mcp_tokens` to recover the card id.
+//!      `card_mcp_tokens`.
 //!   3. Verifies via constant-time compare (defense-in-depth over the
 //!      `WHERE hashed_token = ?` lookup) — see
 //!      [`crate::mcp_server::auth::verify_token`].
-//!   4. Reads `cards.role` for the card (via [`CardRoleCache`]) to
-//!      decide whether this connection's writes will surface as
-//!      `ActorId::AiSpec` or `ActorId::AiCodex` at the role gate.
-//!   5. Returns the [`CardIdentity`] that the transport pins to the
-//!      connection for the rest of its life.
+//!   4. Returns a daemon-trust marker plus the token-bound card identity
+//!      as a temporary fallback for legacy callers. Modern tools/call
+//!      identity is still resolved first from `_meta.threadId`.
 //!
 //! Any failure short-circuits to an MCP-spec `initialize` error response
 //! (`InvalidParams` for malformed `_meta`, `InternalError` for repo
@@ -28,11 +26,9 @@
 //! daemon, then `neige-mcp-stdio-shim` see it, and they pass the token
 //! through the wire in `params._meta`. The kernel side is otherwise
 //! oblivious to *which* card is on the other end of the socket. The
-//! token + `card_mcp_tokens` lookup is the entire identity binding.
+//! token + `card_mcp_tokens` lookup is only daemon trust in PR3b.
 
-use crate::card_role_cache::CardRoleCache;
 use crate::db::RouteRepo;
-use crate::ids::CardId;
 use crate::mcp_server::auth;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::CardIdentity;
@@ -47,11 +43,12 @@ use std::sync::Arc;
 /// implementation-defined server errors.
 pub const TOKEN_NOT_RECOGNIZED_CODE: i64 = -32401;
 
-/// Result of a successful handshake. Carries the bound [`CardIdentity`]
-/// (returned to the transport for connection pinning) and the JSON
-/// `result` value to wire back to the client.
+/// Result of a successful handshake. Carries daemon-level trust, a
+/// temporary legacy card identity fallback, and the JSON `result` value
+/// to wire back to the client.
 pub struct HandshakeOk {
-    pub identity: CardIdentity,
+    pub daemon_trust: bool,
+    pub legacy_identity: Option<CardIdentity>,
     pub result_payload: Value,
 }
 
@@ -65,7 +62,6 @@ pub struct HandshakeOk {
 /// will tighten this if we need version-gated tool registration.
 pub async fn handle_initialize(
     repo: &dyn RouteRepo,
-    card_role_cache: &CardRoleCache,
     params: &Value,
     protocol_version_advertised: &str,
 ) -> Result<HandshakeOk, RpcError> {
@@ -118,26 +114,27 @@ pub async fn handle_initialize(
         ));
     }
 
-    // 4. Recover the role from the in-process cache. Boot-time
-    //    `seed_card_role_cache` populated this; any card with a
-    //    persisted token row also has a persisted card row (FK
-    //    enforced — see migration 0010). A missing cache entry would
-    //    indicate a `cards`/`card_mcp_tokens` consistency bug; surface
-    //    as InternalError so the operator notices.
-    let card_id = CardId::from(card_id_str);
-    let role = card_role_cache.get(&card_id).ok_or_else(|| {
-        RpcError::internal(format!(
-            "initialize: card {} has a token row but no role in cache (cache/db drift?)",
-            card_id.as_str()
-        ))
-    })?;
-
-    let identity = CardIdentity {
-        card_id: card_id.clone(),
-        role,
+    let legacy_identity = match repo
+        .card_get(&card_id_str)
+        .await
+        .map_err(|e| RpcError::internal(format!("legacy card lookup: {e}")))?
+    {
+        Some(card) => {
+            let role = repo
+                .card_role_get(&card_id_str)
+                .await
+                .map_err(|e| RpcError::internal(format!("legacy card role lookup: {e}")))?
+                .ok_or_else(|| RpcError::internal("legacy card role lookup: missing role"))?;
+            Some(CardIdentity {
+                card_id: card.id,
+                role,
+                wave_id: Some(card.wave_id.as_str().to_string()),
+            })
+        }
+        None => None,
     };
 
-    // 5. Build the success payload. The shape mirrors what the kernel's
+    // 4. Build the success payload. The shape mirrors what the kernel's
     //    own MCP *client* sends in its `initialize` request — same
     //    `protocolVersion` echo + a minimal `capabilities` block
     //    advertising `tools`. The exact contents of `serverInfo` are
@@ -154,7 +151,8 @@ pub async fn handle_initialize(
     });
 
     Ok(HandshakeOk {
-        identity,
+        daemon_trust: true,
+        legacy_identity,
         result_payload,
     })
 }

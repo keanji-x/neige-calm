@@ -52,7 +52,7 @@ use calm_server::event::{BroadcastEnvelope, EventBus, SubscribeFilter, Subscribe
 use calm_server::ids::{CardId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::wave_report::{TOOL_REPORT_READ, TOOL_REPORT_WRITE};
-use calm_server::mcp_server::{CardIdentity, ToolRegistry};
+use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
@@ -198,10 +198,12 @@ async fn boot() -> Boot {
     }
 }
 
-fn spec_identity(b: &Boot) -> CardIdentity {
-    CardIdentity {
-        card_id: b.spec_card_id.clone(),
+fn spec_identity(b: &Boot) -> ToolCallIdentity {
+    ToolCallIdentity {
+        card_id: b.spec_card_id.as_str().to_string(),
         role: CardRole::Spec,
+        wave_id: Some(b.wave_id.as_str().to_string()),
+        thread_id: "spec-thread".to_string(),
     }
 }
 
@@ -259,14 +261,14 @@ async fn login(app: &axum::Router) -> String {
 async fn call_mcp(
     boot: &Boot,
     name: &str,
-    identity: CardIdentity,
+    identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
     let handler = boot
         .registry
         .lookup(name)
         .unwrap_or_else(|| panic!("tool not registered: {name}"));
-    handler(boot.ctx.clone(), identity, None, args).await
+    handler(boot.ctx.clone(), identity, args).await
 }
 
 /// The dispatcher's push path subscribes to the wave's event stream with

@@ -61,7 +61,7 @@ pub(crate) fn parse_frame(s: &str) -> Result<Frame, String> {
             let id = serde_json::from_value::<RequestId>(id_v.clone())
                 .map_err(|e| format!("invalid id: {e}"))?;
             let params = obj.get("params").cloned().unwrap_or(Value::Null);
-            let request_meta = obj.get("_meta").filter(|v| v.is_object()).cloned();
+            let request_meta = obj.get("_meta").cloned();
             Ok(Frame::Request {
                 id,
                 method: m,

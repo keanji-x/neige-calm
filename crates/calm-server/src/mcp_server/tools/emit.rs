@@ -2,7 +2,7 @@
 //! `calm.task_completed`, `calm.task_failed`.
 //!
 //! All three lower a JSON `arguments` object to a single eventized
-//! write. The kernel translates the connection-bound [`CardIdentity`]
+//! write. The kernel translates the per-call [`ToolCallIdentity`]
 //! into an [`ActorId`] (Spec → `AiSpec`, Worker → `AiCodex`) and emits
 //! through `write_with_event_typed`, which runs the role gate, persists
 //! the event row, and broadcasts on the bus.
@@ -35,8 +35,10 @@ use crate::event::{Event, EventScope};
 use crate::ids::CardId;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
-    AppContext, CardIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
+    AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
+    require_role_any,
 };
+use crate::model::CardRole;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -55,14 +57,10 @@ pub fn register_into(registry: &mut ToolRegistry) {
 /// `Box::pin` boilerplate.
 fn wrap<F, Fut>(f: F) -> ToolHandler
 where
-    F: Fn(Arc<AppContext>, CardIdentity, Value) -> Fut + Send + Sync + 'static,
+    F: Fn(Arc<AppContext>, ToolCallIdentity, Value) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<Value, RpcError>> + Send + 'static,
 {
-    Arc::new(
-        move |ctx, identity, _request_meta, args| -> ToolHandlerFuture {
-            Box::pin(f(ctx, identity, args))
-        },
-    )
+    Arc::new(move |ctx, identity, args| -> ToolHandlerFuture { Box::pin(f(ctx, identity, args)) })
 }
 
 // ---------------------------------------------------------------------------
@@ -94,9 +92,11 @@ fn dispatch_request_descriptor() -> ToolDescriptor {
 
 async fn dispatch_request(
     ctx: Arc<AppContext>,
-    identity: CardIdentity,
+    identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
+    require_role_any(&identity, &[CardRole::Spec, CardRole::Worker])?;
+
     let idempotency_key = args
         .get("idempotency_key")
         .and_then(|v| v.as_str())
@@ -185,9 +185,11 @@ fn task_completed_descriptor() -> ToolDescriptor {
 
 async fn task_completed(
     ctx: Arc<AppContext>,
-    identity: CardIdentity,
+    identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
+    require_role_any(&identity, &[CardRole::Spec, CardRole::Worker])?;
+
     let idempotency_key = args
         .get("idempotency_key")
         .and_then(|v| v.as_str())
@@ -236,9 +238,11 @@ fn task_failed_descriptor() -> ToolDescriptor {
 
 async fn task_failed(
     ctx: Arc<AppContext>,
-    identity: CardIdentity,
+    identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
+    require_role_any(&identity, &[CardRole::Spec, CardRole::Worker])?;
+
     let idempotency_key = args
         .get("idempotency_key")
         .and_then(|v| v.as_str())
@@ -268,7 +272,7 @@ async fn task_failed(
 
 async fn emit_event_for_identity(
     ctx: &Arc<AppContext>,
-    identity: &CardIdentity,
+    identity: &ToolCallIdentity,
     event: Event,
 ) -> Result<(), RpcError> {
     let actor = identity.to_actor_id();

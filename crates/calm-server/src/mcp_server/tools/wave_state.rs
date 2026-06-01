@@ -11,10 +11,10 @@
 //! ## Tool surface
 //!
 //! * `calm.get_wave_state` — Spec **or** Worker callable. Returns the
-//!   bound card's wave row + the wave's card list (id/kind/role) as
-//!   one JSON snapshot. No event emission, no role gate at the MCP
-//!   entry. Workers occasionally peek wave state before they report;
-//!   the spec gets a full snapshot every loop iteration.
+//!   thread-mapped card's wave row + the wave's card list (id/kind/role) as
+//!   one JSON snapshot. No event emission. Workers occasionally peek wave
+//!   state before they report; the spec gets a full snapshot every loop
+//!   iteration. Plain cards are rejected at the MCP entry.
 //!
 //! * `calm.update_wave_state` — Spec only. Patches the wave row
 //!   (`title` / `sort` / `archived_at`), stamps `updated_at`, and
@@ -71,8 +71,8 @@ use crate::event::{Event, EventScope};
 use crate::ids::WaveId;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
-    AppContext, CardIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    require_role,
+    AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
+    require_role, require_role_any,
 };
 use crate::model::{CardRole, Wave, WaveLifecycle, WavePatch};
 use crate::wave_lifecycle::validate_transition;
@@ -93,14 +93,10 @@ pub fn register_into(registry: &mut ToolRegistry) {
 /// `ToolHandler` the registry expects. Mirrors `emit::wrap`.
 fn wrap<F, Fut>(f: F) -> ToolHandler
 where
-    F: Fn(Arc<AppContext>, CardIdentity, Value) -> Fut + Send + Sync + 'static,
+    F: Fn(Arc<AppContext>, ToolCallIdentity, Value) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<Value, RpcError>> + Send + 'static,
 {
-    Arc::new(
-        move |ctx, identity, _request_meta, args| -> ToolHandlerFuture {
-            Box::pin(f(ctx, identity, args))
-        },
-    )
+    Arc::new(move |ctx, identity, args| -> ToolHandlerFuture { Box::pin(f(ctx, identity, args)) })
 }
 
 // ---------------------------------------------------------------------------
@@ -124,9 +120,10 @@ fn get_wave_state_descriptor() -> ToolDescriptor {
 
 async fn get_wave_state(
     ctx: Arc<AppContext>,
-    identity: CardIdentity,
+    identity: ToolCallIdentity,
     _args: Value,
 ) -> Result<Value, RpcError> {
+    require_role_any(&identity, &[CardRole::Spec, CardRole::Worker])?;
     let (_, wave) = resolve_wave_for_identity(&ctx, &identity).await?;
     let cards = ctx
         .repo
@@ -205,7 +202,7 @@ fn update_wave_state_descriptor() -> ToolDescriptor {
 
 async fn update_wave_state(
     ctx: Arc<AppContext>,
-    identity: CardIdentity,
+    identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Spec)?;
@@ -456,7 +453,7 @@ fn update_task_meta_descriptor() -> ToolDescriptor {
 
 async fn update_task_meta(
     ctx: Arc<AppContext>,
-    identity: CardIdentity,
+    identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Spec)?;
@@ -548,12 +545,12 @@ async fn update_task_meta(
 
 /// Look up the wave the calling card belongs to, returning the card +
 /// wave rows. Mirrors PR7a's `emit_event_for_identity` resolve step:
-/// the bound card was minted at handshake time; a missing row between
-/// then and now means a delete-while-active race, which we surface as
+/// the thread-mapped card must exist while its daemon is active; a
+/// missing row means a delete-while-active race, which we surface as
 /// `InternalError` (the operator wants to see this loud).
 async fn resolve_wave_for_identity(
     ctx: &Arc<AppContext>,
-    identity: &CardIdentity,
+    identity: &ToolCallIdentity,
 ) -> Result<(crate::model::Card, Wave), RpcError> {
     let card_id_str = identity.card_id.as_str().to_string();
     let card = ctx
@@ -611,13 +608,14 @@ fn shape_of(v: &Value) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::CardId;
     use crate::model::CardRole;
 
-    fn identity_with_role(role: CardRole) -> CardIdentity {
-        CardIdentity {
-            card_id: CardId::from("card-1"),
+    fn identity_with_role(role: CardRole) -> ToolCallIdentity {
+        ToolCallIdentity {
+            card_id: "card-1".to_string(),
             role,
+            wave_id: Some("wave-1".to_string()),
+            thread_id: "thread-1".to_string(),
         }
     }
 

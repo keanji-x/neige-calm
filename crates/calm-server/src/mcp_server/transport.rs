@@ -7,11 +7,11 @@
 //!   1. Reads line-delimited JSON frames from the socket via
 //!      [`crate::mcp_server::framing::parse_frame`].
 //!   2. Waits for the first `initialize` request, drives
-//!      [`crate::mcp_server::handshake::handle_initialize`] to bind a
-//!      [`CardIdentity`] to the connection, and sends the response.
+//!      [`crate::mcp_server::handshake::handle_initialize`] to verify
+//!      daemon-level trust, and sends the response.
 //!   3. After handshake, treats every subsequent `tools/call` as an
-//!      invocation of a [`ToolRegistry`] handler, passing the pinned
-//!      [`CardIdentity`].
+//!      invocation of a [`ToolRegistry`] handler, resolving identity
+//!      from per-call `_meta.threadId`.
 //!   4. Responds to `tools/list` from the registry's descriptors.
 //!   5. Echoes a `MethodNotFound` for any other request method.
 //!
@@ -34,10 +34,12 @@
 use crate::card_role_cache::CardRoleCache;
 use crate::db::RouteRepo;
 use crate::mcp_server::framing::{
-    Frame, RequestId, RpcError, build_error_response_frame, build_ok_response_frame, parse_frame,
+    Frame, RpcError, build_error_response_frame, build_ok_response_frame, parse_frame,
 };
 use crate::mcp_server::handshake::handle_initialize;
-use crate::mcp_server::registry::{AppContext, CardIdentity, ToolHandler, ToolRegistry};
+use crate::mcp_server::registry::{
+    AppContext, CardIdentity, ToolCallIdentity, ToolHandler, ToolRegistry,
+};
 use crate::wave_cove_cache::WaveCoveCache;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -229,7 +231,7 @@ async fn handle_connection(
     // gets a `MethodNotFound`-shaped error. We don't bind an identity
     // until `initialize` succeeds — every other request before then is
     // unauthenticated and rejected.
-    let identity = loop {
+    let (daemon_trust, legacy_identity) = loop {
         line.clear();
         let n = reader.read_line(&mut line).await?;
         if n == 0 {
@@ -251,19 +253,14 @@ async fn handle_connection(
             Frame::Request {
                 id, method, params, ..
             } if method == "initialize" => {
-                match handle_initialize(
-                    ctx.repo.as_ref(),
-                    &ctx.card_role_cache,
-                    &params,
-                    KERNEL_MCP_PROTOCOL_VERSION,
-                )
-                .await
+                match handle_initialize(ctx.repo.as_ref(), &params, KERNEL_MCP_PROTOCOL_VERSION)
+                    .await
                 {
                     Ok(ok) => {
                         let frame = build_ok_response_frame(&id, &ok.result_payload);
                         wr.write_all(&frame).await?;
                         wr.flush().await?;
-                        break ok.identity;
+                        break (ok.daemon_trust, ok.legacy_identity);
                     }
                     Err(rpc_err) => {
                         let frame = build_error_response_frame(&id, &rpc_err);
@@ -297,13 +294,14 @@ async fn handle_connection(
     };
 
     tracing::info!(
-        card_id = %identity.card_id.as_str(),
-        role = ?identity.role,
-        "mcp_server: connection bound to card identity"
+        daemon_trust,
+        "mcp_server: connection initialized with daemon trust"
     );
 
     // Phase 2: post-initialize message pump. Any request after this
-    // sees the pinned `identity` value.
+    // sees daemon trust; tools/call resolves identity from
+    // `_meta.threadId` first, then temporarily falls back to the
+    // initialize-time legacy token identity for older clients.
     loop {
         line.clear();
         let n = reader.read_line(&mut line).await?;
@@ -330,12 +328,12 @@ async fn handle_connection(
                 request_meta,
             } => {
                 let resp = dispatch_request(
-                    &id,
                     &method,
                     params,
                     request_meta,
                     &ctx,
-                    &identity,
+                    daemon_trust,
+                    legacy_identity.as_ref(),
                     &registry,
                 )
                 .await;
@@ -363,12 +361,12 @@ async fn handle_connection(
 /// here so the pre-/post-initialize message pump can share a single
 /// switch.
 async fn dispatch_request(
-    _id: &RequestId,
     method: &str,
     params: Value,
     request_meta: Option<Value>,
     ctx: &Arc<AppContext>,
-    identity: &CardIdentity,
+    _daemon_trust: bool,
+    legacy_identity: Option<&CardIdentity>,
     registry: &Arc<ToolRegistry>,
 ) -> Result<Value, RpcError> {
     match method {
@@ -389,39 +387,127 @@ async fn dispatch_request(
             Ok(json!({ "tools": tools }))
         }
         "tools/call" => {
-            let request_meta = request_meta.or_else(|| extract_request_meta(&params));
-            let name = params
-                .get("name")
-                .and_then(|n| n.as_str())
-                .ok_or_else(|| RpcError::invalid_params("tools/call: missing `name`"))?;
-            let arguments = params
-                .get("arguments")
-                .cloned()
-                .unwrap_or(Value::Object(Default::default()));
-            let handler: ToolHandler = registry
-                .lookup(name)
-                .ok_or_else(|| RpcError::method_not_found(&format!("tools/call: {name}")))?;
-            let fut = handler(ctx.clone(), identity.clone(), request_meta, arguments);
-            let raw = fut.await?;
-            // Wrap the handler's raw payload in the MCP `CallToolResult`
-            // envelope so codex's MCP client parses it. The kernel's
-            // tools today return a JSON object; we surface it as a
-            // single `text` content block + `structuredContent` field
-            // so downstream agents can either parse the structured form
-            // or read the text representation.
-            let text = serde_json::to_string(&raw).unwrap_or_else(|_| "{}".to_string());
-            Ok(json!({
-                "content": [{ "type": "text", "text": text }],
-                "structuredContent": raw,
-                "isError": false,
-            }))
+            dispatch_tools_call(ctx, request_meta, params, legacy_identity, registry).await
         }
+        "resources/list" => Ok(json!({ "resources": [] })),
+        "prompts/list" => Ok(json!({ "prompts": [] })),
         other => Err(RpcError::method_not_found(other)),
     }
 }
 
-fn extract_request_meta(params: &Value) -> Option<Value> {
-    params.get("_meta").filter(|v| v.is_object()).cloned()
+async fn dispatch_tools_call(
+    ctx: &Arc<AppContext>,
+    request_meta: Option<Value>,
+    params: Value,
+    legacy_identity: Option<&CardIdentity>,
+    registry: &Arc<ToolRegistry>,
+) -> Result<Value, RpcError> {
+    let top_meta = request_meta_outcome(request_meta.as_ref());
+    let params_meta = extract_request_meta_outcome(&params);
+    for outcome in [&top_meta, &params_meta] {
+        if matches!(outcome, MetaLookupOutcome::Malformed) {
+            return Err(RpcError::invalid_params("_meta must be an object"));
+        }
+    }
+    let thread_id = thread_id_from(&top_meta).or_else(|| thread_id_from(&params_meta));
+    let name = params
+        .get("name")
+        .and_then(|n| n.as_str())
+        .ok_or_else(|| RpcError::invalid_params("tools/call: missing `name`"))?;
+    let arguments = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or(Value::Object(Default::default()));
+    let handler: ToolHandler = registry
+        .lookup(name)
+        .ok_or_else(|| RpcError::method_not_found(&format!("tools/call: {name}")))?;
+
+    let thread_identity = resolve_thread_identity(ctx, thread_id, name).await;
+    let identity = match thread_identity {
+        Ok(identity) => identity,
+        Err(thread_err) => match legacy_identity {
+            Some(legacy) => ToolCallIdentity {
+                card_id: legacy.card_id.as_str().to_string(),
+                role: legacy.role,
+                wave_id: legacy.wave_id.clone(),
+                thread_id: "legacy-token-fallback".to_string(),
+            },
+            None => return Err(thread_err),
+        },
+    };
+
+    let fut = handler(ctx.clone(), identity, arguments);
+    let raw = fut.await?;
+    // Wrap the handler's raw payload in the MCP `CallToolResult`
+    // envelope so codex's MCP client parses it. The kernel's
+    // tools today return a JSON object; we surface it as a
+    // single `text` content block + `structuredContent` field
+    // so downstream agents can either parse the structured form
+    // or read the text representation.
+    let text = serde_json::to_string(&raw).unwrap_or_else(|_| "{}".to_string());
+    Ok(json!({
+        "content": [{ "type": "text", "text": text }],
+        "structuredContent": raw,
+        "isError": false,
+    }))
+}
+
+async fn resolve_thread_identity(
+    ctx: &Arc<AppContext>,
+    thread_id: Option<&str>,
+    tool_name: &str,
+) -> Result<ToolCallIdentity, RpcError> {
+    let thread_id =
+        thread_id.ok_or_else(|| RpcError::invalid_params("tools/call requires _meta.threadId"))?;
+    let row = ctx
+        .repo
+        .card_codex_thread_get_by_thread(thread_id)
+        .await
+        .map_err(|e| RpcError::internal(format!("tools/call thread lookup: {e}")))?
+        .ok_or_else(|| {
+            tracing::warn!(
+                target: "shared_codex_daemon::mcp_identity_miss",
+                thread_id,
+                tool = %tool_name,
+                "mcp_server: tools/call thread id did not resolve to a card"
+            );
+            RpcError::method_not_found(&format!("unknown thread_id: {thread_id}"))
+        })?;
+    Ok(ToolCallIdentity {
+        card_id: row.card_id,
+        role: row.role,
+        wave_id: row.wave_id,
+        thread_id: row.thread_id,
+    })
+}
+
+#[derive(Clone, Copy)]
+enum MetaLookupOutcome<'a> {
+    Absent,
+    Object(&'a Value),
+    Malformed,
+}
+
+fn extract_request_meta_outcome(params: &Value) -> MetaLookupOutcome<'_> {
+    request_meta_outcome(params.get("_meta"))
+}
+
+fn request_meta_outcome(meta: Option<&Value>) -> MetaLookupOutcome<'_> {
+    match meta {
+        None => MetaLookupOutcome::Absent,
+        Some(v) if v.is_object() => MetaLookupOutcome::Object(v),
+        Some(_) => MetaLookupOutcome::Malformed,
+    }
+}
+
+fn thread_id_from<'a>(request_meta: &MetaLookupOutcome<'a>) -> Option<&'a str> {
+    match request_meta {
+        MetaLookupOutcome::Object(meta) => meta
+            .get("threadId")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty()),
+        MetaLookupOutcome::Absent | MetaLookupOutcome::Malformed => None,
+    }
 }
 
 /// Helper used by integration tests to resolve the kernel-side socket

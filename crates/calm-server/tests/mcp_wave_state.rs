@@ -21,7 +21,7 @@
 //!      reason verbatim.
 //!
 //! No live UDS, no handshake — the wave-state tools' contract is
-//! "given a `CardIdentity` + `Value` args, do the right thing"; the
+//! "given a `ToolCallIdentity` + `Value` args, do the right thing"; the
 //! transport layer's job is to bind the identity, and that's
 //! exercised by PR7a's handshake tests + the PR7a.1 worker MCP wiring
 //! tests.
@@ -37,7 +37,7 @@ use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::wave_state::{
     TOOL_GET_WAVE_STATE, TOOL_UPDATE_TASK_META, TOOL_UPDATE_WAVE_STATE,
 };
-use calm_server::mcp_server::{CardIdentity, ToolRegistry};
+use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
 use calm_server::plugin_host::mcp::RpcError;
 use serde_json::{Value, json};
@@ -145,27 +145,31 @@ async fn boot() -> Boot {
 async fn call_tool(
     boot: &Boot,
     name: &str,
-    identity: CardIdentity,
+    identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
     let handler = boot
         .registry
         .lookup(name)
         .unwrap_or_else(|| panic!("tool not registered: {name}"));
-    handler(boot.ctx.clone(), identity, None, args).await
+    handler(boot.ctx.clone(), identity, args).await
 }
 
-fn spec_identity(boot: &Boot) -> CardIdentity {
-    CardIdentity {
-        card_id: boot.spec_card_id.clone(),
+fn spec_identity(boot: &Boot) -> ToolCallIdentity {
+    ToolCallIdentity {
+        card_id: boot.spec_card_id.as_str().to_string(),
         role: CardRole::Spec,
+        wave_id: Some(boot.wave_id.as_str().to_string()),
+        thread_id: "spec-thread".to_string(),
     }
 }
 
-fn worker_identity(boot: &Boot) -> CardIdentity {
-    CardIdentity {
-        card_id: boot.worker_card_id.clone(),
+fn worker_identity(boot: &Boot) -> ToolCallIdentity {
+    ToolCallIdentity {
+        card_id: boot.worker_card_id.as_str().to_string(),
         role: CardRole::Worker,
+        wave_id: Some(boot.wave_id.as_str().to_string()),
+        thread_id: "worker-thread".to_string(),
     }
 }
 

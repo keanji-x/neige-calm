@@ -10,7 +10,7 @@
 //!
 //! Also covers the identity-binding invariant: a `card_id` field
 //! smuggled into the tool's `arguments` is IGNORED — the kernel always
-//! routes through the handshake-bound `CardIdentity`.
+//! routes through the `_meta.threadId` mapping.
 
 #![cfg(unix)]
 
@@ -44,6 +44,7 @@ struct CardBoot {
     /// identity binding ignores it.
     other_card_id: String,
     raw_token: String,
+    thread_id: String,
     socket_path: PathBuf,
     _tmp: TempDir,
 }
@@ -124,6 +125,15 @@ async fn boot_with_role(role: CardRole) -> CardBoot {
     .expect("mint sidekick card");
     tx.commit().await.unwrap();
     let raw_token = mcp_token.expect("Spec/Worker card must mint a token");
+    let thread_id = format!("thread-{card_id}");
+    repo.card_codex_thread_upsert(
+        card_id.as_str(),
+        thread_id.as_str(),
+        role,
+        Some(wave.id.as_str()),
+    )
+    .await
+    .unwrap();
 
     let events = EventBus::new();
     let registry = build_default_registry();
@@ -148,6 +158,7 @@ async fn boot_with_role(role: CardRole) -> CardBoot {
         card_id,
         other_card_id,
         raw_token,
+        thread_id,
         socket_path,
         _tmp: tmp,
     }
@@ -202,12 +213,16 @@ async fn handshake(
     assert!(resp.get("error").is_none(), "initialize failed: {resp:#?}");
 }
 
-fn tools_call_frame(id: i64, name: &str, args: Value) -> Value {
+fn tools_call_frame(id: i64, name: &str, thread_id: &str, args: Value) -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": id,
         "method": "tools/call",
-        "params": { "name": name, "arguments": args }
+        "params": {
+            "name": name,
+            "arguments": args,
+            "_meta": { "threadId": thread_id }
+        }
     })
 }
 
@@ -249,6 +264,7 @@ async fn dispatch_request_codex_emits_codex_job_requested() {
         tools_call_frame(
             10,
             "calm.dispatch_request",
+            &b.thread_id,
             json!({
                 "kind": "codex",
                 "idempotency_key": "dr-codex-1",
@@ -266,7 +282,7 @@ async fn dispatch_request_codex_emits_codex_job_requested() {
         ActorId::AiSpec(cid) => assert_eq!(cid.as_str(), b.card_id.as_str()),
         other => panic!("expected AiSpec actor; got {other:?}"),
     }
-    // Scope is Card on the bound card.
+    // Scope is Card on the thread-mapped card.
     match &env.scope {
         EventScope::Card { card, .. } => assert_eq!(card.as_str(), b.card_id.as_str()),
         other => panic!("expected Card scope; got {other:?}"),
@@ -298,6 +314,7 @@ async fn task_completed_emits_task_completed_with_worker_actor() {
         tools_call_frame(
             20,
             "calm.task_completed",
+            &b.thread_id,
             json!({"idempotency_key": "tc-1", "result": {"ok": true}}),
         ),
     )
@@ -329,6 +346,7 @@ async fn task_failed_emits_task_failed_with_worker_actor() {
         tools_call_frame(
             30,
             "calm.task_failed",
+            &b.thread_id,
             json!({"idempotency_key": "tf-1", "reason": "stub failure"}),
         ),
     )
@@ -368,6 +386,7 @@ async fn smuggled_card_id_in_args_is_ignored() {
         tools_call_frame(
             40,
             "calm.task_completed",
+            &b.thread_id,
             json!({
                 "idempotency_key": "tc-smuggle",
                 "card_id": b.other_card_id, // <-- smuggled
@@ -473,6 +492,7 @@ async fn dispatch_request_drives_dispatcher_rollback_on_stub_daemon() {
         tools_call_frame(
             50,
             "calm.dispatch_request",
+            &b.thread_id,
             json!({
                 "kind": "codex",
                 "idempotency_key": idem,
