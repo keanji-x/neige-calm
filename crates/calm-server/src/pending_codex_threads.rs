@@ -6,6 +6,7 @@
 //! order, so this registry FIFO-binds the next shared-daemon thread start to
 //! the oldest pending card.
 
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -143,6 +144,69 @@ impl PendingThreadStartRegistry {
         expired.len()
     }
 
+    pub async fn expire_dead_pending(&self) -> usize {
+        let snapshot = {
+            let queue = self.queue.lock().await;
+            queue
+                .iter()
+                .map(|entry| (entry.card_id.clone(), entry.terminal_id.clone()))
+                .collect::<Vec<_>>()
+        };
+
+        let mut dead_card_ids = HashSet::new();
+        for (card_id, terminal_id) in snapshot {
+            let terminal = match self.repo.terminal_get(&terminal_id).await {
+                Ok(terminal) => terminal,
+                Err(err) => {
+                    tracing::warn!(
+                        target = "shared_codex_daemon::pending_expire_dead",
+                        %card_id,
+                        %terminal_id,
+                        error = %err,
+                        "failed to read terminal while expiring pending thread starts"
+                    );
+                    continue;
+                }
+            };
+            let is_dead = match terminal {
+                None => true,
+                Some(terminal) => terminal.exit_code.is_some() || terminal.signal_killed,
+            };
+            if is_dead {
+                dead_card_ids.insert(card_id);
+            }
+        }
+
+        if dead_card_ids.is_empty() {
+            return 0;
+        }
+
+        let mut expired = Vec::new();
+        {
+            let mut queue = self.queue.lock().await;
+            let mut kept = VecDeque::with_capacity(queue.len());
+            while let Some(entry) = queue.pop_front() {
+                if dead_card_ids.contains(&entry.card_id) {
+                    expired.push(entry);
+                } else {
+                    kept.push_back(entry);
+                }
+            }
+            *queue = kept;
+        }
+
+        for entry in &expired {
+            tracing::info!(
+                target = "shared_codex_daemon::pending_expire_dead",
+                card_id = %entry.card_id,
+                terminal_id = %entry.terminal_id,
+                age_ms = entry.registered_at.elapsed().as_millis(),
+                "expired pending shared codex empty-card start after terminal ended"
+            );
+        }
+        expired.len()
+    }
+
     pub async fn pending_count(&self) -> usize {
         self.queue.lock().await.len()
     }
@@ -232,11 +296,15 @@ pub fn spawn_periodic_expire_task(
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(interval).await;
-            let expired = registry.expire(ttl).await;
+            let dead_expired = registry.expire_dead_pending().await;
+            let ttl_expired = registry.expire(ttl).await;
+            let expired = dead_expired + ttl_expired;
             if expired > 0 {
                 tracing::info!(
                     target: "shared_codex_daemon::pending_expire_batch",
                     expired,
+                    dead_expired,
+                    ttl_expired,
                     "expired pending thread-start entries"
                 );
             }

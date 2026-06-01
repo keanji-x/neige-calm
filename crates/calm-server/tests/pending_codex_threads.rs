@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
+use calm_server::model::{CardRole, NewCard, NewCove, NewTerminal, NewWave};
 use calm_server::pending_codex_threads::{
     PendingEntry, PendingThreadStartRegistry, spawn_periodic_expire_task,
 };
@@ -58,6 +58,20 @@ async fn seed_card(repo: &SqlxRepo, wave_id: &str, terminal_id: &str) -> String 
             "terminal_id": terminal_id,
             "codex_thread_status": "pending_thread_start"
         }),
+    })
+    .await
+    .unwrap()
+    .id
+    .to_string()
+}
+
+async fn seed_terminal(repo: &SqlxRepo, card_id: &str) -> String {
+    repo.terminal_create(NewTerminal {
+        card_id: card_id.into(),
+        program: "bash".into(),
+        cwd: "/workspace".into(),
+        env: json!({}),
+        theme: calm_server::routes::theme::RequestTheme::default_dark(),
     })
     .await
     .unwrap()
@@ -186,6 +200,61 @@ async fn expire_drops_abandoned_entries_past_ttl() {
         registry.on_thread_started("T-fresh").await.unwrap(),
         Some(fresh.clone())
     );
+}
+
+#[tokio::test]
+async fn expire_only_drops_pending_when_terminal_dead() {
+    let (repo, events, wave_id) = boot().await;
+    let registry = PendingThreadStartRegistry::new(repo.clone(), events);
+    let card_id = seed_card(&repo, &wave_id, "term-live").await;
+    let terminal_id = seed_terminal(&repo, &card_id).await;
+    registry
+        .register(entry(&card_id, &wave_id, &terminal_id))
+        .await
+        .unwrap();
+
+    let dropped = registry.expire_dead_pending().await;
+
+    assert_eq!(dropped, 0);
+    assert_eq!(registry.pending_count().await, 1);
+}
+
+#[tokio::test]
+async fn expire_drops_pending_when_terminal_exits() {
+    let (repo, events, wave_id) = boot().await;
+    let registry = PendingThreadStartRegistry::new(repo.clone(), events);
+    let card_id = seed_card(&repo, &wave_id, "term-exit").await;
+    let terminal_id = seed_terminal(&repo, &card_id).await;
+    registry
+        .register(entry(&card_id, &wave_id, &terminal_id))
+        .await
+        .unwrap();
+    repo.terminal_set_exit(&terminal_id, Some(0), false)
+        .await
+        .unwrap();
+
+    let dropped = registry.expire_dead_pending().await;
+
+    assert_eq!(dropped, 1);
+    assert_eq!(registry.pending_count().await, 0);
+}
+
+#[tokio::test]
+async fn expire_drops_pending_when_terminal_row_deleted() {
+    let (repo, events, wave_id) = boot().await;
+    let registry = PendingThreadStartRegistry::new(repo.clone(), events);
+    let card_id = seed_card(&repo, &wave_id, "term-deleted").await;
+    let terminal_id = seed_terminal(&repo, &card_id).await;
+    registry
+        .register(entry(&card_id, &wave_id, &terminal_id))
+        .await
+        .unwrap();
+    repo.terminal_delete(&terminal_id).await.unwrap();
+
+    let dropped = registry.expire_dead_pending().await;
+
+    assert_eq!(dropped, 1);
+    assert_eq!(registry.pending_count().await, 0);
 }
 
 #[tokio::test]

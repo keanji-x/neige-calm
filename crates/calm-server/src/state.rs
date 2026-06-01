@@ -448,7 +448,11 @@ impl AppState {
             ))
         });
         if let Some(registry) = pending_codex_threads.clone() {
-            spawn_periodic_expire_task(registry, Duration::from_secs(60), Duration::from_secs(300));
+            spawn_periodic_expire_task(
+                registry,
+                Duration::from_secs(60),
+                Duration::from_secs(60 * 60 * 6),
+            );
         }
         let shared_codex_appserver = SharedCodexAppServer::new_with_pending(
             cfg,

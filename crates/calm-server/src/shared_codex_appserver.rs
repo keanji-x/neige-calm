@@ -957,9 +957,20 @@ async fn reap_verified_process_group(pid: i32, pgid: i32, start_time: u64, boot_
 
 fn thread_started_id(notification: &Notification) -> Option<&str> {
     match notification {
-        Notification::ThreadStarted { params } => params.get("threadId").and_then(|v| v.as_str()),
+        Notification::ThreadStarted { params } => thread_id_from_started(params),
         _ => None,
     }
+}
+
+fn thread_id_from_started(params: &serde_json::Value) -> Option<&str> {
+    if let Some(id) = params
+        .get("thread")
+        .and_then(|thread| thread.get("id"))
+        .and_then(serde_json::Value::as_str)
+    {
+        return Some(id);
+    }
+    params.get("threadId").and_then(serde_json::Value::as_str)
 }
 
 fn turn_completed_thread_id(notification: &Notification) -> Option<&str> {
@@ -1171,4 +1182,25 @@ impl SharedCodexAppServer {
 #[cfg(any(test, feature = "fixtures"))]
 pub fn drop_spawned_child_guard_for_test(child: Child, pgid: i32) {
     let _guard = SpawnedChildGuard::new(child, pgid);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn thread_id_from_started_accepts_real_codex_object_shape() {
+        let params = json!({
+            "thread": {"id": "thrd_abc"},
+            "turn_id": "turn_1",
+        });
+        assert_eq!(thread_id_from_started(&params), Some("thrd_abc"));
+    }
+
+    #[test]
+    fn thread_id_from_started_accepts_flat_shape_for_compat() {
+        let params = json!({"threadId": "thrd_xyz"});
+        assert_eq!(thread_id_from_started(&params), Some("thrd_xyz"));
+    }
 }
