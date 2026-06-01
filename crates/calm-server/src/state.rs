@@ -106,6 +106,9 @@ pub struct AppState {
     /// at boot but started explicitly from `main` after shared CODEX_HOME seed
     /// and MCP server setup; PR4 does not route cards through it yet.
     pub shared_codex_appserver: Arc<SharedCodexAppServer>,
+    /// PR5 -> PR3c gate for routing user prompt cards through the shared
+    /// codex daemon. Default false preserves the legacy per-card prompt path.
+    pub shared_codex_prompt_cards_enabled: bool,
     /// #322 — aspect / join-point framework registry. Holds the boot-
     /// installed aspects (today: [`WatermarkSinkInstalledAspect`] on
     /// `BeforeHandleParkInRegistry`). Threaded into
@@ -240,6 +243,7 @@ impl AppState {
             // Same instance the dispatcher above holds a clone of.
             spec_push,
             shared_codex_appserver,
+            shared_codex_prompt_cards_enabled: false,
             // #322 — aspect registry. Identical set in test/replay and
             // production (see `build_aspect_registry` doc) so a test
             // exercising the production register path (e.g.
@@ -248,6 +252,18 @@ impl AppState {
             aspects: build_aspect_registry(),
             raw: repo,
         }
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn with_shared_codex_appserver(mut self, shared: Arc<SharedCodexAppServer>) -> Self {
+        self.shared_codex_appserver = shared;
+        self
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn with_shared_codex_prompt_cards_enabled(mut self, enabled: bool) -> Self {
+        self.shared_codex_prompt_cards_enabled = enabled;
+        self
     }
 
     /// Real boot-time constructor. Loads the plugin manifest registry from
@@ -437,6 +453,7 @@ impl AppState {
             // instance for its push path.
             spec_push,
             shared_codex_appserver,
+            shared_codex_prompt_cards_enabled: cfg.shared_codex_prompt_cards_enabled,
             // #322 — aspect registry, boot-installed once and shared via
             // `Arc` to every handler / actor that needs it.
             aspects: build_aspect_registry(),

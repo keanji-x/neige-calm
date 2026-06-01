@@ -97,7 +97,12 @@ async fn shared_appserver_two_threads_true_binary() {
             &card_id,
             CardRole::Plain,
             None,
-            SharedThreadStartParams::default(),
+            SharedThreadStartParams {
+                cwd: "/tmp".into(),
+                approval_policy: "never".into(),
+                sandbox_mode: "workspace-write".into(),
+                developer_instructions: None,
+            },
         )
         .await
         .unwrap();
@@ -107,7 +112,12 @@ async fn shared_appserver_two_threads_true_binary() {
             &card2,
             CardRole::Plain,
             None,
-            SharedThreadStartParams::default(),
+            SharedThreadStartParams {
+                cwd: "/tmp".into(),
+                approval_policy: "never".into(),
+                sandbox_mode: "workspace-write".into(),
+                developer_instructions: None,
+            },
         )
         .await
         .unwrap();
@@ -141,7 +151,12 @@ async fn shared_appserver_restart_resumes_thread() {
             &card_id,
             CardRole::Plain,
             None,
-            SharedThreadStartParams::default(),
+            SharedThreadStartParams {
+                cwd: "/tmp".into(),
+                approval_policy: "never".into(),
+                sandbox_mode: "workspace-write".into(),
+                developer_instructions: None,
+            },
         )
         .await
         .unwrap();

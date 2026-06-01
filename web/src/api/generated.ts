@@ -981,17 +981,15 @@ export interface components {
          *     stamps `{schemaVersion, terminal_id, cwd?, prompt?}` itself). Empty
          *     `cwd` falls back to `$HOME` then the server's cwd.
          *
-         *     `prompt` is the hands-free entry point: when non-empty, the kernel
-         *       1. passes it to codex CLI as the positional `[PROMPT]` arg
-         *          (shell-single-quoted), which mounts the TUI with the composer
-         *          pre-filled,
-         *       2. writes a per-spawn `$CODEX_HOME/config.toml` that silences the
-         *          three first-run dialogs (approval, sandbox, project trust) so
-         *          injected stdin lands on the composer instead of a modal, and
-         *       3. stamps `prompt` onto the card payload — the
-         *          `codex_auto_submit` subscriber reads it and, once codex emits
-         *          `hook.codex.session_start`, routes `\r` through the renderer so
-         *          the composer auto-submits.
+         *     `prompt` is the hands-free entry point: when non-empty and the shared
+         *     codex prompt-card path is enabled, the kernel starts a shared thread,
+         *     persists its id on both the payload and `card_codex_threads`, sends the
+         *     prompt via `turn/start`, waits for `turn/started` or `turn/completed`,
+         *     and starts the TUI as `codex resume <thread_id> --remote unix://...`.
+         *
+         *     If the shared-daemon rollback flag is disabled, a non-empty prompt stays
+         *     on the legacy path: pass it to codex CLI as positional `[PROMPT]`, write
+         *     per-card `config.toml`, and let `codex_auto_submit` inject `\r`.
          *
          *     Empty / absent `prompt` reverts to the user-initiated flow: codex
          *     boots, the composer is empty, the user types and hits Enter.

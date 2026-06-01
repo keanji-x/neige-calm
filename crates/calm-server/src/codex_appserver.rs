@@ -157,6 +157,14 @@ pub enum InputItem {
     Text { text: String },
 }
 
+#[derive(Debug, Clone)]
+pub struct ThreadStartParams {
+    pub cwd: String,
+    pub approval_policy: String,
+    pub sandbox_mode: String,
+    pub developer_instructions: Option<String>,
+}
+
 impl InputItem {
     /// Convenience constructor for the text variant.
     pub fn text(s: impl Into<String>) -> Self {
@@ -484,6 +492,21 @@ impl CodexAppServer {
             None => json!({}),
         };
         self.request("thread/start", params).await
+    }
+
+    pub async fn thread_start_with_params(
+        &self,
+        params: ThreadStartParams,
+    ) -> Result<ThreadResult> {
+        let mut value = json!({
+            "cwd": params.cwd,
+            "approvalPolicy": params.approval_policy,
+            "sandbox": params.sandbox_mode,
+        });
+        if let Some(prompt) = params.developer_instructions {
+            value["developerInstructions"] = Value::String(prompt);
+        }
+        self.request("thread/start", value).await
     }
 
     /// `thread/resume` — attach to an existing thread by id. Fails with a
@@ -1135,6 +1158,61 @@ mod tests {
 
         let result = req_fut.await.expect("string-id response must correlate");
         assert_eq!(result.thread_id(), Some("str-id"));
+        let _server = server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn thread_start_with_params_sends_runtime_fields() {
+        let mut h = harness().await;
+        let client = h.client.with_request_timeout(Duration::from_secs(5));
+        let req_fut = client.thread_start_with_params(ThreadStartParams {
+            cwd: "/workspace".into(),
+            approval_policy: "never".into(),
+            sandbox_mode: "workspace-write".into(),
+            developer_instructions: None,
+        });
+
+        let server_task = tokio::spawn(async move {
+            let req = server_recv_json(&mut h.server).await;
+            assert_eq!(
+                req.get("method").and_then(Value::as_str),
+                Some("thread/start")
+            );
+            let params = req.get("params").expect("params");
+            assert_eq!(
+                params.get("cwd").and_then(Value::as_str),
+                Some("/workspace")
+            );
+            assert_eq!(
+                params.get("approvalPolicy").and_then(Value::as_str),
+                Some("never")
+            );
+            assert_eq!(
+                params.get("sandbox").and_then(Value::as_str),
+                Some("workspace-write")
+            );
+            assert!(
+                !params
+                    .as_object()
+                    .is_some_and(|params| params.contains_key("additionalContext")),
+                "PR5 must not send additionalContext: {req}"
+            );
+
+            let id = req.get("id").cloned().unwrap();
+            server_send_json(
+                &mut h.server,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "thread": { "id": "with-runtime-fields" }, "model": "m" },
+                }),
+            )
+            .await;
+            h.server
+        });
+
+        let result = req_fut.await.expect("thread/start");
+        assert_eq!(result.thread_id(), Some("with-runtime-fields"));
         let _server = server_task.await.unwrap();
     }
 
