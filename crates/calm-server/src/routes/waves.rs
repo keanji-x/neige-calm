@@ -1009,8 +1009,7 @@ pub(crate) async fn spawn_push_via_shared_daemon(
             // Rollback: the goal never reached the thread. Boot takeover
             // would otherwise treat this card as resumable with no record
             // that the wave title was lost.
-            if let Err(rollback_err) = s.repo.card_codex_thread_delete_by_card(spec_card_id).await
-            {
+            if let Err(rollback_err) = s.repo.card_codex_thread_delete_by_card(spec_card_id).await {
                 tracing::warn!(
                     target: "shared_codex_daemon::spec_card",
                     card_id = %spec_card_id,
@@ -1019,8 +1018,7 @@ pub(crate) async fn spawn_push_via_shared_daemon(
                     "card_codex_thread delete failed during turn_start rollback"
                 );
             }
-            if let Err(rollback_err) =
-                clear_shared_spec_runtime_fields(s, spec_card_id, wave).await
+            if let Err(rollback_err) = clear_shared_spec_runtime_fields(s, spec_card_id, wave).await
             {
                 tracing::warn!(
                     target: "shared_codex_daemon::spec_card",
