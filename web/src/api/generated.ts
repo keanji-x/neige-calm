@@ -252,6 +252,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/fs/readfile-raw": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["readfile_raw"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/overlays": {
         parameters: {
             query?: never;
@@ -2392,6 +2408,56 @@ export interface operations {
                 };
             };
             /** @description Path doesn't exist, is not a file, or is binary/non-UTF-8 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Read permission denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    readfile_raw: {
+        parameters: {
+            query: {
+                /** @description Absolute path to an image file */
+                path: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Read raw image bytes */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": number[];
+                };
+            };
+            /** @description Path doesn't exist, is not a file, has an unsupported extension, or exceeds the image cap */
             400: {
                 headers: {
                     [name: string]: unknown;

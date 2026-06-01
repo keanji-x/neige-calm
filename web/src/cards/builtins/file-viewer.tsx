@@ -27,6 +27,27 @@ const fileViewerPayloadSchema = z.object({
 type Tab = 'code' | 'diff';
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'file-viewer:sidebar-collapsed';
+const IMAGE_EXTENSIONS = [
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.webp',
+  '.bmp',
+  '.ico',
+  '.svg',
+];
+
+type FileState =
+  | { kind: 'idle' | 'loading' }
+  | { kind: 'loaded'; path: string; text: string; truncated: boolean }
+  | { kind: 'image'; path: string }
+  | { kind: 'error'; message: string };
+
+function isImagePath(path: string): boolean {
+  const lower = path.toLowerCase();
+  return IMAGE_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
 
 function readPersistedSidebarCollapsed(): boolean {
   try {
@@ -65,11 +86,7 @@ function FileViewerCard({
   const [listing, setListing] = useState<ListdirResponse | null>(null);
   const [listingLoading, setListingLoading] = useState(false);
   const [listingError, setListingError] = useState<string | null>(null);
-  const [fileState, setFileState] = useState<
-    | { kind: 'idle' | 'loading' }
-    | { kind: 'loaded'; path: string; text: string; truncated: boolean }
-    | { kind: 'error'; message: string }
-  >({ kind: 'idle' });
+  const [fileState, setFileState] = useState<FileState>({ kind: 'idle' });
   const [gitRoot, setGitRoot] = useState<string | null>(null);
   const [changedFiles, setChangedFiles] = useState<GitChangedFile[]>([]);
   const [diffSelected, setDiffSelected] = useState<string | null>(null);
@@ -125,6 +142,10 @@ function FileViewerCard({
 
   useEffect(() => {
     if (tab !== 'code' || !selectedPath) return;
+    if (isImagePath(selectedPath)) {
+      setFileState({ kind: 'image', path: selectedPath });
+      return;
+    }
     let cancelled = false;
     setFileState({ kind: 'loading' });
     api
@@ -349,10 +370,7 @@ function CodeTab({
   selectedPath,
   theme,
 }: {
-  state:
-    | { kind: 'idle' | 'loading' }
-    | { kind: 'loaded'; path: string; text: string; truncated: boolean }
-    | { kind: 'error'; message: string };
+  state: FileState;
   selectedPath: string | null;
   theme: 'light' | 'dark';
 }) {
@@ -365,6 +383,16 @@ function CodeTab({
       return <div className="file-viewer-state">Loading file…</div>;
     case 'error':
       return <div className="file-viewer-error">{state.message}</div>;
+    case 'image':
+      return (
+        <div className="file-viewer-image-wrap">
+          <img
+            className="file-viewer-image"
+            src={api.readFileRaw(state.path)}
+            alt={state.path}
+          />
+        </div>
+      );
   }
   return (
     <div className="file-viewer-code-wrap">

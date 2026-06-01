@@ -324,6 +324,9 @@ export const readFile = (path: string) =>
     `/api/fs/readfile?path=${encodeURIComponent(path)}`,
   );
 
+export const readFileRaw = (path: string) =>
+  `/api/fs/readfile-raw?path=${encodeURIComponent(path)}`;
+
 export const gitStatus = (path: string) =>
   request<GitStatusResponse>(
     'GET',

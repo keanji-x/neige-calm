@@ -2815,7 +2815,8 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 .file-viewer-tabs button.active { background: var(--text); color: var(--paper); }
 .file-viewer-selection { flex: 1; }
 .file-viewer-code-wrap,
-.file-viewer-diff-pane {
+.file-viewer-diff-pane,
+.file-viewer-image-wrap {
   flex: 1 1 0;
   min-height: 0;
   overflow: hidden;
@@ -2823,6 +2824,19 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 .file-viewer-code-wrap {
   display: flex;
   flex-direction: column;
+}
+.file-viewer-image-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  padding: var(--space-6);
+  background: var(--surface-card);
+}
+.file-viewer-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
 }
 .file-viewer-code-wrap .cm-theme {
   flex: 1 1 0;
