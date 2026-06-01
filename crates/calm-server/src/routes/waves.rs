@@ -971,6 +971,15 @@ pub(crate) async fn spawn_push_via_shared_daemon(
             let mut g = status.lock().await;
             g.last_thread_id = Some(thread_id.clone());
         }
+        // Stamp codex_source:"shared" + codex_thread_id on the card payload
+        // BEFORE the fallible turn_start + lifecycle wait. thread_start_for_card
+        // has already upserted card_codex_threads; if turn_start fails and we
+        // hadn't stamped the payload yet, boot takeover would route this card
+        // through the legacy per-wave path (which would fail to find any
+        // appserver_pgid and bootstrap a new app-server). Stamping the marker
+        // first keeps the inert-on-turn-failure card classified as shared, so
+        // takeover_shared_spec_cards_on_boot picks it up via the table.
+        persist_shared_spec_runtime_fields(s, spec_card_id, wave, Some(&thread_id)).await?;
         s.shared_codex_appserver
             .turn_start(&thread_id, vec![InputItem::text(wave.title.trim())])
             .await?;
@@ -978,7 +987,12 @@ pub(crate) async fn spawn_push_via_shared_daemon(
         Some(thread_id)
     };
 
-    persist_shared_spec_runtime_fields(s, spec_card_id, wave, thread_id.as_deref()).await?;
+    if thread_id.is_none() {
+        // Empty-goal path: thread is fresh-started by TUI; payload needs the
+        // shared marker stamped here without a thread_id (it'll be backfilled
+        // by the registry attribution + initial_prompt_ready_sink).
+        persist_shared_spec_runtime_fields(s, spec_card_id, wave, None).await?;
+    }
 
     let handle = spec_push::park_shared_handle(
         s.shared_codex_appserver.clone(),
