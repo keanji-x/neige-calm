@@ -120,6 +120,7 @@ async fn start_new_process_strips_per_card_env_keys() {
     assert_eq!(env.get("NEIGE_CARD_ID"), Some(&None));
     assert_eq!(env.get("NEIGE_HOOK_PROVIDER"), Some(&None));
     assert_eq!(env.get("NEIGE_MCP_TOKEN"), Some(&None));
+    assert_eq!(env.get("NEIGE_HOOK_URL"), Some(&None));
     assert_eq!(
         env.get("NEIGE_CALM_BASE_URL").cloned().flatten().as_deref(),
         Some("http://expected")
