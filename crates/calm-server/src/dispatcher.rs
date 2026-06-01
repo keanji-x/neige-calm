@@ -70,7 +70,8 @@ use tokio::task::JoinHandle;
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
-    card_update_tx, card_with_codex_create_tx, card_with_terminal_rollback_tx,
+    card_codex_thread_upsert_tx, card_update_tx, card_with_codex_create_tx,
+    card_with_terminal_rollback_tx,
 };
 use crate::db::{Repo, RouteRepo};
 use crate::db::{write_in_tx_typed, write_with_event_typed};
@@ -335,7 +336,7 @@ impl Dispatcher {
                             };
                             map.insert(
                                 "codex_thread_id".into(),
-                                serde_json::Value::String(thread_id_for_tx),
+                                serde_json::Value::String(thread_id_for_tx.clone()),
                             );
                             map.remove("appserver_needs_initial_prompt");
                             let card = card_update_tx(
@@ -347,6 +348,14 @@ impl Dispatcher {
                                     payload: Some(payload),
                                     deletable: None,
                                 },
+                            )
+                            .await?;
+                            card_codex_thread_upsert_tx(
+                                tx,
+                                card_id_for_tx.as_str(),
+                                thread_id_for_tx.as_str(),
+                                CardRole::Spec,
+                                Some(card.wave_id.as_str()),
                             )
                             .await?;
                             Ok((card.clone(), Event::CardUpdated(card)))

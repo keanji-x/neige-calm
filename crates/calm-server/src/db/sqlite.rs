@@ -31,8 +31,8 @@ use sqlx::Transaction;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
 use super::{
-    RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, WaveEvent, WriteInTxFn,
-    WriteWithEventFn, WriteWithEventsFn,
+    CardCodexThreadRow, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, WaveEvent,
+    WriteInTxFn, WriteWithEventFn, WriteWithEventsFn,
 };
 use crate::card_role_cache::CardRoleCache;
 use crate::error::{CalmError, Result};
@@ -1470,6 +1470,45 @@ pub async fn card_mcp_token_set_tx(
     Ok(())
 }
 
+pub async fn card_codex_thread_upsert_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card_id: &str,
+    thread_id: &str,
+    role: CardRole,
+    wave_id: Option<&str>,
+) -> Result<()> {
+    let now = now_ms();
+    sqlx::query(
+        r#"INSERT INTO card_codex_threads
+               (thread_id, card_id, role, wave_id, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+           ON CONFLICT(card_id) DO UPDATE SET
+               thread_id  = excluded.thread_id,
+               role       = excluded.role,
+               wave_id    = excluded.wave_id,
+               updated_at = excluded.updated_at"#,
+    )
+    .bind(thread_id)
+    .bind(card_id)
+    .bind(role)
+    .bind(wave_id)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+pub async fn card_codex_thread_delete_by_card_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card_id: &str,
+) -> Result<()> {
+    sqlx::query("DELETE FROM card_codex_threads WHERE card_id = ?1")
+        .bind(card_id)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn spec_card_set_appserver_after_reset_tx(
     tx: &mut Transaction<'_, Sqlite>,
@@ -1811,6 +1850,77 @@ impl RepoRead for SqlxRepo {
             .fetch_optional(&self.pool)
             .await?;
         Ok(row.map(|(role,)| role))
+    }
+
+    async fn card_codex_thread_get_by_thread(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<CardCodexThreadRow>> {
+        let row = sqlx::query_as::<_, (String, String, CardRole, Option<String>, i64, i64)>(
+            r#"SELECT thread_id, card_id, role, wave_id, created_at, updated_at
+               FROM card_codex_threads
+               WHERE thread_id = ?1"#,
+        )
+        .bind(thread_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(
+            |(thread_id, card_id, role, wave_id, created_at, updated_at)| CardCodexThreadRow {
+                thread_id,
+                card_id,
+                role,
+                wave_id,
+                created_at,
+                updated_at,
+            },
+        ))
+    }
+
+    async fn card_codex_thread_get_by_card(
+        &self,
+        card_id: &str,
+    ) -> Result<Option<CardCodexThreadRow>> {
+        let row = sqlx::query_as::<_, (String, String, CardRole, Option<String>, i64, i64)>(
+            r#"SELECT thread_id, card_id, role, wave_id, created_at, updated_at
+               FROM card_codex_threads
+               WHERE card_id = ?1"#,
+        )
+        .bind(card_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(
+            |(thread_id, card_id, role, wave_id, created_at, updated_at)| CardCodexThreadRow {
+                thread_id,
+                card_id,
+                role,
+                wave_id,
+                created_at,
+                updated_at,
+            },
+        ))
+    }
+
+    async fn card_codex_threads_active(&self) -> Result<Vec<CardCodexThreadRow>> {
+        let rows = sqlx::query_as::<_, (String, String, CardRole, Option<String>, i64, i64)>(
+            r#"SELECT thread_id, card_id, role, wave_id, created_at, updated_at
+               FROM card_codex_threads
+               ORDER BY created_at ASC, card_id ASC"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(thread_id, card_id, role, wave_id, created_at, updated_at)| CardCodexThreadRow {
+                    thread_id,
+                    card_id,
+                    role,
+                    wave_id,
+                    created_at,
+                    updated_at,
+                },
+            )
+            .collect())
     }
 
     // -------------------------------------------------------------- overlays
@@ -2491,6 +2601,7 @@ impl RepoOutOfDomain for SqlxRepo {
     ) -> Result<()> {
         let now = now_ms();
         let st_i64 = start_time.and_then(|v| i64::try_from(v).ok());
+        let mut tx = self.pool.begin().await?;
         let _ = sqlx::query(
             r#"UPDATE cards
                   SET payload = json_remove(
@@ -2515,8 +2626,30 @@ impl RepoOutOfDomain for SqlxRepo {
         .bind(watermark)
         .bind(now)
         .bind(card_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        card_codex_thread_delete_by_card_tx(&mut tx, card_id).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn card_codex_thread_upsert(
+        &self,
+        card_id: &str,
+        thread_id: &str,
+        role: CardRole,
+        wave_id: Option<&str>,
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        card_codex_thread_upsert_tx(&mut tx, card_id, thread_id, role, wave_id).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn card_codex_thread_delete_by_card(&self, card_id: &str) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        card_codex_thread_delete_by_card_tx(&mut tx, card_id).await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -2579,7 +2712,7 @@ impl RepoOutOfDomain for SqlxRepo {
         needs_initial_prompt: bool,
     ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
-        let _ = spec_card_set_appserver_after_reset_tx(
+        let card = spec_card_set_appserver_after_reset_tx(
             &mut tx,
             card_id,
             thread_id,
@@ -2588,6 +2721,14 @@ impl RepoOutOfDomain for SqlxRepo {
             start_time,
             boot_id,
             needs_initial_prompt,
+        )
+        .await?;
+        card_codex_thread_upsert_tx(
+            &mut tx,
+            card_id,
+            thread_id,
+            CardRole::Spec,
+            Some(card.wave_id.as_str()),
         )
         .await?;
         tx.commit().await?;
@@ -2605,6 +2746,7 @@ impl RepoOutOfDomain for SqlxRepo {
         // the rest of the push state so a re-spawned-from-scratch wave
         // doesn't carry a stale stamp.
         let now = now_ms();
+        let mut tx = self.pool.begin().await?;
         let _ = sqlx::query(
             r#"UPDATE cards
                   SET payload    = json_remove(
@@ -2622,13 +2764,16 @@ impl RepoOutOfDomain for SqlxRepo {
         )
         .bind(now)
         .bind(card_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        card_codex_thread_delete_by_card_tx(&mut tx, card_id).await?;
+        tx.commit().await?;
         Ok(())
     }
 
     async fn spec_card_clear_runtime_after_reset_failure(&self, card_id: &str) -> Result<()> {
         let now = now_ms();
+        let mut tx = self.pool.begin().await?;
         let _ = sqlx::query(
             r#"UPDATE cards
                   SET payload    = json_remove(
@@ -2645,8 +2790,10 @@ impl RepoOutOfDomain for SqlxRepo {
         )
         .bind(now)
         .bind(card_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        card_codex_thread_delete_by_card_tx(&mut tx, card_id).await?;
+        tx.commit().await?;
         Ok(())
     }
 

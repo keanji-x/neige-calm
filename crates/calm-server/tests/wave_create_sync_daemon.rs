@@ -200,6 +200,22 @@ async fn post_api_waves_spec_terminal_has_renderer_entry_before_response() {
         "exactly one Spec-role card per wave at create (cohort = {cards:?})",
     );
     let spec_card_id = spec_cards[0].id.clone();
+    let thread_id = spec_cards[0]
+        .payload
+        .get("codex_thread_id")
+        .and_then(Value::as_str)
+        .expect("non-empty wave create persists codex_thread_id")
+        .to_string();
+    let mapping = boot
+        .repo
+        .card_codex_thread_get_by_card(spec_card_id.as_str())
+        .await
+        .unwrap()
+        .expect("non-empty wave create dual-writes thread mapping");
+    assert_eq!(mapping.thread_id, thread_id);
+    assert_eq!(mapping.card_id, spec_card_id.as_str());
+    assert_eq!(mapping.role, calm_server::model::CardRole::Spec);
+    assert_eq!(mapping.wave_id.as_deref(), Some(wave.id.as_str()));
 
     // Sanity: the role cache shows Spec (pre-existing PR6 invariant,
     // assertion left here so a future regression flips both signals

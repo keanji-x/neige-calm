@@ -60,9 +60,10 @@
 use crate::actor::Actor;
 use crate::auth::Principal;
 use crate::db::sqlite::{
-    card_create_with_id_tx, card_mcp_token_set_tx, card_update_tx, card_with_codex_create_tx,
-    cove_folder_create_tx, overlay_upsert_tx, spec_card_set_appserver_after_reset_tx,
-    terminal_delete_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
+    card_codex_thread_upsert_tx, card_create_with_id_tx, card_mcp_token_set_tx, card_update_tx,
+    card_with_codex_create_tx, cove_folder_create_tx, overlay_upsert_tx,
+    spec_card_set_appserver_after_reset_tx, terminal_delete_tx, wave_create_tx, wave_delete_tx,
+    wave_update_tx,
 };
 use crate::db::{write_with_event_typed, write_with_events_typed};
 use crate::error::{CalmError, ErrorBody, Result};
@@ -993,6 +994,14 @@ pub(crate) async fn spawn_push_appserver(
                         needs_initial_prompt,
                     )
                     .await?;
+                    card_codex_thread_upsert_tx(
+                        tx,
+                        &card_id_for_tx,
+                        thread_id_for_reset,
+                        CardRole::Spec,
+                        Some(card.wave_id.as_str()),
+                    )
+                    .await?;
                     return Ok((card.clone(), Event::CardUpdated(card)));
                 }
 
@@ -1084,6 +1093,21 @@ pub(crate) async fn spawn_push_appserver(
                     },
                 )
                 .await?;
+                if let Some(thread_id) = card
+                    .payload
+                    .get("codex_thread_id")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|tid| !tid.trim().is_empty())
+                {
+                    card_codex_thread_upsert_tx(
+                        tx,
+                        &card_id_for_tx,
+                        thread_id,
+                        CardRole::Spec,
+                        Some(card.wave_id.as_str()),
+                    )
+                    .await?;
+                }
                 Ok((card.clone(), Event::CardUpdated(card)))
             })
         },
