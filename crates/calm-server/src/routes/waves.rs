@@ -852,18 +852,26 @@ pub(crate) async fn create_wave(
                     false
                 };
                 let handle_removed = s.spec_push.remove(&wave.id).is_some();
-                let initial_prompt_cleared = s
-                    .repo
-                    .spec_card_clear_needs_initial_prompt(spec_card_id.as_ref())
-                    .await
-                    .is_ok();
+                // Clear ALL shared markers — not just needs_initial_prompt.
+                // Otherwise the card is permanently inert: legacy takeover
+                // skips codex_source="shared", shared takeover skips because
+                // needs_initial_prompt=false + no card_codex_threads row, and
+                // reset is rejected for shared cards. clear_shared_spec_runtime_fields
+                // removes codex_source, codex_thread_id, appserver_*, and
+                // appserver_needs_initial_prompt so the card becomes a plain
+                // inert spec card the user can delete (or hand back to the
+                // legacy reset path once #410 PR7b-reset lands).
+                let payload_cleared =
+                    clear_shared_spec_runtime_fields(&s, spec_card_id.as_ref(), &wave)
+                        .await
+                        .is_ok();
                 tracing::warn!(
                     target: "shared_codex_daemon::pending_rollback_on_spawn_failure",
                     card_id = %spec_card_id,
                     wave_id = %wave.id,
                     pending_removed,
                     handle_removed,
-                    initial_prompt_cleared,
+                    payload_cleared,
                     "spec TUI spawn failed; rolled back shared pending spec state"
                 );
             }
