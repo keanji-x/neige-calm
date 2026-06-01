@@ -34,10 +34,12 @@
 use crate::card_role_cache::CardRoleCache;
 use crate::db::RouteRepo;
 use crate::mcp_server::framing::{
-    Frame, RequestId, RpcError, build_error_response_frame, build_ok_response_frame, parse_frame,
+    Frame, RpcError, build_error_response_frame, build_ok_response_frame, parse_frame,
 };
 use crate::mcp_server::handshake::handle_initialize;
-use crate::mcp_server::registry::{AppContext, ToolCallIdentity, ToolHandler, ToolRegistry};
+use crate::mcp_server::registry::{
+    AppContext, CardIdentity, ToolCallIdentity, ToolHandler, ToolRegistry,
+};
 use crate::wave_cove_cache::WaveCoveCache;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -229,7 +231,7 @@ async fn handle_connection(
     // gets a `MethodNotFound`-shaped error. We don't bind an identity
     // until `initialize` succeeds — every other request before then is
     // unauthenticated and rejected.
-    let daemon_trust = loop {
+    let (daemon_trust, legacy_identity) = loop {
         line.clear();
         let n = reader.read_line(&mut line).await?;
         if n == 0 {
@@ -258,7 +260,7 @@ async fn handle_connection(
                         let frame = build_ok_response_frame(&id, &ok.result_payload);
                         wr.write_all(&frame).await?;
                         wr.flush().await?;
-                        break ok.daemon_trust;
+                        break (ok.daemon_trust, ok.legacy_identity);
                     }
                     Err(rpc_err) => {
                         let frame = build_error_response_frame(&id, &rpc_err);
@@ -297,8 +299,9 @@ async fn handle_connection(
     );
 
     // Phase 2: post-initialize message pump. Any request after this
-    // sees only the daemon trust marker; tools/call resolves identity
-    // from `_meta.threadId`.
+    // sees daemon trust; tools/call resolves identity from
+    // `_meta.threadId` first, then temporarily falls back to the
+    // initialize-time legacy token identity for older clients.
     loop {
         line.clear();
         let n = reader.read_line(&mut line).await?;
@@ -325,12 +328,12 @@ async fn handle_connection(
                 request_meta,
             } => {
                 let resp = dispatch_request(
-                    &id,
                     &method,
                     params,
                     request_meta,
                     &ctx,
                     daemon_trust,
+                    legacy_identity.as_ref(),
                     &registry,
                 )
                 .await;
@@ -358,12 +361,12 @@ async fn handle_connection(
 /// here so the pre-/post-initialize message pump can share a single
 /// switch.
 async fn dispatch_request(
-    _id: &RequestId,
     method: &str,
     params: Value,
     request_meta: Option<Value>,
     ctx: &Arc<AppContext>,
     _daemon_trust: bool,
+    legacy_identity: Option<&CardIdentity>,
     registry: &Arc<ToolRegistry>,
 ) -> Result<Value, RpcError> {
     match method {
@@ -384,60 +387,93 @@ async fn dispatch_request(
             Ok(json!({ "tools": tools }))
         }
         "tools/call" => {
-            let params_meta = extract_request_meta(&params);
-            let thread_id = extract_thread_id(request_meta.as_ref())
-                .or_else(|| extract_thread_id(params_meta.as_ref()))
-                .ok_or_else(|| RpcError::invalid_params("tools/call requires _meta.threadId"))?;
-            let name = params
-                .get("name")
-                .and_then(|n| n.as_str())
-                .ok_or_else(|| RpcError::invalid_params("tools/call: missing `name`"))?;
-            let arguments = params
-                .get("arguments")
-                .cloned()
-                .unwrap_or(Value::Object(Default::default()));
-            let handler: ToolHandler = registry
-                .lookup(name)
-                .ok_or_else(|| RpcError::method_not_found(&format!("tools/call: {name}")))?;
-            let row = ctx
-                .repo
-                .card_codex_thread_get_by_thread(thread_id)
-                .await
-                .map_err(|e| RpcError::internal(format!("tools/call thread lookup: {e}")))?
-                .ok_or_else(|| {
-                    tracing::warn!(
-                        target: "shared_codex_daemon::mcp_identity_miss",
-                        thread_id,
-                        tool = %name,
-                        "mcp_server: tools/call thread id did not resolve to a card"
-                    );
-                    RpcError::method_not_found(&format!("unknown thread_id: {thread_id}"))
-                })?;
-            let identity = ToolCallIdentity {
-                card_id: row.card_id,
-                role: row.role,
-                wave_id: row.wave_id,
-                thread_id: row.thread_id,
-            };
-            let fut = handler(ctx.clone(), identity, arguments);
-            let raw = fut.await?;
-            // Wrap the handler's raw payload in the MCP `CallToolResult`
-            // envelope so codex's MCP client parses it. The kernel's
-            // tools today return a JSON object; we surface it as a
-            // single `text` content block + `structuredContent` field
-            // so downstream agents can either parse the structured form
-            // or read the text representation.
-            let text = serde_json::to_string(&raw).unwrap_or_else(|_| "{}".to_string());
-            Ok(json!({
-                "content": [{ "type": "text", "text": text }],
-                "structuredContent": raw,
-                "isError": false,
-            }))
+            dispatch_tools_call(ctx, request_meta, params, legacy_identity, registry).await
         }
         "resources/list" => Ok(json!({ "resources": [] })),
         "prompts/list" => Ok(json!({ "prompts": [] })),
         other => Err(RpcError::method_not_found(other)),
     }
+}
+
+async fn dispatch_tools_call(
+    ctx: &Arc<AppContext>,
+    request_meta: Option<Value>,
+    params: Value,
+    legacy_identity: Option<&CardIdentity>,
+    registry: &Arc<ToolRegistry>,
+) -> Result<Value, RpcError> {
+    let params_meta = extract_request_meta(&params);
+    let thread_id = extract_thread_id(request_meta.as_ref())
+        .or_else(|| extract_thread_id(params_meta.as_ref()));
+    let name = params
+        .get("name")
+        .and_then(|n| n.as_str())
+        .ok_or_else(|| RpcError::invalid_params("tools/call: missing `name`"))?;
+    let arguments = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or(Value::Object(Default::default()));
+    let handler: ToolHandler = registry
+        .lookup(name)
+        .ok_or_else(|| RpcError::method_not_found(&format!("tools/call: {name}")))?;
+
+    let thread_identity = resolve_thread_identity(ctx, thread_id, name).await;
+    let identity = match thread_identity {
+        Ok(identity) => identity,
+        Err(thread_err) => match legacy_identity {
+            Some(legacy) => ToolCallIdentity {
+                card_id: legacy.card_id.as_str().to_string(),
+                role: legacy.role,
+                wave_id: legacy.wave_id.clone(),
+                thread_id: "legacy-token-fallback".to_string(),
+            },
+            None => return Err(thread_err),
+        },
+    };
+
+    let fut = handler(ctx.clone(), identity, arguments);
+    let raw = fut.await?;
+    // Wrap the handler's raw payload in the MCP `CallToolResult`
+    // envelope so codex's MCP client parses it. The kernel's
+    // tools today return a JSON object; we surface it as a
+    // single `text` content block + `structuredContent` field
+    // so downstream agents can either parse the structured form
+    // or read the text representation.
+    let text = serde_json::to_string(&raw).unwrap_or_else(|_| "{}".to_string());
+    Ok(json!({
+        "content": [{ "type": "text", "text": text }],
+        "structuredContent": raw,
+        "isError": false,
+    }))
+}
+
+async fn resolve_thread_identity(
+    ctx: &Arc<AppContext>,
+    thread_id: Option<&str>,
+    tool_name: &str,
+) -> Result<ToolCallIdentity, RpcError> {
+    let thread_id =
+        thread_id.ok_or_else(|| RpcError::invalid_params("tools/call requires _meta.threadId"))?;
+    let row = ctx
+        .repo
+        .card_codex_thread_get_by_thread(thread_id)
+        .await
+        .map_err(|e| RpcError::internal(format!("tools/call thread lookup: {e}")))?
+        .ok_or_else(|| {
+            tracing::warn!(
+                target: "shared_codex_daemon::mcp_identity_miss",
+                thread_id,
+                tool = %tool_name,
+                "mcp_server: tools/call thread id did not resolve to a card"
+            );
+            RpcError::method_not_found(&format!("unknown thread_id: {thread_id}"))
+        })?;
+    Ok(ToolCallIdentity {
+        card_id: row.card_id,
+        role: row.role,
+        wave_id: row.wave_id,
+        thread_id: row.thread_id,
+    })
 }
 
 fn extract_request_meta(params: &Value) -> Option<Value> {

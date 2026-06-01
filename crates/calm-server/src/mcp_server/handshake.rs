@@ -12,8 +12,9 @@
 //!   3. Verifies via constant-time compare (defense-in-depth over the
 //!      `WHERE hashed_token = ?` lookup) — see
 //!      [`crate::mcp_server::auth::verify_token`].
-//!   4. Returns a daemon-trust marker. Card identity is resolved later,
-//!      per `tools/call`, from `_meta.threadId`.
+//!   4. Returns a daemon-trust marker plus the token-bound card identity
+//!      as a temporary fallback for legacy callers. Modern tools/call
+//!      identity is still resolved first from `_meta.threadId`.
 //!
 //! Any failure short-circuits to an MCP-spec `initialize` error response
 //! (`InvalidParams` for malformed `_meta`, `InternalError` for repo
@@ -30,6 +31,7 @@
 use crate::db::RouteRepo;
 use crate::mcp_server::auth;
 use crate::mcp_server::framing::RpcError;
+use crate::mcp_server::registry::CardIdentity;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -41,10 +43,12 @@ use std::sync::Arc;
 /// implementation-defined server errors.
 pub const TOKEN_NOT_RECOGNIZED_CODE: i64 = -32401;
 
-/// Result of a successful handshake. Carries only daemon-level trust and
-/// the JSON `result` value to wire back to the client.
+/// Result of a successful handshake. Carries daemon-level trust, a
+/// temporary legacy card identity fallback, and the JSON `result` value
+/// to wire back to the client.
 pub struct HandshakeOk {
     pub daemon_trust: bool,
+    pub legacy_identity: Option<CardIdentity>,
     pub result_payload: Value,
 }
 
@@ -83,7 +87,7 @@ pub async fn handle_initialize(
     //    stored_hash)` so step 3 can actually run the constant-time
     //    compare promised in the doc above.
     let hashed = auth::hash_token(token);
-    let (_card_id_str, stored_hash) = repo
+    let (card_id_str, stored_hash) = repo
         .card_mcp_token_lookup_by_hash(&hashed)
         .await
         .map_err(|e| RpcError::internal(format!("token lookup: {e}")))?
@@ -110,6 +114,26 @@ pub async fn handle_initialize(
         ));
     }
 
+    let legacy_identity = match repo
+        .card_get(&card_id_str)
+        .await
+        .map_err(|e| RpcError::internal(format!("legacy card lookup: {e}")))?
+    {
+        Some(card) => {
+            let role = repo
+                .card_role_get(&card_id_str)
+                .await
+                .map_err(|e| RpcError::internal(format!("legacy card role lookup: {e}")))?
+                .ok_or_else(|| RpcError::internal("legacy card role lookup: missing role"))?;
+            Some(CardIdentity {
+                card_id: card.id,
+                role,
+                wave_id: Some(card.wave_id.as_str().to_string()),
+            })
+        }
+        None => None,
+    };
+
     // 4. Build the success payload. The shape mirrors what the kernel's
     //    own MCP *client* sends in its `initialize` request — same
     //    `protocolVersion` echo + a minimal `capabilities` block
@@ -128,6 +152,7 @@ pub async fn handle_initialize(
 
     Ok(HandshakeOk {
         daemon_trust: true,
+        legacy_identity,
         result_payload,
     })
 }

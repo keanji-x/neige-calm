@@ -16,9 +16,9 @@
 //!     surface the MCP server needs so the registry doesn't take a
 //!     full `AppState` clone);
 //!   * a [`ToolCallIdentity`] — resolved for each `tools/call` from
-//!     `_meta.threadId` via `card_codex_threads`. The `initialize`
-//!     token only proves daemon-level trust; it no longer pins a card
-//!     to the socket.
+//!     `_meta.threadId` via `card_codex_threads`, with a temporary
+//!     legacy token fallback while older clients and worker launches
+//!     catch up.
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::RouteRepo;
@@ -42,6 +42,7 @@ use std::sync::Arc;
 pub struct CardIdentity {
     pub card_id: CardId,
     pub role: CardRole,
+    pub wave_id: Option<String>,
 }
 
 impl CardIdentity {

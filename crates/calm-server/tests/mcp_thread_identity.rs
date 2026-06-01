@@ -10,8 +10,11 @@ use std::time::Duration;
 
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, card_with_codex_create_tx};
+use calm_server::db::sqlite::{
+    SqlxRepo, card_create_with_id_tx, card_mcp_token_set_tx, card_with_codex_create_tx,
+};
 use calm_server::event::EventBus;
+use calm_server::mcp_server::auth;
 use calm_server::mcp_server::registry::{
     ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, require_role,
 };
@@ -33,6 +36,8 @@ const TEST_BUDGET: Duration = Duration::from_secs(5);
 struct Boot {
     server: Arc<McpServer>,
     repo: Arc<dyn Repo>,
+    sqlx_repo: Arc<SqlxRepo>,
+    card_role_cache: CardRoleCache,
     socket_path: PathBuf,
     raw_token: String,
     wave_id: String,
@@ -104,7 +109,7 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
     let server = McpServer::spawn(
         repo.clone(),
         EventBus::new(),
-        card_role_cache,
+        card_role_cache.clone(),
         wave_cove_cache,
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
@@ -116,6 +121,8 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
     Boot {
         server,
         repo,
+        sqlx_repo,
+        card_role_cache,
         socket_path,
         raw_token: mcp_token.unwrap(),
         wave_id: wave.id.as_str().to_string(),
@@ -123,6 +130,11 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
         plain_card_id: plain.id.as_str().to_string(),
         _tmp: tmp,
     }
+}
+
+struct LegacyCard {
+    card_id: String,
+    legacy_token: String,
 }
 
 fn capture_identity_registry() -> (Arc<ToolRegistry>, mpsc::UnboundedReceiver<ToolCallIdentity>) {
@@ -164,6 +176,35 @@ async fn seed_thread(boot: &Boot, card_id: &str, thread_id: &str, role: CardRole
         .card_codex_thread_upsert(card_id, thread_id, role, Some(boot.wave_id.as_str()))
         .await
         .unwrap();
+}
+
+async fn seed_card_with_legacy_mcp_token(boot: &Boot, card_id: &str, role: CardRole) -> LegacyCard {
+    let token = auth::CardMcpToken::generate();
+    let mut tx = boot.sqlx_repo.pool().begin().await.unwrap();
+    let card = calm_server::model::NewCard {
+        wave_id: boot.wave_id.as_str().into(),
+        kind: "codex".into(),
+        sort: None,
+        payload: Value::Null,
+    };
+    card_create_with_id_tx(
+        &mut tx,
+        card_id.to_string(),
+        card,
+        role,
+        true,
+        &boot.card_role_cache,
+    )
+    .await
+    .unwrap();
+    card_mcp_token_set_tx(&mut tx, card_id, &auth::hash_token(token.as_str()))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    LegacyCard {
+        card_id: card_id.to_string(),
+        legacy_token: token.into_inner(),
+    }
 }
 
 async fn connect(
@@ -234,6 +275,32 @@ async fn initialized_client(
     (rd, wr)
 }
 
+async fn initialized_client_with_token(
+    boot: &Boot,
+    token: &str,
+) -> (
+    BufReader<tokio::net::unix::OwnedReadHalf>,
+    tokio::net::unix::OwnedWriteHalf,
+) {
+    let (mut rd, mut wr) = connect(&boot.socket_path).await;
+    send_frame(&mut wr, initialize_frame(1, token)).await;
+    let resp = recv_frame(&mut rd).await;
+    assert!(resp.get("error").is_none(), "initialize errored: {resp:#?}");
+    (rd, wr)
+}
+
+async fn call_with_token(
+    boot: &Boot,
+    token: &str,
+    name: &str,
+    thread_id: Option<&str>,
+    args: Value,
+) -> Value {
+    let (mut rd, mut wr) = initialized_client_with_token(boot, token).await;
+    send_frame(&mut wr, tools_call_frame(2, name, thread_id, args)).await;
+    recv_frame(&mut rd).await
+}
+
 #[tokio::test]
 async fn tools_call_with_known_thread_id_uses_mapped_card_identity() {
     let (registry, mut rx) = capture_identity_registry();
@@ -291,8 +358,8 @@ async fn tools_call_meta_threadid_in_params_meta_resolves_when_top_level_meta_ha
 }
 
 #[tokio::test]
-async fn tools_call_without_thread_id_rejects_with_invalid_params() {
-    let (registry, _rx) = capture_identity_registry();
+async fn tools_call_without_thread_id_falls_back_to_legacy_token_identity() {
+    let (registry, mut rx) = capture_identity_registry();
     let boot = boot_with_registry(registry).await;
     let (mut rd, mut wr) = initialized_client(&boot).await;
 
@@ -302,19 +369,21 @@ async fn tools_call_without_thread_id_rejects_with_invalid_params() {
     )
     .await;
     let resp = recv_frame(&mut rd).await;
-    assert_eq!(resp["error"]["code"], json!(RpcError::INVALID_PARAMS));
     assert!(
-        resp["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("_meta.threadId")
+        resp.get("error").is_none(),
+        "legacy token fallback must succeed: {resp:#?}"
     );
+    let identity = rx.recv().await.unwrap();
+    assert_eq!(identity.card_id, boot.spec_card_id);
+    assert_eq!(identity.role, CardRole::Spec);
+    assert_eq!(identity.wave_id.as_deref(), Some(boot.wave_id.as_str()));
+    assert_eq!(identity.thread_id, "legacy-token-fallback");
     let _ = &boot.server;
 }
 
 #[tokio::test]
-async fn tools_call_with_unknown_thread_id_rejects_with_not_found() {
-    let (registry, _rx) = capture_identity_registry();
+async fn tools_call_with_unknown_thread_id_falls_back_to_legacy_token_identity() {
+    let (registry, mut rx) = capture_identity_registry();
     let boot = boot_with_registry(registry).await;
     let (mut rd, mut wr) = initialized_client(&boot).await;
     let observed = Arc::new(AtomicBool::new(false));
@@ -329,13 +398,13 @@ async fn tools_call_with_unknown_thread_id_rejects_with_not_found() {
     )
     .await;
     let resp = recv_frame(&mut rd).await;
-    assert_eq!(resp["error"]["code"], json!(RpcError::METHOD_NOT_FOUND));
     assert!(
-        resp["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("unknown thread_id: missing")
+        resp.get("error").is_none(),
+        "unknown threadId must fall back to legacy: {resp:#?}"
     );
+    let identity = rx.recv().await.unwrap();
+    assert_eq!(identity.card_id, boot.spec_card_id);
+    assert_eq!(identity.thread_id, "legacy-token-fallback");
     assert!(
         observed.load(Ordering::SeqCst),
         "mcp_identity_miss tracing event should fire"
@@ -372,6 +441,86 @@ async fn tools_call_thread_id_drives_role_gate() {
         spec_resp["result"]["structuredContent"]["role"],
         json!("spec")
     );
+    let _ = &boot.server;
+}
+
+#[tokio::test]
+async fn worker_tools_call_with_unknown_thread_id_falls_back_to_worker_legacy_identity() {
+    let (registry, mut rx) = capture_identity_registry();
+    let boot = boot_with_registry(registry).await;
+    let worker = seed_card_with_legacy_mcp_token(&boot, "c-worker-legacy", CardRole::Worker).await;
+    let resp = call_with_token(
+        &boot,
+        &worker.legacy_token,
+        "test.capture_identity",
+        Some("fake-thread-not-in-table"),
+        json!({}),
+    )
+    .await;
+    assert!(
+        resp.get("error").is_none(),
+        "worker unknown threadId must fall back to legacy: {resp:#?}"
+    );
+    let identity = rx.recv().await.unwrap();
+    assert_eq!(identity.card_id, worker.card_id);
+    assert_eq!(identity.role, CardRole::Worker);
+    assert_eq!(identity.thread_id, "legacy-token-fallback");
+    let _ = &boot.server;
+}
+
+#[tokio::test]
+async fn default_wave_state_tool_without_thread_id_uses_legacy_spec_identity() {
+    let boot = boot_with_registry(build_default_registry()).await;
+    let resp = call_with_token(
+        &boot,
+        &boot.raw_token,
+        "calm.get_wave_state",
+        None,
+        json!({}),
+    )
+    .await;
+    assert!(
+        resp.get("error").is_none(),
+        "shell-neige style legacy token fallback must succeed: {resp:#?}"
+    );
+    let _ = &boot.server;
+}
+
+#[tokio::test]
+async fn tools_call_without_thread_id_and_without_legacy_token_rejects() {
+    let boot = boot_with_registry(build_default_registry()).await;
+    let (mut rd, mut wr) = connect(&boot.socket_path).await;
+
+    send_frame(
+        &mut wr,
+        tools_call_frame(2, "calm.get_wave_state", None, json!({})),
+    )
+    .await;
+    let resp = recv_frame(&mut rd).await;
+    assert!(
+        resp.get("error").is_some(),
+        "anonymous call must reject: {resp:#?}"
+    );
+    let _ = &boot.server;
+}
+
+#[tokio::test]
+async fn legacy_identity_does_not_bypass_role_gate() {
+    let boot = boot_with_registry(build_default_registry()).await;
+    let plain = seed_card_with_legacy_mcp_token(&boot, "c-plain-legacy", CardRole::Plain).await;
+    let resp = call_with_token(
+        &boot,
+        &plain.legacy_token,
+        "calm.get_wave_state",
+        None,
+        json!({}),
+    )
+    .await;
+    assert!(
+        resp.get("error").is_some(),
+        "Plain must still be rejected via legacy: {resp:#?}"
+    );
+    assert_eq!(resp["error"]["code"], json!(RpcError::INVALID_PARAMS));
     let _ = &boot.server;
 }
 
