@@ -501,7 +501,7 @@ impl CodexAppServer {
         let mut value = json!({
             "cwd": params.cwd,
             "approvalPolicy": params.approval_policy,
-            "sandboxMode": params.sandbox_mode,
+            "sandbox": params.sandbox_mode,
         });
         if let Some(prompt) = params.developer_instructions {
             value["developerInstructions"] = Value::String(prompt);
@@ -1188,7 +1188,7 @@ mod tests {
                 Some("never")
             );
             assert_eq!(
-                params.get("sandboxMode").and_then(Value::as_str),
+                params.get("sandbox").and_then(Value::as_str),
                 Some("workspace-write")
             );
             assert!(

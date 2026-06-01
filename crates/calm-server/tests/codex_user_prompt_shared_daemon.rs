@@ -205,7 +205,7 @@ async fn create_prompt_card_calls_shared_daemon_thread_start() {
         "thread/start cwd: {thread}"
     );
     assert_eq!(thread["params"]["approvalPolicy"], "never");
-    assert_eq!(thread["params"]["sandboxMode"], "workspace-write");
+    assert_eq!(thread["params"]["sandbox"], "workspace-write");
     assert!(thread["params"].get("developerInstructions").is_none());
 
     let turn = request(&rows, "turn/start");
