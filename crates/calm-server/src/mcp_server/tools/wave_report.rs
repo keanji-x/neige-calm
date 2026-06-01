@@ -79,7 +79,11 @@ where
     F: Fn(Arc<AppContext>, CardIdentity, Value) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<Value, RpcError>> + Send + 'static,
 {
-    Arc::new(move |ctx, identity, args| -> ToolHandlerFuture { Box::pin(f(ctx, identity, args)) })
+    Arc::new(
+        move |ctx, identity, _request_meta, args| -> ToolHandlerFuture {
+            Box::pin(f(ctx, identity, args))
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------

@@ -266,7 +266,7 @@ async fn call_mcp(
         .registry
         .lookup(name)
         .unwrap_or_else(|| panic!("tool not registered: {name}"));
-    handler(boot.ctx.clone(), identity, args).await
+    handler(boot.ctx.clone(), identity, None, args).await
 }
 
 /// The dispatcher's push path subscribes to the wave's event stream with

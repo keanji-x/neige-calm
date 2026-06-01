@@ -21,6 +21,9 @@
 //!     the rest of its lifetime. Tools never read the card id out of
 //!     the JSON-RPC params; trying to "spoof" via params is a no-op
 //!     because the registry shadow-overrides whatever the tool sees.
+//!   * per-request MCP `_meta` — infrastructure-only passthrough for
+//!     call metadata. Current handlers intentionally ignore it and keep
+//!     using the connection-bound identity.
 //!
 //! ## Why identity is connection-level (not param-level)
 //!
@@ -158,12 +161,14 @@ pub type ToolHandlerFuture =
 
 /// One tool's invocation contract. The transport calls this with the
 /// per-connection [`CardIdentity`] (immutable, established at
-/// handshake) and the raw `arguments` JSON value from the
-/// `tools/call` params. Handlers are responsible for shape-validating
-/// `arguments` and translating internal errors into [`RpcError`]
-/// (almost always `RpcError::invalid_params` / `RpcError::internal`).
-pub type ToolHandler =
-    Arc<dyn Fn(Arc<AppContext>, CardIdentity, Value) -> ToolHandlerFuture + Send + Sync>;
+/// handshake), the optional per-request `_meta`, and the raw `arguments`
+/// JSON value from the `tools/call` params. Handlers are responsible for
+/// shape-validating `arguments` and translating internal errors into
+/// [`RpcError`] (almost always `RpcError::invalid_params` /
+/// `RpcError::internal`).
+pub type ToolHandler = Arc<
+    dyn Fn(Arc<AppContext>, CardIdentity, Option<Value>, Value) -> ToolHandlerFuture + Send + Sync,
+>;
 
 /// `tools/list` descriptor — the JSON shape codex's MCP client expects.
 /// We store the description + the JSON schema for `inputSchema` here
