@@ -32,6 +32,14 @@ function fixture() {
   return { scrollRoot, activeCard };
 }
 
+function mockElementFromPoint(el: Element | null) {
+  const orig = document.elementFromPoint;
+  document.elementFromPoint = () => el;
+  return () => {
+    document.elementFromPoint = orig;
+  };
+}
+
 afterEach(() => {
   document.body.replaceChildren();
 });
@@ -309,11 +317,39 @@ describe('resolveWheelRoute', () => {
 });
 
 describe('getActiveCardShell', () => {
-  it('returns the focused card shell inside the scroll root', () => {
+  it('returns the cursor-pointed card shell inside the scroll root', () => {
     const { scrollRoot, activeCard } = fixture();
-    activeCard.tabIndex = -1;
-    activeCard.focus();
+    const body = document.createElement('div');
+    activeCard.append(body);
+    const restore = mockElementFromPoint(body);
 
-    expect(getActiveCardShell(scrollRoot, document)).toBe(activeCard);
+    try {
+      expect(getActiveCardShell(scrollRoot, document, 0, 0)).toBe(activeCard);
+    } finally {
+      restore();
+    }
+  });
+
+  it("returns null when the cursor isn't over a card so wheel routes to page", () => {
+    const { scrollRoot } = fixture();
+    const outside = document.createElement('div');
+    scrollRoot.append(outside);
+    const restore = mockElementFromPoint(outside);
+
+    try {
+      const activeCard = getActiveCardShell(scrollRoot, document, 0, 0);
+
+      expect(activeCard).toBeNull();
+      expect(
+        resolveWheelRoute({
+          scrollRoot,
+          activeCard,
+          eventTarget: outside,
+          deltaY: 120,
+        }),
+      ).toEqual({ kind: 'page' });
+    } finally {
+      restore();
+    }
   });
 });

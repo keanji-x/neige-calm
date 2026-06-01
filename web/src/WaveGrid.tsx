@@ -20,7 +20,6 @@ import { dlog } from './util/debug';
 import type { WaveCardSlot } from './types';
 import { useOverlayState } from './hooks/useOverlayState';
 import { OVERLAY_LAYOUT_SCHEMA_VERSION } from './cards/builtins/schemaVersions';
-import { handleWheelCardPointerDown } from './input/cardShell';
 
 const COLS = 12;
 const ROW_HEIGHT = 40;
@@ -271,9 +270,7 @@ export function WaveGrid({
               <div
                 key={slotKey(slot, i)}
                 className="wave-card"
-                tabIndex={-1}
                 data-wheel-card
-                onPointerDownCapture={handleWheelCardPointerDown}
               >
                 {slot.kind === 'card' ? (
                   <WaveCard
