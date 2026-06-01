@@ -26,6 +26,7 @@ use crate::config::Config;
 use crate::db::{Repo, SharedCodexDaemonUpdate};
 use crate::error::{CalmError, Result};
 use crate::model::{CardRole, now_ms};
+use crate::pending_codex_threads::PendingThreadStartRegistry;
 use crate::routes::settings::load_settings;
 use crate::shared_codex_home::SharedCodexHome;
 use crate::spec_appserver::{
@@ -82,6 +83,7 @@ pub struct SharedDaemonStatus {
     pub codex_home: String,
     pub runtime: Option<SharedDaemonRuntime>,
     pub cached_threads: usize,
+    pub pending_count: usize,
     pub restart_count: u64,
     pub last_error: Option<String>,
 }
@@ -180,6 +182,7 @@ pub struct SharedCodexAppServer {
     thread_cache: Arc<DashMap<String, String>>,
     restart_backoff: BackoffState,
     notifications: NotificationFanout,
+    pending_codex_threads_handle: Option<Arc<PendingThreadStartRegistry>>,
     codex_bin: String,
     log_dir: PathBuf,
     enabled: bool,
@@ -210,6 +213,7 @@ impl SharedCodexAppServer {
             thread_cache: Arc::new(DashMap::new()),
             restart_backoff: BackoffState::new(Duration::from_millis(250), Duration::from_secs(10)),
             notifications: tx,
+            pending_codex_threads_handle: None,
             codex_bin: "codex".into(),
             log_dir: root.join("logs/shared-codex-appserver"),
             enabled: false,
@@ -224,6 +228,15 @@ impl SharedCodexAppServer {
     }
 
     pub fn new(cfg: &Config, home: Arc<SharedCodexHome>, repo: Arc<dyn Repo>) -> Arc<Self> {
+        Self::new_with_pending(cfg, home, repo, None)
+    }
+
+    pub fn new_with_pending(
+        cfg: &Config,
+        home: Arc<SharedCodexHome>,
+        repo: Arc<dyn Repo>,
+        pending_codex_threads_handle: Option<Arc<PendingThreadStartRegistry>>,
+    ) -> Arc<Self> {
         let data_dir = cfg.data_dir_resolved();
         let (tx, _) = broadcast::channel(1024);
         Arc::new(Self {
@@ -238,6 +251,7 @@ impl SharedCodexAppServer {
                 Duration::from_millis(cfg.shared_codex_appserver_restart_max_delay_ms),
             ),
             notifications: tx,
+            pending_codex_threads_handle,
             codex_bin: cfg.codex_bin.clone(),
             log_dir: cfg.shared_codex_appserver_log_dir_resolved(),
             enabled: cfg.shared_codex_appserver_enabled,
@@ -358,6 +372,11 @@ impl SharedCodexAppServer {
             codex_home: self.home.path().display().to_string(),
             runtime: self.runtime.try_lock().ok().and_then(|g| g.clone()),
             cached_threads: self.thread_cache.len(),
+            pending_count: self
+                .pending_codex_threads_handle
+                .as_ref()
+                .map(|pending| pending.pending_count_snapshot())
+                .unwrap_or(0),
             restart_count: self.restart_count.load(Ordering::SeqCst),
             last_error: self.last_error.try_lock().ok().and_then(|g| g.clone()),
         }
@@ -670,8 +689,29 @@ impl SharedCodexAppServer {
     ) {
         *self.client.lock().await = Some(client);
         let tx = self.notifications.clone();
+        let pending = self.pending_codex_threads_handle.clone();
+        let thread_cache = self.thread_cache.clone();
         tokio::spawn(async move {
             while let Some(notification) = notifications.recv().await {
+                if let Some(thread_id) = thread_started_id(&notification)
+                    && let Some(pending) = pending.as_ref()
+                {
+                    match pending.on_thread_started(thread_id).await {
+                        Ok(Some(card_id)) => {
+                            thread_cache.insert(thread_id.to_string(), card_id);
+                            continue;
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            tracing::warn!(
+                                target = "shared_codex_daemon::pending_bind",
+                                %thread_id,
+                                error = %e,
+                                "failed to bind pending shared codex empty-card thread start"
+                            );
+                        }
+                    }
+                }
                 let _ = tx.send(notification);
             }
         });
@@ -850,6 +890,13 @@ async fn reap_verified_process_group(pid: i32, pgid: i32, start_time: u64, boot_
             pgid,
             "after SIGKILL pgid, original launcher pid still verified; unexpected"
         );
+    }
+}
+
+fn thread_started_id(notification: &Notification) -> Option<&str> {
+    match notification {
+        Notification::ThreadStarted { params } => params.get("threadId").and_then(|v| v.as_str()),
+        _ => None,
     }
 }
 
