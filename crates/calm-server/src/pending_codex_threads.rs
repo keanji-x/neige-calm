@@ -31,6 +31,7 @@ pub struct PendingThreadStartRegistry {
 #[derive(Clone)]
 pub struct PendingEntry {
     pub card_id: String,
+    pub role: CardRole,
     pub wave_id: Option<String>,
     pub terminal_id: String,
     /// PTY pid (best-effort, for debug logs). Not used for attribution.
@@ -45,12 +46,18 @@ impl PendingEntry {
     pub fn new(card_id: String, wave_id: Option<String>, terminal_id: String) -> Self {
         Self {
             card_id,
+            role: CardRole::Plain,
             wave_id,
             terminal_id,
             pty_pid: None,
             registered_at: Instant::now(),
             belt_and_suspenders_attribution_via_tools_call: false,
         }
+    }
+
+    pub fn with_role(mut self, role: CardRole) -> Self {
+        self.role = role;
+        self
     }
 }
 
@@ -133,8 +140,9 @@ impl PendingThreadStartRegistry {
 
             let age_ms = entry.registered_at.elapsed().as_millis();
             let card_id = entry.card_id;
+            let role = entry.role;
             let wave_id = entry.wave_id;
-            self.bind_entry(&card_id, wave_id.as_deref(), thread_id)
+            self.bind_entry(&card_id, role, wave_id.as_deref(), thread_id)
                 .await?;
             tracing::info!(
                 target = "shared_codex_daemon::pending_bind",
@@ -268,6 +276,7 @@ impl PendingThreadStartRegistry {
     async fn bind_entry(
         &self,
         card_id: &str,
+        role: CardRole,
         wave_id: Option<&str>,
         thread_id: &str,
     ) -> Result<()> {
@@ -314,7 +323,7 @@ impl PendingThreadStartRegistry {
                         tx,
                         &card_id_for_tx,
                         &thread_id_for_tx,
-                        CardRole::Plain,
+                        role,
                         wave_id_for_tx.as_deref(),
                     )
                     .await?;

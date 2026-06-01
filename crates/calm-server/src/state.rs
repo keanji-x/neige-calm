@@ -115,6 +115,9 @@ pub struct AppState {
     /// PR6 -> PR3c gate for routing empty user codex cards through the shared
     /// daemon. Default false preserves the legacy per-card empty-card path.
     pub shared_codex_empty_cards_enabled: bool,
+    /// PR7b gate for routing spec cards created by `POST /api/waves` through
+    /// the shared codex daemon. Default false preserves the per-wave path.
+    pub shared_codex_spec_cards_enabled: bool,
     /// FIFO attribution registry for empty cards that fresh-start a thread
     /// through the shared daemon's TUI. Present only when the shared daemon is
     /// enabled for this boot.
@@ -258,6 +261,7 @@ impl AppState {
             shared_codex_appserver,
             shared_codex_prompt_cards_enabled: false,
             shared_codex_empty_cards_enabled: false,
+            shared_codex_spec_cards_enabled: false,
             pending_codex_threads: None,
             pending_codex_threads_spawn_serial: Arc::new(Mutex::new(())),
             // #322 — aspect registry. Identical set in test/replay and
@@ -285,6 +289,12 @@ impl AppState {
     #[cfg(feature = "fixtures")]
     pub fn with_shared_codex_empty_cards_enabled(mut self, enabled: bool) -> Self {
         self.shared_codex_empty_cards_enabled = enabled;
+        self
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn with_shared_codex_spec_cards_enabled(mut self, enabled: bool) -> Self {
+        self.shared_codex_spec_cards_enabled = enabled;
         self
     }
 
@@ -516,6 +526,7 @@ impl AppState {
             shared_codex_appserver,
             shared_codex_prompt_cards_enabled: cfg.shared_codex_prompt_cards_enabled,
             shared_codex_empty_cards_enabled: cfg.shared_codex_empty_cards_enabled,
+            shared_codex_spec_cards_enabled: cfg.shared_codex_spec_cards_enabled,
             pending_codex_threads,
             pending_codex_threads_spawn_serial: Arc::new(Mutex::new(())),
             // #322 — aspect registry, boot-installed once and shared via

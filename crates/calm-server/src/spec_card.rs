@@ -649,10 +649,17 @@ pub(crate) fn seed_codex_home_with_parts(
 #[derive(Debug, Clone)]
 pub(crate) struct SpecPushDaemonArgs {
     /// `codex_thread_id` — the shared thread; `codex resume <thread_id>`.
-    /// `None` means empty-goal fresh start: `codex --remote <sock>`.
+    /// `None` means empty-goal fresh start: `codex --remote <sock>`, with
+    /// an optional `-c developer_instructions=...` override.
     pub thread_id: Option<String>,
-    /// The `app-server` listen socket; `--remote unix://<sock>`.
-    pub sock: PathBuf,
+    /// The app-server remote URI; `--remote unix://<sock>`.
+    pub sock_uri: String,
+    /// Whether spawning the TUI should seed a per-card CODEX_HOME first.
+    /// Shared-daemon cards use the server-wide home and set this false.
+    pub seed_codex_home: bool,
+    /// Optional role prompt for remote fresh-starts that do not use a
+    /// per-card CODEX_HOME. Passed via `codex -c developer_instructions=...`.
+    pub developer_instructions: Option<String>,
 }
 
 impl SpecPushDaemonArgs {
@@ -661,16 +668,35 @@ impl SpecPushDaemonArgs {
     /// before. Empty goals use `codex --remote unix://<sock>` so the TUI
     /// fresh-starts instead of trying to resume a rollout-less thread.
     pub(crate) fn command_line(&self) -> String {
-        let remote = format!("unix://{}", self.sock.display());
         match &self.thread_id {
             Some(thread_id) => format!(
                 "codex resume {} --remote {}",
                 shell_single_quote(thread_id),
-                shell_single_quote(&remote),
+                shell_single_quote(&self.sock_uri),
             ),
-            None => format!("codex --remote {}", shell_single_quote(&remote)),
+            None => {
+                if let Some(developer_instructions) = self.developer_instructions.as_deref() {
+                    format!(
+                        "codex -c {} --remote {}",
+                        shell_single_quote(&developer_instructions_config_override(
+                            developer_instructions
+                        )),
+                        shell_single_quote(&self.sock_uri)
+                    )
+                } else {
+                    format!("codex --remote {}", shell_single_quote(&self.sock_uri))
+                }
+            }
         }
     }
+}
+
+fn developer_instructions_config_override(value: &str) -> String {
+    let escaped = value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n");
+    format!("developer_instructions=\"{escaped}\"")
 }
 
 pub(crate) async fn spawn_spec_daemon_for_existing_seed(
@@ -775,14 +801,16 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
 ) -> Result<()> {
     // 1. Seed `$CODEX_HOME` for the spec card. Filesystem-only — fast,
     //    bounded by a handful of mkdir + small write_alls.
-    if let Err(e) = seed_codex_home_for_card(
-        &state,
-        &spec_card_id,
-        &cwd,
-        &wave_id,
-        SeededCardRole::Spec,
-        mcp_token.as_deref(),
-    ) {
+    if push.seed_codex_home
+        && let Err(e) = seed_codex_home_for_card(
+            &state,
+            &spec_card_id,
+            &cwd,
+            &wave_id,
+            SeededCardRole::Spec,
+            mcp_token.as_deref(),
+        )
+    {
         tracing::warn!(
             card_id = %spec_card_id,
             wave_id = %wave_id,
@@ -826,7 +854,10 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
     //    #293/#419 — push is the only path. Non-empty goals still resume
     //    the thread the kernel already created and started turn #1 on.
     //    Empty goals omit `resume` and let the TUI create the thread, while
-    //    queued spec pushes wait for the observed thread id.
+    //    queued spec pushes wait for the observed thread id. Shared-home
+    //    empty goals pass their role prompt through `-c
+    //    developer_instructions=...`; legacy empty goals get the same prompt
+    //    from the per-card config.toml seeded above.
     //
     //    `spawn_terminal_for` waits for deterministic daemon readiness on the
     //    response hot path. Since #236, that synchronous wait is intentional:
@@ -871,7 +902,9 @@ mod tests {
     fn push_mode_command_line_is_codex_resume_remote() {
         let args = SpecPushDaemonArgs {
             thread_id: Some("thread-abc123".into()),
-            sock: PathBuf::from("/home/u/.local/share/neige-calm/appserver/card-9/app.sock"),
+            sock_uri: "unix:///home/u/.local/share/neige-calm/appserver/card-9/app.sock".into(),
+            seed_codex_home: true,
+            developer_instructions: None,
         };
         assert_eq!(
             args.command_line(),
@@ -887,7 +920,9 @@ mod tests {
     fn push_mode_command_line_quotes_metacharacters() {
         let args = SpecPushDaemonArgs {
             thread_id: Some("a b; rm -rf /".into()),
-            sock: PathBuf::from("/tmp/has space/app.sock"),
+            sock_uri: "unix:///tmp/has space/app.sock".into(),
+            seed_codex_home: true,
+            developer_instructions: None,
         };
         let line = args.command_line();
         assert!(
@@ -902,11 +937,28 @@ mod tests {
     fn empty_goal_command_line_is_codex_remote_fresh_start() {
         let args = SpecPushDaemonArgs {
             thread_id: None,
-            sock: PathBuf::from("/tmp/has space/app.sock"),
+            sock_uri: "unix:///tmp/has space/app.sock".into(),
+            seed_codex_home: true,
+            developer_instructions: None,
         };
         assert_eq!(
             args.command_line(),
             "codex --remote 'unix:///tmp/has space/app.sock'",
+        );
+    }
+
+    #[test]
+    fn empty_goal_command_line_can_pass_developer_instructions_config_override() {
+        let args = SpecPushDaemonArgs {
+            thread_id: None,
+            sock_uri: "unix:///tmp/spec/app.sock".into(),
+            seed_codex_home: false,
+            developer_instructions: Some("line 1\nsay \"hi\" and don't expand $HOME".into()),
+        };
+        assert_eq!(
+            args.command_line(),
+            "codex -c 'developer_instructions=\"line 1\\nsay \\\"hi\\\" and don'\\''t expand $HOME\"' \
+             --remote 'unix:///tmp/spec/app.sock'",
         );
     }
 
@@ -1273,7 +1325,9 @@ mod tests {
 
         let push = SpecPushDaemonArgs {
             thread_id: None,
-            sock: PathBuf::from("/tmp/reseed-existing-spec/app.sock"),
+            sock_uri: "unix:///tmp/reseed-existing-spec/app.sock".into(),
+            seed_codex_home: true,
+            developer_instructions: None,
         };
         let err = spawn_spec_daemon_for_existing_seed(
             &state,

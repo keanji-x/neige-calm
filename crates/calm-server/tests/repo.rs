@@ -1991,6 +1991,117 @@ async fn spec_cards_for_boot_takeover_excludes_initial_prompt_cards() {
 }
 
 #[tokio::test]
+async fn legacy_spec_boot_queries_exclude_shared_cards() {
+    use calm_server::card_role_cache::CardRoleCache;
+    use calm_server::model::{CardRole, NewCard};
+
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "shared-boot-exclusion").await;
+    let mapped_wave = make_wave(&repo, c.id.as_str(), "mapped").await;
+    let pending_wave = make_wave(&repo, c.id.as_str(), "").await;
+    let cache = CardRoleCache::new();
+
+    let pending_card_id = calm_server::model::new_id();
+    let mut tx = repo.pool().begin().await.unwrap();
+    let _mapped = calm_server::db::sqlite::card_create_with_id_tx(
+        &mut tx,
+        calm_server::model::new_id(),
+        NewCard {
+            wave_id: mapped_wave.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({
+                "codex_source": "shared",
+                "codex_thread_id": "T-shared-mapped",
+                "appserver_sock": "unix:///tmp/shared.sock",
+                "push_watermark": 7,
+            }),
+        },
+        CardRole::Spec,
+        false,
+        &cache,
+    )
+    .await
+    .expect("create mapped shared spec card");
+    let pending = calm_server::db::sqlite::card_create_with_id_tx(
+        &mut tx,
+        pending_card_id.clone(),
+        NewCard {
+            wave_id: pending_wave.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({
+                "codex_source": "shared",
+                "appserver_needs_initial_prompt": true,
+                "appserver_sock": "unix:///tmp/shared.sock",
+                "push_watermark": 11,
+            }),
+        },
+        CardRole::Spec,
+        false,
+        &cache,
+    )
+    .await
+    .expect("create pending shared spec card");
+    tx.commit().await.unwrap();
+
+    // Shared takeover requires a LIVE terminal row (R7 P2 #1 / CI fix):
+    // the SQL JOINs terminals and filters exit_code IS NULL AND
+    // signal_killed = 0. Mint the terminal AFTER the card commit and
+    // update the card payload to point at the real terminal id.
+    let term = make_terminal(&repo, pending.id.as_str()).await;
+    sqlx::query(
+        r#"UPDATE cards
+              SET payload = json_set(payload, '$.terminal_id', ?1)
+            WHERE id = ?2"#,
+    )
+    .bind(term.id.as_str())
+    .bind(pending.id.as_str())
+    .execute(repo.pool())
+    .await
+    .unwrap();
+
+    assert!(
+        repo.spec_cards_for_boot_takeover()
+            .await
+            .expect("legacy takeover query")
+            .is_empty(),
+        "shared mapped spec cards are owned by shared boot takeover"
+    );
+    assert!(
+        repo.spec_cards_for_initial_prompt_bootstrap()
+            .await
+            .expect("legacy initial-prompt query")
+            .is_empty(),
+        "shared pending spec cards must not enter legacy bootstrap"
+    );
+    assert_eq!(
+        repo.shared_spec_cards_for_initial_prompt_takeover()
+            .await
+            .expect("shared pending takeover query"),
+        vec![(
+            pending.id.to_string(),
+            pending_wave.id.to_string(),
+            term.id.to_string(),
+            11,
+        )]
+    );
+
+    // Marking the terminal exited removes the card from the takeover set
+    // (R7 P2 #1) — dead-TUI cards must not be re-registered into the FIFO.
+    repo.terminal_set_exit(term.id.as_str(), Some(0), false)
+        .await
+        .unwrap();
+    assert!(
+        repo.shared_spec_cards_for_initial_prompt_takeover()
+            .await
+            .expect("shared pending takeover query after terminal exit")
+            .is_empty(),
+        "exited terminal must drop the card from shared pending takeover"
+    );
+}
+
+#[tokio::test]
 async fn spec_card_set_push_watermark_clears_initial_prompt_marker() {
     use calm_server::card_role_cache::CardRoleCache;
     use calm_server::model::{CardRole, NewCard};

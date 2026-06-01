@@ -173,10 +173,14 @@ impl RuntimeHarness {
             .thread_id
             .clone()
             .expect("non-empty fake app-server should return a thread id");
-        let initial_pgid = handle.pgid;
-        let sock_str = handle.sock.to_string_lossy().to_string();
-        let start_time = handle.start_time;
-        let boot_id = handle.boot_id.clone();
+        let initial_pgid = handle.legacy_pgid().expect("legacy handle pgid");
+        let sock_str = handle
+            .legacy_sock()
+            .expect("legacy handle sock")
+            .to_string_lossy()
+            .to_string();
+        let start_time = handle.legacy_start_time();
+        let boot_id = handle.legacy_boot_id().map(str::to_string);
 
         let update_card_id = spec_card.id.to_string();
         let update_thread_id = thread_id.clone();

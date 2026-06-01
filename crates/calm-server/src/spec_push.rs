@@ -12,13 +12,14 @@ use std::time::Duration;
 use dashmap::DashMap;
 use serde_json::Value;
 use tokio::process::Child;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::Instant as TokioInstant;
 
 use crate::codex_appserver::{CodexAppServer, InputItem, Notification, NotificationStream};
 use crate::error::{CalmError, Result};
 use crate::ids::WaveId;
+use crate::shared_codex_appserver::SharedCodexAppServer;
 
 /// #318 INV-4 (codex P1 follow-up) — how long [`build_handle_after_spawn_resume`]
 /// waits for a lifecycle notification (`turn/started` or `turn/completed`)
@@ -498,53 +499,27 @@ pub(crate) type WatermarkSinkSlot = Arc<Mutex<Option<WatermarkSink>>>;
 /// → SIGKILL on the group and removes the socket/dir; `Drop` is the
 /// best-effort safety net for every other path (mid-sequence errors,
 /// dropped replaced handles, test teardown).
+pub enum SpecPushSource {
+    /// Per-wave codex app-server child. Existing behavior.
+    Legacy {
+        child: Box<Child>,
+        pgid: i32,
+        start_time: Option<u64>,
+        boot_id: Option<String>,
+        client: Arc<CodexAppServer>,
+        sock: PathBuf,
+    },
+    /// Thread on the shared codex daemon. No per-card child/pgid teardown.
+    Shared { daemon: Arc<SharedCodexAppServer> },
+}
+
 pub struct SpecPushHandle {
-    /// The kernel-owned `codex app-server` child (the `node` launcher).
-    /// `kill_on_drop(true)` is set at spawn as a belt-and-suspenders
-    /// reaper of the launcher; the load-bearing reap is the group kill via
-    /// [`pgid`](Self::pgid).
-    pub child: Child,
-    /// Process-group id of the launcher (`== child.id()` because the child
-    /// is spawned as a group leader via `process_group(0)`). Teardown
-    /// signals `kill(-pgid, …)` to reap the launcher *and* the native
-    /// `codex app-server` child it forks. Persisted on the spec-card
-    /// payload (`appserver_pgid`) for boot-time crash recovery.
-    pub pgid: i32,
-    /// #318 INV-5 (R3-B1) — `starttime` (clock-ticks since boot) of the
-    /// launcher pid captured at spawn from `/proc/<pid>/stat`. Persisted
-    /// on the spec-card payload as `appserver_start_time` alongside
-    /// `appserver_pgid` + `appserver_boot_id`. The boot-recovery path
-    /// calls [`verify_owned_pid`] with `(pgid, this stamp, boot_id)`
-    /// BEFORE `signal_process_group(pgid, …)` so a recycled pid (post-
-    /// reboot OR mid-boot recycle) cannot route the SIGTERM/SIGKILL to
-    /// an unrelated process.
-    ///
-    /// `None` only on non-Linux targets / a `/proc` read failure at
-    /// spawn time (test fixtures on macOS, transient ENOENT) — the
-    /// boot-recovery path conservatively skips the kill when the
-    /// persisted stamp is absent, same as today's mismatch behavior.
-    pub start_time: Option<u64>,
-    /// #318 INV-5 (R3-B1) — kernel boot UUID captured at spawn from
-    /// `/proc/sys/kernel/random/boot_id`. Persisted alongside
-    /// `appserver_start_time` so the boot-recovery path can distinguish
-    /// "same kernel boot, just a kernel restart" from "host rebooted —
-    /// every pid from the prior boot is dead". A `boot_id` mismatch
-    /// short-circuits [`verify_owned_pid`] to `false` regardless of
-    /// `start_time` (the prior boot's process namespace is gone).
-    ///
-    /// `None` only on non-Linux / a `/proc` read failure — same
-    /// conservative-skip-the-kill posture as a missing stamp.
-    pub boot_id: Option<String>,
-    /// Programmatic client connected to `child` over WS-over-UDS. PR3b
-    /// will call `turn_start`/`turn_steer`/`inject_items` on this.
-    pub client: Arc<CodexAppServer>,
+    pub source: SpecPushSource,
     /// The thread id turn #1 ran on. Persisted on the spec card payload as
     /// `codex_thread_id`; the `--remote` TUI resumes it. `None` means an
     /// empty-goal handle is waiting for the TUI to fresh-start a thread.
     pub thread_id: Option<String>,
     pub(crate) thread_id_slot: ThreadIdSlot,
-    /// The listen socket path (`<data_dir>/appserver/<card_id>/app.sock`).
-    pub sock: PathBuf,
     /// Consumer task draining the notification stream (status tracking +
     /// approval-shape warning + PR3b push-queue flush on `turn/completed`).
     /// Aborted on drop.
@@ -605,7 +580,7 @@ pub struct SpecPushHandle {
 /// sync clone under the brief guard, after which the guard is released.
 #[derive(Clone)]
 pub struct SpecPusher {
-    pub(crate) client: Arc<CodexAppServer>,
+    pub(crate) source: SpecPusherSource,
     pub(crate) thread_id_slot: ThreadIdSlot,
     pub(crate) status: SharedStatus,
     pub(crate) queue: PushQueue,
@@ -621,6 +596,33 @@ pub struct SpecPusher {
     /// it to dequeue persisted ids after a successful coalesced
     /// `turn/start`.
     pub(crate) queue_persist: QueuePersistSlot,
+}
+
+#[derive(Clone)]
+pub(crate) enum SpecPusherSource {
+    Legacy { client: Arc<CodexAppServer> },
+    Shared { daemon: Arc<SharedCodexAppServer> },
+}
+
+impl SpecPusherSource {
+    async fn turn_start(&self, thread_id: &str, items: Vec<InputItem>) -> Result<String> {
+        match self {
+            SpecPusherSource::Legacy { client } => client
+                .turn_start(thread_id, items)
+                .await?
+                .turn_id()
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| CalmError::CodexAppServer("turn/start returned no turn.id".into())),
+            SpecPusherSource::Shared { daemon } => daemon.turn_start(thread_id, items).await,
+        }
+    }
+
+    async fn thread_id_bound_to_card(&self, card_id: &str) -> Result<Option<String>> {
+        match self {
+            SpecPusherSource::Legacy { .. } => Ok(None),
+            SpecPusherSource::Shared { daemon } => daemon.thread_id_bound_to_card(card_id).await,
+        }
+    }
 }
 
 impl SpecPusher {
@@ -790,7 +792,7 @@ impl SpecPusher {
                     "spec push: winner issuing coalesced turn/start (queue drained + new observation)"
                 );
                 if let Err(e) = self
-                    .client
+                    .source
                     .turn_start(&thread_id, vec![InputItem::text(&coalesced)])
                     .await
                 {
@@ -923,6 +925,45 @@ impl SpecPusher {
 }
 
 impl SpecPushHandle {
+    pub fn legacy_pgid(&self) -> Option<i32> {
+        match &self.source {
+            SpecPushSource::Legacy { pgid, .. } => Some(*pgid),
+            SpecPushSource::Shared { .. } => None,
+        }
+    }
+
+    pub fn legacy_sock(&self) -> Option<&Path> {
+        match &self.source {
+            SpecPushSource::Legacy { sock, .. } => Some(sock.as_path()),
+            SpecPushSource::Shared { .. } => None,
+        }
+    }
+
+    pub fn legacy_start_time(&self) -> Option<u64> {
+        match &self.source {
+            SpecPushSource::Legacy { start_time, .. } => *start_time,
+            SpecPushSource::Shared { .. } => None,
+        }
+    }
+
+    pub fn legacy_boot_id(&self) -> Option<&str> {
+        match &self.source {
+            SpecPushSource::Legacy { boot_id, .. } => boot_id.as_deref(),
+            SpecPushSource::Shared { .. } => None,
+        }
+    }
+
+    pub fn legacy_client(&self) -> Option<Arc<CodexAppServer>> {
+        match &self.source {
+            SpecPushSource::Legacy { client, .. } => Some(client.clone()),
+            SpecPushSource::Shared { .. } => None,
+        }
+    }
+
+    pub fn is_shared(&self) -> bool {
+        matches!(self.source, SpecPushSource::Shared { .. })
+    }
+
     /// Snapshot the consumer-tracked status. Cheap; clones a small struct
     /// under a short-held lock.
     pub async fn status(&self) -> SpecPushStatus {
@@ -933,8 +974,16 @@ impl SpecPushHandle {
     /// parts. The dispatcher uses this to deliver observations without
     /// holding the registry guard across the async push.
     pub fn pusher(&self) -> SpecPusher {
+        let source = match &self.source {
+            SpecPushSource::Legacy { client, .. } => SpecPusherSource::Legacy {
+                client: client.clone(),
+            },
+            SpecPushSource::Shared { daemon } => SpecPusherSource::Shared {
+                daemon: daemon.clone(),
+            },
+        };
         SpecPusher {
-            client: self.client.clone(),
+            source,
             thread_id_slot: self.thread_id_slot.clone(),
             status: self.status.clone(),
             queue: self.queue.clone(),
@@ -1177,7 +1226,7 @@ impl SpecPusher {
         flush_push_queue(
             &thread_id,
             &self.status,
-            &self.client,
+            &self.source,
             &self.queue,
             &self.watermark_sink,
             &self.queue_persist,
@@ -1196,7 +1245,9 @@ impl Drop for SpecPushHandle {
         // The graceful teardown path (`reap_spec_push`) has already
         // escalated to SIGKILL by the time it drops the handle, so this is
         // typically a no-op (ESRCH) there.
-        crate::spec_appserver::signal_process_group(self.pgid, libc::SIGTERM);
+        if let SpecPushSource::Legacy { pgid, .. } = &self.source {
+            crate::spec_appserver::signal_process_group(*pgid, libc::SIGTERM);
+        }
         // Abort the consumer task so it doesn't outlive the connection.
         // (`JoinHandle::drop` detaches rather than aborts, so this is
         // required.) The `CodexAppServer` reader task aborts on its own
@@ -1400,7 +1451,7 @@ pub(crate) async fn resume_reconcile_task(
     budget: Duration,
     thread_id: String,
     status: SharedStatus,
-    client: Arc<CodexAppServer>,
+    source: SpecPusherSource,
     queue: PushQueue,
     watermark_sink: WatermarkSinkSlot,
     queue_persist: QueuePersistSlot,
@@ -1435,7 +1486,7 @@ pub(crate) async fn resume_reconcile_task(
     flush_push_queue(
         &thread_id,
         &status,
-        &client,
+        &source,
         &queue,
         &watermark_sink,
         &queue_persist,
@@ -1489,14 +1540,16 @@ pub(crate) fn park_handle(
         recovery_signal,
     ));
     SpecPushHandle {
-        child,
-        pgid,
-        start_time,
-        boot_id,
-        client,
+        source: SpecPushSource::Legacy {
+            child: Box::new(child),
+            pgid,
+            start_time,
+            boot_id,
+            client,
+            sock: sock.to_path_buf(),
+        },
         thread_id: thread_id.clone(),
         thread_id_slot,
-        sock: sock.to_path_buf(),
         consumer,
         // Populated only by `build_handle_after_spawn_resume` (post-park).
         // The spawn path seeds `Idle` and reconciles via the normal
@@ -1507,6 +1560,213 @@ pub(crate) fn park_handle(
         watermark_sink,
         queue_persist,
         initial_prompt_ready_sink,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn park_shared_handle(
+    daemon: Arc<SharedCodexAppServer>,
+    thread_id: Option<String>,
+    notifications: broadcast::Receiver<Notification>,
+    status: SharedStatus,
+    pending_card_id: Option<String>,
+    watchdog: TurnWatchdogConfig,
+) -> SpecPushHandle {
+    let queue: PushQueue = Arc::new(Mutex::new(VecDeque::new()));
+    let thread_id_slot: ThreadIdSlot = Arc::new(Mutex::new(thread_id.clone()));
+    let watermark_sink: WatermarkSinkSlot = Arc::new(Mutex::new(None));
+    let queue_persist: QueuePersistSlot = Arc::new(Mutex::new(None));
+    let initial_prompt_ready_sink: InitialPromptReadySinkSlot = Arc::new(Mutex::new(None));
+    let source = SpecPusherSource::Shared {
+        daemon: daemon.clone(),
+    };
+    let consumer = tokio::spawn(consume_shared_notifications(
+        notifications,
+        thread_id_slot.clone(),
+        status.clone(),
+        source,
+        queue.clone(),
+        watermark_sink.clone(),
+        queue_persist.clone(),
+        initial_prompt_ready_sink.clone(),
+        pending_card_id,
+        watchdog,
+    ));
+    SpecPushHandle {
+        source: SpecPushSource::Shared { daemon },
+        thread_id: thread_id.clone(),
+        thread_id_slot,
+        consumer,
+        resume_reconciler: None,
+        status,
+        queue,
+        watermark_sink,
+        queue_persist,
+        initial_prompt_ready_sink,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn consume_shared_notifications(
+    mut notifications: broadcast::Receiver<Notification>,
+    thread_id_slot: ThreadIdSlot,
+    status: SharedStatus,
+    source: SpecPusherSource,
+    queue: PushQueue,
+    watermark_sink: WatermarkSinkSlot,
+    queue_persist: QueuePersistSlot,
+    initial_prompt_ready_sink: InitialPromptReadySinkSlot,
+    pending_card_id: Option<String>,
+    watchdog: TurnWatchdogConfig,
+) {
+    let mut initial_prompt_ready_attempted = false;
+    let mut active_turn: Option<ActiveTurnWatchdog> = {
+        let snapshot = status.lock().await.clone();
+        if snapshot.phase == SpecPushPhase::TurnRunning {
+            snapshot.last_turn_id.map(|turn_id| ActiveTurnWatchdog {
+                turn_id,
+                deadline: TokioInstant::now() + watchdog.max_turn_duration,
+            })
+        } else {
+            None
+        }
+    };
+    loop {
+        let notification = if let Some(active) = active_turn.clone() {
+            tokio::select! {
+                n = notifications.recv() => n,
+                _ = tokio::time::sleep_until(active.deadline) => {
+                    let thread_id = thread_id_slot
+                        .lock()
+                        .await
+                        .clone()
+                        .unwrap_or_else(|| "<pending-thread-start>".to_string());
+                    tracing::error!(
+                        target: "shared_codex_daemon::spec_card",
+                        thread_id = %thread_id,
+                        turn_id = %active.turn_id,
+                        "shared spec push watchdog fired; per-thread recovery is deferred"
+                    );
+                    let mut g = status.lock().await;
+                    g.phase = SpecPushPhase::Wedged;
+                    g.last_turn_id = Some(active.turn_id);
+                    active_turn = None;
+                    continue;
+                }
+            }
+        } else {
+            notifications.recv().await
+        };
+        let n = match notification {
+            Ok(n) => n,
+            Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                tracing::warn!(
+                    target = "shared_codex_daemon::spec_card",
+                    skipped,
+                    "spec consumer lagged broadcast; some notifications missed"
+                );
+                continue;
+            }
+            Err(broadcast::error::RecvError::Closed) => return,
+        };
+        let Some(notification_thread_id) = notification_thread_id(&n) else {
+            continue;
+        };
+        let current_thread_id = thread_id_slot.lock().await.clone();
+        if let Some(current) = current_thread_id.as_deref()
+            && current != notification_thread_id
+        {
+            continue;
+        }
+        if current_thread_id.is_none()
+            && let Some(card_id) = pending_card_id.as_deref()
+        {
+            let bound_thread_id = match source.thread_id_bound_to_card(card_id).await {
+                Ok(bound) => bound,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "shared_codex_daemon::spec_card",
+                        card_id,
+                        error = %e,
+                        "spec consumer failed to check pending thread binding; ignoring notification"
+                    );
+                    continue;
+                }
+            };
+            let Some(bound_thread_id) = bound_thread_id else {
+                continue;
+            };
+            if bound_thread_id != notification_thread_id {
+                *thread_id_slot.lock().await = Some(bound_thread_id);
+                continue;
+            }
+        }
+
+        warn_on_approval(&n);
+        record(&status, &n).await;
+        if current_thread_id.is_none() {
+            *thread_id_slot.lock().await = Some(notification_thread_id.to_string());
+        }
+        if !initial_prompt_ready_attempted
+            && matches!(
+                n,
+                Notification::TurnStarted { .. } | Notification::TurnCompleted { .. }
+            )
+            && status.lock().await.last_turn_id.is_some()
+        {
+            if let Some(sink) = initial_prompt_ready_sink.lock().await.clone() {
+                sink(notification_thread_id.to_string()).await;
+            }
+            initial_prompt_ready_attempted = true;
+        }
+        match &n {
+            Notification::TurnStarted { turn, .. } => {
+                if let Some(turn_id) = turn_id(turn) {
+                    active_turn = Some(ActiveTurnWatchdog {
+                        turn_id: turn_id.to_string(),
+                        deadline: TokioInstant::now() + watchdog.max_turn_duration,
+                    });
+                }
+            }
+            Notification::TurnCompleted { turn, .. } => {
+                if let Some(active) = &active_turn
+                    && turn_id(turn).is_none_or(|id| id == active.turn_id)
+                {
+                    active_turn = None;
+                }
+                flush_push_queue(
+                    notification_thread_id,
+                    &status,
+                    &source,
+                    &queue,
+                    &watermark_sink,
+                    &queue_persist,
+                )
+                .await;
+            }
+            _ => {}
+        }
+    }
+}
+
+pub(crate) fn notification_thread_id(n: &Notification) -> Option<&str> {
+    match n {
+        Notification::ThreadStarted { params } => params
+            .get("thread")
+            .and_then(|thread| thread.get("id"))
+            .and_then(Value::as_str)
+            .or_else(|| params.get("threadId").and_then(Value::as_str)),
+        Notification::ThreadStatusChanged { thread_id, .. }
+        | Notification::TurnStarted { thread_id, .. }
+        | Notification::TurnCompleted { thread_id, .. } => Some(thread_id.as_str()),
+        Notification::Item { params, .. } | Notification::Other { params, .. } => {
+            params.get("threadId").and_then(Value::as_str).or_else(|| {
+                params
+                    .get("thread")
+                    .and_then(|thread| thread.get("id"))
+                    .and_then(Value::as_str)
+            })
+        }
     }
 }
 
@@ -1543,7 +1803,7 @@ pub(crate) async fn consume_notifications(
         notifs,
         thread_id_slot,
         status,
-        client,
+        source: SpecPusherSource::Legacy { client },
         queue,
         watermark_sink,
         queue_persist,
@@ -1561,7 +1821,7 @@ pub(crate) struct NotificationConsumer {
     pub(crate) notifs: NotificationStream,
     pub(crate) thread_id_slot: ThreadIdSlot,
     pub(crate) status: SharedStatus,
-    pub(crate) client: Arc<CodexAppServer>,
+    pub(crate) source: SpecPusherSource,
     pub(crate) queue: PushQueue,
     pub(crate) watermark_sink: WatermarkSinkSlot,
     pub(crate) queue_persist: QueuePersistSlot,
@@ -1670,7 +1930,19 @@ impl NotificationConsumer {
             max_turn_secs = self.watchdog.max_turn_duration.as_secs(),
             "spec push watchdog: max turn duration elapsed; sending turn/interrupt"
         );
-        if let Err(e) = self.client.turn_interrupt(&thread_id, &turn_id).await {
+        let SpecPusherSource::Legacy { client } = &self.source else {
+            self.active_turn = None;
+            tracing::error!(
+                target: "shared_codex_daemon::spec_card",
+                thread_id = %thread_id,
+                turn_id = %turn_id,
+                "shared spec push watchdog fired; per-thread recovery is deferred"
+            );
+            self.signal_process_recovery(turn_id, SpecRecoveryReason::InterruptFailed)
+                .await;
+            return;
+        };
+        if let Err(e) = client.turn_interrupt(&thread_id, &turn_id).await {
             self.active_turn = None;
             tracing::error!(
                 thread_id = %thread_id,
@@ -1856,7 +2128,7 @@ impl NotificationConsumer {
             flush_push_queue(
                 &thread_id,
                 &self.status,
-                &self.client,
+                &self.source,
                 &self.queue,
                 &self.watermark_sink,
                 &self.queue_persist,
@@ -1978,7 +2250,7 @@ fn is_interrupted_completion_for_turn(n: &Notification, expected_turn_id: &str) 
 pub(crate) async fn flush_push_queue(
     thread_id: &str,
     status: &SharedStatus,
-    client: &Arc<CodexAppServer>,
+    source: &SpecPusherSource,
     queue: &PushQueue,
     watermark_sink: &WatermarkSinkSlot,
     queue_persist: &QueuePersistSlot,
@@ -2068,7 +2340,7 @@ pub(crate) async fn flush_push_queue(
         max_envelope_id,
         "spec push: flush winner issuing queued observations as one coalesced turn/start"
     );
-    if let Err(e) = client
+    if let Err(e) = source
         .turn_start(thread_id, vec![InputItem::text(&text)])
         .await
     {
@@ -2205,5 +2477,142 @@ pub(crate) fn warn_on_approval(n: &Notification) {
             "spec push: unexpected approval-shaped notification under approval_policy=never; \
              PR3a does not answer it — the spec agent may stall (investigate codex config)"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::db::prelude::*;
+    use crate::db::sqlite::SqlxRepo;
+    use crate::event::EventBus;
+    use crate::model::{NewCard, NewCove, NewWave};
+    use crate::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
+    use serde_json::json;
+
+    async fn seed_pending_card(repo: &SqlxRepo, wave_id: &str, terminal_id: &str) -> String {
+        let card = repo
+            .card_create(NewCard {
+                wave_id: wave_id.into(),
+                kind: "codex".into(),
+                sort: None,
+                payload: json!({
+                    "schemaVersion": 1,
+                    "terminal_id": terminal_id,
+                    "codex_thread_status": "pending_thread_start"
+                }),
+            })
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"INSERT INTO terminals
+                   (id, card_id, program, cwd, env, pid, theme_fg, theme_bg, created_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)"#,
+        )
+        .bind(terminal_id)
+        .bind(card.id.as_str())
+        .bind("bash")
+        .bind("/workspace")
+        .bind("{}")
+        .bind("216,219,226")
+        .bind("15,20,24")
+        .bind(0_i64)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+        card.id.to_string()
+    }
+
+    #[tokio::test]
+    async fn pending_shared_consumer_waits_for_card_scoped_thread_binding() {
+        let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+        let cove = repo
+            .cove_create(NewCove {
+                name: "pending-consumer".into(),
+                color: "#000".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let wave = repo
+            .wave_create(NewWave {
+                cove_id: cove.id,
+                title: "".into(),
+                sort: None,
+                cwd: "/workspace".into(),
+                attach_folder: false,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        let registry = PendingThreadStartRegistry::new(repo.clone(), EventBus::new());
+        let user_card = seed_pending_card(&repo, wave.id.as_str(), "term-user").await;
+        let spec_card = seed_pending_card(&repo, wave.id.as_str(), "term-spec").await;
+        registry
+            .register(PendingEntry::new(
+                user_card.clone(),
+                Some(wave.id.to_string()),
+                "term-user".into(),
+            ))
+            .await
+            .unwrap();
+        registry
+            .register(
+                PendingEntry::new(
+                    spec_card.clone(),
+                    Some(wave.id.to_string()),
+                    "term-spec".into(),
+                )
+                .with_role(crate::model::CardRole::Spec),
+            )
+            .await
+            .unwrap();
+
+        let daemon = crate::shared_codex_appserver::SharedCodexAppServer::new_stub(repo.clone());
+        let (tx, rx) = broadcast::channel(8);
+        let status = Arc::new(Mutex::new(SpecPushStatus {
+            phase: SpecPushPhase::PendingThreadStart,
+            last_thread_id: None,
+            last_turn_id: None,
+        }));
+        let handle = park_shared_handle(
+            daemon,
+            None,
+            rx,
+            status,
+            Some(spec_card.clone()),
+            TurnWatchdogConfig::default(),
+        );
+
+        assert_eq!(
+            registry.on_thread_started("T-user").await.unwrap(),
+            Some(user_card)
+        );
+        tx.send(Notification::ThreadStarted {
+            params: json!({ "threadId": "T-user" }),
+        })
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert!(
+            handle.thread_id_slot.lock().await.is_none(),
+            "spec handle must ignore another pending card's thread binding"
+        );
+
+        assert_eq!(
+            registry.on_thread_started("T-spec").await.unwrap(),
+            Some(spec_card)
+        );
+        tx.send(Notification::ThreadStarted {
+            params: json!({ "threadId": "T-spec" }),
+        })
+        .unwrap();
+        for _ in 0..20 {
+            if handle.thread_id_slot.lock().await.as_deref() == Some("T-spec") {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("spec handle did not accept its own pending thread binding");
     }
 }

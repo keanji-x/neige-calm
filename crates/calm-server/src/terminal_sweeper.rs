@@ -61,6 +61,7 @@
 //! the card and emits `Event::CardDeleted` (or `WaveDeleted` /
 //! `CoveDeleted`) as the audit signal.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::db::sqlite::terminal_delete_tx;
@@ -342,8 +343,23 @@ pub async fn reap_spec_push(state: &AppState, wave_id: &WaveId) {
     let Some(handle) = state.spec_push.remove(wave_id) else {
         return;
     };
-    let pgid = handle.pgid;
-    let sock = handle.sock.clone();
+    if handle.is_shared() {
+        tracing::info!(
+            wave_id = %wave_id,
+            thread_id = %handle.thread_id.as_deref().unwrap_or("<pending-thread-start>"),
+            "spec push: dropping shared-daemon handle on wave/spec-card delete (daemon lifecycle is shared)"
+        );
+        drop(handle);
+        return;
+    }
+    let Some(pgid) = handle.legacy_pgid() else {
+        drop(handle);
+        return;
+    };
+    let Some(sock) = handle.legacy_sock().map(PathBuf::from) else {
+        drop(handle);
+        return;
+    };
     tracing::info!(
         wave_id = %wave_id,
         thread_id = %handle.thread_id.as_deref().unwrap_or("<pending-thread-start>"),
