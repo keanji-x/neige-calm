@@ -5,8 +5,7 @@ export type WheelRoute =
   | { kind: 'page' }
   | { kind: 'native-scroll'; target: HTMLElement }
   | { kind: 'xterm-scrollback'; target: XtermWheelTarget }
-  | { kind: 'xterm-passthrough'; target: XtermWheelTarget }
-  | { kind: 'sink' };
+  | { kind: 'xterm-passthrough'; target: XtermWheelTarget };
 
 const MODAL_SELECTOR = '.modal-overlay, .modal-panel';
 const WHEEL_CARD_SELECTOR = '[data-wheel-card]';
@@ -138,7 +137,7 @@ export function resolveWheelRoute(args: {
     return { kind: 'native-scroll', target: scrollRoot };
   }
   if (activeCard.querySelector<HTMLElement>(XTERM_ROOT_SELECTOR)) {
-    return { kind: 'sink' };
+    return { kind: 'native-scroll', target: scrollRoot };
   }
 
   const fileViewerPane = fileViewerPaneFor(activeCard, target);
@@ -146,5 +145,5 @@ export function resolveWheelRoute(args: {
     return { kind: 'native-scroll', target: fileViewerPane };
   }
 
-  return { kind: 'sink' };
+  return { kind: 'native-scroll', target: scrollRoot };
 }

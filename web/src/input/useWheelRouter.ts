@@ -40,10 +40,6 @@ export function useWheelRouter(scrollRef: RefObject<HTMLElement | null>): void {
         }
         return;
       }
-      if (route.kind === 'sink') {
-        event.preventDefault();
-        return;
-      }
     };
 
     scrollRoot.addEventListener('wheel', handleWheel, {
