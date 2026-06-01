@@ -39,6 +39,7 @@ use crate::db::sqlite::{card_codex_thread_upsert_tx, card_update_tx, card_with_c
 use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::Event;
+use crate::ids::ActorId;
 use crate::model::{Card, CardPatch, CardRole, new_id};
 use crate::pending_codex_threads::PendingEntry;
 use crate::routes::cards::card_scope;
@@ -537,12 +538,17 @@ pub(crate) async fn create_codex_card(
     if let Err(e) = spawn_terminal_for(&s, &term, &command_line, &cwd, &env).await {
         if use_shared_empty_path && let Some(pending) = s.pending_codex_threads.as_ref() {
             let removed = pending.remove_by_card(card.id.as_ref()).await;
+            let payload_rolled_back =
+                card_payload_clear_pending_status(&s, card.id.as_ref(), actor.to_actor_id())
+                    .await
+                    .is_ok();
             tracing::warn!(
                 target: "shared_codex_daemon::pending_rollback_on_spawn_failure",
                 card_id = %card.id,
                 removed,
+                payload_rolled_back,
                 error = %e,
-                "PTY spawn failed after pending register; rolled back pending entry"
+                "PTY spawn failed; rolled back pending registry + payload"
             );
         }
         return Err(e);
@@ -566,6 +572,59 @@ pub(crate) async fn create_codex_card(
 // support. The remaining `routes/codex.rs` file keeps only the hook-ingest
 // loopback route + its query-param struct.
 // ---------------------------------------------------------------------------
+
+async fn card_payload_clear_pending_status(
+    s: &AppState,
+    card_id: &str,
+    actor: ActorId,
+) -> Result<()> {
+    let card = s
+        .repo
+        .card_get(card_id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
+    let mut payload = card.payload.clone();
+    let Some(map) = payload.as_object_mut() else {
+        return Err(CalmError::Internal(format!(
+            "codex card {card_id} payload is not a JSON object; cannot mark spawn failure"
+        )));
+    };
+    map.insert(
+        "codex_thread_status".into(),
+        serde_json::Value::String("failed_to_spawn".into()),
+    );
+
+    let scope = card_scope(s.repo.as_ref(), card.id.clone(), card.wave_id.clone()).await?;
+    let card_id_for_tx = card_id.to_string();
+    let payload_for_tx = payload;
+    let (_updated, _id) = write_with_event_typed(
+        s.repo.as_ref(),
+        actor,
+        scope,
+        None,
+        &s.events,
+        &s.card_role_cache,
+        &s.wave_cove_cache,
+        move |tx| {
+            Box::pin(async move {
+                let card = card_update_tx(
+                    tx,
+                    &card_id_for_tx,
+                    CardPatch {
+                        kind: None,
+                        sort: None,
+                        payload: Some(payload_for_tx),
+                        deletable: None,
+                    },
+                )
+                .await?;
+                Ok((card.clone(), Event::CardUpdated(card)))
+            })
+        },
+    )
+    .await?;
+    Ok(())
+}
 
 /// `~/.codex` on the host — visible inside the docker container thanks to
 /// the `${HOME}:${HOME}` bind mount in docker-compose.yml.

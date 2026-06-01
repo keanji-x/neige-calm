@@ -445,6 +445,13 @@ async fn empty_card_spawn_failure_removes_pending_entry() {
         .as_ref()
         .expect("pending registry");
     assert_eq!(pending.pending_count().await, 0);
+    let failed_cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
+    assert_eq!(failed_cards.len(), 1);
+    assert_eq!(
+        failed_cards[0].payload["codex_thread_status"],
+        "failed_to_spawn"
+    );
+    let failed_terminal_id = failed_cards[0].payload["terminal_id"].as_str().unwrap();
 
     let card = boot
         .repo
@@ -458,7 +465,11 @@ async fn empty_card_spawn_failure_removes_pending_entry() {
         .unwrap();
     let card_id = card.id.to_string();
     pending
-        .register(PendingEntry::new(card_id.clone(), None, String::new()))
+        .register(PendingEntry::new(
+            card_id.clone(),
+            None,
+            failed_terminal_id.to_string(),
+        ))
         .await
         .unwrap();
     assert!(

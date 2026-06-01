@@ -28,6 +28,7 @@ pub struct PendingThreadStartRegistry {
     events: EventBus,
 }
 
+#[derive(Clone)]
 pub struct PendingEntry {
     pub card_id: String,
     pub wave_id: Option<String>,
@@ -93,28 +94,62 @@ impl PendingThreadStartRegistry {
     }
 
     pub async fn on_thread_started(&self, thread_id: &str) -> Result<Option<String>> {
-        let Some(entry) = self.queue.lock().await.pop_front() else {
-            tracing::info!(
-                target = "shared_codex_daemon::pending_orphan_thread_started",
-                %thread_id,
-                "shared codex thread/started had no pending empty-card registration"
-            );
-            return Ok(None);
-        };
+        loop {
+            let Some(entry_to_check) = self.queue.lock().await.front().cloned() else {
+                tracing::info!(
+                    target = "shared_codex_daemon::pending_orphan_thread_started",
+                    %thread_id,
+                    "shared codex thread/started had no pending empty-card registration"
+                );
+                return Ok(None);
+            };
 
-        let age_ms = entry.registered_at.elapsed().as_millis();
-        let card_id = entry.card_id;
-        let wave_id = entry.wave_id;
-        self.bind_entry(&card_id, wave_id.as_deref(), thread_id)
-            .await?;
-        tracing::info!(
-            target = "shared_codex_daemon::pending_bind",
-            %thread_id,
-            %card_id,
-            age_ms,
-            "bound pending shared codex empty-card thread start"
-        );
-        Ok(Some(card_id))
+            if !self.is_terminal_alive(&entry_to_check.terminal_id).await {
+                let dropped = {
+                    let mut queue = self.queue.lock().await;
+                    let Some(front) = queue.front() else {
+                        continue;
+                    };
+                    if !same_pending_entry(front, &entry_to_check) {
+                        continue;
+                    }
+                    queue.pop_front().expect("front checked")
+                };
+                tracing::warn!(
+                    target = "shared_codex_daemon::pending_drop_stale",
+                    card_id = %dropped.card_id,
+                    terminal_id = %dropped.terminal_id,
+                    thread_id,
+                    "skipped stale pending entry before binding"
+                );
+                continue;
+            }
+
+            let entry = {
+                let mut queue = self.queue.lock().await;
+                let Some(front) = queue.front() else {
+                    continue;
+                };
+                if !same_pending_entry(front, &entry_to_check) {
+                    continue;
+                }
+                queue.pop_front().expect("front checked")
+            };
+
+            let age_ms = entry.registered_at.elapsed().as_millis();
+            let card_id = entry.card_id;
+            let wave_id = entry.wave_id;
+            self.bind_entry(&card_id, wave_id.as_deref(), thread_id)
+                .await?;
+            tracing::info!(
+                target = "shared_codex_daemon::pending_bind",
+                %thread_id,
+                %card_id,
+                age_ms,
+                "bound pending shared codex empty-card thread start"
+            );
+            return Ok(Some(card_id));
+        }
     }
 
     pub async fn expire(&self, ttl: Duration) -> usize {
@@ -215,6 +250,15 @@ impl PendingThreadStartRegistry {
         self.queue.try_lock().map(|queue| queue.len()).unwrap_or(0)
     }
 
+    async fn is_terminal_alive(&self, terminal_id: &str) -> bool {
+        self.repo
+            .terminal_get(terminal_id)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|terminal| terminal.exit_code.is_none() && !terminal.signal_killed)
+    }
+
     async fn bind_entry(
         &self,
         card_id: &str,
@@ -286,6 +330,10 @@ impl PendingThreadStartRegistry {
         .await?;
         Ok(())
     }
+}
+
+fn same_pending_entry(a: &PendingEntry, b: &PendingEntry) -> bool {
+    a.card_id == b.card_id && a.terminal_id == b.terminal_id
 }
 
 pub fn spawn_periodic_expire_task(

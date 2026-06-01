@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus};
-use calm_server::model::{CardRole, NewCard, NewCove, NewTerminal, NewWave};
+use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
 use calm_server::pending_codex_threads::{
     PendingEntry, PendingThreadStartRegistry, spawn_periodic_expire_task,
 };
@@ -49,34 +49,37 @@ async fn boot_pending_server() -> (
 }
 
 async fn seed_card(repo: &SqlxRepo, wave_id: &str, terminal_id: &str) -> String {
-    repo.card_create(NewCard {
-        wave_id: wave_id.into(),
-        kind: "codex".into(),
-        sort: None,
-        payload: json!({
-            "schemaVersion": 1,
-            "terminal_id": terminal_id,
-            "codex_thread_status": "pending_thread_start"
-        }),
-    })
+    let card = repo
+        .card_create(NewCard {
+            wave_id: wave_id.into(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({
+                "schemaVersion": 1,
+                "terminal_id": terminal_id,
+                "codex_thread_status": "pending_thread_start"
+            }),
+        })
+        .await
+        .unwrap();
+    let theme = calm_server::routes::theme::RequestTheme::default_dark();
+    sqlx::query(
+        r#"INSERT INTO terminals
+               (id, card_id, program, cwd, env, pid, theme_fg, theme_bg, created_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)"#,
+    )
+    .bind(terminal_id)
+    .bind(card.id.as_str())
+    .bind("bash")
+    .bind("/workspace")
+    .bind("{}")
+    .bind(theme.fg_arg())
+    .bind(theme.bg_arg())
+    .bind(0_i64)
+    .execute(repo.pool())
     .await
-    .unwrap()
-    .id
-    .to_string()
-}
-
-async fn seed_terminal(repo: &SqlxRepo, card_id: &str) -> String {
-    repo.terminal_create(NewTerminal {
-        card_id: card_id.into(),
-        program: "bash".into(),
-        cwd: "/workspace".into(),
-        env: json!({}),
-        theme: calm_server::routes::theme::RequestTheme::default_dark(),
-    })
-    .await
-    .unwrap()
-    .id
-    .to_string()
+    .unwrap();
+    card.id.to_string()
 }
 
 fn entry(card_id: &str, wave_id: &str, terminal_id: &str) -> PendingEntry {
@@ -207,9 +210,8 @@ async fn expire_only_drops_pending_when_terminal_dead() {
     let (repo, events, wave_id) = boot().await;
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
     let card_id = seed_card(&repo, &wave_id, "term-live").await;
-    let terminal_id = seed_terminal(&repo, &card_id).await;
     registry
-        .register(entry(&card_id, &wave_id, &terminal_id))
+        .register(entry(&card_id, &wave_id, "term-live"))
         .await
         .unwrap();
 
@@ -224,12 +226,11 @@ async fn expire_drops_pending_when_terminal_exits() {
     let (repo, events, wave_id) = boot().await;
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
     let card_id = seed_card(&repo, &wave_id, "term-exit").await;
-    let terminal_id = seed_terminal(&repo, &card_id).await;
     registry
-        .register(entry(&card_id, &wave_id, &terminal_id))
+        .register(entry(&card_id, &wave_id, "term-exit"))
         .await
         .unwrap();
-    repo.terminal_set_exit(&terminal_id, Some(0), false)
+    repo.terminal_set_exit("term-exit", Some(0), false)
         .await
         .unwrap();
 
@@ -244,16 +245,66 @@ async fn expire_drops_pending_when_terminal_row_deleted() {
     let (repo, events, wave_id) = boot().await;
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
     let card_id = seed_card(&repo, &wave_id, "term-deleted").await;
-    let terminal_id = seed_terminal(&repo, &card_id).await;
     registry
-        .register(entry(&card_id, &wave_id, &terminal_id))
+        .register(entry(&card_id, &wave_id, "term-deleted"))
         .await
         .unwrap();
-    repo.terminal_delete(&terminal_id).await.unwrap();
+    repo.terminal_delete("term-deleted").await.unwrap();
 
     let dropped = registry.expire_dead_pending().await;
 
     assert_eq!(dropped, 1);
+    assert_eq!(registry.pending_count().await, 0);
+}
+
+#[tokio::test]
+async fn on_thread_started_skips_stale_dead_entry_before_binding_live_entry() {
+    let (repo, events, wave_id) = boot().await;
+    let registry = PendingThreadStartRegistry::new(repo.clone(), events);
+    let dead_card = seed_card(&repo, &wave_id, "term-dead").await;
+    repo.terminal_set_exit("term-dead", Some(1), false)
+        .await
+        .unwrap();
+    registry
+        .register(entry(&dead_card, &wave_id, "term-dead"))
+        .await
+        .unwrap();
+    let live_card = seed_pending(&repo, &registry, &wave_id, "term-live").await;
+
+    let bound = registry.on_thread_started("T-live").await.unwrap();
+
+    assert_eq!(bound.as_deref(), Some(live_card.as_str()));
+    assert_eq!(registry.pending_count().await, 0);
+    assert!(
+        repo.card_codex_thread_get_by_card(&dead_card)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        repo.card_codex_thread_get_by_card(&live_card)
+            .await
+            .unwrap()
+            .unwrap()
+            .thread_id,
+        "T-live"
+    );
+}
+
+#[tokio::test]
+async fn on_thread_started_skips_all_stale_returns_none_if_no_live() {
+    let (repo, events, wave_id) = boot().await;
+    let registry = PendingThreadStartRegistry::new(repo.clone(), events);
+    for label in ["term-dead-a", "term-dead-b"] {
+        let card_id = seed_card(&repo, &wave_id, label).await;
+        repo.terminal_set_exit(label, Some(1), false).await.unwrap();
+        registry
+            .register(entry(&card_id, &wave_id, label))
+            .await
+            .unwrap();
+    }
+
+    assert_eq!(registry.on_thread_started("T-orphan").await.unwrap(), None);
     assert_eq!(registry.pending_count().await, 0);
 }
 
