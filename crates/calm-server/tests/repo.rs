@@ -6,7 +6,7 @@
 //! and terminal-per-card uniqueness.
 
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::SqlxRepo;
+use calm_server::db::sqlite::{SqlxRepo, overlay_delete_by_entity_tx};
 use calm_server::error::CalmError;
 use calm_server::model::*;
 use serde_json::json;
@@ -49,6 +49,24 @@ async fn make_card(repo: &SqlxRepo, wave_id: &str, kind: &str) -> Card {
     })
     .await
     .expect("create card")
+}
+
+async fn make_overlay(
+    repo: &SqlxRepo,
+    plugin_id: &str,
+    entity_kind: &str,
+    entity_id: &str,
+    kind: &str,
+) -> Overlay {
+    repo.overlay_upsert(NewOverlay {
+        plugin_id: plugin_id.into(),
+        entity_kind: entity_kind.into(),
+        entity_id: entity_id.into(),
+        kind: kind.into(),
+        payload: json!({"schemaVersion": 1, "state": "idle"}),
+    })
+    .await
+    .expect("upsert overlay")
 }
 
 // ---------------------------------------------------------------- CRUD ----
@@ -407,6 +425,141 @@ async fn wave_delete_cascades_to_cards() {
             .unwrap()
             .is_some()
     );
+}
+
+#[tokio::test]
+async fn card_delete_sweeps_card_overlays() {
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "C").await;
+    let w = make_wave(&repo, c.id.as_str(), "W").await;
+    let card = make_card(&repo, w.id.as_str(), "terminal").await;
+
+    make_overlay(&repo, "p1", "card", card.id.as_str(), "status").await;
+    make_overlay(&repo, "p2", "card", card.id.as_str(), "badge").await;
+
+    repo.card_delete(card.id.as_str()).await.unwrap();
+
+    assert!(
+        repo.overlays_for("card", card.id.as_str())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn wave_delete_sweeps_card_overlays() {
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "C").await;
+    let w = make_wave(&repo, c.id.as_str(), "W").await;
+    let card1 = make_card(&repo, w.id.as_str(), "terminal").await;
+    let card2 = make_card(&repo, w.id.as_str(), "terminal").await;
+
+    make_overlay(&repo, "p", "card", card1.id.as_str(), "status").await;
+    make_overlay(&repo, "p", "card", card2.id.as_str(), "status").await;
+
+    repo.wave_delete(w.id.as_str()).await.unwrap();
+
+    assert!(
+        repo.overlays_for("card", card1.id.as_str())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        repo.overlays_for("card", card2.id.as_str())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn wave_delete_sweeps_wave_and_view_overlays() {
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "C").await;
+    let w = make_wave(&repo, c.id.as_str(), "W").await;
+
+    make_overlay(&repo, "p", "wave", w.id.as_str(), "status").await;
+    make_overlay(&repo, "p", "view", w.id.as_str(), "status").await;
+
+    repo.wave_delete(w.id.as_str()).await.unwrap();
+
+    assert!(
+        repo.overlays_for("wave", w.id.as_str())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        repo.overlays_for("view", w.id.as_str())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn cove_delete_sweeps_all_overlays_transitively() {
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "C").await;
+    make_overlay(&repo, "p", "cove", c.id.as_str(), "status").await;
+
+    let waves = [
+        make_wave(&repo, c.id.as_str(), "w1").await,
+        make_wave(&repo, c.id.as_str(), "w2").await,
+    ];
+    let mut card_ids: Vec<String> = Vec::new();
+
+    for wave in &waves {
+        make_overlay(&repo, "p", "wave", wave.id.as_str(), "status").await;
+        make_overlay(&repo, "p", "view", wave.id.as_str(), "status").await;
+
+        for name in ["c1", "c2"] {
+            let card = make_card(&repo, wave.id.as_str(), name).await;
+            make_overlay(&repo, "p", "card", card.id.as_str(), "status").await;
+            card_ids.push(card.id.to_string());
+        }
+    }
+
+    repo.cove_delete(c.id.as_str()).await.unwrap();
+
+    assert!(
+        repo.overlays_for("cove", c.id.as_str())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    for wave in &waves {
+        assert!(
+            repo.overlays_for("wave", wave.id.as_str())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            repo.overlays_for("view", wave.id.as_str())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+    for card_id in &card_ids {
+        assert!(repo.overlays_for("card", card_id).await.unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn overlay_sweep_is_idempotent_no_rows() {
+    let repo = fresh_repo().await;
+    let mut tx = repo.pool().begin().await.unwrap();
+
+    let rows = overlay_delete_by_entity_tx(&mut tx, "card", "missing-card")
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(rows, 0);
 }
 
 // --- Terminal FK contract regression tests (issues #4, #197) ---------------
