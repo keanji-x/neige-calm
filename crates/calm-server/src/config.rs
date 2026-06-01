@@ -136,13 +136,19 @@ pub struct Config {
     )]
     pub shared_codex_appserver_enabled: bool,
 
-    /// PR3c (#410) — route non-empty user prompt cards through the shared
-    /// codex daemon by default. Roll back to legacy per-card codex with
-    /// `CALM_SHARED_CODEX_PROMPT_CARDS_ENABLED=false`.
+    /// Route prompt-bearing user codex cards through the shared codex
+    /// app-server (PR4) when `true`.
+    /// `shared_codex_prompt_cards_enabled` default false keeps PR3c opt-in
+    /// until ops confirms shared-daemon stability and addresses these followups:
+    /// - settings.http_proxy / https_proxy hot-reload (R7): currently
+    ///   the daemon reads settings at spawn time; changes require daemon
+    ///   restart. Legacy per-card path reads settings per spawn.
+    /// - any further Channel B review findings as we accumulate production
+    ///   telemetry on shared daemon.
     #[arg(
         long,
         env = "CALM_SHARED_CODEX_PROMPT_CARDS_ENABLED",
-        default_value_t = true
+        default_value_t = false
     )]
     pub shared_codex_prompt_cards_enabled: bool,
 
