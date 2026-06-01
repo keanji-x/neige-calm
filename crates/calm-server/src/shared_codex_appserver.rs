@@ -374,21 +374,33 @@ impl SharedCodexAppServer {
             return Ok(false);
         };
         let sock = PathBuf::from(sock_path);
-        let Ok((client, notifications)) = connect_initialized(&sock).await else {
-            return Ok(false);
-        };
-        let client = Arc::new(client);
-        self.install_client(client, notifications).await;
-        *self.runtime.lock().await = Some(SharedDaemonRuntime {
-            pid,
-            pgid,
-            boot_id,
-            process_start_time: start_time,
-            started_at,
-        });
-        *self.state.lock().await = SharedDaemonState::Running;
-        self.resume_cached_threads().await;
-        Ok(true)
+        match connect_initialized(&sock).await {
+            Ok((client, notifications)) => {
+                let client = Arc::new(client);
+                self.install_client(client, notifications).await;
+                *self.runtime.lock().await = Some(SharedDaemonRuntime {
+                    pid,
+                    pgid,
+                    boot_id,
+                    process_start_time: start_time,
+                    started_at,
+                });
+                *self.state.lock().await = SharedDaemonState::Running;
+                self.resume_cached_threads().await;
+                Ok(true)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "shared_codex_daemon::stop",
+                    pid,
+                    pgid,
+                    error = %e,
+                    "takeover handshake failed against verified daemon; reaping pgid before relaunch"
+                );
+                reap_verified_process_group(pid, pgid, start_time, &boot_id).await;
+                Ok(false)
+            }
+        }
     }
 
     async fn start_new_process(
@@ -438,11 +450,9 @@ impl SharedCodexAppServer {
         let process_start_time = read_proc_start_time(pid).unwrap_or(0);
         let boot_id = read_boot_id().unwrap_or_default();
         let started_at = now_ms();
-        *self.child.lock().await = Some(child);
+        let mut spawn_guard = SpawnedChildGuard::new(child, pgid);
 
         let (client, notifications) = self.poll_connect_initialized().await?;
-        let client = Arc::new(client);
-        self.install_client(client, notifications).await;
         let runtime = SharedDaemonRuntime {
             pid,
             pgid,
@@ -450,13 +460,6 @@ impl SharedCodexAppServer {
             process_start_time,
             started_at,
         };
-        *self.runtime.lock().await = Some(runtime.clone());
-        *self.state.lock().await = SharedDaemonState::Running;
-        self.restart_backoff.note_relaunch_now();
-        if increment_restart_count {
-            self.restart_count.fetch_add(1, Ordering::SeqCst);
-        }
-        *self.last_error.lock().await = last_error.clone();
         self.repo
             .shared_daemon_runtime_set(SharedCodexDaemonUpdate {
                 state: SharedDaemonState::Running.as_db_str().to_string(),
@@ -467,10 +470,21 @@ impl SharedCodexAppServer {
                 process_start_time: Some(process_start_time),
                 boot_id: Some(boot_id.clone()),
                 started_at: Some(started_at),
-                last_error,
+                last_error: last_error.clone(),
                 increment_restart_count,
             })
             .await?;
+        let child = spawn_guard.disarm();
+        *self.child.lock().await = Some(child);
+        let client = Arc::new(client);
+        self.install_client(client, notifications).await;
+        *self.runtime.lock().await = Some(runtime.clone());
+        *self.state.lock().await = SharedDaemonState::Running;
+        self.restart_backoff.note_relaunch_now();
+        if increment_restart_count {
+            self.restart_count.fetch_add(1, Ordering::SeqCst);
+        }
+        *self.last_error.lock().await = last_error.clone();
         self.resume_cached_threads().await;
         tracing::info!(
             target = "shared_codex_daemon::start",
@@ -670,6 +684,48 @@ impl SharedCodexAppServer {
     }
 }
 
+async fn reap_verified_process_group(pid: i32, pgid: i32, start_time: u64, boot_id: &str) {
+    signal_process_group(pgid, libc::SIGTERM);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    if verify_owned_pid(pid, start_time, boot_id) {
+        signal_process_group(pgid, libc::SIGKILL);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+struct SpawnedChildGuard {
+    child: Option<Child>,
+    pgid: i32,
+}
+
+impl SpawnedChildGuard {
+    fn new(child: Child, pgid: i32) -> Self {
+        Self {
+            child: Some(child),
+            pgid,
+        }
+    }
+
+    fn disarm(&mut self) -> Child {
+        self.child.take().expect("spawn guard disarmed once")
+    }
+}
+
+impl Drop for SpawnedChildGuard {
+    fn drop(&mut self) {
+        if self.child.is_none() {
+            return;
+        }
+        tracing::warn!(
+            target: "shared_codex_daemon::stop",
+            pgid = self.pgid,
+            "spawn aborted; reaping orphan pgid"
+        );
+        signal_process_group(self.pgid, libc::SIGTERM);
+        signal_process_group(self.pgid, libc::SIGKILL);
+    }
+}
+
 impl Drop for SharedCodexAppServer {
     fn drop(&mut self) {
         if let Ok(runtime) = self.runtime.try_lock()
@@ -699,4 +755,9 @@ impl SharedCodexAppServer {
     pub fn sock_path(&self) -> &Path {
         &self.sock
     }
+}
+
+#[cfg(any(test, feature = "fixtures"))]
+pub fn drop_spawned_child_guard_for_test(child: Child, pgid: i32) {
+    let _guard = SpawnedChildGuard::new(child, pgid);
 }

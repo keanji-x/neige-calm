@@ -161,6 +161,10 @@ async fn serve_conn(stream: tokio::net::UnixStream, control: WedgeControl) -> Re
 
         match method.as_str() {
             "initialize" => {
+                if env_flag("FAKE_CODEX_FAIL_INITIALIZE") {
+                    send_error(&mut write, &id, -32000, "forced initialize failure").await?;
+                    continue;
+                }
                 send_result(
                     &mut write,
                     &id,
@@ -291,6 +295,22 @@ where
         .send(Message::Text(frame.to_string()))
         .await
         .map_err(|e| format!("send result: {e}"))
+}
+
+async fn send_error<S>(write: &mut S, id: &Value, code: i64, message: &str) -> Result<(), String>
+where
+    S: SinkExt<Message> + Unpin,
+    <S as futures::Sink<Message>>::Error: std::fmt::Display,
+{
+    let frame = json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": { "code": code, "message": message }
+    });
+    write
+        .send(Message::Text(frame.to_string()))
+        .await
+        .map_err(|e| format!("send error: {e}"))
 }
 
 async fn send_notification<S>(write: &mut S, method: &str, params: Value) -> Result<(), String>

@@ -3,11 +3,14 @@ use std::time::Duration;
 
 use calm_server::config::Config;
 use calm_server::db::sqlite::SqlxRepo;
-use calm_server::db::{Repo, RepoOutOfDomain, RepoSyncDomainRaw, SharedCodexDaemonUpdate};
+use calm_server::db::{
+    Repo, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, SharedCodexDaemonUpdate,
+};
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, now_ms};
 use calm_server::routes::theme::RequestTheme;
 use calm_server::shared_codex_appserver::{
     BackoffState, SharedCodexAppServer, SharedDaemonState, bounded_exponential_backoff,
+    drop_spawned_child_guard_for_test,
 };
 use calm_server::spec_appserver::{read_boot_id, read_proc_start_time};
 use clap::Parser;
@@ -45,6 +48,39 @@ async fn server(root: &tempfile::TempDir, repo: Arc<dyn Repo>) -> Arc<SharedCode
     );
     home.seed().unwrap();
     SharedCodexAppServer::new(&cfg, Arc::new(home), repo)
+}
+
+async fn wait_for_start_time_and_socket(pid: i32, sock: &std::path::Path) -> u64 {
+    let mut process_start_time = None;
+    for _ in 0..40 {
+        process_start_time = read_proc_start_time(pid);
+        if process_start_time.is_some() && sock.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(sock.exists(), "fake app-server must bind takeover socket");
+    process_start_time.expect("fake app-server start time")
+}
+
+async fn waitpid_reaped(pid: i32) -> bool {
+    for _ in 0..50 {
+        let mut status = 0;
+        // SAFETY: waitpid is called for a direct child pid spawned by this test.
+        let rc = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+        if rc == pid {
+            return true;
+        }
+        if rc == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD) {
+            return true;
+        }
+        // SAFETY: signal 0 probes liveness without delivering a signal.
+        if unsafe { libc::kill(pid, 0) } != 0 {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    false
 }
 
 async fn seed_card(repo: &SqlxRepo, idx: usize) -> String {
@@ -144,6 +180,65 @@ async fn stale_daemon_detected_by_start_time_mismatch() {
     let snapshot = daemon.status_snapshot();
     assert_eq!(snapshot.state, SharedDaemonState::Running);
     assert_ne!(snapshot.runtime.unwrap().pid, 999_998);
+}
+
+#[tokio::test]
+async fn takeover_handshake_failure_reaps_verified_daemon_before_relaunch() {
+    let root = tempfile::tempdir().unwrap();
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+
+    let mut child = Command::new(fake_codex_bin())
+        .arg("app-server")
+        .arg("--listen")
+        .arg(format!("unix://{}", sock.display()))
+        .env("FAKE_CODEX_FAIL_INITIALIZE", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn handshake-failing fake app-server for takeover");
+    let old_pid = i32::try_from(child.id().expect("fake app-server pid")).expect("pid fits i32");
+    let process_start_time = wait_for_start_time_and_socket(old_pid, &sock).await;
+
+    let repo = repo().await;
+    repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
+        state: "running".into(),
+        pid: Some(old_pid),
+        pgid: Some(old_pid),
+        sock_path: Some(sock.display().to_string()),
+        codex_home_path: Some(root.path().join("codex-home").display().to_string()),
+        process_start_time: Some(process_start_time),
+        boot_id: Some(read_boot_id().unwrap_or_default()),
+        started_at: Some(now_ms()),
+        last_error: None,
+        increment_restart_count: false,
+    })
+    .await
+    .unwrap();
+
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+
+    tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .expect("verified handshake-failing daemon should be reaped before relaunch")
+        .expect("wait old fake app-server");
+
+    let snapshot = daemon.status_snapshot();
+    assert_eq!(snapshot.state, SharedDaemonState::Running);
+    let new_pid = snapshot
+        .runtime
+        .as_ref()
+        .map(|runtime| runtime.pid)
+        .unwrap();
+    assert_ne!(new_pid, old_pid);
+
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(record.pid, Some(new_pid));
+    assert_eq!(record.pgid, Some(new_pid));
 }
 
 #[tokio::test]
@@ -320,4 +415,22 @@ async fn taken_over_daemon_exit_triggers_restart() {
     .expect("taken-over daemon exit should trigger restart");
 
     assert_eq!(restarted.restart_count, 1);
+}
+
+#[tokio::test]
+async fn cleanup_guard_drop_kills_pgid() {
+    let child = Command::new("sleep")
+        .arg("120")
+        .process_group(0)
+        .kill_on_drop(false)
+        .spawn()
+        .expect("spawn guard test child");
+    let pid = i32::try_from(child.id().expect("child pid")).expect("pid fits i32");
+
+    drop_spawned_child_guard_for_test(child, pid);
+
+    assert!(
+        waitpid_reaped(pid).await,
+        "SpawnedChildGuard drop must reap the child process group"
+    );
 }
