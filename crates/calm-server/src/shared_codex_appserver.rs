@@ -717,6 +717,7 @@ impl SharedCodexAppServer {
         *self.client.lock().await = Some(client);
         let tx = self.notifications.clone();
         let pending = self.pending_codex_threads_handle.clone();
+        let repo = self.repo.clone();
         let thread_cache = self.thread_cache.clone();
         let kernel_initiated_threads = self.kernel_initiated_threads.clone();
         let kernel_thread_start_serial = self.kernel_thread_start_serial.clone();
@@ -725,6 +726,7 @@ impl SharedCodexAppServer {
                 if let Some(thread_id) = thread_started_id(&notification) {
                     match handle_thread_started_notification(
                         pending.as_ref(),
+                        &repo,
                         &thread_cache,
                         &kernel_initiated_threads,
                         &kernel_thread_start_serial,
@@ -767,6 +769,7 @@ impl SharedCodexAppServer {
     ) -> Result<bool> {
         let handled = handle_thread_started_notification(
             self.pending_codex_threads_handle.as_ref(),
+            &self.repo,
             &self.thread_cache,
             &self.kernel_initiated_threads,
             &self.kernel_thread_start_serial,
@@ -973,6 +976,7 @@ enum ThreadStartedHandling {
 
 async fn handle_thread_started_notification(
     pending: Option<&Arc<PendingThreadStartRegistry>>,
+    repo: &Arc<dyn Repo>,
     thread_cache: &Arc<DashMap<String, String>>,
     kernel_initiated_threads: &Arc<Mutex<HashSet<String>>>,
     kernel_thread_start_serial: &Arc<Mutex<()>>,
@@ -991,6 +995,23 @@ async fn handle_thread_started_notification(
     let Some(pending) = pending else {
         return Ok(ThreadStartedHandling::DispatchNormally);
     };
+    let already_mapped = if thread_cache.contains_key(thread_id) {
+        true
+    } else if let Some(row) = repo.card_codex_thread_get_by_thread(thread_id).await? {
+        thread_cache.insert(thread_id.to_string(), row.card_id);
+        true
+    } else {
+        false
+    };
+    if already_mapped {
+        tracing::debug!(
+            target: "shared_codex_daemon::pending_skip_already_mapped",
+            %thread_id,
+            "shared codex thread/started already has a card mapping"
+        );
+        return Ok(ThreadStartedHandling::DispatchNormally);
+    }
+
     match pending.on_thread_started(thread_id).await? {
         Some(card_id) => {
             thread_cache.insert(thread_id.to_string(), card_id);

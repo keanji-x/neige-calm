@@ -10,8 +10,8 @@ use calm_server::config::Config;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{NewCove, NewWave};
-use calm_server::pending_codex_threads::PendingThreadStartRegistry;
+use calm_server::model::{NewCard, NewCove, NewWave};
+use calm_server::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
@@ -108,7 +108,7 @@ async fn boot_with_shared_daemon(
 
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().join("terminals"),
-        proc_supervisor_sock: None,
+        proc_supervisor_sock: std::env::var_os("CALM_TEST_PROC_SUPERVISOR_SOCK").map(PathBuf::from),
     });
     let events = EventBus::new();
     let codex = Arc::new(CodexClient::new_stub());
@@ -414,6 +414,68 @@ async fn create_empty_card_with_empty_cards_flag_enabled_uses_shared_daemon_pend
     assert!(
         !shell_line.contains("resume"),
         "empty shared TUI must fresh-start, not resume: {shell_line}"
+    );
+}
+
+#[tokio::test]
+async fn empty_card_spawn_failure_removes_pending_entry() {
+    let _guard = ENV_LOCK.lock().await;
+    let missing_sock = std::env::temp_dir().join(format!(
+        "neige-calm-missing-supervisor-{}.sock",
+        uuid::Uuid::new_v4()
+    ));
+    unsafe {
+        std::env::set_var("CALM_TEST_PROC_SUPERVISOR_SOCK", &missing_sock);
+    }
+    let boot = boot(true, true, true).await;
+    unsafe {
+        std::env::remove_var("CALM_TEST_PROC_SUPERVISOR_SOCK");
+    }
+
+    let (status, failed) = post(
+        boot.app.clone(),
+        &boot.wave_id,
+        json!({ "cwd": "/", "theme": theme() }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={failed:?}");
+    let pending = boot
+        .state
+        .pending_codex_threads
+        .as_ref()
+        .expect("pending registry");
+    assert_eq!(pending.pending_count().await, 0);
+
+    let card = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: boot.wave_id.clone().into(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({}),
+        })
+        .await
+        .unwrap();
+    let card_id = card.id.to_string();
+    pending
+        .register(PendingEntry::new(card_id.clone(), None, String::new()))
+        .await
+        .unwrap();
+    assert!(
+        boot.state
+            .shared_codex_appserver
+            .handle_thread_started_notification_for_test("T-new")
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        boot.repo
+            .card_codex_thread_get_by_thread("T-new")
+            .await
+            .unwrap()
+            .expect("new mapping")
+            .card_id,
+        card_id
     );
 }
 

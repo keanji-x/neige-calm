@@ -532,12 +532,21 @@ pub(crate) async fn create_codex_card(
         }
     };
 
-    // 7. Spawn the daemon. On failure we deliberately do NOT roll back
-    //    the persisted rows — the orphan-terminal sweeper handles cleanup
-    //    within its grace window. Matches the prior endpoint's semantics:
-    //    a 500 tells the client the spawn failed, but the card/terminal
-    //    pair is still in the DB until the sweeper runs.
-    spawn_terminal_for(&s, &term, &command_line, &cwd, &env).await?;
+    // 7. Persisted rows remain on spawn failure, but shared empty-card
+    //    pending state must be rolled back immediately.
+    if let Err(e) = spawn_terminal_for(&s, &term, &command_line, &cwd, &env).await {
+        if use_shared_empty_path && let Some(pending) = s.pending_codex_threads.as_ref() {
+            let removed = pending.remove_by_card(card.id.as_ref()).await;
+            tracing::warn!(
+                target: "shared_codex_daemon::pending_rollback_on_spawn_failure",
+                card_id = %card.id,
+                removed,
+                error = %e,
+                "PTY spawn failed after pending register; rolled back pending entry"
+            );
+        }
+        return Err(e);
+    }
 
     tracing::info!(
         card_id = %card.id,

@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus};
-use calm_server::model::{NewCard, NewCove, NewWave};
+use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
 use calm_server::pending_codex_threads::{
     PendingEntry, PendingThreadStartRegistry, spawn_periodic_expire_task,
 };
@@ -233,6 +233,35 @@ async fn unknown_thread_started_when_no_pending() {
 }
 
 #[tokio::test]
+async fn already_mapped_thread_does_not_consume_pending() {
+    let (repo, registry, server, wave_id) = boot_pending_server().await;
+    let mapped = seed_card(&repo, &wave_id, "term-mapped").await;
+    repo.card_codex_thread_upsert(&mapped, "T-mapped", CardRole::Plain, Some(&wave_id))
+        .await
+        .unwrap();
+    let pending_card = seed_pending(&repo, &registry, &wave_id, "term-empty").await;
+
+    assert!(
+        !server
+            .handle_thread_started_notification_for_test("T-mapped")
+            .await
+            .unwrap()
+    );
+
+    assert_eq!(registry.pending_count().await, 1);
+    assert_eq!(
+        server.cached_card_for_thread("T-mapped").as_deref(),
+        Some(mapped.as_str())
+    );
+    assert!(
+        repo.card_codex_thread_get_by_card(&pending_card)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
 async fn kernel_initiated_threads_bypass_pending_registry() {
     let (repo, registry, server, wave_id) = boot_pending_server().await;
     let card_id = seed_pending(&repo, &registry, &wave_id, "term-a").await;
@@ -362,6 +391,46 @@ async fn expire_runs_periodically_via_background_task() {
     }
     handle.abort();
     assert_eq!(registry.pending_count().await, 0);
+}
+
+#[tokio::test]
+async fn remove_by_card_drops_pending_entry() {
+    let (repo, events, wave_id) = boot().await;
+    let registry = PendingThreadStartRegistry::new(repo.clone(), events);
+    let a = seed_card(&repo, &wave_id, "term-a").await;
+    let b = seed_card(&repo, &wave_id, "term-b").await;
+    let c = seed_card(&repo, &wave_id, "term-c").await;
+    registry
+        .register(entry(&a, &wave_id, "term-a"))
+        .await
+        .unwrap();
+    registry
+        .register(entry(&b, &wave_id, "term-b"))
+        .await
+        .unwrap();
+    registry
+        .register(entry(&c, &wave_id, "term-c"))
+        .await
+        .unwrap();
+
+    assert!(registry.remove_by_card(&b).await);
+    assert_eq!(registry.pending_count().await, 2);
+    assert_eq!(
+        registry.on_thread_started("T-1").await.unwrap(),
+        Some(a.clone())
+    );
+    assert_eq!(
+        registry.on_thread_started("T-2").await.unwrap(),
+        Some(c.clone())
+    );
+}
+
+#[tokio::test]
+async fn remove_by_card_returns_false_for_unknown() {
+    let (repo, events, _wave_id) = boot().await;
+    let registry = PendingThreadStartRegistry::new(repo, events);
+
+    assert!(!registry.remove_by_card("never-registered").await);
 }
 
 #[tokio::test]

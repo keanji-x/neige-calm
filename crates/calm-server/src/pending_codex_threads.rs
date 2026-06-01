@@ -83,6 +83,14 @@ impl PendingThreadStartRegistry {
         Ok(())
     }
 
+    pub async fn remove_by_card(&self, card_id: &str) -> bool {
+        let mut queue = self.queue.lock().await;
+        let Some(index) = queue.iter().position(|entry| entry.card_id == card_id) else {
+            return false;
+        };
+        queue.remove(index).is_some()
+    }
+
     pub async fn on_thread_started(&self, thread_id: &str) -> Result<Option<String>> {
         let Some(entry) = self.queue.lock().await.pop_front() else {
             tracing::info!(
