@@ -37,6 +37,12 @@ async fn main() -> anyhow::Result<()> {
             "shared_codex_prompt_cards_enabled=false - user prompt cards use the legacy per-card codex path"
         );
     }
+    if !cfg.shared_codex_empty_cards_enabled {
+        tracing::info!(
+            target: "shared_codex_daemon::config",
+            "shared_codex_empty_cards_enabled=false - empty user codex cards stay on legacy path until PR3c"
+        );
+    }
     warn_if_worker_hook_callback_is_not_loopback(&cfg);
 
     // Storage. `mock` keeps the in-memory backend for dev — it now resolves to

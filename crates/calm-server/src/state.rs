@@ -10,6 +10,7 @@ use crate::db::{Repo, RouteRepo};
 use crate::dispatcher::Dispatcher;
 use crate::event::EventBus;
 use crate::mcp_server::McpServer;
+use crate::pending_codex_threads::{PendingThreadStartRegistry, spawn_periodic_expire_task};
 use crate::plugin_host::{PluginHost, PluginRegistry};
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::shared_codex_home::SharedCodexHome;
@@ -19,6 +20,7 @@ use crate::wave_cove_cache::WaveCoveCache;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 /// Route-facing handle: the trait object `AppState::repo` exposes. Excludes
 /// `RepoSyncDomainRaw` — see `db/mod.rs` module doc for the capability split.
@@ -110,6 +112,16 @@ pub struct AppState {
     /// daemon. Config default is true; tests may override through
     /// `with_shared_codex_prompt_cards_enabled`.
     pub shared_codex_prompt_cards_enabled: bool,
+    /// PR6 -> PR3c gate for routing empty user codex cards through the shared
+    /// daemon. Default false preserves the legacy per-card empty-card path.
+    pub shared_codex_empty_cards_enabled: bool,
+    /// FIFO attribution registry for empty cards that fresh-start a thread
+    /// through the shared daemon's TUI. Present only when the shared daemon is
+    /// enabled for this boot.
+    pub pending_codex_threads: Option<Arc<PendingThreadStartRegistry>>,
+    /// Serializes the shared empty-card `(pending register, PTY spawn)` pair
+    /// so FIFO pending attribution matches actual TUI fresh-start order.
+    pub pending_codex_threads_spawn_serial: Arc<Mutex<()>>,
     /// #322 — aspect / join-point framework registry. Holds the boot-
     /// installed aspects (today: [`WatermarkSinkInstalledAspect`] on
     /// `BeforeHandleParkInRegistry`). Threaded into
@@ -245,6 +257,9 @@ impl AppState {
             spec_push,
             shared_codex_appserver,
             shared_codex_prompt_cards_enabled: false,
+            shared_codex_empty_cards_enabled: false,
+            pending_codex_threads: None,
+            pending_codex_threads_spawn_serial: Arc::new(Mutex::new(())),
             // #322 — aspect registry. Identical set in test/replay and
             // production (see `build_aspect_registry` doc) so a test
             // exercising the production register path (e.g.
@@ -264,6 +279,21 @@ impl AppState {
     #[cfg(feature = "fixtures")]
     pub fn with_shared_codex_prompt_cards_enabled(mut self, enabled: bool) -> Self {
         self.shared_codex_prompt_cards_enabled = enabled;
+        self
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn with_shared_codex_empty_cards_enabled(mut self, enabled: bool) -> Self {
+        self.shared_codex_empty_cards_enabled = enabled;
+        self
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn with_pending_codex_threads(
+        mut self,
+        pending: Option<Arc<PendingThreadStartRegistry>>,
+    ) -> Self {
+        self.pending_codex_threads = pending;
         self
     }
 
@@ -411,8 +441,25 @@ impl AppState {
         // dispatcher spawn so the dispatcher's push path and the route both
         // touch the same `Arc<DashMap>`.
         let spec_push = SpecPushRegistry::new();
-        let shared_codex_appserver =
-            SharedCodexAppServer::new(cfg, codex.shared_codex_home.clone(), repo.clone());
+        let pending_codex_threads = cfg.shared_codex_appserver_enabled.then(|| {
+            Arc::new(PendingThreadStartRegistry::new(
+                repo.clone(),
+                events.clone(),
+            ))
+        });
+        if let Some(registry) = pending_codex_threads.clone() {
+            spawn_periodic_expire_task(
+                registry,
+                Duration::from_secs(60),
+                Duration::from_secs(60 * 60 * 6),
+            );
+        }
+        let shared_codex_appserver = SharedCodexAppServer::new_with_pending(
+            cfg,
+            codex.shared_codex_home.clone(),
+            repo.clone(),
+            pending_codex_threads.clone(),
+        );
         let dispatcher = Arc::new(crate::dispatcher::Dispatcher::spawn_with_terminal_renderer(
             repo.clone(),
             events.clone(),
@@ -468,6 +515,9 @@ impl AppState {
             spec_push,
             shared_codex_appserver,
             shared_codex_prompt_cards_enabled: cfg.shared_codex_prompt_cards_enabled,
+            shared_codex_empty_cards_enabled: cfg.shared_codex_empty_cards_enabled,
+            pending_codex_threads,
+            pending_codex_threads_spawn_serial: Arc::new(Mutex::new(())),
             // #322 — aspect registry, boot-installed once and shared via
             // `Arc` to every handler / actor that needs it.
             aspects: build_aspect_registry(),

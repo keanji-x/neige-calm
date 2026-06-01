@@ -152,6 +152,16 @@ pub struct Config {
     )]
     pub shared_codex_prompt_cards_enabled: bool,
 
+    /// PR6 -> PR3c decoupling gate. Default false keeps empty user codex
+    /// cards on the legacy per-card CODEX_HOME path until shared-daemon
+    /// prompt identity is confirmed stable by operators.
+    #[arg(
+        long,
+        env = "CALM_SHARED_CODEX_EMPTY_CARDS_ENABLED",
+        default_value_t = false
+    )]
+    pub shared_codex_empty_cards_enabled: bool,
+
     /// Initial delay before restarting the shared codex app-server after a crash.
     #[arg(
         long,

@@ -40,6 +40,7 @@ use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::Event;
 use crate::model::{Card, CardPatch, CardRole, new_id};
+use crate::pending_codex_threads::{PendingEntry, card_payload_clear_pending_status};
 use crate::routes::cards::card_scope;
 use crate::routes::settings::load_settings;
 use crate::routes::terminal::spawn_terminal_for;
@@ -192,6 +193,18 @@ pub(crate) async fn create_codex_card(
 
     let shared_prompt_requested = prompt.is_some() && s.shared_codex_prompt_cards_enabled;
     let use_shared_prompt_path = shared_prompt_requested && s.shared_codex_appserver.is_running();
+    let use_shared_empty_path = prompt.is_none()
+        && s.shared_codex_empty_cards_enabled
+        && s.shared_codex_appserver.is_running()
+        && s.pending_codex_threads.is_some();
+    if prompt.is_none() && s.shared_codex_empty_cards_enabled && !use_shared_empty_path {
+        tracing::info!(
+            target = "shared_codex_daemon::empty_card_fallback",
+            daemon_running = s.shared_codex_appserver.is_running(),
+            pending_registry = s.pending_codex_threads.is_some(),
+            "shared empty-card path enabled but unavailable; falling back to legacy spawn"
+        );
+    }
 
     // 4. Assemble the env map the daemon will forward to the PTY child:
     //    CODEX_HOME / NEIGE_CARD_ID / NEIGE_CALM_BASE_URL plus proxy vars
@@ -199,7 +212,7 @@ pub(crate) async fn create_codex_card(
     //    user has a non-empty override — empty would *clear* the container
     //    default which is the opposite of what the user expects.
     let codex_home = s.codex.codex_homes_dir.join(&card_id);
-    let codex_home_path = if use_shared_prompt_path {
+    let codex_home_path = if use_shared_prompt_path || use_shared_empty_path {
         s.codex.codex_home_dir().to_string_lossy().to_string()
     } else {
         codex_home.to_string_lossy().to_string()
@@ -337,6 +350,12 @@ pub(crate) async fn create_codex_card(
         );
     }
 
+    let _pending_spawn_serial_guard = if use_shared_empty_path {
+        Some(s.pending_codex_threads_spawn_serial.lock().await)
+    } else {
+        None
+    };
+
     let command_line = if let Some(prompt_text) = prompt.as_deref() {
         if use_shared_prompt_path {
             // PR5 new path: non-empty user prompt cards run turn #1 on the
@@ -446,24 +465,101 @@ pub(crate) async fn create_codex_card(
             format!("codex {}", shell_single_quote(prompt_text))
         }
     } else {
-        // PR6 pending path: empty prompt cards still use the legacy bare
-        // codex spawn with a per-card CODEX_HOME seeded from the host.
-        seed_legacy_codex_home(&codex_home, None)?;
-        tracing::info!(
-            target = "codex_auto_submit::spawned",
-            card_id = %card.id,
-            source = "empty-codex-card",
-            "legacy empty codex card spawned"
-        );
-        "codex".to_string()
+        if use_shared_empty_path {
+            let mut payload = card.payload.clone();
+            let Some(map) = payload.as_object_mut() else {
+                return Err(CalmError::Internal(format!(
+                    "codex card {} payload is not a JSON object; cannot persist pending status",
+                    card.id
+                )));
+            };
+            map.insert(
+                "codex_thread_status".into(),
+                serde_json::Value::String("pending_thread_start".into()),
+            );
+
+            let scope = card_scope(s.repo.as_ref(), card.id.clone(), card.wave_id.clone()).await?;
+            let card_id_for_tx = card.id.to_string();
+            let payload_for_tx = payload;
+            let (updated, _id) = write_with_event_typed(
+                s.repo.as_ref(),
+                actor.to_actor_id(),
+                scope,
+                None,
+                &s.events,
+                &s.card_role_cache,
+                &s.wave_cove_cache,
+                move |tx| {
+                    Box::pin(async move {
+                        let card = card_update_tx(
+                            tx,
+                            &card_id_for_tx,
+                            CardPatch {
+                                kind: None,
+                                sort: None,
+                                payload: Some(payload_for_tx),
+                                deletable: None,
+                            },
+                        )
+                        .await?;
+                        Ok((card.clone(), Event::CardUpdated(card)))
+                    })
+                },
+            )
+            .await?;
+            card = updated;
+
+            let pending = s.pending_codex_threads.as_ref().ok_or_else(|| {
+                CalmError::Internal(
+                    "shared empty-card path enabled without pending registry".into(),
+                )
+            })?;
+            pending
+                .register(PendingEntry::new(
+                    card.id.to_string(),
+                    Some(wave_id.clone()),
+                    term.id.to_string(),
+                ))
+                .await?;
+
+            format!(
+                "codex --remote {}",
+                shell_single_quote(&s.shared_codex_appserver.remote_uri()),
+            )
+        } else {
+            // Flag-off PR6 path: empty prompt cards stay on the legacy bare
+            // codex spawn with a per-card CODEX_HOME seeded from the host.
+            seed_legacy_codex_home(&codex_home, None)?;
+            tracing::info!(
+                target = "codex_auto_submit::spawned",
+                card_id = %card.id,
+                source = "empty-codex-card",
+                "legacy empty codex card spawned"
+            );
+            "codex".to_string()
+        }
     };
 
-    // 7. Spawn the daemon. On failure we deliberately do NOT roll back
-    //    the persisted rows — the orphan-terminal sweeper handles cleanup
-    //    within its grace window. Matches the prior endpoint's semantics:
-    //    a 500 tells the client the spawn failed, but the card/terminal
-    //    pair is still in the DB until the sweeper runs.
-    spawn_terminal_for(&s, &term, &command_line, &cwd, &env).await?;
+    // 7. Persisted rows remain on spawn failure, but shared empty-card
+    //    pending state must be rolled back immediately.
+    if let Err(e) = spawn_terminal_for(&s, &term, &command_line, &cwd, &env).await {
+        if use_shared_empty_path && let Some(pending) = s.pending_codex_threads.as_ref() {
+            let removed = pending.remove_by_card(card.id.as_ref()).await;
+            let payload_rolled_back =
+                card_payload_clear_pending_status(s.repo.as_ref(), &s.events, card.id.as_ref())
+                    .await
+                    .is_ok();
+            tracing::warn!(
+                target: "shared_codex_daemon::pending_rollback_on_spawn_failure",
+                card_id = %card.id,
+                removed,
+                payload_rolled_back,
+                error = %e,
+                "PTY spawn failed; rolled back pending registry + payload"
+            );
+        }
+        return Err(e);
+    }
 
     tracing::info!(
         card_id = %card.id,
@@ -471,6 +567,7 @@ pub(crate) async fn create_codex_card(
         cwd = %cwd,
         hands_free = prompt.is_some(),
         shared_prompt_thread = use_shared_prompt_path,
+        shared_empty_thread_pending = use_shared_empty_path,
         "spawned interactive codex"
     );
 

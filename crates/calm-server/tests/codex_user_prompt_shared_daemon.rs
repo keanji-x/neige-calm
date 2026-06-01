@@ -10,7 +10,8 @@ use calm_server::config::Config;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{NewCove, NewWave};
+use calm_server::model::{NewCard, NewCove, NewWave};
+use calm_server::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
@@ -36,7 +37,12 @@ fn fake_codex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_osc-probe-child")
 }
 
-fn cfg(root: &TempDir, appserver_enabled: bool, prompt_cards_enabled: bool) -> Config {
+fn cfg(
+    root: &TempDir,
+    appserver_enabled: bool,
+    prompt_cards_enabled: bool,
+    empty_cards_enabled: bool,
+) -> Config {
     let mut cfg = Config::parse_from([
         "calm-server",
         "--data-dir",
@@ -50,16 +56,28 @@ fn cfg(root: &TempDir, appserver_enabled: bool, prompt_cards_enabled: bool) -> C
     ]);
     cfg.shared_codex_appserver_enabled = appserver_enabled;
     cfg.shared_codex_prompt_cards_enabled = prompt_cards_enabled;
+    cfg.shared_codex_empty_cards_enabled = empty_cards_enabled;
     cfg
 }
 
-async fn boot(appserver_enabled: bool, prompt_cards_enabled: bool) -> Boot {
-    boot_with_shared_daemon(appserver_enabled, prompt_cards_enabled, appserver_enabled).await
+async fn boot(
+    appserver_enabled: bool,
+    prompt_cards_enabled: bool,
+    empty_cards_enabled: bool,
+) -> Boot {
+    boot_with_shared_daemon(
+        appserver_enabled,
+        prompt_cards_enabled,
+        empty_cards_enabled,
+        appserver_enabled,
+    )
+    .await
 }
 
 async fn boot_with_shared_daemon(
     appserver_enabled: bool,
     prompt_cards_enabled: bool,
+    empty_cards_enabled: bool,
     start_appserver: bool,
 ) -> Boot {
     let tmp = TempDir::new().expect("tempdir");
@@ -90,14 +108,14 @@ async fn boot_with_shared_daemon(
 
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().join("terminals"),
-        proc_supervisor_sock: None,
+        proc_supervisor_sock: std::env::var_os("CALM_TEST_PROC_SUPERVISOR_SOCK").map(PathBuf::from),
     });
     let events = EventBus::new();
     let codex = Arc::new(CodexClient::new_stub());
     let codex_homes_dir = codex.codex_homes_dir.clone();
     let mut state = AppState::from_parts(
         repo.clone(),
-        events,
+        events.clone(),
         daemon,
         Arc::new(PluginHost::new_full(
             Arc::new(PluginRegistry::empty()),
@@ -115,19 +133,30 @@ async fn boot_with_shared_daemon(
     );
 
     state = state.with_shared_codex_prompt_cards_enabled(prompt_cards_enabled);
+    state = state.with_shared_codex_empty_cards_enabled(empty_cards_enabled);
 
     if appserver_enabled {
-        let cfg = cfg(&tmp, true, prompt_cards_enabled);
+        let cfg = cfg(&tmp, true, prompt_cards_enabled, empty_cards_enabled);
         let home = calm_server::shared_codex_home::SharedCodexHome::new(
             cfg.data_dir_resolved().join("codex-home"),
             cfg.data_dir_resolved().join("codex-homes"),
         );
         home.seed().unwrap();
-        let shared = SharedCodexAppServer::new(&cfg, Arc::new(home), repo.clone());
+        let pending = Arc::new(PendingThreadStartRegistry::new(
+            repo.clone(),
+            events.clone(),
+        ));
+        let shared = SharedCodexAppServer::new_with_pending(
+            &cfg,
+            Arc::new(home),
+            repo.clone(),
+            Some(pending.clone()),
+        );
         if start_appserver {
             shared.start_or_takeover().await.unwrap();
         }
         state = state.with_shared_codex_appserver(shared);
+        state = state.with_pending_codex_threads(Some(pending));
     }
 
     let app = routes::router()
@@ -211,7 +240,7 @@ async fn create_prompt_card_calls_shared_daemon_thread_start() {
     unsafe {
         std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
     }
-    let boot = boot(true, true).await;
+    let boot = boot(true, true, false).await;
 
     let (status, card) = post(
         boot.app.clone(),
@@ -245,7 +274,7 @@ async fn create_prompt_card_calls_shared_daemon_thread_start() {
 #[tokio::test]
 async fn create_prompt_card_persists_thread_mapping_to_table_and_payload() {
     let _guard = ENV_LOCK.lock().await;
-    let boot = boot(true, true).await;
+    let boot = boot(true, true, false).await;
     let (status, card) = post(
         boot.app.clone(),
         &boot.wave_id,
@@ -269,7 +298,7 @@ async fn create_prompt_card_persists_thread_mapping_to_table_and_payload() {
 #[tokio::test]
 async fn create_prompt_card_spawns_remote_resume_tui() {
     let _guard = ENV_LOCK.lock().await;
-    let boot = boot(true, true).await;
+    let boot = boot(true, true, false).await;
     let (status, card) = post(
         boot.app.clone(),
         &boot.wave_id,
@@ -293,7 +322,7 @@ async fn create_prompt_card_spawns_remote_resume_tui() {
 #[tokio::test]
 async fn create_prompt_card_skips_per_card_codex_home_seeding() {
     let _guard = ENV_LOCK.lock().await;
-    let boot = boot(true, true).await;
+    let boot = boot(true, true, false).await;
     let (status, card) = post(
         boot.app.clone(),
         &boot.wave_id,
@@ -309,9 +338,9 @@ async fn create_prompt_card_skips_per_card_codex_home_seeding() {
 }
 
 #[tokio::test]
-async fn create_empty_codex_card_still_uses_legacy_path() {
+async fn create_empty_card_with_empty_cards_flag_disabled_uses_legacy() {
     let _guard = ENV_LOCK.lock().await;
-    let boot = boot(true, true).await;
+    let boot = boot(true, true, false).await;
     let (status, card) = post(
         boot.app.clone(),
         &boot.wave_id,
@@ -335,9 +364,162 @@ async fn create_empty_codex_card_still_uses_legacy_path() {
 }
 
 #[tokio::test]
+async fn empty_path_falls_back_to_legacy_when_shared_daemon_not_running() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot(false, true, true).await;
+    let (status, card) = post(
+        boot.app.clone(),
+        &boot.wave_id,
+        json!({ "cwd": "/workspace", "theme": theme() }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={card:?}");
+    assert!(card["payload"].get("codex_thread_status").is_none());
+    let card_id = card["id"].as_str().unwrap();
+    assert!(
+        boot.codex_homes_dir.join(card_id).exists(),
+        "fallback path must seed per-card CODEX_HOME"
+    );
+    let terminal_id = card["payload"]["terminal_id"].as_str().unwrap();
+    let entry = boot
+        .state
+        .terminal_renderer
+        .get(terminal_id)
+        .expect("renderer entry");
+    assert_eq!(entry.config().args[1], "codex");
+}
+
+#[tokio::test]
+async fn create_empty_card_with_empty_cards_flag_enabled_uses_shared_daemon_pending_register() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot(true, true, true).await;
+    let (status, card) = post(
+        boot.app.clone(),
+        &boot.wave_id,
+        json!({ "cwd": "/workspace", "theme": theme() }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={card:?}");
+    assert!(card["payload"].get("codex_thread_id").is_none());
+    assert_eq!(
+        card["payload"]["codex_thread_status"],
+        "pending_thread_start"
+    );
+    let card_id = card["id"].as_str().unwrap();
+    assert!(
+        !boot.codex_homes_dir.join(card_id).exists(),
+        "shared empty-card path must not create a per-card CODEX_HOME"
+    );
+    assert!(
+        boot.repo
+            .card_codex_thread_get_by_card(card_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        boot.state
+            .pending_codex_threads
+            .as_ref()
+            .expect("pending registry")
+            .pending_count()
+            .await,
+        1
+    );
+    let terminal_id = card["payload"]["terminal_id"].as_str().unwrap();
+    let entry = boot
+        .state
+        .terminal_renderer
+        .get(terminal_id)
+        .expect("renderer entry");
+    let shell_line = &entry.config().args[1];
+    assert!(
+        shell_line.contains("codex --remote 'unix://"),
+        "unexpected command line: {shell_line}"
+    );
+    assert!(
+        !shell_line.contains("resume"),
+        "empty shared TUI must fresh-start, not resume: {shell_line}"
+    );
+}
+
+#[tokio::test]
+async fn empty_card_spawn_failure_removes_pending_entry() {
+    let _guard = ENV_LOCK.lock().await;
+    let missing_sock = std::env::temp_dir().join(format!(
+        "neige-calm-missing-supervisor-{}.sock",
+        uuid::Uuid::new_v4()
+    ));
+    unsafe {
+        std::env::set_var("CALM_TEST_PROC_SUPERVISOR_SOCK", &missing_sock);
+    }
+    let boot = boot(true, true, true).await;
+    unsafe {
+        std::env::remove_var("CALM_TEST_PROC_SUPERVISOR_SOCK");
+    }
+
+    let (status, failed) = post(
+        boot.app.clone(),
+        &boot.wave_id,
+        json!({ "cwd": "/", "theme": theme() }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={failed:?}");
+    let pending = boot
+        .state
+        .pending_codex_threads
+        .as_ref()
+        .expect("pending registry");
+    assert_eq!(pending.pending_count().await, 0);
+    let failed_cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
+    assert_eq!(failed_cards.len(), 1);
+    assert_eq!(
+        failed_cards[0].payload["codex_thread_status"],
+        "failed_to_spawn"
+    );
+    let failed_terminal_id = failed_cards[0].payload["terminal_id"].as_str().unwrap();
+
+    let card = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: boot.wave_id.clone().into(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({}),
+        })
+        .await
+        .unwrap();
+    let card_id = card.id.to_string();
+    pending
+        .register(PendingEntry::new(
+            card_id.clone(),
+            None,
+            failed_terminal_id.to_string(),
+        ))
+        .await
+        .unwrap();
+    assert!(
+        boot.state
+            .shared_codex_appserver
+            .handle_thread_started_notification_for_test("T-new")
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        boot.repo
+            .card_codex_thread_get_by_thread("T-new")
+            .await
+            .unwrap()
+            .expect("new mapping")
+            .card_id,
+        card_id
+    );
+}
+
+#[tokio::test]
 async fn create_prompt_card_with_shared_codex_prompt_cards_disabled_falls_back_to_legacy() {
     let _guard = ENV_LOCK.lock().await;
-    let boot = boot(false, false).await;
+    let boot = boot(false, false, false).await;
     let (status, card) = post(
         boot.app.clone(),
         &boot.wave_id,
@@ -373,7 +555,7 @@ async fn create_prompt_card_with_shared_codex_prompt_cards_disabled_falls_back_t
 async fn create_prompt_card_with_shared_daemon_enabled_but_prompt_cards_disabled_falls_back_to_legacy()
  {
     let _guard = ENV_LOCK.lock().await;
-    let boot = boot(true, false).await;
+    let boot = boot(true, false, false).await;
     let (status, card) = post(
         boot.app.clone(),
         &boot.wave_id,
@@ -408,7 +590,7 @@ async fn create_prompt_card_with_shared_daemon_enabled_but_prompt_cards_disabled
 #[tokio::test]
 async fn create_prompt_card_falls_back_to_legacy_when_shared_daemon_not_running() {
     let _guard = ENV_LOCK.lock().await;
-    let boot = boot_with_shared_daemon(true, true, false).await;
+    let boot = boot_with_shared_daemon(true, true, false, false).await;
     assert!(!boot.state.shared_codex_appserver.is_running());
 
     let (status, card) = post(
