@@ -535,6 +535,10 @@ impl SharedCodexAppServer {
     }
 
     async fn apply_spawn_env(&self, cmd: &mut Command) -> Result<()> {
+        for stale in ["NEIGE_CARD_ID", "NEIGE_HOOK_PROVIDER", "NEIGE_MCP_TOKEN"] {
+            cmd.env_remove(stale);
+        }
+
         cmd.env("CODEX_HOME", self.home.path())
             .env("NEIGE_CALM_BASE_URL", &self.ingest_url);
 

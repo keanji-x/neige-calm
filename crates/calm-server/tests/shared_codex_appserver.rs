@@ -85,7 +85,30 @@ async fn start_new_process_passes_ingest_url_and_proxy_env_without_card_id() {
     assert_eq!(get("http_proxy"), Some("http://proxy.local:3128"));
     assert_eq!(get("HTTPS_PROXY"), Some("http://secure-proxy.local:3129"));
     assert_eq!(get("https_proxy"), Some("http://secure-proxy.local:3129"));
-    assert!(!env.contains_key("NEIGE_CARD_ID"));
+}
+
+#[tokio::test]
+async fn start_new_process_strips_per_card_env_keys() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let mut cfg = cfg(&root);
+    cfg.codex_ingest_url = Some("http://expected".into());
+    let home = calm_server::shared_codex_home::SharedCodexHome::new(
+        cfg.data_dir_resolved().join("codex-home"),
+        cfg.data_dir_resolved().join("codex-homes"),
+    );
+    home.seed().unwrap();
+
+    let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo);
+    let env = daemon.spawn_env_for_test().await.unwrap();
+
+    assert_eq!(env.get("NEIGE_CARD_ID"), Some(&None));
+    assert_eq!(env.get("NEIGE_HOOK_PROVIDER"), Some(&None));
+    assert_eq!(env.get("NEIGE_MCP_TOKEN"), Some(&None));
+    assert_eq!(
+        env.get("NEIGE_CALM_BASE_URL").cloned().flatten().as_deref(),
+        Some("http://expected")
+    );
 }
 
 async fn persist_running_daemon(
