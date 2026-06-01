@@ -121,6 +121,7 @@ async fn boot() -> Boot {
         events,
         card_role_cache,
         wave_cove_cache,
+        daemon_token_hash: None,
     });
 
     let mut registry = ToolRegistry::new();

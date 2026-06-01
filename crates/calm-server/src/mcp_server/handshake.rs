@@ -62,6 +62,7 @@ pub struct HandshakeOk {
 /// will tighten this if we need version-gated tool registration.
 pub async fn handle_initialize(
     repo: &dyn RouteRepo,
+    daemon_token_hash: Option<&str>,
     params: &Value,
     protocol_version_advertised: &str,
 ) -> Result<HandshakeOk, RpcError> {
@@ -80,6 +81,18 @@ pub async fn handle_initialize(
                 "initialize: missing _meta[\"dev.neige/auth\"].token (per-card MCP token required)",
             )
         })?;
+
+    let result_payload = initialize_result_payload(protocol_version_advertised);
+
+    if let Some(stored_hash) = daemon_token_hash
+        && auth::verify_token(token, stored_hash)
+    {
+        return Ok(HandshakeOk {
+            daemon_trust: true,
+            legacy_identity: None,
+            result_payload,
+        });
+    }
 
     // 2. Hash + lookup. The lookup is a `WHERE hashed_token = ?`
     //    against the indexed column, so it's a single B-tree probe.
@@ -139,7 +152,15 @@ pub async fn handle_initialize(
     //    `protocolVersion` echo + a minimal `capabilities` block
     //    advertising `tools`. The exact contents of `serverInfo` are
     //    informational; codex doesn't gate on them today.
-    let result_payload = json!({
+    Ok(HandshakeOk {
+        daemon_trust: true,
+        legacy_identity,
+        result_payload,
+    })
+}
+
+fn initialize_result_payload(protocol_version_advertised: &str) -> Value {
+    json!({
         "protocolVersion": protocol_version_advertised,
         "capabilities": {
             "tools": {},
@@ -148,12 +169,6 @@ pub async fn handle_initialize(
             "name": "neige-calm-kernel",
             "version": env!("CARGO_PKG_VERSION"),
         },
-    });
-
-    Ok(HandshakeOk {
-        daemon_trust: true,
-        legacy_identity,
-        result_payload,
     })
 }
 

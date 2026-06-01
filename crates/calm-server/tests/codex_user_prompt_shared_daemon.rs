@@ -180,6 +180,19 @@ fn theme() -> Value {
     json!({"fg": [216,219,226], "bg": [15,20,24]})
 }
 
+#[test]
+fn shared_prompt_cards_are_enabled_by_default() {
+    let tmp = TempDir::new().expect("tempdir");
+    let cfg = Config::parse_from([
+        "calm-server",
+        "--data-dir",
+        tmp.path().to_str().unwrap(),
+        "--codex-bin",
+        fake_codex_bin(),
+    ]);
+    assert!(cfg.shared_codex_prompt_cards_enabled);
+}
+
 #[tokio::test]
 async fn create_prompt_card_calls_shared_daemon_thread_start() {
     let _guard = ENV_LOCK.lock().await;

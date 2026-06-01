@@ -81,7 +81,8 @@ fn spawn_bridge_with_stop(
     let mut command = std::process::Command::new(bridge_bin);
     command
         .env("NEIGE_CARD_ID", "test-card-123")
-        .env("NEIGE_CALM_BASE_URL", base_url);
+        .env("NEIGE_CALM_BASE_URL", base_url)
+        .env_remove("NEIGE_HOOK_PROVIDER");
     if let Some(provider) = provider {
         command.arg("--provider").arg(provider);
     }

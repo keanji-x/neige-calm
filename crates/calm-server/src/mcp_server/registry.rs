@@ -158,6 +158,10 @@ pub struct AppContext {
     /// #234 — parallel wave→cove cache the role gate consults alongside
     /// `card_role_cache`.
     pub wave_cove_cache: WaveCoveCache,
+    /// Optional server-wide MCP daemon token hash. When present, the
+    /// initialize handshake accepts this as daemon trust without binding a
+    /// legacy per-card identity.
+    pub daemon_token_hash: Option<String>,
 }
 
 /// Boxed future returned by a tool handler. Handlers are async fns;

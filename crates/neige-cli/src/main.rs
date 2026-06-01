@@ -16,6 +16,7 @@ use tokio::net::UnixStream;
 
 const ENV_SOCKET: &str = "NEIGE_MCP_SOCKET";
 const ENV_TOKEN: &str = "NEIGE_MCP_TOKEN";
+const ENV_DAEMON_TOKEN: &str = "NEIGE_MCP_DAEMON_TOKEN";
 const TOOL_WAVE_LS: &str = "calm.wave.ls";
 const TOOL_WAVE_CAT: &str = "calm.wave.cat";
 const TOOL_GET_WAVE_STATE: &str = "calm.get_wave_state";
@@ -51,10 +52,12 @@ async fn run(cli: Cli) -> Result<(), AppError> {
         .ok()
         .filter(|s| !s.is_empty())
         .ok_or_else(|| AppError::missing_env(ENV_SOCKET, cli.json_errors()))?;
-    let token = env::var(ENV_TOKEN)
-        .ok()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| AppError::missing_env(ENV_TOKEN, cli.json_errors()))?;
+    let token = resolve_token().ok_or_else(|| {
+        AppError::missing_env(
+            &format!("{ENV_TOKEN} or {ENV_DAEMON_TOKEN}"),
+            cli.json_errors(),
+        )
+    })?;
 
     let raw = call_wave_tool(&socket, &token, &cli).await?;
     match cli.command {
@@ -62,6 +65,13 @@ async fn run(cli: Cli) -> Result<(), AppError> {
         Command::Cat { .. } => render_cat(&raw, cli.json_errors()),
         Command::State { json_output } => render_state(&raw, json_output, cli.json_errors()),
     }
+}
+
+fn resolve_token() -> Option<String> {
+    env::var(ENV_TOKEN)
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| env::var(ENV_DAEMON_TOKEN).ok().filter(|s| !s.is_empty()))
 }
 
 async fn call_wave_tool(socket: &str, token: &str, cli: &Cli) -> Result<Value, AppError> {

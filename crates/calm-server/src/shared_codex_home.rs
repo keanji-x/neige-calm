@@ -10,6 +10,7 @@ use std::io;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
+use crate::mcp_server::McpShimConfig;
 use toml_edit::DocumentMut;
 
 /// Layout: <data_dir>/codex-home/  <- shared, no per-card subdir
@@ -78,6 +79,23 @@ impl SharedCodexHome {
 
     /// toml_edit round-trip idempotent writer for `<home>/config.toml`.
     pub fn ensure_config_for_cwd(&self, cwd: &Path) -> io::Result<()> {
+        self.ensure_config(Some(cwd), None)
+    }
+
+    /// Ensure the shared CODEX_HOME has the daemon-level MCP shim config.
+    pub fn ensure_daemon_mcp_config(
+        &self,
+        shim: &McpShimConfig,
+        daemon_token: &str,
+    ) -> io::Result<()> {
+        self.ensure_config(None, Some((shim, daemon_token)))
+    }
+
+    fn ensure_config(
+        &self,
+        cwd: Option<&Path>,
+        mcp_block: Option<(&McpShimConfig, &str)>,
+    ) -> io::Result<()> {
         fs::create_dir_all(&self.home)?;
 
         let lock_path = self.home.join(".config.lock");
@@ -100,13 +118,36 @@ impl SharedCodexHome {
         ensure_top_level_str(&mut doc, "sandbox_mode", "workspace-write");
         ensure_table_bool(&mut doc, "sandbox_workspace_write", "network_access", true);
 
-        let cwd_str = cwd.to_string_lossy().into_owned();
-        let projects = doc["projects"].or_insert(toml_edit::table());
-        if let Some(projects_table) = projects.as_table_mut() {
-            projects_table.set_implicit(true);
-            let project = projects_table.entry(&cwd_str).or_insert(toml_edit::table());
-            if let Some(project_table) = project.as_table_mut() {
-                project_table["trust_level"] = toml_edit::value("trusted");
+        if let Some(cwd) = cwd {
+            let cwd_str = cwd.to_string_lossy().into_owned();
+            let projects = doc["projects"].or_insert(toml_edit::table());
+            if let Some(projects_table) = projects.as_table_mut() {
+                projects_table.set_implicit(true);
+                let project = projects_table.entry(&cwd_str).or_insert(toml_edit::table());
+                if let Some(project_table) = project.as_table_mut() {
+                    project_table["trust_level"] = toml_edit::value("trusted");
+                }
+            }
+        }
+
+        if let Some((shim, daemon_token)) = mcp_block {
+            let mcp_servers = doc["mcp_servers"].or_insert(toml_edit::table());
+            if let Some(mcp_servers_table) = mcp_servers.as_table_mut() {
+                mcp_servers_table.set_implicit(true);
+                let calm = mcp_servers_table
+                    .entry("calm")
+                    .or_insert(toml_edit::table());
+                if let Some(calm_table) = calm.as_table_mut() {
+                    calm_table["command"] =
+                        toml_edit::value(shim.shim_bin.to_string_lossy().to_string());
+                    calm_table["args"] = toml_edit::value(toml_edit::Array::new());
+                    let env = calm_table.entry("env").or_insert(toml_edit::table());
+                    if let Some(env_table) = env.as_table_mut() {
+                        env_table["NEIGE_MCP_SOCKET"] =
+                            toml_edit::value(shim.socket_path.to_string_lossy().to_string());
+                        env_table["NEIGE_MCP_DAEMON_TOKEN"] = toml_edit::value(daemon_token);
+                    }
+                }
             }
         }
 

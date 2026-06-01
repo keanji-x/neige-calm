@@ -137,6 +137,7 @@ async fn boot() -> Boot {
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"), // not used in handshake tests
         registry,
+        None,
     )
     .await
     .expect("spawn McpServer");
@@ -520,6 +521,7 @@ async fn spawn_refuses_to_steal_live_co_tenant_socket() {
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         registry,
+        None,
     )
     .await;
 

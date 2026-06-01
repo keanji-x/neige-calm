@@ -136,13 +136,13 @@ pub struct Config {
     )]
     pub shared_codex_appserver_enabled: bool,
 
-    /// PR5 -> PR3c decoupling gate. Default false keeps user prompt cards on
-    /// the legacy per-card codex path until the bridge can identify cards from
-    /// hook session_id instead of per-process env.
+    /// PR3c (#410) — route non-empty user prompt cards through the shared
+    /// codex daemon by default. Roll back to legacy per-card codex with
+    /// `CALM_SHARED_CODEX_PROMPT_CARDS_ENABLED=false`.
     #[arg(
         long,
         env = "CALM_SHARED_CODEX_PROMPT_CARDS_ENABLED",
-        default_value_t = false
+        default_value_t = true
     )]
     pub shared_codex_prompt_cards_enabled: bool,
 

@@ -118,6 +118,7 @@ impl McpServer {
         socket_path: PathBuf,
         shim_bin: PathBuf,
         registry: Arc<ToolRegistry>,
+        daemon_token_hash: Option<String>,
     ) -> anyhow::Result<Arc<Self>> {
         if let Some(parent) = socket_path.parent()
             && !parent.exists()
@@ -167,6 +168,7 @@ impl McpServer {
             events,
             card_role_cache,
             wave_cove_cache,
+            daemon_token_hash,
         });
 
         let socket_for_handle = socket_path.clone();
@@ -253,8 +255,13 @@ async fn handle_connection(
             Frame::Request {
                 id, method, params, ..
             } if method == "initialize" => {
-                match handle_initialize(ctx.repo.as_ref(), &params, KERNEL_MCP_PROTOCOL_VERSION)
-                    .await
+                match handle_initialize(
+                    ctx.repo.as_ref(),
+                    ctx.daemon_token_hash.as_deref(),
+                    &params,
+                    KERNEL_MCP_PROTOCOL_VERSION,
+                )
+                .await
                 {
                     Ok(ok) => {
                         let frame = build_ok_response_frame(&id, &ok.result_payload);

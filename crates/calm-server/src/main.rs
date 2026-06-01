@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
     if !cfg.shared_codex_prompt_cards_enabled {
         tracing::info!(
             target: "shared_codex_daemon::config",
-            "shared_codex_prompt_cards_enabled=false - user prompt cards stay on legacy path until PR3c"
+            "shared_codex_prompt_cards_enabled=false - user prompt cards use the legacy per-card codex path"
         );
     }
     warn_if_worker_hook_callback_is_not_loopback(&cfg);

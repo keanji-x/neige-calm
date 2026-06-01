@@ -37,6 +37,9 @@
 use rand::RngCore;
 use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
+use std::fs;
+use std::io;
+use std::path::Path;
 use subtle::ConstantTimeEq;
 
 /// 64-char hex-encoded 32-byte secret. Constructed via [`Self::generate`];
@@ -91,6 +94,29 @@ pub fn verify_token(presented: &str, stored_hash: &str) -> bool {
     derived.as_bytes().ct_eq(stored_hash.as_bytes()).into()
 }
 
+/// Server-wide MCP daemon token for the shared codex app-server's shim.
+///
+/// Unlike per-card tokens in `card_mcp_tokens`, this token only establishes
+/// daemon trust during `initialize`; card identity still comes from per-call
+/// thread metadata / thread mapping. The raw token is persisted under
+/// `<data_dir>/secrets/mcp-daemon-token` so shared CODEX_HOME config remains
+/// stable across kernel restarts.
+pub fn get_or_generate_daemon_token(data_dir: &Path) -> io::Result<String> {
+    let secrets_dir = data_dir.join("secrets");
+    let token_path = secrets_dir.join("mcp-daemon-token");
+    match fs::read_to_string(&token_path) {
+        Ok(token) if !token.trim().is_empty() => return Ok(token.trim().to_string()),
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+
+    fs::create_dir_all(&secrets_dir)?;
+    let token = CardMcpToken::generate().into_inner();
+    fs::write(&token_path, format!("{token}\n"))?;
+    Ok(token)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,5 +161,14 @@ mod tests {
         // break the SELECT-by-hash lookup the MCP server relies on.
         let raw = "deadbeef".repeat(8);
         assert_eq!(hash_token(&raw), hash_token(&raw));
+    }
+
+    #[test]
+    fn daemon_token_is_persisted_and_reused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let first = get_or_generate_daemon_token(tmp.path()).unwrap();
+        let second = get_or_generate_daemon_token(tmp.path()).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 64);
     }
 }

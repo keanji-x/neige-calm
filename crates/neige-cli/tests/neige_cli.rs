@@ -51,6 +51,16 @@ async fn accept_initialized(
     BufReader<tokio::net::unix::OwnedReadHalf>,
     tokio::net::unix::OwnedWriteHalf,
 ) {
+    accept_initialized_with_token(listener, "test-token").await
+}
+
+async fn accept_initialized_with_token(
+    listener: UnixListener,
+    expected_token: &str,
+) -> (
+    BufReader<tokio::net::unix::OwnedReadHalf>,
+    tokio::net::unix::OwnedWriteHalf,
+) {
     let (server_stream, _addr) = timeout(TEST_BUDGET, listener.accept())
         .await
         .expect("client connected")
@@ -62,7 +72,7 @@ async fn accept_initialized(
     assert_eq!(init["method"], "initialize");
     assert_eq!(
         init["params"]["_meta"]["dev.neige/auth"]["token"],
-        json!("test-token")
+        json!(expected_token)
     );
     write_frame(
         &mut wr,
@@ -85,7 +95,21 @@ async fn spawn_neige(socket_path: &Path, args: &[&str]) -> tokio::process::Child
     Command::new(NEIGE_BIN)
         .args(args)
         .env("NEIGE_MCP_SOCKET", socket_path)
+        .env_remove("NEIGE_MCP_DAEMON_TOKEN")
         .env("NEIGE_MCP_TOKEN", "test-token")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn neige")
+}
+
+async fn spawn_neige_with_daemon_token(socket_path: &Path, args: &[&str]) -> tokio::process::Child {
+    Command::new(NEIGE_BIN)
+        .args(args)
+        .env("NEIGE_MCP_SOCKET", socket_path)
+        .env_remove("NEIGE_MCP_TOKEN")
+        .env("NEIGE_MCP_DAEMON_TOKEN", "daemon-test-token")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -133,6 +157,25 @@ async fn ls_root_lists_top_level_entries() {
     assert!(stdout.contains("- wave.json"), "stdout = {stdout:?}");
     assert!(stdout.contains("- report.md"), "stdout = {stdout:?}");
     assert!(stdout.contains("d cards/"), "stdout = {stdout:?}");
+}
+
+#[tokio::test]
+async fn daemon_token_env_alias_is_accepted() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let socket_path: PathBuf = tmp.path().join("kernel.sock");
+    let listener = listen(&socket_path);
+    let child = spawn_neige_with_daemon_token(&socket_path, &["state"]).await;
+
+    let (mut reader, mut wr) = accept_initialized_with_token(listener, "daemon-test-token").await;
+    let call = read_frame(&mut reader).await;
+    assert_eq!(call["params"]["name"], json!("calm.get_wave_state"));
+    write_frame(&mut wr, tool_result(2, json!({"ok": true}))).await;
+
+    let out = timeout(TEST_BUDGET, child.wait_with_output())
+        .await
+        .expect("child exited")
+        .expect("wait ok");
+    assert!(out.status.success());
 }
 
 #[tokio::test]
@@ -248,6 +291,7 @@ async fn missing_token_env_exits_nonzero() {
         Command::new(NEIGE_BIN)
             .arg("ls")
             .env("NEIGE_MCP_SOCKET", "/tmp/neige-test.sock")
+            .env_remove("NEIGE_MCP_DAEMON_TOKEN")
             .env_remove("NEIGE_MCP_TOKEN")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -259,7 +303,10 @@ async fn missing_token_env_exits_nonzero() {
     .expect("wait ok");
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("NEIGE_MCP_TOKEN"), "stderr = {stderr}");
+    assert!(
+        stderr.contains("NEIGE_MCP_TOKEN") && stderr.contains("NEIGE_MCP_DAEMON_TOKEN"),
+        "stderr = {stderr}"
+    );
 }
 
 #[tokio::test]
@@ -269,6 +316,7 @@ async fn missing_socket_env_exits_nonzero() {
         Command::new(NEIGE_BIN)
             .arg("ls")
             .env_remove("NEIGE_MCP_SOCKET")
+            .env_remove("NEIGE_MCP_DAEMON_TOKEN")
             .env("NEIGE_MCP_TOKEN", "test-token")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -290,6 +338,7 @@ async fn token_argv_flag_is_rejected() {
         Command::new(NEIGE_BIN)
             .args(["--token", "secret", "ls"])
             .env_remove("NEIGE_MCP_SOCKET")
+            .env_remove("NEIGE_MCP_DAEMON_TOKEN")
             .env_remove("NEIGE_MCP_TOKEN")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
