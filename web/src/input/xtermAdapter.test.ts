@@ -101,6 +101,71 @@ describe('createXtermWheelTarget', () => {
     expect(target.mode()).toBe('scrollback');
   });
 
+  it('canScrollback returns false when the wheel delta resolves to zero lines', () => {
+    const target = createXtermWheelTarget({
+      root: document.createElement('div'),
+      terminalRef: {
+        current: terminal({
+          buffer: { active: { type: 'normal', viewportY: 1, baseY: 3 } },
+        }),
+      },
+    });
+
+    expect(target.canScrollback(0, WheelEvent.DOM_DELTA_PIXEL)).toBe(false);
+  });
+
+  it('canScrollback returns true when wheel up can move toward the top', () => {
+    const target = createXtermWheelTarget({
+      root: document.createElement('div'),
+      terminalRef: {
+        current: terminal({
+          buffer: { active: { type: 'normal', viewportY: 1, baseY: 3 } },
+        }),
+      },
+    });
+
+    expect(target.canScrollback(-120, WheelEvent.DOM_DELTA_PIXEL)).toBe(true);
+  });
+
+  it('canScrollback returns false when wheel up is already at the top', () => {
+    const target = createXtermWheelTarget({
+      root: document.createElement('div'),
+      terminalRef: {
+        current: terminal({
+          buffer: { active: { type: 'normal', viewportY: 0, baseY: 3 } },
+        }),
+      },
+    });
+
+    expect(target.canScrollback(-120, WheelEvent.DOM_DELTA_PIXEL)).toBe(false);
+  });
+
+  it('canScrollback returns true when wheel down can move toward the bottom', () => {
+    const target = createXtermWheelTarget({
+      root: document.createElement('div'),
+      terminalRef: {
+        current: terminal({
+          buffer: { active: { type: 'normal', viewportY: 1, baseY: 3 } },
+        }),
+      },
+    });
+
+    expect(target.canScrollback(120, WheelEvent.DOM_DELTA_PIXEL)).toBe(true);
+  });
+
+  it('canScrollback returns false when wheel down is already at the bottom', () => {
+    const target = createXtermWheelTarget({
+      root: document.createElement('div'),
+      terminalRef: {
+        current: terminal({
+          buffer: { active: { type: 'normal', viewportY: 3, baseY: 3 } },
+        }),
+      },
+    });
+
+    expect(target.canScrollback(120, WheelEvent.DOM_DELTA_PIXEL)).toBe(false);
+  });
+
   it('returns false when scrollLines does not move the viewport', () => {
     const target = createXtermWheelTarget({
       root: document.createElement('div'),

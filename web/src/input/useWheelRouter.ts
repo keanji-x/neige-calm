@@ -22,6 +22,7 @@ export function useWheelRouter(scrollRef: RefObject<HTMLElement | null>): void {
         activeCard,
         eventTarget: event.target,
         deltaY: event.deltaY,
+        deltaMode: event.deltaMode,
       });
 
       if (route.kind === 'page' || route.kind === 'xterm-passthrough') return;

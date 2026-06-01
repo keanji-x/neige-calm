@@ -104,8 +104,15 @@ export function resolveWheelRoute(args: {
   activeCard: HTMLElement | null;
   eventTarget: EventTarget | null;
   deltaY: number;
+  deltaMode?: number;
 }): WheelRoute {
-  const { scrollRoot, activeCard, eventTarget } = args;
+  const {
+    scrollRoot,
+    activeCard,
+    eventTarget,
+    deltaY,
+    deltaMode = WheelEvent.DOM_DELTA_PIXEL,
+  } = args;
   const target = asElement(eventTarget);
 
   if (target?.closest(MODAL_SELECTOR)) return { kind: 'page' };
@@ -120,13 +127,15 @@ export function resolveWheelRoute(args: {
 
   const xtermTarget = getXtermForShell(activeCard);
   if (xtermTarget) {
-    return {
-      kind:
-        xtermTarget.mode() === 'passthrough'
-          ? 'xterm-passthrough'
-          : 'xterm-scrollback',
-      target: xtermTarget,
-    };
+    if (xtermTarget.mode() === 'passthrough') {
+      return { kind: 'xterm-passthrough', target: xtermTarget };
+    }
+    if (xtermTarget.canScrollback(deltaY, deltaMode)) {
+      return { kind: 'xterm-scrollback', target: xtermTarget };
+    }
+    // Xterm can't consume this wheel in this direction. Scroll the page
+    // container directly so the .xterm-viewport overflow box cannot absorb it.
+    return { kind: 'native-scroll', target: scrollRoot };
   }
   if (activeCard.querySelector<HTMLElement>(XTERM_ROOT_SELECTOR)) {
     return { kind: 'sink' };

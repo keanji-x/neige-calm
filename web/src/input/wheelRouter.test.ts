@@ -182,6 +182,7 @@ describe('resolveWheelRoute', () => {
     const xtermTarget: XtermWheelTarget = {
       root: document.createElement('div'),
       mode: () => 'scrollback',
+      canScrollback: () => true,
       scrollback: () => true,
     };
     registerXtermShell(activeCard, xtermTarget);
@@ -202,6 +203,7 @@ describe('resolveWheelRoute', () => {
     const xtermTarget: XtermWheelTarget = {
       root: document.createElement('div'),
       mode: () => 'passthrough',
+      canScrollback: () => false,
       scrollback: () => false,
     };
     registerXtermShell(activeCard, xtermTarget);
@@ -214,6 +216,116 @@ describe('resolveWheelRoute', () => {
     });
 
     expect(route).toEqual({ kind: 'xterm-passthrough', target: xtermTarget });
+    unregisterXtermShell(activeCard);
+  });
+
+  it('routes xterm with no scrollback down to the page scroll container', () => {
+    const { scrollRoot, activeCard } = fixture();
+    const xtermTarget: XtermWheelTarget = {
+      root: document.createElement('div'),
+      mode: () => 'scrollback',
+      canScrollback: () => false,
+      scrollback: () => false,
+    };
+    registerXtermShell(activeCard, xtermTarget);
+
+    const route: WheelRoute = resolveWheelRoute({
+      scrollRoot,
+      activeCard,
+      eventTarget: scrollRoot,
+      deltaY: 120,
+      deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+    });
+
+    expect(route).toEqual({ kind: 'native-scroll', target: scrollRoot });
+    unregisterXtermShell(activeCard);
+  });
+
+  it('routes xterm at the top of scrollback wheel up to the page scroll container', () => {
+    const { scrollRoot, activeCard } = fixture();
+    const xtermTarget: XtermWheelTarget = {
+      root: document.createElement('div'),
+      mode: () => 'scrollback',
+      canScrollback: (deltaY) => deltaY > 0,
+      scrollback: () => false,
+    };
+    registerXtermShell(activeCard, xtermTarget);
+
+    const route: WheelRoute = resolveWheelRoute({
+      scrollRoot,
+      activeCard,
+      eventTarget: scrollRoot,
+      deltaY: -120,
+      deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+    });
+
+    expect(route).toEqual({ kind: 'native-scroll', target: scrollRoot });
+    unregisterXtermShell(activeCard);
+  });
+
+  it('routes xterm at the top of scrollback wheel down to xterm scrollback', () => {
+    const { scrollRoot, activeCard } = fixture();
+    const xtermTarget: XtermWheelTarget = {
+      root: document.createElement('div'),
+      mode: () => 'scrollback',
+      canScrollback: (deltaY) => deltaY > 0,
+      scrollback: () => true,
+    };
+    registerXtermShell(activeCard, xtermTarget);
+
+    const route: WheelRoute = resolveWheelRoute({
+      scrollRoot,
+      activeCard,
+      eventTarget: scrollRoot,
+      deltaY: 120,
+      deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+    });
+
+    expect(route).toEqual({ kind: 'xterm-scrollback', target: xtermTarget });
+    unregisterXtermShell(activeCard);
+  });
+
+  it('routes xterm at the bottom of scrollback wheel up to xterm scrollback', () => {
+    const { scrollRoot, activeCard } = fixture();
+    const xtermTarget: XtermWheelTarget = {
+      root: document.createElement('div'),
+      mode: () => 'scrollback',
+      canScrollback: (deltaY) => deltaY < 0,
+      scrollback: () => true,
+    };
+    registerXtermShell(activeCard, xtermTarget);
+
+    const route: WheelRoute = resolveWheelRoute({
+      scrollRoot,
+      activeCard,
+      eventTarget: scrollRoot,
+      deltaY: -120,
+      deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+    });
+
+    expect(route).toEqual({ kind: 'xterm-scrollback', target: xtermTarget });
+    unregisterXtermShell(activeCard);
+  });
+
+  it('routes xterm at the bottom of scrollback wheel down to the page scroll container', () => {
+    const { scrollRoot, activeCard } = fixture();
+    const xtermTarget: XtermWheelTarget = {
+      root: document.createElement('div'),
+      mode: () => 'scrollback',
+      canScrollback: (deltaY) => deltaY < 0,
+      scrollback: () => false,
+    };
+    registerXtermShell(activeCard, xtermTarget);
+
+    const route: WheelRoute = resolveWheelRoute({
+      scrollRoot,
+      activeCard,
+      eventTarget: scrollRoot,
+      deltaY: 120,
+      deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+    });
+
+    expect(route).toEqual({ kind: 'native-scroll', target: scrollRoot });
     unregisterXtermShell(activeCard);
   });
 
@@ -367,6 +479,7 @@ describe('useWheelRouter', () => {
     const xtermTarget: XtermWheelTarget = {
       root: document.createElement('div'),
       mode: () => 'passthrough',
+      canScrollback: () => false,
       scrollback,
     };
     registerXtermShell(activeCard, xtermTarget);
@@ -409,6 +522,7 @@ describe('useWheelRouter', () => {
     const xtermTarget: XtermWheelTarget = {
       root: document.createElement('div'),
       mode: () => 'scrollback',
+      canScrollback: () => true,
       scrollback,
     };
     registerXtermShell(activeCard, xtermTarget);
@@ -429,12 +543,13 @@ describe('useWheelRouter', () => {
     }
   });
 
-  it('does not prevent default when xterm scrollback cannot consume the wheel', () => {
+  it('scrolls the page container when xterm scrollback cannot consume the wheel', () => {
     const { scrollRoot, activeCard } = fixture();
     const scrollback = vi.fn(() => false);
     const xtermTarget: XtermWheelTarget = {
       root: document.createElement('div'),
       mode: () => 'scrollback',
+      canScrollback: () => false,
       scrollback,
     };
     registerXtermShell(activeCard, xtermTarget);
@@ -447,8 +562,9 @@ describe('useWheelRouter', () => {
         deltaMode: WheelEvent.DOM_DELTA_LINE,
       });
 
-      expect(event.defaultPrevented).toBe(false);
-      expect(scrollback).toHaveBeenCalledWith(48, WheelEvent.DOM_DELTA_LINE);
+      expect(event.defaultPrevented).toBe(true);
+      expect(scrollback).not.toHaveBeenCalled();
+      expect(scrollRoot.scrollTop).toBe(768);
     } finally {
       restore();
       unregisterXtermShell(activeCard);
