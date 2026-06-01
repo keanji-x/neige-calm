@@ -281,6 +281,7 @@ async fn empty_wave_registers_pending_spec_thread_without_thread_id() {
     let boot = boot(true, true).await;
     let (status, wave) = post_wave(boot.app.clone(), &boot.cove_id, "").await;
     assert_eq!(status, StatusCode::CREATED, "body={wave:?}");
+    let wave_id = wave["id"].as_str().unwrap().to_string();
     let spec = spec_card(&boot.repo, wave["id"].as_str().unwrap()).await;
     assert_eq!(spec.payload["codex_source"], "shared");
     assert!(spec.payload.get("codex_thread_id").is_none());
@@ -292,6 +293,68 @@ async fn empty_wave_registers_pending_spec_thread_without_thread_id() {
             .unwrap()
             .is_none()
     );
+    assert_eq!(
+        boot.state
+            .pending_codex_threads
+            .as_ref()
+            .unwrap()
+            .pending_count()
+            .await,
+        1
+    );
+    let terminal_id = spec.payload["terminal_id"].as_str().unwrap();
+    let entry = boot
+        .state
+        .terminal_renderer
+        .get(terminal_id)
+        .expect("renderer entry");
+    let shell_line = &entry.config().args[1];
+    assert!(
+        shell_line.contains("codex -c 'developer_instructions=\""),
+        "shared empty spec TUI must pass spec developer_instructions: {shell_line}"
+    );
+    assert!(
+        shell_line.contains(&format!("You are the spec agent for wave `{wave_id}`.")),
+        "developer_instructions must be rendered for this wave: {shell_line}"
+    );
+    assert!(
+        shell_line.contains("calm.update_wave_state"),
+        "developer_instructions must include the spec MCP contract: {shell_line}"
+    );
+    assert!(
+        shell_line.contains("--remote 'unix://"),
+        "shared empty spec TUI must still fresh-start over remote app-server: {shell_line}"
+    );
+}
+
+#[tokio::test]
+async fn empty_shared_spec_pending_register_waits_for_spawn_serial_lock() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot(true, true).await;
+    let serial_guard = boot.state.pending_codex_threads_spawn_serial.lock().await;
+    let pending_post = post_wave(boot.app.clone(), &boot.cove_id, "");
+    tokio::pin!(pending_post);
+
+    tokio::select! {
+        biased;
+        _ = &mut pending_post => panic!("shared empty spec create completed while spawn-serial lock was held"),
+        _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+    }
+
+    assert_eq!(
+        boot.state
+            .pending_codex_threads
+            .as_ref()
+            .unwrap()
+            .pending_count()
+            .await,
+        0,
+        "pending spec registration must be inside the spawn-serial critical section"
+    );
+
+    drop(serial_guard);
+    let (status, wave) = pending_post.await;
+    assert_eq!(status, StatusCode::CREATED, "body={wave:?}");
     assert_eq!(
         boot.state
             .pending_codex_threads

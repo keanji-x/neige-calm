@@ -955,6 +955,7 @@ async fn bootstrap_empty_goal_spec_appserver(
             .map(|sock| format!("unix://{}", sock.display()))
             .unwrap_or_default(),
         seed_codex_home: true,
+        developer_instructions: None,
     };
     register_and_catch_up(state, card_id, wave_id, watermark, handle, false).await;
     let mcp_token = env_map

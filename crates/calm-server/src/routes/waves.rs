@@ -765,6 +765,13 @@ pub(crate) async fn create_wave(
         map.remove("NEIGE_MCP_TOKEN");
     }
 
+    let serialize_shared_empty_spec_spawn = use_shared_spec_path && wave.title.trim().is_empty();
+    let _pending_spawn_serial_guard = if serialize_shared_empty_spec_spawn {
+        Some(s.pending_codex_threads_spawn_serial.lock().await)
+    } else {
+        None
+    };
+
     let push_args = if use_shared_spec_path {
         match spawn_push_via_shared_daemon(&s, &spec_card_id, &wave).await {
             Ok(args) => Some(args),
@@ -996,6 +1003,12 @@ pub(crate) async fn spawn_push_via_shared_daemon(
         thread_id,
         sock_uri: s.shared_codex_appserver.remote_uri(),
         seed_codex_home: false,
+        developer_instructions: needs_initial_prompt.then(|| {
+            crate::spec_card::render_system_prompt(
+                crate::spec_card::SeededCardRole::Spec.prompt_template(),
+                wave.id.as_str(),
+            )
+        }),
     })
 }
 
@@ -1526,6 +1539,7 @@ pub(crate) async fn spawn_push_appserver(
         thread_id,
         sock_uri: format!("unix://{}", sock_for_args.display()),
         seed_codex_home: true,
+        developer_instructions: None,
     })
 }
 
