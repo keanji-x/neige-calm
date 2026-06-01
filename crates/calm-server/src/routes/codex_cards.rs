@@ -498,6 +498,9 @@ pub(crate) fn normalize_optional_css_color(
 /// real config in this per-card CODEX_HOME. The
 /// `config_toml_has_no_mcp_servers_block` regression test below guards
 /// this.
+/// PR1 (#410): legacy per-card path. Shared replacement is in
+/// `crate::shared_codex_home::SharedCodexHome::ensure_config_for_cwd`,
+/// but callers are not switched until later #410 PRs.
 pub(crate) fn build_codex_config_toml(cwd: &str) -> String {
     // We hand-write the TOML (no `toml` crate in the workspace) — the
     // payload is small enough to be readable, and the only field that

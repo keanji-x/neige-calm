@@ -11,10 +11,11 @@ use crate::dispatcher::Dispatcher;
 use crate::event::EventBus;
 use crate::mcp_server::McpServer;
 use crate::plugin_host::{PluginHost, PluginRegistry};
+use crate::shared_codex_home::SharedCodexHome;
 use crate::spec_appserver::SpecPushRegistry;
 use crate::terminal_renderer::TerminalRendererRegistry;
 use crate::wave_cove_cache::WaveCoveCache;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -251,6 +252,8 @@ impl AppState {
     /// surface it: that's a hard misconfiguration the operator needs to fix.
     /// Per-plugin parse failures (and per-plugin spawn failures) are already
     /// downgraded to `tracing::warn!` so one broken plugin can't block boot.
+    /// Shared CODEX_HOME seeding stays here because it is colocated with the
+    /// CodexClient owner and `AppState::new` is the boot-time-only path.
     pub async fn new(cfg: &Config, repo: Arc<dyn Repo>) -> anyhow::Result<Self> {
         let plugins_dir = cfg.plugins_dir_resolved();
         if !plugins_dir.exists() {
@@ -320,6 +323,12 @@ impl AppState {
         // calls, which is a no-op today but unnecessary risk).
         let daemon = Arc::new(DaemonClient::new(cfg));
         let codex = Arc::new(CodexClient::new(cfg));
+        if let Err(e) = codex.shared_codex_home.seed() {
+            tracing::warn!(
+                error = %e,
+                "shared CODEX_HOME seed failed; continuing; legacy per-card homes still functional"
+            );
+        }
 
         // PR7a (#136) — boot the kernel-as-MCP-server. Socket lives at
         // `<data_dir>/mcp/kernel.sock`; `neige-mcp-stdio-shim` is the
@@ -586,11 +595,16 @@ pub struct CodexClient {
     /// restarts. (The old `/tmp/`-based location was wiped on every
     /// container recreate, leaving the daemon stuck in a respawn loop.)
     pub codex_homes_dir: PathBuf,
+    /// Single shared CODEX_HOME for the future shared Codex app-server.
+    /// PR1 seeds/configures it only; legacy per-card callers keep using
+    /// `codex_homes_dir` until later #410 PRs switch them.
+    pub shared_codex_home: Arc<SharedCodexHome>,
     /// Parent directory for generated per-Claude-card `settings.json`
     /// files. This is only a hook settings sidecar, not a Claude home.
     pub claude_settings_dir: PathBuf,
     /// Test-only handle. When `new_stub()` constructs the client it stows
-    /// a `tempfile::TempDir` here whose path equals `codex_homes_dir`.
+    /// a `tempfile::TempDir` here whose path contains both the legacy
+    /// `codex_homes_dir` and PR1's shared `codex-home`.
     /// Holding the handle for the lifetime of the `CodexClient` (which
     /// is itself held inside `Arc<CodexClient>` on `AppState.codex`)
     /// guarantees the per-card `$CODEX_HOME` subdirs created under it
@@ -607,6 +621,8 @@ pub struct CodexClient {
 
 impl CodexClient {
     pub fn new(cfg: &Config) -> Self {
+        let data_dir = cfg.data_dir_resolved();
+        let legacy_homes_parent = data_dir.join("codex-homes");
         Self {
             codex_bin: cfg.codex_bin.clone(),
             claude_bin: cfg.claude_bin.clone(),
@@ -615,8 +631,12 @@ impl CodexClient {
                 .clone()
                 .unwrap_or_else(resolve_codex_bridge_bin),
             ingest_url: cfg.codex_ingest_url_resolved(),
-            codex_homes_dir: cfg.data_dir_resolved().join("codex-homes"),
-            claude_settings_dir: cfg.data_dir_resolved().join("claude-settings"),
+            codex_homes_dir: legacy_homes_parent.clone(),
+            shared_codex_home: Arc::new(SharedCodexHome::new(
+                data_dir.join("codex-home"),
+                legacy_homes_parent,
+            )),
+            claude_settings_dir: data_dir.join("claude-settings"),
             _codex_homes_tempdir: None,
         }
     }
@@ -631,13 +651,15 @@ impl CodexClient {
     /// — across enough test runs the dir grew to 100+ GB of codex
     /// session state (per-card `logs_*.sqlite*`, `history`, the seeded
     /// `~/.codex` copy). Now each `new_stub()` mints its own
-    /// `tempfile::TempDir`, stashed in `_codex_homes_tempdir`, so the
-    /// directory disappears when the `CodexClient` (and the `Arc` on
-    /// `AppState.codex`) drops at test teardown. Falls back to the old
-    /// shared path only if `TempDir::new()` fails — vanishingly rare in
-    /// practice and the failure case isn't worth losing test coverage.
+    /// `tempfile::TempDir`, stashed in `_codex_homes_tempdir`, with
+    /// `codex-homes/` for legacy per-card homes and `codex-home/` for
+    /// PR1's shared home under it. The directory disappears when the
+    /// `CodexClient` (and the `Arc` on `AppState.codex`) drops at test
+    /// teardown. Falls back to the old shared path only if
+    /// `TempDir::new()` fails — vanishingly rare in practice and the
+    /// failure case isn't worth losing test coverage.
     pub fn new_stub() -> Self {
-        let (codex_homes_dir, tmp) = match tempfile::Builder::new()
+        let (temp_root, tmp) = match tempfile::Builder::new()
             .prefix("neige-codex-homes-stub-")
             .tempdir()
         {
@@ -659,6 +681,18 @@ impl CodexClient {
                 (std::env::temp_dir().join("neige-codex-homes-stub"), None)
             }
         };
+        let codex_homes_dir = temp_root.join("codex-homes");
+        let shared_codex_home = Arc::new(SharedCodexHome::new(
+            temp_root.join("codex-home"),
+            codex_homes_dir.clone(),
+        ));
+        if let Err(e) = std::fs::create_dir_all(&codex_homes_dir) {
+            tracing::error!(
+                error = %e,
+                path = %codex_homes_dir.display(),
+                "failed to create stub codex_homes_dir"
+            );
+        }
         Self {
             codex_bin: "codex".into(),
             claude_bin: "claude".into(),
@@ -666,8 +700,14 @@ impl CodexClient {
             ingest_url: "http://127.0.0.1:0".into(),
             claude_settings_dir: codex_homes_dir.join("claude-settings"),
             codex_homes_dir,
+            shared_codex_home,
             _codex_homes_tempdir: tmp,
         }
+    }
+
+    /// Shared CODEX_HOME accessor (`codex_home_dir()` in the #410 PR gates).
+    pub fn codex_home_dir(&self) -> &Path {
+        self.shared_codex_home.path()
     }
 }
 

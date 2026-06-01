@@ -1710,6 +1710,7 @@ pub(crate) mod proc_supervisor;
 pub mod replay;
 pub mod role_gate;
 pub mod routes;
+pub mod shared_codex_home;
 pub mod spec_appserver;
 pub mod spec_card;
 pub mod state;
