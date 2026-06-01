@@ -11,6 +11,7 @@ use crate::dispatcher::Dispatcher;
 use crate::event::EventBus;
 use crate::mcp_server::McpServer;
 use crate::plugin_host::{PluginHost, PluginRegistry};
+use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::shared_codex_home::SharedCodexHome;
 use crate::spec_appserver::SpecPushRegistry;
 use crate::terminal_renderer::TerminalRendererRegistry;
@@ -101,6 +102,10 @@ pub struct AppState {
     /// (`Arc<DashMap<…>>` inside); the dispatcher push path resolves a wave's
     /// client through this registry.
     pub spec_push: SpecPushRegistry,
+    /// PR4 (#410) — one server-wide codex app-server supervisor. Constructed
+    /// at boot but started explicitly from `main` after shared CODEX_HOME seed
+    /// and MCP server setup; PR4 does not route cards through it yet.
+    pub shared_codex_appserver: Arc<SharedCodexAppServer>,
     /// #322 — aspect / join-point framework registry. Holds the boot-
     /// installed aspects (today: [`WatermarkSinkInstalledAspect`] on
     /// `BeforeHandleParkInRegistry`). Threaded into
@@ -196,6 +201,7 @@ impl AppState {
         // (`Arc<DashMap>` inside); the dispatcher takes a clone so its push
         // path resolves the same handles `create_wave` parks here.
         let spec_push = SpecPushRegistry::new();
+        let shared_codex_appserver = SharedCodexAppServer::new_stub(repo.clone());
         let dispatcher = Arc::new(Dispatcher::spawn_with_terminal_renderer(
             repo.clone(),
             events.clone(),
@@ -233,6 +239,7 @@ impl AppState {
             // their own handles or drive the gated e2e; the default is empty.
             // Same instance the dispatcher above holds a clone of.
             spec_push,
+            shared_codex_appserver,
             // #322 — aspect registry. Identical set in test/replay and
             // production (see `build_aspect_registry` doc) so a test
             // exercising the production register path (e.g.
@@ -374,6 +381,8 @@ impl AppState {
         // dispatcher spawn so the dispatcher's push path and the route both
         // touch the same `Arc<DashMap>`.
         let spec_push = SpecPushRegistry::new();
+        let shared_codex_appserver =
+            SharedCodexAppServer::new(cfg, codex.shared_codex_home.clone(), repo.clone());
         let dispatcher = Arc::new(crate::dispatcher::Dispatcher::spawn_with_terminal_renderer(
             repo.clone(),
             events.clone(),
@@ -427,6 +436,7 @@ impl AppState {
             // path now). The dispatcher above holds a clone of this same
             // instance for its push path.
             spec_push,
+            shared_codex_appserver,
             // #322 — aspect registry, boot-installed once and shared via
             // `Arc` to every handler / actor that needs it.
             aspects: build_aspect_registry(),

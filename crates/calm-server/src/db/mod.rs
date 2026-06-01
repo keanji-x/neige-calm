@@ -205,6 +205,35 @@ pub struct CardCodexThreadRow {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct SharedCodexDaemonRecord {
+    pub state: String,
+    pub pid: Option<i32>,
+    pub pgid: Option<i32>,
+    pub sock_path: Option<String>,
+    pub codex_home_path: Option<String>,
+    pub process_start_time: Option<u64>,
+    pub boot_id: Option<String>,
+    pub started_at: Option<i64>,
+    pub updated_at: i64,
+    pub restart_count: i64,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SharedCodexDaemonUpdate {
+    pub state: String,
+    pub pid: Option<i32>,
+    pub pgid: Option<i32>,
+    pub sock_path: Option<String>,
+    pub codex_home_path: Option<String>,
+    pub process_start_time: Option<u64>,
+    pub boot_id: Option<String>,
+    pub started_at: Option<i64>,
+    pub last_error: Option<String>,
+    pub increment_restart_count: bool,
+}
+
 // ---------------------------------------------------------------------------
 // Sub-trait split. See the "Trait capability split" section in the module
 // docs for the rationale. Each sub-trait carries `Send + Sync + 'static` so
@@ -427,6 +456,7 @@ pub trait RepoRead: Send + Sync + 'static {
         card_id: &str,
     ) -> Result<Option<CardCodexThreadRow>>;
     async fn card_codex_threads_active(&self) -> Result<Vec<CardCodexThreadRow>>;
+    async fn shared_daemon_runtime_get(&self) -> Result<SharedCodexDaemonRecord>;
 }
 
 /// Eventized write surface. The **only** path that writes to the persistent
@@ -838,6 +868,9 @@ pub trait RepoOutOfDomain: RepoRead {
         wave_id: Option<&str>,
     ) -> Result<()>;
     async fn card_codex_thread_delete_by_card(&self, card_id: &str) -> Result<()>;
+
+    async fn shared_daemon_runtime_set(&self, update: SharedCodexDaemonUpdate) -> Result<()>;
+    async fn shared_daemon_record_event(&self, action: &str, error: Option<&str>) -> Result<()>;
 
     // ---- spec push queue (#318 INV-3 / R2-B1)
     //

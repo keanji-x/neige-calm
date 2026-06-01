@@ -47,6 +47,16 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState::new(&cfg, repo).await?;
 
+    // #410 PR4 — shared codex app-server boot/takeover. Failure is a
+    // degradation path in PR4: no card routes use this daemon yet, and the
+    // rollback flag can disable it while legacy per-wave app-servers continue.
+    if let Err(e) = state.shared_codex_appserver.start_or_takeover().await {
+        tracing::error!(
+            error = %e,
+            "shared codex app-server start/takeover failed; continuing boot"
+        );
+    }
+
     // #388 Phase 3b — reconcile non-exited terminal rows with the
     // supervisor PTY registry. No daemon binary respawn happens here.
     calm_server::reconcile_supervisor_on_boot(&state).await;
