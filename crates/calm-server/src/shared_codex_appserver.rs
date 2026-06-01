@@ -378,10 +378,11 @@ impl SharedCodexAppServer {
     }
 
     pub fn is_running(&self) -> bool {
-        self.state
-            .try_lock()
-            .map(|state| *state == SharedDaemonState::Running)
-            .unwrap_or(false)
+        self.enabled
+            && self
+                .state
+                .try_lock()
+                .is_ok_and(|state| *state == SharedDaemonState::Running)
     }
 
     pub fn remote_uri(&self) -> String {

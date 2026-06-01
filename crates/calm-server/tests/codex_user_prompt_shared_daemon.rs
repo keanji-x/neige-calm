@@ -364,6 +364,32 @@ async fn create_empty_card_with_empty_cards_flag_disabled_uses_legacy() {
 }
 
 #[tokio::test]
+async fn empty_path_falls_back_to_legacy_when_shared_daemon_not_running() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot(false, true, true).await;
+    let (status, card) = post(
+        boot.app.clone(),
+        &boot.wave_id,
+        json!({ "cwd": "/workspace", "theme": theme() }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={card:?}");
+    assert!(card["payload"].get("codex_thread_status").is_none());
+    let card_id = card["id"].as_str().unwrap();
+    assert!(
+        boot.codex_homes_dir.join(card_id).exists(),
+        "fallback path must seed per-card CODEX_HOME"
+    );
+    let terminal_id = card["payload"]["terminal_id"].as_str().unwrap();
+    let entry = boot
+        .state
+        .terminal_renderer
+        .get(terminal_id)
+        .expect("renderer entry");
+    assert_eq!(entry.config().args[1], "codex");
+}
+
+#[tokio::test]
 async fn create_empty_card_with_empty_cards_flag_enabled_uses_shared_daemon_pending_register() {
     let _guard = ENV_LOCK.lock().await;
     let boot = boot(true, true, true).await;

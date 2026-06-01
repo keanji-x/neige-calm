@@ -222,7 +222,7 @@ async fn expire_only_drops_pending_when_terminal_dead() {
 }
 
 #[tokio::test]
-async fn expire_drops_pending_when_terminal_exits() {
+async fn expire_dead_pending_clears_payload_status() {
     let (repo, events, wave_id) = boot().await;
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
     let card_id = seed_card(&repo, &wave_id, "term-exit").await;
@@ -238,6 +238,8 @@ async fn expire_drops_pending_when_terminal_exits() {
 
     assert_eq!(dropped, 1);
     assert_eq!(registry.pending_count().await, 0);
+    let card = repo.card_get(&card_id).await.unwrap().expect("card row");
+    assert_eq!(card.payload["codex_thread_status"], "failed_to_spawn");
 }
 
 #[tokio::test]
@@ -258,7 +260,7 @@ async fn expire_drops_pending_when_terminal_row_deleted() {
 }
 
 #[tokio::test]
-async fn on_thread_started_skips_stale_dead_entry_before_binding_live_entry() {
+async fn on_thread_started_stale_drop_clears_payload_status() {
     let (repo, events, wave_id) = boot().await;
     let registry = PendingThreadStartRegistry::new(repo.clone(), events);
     let dead_card = seed_card(&repo, &wave_id, "term-dead").await;
@@ -281,6 +283,8 @@ async fn on_thread_started_skips_stale_dead_entry_before_binding_live_entry() {
             .unwrap()
             .is_none()
     );
+    let dead = repo.card_get(&dead_card).await.unwrap().expect("dead card");
+    assert_eq!(dead.payload["codex_thread_status"], "failed_to_spawn");
     assert_eq!(
         repo.card_codex_thread_get_by_card(&live_card)
             .await

@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{card_codex_thread_upsert_tx, card_update_tx};
-use crate::db::{Repo, write_with_event_typed};
+use crate::db::{Repo, RepoEventWrite, write_with_event_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus};
 use crate::ids::ActorId;
@@ -115,13 +115,8 @@ impl PendingThreadStartRegistry {
                     }
                     queue.pop_front().expect("front checked")
                 };
-                tracing::warn!(
-                    target = "shared_codex_daemon::pending_drop_stale",
-                    card_id = %dropped.card_id,
-                    terminal_id = %dropped.terminal_id,
-                    thread_id,
-                    "skipped stale pending entry before binding"
-                );
+                self.drop_stale_entry(dropped, "thread_started_stale_front")
+                    .await;
                 continue;
             }
 
@@ -230,16 +225,11 @@ impl PendingThreadStartRegistry {
             *queue = kept;
         }
 
-        for entry in &expired {
-            tracing::info!(
-                target = "shared_codex_daemon::pending_expire_dead",
-                card_id = %entry.card_id,
-                terminal_id = %entry.terminal_id,
-                age_ms = entry.registered_at.elapsed().as_millis(),
-                "expired pending shared codex empty-card start after terminal ended"
-            );
+        let expired_len = expired.len();
+        for entry in expired {
+            self.drop_stale_entry(entry, "terminal_dead_expire").await;
         }
-        expired.len()
+        expired_len
     }
 
     pub async fn pending_count(&self) -> usize {
@@ -257,6 +247,22 @@ impl PendingThreadStartRegistry {
             .ok()
             .flatten()
             .is_some_and(|terminal| terminal.exit_code.is_none() && !terminal.signal_killed)
+    }
+
+    async fn drop_stale_entry(&self, entry: PendingEntry, reason: &str) {
+        let payload_cleared =
+            card_payload_clear_pending_status(self.repo.as_ref(), &self.events, &entry.card_id)
+                .await
+                .is_ok();
+        tracing::warn!(
+            target = "shared_codex_daemon::pending_drop_stale",
+            card_id = %entry.card_id,
+            terminal_id = %entry.terminal_id,
+            age_ms = entry.registered_at.elapsed().as_millis(),
+            reason,
+            payload_cleared,
+            "stale pending entry dropped"
+        );
     }
 
     async fn bind_entry(
@@ -330,6 +336,61 @@ impl PendingThreadStartRegistry {
         .await?;
         Ok(())
     }
+}
+
+pub(crate) async fn card_payload_clear_pending_status(
+    repo: &dyn RepoEventWrite,
+    events: &EventBus,
+    card_id: &str,
+) -> Result<()> {
+    let card = repo
+        .card_get(card_id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
+    let mut payload = card.payload.clone();
+    let Some(map) = payload.as_object_mut() else {
+        return Err(CalmError::Internal(format!(
+            "codex card {card_id} payload is not a JSON object; cannot mark spawn failure"
+        )));
+    };
+    map.insert(
+        "codex_thread_status".into(),
+        serde_json::Value::String("failed_to_spawn".into()),
+    );
+
+    let scope =
+        crate::routes::cards::card_scope(repo, card.id.clone(), card.wave_id.clone()).await?;
+    let card_id_for_tx = card_id.to_string();
+    let payload_for_tx = payload;
+    let card_role_cache = CardRoleCache::default();
+    let wave_cove_cache = WaveCoveCache::default();
+    let (_updated, _id) = write_with_event_typed(
+        repo,
+        ActorId::Kernel,
+        scope,
+        None,
+        events,
+        &card_role_cache,
+        &wave_cove_cache,
+        move |tx| {
+            Box::pin(async move {
+                let card = card_update_tx(
+                    tx,
+                    &card_id_for_tx,
+                    CardPatch {
+                        kind: None,
+                        sort: None,
+                        payload: Some(payload_for_tx),
+                        deletable: None,
+                    },
+                )
+                .await?;
+                Ok((card.clone(), Event::CardUpdated(card)))
+            })
+        },
+    )
+    .await?;
+    Ok(())
 }
 
 fn same_pending_entry(a: &PendingEntry, b: &PendingEntry) -> bool {
