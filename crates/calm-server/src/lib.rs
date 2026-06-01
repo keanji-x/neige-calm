@@ -429,6 +429,21 @@ pub async fn takeover_shared_spec_cards_on_boot(state: &state::AppState) {
     if !state.shared_codex_appserver.is_running() {
         return;
     }
+    let pending_initial_prompt_cards = match state
+        .repo
+        .shared_spec_cards_for_initial_prompt_takeover()
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(
+                target: "shared_codex_daemon::spec_card",
+                error = %e,
+                "shared spec pending boot takeover query failed; skipping"
+            );
+            Vec::new()
+        }
+    };
     let mappings = match state.repo.card_codex_threads_active().await {
         Ok(rows) => rows,
         Err(e) => {
@@ -441,6 +456,7 @@ pub async fn takeover_shared_spec_cards_on_boot(state: &state::AppState) {
         }
     };
     let mut resumed = 0usize;
+    let mut pending_reparked = 0usize;
     for mapping in mappings {
         if mapping.role != crate::model::CardRole::Spec {
             continue;
@@ -500,6 +516,7 @@ pub async fn takeover_shared_spec_cards_on_boot(state: &state::AppState) {
             Some(mapping.thread_id.clone()),
             state.shared_codex_appserver.subscribe_notifications(),
             status.clone(),
+            None,
             spec_push::TurnWatchdogConfig::default(),
         );
         handle.resume_reconciler = Some(tokio::spawn(spec_push::resume_reconcile_task(
@@ -521,10 +538,67 @@ pub async fn takeover_shared_spec_cards_on_boot(state: &state::AppState) {
         );
         resumed += 1;
     }
-    if resumed > 0 {
+    for (card_id, wave_id, terminal_id, watermark) in pending_initial_prompt_cards {
+        let Some(pending) = state.pending_codex_threads.as_ref() else {
+            tracing::warn!(
+                target: "shared_codex_daemon::spec_card",
+                card_id,
+                wave_id,
+                "shared spec pending boot takeover requires pending registry; skipping"
+            );
+            continue;
+        };
+        if let Err(e) = pending
+            .register(
+                crate::pending_codex_threads::PendingEntry::new(
+                    card_id.clone(),
+                    Some(wave_id.clone()),
+                    terminal_id.clone(),
+                )
+                .with_role(crate::model::CardRole::Spec),
+            )
+            .await
+        {
+            tracing::warn!(
+                target: "shared_codex_daemon::spec_card",
+                card_id,
+                wave_id,
+                terminal_id,
+                error = %e,
+                "shared spec pending boot takeover failed to register pending thread"
+            );
+            continue;
+        }
+        let wave_key: crate::ids::WaveId = wave_id.clone().into();
+        let status: spec_push::SharedStatus =
+            std::sync::Arc::new(tokio::sync::Mutex::new(spec_push::SpecPushStatus {
+                phase: spec_push::SpecPushPhase::PendingThreadStart,
+                last_thread_id: None,
+                last_turn_id: None,
+            }));
+        let handle = spec_push::park_shared_handle(
+            state.shared_codex_appserver.clone(),
+            None,
+            state.shared_codex_appserver.subscribe_notifications(),
+            status,
+            Some(card_id.clone()),
+            spec_push::TurnWatchdogConfig::default(),
+        );
+        register_and_catch_up(state, &card_id, &wave_key, watermark, handle, true).await;
+        tracing::info!(
+            target: "shared_codex_daemon::spec_card",
+            card_id,
+            wave_id,
+            terminal_id,
+            "shared spec boot takeover re-parked pending handle"
+        );
+        pending_reparked += 1;
+    }
+    if resumed > 0 || pending_reparked > 0 {
         tracing::info!(
             target: "shared_codex_daemon::spec_card",
             resumed,
+            pending_reparked,
             "shared spec boot takeover complete"
         );
     }

@@ -37,6 +37,14 @@ struct Boot {
 }
 
 async fn boot(shared_enabled: bool, start_shared: bool) -> Boot {
+    boot_with_proc_supervisor(shared_enabled, start_shared, None).await
+}
+
+async fn boot_with_proc_supervisor(
+    shared_enabled: bool,
+    start_shared: bool,
+    proc_supervisor_sock: Option<PathBuf>,
+) -> Boot {
     let tmp = TempDir::new().expect("tempdir");
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let cove = repo
@@ -56,7 +64,7 @@ async fn boot(shared_enabled: bool, start_shared: bool) -> Boot {
         events.clone(),
         Arc::new(DaemonClient {
             data_dir: tmp.path().join("terminals"),
-            proc_supervisor_sock: None,
+            proc_supervisor_sock,
         }),
         Arc::new(PluginHost::new_full(
             Arc::new(PluginRegistry::empty()),
@@ -90,7 +98,11 @@ async fn boot(shared_enabled: bool, start_shared: bool) -> Boot {
         cfg.data_dir_resolved().join("codex-home"),
         cfg.data_dir_resolved().join("codex-homes"),
     );
-    home.seed().unwrap();
+    // Use seed_from(None) to skip reading host ~/.codex, which can be
+    // concurrently mutated by other tests / the dev's live codex session
+    // and trigger ENOENT in fs::read_dir mid-copy. The fake codex bin
+    // doesn't need a populated CODEX_HOME — only the dir itself.
+    home.seed_from(None).unwrap();
     let pending = Arc::new(PendingThreadStartRegistry::new(repo.clone(), events));
     let shared = SharedCodexAppServer::new_with_pending(
         &cfg,
@@ -205,6 +217,7 @@ fn reloaded_state_from_boot(boot: &Boot) -> AppState {
     )
     .with_shared_codex_spec_cards_enabled(true)
     .with_shared_codex_appserver(boot.state.shared_codex_appserver.clone())
+    .with_pending_codex_threads(boot.state.pending_codex_threads.clone())
 }
 
 #[test]
@@ -288,6 +301,108 @@ async fn empty_wave_registers_pending_spec_thread_without_thread_id() {
             .await,
         1
     );
+}
+
+#[tokio::test]
+async fn empty_shared_spec_boot_takeover_reparks_pending_without_legacy_bootstrap() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot(true, true).await;
+    let (status, wave) = post_wave(boot.app.clone(), &boot.cove_id, "").await;
+    assert_eq!(status, StatusCode::CREATED, "body={wave:?}");
+    let wave_id = wave["id"].as_str().unwrap().to_string();
+    let spec = spec_card(&boot.repo, &wave_id).await;
+    let pending = boot.state.pending_codex_threads.as_ref().unwrap();
+    assert!(pending.remove_by_card(spec.id.as_str()).await);
+    drop(boot.state.spec_push.remove(&wave_id.clone().into()));
+
+    assert!(
+        boot.repo
+            .spec_cards_for_initial_prompt_bootstrap()
+            .await
+            .unwrap()
+            .is_empty(),
+        "shared empty specs must be excluded from legacy initial-prompt bootstrap"
+    );
+    let reloaded = reloaded_state_from_boot(&boot);
+    assert_eq!(
+        reloaded
+            .pending_codex_threads
+            .as_ref()
+            .unwrap()
+            .pending_count()
+            .await,
+        0
+    );
+    calm_server::takeover_shared_spec_cards_on_boot(&reloaded).await;
+    assert!(reloaded.spec_push.contains(&wave_id.clone().into()));
+    assert_eq!(
+        reloaded
+            .pending_codex_threads
+            .as_ref()
+            .unwrap()
+            .pending_count()
+            .await,
+        1
+    );
+
+    assert_eq!(
+        reloaded
+            .pending_codex_threads
+            .as_ref()
+            .unwrap()
+            .on_thread_started("T-spec-reloaded")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(spec.id.as_str())
+    );
+    assert_eq!(
+        boot.repo
+            .card_codex_thread_get_by_card(spec.id.as_str())
+            .await
+            .unwrap()
+            .unwrap()
+            .thread_id,
+        "T-spec-reloaded"
+    );
+}
+
+#[tokio::test]
+async fn empty_shared_spec_tui_spawn_failure_rolls_back_pending_state() {
+    let _guard = ENV_LOCK.lock().await;
+    let bad_supervisor_sock = PathBuf::from(format!(
+        "/tmp/neige-calm-missing-supervisor-{}.sock",
+        calm_server::model::new_id()
+    ));
+    let boot = boot_with_proc_supervisor(true, true, Some(bad_supervisor_sock)).await;
+    let (status, wave) = post_wave(boot.app.clone(), &boot.cove_id, "").await;
+    assert_eq!(status, StatusCode::CREATED, "body={wave:?}");
+    let wave_id = wave["id"].as_str().unwrap().to_string();
+    let spec = spec_card(&boot.repo, &wave_id).await;
+
+    assert_eq!(
+        boot.state
+            .pending_codex_threads
+            .as_ref()
+            .unwrap()
+            .pending_count()
+            .await,
+        0
+    );
+    assert!(!boot.state.spec_push.contains(&wave_id.clone().into()));
+    assert!(
+        boot.state
+            .pending_codex_threads
+            .as_ref()
+            .unwrap()
+            .on_thread_started("T-orphan")
+            .await
+            .unwrap()
+            .is_none(),
+        "rolled-back shared spec must not consume later thread/started events"
+    );
+    let spec = boot.repo.card_get(spec.id.as_str()).await.unwrap().unwrap();
+    assert!(spec.payload.get("appserver_needs_initial_prompt").is_none());
 }
 
 #[tokio::test]

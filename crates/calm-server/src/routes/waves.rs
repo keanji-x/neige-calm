@@ -815,6 +815,7 @@ pub(crate) async fn create_wave(
     // — there is no socket to attach to, so we skip the daemon spawn entirely
     // and return the created wave.
     if let Some(push_args) = push_args {
+        let rollback_shared_pending = use_shared_spec_path && push_args.thread_id.is_none();
         if let Err(e) = seed_and_spawn_spec_daemon(
             s.clone(),
             spec_card_id.clone(),
@@ -829,8 +830,31 @@ pub(crate) async fn create_wave(
             // Non-fatal, mirroring the app-server boot path: the wave +
             // rows are committed and the app-server already booted (its
             // handle is parked in `state.spec_push`). A failed PTY daemon
-            // spawn leaves the wave inert/not-running rather than 500'ing;
-            // the sweeper reaps the orphan terminal.
+            // spawn leaves the wave inert/not-running rather than 500'ing.
+            // Empty shared specs have no TUI-owned thread yet, so roll back
+            // their pending registry entry and parked handle immediately.
+            if rollback_shared_pending {
+                let pending_removed = if let Some(pending) = s.pending_codex_threads.as_ref() {
+                    pending.remove_by_card(spec_card_id.as_ref()).await
+                } else {
+                    false
+                };
+                let handle_removed = s.spec_push.remove(&wave.id).is_some();
+                let initial_prompt_cleared = s
+                    .repo
+                    .spec_card_clear_needs_initial_prompt(spec_card_id.as_ref())
+                    .await
+                    .is_ok();
+                tracing::warn!(
+                    target: "shared_codex_daemon::pending_rollback_on_spawn_failure",
+                    card_id = %spec_card_id,
+                    wave_id = %wave.id,
+                    pending_removed,
+                    handle_removed,
+                    initial_prompt_cleared,
+                    "spec TUI spawn failed; rolled back shared pending spec state"
+                );
+            }
             tracing::warn!(
                 card_id = %spec_card_id,
                 wave_id = %wave.id,
@@ -954,6 +978,7 @@ pub(crate) async fn spawn_push_via_shared_daemon(
         thread_id.clone(),
         notifications,
         status,
+        needs_initial_prompt.then(|| spec_card_id.to_string()),
         TurnWatchdogConfig::default(),
     );
     install_spec_push_sinks_and_park(s, spec_card_id, wave, handle).await;

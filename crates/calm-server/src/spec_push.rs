@@ -616,6 +616,13 @@ impl SpecPusherSource {
             SpecPusherSource::Shared { daemon } => daemon.turn_start(thread_id, items).await,
         }
     }
+
+    async fn thread_id_bound_to_card(&self, card_id: &str) -> Result<Option<String>> {
+        match self {
+            SpecPusherSource::Legacy { .. } => Ok(None),
+            SpecPusherSource::Shared { daemon } => daemon.thread_id_bound_to_card(card_id).await,
+        }
+    }
 }
 
 impl SpecPusher {
@@ -1562,6 +1569,7 @@ pub(crate) fn park_shared_handle(
     thread_id: Option<String>,
     notifications: broadcast::Receiver<Notification>,
     status: SharedStatus,
+    pending_card_id: Option<String>,
     watchdog: TurnWatchdogConfig,
 ) -> SpecPushHandle {
     let queue: PushQueue = Arc::new(Mutex::new(VecDeque::new()));
@@ -1581,6 +1589,7 @@ pub(crate) fn park_shared_handle(
         watermark_sink.clone(),
         queue_persist.clone(),
         initial_prompt_ready_sink.clone(),
+        pending_card_id,
         watchdog,
     ));
     SpecPushHandle {
@@ -1607,6 +1616,7 @@ pub(crate) async fn consume_shared_notifications(
     watermark_sink: WatermarkSinkSlot,
     queue_persist: QueuePersistSlot,
     initial_prompt_ready_sink: InitialPromptReadySinkSlot,
+    pending_card_id: Option<String>,
     watchdog: TurnWatchdogConfig,
 ) {
     let mut initial_prompt_ready_attempted = false;
@@ -1667,6 +1677,29 @@ pub(crate) async fn consume_shared_notifications(
             && current != notification_thread_id
         {
             continue;
+        }
+        if current_thread_id.is_none()
+            && let Some(card_id) = pending_card_id.as_deref()
+        {
+            let bound_thread_id = match source.thread_id_bound_to_card(card_id).await {
+                Ok(bound) => bound,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "shared_codex_daemon::spec_card",
+                        card_id,
+                        error = %e,
+                        "spec consumer failed to check pending thread binding; ignoring notification"
+                    );
+                    continue;
+                }
+            };
+            let Some(bound_thread_id) = bound_thread_id else {
+                continue;
+            };
+            if bound_thread_id != notification_thread_id {
+                *thread_id_slot.lock().await = Some(bound_thread_id);
+                continue;
+            }
         }
 
         warn_on_approval(&n);
@@ -2444,5 +2477,142 @@ pub(crate) fn warn_on_approval(n: &Notification) {
             "spec push: unexpected approval-shaped notification under approval_policy=never; \
              PR3a does not answer it — the spec agent may stall (investigate codex config)"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::db::prelude::*;
+    use crate::db::sqlite::SqlxRepo;
+    use crate::event::EventBus;
+    use crate::model::{NewCard, NewCove, NewWave};
+    use crate::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
+    use serde_json::json;
+
+    async fn seed_pending_card(repo: &SqlxRepo, wave_id: &str, terminal_id: &str) -> String {
+        let card = repo
+            .card_create(NewCard {
+                wave_id: wave_id.into(),
+                kind: "codex".into(),
+                sort: None,
+                payload: json!({
+                    "schemaVersion": 1,
+                    "terminal_id": terminal_id,
+                    "codex_thread_status": "pending_thread_start"
+                }),
+            })
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"INSERT INTO terminals
+                   (id, card_id, program, cwd, env, pid, theme_fg, theme_bg, created_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)"#,
+        )
+        .bind(terminal_id)
+        .bind(card.id.as_str())
+        .bind("bash")
+        .bind("/workspace")
+        .bind("{}")
+        .bind("216,219,226")
+        .bind("15,20,24")
+        .bind(0_i64)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+        card.id.to_string()
+    }
+
+    #[tokio::test]
+    async fn pending_shared_consumer_waits_for_card_scoped_thread_binding() {
+        let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+        let cove = repo
+            .cove_create(NewCove {
+                name: "pending-consumer".into(),
+                color: "#000".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let wave = repo
+            .wave_create(NewWave {
+                cove_id: cove.id,
+                title: "".into(),
+                sort: None,
+                cwd: "/workspace".into(),
+                attach_folder: false,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        let registry = PendingThreadStartRegistry::new(repo.clone(), EventBus::new());
+        let user_card = seed_pending_card(&repo, wave.id.as_str(), "term-user").await;
+        let spec_card = seed_pending_card(&repo, wave.id.as_str(), "term-spec").await;
+        registry
+            .register(PendingEntry::new(
+                user_card.clone(),
+                Some(wave.id.to_string()),
+                "term-user".into(),
+            ))
+            .await
+            .unwrap();
+        registry
+            .register(
+                PendingEntry::new(
+                    spec_card.clone(),
+                    Some(wave.id.to_string()),
+                    "term-spec".into(),
+                )
+                .with_role(crate::model::CardRole::Spec),
+            )
+            .await
+            .unwrap();
+
+        let daemon = crate::shared_codex_appserver::SharedCodexAppServer::new_stub(repo.clone());
+        let (tx, rx) = broadcast::channel(8);
+        let status = Arc::new(Mutex::new(SpecPushStatus {
+            phase: SpecPushPhase::PendingThreadStart,
+            last_thread_id: None,
+            last_turn_id: None,
+        }));
+        let handle = park_shared_handle(
+            daemon,
+            None,
+            rx,
+            status,
+            Some(spec_card.clone()),
+            TurnWatchdogConfig::default(),
+        );
+
+        assert_eq!(
+            registry.on_thread_started("T-user").await.unwrap(),
+            Some(user_card)
+        );
+        tx.send(Notification::ThreadStarted {
+            params: json!({ "threadId": "T-user" }),
+        })
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert!(
+            handle.thread_id_slot.lock().await.is_none(),
+            "spec handle must ignore another pending card's thread binding"
+        );
+
+        assert_eq!(
+            registry.on_thread_started("T-spec").await.unwrap(),
+            Some(spec_card)
+        );
+        tx.send(Notification::ThreadStarted {
+            params: json!({ "threadId": "T-spec" }),
+        })
+        .unwrap();
+        for _ in 0..20 {
+            if handle.thread_id_slot.lock().await.as_deref() == Some("T-spec") {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("spec handle did not accept its own pending thread binding");
     }
 }

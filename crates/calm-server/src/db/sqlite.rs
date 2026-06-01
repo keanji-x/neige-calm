@@ -2151,7 +2151,9 @@ impl RepoRead for SqlxRepo {
         // #313 problem #1 — boot takeover input. Spec cards whose payload
         // carries `codex_thread_id`, JOINed against `waves` so we can filter
         // out terminal-lifecycle waves in SQL rather than re-querying per
-        // card from Rust. Empty-goal rows marked
+        // card from Rust. Shared-daemon cards are excluded because they are
+        // owned by `takeover_shared_spec_cards_on_boot`, not the legacy
+        // per-wave app-server path. Empty-goal rows marked
         // `appserver_needs_initial_prompt` are excluded because their
         // thread has no rollout yet and must be fresh-started by
         // `spec_cards_for_initial_prompt_bootstrap`, never resumed.
@@ -2213,6 +2215,7 @@ impl RepoRead for SqlxRepo {
                JOIN waves w ON w.id = c.wave_id
                WHERE c.role = 'spec'
                  AND json_extract(c.payload, '$.codex_thread_id') IS NOT NULL
+                 AND COALESCE(json_extract(c.payload, '$.codex_source'), 'legacy') != 'shared'
                  AND COALESCE(json_extract(c.payload, '$.appserver_needs_initial_prompt'), 0) != 1
                  AND w.lifecycle NOT IN ('done', 'canceled', 'failed')"#,
         )
@@ -2275,6 +2278,7 @@ impl RepoRead for SqlxRepo {
                JOIN waves w ON w.id = c.wave_id
                WHERE c.role = 'spec'
                  AND COALESCE(json_extract(c.payload, '$.appserver_needs_initial_prompt'), 0) = 1
+                 AND COALESCE(json_extract(c.payload, '$.codex_source'), 'legacy') != 'shared'
                  AND w.lifecycle NOT IN ('done', 'canceled', 'failed')"#,
         )
         .fetch_all(&self.pool)
@@ -2292,6 +2296,37 @@ impl RepoRead for SqlxRepo {
                     )
                 },
             )
+            .collect())
+    }
+
+    async fn shared_spec_cards_for_initial_prompt_takeover(
+        &self,
+    ) -> Result<Vec<(String, String, String, i64)>> {
+        let rows: Vec<(String, String, String, Option<i64>)> = sqlx::query_as(
+            r#"SELECT c.id,
+                      c.wave_id,
+                      json_extract(c.payload, '$.terminal_id'),
+                      json_extract(c.payload, '$.push_watermark')
+               FROM cards c
+               JOIN waves w ON w.id = c.wave_id
+               WHERE c.role = 'spec'
+                 AND COALESCE(json_extract(c.payload, '$.appserver_needs_initial_prompt'), 0) = 1
+                 AND COALESCE(json_extract(c.payload, '$.codex_source'), 'legacy') = 'shared'
+                 AND json_extract(c.payload, '$.terminal_id') IS NOT NULL
+                 AND NOT EXISTS (
+                       SELECT 1
+                         FROM card_codex_threads t
+                        WHERE t.card_id = c.id
+                 )
+                 AND w.lifecycle NOT IN ('done', 'canceled', 'failed')"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(card_id, wave_id, terminal_id, watermark)| {
+                (card_id, wave_id, terminal_id, watermark.unwrap_or(0))
+            })
             .collect())
     }
 

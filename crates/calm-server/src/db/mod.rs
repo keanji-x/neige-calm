@@ -401,6 +401,14 @@ pub trait RepoRead: Send + Sync + 'static {
         )>,
     >;
 
+    /// Shared-daemon empty-goal spec cards that still need the TUI to
+    /// fresh-start their first thread. These are excluded from the legacy
+    /// initial-prompt bootstrap path and must be re-registered with
+    /// `PendingThreadStartRegistry` on boot.
+    async fn shared_spec_cards_for_initial_prompt_takeover(
+        &self,
+    ) -> Result<Vec<(String, String, String, i64)>>;
+
     // ---- plugins (read-only)
     async fn plugins_list(&self) -> Result<Vec<Plugin>>;
     async fn plugins_list_all(&self) -> Result<Vec<Plugin>>;

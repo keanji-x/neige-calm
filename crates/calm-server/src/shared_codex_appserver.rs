@@ -373,6 +373,14 @@ impl SharedCodexAppServer {
         self.notifications.subscribe()
     }
 
+    pub(crate) async fn thread_id_bound_to_card(&self, card_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .repo
+            .card_codex_thread_get_by_card(card_id)
+            .await?
+            .map(|row| row.thread_id))
+    }
+
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }

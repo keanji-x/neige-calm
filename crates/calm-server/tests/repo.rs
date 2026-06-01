@@ -1991,6 +1991,88 @@ async fn spec_cards_for_boot_takeover_excludes_initial_prompt_cards() {
 }
 
 #[tokio::test]
+async fn legacy_spec_boot_queries_exclude_shared_cards() {
+    use calm_server::card_role_cache::CardRoleCache;
+    use calm_server::model::{CardRole, NewCard};
+
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "shared-boot-exclusion").await;
+    let mapped_wave = make_wave(&repo, c.id.as_str(), "mapped").await;
+    let pending_wave = make_wave(&repo, c.id.as_str(), "").await;
+    let cache = CardRoleCache::new();
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    let _mapped = calm_server::db::sqlite::card_create_with_id_tx(
+        &mut tx,
+        calm_server::model::new_id(),
+        NewCard {
+            wave_id: mapped_wave.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({
+                "codex_source": "shared",
+                "codex_thread_id": "T-shared-mapped",
+                "appserver_sock": "unix:///tmp/shared.sock",
+                "push_watermark": 7,
+            }),
+        },
+        CardRole::Spec,
+        false,
+        &cache,
+    )
+    .await
+    .expect("create mapped shared spec card");
+    let pending = calm_server::db::sqlite::card_create_with_id_tx(
+        &mut tx,
+        calm_server::model::new_id(),
+        NewCard {
+            wave_id: pending_wave.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({
+                "codex_source": "shared",
+                "terminal_id": "term-shared-pending",
+                "appserver_needs_initial_prompt": true,
+                "appserver_sock": "unix:///tmp/shared.sock",
+                "push_watermark": 11,
+            }),
+        },
+        CardRole::Spec,
+        false,
+        &cache,
+    )
+    .await
+    .expect("create pending shared spec card");
+    tx.commit().await.unwrap();
+
+    assert!(
+        repo.spec_cards_for_boot_takeover()
+            .await
+            .expect("legacy takeover query")
+            .is_empty(),
+        "shared mapped spec cards are owned by shared boot takeover"
+    );
+    assert!(
+        repo.spec_cards_for_initial_prompt_bootstrap()
+            .await
+            .expect("legacy initial-prompt query")
+            .is_empty(),
+        "shared pending spec cards must not enter legacy bootstrap"
+    );
+    assert_eq!(
+        repo.shared_spec_cards_for_initial_prompt_takeover()
+            .await
+            .expect("shared pending takeover query"),
+        vec![(
+            pending.id.to_string(),
+            pending_wave.id.to_string(),
+            "term-shared-pending".to_string(),
+            11,
+        )]
+    );
+}
+
+#[tokio::test]
 async fn spec_card_set_push_watermark_clears_initial_prompt_marker() {
     use calm_server::card_role_cache::CardRoleCache;
     use calm_server::model::{CardRole, NewCard};
