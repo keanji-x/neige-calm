@@ -37,8 +37,9 @@
 use rand::RngCore;
 use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
-use std::fs;
-use std::io;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use subtle::ConstantTimeEq;
@@ -118,17 +119,38 @@ pub fn get_or_generate_daemon_token(data_dir: &Path) -> io::Result<String> {
     }
 
     let token = CardMcpToken::generate().into_inner();
-    write_with_perms(&token_path, format!("{token}\n").as_bytes(), 0o600)?;
+    match write_daemon_token_file(&token_path, &token) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            let token = fs::read_to_string(&token_path)?;
+            fs::set_permissions(&token_path, fs::Permissions::from_mode(0o600))?;
+            let token = token.trim();
+            if token.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "daemon token file exists but is empty",
+                ));
+            }
+            return Ok(token.to_string());
+        }
+        Err(e) => return Err(e),
+    }
     Ok(token)
 }
 
-fn write_with_perms(path: &Path, content: &[u8], mode: u32) -> io::Result<()> {
+pub fn write_daemon_token_file(path: &Path, token: &str) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
         fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
     }
-    fs::write(path, content)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(token.as_bytes())?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
     Ok(())
 }
 
@@ -205,6 +227,29 @@ mod tests {
         assert_eq!(
             dir_mode, 0o700,
             "secrets dir must be 0700: got {dir_mode:o}"
+        );
+    }
+
+    #[test]
+    fn daemon_token_creation_uses_o600() {
+        let tmp = tempfile::tempdir().unwrap();
+        let token_path = tmp.path().join("secrets/mcp-daemon-token");
+
+        write_daemon_token_file(&token_path, "TKN-123").unwrap();
+
+        let mode = fs::metadata(&token_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "daemon token must be 0600: got {mode:o}");
+        assert_eq!(
+            fs::read_to_string(&token_path).unwrap(),
+            "TKN-123\n",
+            "daemon token writer should persist the token once"
+        );
+        assert_eq!(
+            write_daemon_token_file(&token_path, "TKN-456")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists,
+            "daemon token writer must refuse to replace an existing token"
         );
     }
 }

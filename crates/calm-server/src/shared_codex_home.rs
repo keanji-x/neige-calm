@@ -6,8 +6,9 @@
 
 use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
-use std::io;
+use std::io::{self, Write};
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -154,7 +155,14 @@ impl SharedCodexHome {
 
         let new_text = doc.to_string();
         if new_text != text {
-            fs::write(&cfg_path, new_text)?;
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&cfg_path)?;
+            file.write_all(new_text.as_bytes())?;
+            file.sync_all()?;
         }
         if cfg_path.exists() {
             fs::set_permissions(&cfg_path, fs::Permissions::from_mode(0o600))?;

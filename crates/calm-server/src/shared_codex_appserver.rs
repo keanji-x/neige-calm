@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use tokio::net::UnixStream;
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, broadcast};
@@ -366,12 +367,38 @@ impl SharedCodexAppServer {
         self.thread_cache.get(thread_id).map(|v| v.value().clone())
     }
 
+    pub fn compute_env_signature(
+        ingest_url: &str,
+        http_proxy: Option<&str>,
+        https_proxy: Option<&str>,
+    ) -> String {
+        let mut h = Sha256::new();
+        h.update(ingest_url.as_bytes());
+        h.update(b"|");
+        h.update(http_proxy.unwrap_or_default().as_bytes());
+        h.update(b"|");
+        h.update(https_proxy.unwrap_or_default().as_bytes());
+        let hex = hex::encode(h.finalize());
+        hex[..16].to_string()
+    }
+
     async fn client(&self) -> Result<Arc<CodexAppServer>> {
         self.client
             .lock()
             .await
             .clone()
             .ok_or_else(|| CalmError::CodexAppServer("shared app-server is not connected".into()))
+    }
+
+    async fn current_env_signature(&self) -> Result<String> {
+        let settings = load_settings(self.repo.as_ref()).await?;
+        let http_proxy = settings.http_proxy.as_deref().filter(|s| !s.is_empty());
+        let https_proxy = settings.https_proxy.as_deref().filter(|s| !s.is_empty());
+        Ok(Self::compute_env_signature(
+            &self.ingest_url,
+            http_proxy,
+            https_proxy,
+        ))
     }
 
     async fn try_takeover_live(&self, record: &crate::db::SharedCodexDaemonRecord) -> Result<bool> {
@@ -397,6 +424,19 @@ impl SharedCodexAppServer {
                 pgid,
                 "shared codex app-server persisted pid is stale"
             );
+            return Ok(false);
+        }
+        let current_env_signature = self.current_env_signature().await?;
+        if record.daemon_env_signature.as_deref() != Some(current_env_signature.as_str()) {
+            tracing::warn!(
+                target: "shared_codex_daemon::takeover_env_changed",
+                pid,
+                pgid,
+                persisted = ?record.daemon_env_signature,
+                current = %current_env_signature,
+                "shared daemon was spawned with stale env signature; reaping for respawn"
+            );
+            reap_verified_process_group(pid, pgid, start_time, &boot_id).await;
             return Ok(false);
         }
         let Some(sock_path) = &record.sock_path else {
@@ -477,19 +517,7 @@ impl SharedCodexAppServer {
         let process_start_time = read_proc_start_time(pid).unwrap_or(0);
         let boot_id = read_boot_id().unwrap_or_default();
         let started_at = now_ms();
-        let mut spawn_guard = SpawnedChildGuard::new(child, pgid);
-
-        self.persist_runtime_starting(
-            pid,
-            pgid,
-            process_start_time,
-            &boot_id,
-            started_at,
-            last_error.clone(),
-        )
-        .await?;
-
-        let (client, notifications) = self.poll_connect_initialized().await?;
+        let daemon_env_signature = self.current_env_signature().await?;
         let runtime = SharedDaemonRuntime {
             pid,
             pgid,
@@ -497,6 +525,12 @@ impl SharedCodexAppServer {
             process_start_time,
             started_at,
         };
+        let mut spawn_guard = SpawnedChildGuard::new(child, pgid);
+
+        self.persist_runtime_starting(&runtime, last_error.clone(), daemon_env_signature.clone())
+            .await?;
+
+        let (client, notifications) = self.poll_connect_initialized().await?;
         self.repo
             .shared_daemon_runtime_set(SharedCodexDaemonUpdate {
                 state: SharedDaemonState::Running.as_db_str().to_string(),
@@ -509,6 +543,7 @@ impl SharedCodexAppServer {
                 started_at: Some(started_at),
                 last_error: last_error.clone(),
                 increment_restart_count,
+                daemon_env_signature: Some(daemon_env_signature),
             })
             .await?;
         let child = spawn_guard.disarm();
@@ -563,25 +598,23 @@ impl SharedCodexAppServer {
 
     async fn persist_runtime_starting(
         &self,
-        pid: i32,
-        pgid: i32,
-        process_start_time: u64,
-        boot_id: &str,
-        started_at: i64,
+        runtime: &SharedDaemonRuntime,
         last_error: Option<String>,
+        daemon_env_signature: String,
     ) -> Result<()> {
         self.repo
             .shared_daemon_runtime_set(SharedCodexDaemonUpdate {
                 state: SharedDaemonState::Starting.as_db_str().to_string(),
-                pid: Some(pid),
-                pgid: Some(pgid),
+                pid: Some(runtime.pid),
+                pgid: Some(runtime.pgid),
                 sock_path: Some(self.sock.display().to_string()),
                 codex_home_path: Some(self.home.path().display().to_string()),
-                process_start_time: Some(process_start_time),
-                boot_id: Some(boot_id.to_string()),
-                started_at: Some(started_at),
+                process_start_time: Some(runtime.process_start_time),
+                boot_id: Some(runtime.boot_id.clone()),
+                started_at: Some(runtime.started_at),
                 last_error,
                 increment_restart_count: false,
+                daemon_env_signature: Some(daemon_env_signature),
             })
             .await
     }
@@ -767,6 +800,9 @@ impl SharedCodexAppServer {
                     started_at: None,
                     last_error: Some(e.to_string()),
                     increment_restart_count: false,
+                    daemon_env_signature: Some(self.current_env_signature().await.unwrap_or_else(
+                        |_| Self::compute_env_signature(&self.ingest_url, None, None),
+                    )),
                 })
                 .await;
         }

@@ -2017,10 +2017,12 @@ impl RepoRead for SqlxRepo {
                 i64,
                 i64,
                 Option<String>,
+                Option<String>,
             ),
         >(
             r#"SELECT state, pid, pgid, sock_path, codex_home_path, process_start_time,
-                      boot_id, started_at, updated_at, restart_count, last_error
+                      boot_id, started_at, updated_at, restart_count, last_error,
+                      daemon_env_signature
                FROM shared_codex_daemon
                WHERE id = 1"#,
         )
@@ -2038,6 +2040,7 @@ impl RepoRead for SqlxRepo {
             updated_at: row.8,
             restart_count: row.9,
             last_error: row.10,
+            daemon_env_signature: row.11,
         })
     }
 
@@ -2784,10 +2787,11 @@ impl RepoOutOfDomain for SqlxRepo {
         sqlx::query(
             r#"INSERT INTO shared_codex_daemon
                    (id, state, pid, pgid, sock_path, codex_home_path, process_start_time,
-                    boot_id, started_at, updated_at, restart_count, last_error)
+                    boot_id, started_at, updated_at, restart_count, last_error,
+                    daemon_env_signature)
                VALUES
                    (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
-                    CASE WHEN ?10 THEN 1 ELSE 0 END, ?11)
+                    CASE WHEN ?10 THEN 1 ELSE 0 END, ?11, ?12)
                ON CONFLICT(id) DO UPDATE SET
                    state = excluded.state,
                    pid = excluded.pid,
@@ -2800,7 +2804,8 @@ impl RepoOutOfDomain for SqlxRepo {
                    updated_at = excluded.updated_at,
                    restart_count = shared_codex_daemon.restart_count
                        + CASE WHEN ?10 THEN 1 ELSE 0 END,
-                   last_error = excluded.last_error"#,
+                   last_error = excluded.last_error,
+                   daemon_env_signature = excluded.daemon_env_signature"#,
         )
         .bind(&update.state)
         .bind(update.pid)
@@ -2813,6 +2818,7 @@ impl RepoOutOfDomain for SqlxRepo {
         .bind(now)
         .bind(update.increment_restart_count)
         .bind(&update.last_error)
+        .bind(&update.daemon_env_signature)
         .execute(&self.pool)
         .await?;
         Ok(())
