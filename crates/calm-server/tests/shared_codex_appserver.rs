@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
+use std::{path::Path, process::Stdio};
 
 use calm_server::config::Config;
 use calm_server::db::sqlite::SqlxRepo;
@@ -15,7 +16,7 @@ use calm_server::shared_codex_appserver::{
 use calm_server::spec_appserver::{read_boot_id, read_proc_start_time};
 use clap::Parser;
 use serde_json::json;
-use std::process::Stdio;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
 fn fake_codex_bin() -> &'static str {
@@ -50,6 +51,30 @@ async fn server(root: &tempfile::TempDir, repo: Arc<dyn Repo>) -> Arc<SharedCode
     SharedCodexAppServer::new(&cfg, Arc::new(home), repo)
 }
 
+async fn persist_running_daemon(
+    repo: &SqlxRepo,
+    root: &tempfile::TempDir,
+    pid: i32,
+    pgid: i32,
+    sock: &Path,
+    process_start_time: u64,
+) {
+    repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
+        state: "running".into(),
+        pid: Some(pid),
+        pgid: Some(pgid),
+        sock_path: Some(sock.display().to_string()),
+        codex_home_path: Some(root.path().join("codex-home").display().to_string()),
+        process_start_time: Some(process_start_time),
+        boot_id: Some(read_boot_id().unwrap_or_default()),
+        started_at: Some(now_ms()),
+        last_error: None,
+        increment_restart_count: false,
+    })
+    .await
+    .unwrap();
+}
+
 async fn wait_for_start_time_and_socket(pid: i32, sock: &std::path::Path) -> u64 {
     let mut process_start_time = None;
     for _ in 0..40 {
@@ -81,6 +106,84 @@ async fn waitpid_reaped(pid: i32) -> bool {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     false
+}
+
+async fn wait_proc_gone(pid: i32) -> bool {
+    for _ in 0..80 {
+        if unsafe { libc::getpgid(pid) } < 0 {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    false
+}
+
+async fn read_pid_line(out: tokio::process::ChildStdout) -> i32 {
+    let mut line = String::new();
+    let n = tokio::time::timeout(
+        Duration::from_secs(5),
+        BufReader::new(out).read_line(&mut line),
+    )
+    .await
+    .expect("timed out reading child pid")
+    .expect("read child pid");
+    assert!(n != 0, "launcher exited before printing child pid");
+    line.trim().parse::<i32>().expect("child pid int")
+}
+
+async fn spawn_launcher_with_fake_appserver(
+    sock: &Path,
+    ignore_child_sigterm: bool,
+    fail_initialize: bool,
+) -> (tokio::process::Child, i32, i32) {
+    let trap = if ignore_child_sigterm {
+        r#"trap "" TERM; "#
+    } else {
+        ""
+    };
+    let script = format!(
+        r#"sh -c '{trap}exec "$FAKE_CODEX_BIN" app-server --listen "unix://$FAKE_CODEX_SOCK"' & echo $!; wait"#
+    );
+    let mut launcher = Command::new("sh")
+        .arg("-c")
+        .arg(script)
+        .env("FAKE_CODEX_BIN", fake_codex_bin())
+        .env("FAKE_CODEX_SOCK", sock)
+        .env(
+            "FAKE_CODEX_FAIL_INITIALIZE",
+            if fail_initialize { "1" } else { "0" },
+        )
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn launcher with fake app-server child");
+    let pgid = i32::try_from(launcher.id().expect("launcher pid")).expect("pid fits i32");
+    let peer_pid = read_pid_line(launcher.stdout.take().expect("launcher stdout piped")).await;
+
+    for _ in 0..40 {
+        if sock.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(sock.exists(), "fake app-server child must bind socket");
+    assert_ne!(peer_pid, pgid, "test must model launcher/native split");
+    assert_eq!(
+        unsafe { libc::getpgid(peer_pid) },
+        pgid,
+        "fake app-server child must share launcher pgid"
+    );
+
+    (launcher, pgid, peer_pid)
+}
+
+fn force_cleanup_process_group(child: tokio::process::Child, pgid: i32) {
+    unsafe {
+        libc::kill(-pgid, libc::SIGKILL);
+    }
+    drop(child);
 }
 
 async fn seed_card(repo: &SqlxRepo, idx: usize) -> String {
@@ -204,20 +307,7 @@ async fn takeover_handshake_failure_reaps_verified_daemon_before_relaunch() {
     let process_start_time = wait_for_start_time_and_socket(old_pid, &sock).await;
 
     let repo = repo().await;
-    repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
-        state: "running".into(),
-        pid: Some(old_pid),
-        pgid: Some(old_pid),
-        sock_path: Some(sock.display().to_string()),
-        codex_home_path: Some(root.path().join("codex-home").display().to_string()),
-        process_start_time: Some(process_start_time),
-        boot_id: Some(read_boot_id().unwrap_or_default()),
-        started_at: Some(now_ms()),
-        last_error: None,
-        increment_restart_count: false,
-    })
-    .await
-    .unwrap();
+    persist_running_daemon(&repo, &root, old_pid, old_pid, &sock, process_start_time).await;
 
     let daemon = server(&root, repo.clone()).await;
     daemon.start_or_takeover().await.unwrap();
@@ -239,6 +329,29 @@ async fn takeover_handshake_failure_reaps_verified_daemon_before_relaunch() {
     let record = repo.shared_daemon_runtime_get().await.unwrap();
     assert_eq!(record.pid, Some(new_pid));
     assert_eq!(record.pgid, Some(new_pid));
+}
+
+#[tokio::test]
+async fn takeover_handshake_fail_sigkills_pgid_even_after_launcher_exits() {
+    let root = tempfile::tempdir().unwrap();
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+
+    let (launcher, pgid, native_pid) = spawn_launcher_with_fake_appserver(&sock, true, true).await;
+    let process_start_time = read_proc_start_time(pgid).expect("launcher start time");
+
+    let repo = repo().await;
+    persist_running_daemon(&repo, &root, pgid, pgid, &sock, process_start_time).await;
+
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+
+    let native_gone = wait_proc_gone(native_pid).await;
+    force_cleanup_process_group(launcher, pgid);
+    assert!(
+        native_gone,
+        "takeover reap must SIGKILL the pgid even after launcher pid exits"
+    );
 }
 
 #[tokio::test]
@@ -278,6 +391,26 @@ async fn stale_socket_with_live_listener_reaped_before_relaunch() {
         .map(|runtime| runtime.pid)
         .unwrap();
     assert_ne!(new_pid, old_pid);
+}
+
+#[tokio::test]
+async fn reap_listener_uses_getpgid_to_derive_pgid_from_peer_pid() {
+    let root = tempfile::tempdir().unwrap();
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+
+    let (launcher, pgid, peer_pid) = spawn_launcher_with_fake_appserver(&sock, false, false).await;
+
+    let repo = repo().await;
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+
+    let peer_gone = wait_proc_gone(peer_pid).await;
+    force_cleanup_process_group(launcher, pgid);
+    assert!(
+        peer_gone,
+        "stale listener reap must kill peer_pid's real pgid, not kill(-peer_pid)"
+    );
 }
 
 #[tokio::test]
@@ -410,20 +543,7 @@ async fn taken_over_daemon_exit_triggers_restart() {
     assert!(sock.exists(), "fake app-server must bind takeover socket");
 
     let repo = repo().await;
-    repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
-        state: "running".into(),
-        pid: Some(pid),
-        pgid: Some(pid),
-        sock_path: Some(sock.display().to_string()),
-        codex_home_path: Some(root.path().join("codex-home").display().to_string()),
-        process_start_time: Some(process_start_time),
-        boot_id: Some(read_boot_id().unwrap_or_default()),
-        started_at: Some(now_ms()),
-        last_error: None,
-        increment_restart_count: false,
-    })
-    .await
-    .unwrap();
+    persist_running_daemon(&repo, &root, pid, pid, &sock, process_start_time).await;
 
     let daemon = server(&root, repo.clone()).await;
     daemon.start_or_takeover().await.unwrap();

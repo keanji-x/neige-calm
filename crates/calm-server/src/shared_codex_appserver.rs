@@ -728,9 +728,16 @@ impl SharedCodexAppServer {
 async fn reap_verified_process_group(pid: i32, pgid: i32, start_time: u64, boot_id: &str) {
     signal_process_group(pgid, libc::SIGTERM);
     tokio::time::sleep(Duration::from_millis(500)).await;
+    signal_process_group(pgid, libc::SIGKILL);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
     if verify_owned_pid(pid, start_time, boot_id) {
-        signal_process_group(pgid, libc::SIGKILL);
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tracing::warn!(
+            target: "shared_codex_daemon::stop",
+            pid,
+            pgid,
+            "after SIGKILL pgid, original launcher pid still verified; unexpected"
+        );
     }
 }
 
@@ -762,20 +769,41 @@ async fn reap_listener_if_alive(sock_path: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let pid = cred.pid;
+    let peer_pid = cred.pid;
+    let pgid = unsafe { libc::getpgid(peer_pid) };
+    if pgid < 0 {
+        let err = std::io::Error::last_os_error();
+        tracing::warn!(
+            target: "shared_codex_daemon::stop",
+            peer_pid,
+            error = %err,
+            sock = %sock_path.display(),
+            "getpgid failed; falling back to pid-only reap of stale socket listener"
+        );
+        unsafe {
+            libc::kill(peer_pid, libc::SIGTERM);
+        }
+        drop(stream);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        unsafe {
+            libc::kill(peer_pid, libc::SIGKILL);
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        return Ok(());
+    }
+
     tracing::warn!(
         target: "shared_codex_daemon::stop",
-        pid,
+        peer_pid,
+        pgid,
         sock = %sock_path.display(),
         "stale socket has live listener; reaping orphaned daemon pgid before unlink"
     );
-    signal_process_group(pid, libc::SIGTERM);
+    signal_process_group(pgid, libc::SIGTERM);
     drop(stream);
     tokio::time::sleep(Duration::from_millis(500)).await;
-    if UnixStream::connect(sock_path).await.is_ok() {
-        signal_process_group(pid, libc::SIGKILL);
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    signal_process_group(pgid, libc::SIGKILL);
+    tokio::time::sleep(Duration::from_millis(200)).await;
     Ok(())
 }
 
