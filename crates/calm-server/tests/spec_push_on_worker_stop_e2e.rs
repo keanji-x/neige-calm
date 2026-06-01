@@ -487,7 +487,7 @@ async fn expect_no_push(
 }
 
 async fn wait_until_idle(state: &AppState, wave_id: &str, budget: Duration) {
-    use calm_server::spec_appserver::SpecPushPhase;
+    use calm_server::spec_push::SpecPushPhase;
     let key: WaveId = wave_id.to_string().into();
     let deadline = Instant::now() + budget;
     loop {

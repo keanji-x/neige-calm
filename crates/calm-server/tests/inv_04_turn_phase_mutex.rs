@@ -58,7 +58,7 @@
 //! `Resumed`), `SpecPushPhase::Resumed` (the new variant), `decide` (the
 //! decision table). PR #323 for R2-B2.
 
-use calm_server::spec_appserver::{PushAction, SpecPushPhase, decide};
+use calm_server::spec_push::{PushAction, SpecPushPhase, decide};
 
 /// INV-4 regression guard: the full `decide` decision table, including
 /// the `Resumed` arm added by #323.

@@ -142,7 +142,7 @@ async fn dispatcher_initial_prompt_ready_sink_persists_thread_id_and_broadcasts_
         codex,
         stub_daemon(),
         None,
-        calm_server::spec_appserver::SpecPushRegistry::new(),
+        calm_server::spec_push::SpecPushRegistry::new(),
         4,
     );
     let mut rx = events.subscribe();
@@ -219,7 +219,7 @@ async fn dispatcher_initial_prompt_ready_sink_failure_does_not_broadcast_or_muta
         codex,
         stub_daemon(),
         None,
-        calm_server::spec_appserver::SpecPushRegistry::new(),
+        calm_server::spec_push::SpecPushRegistry::new(),
         4,
     );
     let mut rx = events.subscribe();
@@ -397,7 +397,7 @@ async fn dispatcher_happy_path_mints_worker_card() {
         daemon,
         terminal_renderer.clone(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
-        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
+        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         4,    // permits
     );
 
@@ -474,7 +474,7 @@ async fn dispatcher_role_is_worker_via_role_cache() {
         codex.clone(),
         daemon,
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
-        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
+        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
@@ -543,7 +543,7 @@ async fn dispatcher_dedup_does_not_double_emit_task_failed() {
         codex.clone(),
         daemon,
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
-        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
+        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
@@ -628,7 +628,7 @@ async fn dispatcher_dedupes_same_idempotency_key() {
         codex.clone(),
         daemon,
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
-        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
+        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
@@ -701,7 +701,7 @@ async fn dispatcher_semaphore_caps_concurrent_spawns() {
         codex.clone(),
         daemon,
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
-        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
+        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         2,
     ));
     assert_eq!(dispatcher.permits(), 2);
@@ -782,7 +782,7 @@ async fn dispatcher_emits_task_failed_on_bad_scope() {
         codex.clone(),
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
-        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
+        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
@@ -870,7 +870,7 @@ async fn dispatcher_card_added_emit_passes_role_gate() {
         codex.clone(),
         daemon,
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
-        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
+        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
@@ -934,7 +934,7 @@ async fn dispatcher_dedupes_under_real_concurrent_race() {
         codex.clone(),
         daemon,
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
-        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
+        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
@@ -1046,7 +1046,7 @@ async fn dispatcher_codex_worker_spawns_with_dark_theme_default() {
         daemon,
         terminal_renderer.clone(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
-        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
+        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         4,    // permits
     );
 
@@ -1118,7 +1118,7 @@ async fn dispatcher_codex_worker_spawn_carries_prompt_argv() {
         daemon,
         terminal_renderer.clone(),
         None,
-        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
+        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
@@ -1210,7 +1210,7 @@ async fn dispatcher_codex_card_added_after_renderer_entry_set_issue_310() {
         daemon,
         terminal_renderer.clone(),
         None,
-        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
+        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
@@ -1307,7 +1307,7 @@ async fn dispatcher_terminal_card_added_after_renderer_entry_set_issue_310() {
         daemon,
         terminal_renderer.clone(),
         None,
-        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
+        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
@@ -1419,7 +1419,7 @@ async fn dispatcher_rolls_back_card_on_codex_daemon_spawn_failure_issue_310() {
         codex.clone(),
         stub_daemon(), // proc_supervisor_sock = missing socket
         None,
-        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
+        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
@@ -1525,7 +1525,7 @@ async fn dispatcher_rolls_back_card_on_codex_daemon_spawn_failure_issue_310() {
         codex.clone(),
         daemon_ok,
         None,
-        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
+        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
@@ -1599,7 +1599,7 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
         codex.clone(),
         stub_daemon(),
         None,
-        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
+        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
@@ -1684,7 +1684,7 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
         codex.clone(),
         daemon_ok,
         None,
-        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
+        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
@@ -1776,7 +1776,7 @@ async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
         daemon,
         terminal_renderer.clone(),
         None,
-        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
+        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 
@@ -1898,7 +1898,7 @@ async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
         codex.clone(),
         daemon,
         None,
-        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
+        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         4,
     );
 

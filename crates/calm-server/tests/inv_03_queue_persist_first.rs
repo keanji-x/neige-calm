@@ -24,7 +24,7 @@
 //! seam that the production push path was rewired through:
 //!
 //!   * `Dispatcher::queue_persist_for(card_id)` builds the
-//!     [`calm_server::spec_appserver::QueuePersist`] closure trio
+//!     [`calm_server::spec_push::QueuePersist`] closure trio
 //!     (`enqueue` / `dequeue` / `list`) the handle installs.
 //!   * The `enqueue` closure persists the row BEFORE returning, so
 //!     dropping the in-memory closure + repo handle and reopening from
@@ -51,7 +51,7 @@ use calm_server::dispatcher::Dispatcher;
 use calm_server::event::EventBus;
 use calm_server::ids::CardId;
 use calm_server::model::{NewCard, NewCove, NewWave};
-use calm_server::spec_appserver::SpecPushRegistry;
+use calm_server::spec_push::SpecPushRegistry;
 use calm_server::state::{CodexClient, DaemonClient};
 use calm_server::wave_cove_cache::WaveCoveCache;
 use serde_json::json;

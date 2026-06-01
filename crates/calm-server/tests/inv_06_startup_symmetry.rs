@@ -59,7 +59,7 @@
 //! (the observability seam).
 
 use calm_server::ids::WaveId;
-use calm_server::spec_appserver::SpecPushRegistry;
+use calm_server::spec_push::SpecPushRegistry;
 
 #[cfg(unix)]
 mod common;
@@ -122,7 +122,7 @@ mod behavioral {
     use calm_server::model::{CardRole, NewCove, NewWave, new_id};
     use calm_server::plugin_host::{PluginHost, PluginRegistry};
     use calm_server::routes;
-    use calm_server::spec_appserver::SpecPushRegistry;
+    use calm_server::spec_push::SpecPushRegistry;
     use calm_server::state::{AppState, DaemonClient};
     use calm_server::wave_cove_cache::WaveCoveCache;
     use http_body_util::BodyExt;

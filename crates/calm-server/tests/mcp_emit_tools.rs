@@ -477,7 +477,7 @@ async fn dispatch_request_drives_dispatcher_rollback_on_stub_daemon() {
             )),
         }),
         None,
-        calm_server::spec_appserver::SpecPushRegistry::new(), // #293: empty push registry
+        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         2,
     );
 

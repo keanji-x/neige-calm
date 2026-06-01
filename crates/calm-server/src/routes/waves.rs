@@ -75,10 +75,9 @@ use crate::model::{
 };
 use crate::routes::cove_folders::{is_descendant_of, normalize_path};
 use crate::routes::settings::{Settings, load_settings};
-use crate::spec_appserver::{
-    TurnWatchdogConfig, spawn_spec_appserver_with_watchdog_config_and_recovery_for_wave,
-};
+use crate::spec_appserver::spawn_spec_appserver_with_watchdog_config_and_recovery_for_wave;
 use crate::spec_card::{SpecPushDaemonArgs, build_codex_env_map, seed_and_spawn_spec_daemon};
+use crate::spec_push::TurnWatchdogConfig;
 use crate::state::AppState;
 use crate::terminal_sweeper::{reap_spec_push, reap_terminal_artifacts};
 use crate::wave_lifecycle::validate_transition;

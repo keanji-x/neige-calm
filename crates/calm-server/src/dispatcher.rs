@@ -85,8 +85,8 @@ use crate::model::{CardPatch, CardRole};
 use crate::routes::codex_cards::shell_single_quote;
 use crate::routes::settings::load_settings;
 use crate::routes::terminal::spawn_terminal_with_parts;
-use crate::spec_appserver::SpecPushRegistry;
 use crate::spec_card::{SeededCardRole, build_codex_env_map, seed_codex_home_with_parts};
+use crate::spec_push::SpecPushRegistry;
 use crate::state::{CodexClient, DaemonClient};
 use crate::terminal_renderer::TerminalRendererRegistry;
 use crate::terminal_sweeper::{reap_terminal_artifacts_with_renderer, reap_terminal_pid_only};
@@ -240,7 +240,7 @@ impl Dispatcher {
     ///
     /// Captures `repo` + the spec card id; emits no `CardUpdated` event
     /// (same posture as `Inner::push_to_spec`'s direct call).
-    pub fn watermark_sink_for(&self, spec_card_id: CardId) -> crate::spec_appserver::WatermarkSink {
+    pub fn watermark_sink_for(&self, spec_card_id: CardId) -> crate::spec_push::WatermarkSink {
         let repo = Arc::clone(&self.inner.repo);
         let push_cursor = self.inner.push_cursor.clone();
         Arc::new(move |max_envelope_id: i64| {
@@ -281,7 +281,7 @@ impl Dispatcher {
         spec_card_id: CardId,
         wave_id: WaveId,
         cove_id: CoveId,
-    ) -> crate::spec_appserver::InitialPromptReadySink {
+    ) -> crate::spec_push::InitialPromptReadySink {
         let repo = Arc::clone(&self.inner.repo);
         let events = self.inner.events.clone();
         let card_role_cache = self.inner.card_role_cache.clone();
@@ -382,7 +382,7 @@ impl Dispatcher {
     pub fn initial_prompt_clear_sink_for(
         &self,
         spec_card_id: CardId,
-    ) -> crate::spec_appserver::InitialPromptReadySink {
+    ) -> crate::spec_push::InitialPromptReadySink {
         let repo = Arc::clone(&self.inner.repo);
         Arc::new(move |_thread_id: String| {
             let repo = Arc::clone(&repo);
@@ -403,7 +403,7 @@ impl Dispatcher {
         })
     }
 
-    /// #318 INV-3 (R2-B1) — build the [`crate::spec_appserver::QueuePersist`]
+    /// #318 INV-3 (R2-B1) — build the [`crate::spec_push::QueuePersist`]
     /// the `SpecPushHandle` uses to mirror its in-memory `VecDeque` into the
     /// durable `spec_push_queue` table. Captures `repo` + the spec card id;
     /// emits no events (the rows are server-private operational state, same
@@ -424,14 +424,14 @@ impl Dispatcher {
     /// [`Self::watermark_sink_for`]:
     ///   * `routes/waves.rs::spawn_push_appserver` — create-wave path,
     ///   * `lib.rs::register_and_catch_up`        — boot-takeover path.
-    pub fn queue_persist_for(&self, spec_card_id: CardId) -> crate::spec_appserver::QueuePersist {
+    pub fn queue_persist_for(&self, spec_card_id: CardId) -> crate::spec_push::QueuePersist {
         let repo_e = Arc::clone(&self.inner.repo);
         let card_e = spec_card_id.clone();
         let repo_d = Arc::clone(&self.inner.repo);
         let card_d = spec_card_id.clone();
         let repo_l = Arc::clone(&self.inner.repo);
         let card_l = spec_card_id;
-        crate::spec_appserver::QueuePersist {
+        crate::spec_push::QueuePersist {
             enqueue: Arc::new(move |envelope_id: i64, text: String| {
                 let repo = Arc::clone(&repo_e);
                 let card_id = card_e.clone();
@@ -773,7 +773,7 @@ struct Inner {
     mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
     /// #293 PR3b — wave→app-server push registry (shared with
     /// `AppState.spec_push`). `push_to_spec` resolves a wave's
-    /// [`crate::spec_appserver::SpecPushHandle`] from here and calls
+    /// [`crate::spec_push::SpecPushHandle`] from here and calls
     /// `push_observation` on it. Empty when a kernel restart lost the
     /// in-memory handle (no crash-recovery — see `push_to_spec`).
     spec_push: SpecPushRegistry,
@@ -1093,7 +1093,7 @@ impl Inner {
     ///      event can reach here) OR "takeover failed for this wave"
     ///      (warn was logged at boot; wave is inert).
     ///   4. **Build + deliver** the observation via
-    ///      [`crate::spec_appserver::SpecPusher::push_observation`],
+    ///      [`crate::spec_push::SpecPusher::push_observation`],
     ///      which decides `turn/start`-now vs enqueue based on the tracked
     ///      turn phase.
     ///   5. **Persist durable watermark** — only AFTER a successful
@@ -1291,7 +1291,7 @@ impl Inner {
         // `CardUpdated` and the field is server-private bookkeeping
         // (same treatment terminal PIDs/handles get).
         match outcome {
-            crate::spec_appserver::PushOutcome::Issued { max_envelope_id } => {
+            crate::spec_push::PushOutcome::Issued { max_envelope_id } => {
                 // #347: bump the in-process cursor only after the handle
                 // accepted the observation. A Wedged handle now returns an
                 // error so runtime recovery can replay from the durable
@@ -1315,7 +1315,7 @@ impl Inner {
                     );
                 }
             }
-            crate::spec_appserver::PushOutcome::Enqueued => {
+            crate::spec_push::PushOutcome::Enqueued => {
                 self.push_cursor.bump(spec_card_id.clone(), envelope_id);
                 tracing::debug!(
                     wave_id = %wave_id,
@@ -3233,7 +3233,7 @@ mod tests {
     /// the e2e proves the durable watermark behavior end-to-end.
     #[test]
     fn push_outcome_shape() {
-        use crate::spec_appserver::PushOutcome;
+        use crate::spec_push::PushOutcome;
         match (PushOutcome::Issued {
             max_envelope_id: 42,
         }) {

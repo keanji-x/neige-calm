@@ -13,7 +13,7 @@ use crate::mcp_server::McpServer;
 use crate::plugin_host::{PluginHost, PluginRegistry};
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::shared_codex_home::SharedCodexHome;
-use crate::spec_appserver::SpecPushRegistry;
+use crate::spec_push::SpecPushRegistry;
 use crate::terminal_renderer::TerminalRendererRegistry;
 use crate::wave_cove_cache::WaveCoveCache;
 use std::path::{Path, PathBuf};
@@ -109,13 +109,13 @@ pub struct AppState {
     /// #322 — aspect / join-point framework registry. Holds the boot-
     /// installed aspects (today: [`WatermarkSinkInstalledAspect`] on
     /// `BeforeHandleParkInRegistry`). Threaded into
-    /// [`SpecPushRegistry::park`](crate::spec_appserver::SpecPushRegistry::park)
+    /// [`SpecPushRegistry::park`](crate::spec_push::SpecPushRegistry::park)
     /// at each production registration site. `Arc` so route handlers,
     /// the dispatcher, and any future aspect-enforcing callsite share
     /// one registry without re-installing aspects per request. The set
     /// of aspects is fixed at boot — no runtime mutation, no per-test
     /// override surface (test paths bypass via the bare
-    /// [`SpecPushRegistry::insert`](crate::spec_appserver::SpecPushRegistry::insert)).
+    /// [`SpecPushRegistry::insert`](crate::spec_push::SpecPushRegistry::insert)).
     pub aspects: Arc<AspectRegistry>,
     /// Full-capability handle. Held separately from `repo` so the gate at
     /// `AppState::repo` survives even though the underlying concrete impl

@@ -46,7 +46,7 @@
 use std::sync::Arc;
 
 use crate::ids::WaveId;
-use crate::spec_appserver::SpecPushHandle;
+use crate::spec_push::SpecPushHandle;
 
 /// Stable join-point enum. Closed: extending the framework with a new
 /// invariant class means adding a variant here, and the framework code
@@ -70,7 +70,7 @@ use crate::spec_appserver::SpecPushHandle;
 /// guards.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum JoinPoint {
-    /// Fired by [`crate::spec_appserver::SpecPushRegistry::park`] right
+    /// Fired by [`crate::spec_push::SpecPushRegistry::park`] right
     /// before a [`SpecPushHandle`] is `insert`ed into the keyed
     /// `DashMap`. Aspects on this join point see the handle + the
     /// `WaveId` it'll be registered under, and decide whether the
@@ -150,7 +150,7 @@ pub trait BeforeHandleParkAspect: Send + Sync {
 #[derive(Default)]
 pub struct AspectRegistry {
     /// Aspects to run before a [`SpecPushHandle`] is parked in
-    /// [`crate::spec_appserver::SpecPushRegistry`]. Iterated in
+    /// [`crate::spec_push::SpecPushRegistry`]. Iterated in
     /// registration order — order matters only insofar as the first
     /// failing aspect determines which name lands in the panic
     /// message; semantically every aspect must pass.
@@ -212,8 +212,8 @@ impl AspectRegistry {
 // ---------------------------------------------------------------------------
 
 /// INV-6 — every [`SpecPushHandle`] parked in
-/// [`crate::spec_appserver::SpecPushRegistry`] must already have a
-/// [`crate::spec_appserver::WatermarkSink`] installed. Without one, a
+/// [`crate::spec_push::SpecPushRegistry`] must already have a
+/// [`crate::spec_push::WatermarkSink`] installed. Without one, a
 /// queued-then-flushed observation would deliver but the durable
 /// `push_watermark` would never advance past it — boot replay would
 /// then re-deliver it to the spec thread. See module doc + #313 round-3
