@@ -762,7 +762,12 @@ pub(crate) async fn create_wave(
             "CODEX_HOME".into(),
             serde_json::Value::String(s.codex.codex_home_dir().to_string_lossy().to_string()),
         );
-        map.remove("NEIGE_MCP_TOKEN");
+        // KEEP NEIGE_MCP_TOKEN — the spec TUI's shell still needs the
+        // per-card credential so `neige state`/`ls`/`cat` work (CLI does
+        // not accept the daemon token). The shared CODEX_HOME's stdio
+        // shim uses NEIGE_MCP_DAEMON_TOKEN for the codex MCP path; both
+        // tokens live alongside without conflict because the CLI reads
+        // NEIGE_MCP_TOKEN explicitly.
     }
 
     let serialize_shared_empty_spec_spawn = use_shared_spec_path && wave.title.trim().is_empty();
