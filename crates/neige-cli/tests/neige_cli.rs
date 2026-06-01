@@ -104,19 +104,6 @@ async fn spawn_neige(socket_path: &Path, args: &[&str]) -> tokio::process::Child
         .expect("spawn neige")
 }
 
-async fn spawn_neige_with_daemon_token(socket_path: &Path, args: &[&str]) -> tokio::process::Child {
-    Command::new(NEIGE_BIN)
-        .args(args)
-        .env("NEIGE_MCP_SOCKET", socket_path)
-        .env_remove("NEIGE_MCP_TOKEN")
-        .env("NEIGE_MCP_DAEMON_TOKEN", "daemon-test-token")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn neige")
-}
-
 #[tokio::test]
 async fn ls_root_lists_top_level_entries() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -160,22 +147,31 @@ async fn ls_root_lists_top_level_entries() {
 }
 
 #[tokio::test]
-async fn daemon_token_env_alias_is_accepted() {
+async fn cli_uses_per_card_token_only_not_daemon_token() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let socket_path: PathBuf = tmp.path().join("kernel.sock");
-    let listener = listen(&socket_path);
-    let child = spawn_neige_with_daemon_token(&socket_path, &["state"]).await;
 
-    let (mut reader, mut wr) = accept_initialized_with_token(listener, "daemon-test-token").await;
-    let call = read_frame(&mut reader).await;
-    assert_eq!(call["params"]["name"], json!("calm.get_wave_state"));
-    write_frame(&mut wr, tool_result(2, json!({"ok": true}))).await;
-
-    let out = timeout(TEST_BUDGET, child.wait_with_output())
-        .await
-        .expect("child exited")
-        .expect("wait ok");
-    assert!(out.status.success());
+    let out = timeout(
+        TEST_BUDGET,
+        Command::new(NEIGE_BIN)
+            .arg("state")
+            .env("NEIGE_MCP_SOCKET", socket_path)
+            .env_remove("NEIGE_MCP_TOKEN")
+            .env("NEIGE_MCP_DAEMON_TOKEN", "daemon-test-token")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output(),
+    )
+    .await
+    .expect("child exited")
+    .expect("wait ok");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("missing NEIGE_MCP_TOKEN env var"),
+        "stderr = {stderr}"
+    );
 }
 
 #[tokio::test]
@@ -304,7 +300,7 @@ async fn missing_token_env_exits_nonzero() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("NEIGE_MCP_TOKEN") && stderr.contains("NEIGE_MCP_DAEMON_TOKEN"),
+        stderr.contains("NEIGE_MCP_TOKEN") && !stderr.contains("NEIGE_MCP_DAEMON_TOKEN"),
         "stderr = {stderr}"
     );
 }

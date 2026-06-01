@@ -8,6 +8,7 @@ use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io;
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::mcp_server::McpShimConfig;
@@ -153,7 +154,10 @@ impl SharedCodexHome {
 
         let new_text = doc.to_string();
         if new_text != text {
-            fs::write(cfg_path, new_text)?;
+            fs::write(&cfg_path, new_text)?;
+        }
+        if cfg_path.exists() {
+            fs::set_permissions(&cfg_path, fs::Permissions::from_mode(0o600))?;
         }
 
         Ok(())

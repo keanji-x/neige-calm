@@ -39,6 +39,7 @@ use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use subtle::ConstantTimeEq;
 
@@ -104,22 +105,37 @@ pub fn verify_token(presented: &str, stored_hash: &str) -> bool {
 pub fn get_or_generate_daemon_token(data_dir: &Path) -> io::Result<String> {
     let secrets_dir = data_dir.join("secrets");
     let token_path = secrets_dir.join("mcp-daemon-token");
+    fs::create_dir_all(&secrets_dir)?;
+    fs::set_permissions(&secrets_dir, fs::Permissions::from_mode(0o700))?;
     match fs::read_to_string(&token_path) {
-        Ok(token) if !token.trim().is_empty() => return Ok(token.trim().to_string()),
+        Ok(token) if !token.trim().is_empty() => {
+            fs::set_permissions(&token_path, fs::Permissions::from_mode(0o600))?;
+            return Ok(token.trim().to_string());
+        }
         Ok(_) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(e),
     }
 
-    fs::create_dir_all(&secrets_dir)?;
     let token = CardMcpToken::generate().into_inner();
-    fs::write(&token_path, format!("{token}\n"))?;
+    write_with_perms(&token_path, format!("{token}\n").as_bytes(), 0o600)?;
     Ok(token)
+}
+
+fn write_with_perms(path: &Path, content: &[u8], mode: u32) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+    }
+    fs::write(path, content)?;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn hash_token_round_trips() {
@@ -170,5 +186,25 @@ mod tests {
         let second = get_or_generate_daemon_token(tmp.path()).unwrap();
         assert_eq!(first, second);
         assert_eq!(first.len(), 64);
+    }
+
+    #[test]
+    fn daemon_token_file_has_0600_perms() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _token = get_or_generate_daemon_token(tmp.path()).unwrap();
+
+        let token_path = tmp.path().join("secrets/mcp-daemon-token");
+        let mode = fs::metadata(&token_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "daemon token must be 0600: got {mode:o}");
+
+        let dir_mode = fs::metadata(tmp.path().join("secrets"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            dir_mode, 0o700,
+            "secrets dir must be 0700: got {dir_mode:o}"
+        );
     }
 }

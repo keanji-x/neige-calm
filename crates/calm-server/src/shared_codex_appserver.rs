@@ -331,6 +331,13 @@ impl SharedCodexAppServer {
         self.enabled
     }
 
+    pub fn is_running(&self) -> bool {
+        self.state
+            .try_lock()
+            .map(|state| *state == SharedDaemonState::Running)
+            .unwrap_or(false)
+    }
+
     pub fn remote_uri(&self) -> String {
         format!("unix://{}", self.sock.display())
     }
