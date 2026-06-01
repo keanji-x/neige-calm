@@ -342,6 +342,12 @@ pub(crate) async fn create_codex_card(
         );
     }
 
+    let _pending_spawn_serial_guard = if use_shared_empty_path {
+        Some(s.pending_codex_threads_spawn_serial.lock().await)
+    } else {
+        None
+    };
+
     let command_line = if let Some(prompt_text) = prompt.as_deref() {
         if use_shared_prompt_path {
             // PR5 new path: non-empty user prompt cards run turn #1 on the

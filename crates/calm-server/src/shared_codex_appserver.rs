@@ -4,6 +4,7 @@
 //! server. It deliberately does not route any card traffic to this daemon yet;
 //! later PRs switch callers over through the public methods here.
 
+use std::collections::HashSet;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -183,6 +184,8 @@ pub struct SharedCodexAppServer {
     restart_backoff: BackoffState,
     notifications: NotificationFanout,
     pending_codex_threads_handle: Option<Arc<PendingThreadStartRegistry>>,
+    kernel_initiated_threads: Arc<Mutex<HashSet<String>>>,
+    kernel_thread_start_serial: Arc<Mutex<()>>,
     codex_bin: String,
     log_dir: PathBuf,
     enabled: bool,
@@ -197,6 +200,21 @@ pub struct SharedCodexAppServer {
 
 impl SharedCodexAppServer {
     pub fn new_stub(repo: Arc<dyn Repo>) -> Arc<Self> {
+        Self::new_stub_inner(repo, None)
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn new_stub_with_pending(
+        repo: Arc<dyn Repo>,
+        pending_codex_threads_handle: Option<Arc<PendingThreadStartRegistry>>,
+    ) -> Arc<Self> {
+        Self::new_stub_inner(repo, pending_codex_threads_handle)
+    }
+
+    fn new_stub_inner(
+        repo: Arc<dyn Repo>,
+        pending_codex_threads_handle: Option<Arc<PendingThreadStartRegistry>>,
+    ) -> Arc<Self> {
         let root = std::env::temp_dir().join(format!(
             "neige-shared-codex-appserver-stub-{}",
             uuid::Uuid::new_v4()
@@ -213,7 +231,9 @@ impl SharedCodexAppServer {
             thread_cache: Arc::new(DashMap::new()),
             restart_backoff: BackoffState::new(Duration::from_millis(250), Duration::from_secs(10)),
             notifications: tx,
-            pending_codex_threads_handle: None,
+            pending_codex_threads_handle,
+            kernel_initiated_threads: Arc::new(Mutex::new(HashSet::new())),
+            kernel_thread_start_serial: Arc::new(Mutex::new(())),
             codex_bin: "codex".into(),
             log_dir: root.join("logs/shared-codex-appserver"),
             enabled: false,
@@ -252,6 +272,8 @@ impl SharedCodexAppServer {
             ),
             notifications: tx,
             pending_codex_threads_handle,
+            kernel_initiated_threads: Arc::new(Mutex::new(HashSet::new())),
+            kernel_thread_start_serial: Arc::new(Mutex::new(())),
             codex_bin: cfg.codex_bin.clone(),
             log_dir: cfg.shared_codex_appserver_log_dir_resolved(),
             enabled: cfg.shared_codex_appserver_enabled,
@@ -297,6 +319,7 @@ impl SharedCodexAppServer {
         wave_id: Option<&str>,
         params: SharedThreadStartParams,
     ) -> Result<String> {
+        let _start_guard = self.kernel_thread_start_serial.lock().await;
         let client = self.client().await?;
         let thread = client
             .thread_start_with_params(ThreadStartParams {
@@ -310,6 +333,10 @@ impl SharedCodexAppServer {
             .thread_id()
             .ok_or_else(|| CalmError::CodexAppServer("thread/start returned no thread.id".into()))?
             .to_string();
+        self.kernel_initiated_threads
+            .lock()
+            .await
+            .insert(thread_id.clone());
         self.repo
             .card_codex_thread_upsert(card_id, &thread_id, role, wave_id)
             .await?;
@@ -691,17 +718,22 @@ impl SharedCodexAppServer {
         let tx = self.notifications.clone();
         let pending = self.pending_codex_threads_handle.clone();
         let thread_cache = self.thread_cache.clone();
+        let kernel_initiated_threads = self.kernel_initiated_threads.clone();
+        let kernel_thread_start_serial = self.kernel_thread_start_serial.clone();
         tokio::spawn(async move {
             while let Some(notification) = notifications.recv().await {
-                if let Some(thread_id) = thread_started_id(&notification)
-                    && let Some(pending) = pending.as_ref()
-                {
-                    match pending.on_thread_started(thread_id).await {
-                        Ok(Some(card_id)) => {
-                            thread_cache.insert(thread_id.to_string(), card_id);
-                            continue;
-                        }
-                        Ok(None) => {}
+                if let Some(thread_id) = thread_started_id(&notification) {
+                    match handle_thread_started_notification(
+                        pending.as_ref(),
+                        &thread_cache,
+                        &kernel_initiated_threads,
+                        &kernel_thread_start_serial,
+                        thread_id,
+                    )
+                    .await
+                    {
+                        Ok(ThreadStartedHandling::PendingBound) => continue,
+                        Ok(ThreadStartedHandling::DispatchNormally) => {}
                         Err(e) => {
                             tracing::warn!(
                                 target = "shared_codex_daemon::pending_bind",
@@ -712,9 +744,36 @@ impl SharedCodexAppServer {
                         }
                     }
                 }
+                if let Some(thread_id) = turn_completed_thread_id(&notification) {
+                    kernel_initiated_threads.lock().await.remove(thread_id);
+                }
                 let _ = tx.send(notification);
             }
         });
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub async fn mark_kernel_initiated_thread_for_test(&self, thread_id: &str) {
+        self.kernel_initiated_threads
+            .lock()
+            .await
+            .insert(thread_id.to_string());
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub async fn handle_thread_started_notification_for_test(
+        &self,
+        thread_id: &str,
+    ) -> Result<bool> {
+        let handled = handle_thread_started_notification(
+            self.pending_codex_threads_handle.as_ref(),
+            &self.thread_cache,
+            &self.kernel_initiated_threads,
+            &self.kernel_thread_start_serial,
+            thread_id,
+        )
+        .await?;
+        Ok(matches!(handled, ThreadStartedHandling::PendingBound))
     }
 
     async fn rebuild_thread_cache_from_db(&self) -> Result<()> {
@@ -897,6 +956,47 @@ fn thread_started_id(notification: &Notification) -> Option<&str> {
     match notification {
         Notification::ThreadStarted { params } => params.get("threadId").and_then(|v| v.as_str()),
         _ => None,
+    }
+}
+
+fn turn_completed_thread_id(notification: &Notification) -> Option<&str> {
+    match notification {
+        Notification::TurnCompleted { thread_id, .. } => Some(thread_id),
+        _ => None,
+    }
+}
+
+enum ThreadStartedHandling {
+    PendingBound,
+    DispatchNormally,
+}
+
+async fn handle_thread_started_notification(
+    pending: Option<&Arc<PendingThreadStartRegistry>>,
+    thread_cache: &Arc<DashMap<String, String>>,
+    kernel_initiated_threads: &Arc<Mutex<HashSet<String>>>,
+    kernel_thread_start_serial: &Arc<Mutex<()>>,
+    thread_id: &str,
+) -> Result<ThreadStartedHandling> {
+    let _start_guard = kernel_thread_start_serial.lock().await;
+    if kernel_initiated_threads.lock().await.contains(thread_id) {
+        tracing::debug!(
+            target: "shared_codex_daemon::pending_skip_kernel_initiated",
+            %thread_id,
+            "shared codex thread/started belongs to a kernel-initiated thread"
+        );
+        return Ok(ThreadStartedHandling::DispatchNormally);
+    }
+
+    let Some(pending) = pending else {
+        return Ok(ThreadStartedHandling::DispatchNormally);
+    };
+    match pending.on_thread_started(thread_id).await? {
+        Some(card_id) => {
+            thread_cache.insert(thread_id.to_string(), card_id);
+            Ok(ThreadStartedHandling::PendingBound)
+        }
+        None => Ok(ThreadStartedHandling::DispatchNormally),
     }
 }
 

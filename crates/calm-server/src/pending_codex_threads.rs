@@ -12,12 +12,14 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
+use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{card_codex_thread_upsert_tx, card_update_tx};
-use crate::db::{Repo, write_in_tx_typed};
+use crate::db::{Repo, write_with_event_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus};
 use crate::ids::ActorId;
 use crate::model::{CardPatch, CardRole};
+use crate::wave_cove_cache::WaveCoveCache;
 
 pub struct PendingThreadStartRegistry {
     queue: Mutex<VecDeque<PendingEntry>>,
@@ -167,36 +169,69 @@ impl PendingThreadStartRegistry {
             serde_json::Value::String("started".into()),
         );
 
+        let scope =
+            crate::routes::cards::card_scope(self.repo.as_ref(), card.id.clone(), card.wave_id)
+                .await?;
         let card_id_for_tx = card_id.to_string();
         let thread_id_for_tx = thread_id.to_string();
         let wave_id_for_tx = wave_id.map(ToOwned::to_owned);
         let payload_for_tx = payload;
-        let updated = write_in_tx_typed(self.repo.as_ref(), move |tx| {
-            Box::pin(async move {
-                card_codex_thread_upsert_tx(
-                    tx,
-                    &card_id_for_tx,
-                    &thread_id_for_tx,
-                    CardRole::Plain,
-                    wave_id_for_tx.as_deref(),
-                )
-                .await?;
-                card_update_tx(
-                    tx,
-                    &card_id_for_tx,
-                    CardPatch {
-                        kind: None,
-                        sort: None,
-                        payload: Some(payload_for_tx),
-                        deletable: None,
-                    },
-                )
-                .await
-            })
-        })
+        let card_role_cache = CardRoleCache::default();
+        let wave_cove_cache = WaveCoveCache::default();
+        let (_updated, _event_id) = write_with_event_typed(
+            self.repo.as_ref(),
+            ActorId::Kernel,
+            scope,
+            None,
+            &self.events,
+            &card_role_cache,
+            &wave_cove_cache,
+            move |tx| {
+                Box::pin(async move {
+                    card_codex_thread_upsert_tx(
+                        tx,
+                        &card_id_for_tx,
+                        &thread_id_for_tx,
+                        CardRole::Plain,
+                        wave_id_for_tx.as_deref(),
+                    )
+                    .await?;
+                    let card = card_update_tx(
+                        tx,
+                        &card_id_for_tx,
+                        CardPatch {
+                            kind: None,
+                            sort: None,
+                            payload: Some(payload_for_tx),
+                            deletable: None,
+                        },
+                    )
+                    .await?;
+                    Ok((card.clone(), Event::CardUpdated(card)))
+                })
+            },
+        )
         .await?;
-        self.events
-            .emit(ActorId::Kernel, Event::CardUpdated(updated));
         Ok(())
     }
+}
+
+pub fn spawn_periodic_expire_task(
+    registry: Arc<PendingThreadStartRegistry>,
+    interval: Duration,
+    ttl: Duration,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(interval).await;
+            let expired = registry.expire(ttl).await;
+            if expired > 0 {
+                tracing::info!(
+                    target: "shared_codex_daemon::pending_expire_batch",
+                    expired,
+                    "expired pending thread-start entries"
+                );
+            }
+        }
+    })
 }
