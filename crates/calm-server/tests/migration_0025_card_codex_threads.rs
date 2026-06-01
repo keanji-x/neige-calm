@@ -184,6 +184,51 @@ async fn migration_backfills_payload_codex_thread_id() {
 }
 
 #[tokio::test]
+async fn migration_does_not_backfill_plain_card_payloads() {
+    let pool = pool_staged_at_0024().await;
+
+    sqlx::query(
+        r#"INSERT INTO coves (id, name, color, sort, kind, created_at, updated_at)
+           VALUES ('cove-plain', 'c', '#000000', 0.0, 'user', 1000, 1000)"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"INSERT INTO waves
+              (id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, terminal_at, created_at, updated_at)
+           VALUES ('wave-plain', 'cove-plain', 'w', 0.0, NULL, NULL, 'draft', '/tmp', NULL, 1000, 1000)"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"INSERT INTO cards
+              (id, wave_id, kind, sort, payload, created_at, updated_at, role, deletable)
+           VALUES
+              ('card-plain-1', 'wave-plain', 'plugin', 0.0, '{"schemaVersion":1,"codex_thread_id":"plugin-thread-A"}', 1100, 1100, 'plain', 1),
+              ('card-plain-2', 'wave-plain', 'plugin', 1.0, '{"schemaVersion":1,"codex_thread_id":"plugin-thread-A"}', 1200, 1200, 'plain', 1),
+              ('card-spec-1', 'wave-plain', 'codex', 2.0, '{"schemaVersion":1,"codex_thread_id":"real-thread-X"}', 1300, 1300, 'spec', 0)"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    apply_sql(&pool, "0025_card_codex_threads", MIGRATION_0025_SQL).await;
+
+    let rows = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT thread_id, card_id, role FROM card_codex_threads ORDER BY card_id",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 1, "only spec backfilled: {rows:?}");
+    assert_eq!(rows[0].0, "real-thread-X");
+    assert_eq!(rows[0].1, "card-spec-1");
+    assert_eq!(rows[0].2, "spec");
+}
+
+#[tokio::test]
 async fn migration_enforces_unique_thread_and_card() {
     let pool = pool_staged_at_0024().await;
     seed_wave_and_cards(&pool).await;

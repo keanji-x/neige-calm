@@ -18,6 +18,10 @@ SELECT json_extract(c.payload, '$.codex_thread_id'),
        c.created_at,
        c.created_at
 FROM cards c
-WHERE json_extract(c.payload, '$.codex_thread_id') IS NOT NULL
-  AND trim(json_extract(c.payload, '$.codex_thread_id')) != ''
-  AND c.role IN ('plain', 'spec', 'worker');
+WHERE c.role = 'spec'
+  -- Only spec cards have a kernel-owned `payload.codex_thread_id` write path
+  -- today (`spec_appserver` + `routes/waves.rs`). Plain payloads are
+  -- plugin-opaque, and worker/plain codex thread rows will arrive through
+  -- their dual-write paths when those roles start writing thread ids.
+  AND json_extract(c.payload, '$.codex_thread_id') IS NOT NULL
+  AND trim(json_extract(c.payload, '$.codex_thread_id')) != '';
