@@ -388,9 +388,7 @@ pub fn validate_overlay_payload(kind: &str, payload: &Value) -> Result<()> {
             check_schema_version(kind, payload, OVERLAY_FILE_VIEWER_NAV_SCHEMA_VERSION)?;
             serde_json::from_value::<FileViewerNavPayload>(payload.clone())
                 .map(|_| ())
-                .map_err(|e| {
-                    CalmError::BadRequest(format!("invalid file-viewer-nav payload: {e}"))
-                })
+                .map_err(|e| CalmError::BadRequest(format!("invalid file-viewer-nav payload: {e}")))
         }
         // Issue #254 — wave-scoped aggregate written by `card_fsm`:
         // `{value: bool}`. Strict shape: missing or wrong-type `value`
