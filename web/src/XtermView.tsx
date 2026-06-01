@@ -572,10 +572,9 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
             pixel_height: null,
           },
           cell_size: null,
-          // None = just current viewport. We deliberately don't ask for
-          // history yet — the server-side scrollback story (CellGrid
-          // patches, line-granular replay) lands in a follow-up PR.
-          initial_scrollback: 'None',
+          // 'All' restores daemon-retained scrollback on remount;
+          // bounded server-side by SCROLLBACK_MAX_LINES. Fixes #457.
+          initial_scrollback: 'All',
           resume_from: null,
           // The browser is the user's primary interaction surface, so we
           // hint Owner. The daemon may still hand us Observer if someone

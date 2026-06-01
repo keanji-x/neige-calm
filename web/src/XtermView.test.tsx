@@ -492,7 +492,7 @@ describe('XtermView v4 handshake', () => {
     expect(hello.capabilities.render_encodings).toEqual(['Vt']);
     expect(hello.capabilities.supports_sixel).toBe(false);
     expect(hello.capabilities.supports_images).toBe(false);
-    expect(hello.initial_scrollback).toBe('None');
+    expect(hello.initial_scrollback).toBe('All');
     expect(hello.resume_from).toBeNull();
     expect(hello.desired_size.cols).toBe(80);
     expect(hello.desired_size.rows).toBe(24);
@@ -523,6 +523,38 @@ describe('XtermView v4 handshake', () => {
     expect(Array.from(firstWriteArg)).toEqual([104, 105]);
     // The 'connected' state hides the handshaking overlay.
     expect(screen.queryByText(/handshaking/i)).not.toBeInTheDocument();
+  });
+
+  it('writes snapshot.scrollback before snapshot.data on ServerHello (#457)', () => {
+    render(<XtermView terminalId="term_test" />);
+    const ws = currentWs();
+    act(() => {
+      ws.fireOpen();
+    });
+    // 'sb' = scrollback bytes, 'hi' = visible-frame bytes.
+    const scrollbackBytes = [115, 98];
+    const dataBytes = [104, 105];
+    act(() => {
+      ws.push(
+        serverHello({
+          snapshot: {
+            render_rev: 1,
+            pty_seq: 0,
+            cols: 80,
+            rows: 24,
+            encoding: 'Vt',
+            data: dataBytes,
+            scrollback: scrollbackBytes,
+          },
+        }),
+      );
+    });
+    const writeCalls = mockTerm.write.mock.calls.map((c: unknown[]) =>
+      Array.from(c[0] as Uint8Array),
+    );
+    expect(writeCalls.length).toBeGreaterThanOrEqual(2);
+    expect(writeCalls[0]).toEqual(scrollbackBytes);
+    expect(writeCalls[1]).toEqual(dataBytes);
   });
 
   it('resizes the local term if the snapshot size differs', () => {
