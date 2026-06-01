@@ -83,6 +83,8 @@ pub const OVERLAY_ETA_SCHEMA_VERSION: u32 = 1;
 pub const OVERLAY_NOW_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Overlay.payload` when `kind == "layout"`.
 pub const OVERLAY_LAYOUT_SCHEMA_VERSION: u32 = 1;
+/// `schemaVersion` for `Overlay.payload` when `kind == "file-viewer-nav"`.
+pub const OVERLAY_FILE_VIEWER_NAV_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Overlay.payload` when `kind == "any_card_needs_input"`
 /// — the wave-scoped boolean aggregate written by `card_fsm` (issue #254).
 pub const OVERLAY_ANY_CARD_NEEDS_INPUT_SCHEMA_VERSION: u32 = 1;
@@ -108,6 +110,7 @@ pub fn max_supported_overlay_schema_version(kind: &str) -> Option<u32> {
         "eta" => Some(OVERLAY_ETA_SCHEMA_VERSION),
         "now" => Some(OVERLAY_NOW_SCHEMA_VERSION),
         "layout" => Some(OVERLAY_LAYOUT_SCHEMA_VERSION),
+        "file-viewer-nav" => Some(OVERLAY_FILE_VIEWER_NAV_SCHEMA_VERSION),
         "any_card_needs_input" => Some(OVERLAY_ANY_CARD_NEEDS_INPUT_SCHEMA_VERSION),
         _ => None,
     }
@@ -360,6 +363,34 @@ pub fn validate_overlay_payload(kind: &str, payload: &Value) -> Result<()> {
         "layout" => {
             check_schema_version(kind, payload, OVERLAY_LAYOUT_SCHEMA_VERSION)?;
             validate_layout_payload(payload)
+        }
+        "file-viewer-nav" => {
+            #[derive(Deserialize)]
+            #[allow(dead_code)]
+            #[serde(rename_all = "lowercase")]
+            enum FileViewerTab {
+                Code,
+                Diff,
+            }
+
+            #[derive(Deserialize)]
+            #[allow(dead_code)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct FileViewerNavPayload {
+                #[serde(default)]
+                schema_version: Option<u32>,
+                tab: FileViewerTab,
+                folder_path: String,
+                selected_path: Option<String>,
+                diff_selected: Option<String>,
+            }
+
+            check_schema_version(kind, payload, OVERLAY_FILE_VIEWER_NAV_SCHEMA_VERSION)?;
+            serde_json::from_value::<FileViewerNavPayload>(payload.clone())
+                .map(|_| ())
+                .map_err(|e| {
+                    CalmError::BadRequest(format!("invalid file-viewer-nav payload: {e}"))
+                })
         }
         // Issue #254 — wave-scoped aggregate written by `card_fsm`:
         // `{value: bool}`. Strict shape: missing or wrong-type `value`
@@ -647,6 +678,102 @@ mod tests {
     fn any_card_needs_input_rejects_wrong_type() {
         let err = validate_overlay_payload("any_card_needs_input", &json!({ "value": "yes" }))
             .unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(_)));
+    }
+
+    // ---------------- Overlay: file-viewer-nav ----------------
+
+    #[test]
+    fn file_viewer_nav_happy_code_with_nulls() {
+        validate_overlay_payload(
+            "file-viewer-nav",
+            &json!({
+                "schemaVersion": 1,
+                "tab": "code",
+                "folderPath": "/repo/src",
+                "selectedPath": null,
+                "diffSelected": null
+            }),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn file_viewer_nav_happy_diff_with_paths() {
+        validate_overlay_payload(
+            "file-viewer-nav",
+            &json!({
+                "schemaVersion": 1,
+                "tab": "diff",
+                "folderPath": "/repo/src",
+                "selectedPath": "/repo/src/main.ts",
+                "diffSelected": "src/main.ts"
+            }),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn file_viewer_nav_rejects_missing_folder_path() {
+        let err = validate_overlay_payload(
+            "file-viewer-nav",
+            &json!({
+                "schemaVersion": 1,
+                "tab": "code",
+                "selectedPath": null,
+                "diffSelected": null
+            }),
+        )
+        .unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(_)));
+    }
+
+    #[test]
+    fn file_viewer_nav_rejects_unknown_tab() {
+        let err = validate_overlay_payload(
+            "file-viewer-nav",
+            &json!({
+                "schemaVersion": 1,
+                "tab": "history",
+                "folderPath": "/repo/src",
+                "selectedPath": null,
+                "diffSelected": null
+            }),
+        )
+        .unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(_)));
+    }
+
+    #[test]
+    fn file_viewer_nav_rejects_wrong_selected_path_type() {
+        let err = validate_overlay_payload(
+            "file-viewer-nav",
+            &json!({
+                "schemaVersion": 1,
+                "tab": "code",
+                "folderPath": "/repo/src",
+                "selectedPath": 42,
+                "diffSelected": null
+            }),
+        )
+        .unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(_)));
+    }
+
+    #[test]
+    fn file_viewer_nav_rejects_unknown_field() {
+        let err = validate_overlay_payload(
+            "file-viewer-nav",
+            &json!({
+                "schemaVersion": 1,
+                "tab": "code",
+                "folderPath": "/repo/src",
+                "selectedPath": null,
+                "diffSelected": null,
+                "extra": true
+            }),
+        )
+        .unwrap_err();
         assert!(matches!(err, CalmError::BadRequest(_)));
     }
 
@@ -1012,6 +1139,22 @@ mod tests {
         assert!(matches!(err, CalmError::BadRequest(ref m) if m.contains("schemaVersion")));
     }
 
+    #[test]
+    fn file_viewer_nav_rejects_unknown_schema_version() {
+        let err = validate_overlay_payload(
+            "file-viewer-nav",
+            &json!({
+                "schemaVersion": 9,
+                "tab": "code",
+                "folderPath": "/repo/src",
+                "selectedPath": null,
+                "diffSelected": null
+            }),
+        )
+        .unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(ref m) if m.contains("schemaVersion")));
+    }
+
     // ---------------- schemaVersion: plugin-owned overlay passthrough ----------------
 
     #[test]
@@ -1067,6 +1210,10 @@ mod tests {
         assert_eq!(
             max_supported_overlay_schema_version("layout"),
             Some(OVERLAY_LAYOUT_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            max_supported_overlay_schema_version("file-viewer-nav"),
+            Some(OVERLAY_FILE_VIEWER_NAV_SCHEMA_VERSION)
         );
     }
 
