@@ -2887,6 +2887,59 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 .file-viewer-merge .cm-editor { height: 100%; }
 .file-viewer-merge .cm-scroller { font-family: var(--font-code); }
 
+/* ===== Iframe card (issue #431) ===== */
+.iframe-card {
+  border: 1px solid var(--hairline);
+  border-radius: var(--r);
+  background: var(--paper);
+  box-shadow: var(--shadow);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.iframe-url-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--hairline);
+  background: var(--paper);
+}
+.iframe-url-input {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 30px;
+  padding: var(--space-0) var(--space-3);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-card);
+  color: var(--text);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+.iframe-url-go {
+  flex: none;
+  height: 30px;
+  padding: var(--space-0) var(--space-5);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-sm);
+  background: var(--text);
+  color: var(--paper);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+.iframe-url-go:hover { opacity: 0.9; }
+.iframe-frame {
+  flex: 1 1 0;
+  min-height: 0;
+  width: 100%;
+  border: none;
+}
+
 /* ===== Terminal card ===== */
 .term {
   border: 1px solid var(--hairline);
@@ -3930,6 +3983,7 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 .wave-list-item > .plan-card,
 .wave-list-item > .note,
 .wave-list-item > .codex-card,
+.wave-list-item > .iframe-card,
 .wave-list-item > .plugin-iframe-card,
 .wave-list-item > .card-unknown {
   margin: var(--space-0);
@@ -3951,6 +4005,7 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
    a comfortable column for a reading-focused plugin while still
    letting an iframe that wants to be wider stretch the wave page
    width itself. */
+.wave-list-item > .iframe-card,
 .wave-list-item > .plugin-iframe-card {
   max-width: 800px;
   height: 400px;
