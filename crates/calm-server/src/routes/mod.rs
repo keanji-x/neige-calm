@@ -20,6 +20,7 @@ pub mod settings;
 pub mod terminal;
 pub mod terminal_cards;
 pub mod theme;
+pub mod threads;
 pub mod version;
 pub mod waves;
 
@@ -71,7 +72,10 @@ pub fn protected_router() -> Router<AppState> {
 /// ingest; unknown cards are rejected by the role gate instead of being
 /// accepted as anonymous/internal writes.
 pub fn internal_router() -> Router<AppState> {
-    Router::new().merge(claude::router()).merge(codex::router())
+    Router::new()
+        .merge(claude::router())
+        .merge(codex::router())
+        .merge(threads::router())
 }
 
 /// Public REST surface — endpoints that must remain reachable BEFORE

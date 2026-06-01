@@ -5,7 +5,7 @@
 //! transport is stdio JSON-RPC; the kernel exposes its MCP server over
 //! a Unix domain socket so it can authenticate the caller per-card via
 //! `card_mcp_tokens`. This shim is the glue: codex spawns it with
-//! `NEIGE_MCP_TOKEN` + `NEIGE_MCP_SOCKET` in the env (set by
+//! `NEIGE_MCP_DAEMON_TOKEN` + `NEIGE_MCP_SOCKET` in the env (set by
 //! `spec_card::build_codex_env_map`), the shim opens the socket, injects
 //! the token into the first `initialize` frame, then ferries bytes in
 //! both directions until either side closes.
@@ -59,6 +59,7 @@ use tokio::net::UnixStream;
 
 const ENV_SOCKET: &str = "NEIGE_MCP_SOCKET";
 const ENV_TOKEN: &str = "NEIGE_MCP_TOKEN";
+const ENV_DAEMON_TOKEN: &str = "NEIGE_MCP_DAEMON_TOKEN";
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
@@ -90,12 +91,12 @@ async fn main() -> ExitCode {
     // first frame; failing fast here gives a clear "operator
     // misconfigured" stderr instead of an opaque JSON-RPC error written
     // to stdout.
-    let token = match env::var(ENV_TOKEN) {
+    let token = match resolve_token() {
         Ok(v) if !v.is_empty() => v,
         _ => {
             let _ = writeln!(
                 io::stderr(),
-                "neige-mcp-stdio-shim: missing {ENV_TOKEN} env var; not started by neige-calm?"
+                "neige-mcp-stdio-shim: missing {ENV_DAEMON_TOKEN} or {ENV_TOKEN} env var; not started by neige-calm?"
             );
             return ExitCode::from(2);
         }
@@ -212,6 +213,13 @@ async fn main() -> ExitCode {
     tokio::join!(stdin_to_sock, sock_to_stdout);
 
     ExitCode::SUCCESS
+}
+
+fn resolve_token() -> Result<String, env::VarError> {
+    match env::var(ENV_DAEMON_TOKEN) {
+        Ok(v) if !v.is_empty() => Ok(v),
+        _ => env::var(ENV_TOKEN),
+    }
 }
 
 /// Try to parse `line` as a JSON-RPC `initialize` request and inject

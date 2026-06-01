@@ -268,6 +268,7 @@ async fn spec_card_codex_daemon_env_contains_mcp_vars() {
         mcp_socket_path.clone(),
         locate_shim_bin(),
         build_default_registry(),
+        None,
     )
     .await
     .expect("boot test mcp server");

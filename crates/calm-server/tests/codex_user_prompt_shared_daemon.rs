@@ -54,6 +54,14 @@ fn cfg(root: &TempDir, appserver_enabled: bool, prompt_cards_enabled: bool) -> C
 }
 
 async fn boot(appserver_enabled: bool, prompt_cards_enabled: bool) -> Boot {
+    boot_with_shared_daemon(appserver_enabled, prompt_cards_enabled, appserver_enabled).await
+}
+
+async fn boot_with_shared_daemon(
+    appserver_enabled: bool,
+    prompt_cards_enabled: bool,
+    start_appserver: bool,
+) -> Boot {
     let tmp = TempDir::new().expect("tempdir");
     let repo = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -116,7 +124,9 @@ async fn boot(appserver_enabled: bool, prompt_cards_enabled: bool) -> Boot {
         );
         home.seed().unwrap();
         let shared = SharedCodexAppServer::new(&cfg, Arc::new(home), repo.clone());
-        shared.start_or_takeover().await.unwrap();
+        if start_appserver {
+            shared.start_or_takeover().await.unwrap();
+        }
         state = state.with_shared_codex_appserver(shared);
     }
 
@@ -178,6 +188,19 @@ fn request<'a>(rows: &'a [Value], method: &str) -> &'a Value {
 
 fn theme() -> Value {
     json!({"fg": [216,219,226], "bg": [15,20,24]})
+}
+
+#[test]
+fn shared_codex_prompt_cards_enabled_defaults_to_false() {
+    let tmp = TempDir::new().expect("tempdir");
+    let cfg = Config::parse_from([
+        "calm-server",
+        "--data-dir",
+        tmp.path().to_str().unwrap(),
+        "--codex-bin",
+        fake_codex_bin(),
+    ]);
+    assert!(!cfg.shared_codex_prompt_cards_enabled);
 }
 
 #[tokio::test]
@@ -380,4 +403,43 @@ async fn create_prompt_card_with_shared_daemon_enabled_but_prompt_cards_disabled
         .get(terminal_id)
         .expect("renderer entry");
     assert_eq!(entry.config().args[1], "codex 'legacy prompt'");
+}
+
+#[tokio::test]
+async fn create_prompt_card_falls_back_to_legacy_when_shared_daemon_not_running() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot_with_shared_daemon(true, true, false).await;
+    assert!(!boot.state.shared_codex_appserver.is_running());
+
+    let (status, card) = post(
+        boot.app.clone(),
+        &boot.wave_id,
+        json!({ "cwd": "/workspace", "prompt": "legacy degraded", "theme": theme() }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED, "body={card:?}");
+    assert!(card["payload"].get("codex_thread_id").is_none());
+    let card_id = card["id"].as_str().unwrap();
+    assert!(
+        boot.codex_homes_dir
+            .join(card_id)
+            .join("config.toml")
+            .exists(),
+        "degraded shared daemon path must seed legacy per-card CODEX_HOME"
+    );
+    assert!(
+        boot.repo
+            .card_codex_thread_get_by_card(card_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let terminal_id = card["payload"]["terminal_id"].as_str().unwrap();
+    let entry = boot
+        .state
+        .terminal_renderer
+        .get(terminal_id)
+        .expect("renderer entry");
+    assert_eq!(entry.config().args[1], "codex 'legacy degraded'");
 }

@@ -508,6 +508,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/threads/{thread_id}/card": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Bridge endpoint: resolve a codex thread_id back to its owning card_id.
+         * @description Used by neige-codex-bridge to attribute hooks fired by the shared codex
+         *     app-server to the correct card.
+         */
+        get: operations["resolve_card_for_thread"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/version": {
         parameters: {
             query?: never;
@@ -731,6 +752,39 @@ export interface components {
             /** Format: double */
             sort?: number | null;
         };
+        /**
+         * @description Wave-as-Actor PR3 (#136): authorization label persisted on each card.
+         *
+         *     The role decides whether the card's implicit actor (the AI agent bound
+         *     to it, or the user when no agent is bound) is allowed to emit a given
+         *     event. The gate is checked at the single write entry — see
+         *     `role_gate::enforce_role` — *inside* the transaction, before the event
+         *     row is appended. Violations roll the txn back; nothing is broadcast.
+         *
+         *       * [`CardRole::Plain`] is the default for every existing card and
+         *         every PR3-era card insert. The kernel places no extra restrictions
+         *         beyond what the wave/cove already provides.
+         *       * [`CardRole::Spec`] (PR6) is the wave's spec card. Only spec cards
+         *         may emit `WaveUpdated`; this is the structural choke point that
+         *         keeps AI workers from rewriting wave-level metadata.
+         *       * [`CardRole::Worker`] (PR5) is a dispatcher-spawned worker card.
+         *         Its events are scoped to the card itself and never broaden.
+         *       * [`CardRole::ReportCard`] (#229 PR A) is the wave's auto-generated
+         *         report card. Same kernel-ownership profile as `Spec` — minted by
+         *         the wave-create path (PR B), one per wave (partial unique index
+         *         in migration 0013), undeletable from REST / plugin-callback paths.
+         *         Role-gate-wise it behaves like `Plain`: it only emits `CardUpdated`
+         *         for its own scope; it does **not** emit `WaveUpdated` (only `Spec`
+         *         does — preserving the #136 contract).
+         *
+         *     Persisted as a lowercase string in `cards.role` (migration 0008). The
+         *     serde + sqlx `rename_all = "lowercase"` keeps the wire / storage shape
+         *     stable; ts-rs exports the matching TS union (`"plain" | "spec" |
+         *     "worker" | "reportcard"`) into `web/src/api/generated-events.ts` so the
+         *     frontend can adopt the enum once any UI lands.
+         * @enum {string}
+         */
+        CardRole: "plain" | "spec" | "worker" | "reportcard";
         Cove: {
             color: string;
             /** Format: int64 */
@@ -1328,6 +1382,12 @@ export interface components {
              *     the browser theme.
              */
             theme_fg: string;
+        };
+        ThreadCardResolution: {
+            card_id: string;
+            role: components["schemas"]["CardRole"];
+            thread_id: string;
+            wave_id?: string | null;
         };
         /**
          * @description M5: AppBridge → kernel tool-call wire body. Mirrors the JSON-RPC
@@ -3218,6 +3278,47 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SettingsBag"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    resolve_card_for_thread: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Codex thread/session id */
+                thread_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Owning card for this codex thread */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ThreadCardResolution"];
+                };
+            };
+            /** @description No card is mapped to this thread */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             /** @description Internal error */

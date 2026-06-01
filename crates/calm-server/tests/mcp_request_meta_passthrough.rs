@@ -134,6 +134,7 @@ async fn boot_with_registry_options(registry: Arc<ToolRegistry>, seed_legacy_car
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         registry,
+        None,
     )
     .await
     .expect("spawn McpServer");

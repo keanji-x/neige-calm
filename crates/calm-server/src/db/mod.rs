@@ -218,6 +218,7 @@ pub struct SharedCodexDaemonRecord {
     pub updated_at: i64,
     pub restart_count: i64,
     pub last_error: Option<String>,
+    pub daemon_env_signature: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -232,6 +233,7 @@ pub struct SharedCodexDaemonUpdate {
     pub started_at: Option<i64>,
     pub last_error: Option<String>,
     pub increment_restart_count: bool,
+    pub daemon_env_signature: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

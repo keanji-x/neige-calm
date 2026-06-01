@@ -147,6 +147,7 @@ async fn boot_with_role(role: CardRole) -> CardBoot {
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         registry,
+        None,
     )
     .await
     .expect("spawn McpServer");

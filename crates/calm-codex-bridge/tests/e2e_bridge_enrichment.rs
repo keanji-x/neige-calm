@@ -51,6 +51,61 @@ async fn serve_one_hook(listener: TcpListener, captured: oneshot::Sender<String>
     let _ = stream.shutdown().await;
 }
 
+async fn serve_resolution_then_hook(listener: TcpListener, captured: oneshot::Sender<String>) {
+    let (mut resolve_stream, _) = listener.accept().await.expect("accept resolve conn");
+    let _resolve_request = read_http_request(&mut resolve_stream).await;
+    let body =
+        r#"{"thread_id":"test-session","card_id":"resolved-card","role":"plain","wave_id":null}"#;
+    let resp = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let _ = resolve_stream.write_all(resp.as_bytes()).await;
+    let _ = resolve_stream.shutdown().await;
+
+    let (mut hook_stream, _) = listener.accept().await.expect("accept hook conn");
+    let request = read_http_request(&mut hook_stream).await;
+    let body = request_body(request.as_bytes()).unwrap_or_default();
+    let _ = captured.send(body);
+    let resp = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
+    let _ = hook_stream.write_all(resp.as_bytes()).await;
+    let _ = hook_stream.shutdown().await;
+}
+
+async fn read_http_request(stream: &mut tokio::net::TcpStream) -> String {
+    let mut request = Vec::new();
+    let mut chunk = [0_u8; 4096];
+
+    loop {
+        let n = match tokio::time::timeout(Duration::from_secs(2), stream.read(&mut chunk)).await {
+            Ok(Ok(n)) => n,
+            _ => 0,
+        };
+        if n == 0 {
+            break;
+        }
+        request.extend_from_slice(&chunk[..n]);
+
+        if let Some((body_start, content_len)) = request_body_bounds(&request)
+            && request.len() >= body_start + content_len
+        {
+            break;
+        }
+        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let headers = String::from_utf8_lossy(&request);
+            if !headers
+                .lines()
+                .any(|line| line.to_ascii_lowercase().starts_with("content-length:"))
+            {
+                break;
+            }
+        }
+    }
+
+    String::from_utf8_lossy(&request).to_string()
+}
+
 fn request_body(request: &[u8]) -> Option<String> {
     let (body_start, content_len) = request_body_bounds(request)?;
     if request.len() < body_start + content_len {
@@ -82,6 +137,38 @@ fn spawn_bridge(
     let bridge_bin = env!("CARGO_BIN_EXE_neige-codex-bridge");
     let mut child = std::process::Command::new(bridge_bin)
         .env("NEIGE_CARD_ID", "test-card")
+        .env("NEIGE_CALM_BASE_URL", base_url)
+        .env("NEIGE_HOOK_PROVIDER", provider)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn bridge binary");
+
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(payload.to_string().as_bytes())
+        .unwrap();
+    child.stdin.take();
+
+    let output = wait_with_timeout(child, TEST_BUDGET);
+    (
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        output.status,
+        String::from_utf8_lossy(&output.stderr).to_string(),
+    )
+}
+
+fn spawn_bridge_without_card_env(
+    base_url: &str,
+    provider: &str,
+    payload: serde_json::Value,
+) -> (String, std::process::ExitStatus, String) {
+    let bridge_bin = env!("CARGO_BIN_EXE_neige-codex-bridge");
+    let mut child = std::process::Command::new(bridge_bin)
+        .env_remove("NEIGE_CARD_ID")
         .env("NEIGE_CALM_BASE_URL", base_url)
         .env("NEIGE_HOOK_PROVIDER", provider)
         .stdin(Stdio::piped())
@@ -181,6 +268,37 @@ async fn run_bridge_and_capture_body(
     Some((parsed, stdout, stderr))
 }
 
+async fn run_bridge_with_session_resolution_and_capture_body(
+    provider: &str,
+    payload: serde_json::Value,
+) -> Option<(serde_json::Value, String, String)> {
+    let (listener, base) = bind_stub().await?;
+    let (tx, rx) = oneshot::channel();
+    let stub_handle = tokio::spawn(serve_resolution_then_hook(listener, tx));
+
+    let base_clone = base.clone();
+    let provider = provider.to_string();
+    let (stdout, status, stderr) = tokio::task::spawn_blocking(move || {
+        spawn_bridge_without_card_env(&base_clone, &provider, payload)
+    })
+    .await
+    .expect("spawn_blocking join");
+
+    assert!(
+        status.success(),
+        "bridge must exit 0 (got {status:?}); stderr:\n{stderr}"
+    );
+    let body = tokio::time::timeout(Duration::from_secs(2), rx)
+        .await
+        .expect("captured body timeout")
+        .expect("captured body");
+    let _ = tokio::time::timeout(Duration::from_secs(2), stub_handle).await;
+
+    let parsed =
+        serde_json::from_str(&body).unwrap_or_else(|_| panic!("POST body is JSON: {body}"));
+    Some((parsed, stdout, stderr))
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn claude_stop_payload_is_enriched_from_transcript() {
     let transcript = write_transcript("claude final answer");
@@ -224,6 +342,30 @@ async fn codex_provider_with_claude_shape_transcript_is_enriched() {
             .get("last_assistant_message")
             .and_then(serde_json::Value::as_str),
         Some("codex final answer")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_id_resolution_path_preserves_stop_enrichment() {
+    let transcript = write_transcript("resolved final answer");
+    let payload = serde_json::json!({
+        "hook_event_name": "Stop",
+        "session_id": "test-session",
+        "transcript_path": transcript.path()
+    });
+
+    let Some((posted, stdout, _stderr)) =
+        run_bridge_with_session_resolution_and_capture_body("codex", payload).await
+    else {
+        return;
+    };
+
+    assert_eq!(stdout.trim(), "{}");
+    assert_eq!(
+        posted
+            .get("last_assistant_message")
+            .and_then(serde_json::Value::as_str),
+        Some("resolved final answer")
     );
 }
 

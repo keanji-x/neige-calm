@@ -1976,6 +1976,59 @@
         }
       }
     },
+    "/api/threads/{thread_id}/card": {
+      "get": {
+        "tags": [
+          "threads"
+        ],
+        "summary": "Bridge endpoint: resolve a codex thread_id back to its owning card_id.",
+        "description": "Used by neige-codex-bridge to attribute hooks fired by the shared codex\napp-server to the correct card.",
+        "operationId": "resolve_card_for_thread",
+        "parameters": [
+          {
+            "name": "thread_id",
+            "in": "path",
+            "description": "Codex thread/session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owning card for this codex thread",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadCardResolution"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No card is mapped to this thread",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/version": {
       "get": {
         "tags": [
@@ -2790,6 +2843,16 @@
             "format": "double"
           }
         }
+      },
+      "CardRole": {
+        "type": "string",
+        "description": "Wave-as-Actor PR3 (#136): authorization label persisted on each card.\n\nThe role decides whether the card's implicit actor (the AI agent bound\nto it, or the user when no agent is bound) is allowed to emit a given\nevent. The gate is checked at the single write entry — see\n`role_gate::enforce_role` — *inside* the transaction, before the event\nrow is appended. Violations roll the txn back; nothing is broadcast.\n\n  * [`CardRole::Plain`] is the default for every existing card and\n    every PR3-era card insert. The kernel places no extra restrictions\n    beyond what the wave/cove already provides.\n  * [`CardRole::Spec`] (PR6) is the wave's spec card. Only spec cards\n    may emit `WaveUpdated`; this is the structural choke point that\n    keeps AI workers from rewriting wave-level metadata.\n  * [`CardRole::Worker`] (PR5) is a dispatcher-spawned worker card.\n    Its events are scoped to the card itself and never broaden.\n  * [`CardRole::ReportCard`] (#229 PR A) is the wave's auto-generated\n    report card. Same kernel-ownership profile as `Spec` — minted by\n    the wave-create path (PR B), one per wave (partial unique index\n    in migration 0013), undeletable from REST / plugin-callback paths.\n    Role-gate-wise it behaves like `Plain`: it only emits `CardUpdated`\n    for its own scope; it does **not** emit `WaveUpdated` (only `Spec`\n    does — preserving the #136 contract).\n\nPersisted as a lowercase string in `cards.role` (migration 0008). The\nserde + sqlx `rename_all = \"lowercase\"` keeps the wire / storage shape\nstable; ts-rs exports the matching TS union (`\"plain\" | \"spec\" |\n\"worker\" | \"reportcard\"`) into `web/src/api/generated-events.ts` so the\nfrontend can adopt the enum once any UI lands.",
+        "enum": [
+          "plain",
+          "spec",
+          "worker",
+          "reportcard"
+        ]
       },
       "Cove": {
         "type": "object",
@@ -3838,6 +3901,31 @@
           }
         }
       },
+      "ThreadCardResolution": {
+        "type": "object",
+        "required": [
+          "thread_id",
+          "card_id",
+          "role"
+        ],
+        "properties": {
+          "card_id": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/CardRole"
+          },
+          "thread_id": {
+            "type": "string"
+          },
+          "wave_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "ToolCallBody": {
         "type": "object",
         "description": "M5: AppBridge → kernel tool-call wire body. Mirrors the JSON-RPC\n`tools/call` params shape so the web-calm helper can hand it through\nverbatim from the iframe-side `app.callServerTool({ name, arguments })`.\n\nScope β: an optional `call_id` is threaded through to every event the\nkernel writes while servicing this call. Each downstream `events.row`\nrecords `correlation = \"user_tool_call:<call_id>\"` so multi-step\ndispatches (e.g. a plugin tool that issues several overlay writes) can\nbe grouped after the fact (design doc §9). The frontend mints the id;\nthe kernel never inspects its content beyond formatting it into the\ncorrelation string.",
@@ -4264,6 +4352,10 @@
     {
       "name": "codex",
       "description": "Codex (OpenAI) agent cards — hook-driven event stream"
+    },
+    {
+      "name": "threads",
+      "description": "Internal codex thread resolution"
     },
     {
       "name": "claude",

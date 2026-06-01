@@ -181,6 +181,7 @@ async fn boot() -> Boot {
         events: events.clone(),
         card_role_cache,
         wave_cove_cache,
+        daemon_token_hash: None,
     });
     let mut registry = ToolRegistry::new();
     calm_server::mcp_server::tools::register_default_tools(&mut registry);

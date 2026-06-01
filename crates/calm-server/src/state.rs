@@ -106,8 +106,9 @@ pub struct AppState {
     /// at boot but started explicitly from `main` after shared CODEX_HOME seed
     /// and MCP server setup; PR4 does not route cards through it yet.
     pub shared_codex_appserver: Arc<SharedCodexAppServer>,
-    /// PR5 -> PR3c gate for routing user prompt cards through the shared
-    /// codex daemon. Default false preserves the legacy per-card prompt path.
+    /// PR3c gate for routing user prompt cards through the shared codex
+    /// daemon. Config default is true; tests may override through
+    /// `with_shared_codex_prompt_cards_enabled`.
     pub shared_codex_prompt_cards_enabled: bool,
     /// #322 — aspect / join-point framework registry. Holds the boot-
     /// installed aspects (today: [`WatermarkSinkInstalledAspect`] on
@@ -370,6 +371,9 @@ impl AppState {
         let mcp_socket_path = cfg.data_dir_resolved().join("mcp").join("kernel.sock");
         let mcp_shim_bin = resolve_mcp_stdio_shim_bin(cfg);
         let mcp_registry = crate::mcp_server::build_default_registry();
+        let daemon_mcp_token =
+            crate::mcp_server::auth::get_or_generate_daemon_token(&cfg.data_dir_resolved())?;
+        let daemon_mcp_token_hash = crate::mcp_server::auth::hash_token(&daemon_mcp_token);
         let mcp_server = crate::mcp_server::McpServer::spawn(
             repo.clone(),
             events.clone(),
@@ -378,8 +382,18 @@ impl AppState {
             mcp_socket_path,
             mcp_shim_bin,
             mcp_registry,
+            Some(daemon_mcp_token_hash),
         )
         .await?;
+        if let Err(e) = codex
+            .shared_codex_home
+            .ensure_daemon_mcp_config(&mcp_server.shim_config, &daemon_mcp_token)
+        {
+            tracing::warn!(
+                error = %e,
+                "shared CODEX_HOME daemon MCP config write failed; shared prompt cards may not reach kernel MCP"
+            );
+        }
 
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
         let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());

@@ -31,6 +31,7 @@ use crate::routes::plugins::{
 };
 use crate::routes::settings::{SettingsBag, SettingsPutBody};
 use crate::routes::terminal_cards::NewTerminalCardBody;
+use crate::routes::threads::ThreadCardResolution;
 use crate::routes::version::VersionInfo;
 use crate::routes::waves::{UpdateWaveReportBody, WavesWindowQuery};
 use utoipa::OpenApi;
@@ -78,6 +79,7 @@ use utoipa::OpenApi;
         crate::routes::terminal::get_terminal_for_card,
         // ---- codex ----
         crate::routes::codex_cards::create_codex_card,
+        crate::routes::threads::resolve_card_for_thread,
         // ---- claude ----
         crate::routes::claude_cards::create_claude_card,
         // ---- fs ----
@@ -142,6 +144,7 @@ use utoipa::OpenApi;
         ViaToolCall,
         NewTerminalCardBody,
         NewCodexCardBody,
+        ThreadCardResolution,
         NewClaudeCardBody,
         DirEntry,
         ListdirResponse,
@@ -174,6 +177,7 @@ use utoipa::OpenApi;
         (name = "overlays", description = "Plugin-rendered overlays attached to waves/cards"),
         (name = "terminals", description = "PTY-backed terminal cards"),
         (name = "codex", description = "Codex (OpenAI) agent cards — hook-driven event stream"),
+        (name = "threads", description = "Internal codex thread resolution"),
         (name = "claude", description = "Claude worker cards — hook-driven event stream"),
         (name = "fs", description = "Read-only host filesystem helpers (directory listing for path pickers)"),
         (name = "settings", description = "App-global settings (HTTP proxy override, etc.)"),

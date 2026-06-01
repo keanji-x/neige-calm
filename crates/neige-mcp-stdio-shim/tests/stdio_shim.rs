@@ -41,6 +41,7 @@ async fn stdin_to_socket_forwards_bytes() {
     // test below for the failure shape when it's absent.
     let mut child = Command::new(SHIM_BIN)
         .env("NEIGE_MCP_SOCKET", &socket_path)
+        .env_remove("NEIGE_MCP_DAEMON_TOKEN")
         .env("NEIGE_MCP_TOKEN", "test-byte-pump-token")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -95,6 +96,7 @@ async fn socket_to_stdout_forwards_bytes() {
 
     let mut child = Command::new(SHIM_BIN)
         .env("NEIGE_MCP_SOCKET", &socket_path)
+        .env_remove("NEIGE_MCP_DAEMON_TOKEN")
         .env("NEIGE_MCP_TOKEN", "test-byte-pump-token")
         // `Stdio::null()` for stdin is the natural "no inbound bytes
         // from codex" shape for this direction-isolated test. With
@@ -166,6 +168,7 @@ async fn shim_stays_alive_after_stdin_eof_until_socket_closes() {
 
     let mut child = Command::new(SHIM_BIN)
         .env("NEIGE_MCP_SOCKET", &socket_path)
+        .env_remove("NEIGE_MCP_DAEMON_TOKEN")
         .env("NEIGE_MCP_TOKEN", "test-byte-pump-token")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -225,6 +228,7 @@ async fn missing_socket_env_exits_nonzero() {
     // error path so a future refactor doesn't silently swallow it.
     let child = Command::new(SHIM_BIN)
         .env_remove("NEIGE_MCP_SOCKET")
+        .env_remove("NEIGE_MCP_DAEMON_TOKEN")
         .env_remove("NEIGE_MCP_TOKEN")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -265,6 +269,7 @@ async fn missing_token_env_exits_nonzero() {
 
     let child = Command::new(SHIM_BIN)
         .env("NEIGE_MCP_SOCKET", &socket_path)
+        .env_remove("NEIGE_MCP_DAEMON_TOKEN")
         .env_remove("NEIGE_MCP_TOKEN")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -277,12 +282,12 @@ async fn missing_token_env_exits_nonzero() {
         .expect("wait ok");
     assert!(
         !out.status.success(),
-        "shim must fail without NEIGE_MCP_TOKEN; got status {:?}",
+        "shim must fail without NEIGE_MCP_DAEMON_TOKEN or NEIGE_MCP_TOKEN; got status {:?}",
         out.status
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("NEIGE_MCP_TOKEN"),
+        stderr.contains("NEIGE_MCP_DAEMON_TOKEN") && stderr.contains("NEIGE_MCP_TOKEN"),
         "shim stderr should mention the missing env var; got: {stderr}"
     );
 }
@@ -300,6 +305,7 @@ async fn initialize_first_frame_gets_token_injected() {
 
     let mut child = Command::new(SHIM_BIN)
         .env("NEIGE_MCP_SOCKET", &socket_path)
+        .env_remove("NEIGE_MCP_DAEMON_TOKEN")
         .env("NEIGE_MCP_TOKEN", "e2e-shim-token-xyz")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -340,6 +346,54 @@ async fn initialize_first_frame_gets_token_injected() {
     assert_eq!(token, "e2e-shim-token-xyz");
 
     // Cleanup: drop both ends so the shim winds down.
+    drop(child_stdin);
+    drop(server_wr);
+    let _ = timeout(TEST_BUDGET, child.wait()).await;
+}
+
+#[tokio::test]
+async fn daemon_token_env_takes_precedence_over_legacy_token() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let socket_path: PathBuf = tmp.path().join("kernel.sock");
+    let listener = listen(&socket_path);
+
+    let mut child = Command::new(SHIM_BIN)
+        .env("NEIGE_MCP_SOCKET", &socket_path)
+        .env("NEIGE_MCP_DAEMON_TOKEN", "daemon-token")
+        .env("NEIGE_MCP_TOKEN", "legacy-token")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn shim");
+
+    let (server_stream, _addr) = timeout(TEST_BUDGET, listener.accept())
+        .await
+        .expect("shim connected within budget")
+        .expect("accept ok");
+    let (server_rd, server_wr) = server_stream.into_split();
+    let mut server_reader = BufReader::new(server_rd);
+
+    let mut child_stdin = child.stdin.take().expect("stdin piped");
+    let init_frame = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n";
+    child_stdin
+        .write_all(init_frame)
+        .await
+        .expect("write stdin");
+    child_stdin.flush().await.expect("flush stdin");
+
+    let mut received = String::new();
+    timeout(TEST_BUDGET, server_reader.read_line(&mut received))
+        .await
+        .expect("server read within budget")
+        .expect("read line ok");
+    let parsed: serde_json::Value =
+        serde_json::from_str(received.trim_end()).expect("kernel received valid JSON");
+    assert_eq!(
+        parsed["params"]["_meta"]["dev.neige/auth"]["token"],
+        serde_json::json!("daemon-token")
+    );
+
     drop(child_stdin);
     drop(server_wr);
     let _ = timeout(TEST_BUDGET, child.wait()).await;

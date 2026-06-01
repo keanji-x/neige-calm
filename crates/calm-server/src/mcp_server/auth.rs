@@ -37,6 +37,11 @@
 use rand::RngCore;
 use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use subtle::ConstantTimeEq;
 
 /// 64-char hex-encoded 32-byte secret. Constructed via [`Self::generate`];
@@ -91,9 +96,68 @@ pub fn verify_token(presented: &str, stored_hash: &str) -> bool {
     derived.as_bytes().ct_eq(stored_hash.as_bytes()).into()
 }
 
+/// Server-wide MCP daemon token for the shared codex app-server's shim.
+///
+/// Unlike per-card tokens in `card_mcp_tokens`, this token only establishes
+/// daemon trust during `initialize`; card identity still comes from per-call
+/// thread metadata / thread mapping. The raw token is persisted under
+/// `<data_dir>/secrets/mcp-daemon-token` so shared CODEX_HOME config remains
+/// stable across kernel restarts.
+pub fn get_or_generate_daemon_token(data_dir: &Path) -> io::Result<String> {
+    let secrets_dir = data_dir.join("secrets");
+    let token_path = secrets_dir.join("mcp-daemon-token");
+    fs::create_dir_all(&secrets_dir)?;
+    fs::set_permissions(&secrets_dir, fs::Permissions::from_mode(0o700))?;
+    match fs::read_to_string(&token_path) {
+        Ok(token) if !token.trim().is_empty() => {
+            fs::set_permissions(&token_path, fs::Permissions::from_mode(0o600))?;
+            return Ok(token.trim().to_string());
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+
+    let token = CardMcpToken::generate().into_inner();
+    match write_daemon_token_file(&token_path, &token) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            let token = fs::read_to_string(&token_path)?;
+            fs::set_permissions(&token_path, fs::Permissions::from_mode(0o600))?;
+            let token = token.trim();
+            if token.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "daemon token file exists but is empty",
+                ));
+            }
+            return Ok(token.to_string());
+        }
+        Err(e) => return Err(e),
+    }
+    Ok(token)
+}
+
+pub fn write_daemon_token_file(path: &Path, token: &str) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+    }
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(token.as_bytes())?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn hash_token_round_trips() {
@@ -135,5 +199,57 @@ mod tests {
         // break the SELECT-by-hash lookup the MCP server relies on.
         let raw = "deadbeef".repeat(8);
         assert_eq!(hash_token(&raw), hash_token(&raw));
+    }
+
+    #[test]
+    fn daemon_token_is_persisted_and_reused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let first = get_or_generate_daemon_token(tmp.path()).unwrap();
+        let second = get_or_generate_daemon_token(tmp.path()).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 64);
+    }
+
+    #[test]
+    fn daemon_token_file_has_0600_perms() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _token = get_or_generate_daemon_token(tmp.path()).unwrap();
+
+        let token_path = tmp.path().join("secrets/mcp-daemon-token");
+        let mode = fs::metadata(&token_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "daemon token must be 0600: got {mode:o}");
+
+        let dir_mode = fs::metadata(tmp.path().join("secrets"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            dir_mode, 0o700,
+            "secrets dir must be 0700: got {dir_mode:o}"
+        );
+    }
+
+    #[test]
+    fn daemon_token_creation_uses_o600() {
+        let tmp = tempfile::tempdir().unwrap();
+        let token_path = tmp.path().join("secrets/mcp-daemon-token");
+
+        write_daemon_token_file(&token_path, "TKN-123").unwrap();
+
+        let mode = fs::metadata(&token_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "daemon token must be 0600: got {mode:o}");
+        assert_eq!(
+            fs::read_to_string(&token_path).unwrap(),
+            "TKN-123\n",
+            "daemon token writer should persist the token once"
+        );
+        assert_eq!(
+            write_daemon_token_file(&token_path, "TKN-456")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists,
+            "daemon token writer must refuse to replace an existing token"
+        );
     }
 }

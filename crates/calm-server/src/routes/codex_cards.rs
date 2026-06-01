@@ -190,9 +190,8 @@ pub(crate) async fn create_codex_card(
         .filter(|s| !s.is_empty())
         .map(String::from);
 
-    let use_shared_prompt_path = prompt.is_some()
-        && s.shared_codex_prompt_cards_enabled
-        && s.shared_codex_appserver.is_enabled();
+    let shared_prompt_requested = prompt.is_some() && s.shared_codex_prompt_cards_enabled;
+    let use_shared_prompt_path = shared_prompt_requested && s.shared_codex_appserver.is_running();
 
     // 4. Assemble the env map the daemon will forward to the PTY child:
     //    CODEX_HOME / NEIGE_CARD_ID / NEIGE_CALM_BASE_URL plus proxy vars
@@ -328,6 +327,15 @@ pub(crate) async fn create_codex_card(
                 card.id
             ))
         })?;
+
+    if shared_prompt_requested && !use_shared_prompt_path {
+        tracing::warn!(
+            target: "shared_codex_daemon::fallback_to_legacy",
+            card_id = %card.id,
+            reason = "shared codex app-server not running",
+            "PR3c degraded fallback: legacy per-card path used"
+        );
+    }
 
     let command_line = if let Some(prompt_text) = prompt.as_deref() {
         if use_shared_prompt_path {

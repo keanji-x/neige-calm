@@ -18,7 +18,7 @@
 //! so Stop is no longer special-cased here.
 //!
 //! Env contract (set by calm-server when spawning codex):
-//!   * `NEIGE_CARD_ID`        — card uuid the hook belongs to (required)
+//!   * `NEIGE_CARD_ID`        — legacy card uuid override (optional)
 //!   * `NEIGE_CALM_BASE_URL`  — e.g. `http://127.0.0.1:4040` (required)
 //!   * `NEIGE_HOOK_PROVIDER`  — `codex` or `claude` (optional; codex default)
 //!   * `NEIGE_HOOK_URL`       — full ingest URL override (optional)
@@ -45,14 +45,6 @@ fn main() {
         return;
     }
 
-    let card_id = match std::env::var("NEIGE_CARD_ID") {
-        Ok(v) if !v.is_empty() => v,
-        _ => {
-            eprintln!("neige-codex-bridge: NEIGE_CARD_ID not set");
-            print!("{}", provider.ack());
-            return;
-        }
-    };
     let base = match std::env::var("NEIGE_CALM_BASE_URL") {
         Ok(v) if !v.is_empty() => v,
         _ => {
@@ -64,6 +56,13 @@ fn main() {
     let hook_url = std::env::var("NEIGE_HOOK_URL")
         .ok()
         .filter(|v| !v.is_empty());
+    let card_id = match resolve_card_id_for_hook(&base, &body) {
+        Some(card_id) => card_id,
+        None => {
+            print!("{}", provider.ack());
+            return;
+        }
+    };
 
     // #293 cutover: every hook (Stop included) takes the same
     // fire-and-forget path. Stop payloads may be enriched before POST so
@@ -72,6 +71,64 @@ fn main() {
     post_hook(provider, &base, &card_id, hook_url.as_deref(), &post_body);
 
     print!("{}", provider.ack());
+}
+
+fn resolve_card_id_for_hook(base: &str, body: &str) -> Option<String> {
+    if let Ok(card_id) = std::env::var("NEIGE_CARD_ID")
+        && !card_id.is_empty()
+    {
+        return Some(card_id);
+    }
+
+    let payload: serde_json::Value = match serde_json::from_str(body) {
+        Ok(payload) => payload,
+        Err(e) => {
+            eprintln!("neige-codex-bridge: hook payload is not JSON; cannot resolve card: {e}");
+            return None;
+        }
+    };
+    let Some(session_id) = payload
+        .get("session_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+    else {
+        eprintln!("neige-codex-bridge: hook input missing session_id and NEIGE_CARD_ID not set");
+        return None;
+    };
+
+    match resolve_card_id(base, session_id) {
+        Ok(card_id) => Some(card_id),
+        Err(e) => {
+            eprintln!(
+                "neige-codex-bridge: failed to resolve card for session_id {session_id:?}: {e}"
+            );
+            None
+        }
+    }
+}
+
+fn resolve_card_id(base: &str, thread_id: &str) -> Result<String, String> {
+    let url = format!(
+        "{}/api/threads/{}/card",
+        base.trim_end_matches('/'),
+        url_encode(thread_id),
+    );
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(3))
+        .build();
+    let body = agent
+        .get(&url)
+        .call()
+        .map_err(|e| e.to_string())?
+        .into_string()
+        .map_err(|e| e.to_string())?;
+    let payload: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    payload
+        .get("card_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| "resolution response missing card_id".to_string())
 }
 
 fn maybe_enrich_stop_payload(body: &str) -> Option<String> {

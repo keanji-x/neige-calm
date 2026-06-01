@@ -4,7 +4,9 @@
 //! token from the terminal environment, initializes the existing kernel MCP
 //! server with the token under `params._meta["dev.neige/auth"].token`, then
 //! performs one `tools/call` for `calm.wave.ls`, `calm.wave.cat`, or
-//! `calm.get_wave_state`.
+//! `calm.get_wave_state`. `NEIGE_MCP_DAEMON_TOKEN` is for the stdio shim only;
+//! the CLI requires `NEIGE_MCP_TOKEN` because its tool calls do not carry
+//! thread metadata.
 
 use std::env;
 use std::io::{self, Write};

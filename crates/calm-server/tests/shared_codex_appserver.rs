@@ -51,6 +51,82 @@ async fn server(root: &tempfile::TempDir, repo: Arc<dyn Repo>) -> Arc<SharedCode
     SharedCodexAppServer::new(&cfg, Arc::new(home), repo)
 }
 
+fn effective_test_env_signature(ingest_url: &str) -> String {
+    let http_proxy = SharedCodexAppServer::effective_proxy_env(None, &["HTTP_PROXY", "http_proxy"]);
+    let https_proxy =
+        SharedCodexAppServer::effective_proxy_env(None, &["HTTPS_PROXY", "https_proxy"]);
+    SharedCodexAppServer::compute_env_signature(
+        ingest_url,
+        http_proxy.as_deref(),
+        https_proxy.as_deref(),
+    )
+}
+
+fn inherited_http_proxy(value: &'static str) -> impl Fn(&str) -> Option<String> {
+    move |key| (key == "HTTP_PROXY").then(|| value.into())
+}
+
+#[tokio::test]
+async fn start_new_process_passes_ingest_url_and_proxy_env_without_card_id() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    repo.settings_upsert("http_proxy", "http://proxy.local:3128")
+        .await
+        .unwrap();
+    repo.settings_upsert("https_proxy", "http://secure-proxy.local:3129")
+        .await
+        .unwrap();
+
+    let mut cfg = cfg(&root);
+    cfg.codex_ingest_url = Some("http://127.0.0.1:8765".into());
+    let home = calm_server::shared_codex_home::SharedCodexHome::new(
+        cfg.data_dir_resolved().join("codex-home"),
+        cfg.data_dir_resolved().join("codex-homes"),
+    );
+    home.seed().unwrap();
+
+    let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo.clone());
+    let env = daemon.spawn_env_for_test().await.unwrap();
+
+    let get = |key: &str| env.get(key).and_then(|v| v.as_deref());
+    let expected_codex_home = cfg
+        .data_dir_resolved()
+        .join("codex-home")
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(get("CODEX_HOME"), Some(expected_codex_home.as_str()));
+    assert_eq!(get("NEIGE_CALM_BASE_URL"), Some("http://127.0.0.1:8765"));
+    assert_eq!(get("HTTP_PROXY"), Some("http://proxy.local:3128"));
+    assert_eq!(get("http_proxy"), Some("http://proxy.local:3128"));
+    assert_eq!(get("HTTPS_PROXY"), Some("http://secure-proxy.local:3129"));
+    assert_eq!(get("https_proxy"), Some("http://secure-proxy.local:3129"));
+}
+
+#[tokio::test]
+async fn start_new_process_strips_per_card_env_keys() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let mut cfg = cfg(&root);
+    cfg.codex_ingest_url = Some("http://expected".into());
+    let home = calm_server::shared_codex_home::SharedCodexHome::new(
+        cfg.data_dir_resolved().join("codex-home"),
+        cfg.data_dir_resolved().join("codex-homes"),
+    );
+    home.seed().unwrap();
+
+    let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo);
+    let env = daemon.spawn_env_for_test().await.unwrap();
+
+    assert_eq!(env.get("NEIGE_CARD_ID"), Some(&None));
+    assert_eq!(env.get("NEIGE_HOOK_PROVIDER"), Some(&None));
+    assert_eq!(env.get("NEIGE_MCP_TOKEN"), Some(&None));
+    assert_eq!(env.get("NEIGE_HOOK_URL"), Some(&None));
+    assert_eq!(
+        env.get("NEIGE_CALM_BASE_URL").cloned().flatten().as_deref(),
+        Some("http://expected")
+    );
+}
+
 async fn persist_running_daemon(
     repo: &SqlxRepo,
     root: &tempfile::TempDir,
@@ -58,6 +134,29 @@ async fn persist_running_daemon(
     pgid: i32,
     sock: &Path,
     process_start_time: u64,
+) {
+    persist_running_daemon_with_signature(
+        repo,
+        root,
+        pid,
+        pgid,
+        sock,
+        process_start_time,
+        Some(effective_test_env_signature(
+            &cfg(root).codex_ingest_url_resolved(),
+        )),
+    )
+    .await;
+}
+
+async fn persist_running_daemon_with_signature(
+    repo: &SqlxRepo,
+    root: &tempfile::TempDir,
+    pid: i32,
+    pgid: i32,
+    sock: &Path,
+    process_start_time: u64,
+    daemon_env_signature: Option<String>,
 ) {
     repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
         state: "running".into(),
@@ -70,6 +169,7 @@ async fn persist_running_daemon(
         started_at: Some(now_ms()),
         last_error: None,
         increment_restart_count: false,
+        daemon_env_signature,
     })
     .await
     .unwrap();
@@ -247,6 +347,7 @@ async fn stale_daemon_detected_by_boot_id_mismatch() {
         started_at: Some(1),
         last_error: None,
         increment_restart_count: false,
+        daemon_env_signature: None,
     })
     .await
     .unwrap();
@@ -274,6 +375,7 @@ async fn stale_daemon_detected_by_start_time_mismatch() {
         started_at: Some(1),
         last_error: None,
         increment_restart_count: false,
+        daemon_env_signature: None,
     })
     .await
     .unwrap();
@@ -329,6 +431,64 @@ async fn takeover_handshake_failure_reaps_verified_daemon_before_relaunch() {
     let record = repo.shared_daemon_runtime_get().await.unwrap();
     assert_eq!(record.pid, Some(new_pid));
     assert_eq!(record.pgid, Some(new_pid));
+}
+
+#[tokio::test]
+async fn takeover_respawns_when_env_signature_differs() {
+    let root = tempfile::tempdir().unwrap();
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+
+    let mut child = Command::new(fake_codex_bin())
+        .arg("app-server")
+        .arg("--listen")
+        .arg(format!("unix://{}", sock.display()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn stale-signature fake app-server for takeover");
+    let old_pid = i32::try_from(child.id().expect("fake app-server pid")).expect("pid fits i32");
+    let process_start_time = wait_for_start_time_and_socket(old_pid, &sock).await;
+
+    let repo = repo().await;
+    persist_running_daemon_with_signature(
+        &repo,
+        &root,
+        old_pid,
+        old_pid,
+        &sock,
+        process_start_time,
+        Some("stale-env-signature".into()),
+    )
+    .await;
+
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+
+    tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .expect("stale-signature daemon should be reaped before relaunch")
+        .expect("wait old fake app-server");
+
+    let snapshot = daemon.status_snapshot();
+    assert_eq!(snapshot.state, SharedDaemonState::Running);
+    let new_pid = snapshot
+        .runtime
+        .as_ref()
+        .map(|runtime| runtime.pid)
+        .unwrap();
+    assert_ne!(new_pid, old_pid);
+
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(record.pid, Some(new_pid));
+    let expected_signature = effective_test_env_signature(&cfg(&root).codex_ingest_url_resolved());
+    assert_eq!(
+        record.daemon_env_signature.as_deref(),
+        Some(expected_signature.as_str())
+    );
 }
 
 #[tokio::test]
@@ -478,6 +638,64 @@ fn bounded_exponential_backoff_caps_at_max() {
         last = state.next_delay();
     }
     assert_eq!(last, max);
+}
+
+#[test]
+fn current_env_signature_changes_with_ingest_url_and_proxy() {
+    let s1 = SharedCodexAppServer::compute_env_signature("u1", None, None);
+    let s2 = SharedCodexAppServer::compute_env_signature("u2", None, None);
+    assert_ne!(s1, s2);
+
+    let s3 = SharedCodexAppServer::compute_env_signature("u1", Some("p"), None);
+    assert_ne!(s1, s3);
+
+    let s4 = SharedCodexAppServer::compute_env_signature("u1", None, Some("p"));
+    assert_ne!(s1, s4);
+    assert_eq!(s1.len(), 16);
+}
+
+#[test]
+fn current_env_signature_reads_inherited_proxy_when_settings_absent() {
+    let proxy = SharedCodexAppServer::effective_proxy_env_from(
+        None,
+        &["HTTP_PROXY", "http_proxy"],
+        inherited_http_proxy("http://from-env"),
+    );
+    let sig_with_env = SharedCodexAppServer::compute_env_signature("u1", proxy.as_deref(), None);
+
+    let other_proxy = SharedCodexAppServer::effective_proxy_env_from(
+        None,
+        &["HTTP_PROXY", "http_proxy"],
+        inherited_http_proxy("http://other"),
+    );
+    let sig_with_other_env =
+        SharedCodexAppServer::compute_env_signature("u1", other_proxy.as_deref(), None);
+
+    assert_ne!(
+        sig_with_env, sig_with_other_env,
+        "signature must reflect inherited env, not just settings"
+    );
+}
+
+#[test]
+fn current_env_signature_prefers_settings_over_inherited_env() {
+    let proxy = SharedCodexAppServer::effective_proxy_env_from(
+        Some("http://from-settings"),
+        &["HTTP_PROXY", "http_proxy"],
+        inherited_http_proxy("http://from-env"),
+    );
+    let sig = SharedCodexAppServer::compute_env_signature("u1", proxy.as_deref(), None);
+
+    let proxy_no_env = SharedCodexAppServer::effective_proxy_env_from(
+        Some("http://from-settings"),
+        &["HTTP_PROXY", "http_proxy"],
+        |_| None,
+    );
+    let sig_no_env =
+        SharedCodexAppServer::compute_env_signature("u1", proxy_no_env.as_deref(), None);
+
+    assert_eq!(proxy.as_deref(), Some("http://from-settings"));
+    assert_eq!(sig, sig_no_env, "settings override must take precedence");
 }
 
 #[test]

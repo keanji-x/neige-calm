@@ -14,7 +14,7 @@
 //! ```text
 //!   codex daemon ── stdio ──> neige-mcp-stdio-shim ── UDS ──> kernel
 //!     (initialize with                                          mcp_server
-//!      `_meta["dev.neige/auth"].token = $NEIGE_MCP_TOKEN`)        │
+//!      `_meta["dev.neige/auth"].token` from per-card or daemon env) │
 //!                                                                  ▼
 //!                                                            ToolRegistry
 //!                                                                  │

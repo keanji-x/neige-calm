@@ -47,6 +47,13 @@ struct Boot {
 }
 
 async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
+    boot_with_registry_and_daemon_hash(registry, None).await
+}
+
+async fn boot_with_registry_and_daemon_hash(
+    registry: Arc<ToolRegistry>,
+    daemon_token_hash: Option<String>,
+) -> Boot {
     let tmp = TempDir::new().expect("tempdir for MCP socket");
     let socket_path = tmp.path().join("kernel.sock");
     let sqlx_repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -114,6 +121,7 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         registry,
+        daemon_token_hash,
     )
     .await
     .unwrap();
@@ -326,6 +334,29 @@ async fn tools_call_with_known_thread_id_uses_mapped_card_identity() {
     assert_eq!(identity.role, CardRole::Spec);
     assert_eq!(identity.wave_id.as_deref(), Some(boot.wave_id.as_str()));
     assert_eq!(identity.thread_id, "T1");
+    let _ = &boot.server;
+}
+
+#[tokio::test]
+async fn daemon_token_with_known_thread_id_uses_mapped_card_identity() {
+    let daemon_token = "daemon-token-for-thread-map";
+    let (registry, mut rx) = capture_identity_registry();
+    let boot =
+        boot_with_registry_and_daemon_hash(registry, Some(auth::hash_token(daemon_token))).await;
+    seed_thread(&boot, &boot.spec_card_id, "T-daemon", CardRole::Spec).await;
+    let (mut rd, mut wr) = initialized_client_with_token(&boot, daemon_token).await;
+
+    send_frame(
+        &mut wr,
+        tools_call_frame(2, "test.capture_identity", Some("T-daemon"), json!({})),
+    )
+    .await;
+    let resp = recv_frame(&mut rd).await;
+    assert!(resp.get("error").is_none(), "tools/call errored: {resp:#?}");
+    let identity = rx.recv().await.unwrap();
+    assert_eq!(identity.card_id, boot.spec_card_id);
+    assert_eq!(identity.role, CardRole::Spec);
+    assert_eq!(identity.thread_id, "T-daemon");
     let _ = &boot.server;
 }
 

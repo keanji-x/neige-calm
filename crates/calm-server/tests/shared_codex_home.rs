@@ -1,9 +1,11 @@
 use std::path::{Path, PathBuf};
 
+use calm_server::mcp_server::McpShimConfig;
 use calm_server::shared_codex_home::SharedCodexHome;
 
 mod shared_codex_home {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     fn shared_home(root: &tempfile::TempDir) -> SharedCodexHome {
         SharedCodexHome::new(
@@ -28,6 +30,63 @@ mod shared_codex_home {
             .and_then(|v| v.get("trust_level"))
             .and_then(|v| v.as_str())
             .map(ToOwned::to_owned)
+    }
+
+    #[test]
+    fn daemon_mcp_config_writes_shared_token_env() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let home = shared_home(&root);
+        let shim = McpShimConfig {
+            shim_bin: root.path().join("bin/neige-mcp-stdio-shim"),
+            socket_path: root.path().join("mcp/kernel.sock"),
+        };
+
+        home.ensure_daemon_mcp_config(&shim, "daemon-token")
+            .expect("ensure daemon mcp config");
+
+        let config = parsed_config(&home);
+        let calm = config
+            .get("mcp_servers")
+            .and_then(|v| v.get("calm"))
+            .expect("mcp_servers.calm");
+        assert_eq!(
+            calm.get("command").and_then(|v| v.as_str()),
+            Some(shim.shim_bin.to_string_lossy().as_ref())
+        );
+        let env = calm.get("env").expect("mcp_servers.calm.env");
+        assert_eq!(
+            env.get("NEIGE_MCP_SOCKET").and_then(|v| v.as_str()),
+            Some(shim.socket_path.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            env.get("NEIGE_MCP_DAEMON_TOKEN").and_then(|v| v.as_str()),
+            Some("daemon-token")
+        );
+        assert!(
+            env.get("NEIGE_MCP_TOKEN").is_none(),
+            "shared daemon config must use daemon token, not per-card token"
+        );
+    }
+
+    #[test]
+    fn shared_codex_home_config_toml_has_0600_perms_after_write() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let home = shared_home(&root);
+
+        home.seed().expect("seed shared home");
+        home.ensure_config_for_cwd(Path::new("/tmp"))
+            .expect("ensure config");
+
+        let config_path = home.path().join("config.toml");
+        let mode = std::fs::metadata(&config_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "shared config.toml must be 0600 (contains daemon token): got {mode:o}"
+        );
     }
 
     #[test]

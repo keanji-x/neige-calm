@@ -136,9 +136,15 @@ pub struct Config {
     )]
     pub shared_codex_appserver_enabled: bool,
 
-    /// PR5 -> PR3c decoupling gate. Default false keeps user prompt cards on
-    /// the legacy per-card codex path until the bridge can identify cards from
-    /// hook session_id instead of per-process env.
+    /// Route prompt-bearing user codex cards through the shared codex
+    /// app-server (PR4) when `true`.
+    /// `shared_codex_prompt_cards_enabled` default false keeps PR3c opt-in
+    /// until ops confirms shared-daemon stability and addresses these followups:
+    /// - settings.http_proxy / https_proxy hot-reload (R7): currently
+    ///   the daemon reads settings at spawn time; changes require daemon
+    ///   restart. Legacy per-card path reads settings per spawn.
+    /// - any further Channel B review findings as we accumulate production
+    ///   telemetry on shared daemon.
     #[arg(
         long,
         env = "CALM_SHARED_CODEX_PROMPT_CARDS_ENABLED",
