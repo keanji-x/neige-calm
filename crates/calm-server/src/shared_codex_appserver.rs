@@ -367,6 +367,23 @@ impl SharedCodexAppServer {
         self.thread_cache.get(thread_id).map(|v| v.value().clone())
     }
 
+    pub fn effective_proxy_env(settings_value: Option<&str>, env_keys: &[&str]) -> Option<String> {
+        Self::effective_proxy_env_from(settings_value, env_keys, |key| std::env::var(key).ok())
+    }
+
+    pub fn effective_proxy_env_from(
+        settings_value: Option<&str>,
+        env_keys: &[&str],
+        lookup: impl Fn(&str) -> Option<String>,
+    ) -> Option<String> {
+        if let Some(v) = settings_value {
+            return Some(v.to_string());
+        }
+        env_keys
+            .iter()
+            .find_map(|key| lookup(key).filter(|v| !v.is_empty()))
+    }
+
     pub fn compute_env_signature(
         ingest_url: &str,
         http_proxy: Option<&str>,
@@ -392,12 +409,18 @@ impl SharedCodexAppServer {
 
     async fn current_env_signature(&self) -> Result<String> {
         let settings = load_settings(self.repo.as_ref()).await?;
-        let http_proxy = settings.http_proxy.as_deref().filter(|s| !s.is_empty());
-        let https_proxy = settings.https_proxy.as_deref().filter(|s| !s.is_empty());
+        let http_proxy = Self::effective_proxy_env(
+            settings.http_proxy.as_deref(),
+            &["HTTP_PROXY", "http_proxy"],
+        );
+        let https_proxy = Self::effective_proxy_env(
+            settings.https_proxy.as_deref(),
+            &["HTTPS_PROXY", "https_proxy"],
+        );
         Ok(Self::compute_env_signature(
             &self.ingest_url,
-            http_proxy,
-            https_proxy,
+            http_proxy.as_deref(),
+            https_proxy.as_deref(),
         ))
     }
 
