@@ -257,6 +257,40 @@ async fn tools_call_with_known_thread_id_uses_mapped_card_identity() {
 }
 
 #[tokio::test]
+async fn tools_call_meta_threadid_in_params_meta_resolves_when_top_level_meta_has_no_thread_id() {
+    let (registry, mut rx) = capture_identity_registry();
+    let boot = boot_with_registry(registry).await;
+    seed_thread(&boot, &boot.spec_card_id, "T-params", CardRole::Spec).await;
+    let (mut rd, mut wr) = initialized_client(&boot).await;
+
+    send_frame(
+        &mut wr,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "_meta": { "client_request_id": "abc" },
+            "params": {
+                "name": "test.capture_identity",
+                "arguments": {},
+                "_meta": { "threadId": "T-params" }
+            }
+        }),
+    )
+    .await;
+
+    let resp = recv_frame(&mut rd).await;
+    assert!(
+        resp.get("error").is_none(),
+        "must resolve via params._meta when top-level lacks threadId: {resp:#?}"
+    );
+    let identity = rx.recv().await.unwrap();
+    assert_eq!(identity.thread_id, "T-params");
+    assert_eq!(identity.card_id, boot.spec_card_id);
+    let _ = &boot.server;
+}
+
+#[tokio::test]
 async fn tools_call_without_thread_id_rejects_with_invalid_params() {
     let (registry, _rx) = capture_identity_registry();
     let boot = boot_with_registry(registry).await;
@@ -338,6 +372,59 @@ async fn tools_call_thread_id_drives_role_gate() {
         spec_resp["result"]["structuredContent"]["role"],
         json!("spec")
     );
+    let _ = &boot.server;
+}
+
+#[tokio::test]
+async fn tools_call_plain_role_rejected_by_documented_role_gates() {
+    let boot = boot_with_registry(build_default_registry()).await;
+    seed_thread(&boot, &boot.plain_card_id, "plain-thread", CardRole::Plain).await;
+    let (mut rd, mut wr) = initialized_client(&boot).await;
+
+    let cases = [
+        (
+            "calm.dispatch_request",
+            json!({
+                "kind": "codex",
+                "idempotency_key": "plain-dispatch",
+                "goal": "should not run"
+            }),
+        ),
+        (
+            "calm.task_completed",
+            json!({ "idempotency_key": "plain-completed" }),
+        ),
+        (
+            "calm.task_failed",
+            json!({
+                "idempotency_key": "plain-failed",
+                "reason": "should not run"
+            }),
+        ),
+        ("calm.get_wave_state", json!({})),
+        (
+            "calm.update_task_meta",
+            json!({
+                "idempotency_key": "plain-meta",
+                "status": "accepted"
+            }),
+        ),
+    ];
+
+    for (idx, (tool, args)) in cases.into_iter().enumerate() {
+        send_frame(
+            &mut wr,
+            tools_call_frame(idx as i64 + 2, tool, Some("plain-thread"), args),
+        )
+        .await;
+        let resp = recv_frame(&mut rd).await;
+        assert_eq!(
+            resp["error"]["code"],
+            json!(RpcError::INVALID_PARAMS),
+            "tool {tool}: Plain role must be rejected, got {resp:#?}",
+        );
+    }
+
     let _ = &boot.server;
 }
 

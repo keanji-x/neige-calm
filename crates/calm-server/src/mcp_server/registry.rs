@@ -108,7 +108,7 @@ impl ToolCallIdentity {
 ///
 /// Use at the top of every spec-only handler. `calm.get_wave_state` is
 /// callable by both Spec and Worker (a worker may need to peek wave
-/// metadata before reporting), so it skips this gate.
+/// metadata before reporting), so it uses [`require_role_any`] instead.
 pub fn require_role(identity: &ToolCallIdentity, required: CardRole) -> Result<(), RpcError> {
     if identity.role != required {
         return Err(RpcError::custom(

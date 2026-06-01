@@ -384,8 +384,9 @@ async fn dispatch_request(
             Ok(json!({ "tools": tools }))
         }
         "tools/call" => {
-            let request_meta = request_meta.or_else(|| extract_request_meta(&params));
+            let params_meta = extract_request_meta(&params);
             let thread_id = extract_thread_id(request_meta.as_ref())
+                .or_else(|| extract_thread_id(params_meta.as_ref()))
                 .ok_or_else(|| RpcError::invalid_params("tools/call requires _meta.threadId"))?;
             let name = params
                 .get("name")

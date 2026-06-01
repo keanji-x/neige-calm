@@ -12,9 +12,9 @@
 //!
 //! * `calm.get_wave_state` — Spec **or** Worker callable. Returns the
 //!   thread-mapped card's wave row + the wave's card list (id/kind/role) as
-//!   one JSON snapshot. No event emission, no role gate at the MCP
-//!   entry. Workers occasionally peek wave state before they report;
-//!   the spec gets a full snapshot every loop iteration.
+//!   one JSON snapshot. No event emission. Workers occasionally peek wave
+//!   state before they report; the spec gets a full snapshot every loop
+//!   iteration. Plain cards are rejected at the MCP entry.
 //!
 //! * `calm.update_wave_state` — Spec only. Patches the wave row
 //!   (`title` / `sort` / `archived_at`), stamps `updated_at`, and
@@ -72,7 +72,7 @@ use crate::ids::WaveId;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    require_role,
+    require_role, require_role_any,
 };
 use crate::model::{CardRole, Wave, WaveLifecycle, WavePatch};
 use crate::wave_lifecycle::validate_transition;
@@ -123,6 +123,7 @@ async fn get_wave_state(
     identity: ToolCallIdentity,
     _args: Value,
 ) -> Result<Value, RpcError> {
+    require_role_any(&identity, &[CardRole::Spec, CardRole::Worker])?;
     let (_, wave) = resolve_wave_for_identity(&ctx, &identity).await?;
     let cards = ctx
         .repo
