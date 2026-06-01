@@ -234,6 +234,134 @@ async fn card_crud_round_trip() {
     assert!(matches!(err, CalmError::NotFound(_)));
 }
 
+#[tokio::test]
+async fn card_codex_thread_upsert_replaces_by_card() {
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "thread-map").await;
+    let w = make_wave(&repo, c.id.as_str(), "w").await;
+    let card = make_card(&repo, w.id.as_str(), "codex").await;
+
+    repo.card_codex_thread_upsert(
+        card.id.as_str(),
+        "thread-one",
+        CardRole::Spec,
+        Some(w.id.as_str()),
+    )
+    .await
+    .unwrap();
+    repo.card_codex_thread_upsert(
+        card.id.as_str(),
+        "thread-two",
+        CardRole::Spec,
+        Some(w.id.as_str()),
+    )
+    .await
+    .unwrap();
+
+    let by_card = repo
+        .card_codex_thread_get_by_card(card.id.as_str())
+        .await
+        .unwrap()
+        .expect("mapping exists");
+    assert_eq!(by_card.thread_id, "thread-two");
+    assert_eq!(by_card.card_id, card.id.as_str());
+    assert_eq!(by_card.role, CardRole::Spec);
+    assert_eq!(by_card.wave_id.as_deref(), Some(w.id.as_str()));
+    assert!(
+        repo.card_codex_thread_get_by_thread("thread-one")
+            .await
+            .unwrap()
+            .is_none(),
+        "old thread id should no longer point at the card"
+    );
+}
+
+#[tokio::test]
+async fn card_codex_thread_get_by_thread_returns_none_for_missing() {
+    let repo = fresh_repo().await;
+    assert!(
+        repo.card_codex_thread_get_by_thread("missing-thread")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn card_codex_threads_active_includes_all_roles() {
+    use calm_server::card_role_cache::CardRoleCache;
+
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "active-map").await;
+    let w = make_wave(&repo, c.id.as_str(), "w").await;
+    let plain = make_card(&repo, w.id.as_str(), "terminal").await;
+    let cache = CardRoleCache::new();
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    let spec = calm_server::db::sqlite::card_create_with_id_tx(
+        &mut tx,
+        calm_server::model::new_id(),
+        NewCard {
+            wave_id: w.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({}),
+        },
+        CardRole::Spec,
+        false,
+        &cache,
+    )
+    .await
+    .unwrap();
+    let worker = calm_server::db::sqlite::card_create_with_id_tx(
+        &mut tx,
+        calm_server::model::new_id(),
+        NewCard {
+            wave_id: w.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({}),
+        },
+        CardRole::Worker,
+        false,
+        &cache,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    repo.card_codex_thread_upsert(
+        spec.id.as_str(),
+        "thread-spec",
+        CardRole::Spec,
+        Some(w.id.as_str()),
+    )
+    .await
+    .unwrap();
+    repo.card_codex_thread_upsert(
+        worker.id.as_str(),
+        "thread-worker",
+        CardRole::Worker,
+        Some(w.id.as_str()),
+    )
+    .await
+    .unwrap();
+
+    let rows = repo.card_codex_threads_active().await.unwrap();
+    assert_eq!(rows.len(), 2, "plain card has no mapping: {}", plain.id);
+    assert!(rows.iter().any(|row| {
+        row.card_id == spec.id.as_str()
+            && row.thread_id == "thread-spec"
+            && row.role == CardRole::Spec
+    }));
+    assert!(rows.iter().any(|row| {
+        row.card_id == worker.id.as_str()
+            && row.thread_id == "thread-worker"
+            && row.role == CardRole::Worker
+    }));
+    assert!(!rows.iter().any(|row| row.card_id == plain.id.as_str()));
+}
+
 // ----------------------------------------------------------- Cascades ----
 
 #[tokio::test]

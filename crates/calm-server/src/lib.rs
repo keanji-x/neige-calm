@@ -306,7 +306,7 @@ pub async fn takeover_spec_appservers_on_boot(state: &state::AppState) {
          process groups will NOT be reaped, falling back to bind(2) \
          conflict surfaced by the respawn"
     );
-    let cards = match state.repo.spec_cards_for_boot_takeover().await {
+    let cards = match spec_cards_for_boot_takeover_table_first(state.repo.as_ref()).await {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(
@@ -423,6 +423,194 @@ pub async fn takeover_spec_appservers_on_boot(state: &state::AppState) {
         inert,
         "takeover_spec_appservers_on_boot: complete"
     );
+}
+
+type BootTakeoverSpecCard = (
+    String,
+    String,
+    String,
+    Option<i32>,
+    Option<String>,
+    Option<u64>,
+    Option<String>,
+    i64,
+);
+
+pub(crate) async fn spec_cards_for_boot_takeover_table_first(
+    repo: &dyn crate::db::RepoRead,
+) -> crate::error::Result<Vec<BootTakeoverSpecCard>> {
+    let mappings = repo.card_codex_threads_active().await?;
+    let mapped_card_ids: std::collections::HashSet<String> =
+        mappings.iter().map(|row| row.card_id.clone()).collect();
+    let mut rows = Vec::new();
+
+    for mapping in mappings {
+        if mapping.role != crate::model::CardRole::Spec {
+            continue;
+        }
+        let Some(wave_id) = mapping.wave_id.clone() else {
+            tracing::warn!(
+                card_id = %mapping.card_id,
+                thread_id = %mapping.thread_id,
+                "takeover_spec_appservers_on_boot: spec thread mapping has no wave_id; skipping"
+            );
+            continue;
+        };
+        let Some(wave) = repo.wave_get(&wave_id).await? else {
+            continue;
+        };
+        if matches!(
+            wave.lifecycle,
+            crate::model::WaveLifecycle::Done
+                | crate::model::WaveLifecycle::Canceled
+                | crate::model::WaveLifecycle::Failed
+        ) {
+            continue;
+        }
+        let Some(card) = repo.card_get(&mapping.card_id).await? else {
+            continue;
+        };
+        if payload_needs_initial_prompt(&card.payload) {
+            continue;
+        }
+        let (pgid, sock, start_time, boot_id, watermark) =
+            boot_takeover_payload_fields(&card.payload);
+        rows.push((
+            mapping.card_id,
+            wave_id,
+            mapping.thread_id,
+            pgid,
+            sock,
+            start_time,
+            boot_id,
+            watermark,
+        ));
+    }
+
+    for legacy in repo.spec_cards_for_boot_takeover().await? {
+        if !mapped_card_ids.contains(&legacy.0) {
+            rows.push(legacy);
+        }
+    }
+
+    Ok(rows)
+}
+
+fn payload_needs_initial_prompt(payload: &serde_json::Value) -> bool {
+    payload
+        .get("appserver_needs_initial_prompt")
+        .is_some_and(|value| value.as_i64() == Some(1) || value.as_bool() == Some(true))
+}
+
+fn boot_takeover_payload_fields(
+    payload: &serde_json::Value,
+) -> (
+    Option<i32>,
+    Option<String>,
+    Option<u64>,
+    Option<String>,
+    i64,
+) {
+    let pgid = payload
+        .get("appserver_pgid")
+        .and_then(serde_json::Value::as_i64)
+        .and_then(|v| i32::try_from(v).ok());
+    let sock = payload
+        .get("appserver_sock")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let start_time = payload
+        .get("appserver_start_time")
+        .and_then(serde_json::Value::as_u64);
+    let boot_id = payload
+        .get("appserver_boot_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let watermark = payload
+        .get("push_watermark")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0);
+    (pgid, sock, start_time, boot_id, watermark)
+}
+
+#[cfg(test)]
+mod pr2_thread_mapping_tests {
+    use super::*;
+    use crate::card_role_cache::CardRoleCache;
+    use crate::db::prelude::*;
+    use crate::db::sqlite::SqlxRepo;
+    use crate::model::{CardRole, NewCard, NewCove, NewWave};
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn boot_takeover_uses_table_before_payload() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let cove = repo
+            .cove_create(NewCove {
+                name: "c".into(),
+                color: "#000000".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let wave = repo
+            .wave_create(NewWave {
+                cove_id: cove.id.clone(),
+                title: "w".into(),
+                sort: None,
+                cwd: "/tmp".into(),
+                attach_folder: false,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+
+        let cache = CardRoleCache::new();
+        let mut tx = repo.pool().begin().await.unwrap();
+        let card = crate::db::sqlite::card_create_with_id_tx(
+            &mut tx,
+            crate::model::new_id(),
+            NewCard {
+                wave_id: wave.id.clone(),
+                kind: "codex".into(),
+                sort: None,
+                payload: json!({
+                    "codex_thread_id": "thread-from-payload",
+                    "appserver_pgid": 1234,
+                    "appserver_sock": "/tmp/spec.sock",
+                    "push_watermark": 42,
+                }),
+            },
+            CardRole::Spec,
+            false,
+            &cache,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        sqlx::query(
+            r#"INSERT INTO card_codex_threads
+                  (thread_id, card_id, role, wave_id, created_at, updated_at)
+               VALUES ('thread-from-table', ?1, 'spec', ?2, 1000, 1000)"#,
+        )
+        .bind(card.id.as_str())
+        .bind(wave.id.as_str())
+        .execute(repo.pool())
+        .await
+        .unwrap();
+
+        let rows = spec_cards_for_boot_takeover_table_first(&repo)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, card.id.as_str());
+        assert_eq!(rows[0].1, wave.id.as_str());
+        assert_eq!(rows[0].2, "thread-from-table");
+        assert_eq!(rows[0].3, Some(1234));
+        assert_eq!(rows[0].4.as_deref(), Some("/tmp/spec.sock"));
+        assert_eq!(rows[0].7, 42);
+    }
 }
 
 /// Per-wave outcome of [`takeover_spec_appservers_on_boot`].

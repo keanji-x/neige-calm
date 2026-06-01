@@ -195,6 +195,16 @@ pub struct WaveEvent {
     pub event: Event,
 }
 
+#[derive(Debug, Clone)]
+pub struct CardCodexThreadRow {
+    pub thread_id: String,
+    pub card_id: String,
+    pub role: CardRole,
+    pub wave_id: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 // ---------------------------------------------------------------------------
 // Sub-trait split. See the "Trait capability split" section in the module
 // docs for the rationale. Each sub-trait carries `Send + Sync + 'static` so
@@ -407,6 +417,16 @@ pub trait RepoRead: Send + Sync + 'static {
         &self,
         hashed_token: &str,
     ) -> Result<Option<(String, String)>>;
+
+    async fn card_codex_thread_get_by_thread(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<CardCodexThreadRow>>;
+    async fn card_codex_thread_get_by_card(
+        &self,
+        card_id: &str,
+    ) -> Result<Option<CardCodexThreadRow>>;
+    async fn card_codex_threads_active(&self) -> Result<Vec<CardCodexThreadRow>>;
 }
 
 /// Eventized write surface. The **only** path that writes to the persistent
@@ -809,6 +829,15 @@ pub trait RepoOutOfDomain: RepoRead {
         boot_id: Option<&str>,
         watermark: i64,
     ) -> Result<()>;
+
+    async fn card_codex_thread_upsert(
+        &self,
+        card_id: &str,
+        thread_id: &str,
+        role: CardRole,
+        wave_id: Option<&str>,
+    ) -> Result<()>;
+    async fn card_codex_thread_delete_by_card(&self, card_id: &str) -> Result<()>;
 
     // ---- spec push queue (#318 INV-3 / R2-B1)
     //
