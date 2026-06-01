@@ -2318,7 +2318,8 @@ impl RepoRead for SqlxRepo {
                          FROM card_codex_threads t
                         WHERE t.card_id = c.id
                  )
-                 AND w.lifecycle NOT IN ('done', 'canceled', 'failed')"#,
+                 AND w.lifecycle NOT IN ('done', 'canceled', 'failed')
+               ORDER BY c.created_at ASC, c.id ASC"#,
         )
         .fetch_all(&self.pool)
         .await?;

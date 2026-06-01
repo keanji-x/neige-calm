@@ -978,17 +978,52 @@ pub(crate) async fn spawn_push_via_shared_daemon(
         }
         // Stamp codex_source:"shared" + codex_thread_id on the card payload
         // BEFORE the fallible turn_start + lifecycle wait. thread_start_for_card
-        // has already upserted card_codex_threads; if turn_start fails and we
-        // hadn't stamped the payload yet, boot takeover would route this card
-        // through the legacy per-wave path (which would fail to find any
-        // appserver_pgid and bootstrap a new app-server). Stamping the marker
-        // first keeps the inert-on-turn-failure card classified as shared, so
-        // takeover_shared_spec_cards_on_boot picks it up via the table.
+        // has already upserted card_codex_threads; if a hard crash happens
+        // between thread_start and our stamp, boot takeover would route this
+        // card through the legacy per-wave path. Stamping the marker first
+        // keeps the half-initialized card classified as shared so the table-
+        // first takeover finds it. On in-process turn_start / lifecycle
+        // failure (see match block below) we ROLL BACK both the table row
+        // and the payload stamp — the goal was never delivered to the thread,
+        // so leaving it as resumable would silently drop the user's wave
+        // title.
         persist_shared_spec_runtime_fields(s, spec_card_id, wave, Some(&thread_id)).await?;
-        s.shared_codex_appserver
-            .turn_start(&thread_id, vec![InputItem::text(wave.title.trim())])
-            .await?;
-        await_shared_spec_initial_turn_lifecycle(&mut notifications, &thread_id, &status).await?;
+        let initial_turn_result = async {
+            s.shared_codex_appserver
+                .turn_start(&thread_id, vec![InputItem::text(wave.title.trim())])
+                .await?;
+            await_shared_spec_initial_turn_lifecycle(&mut notifications, &thread_id, &status)
+                .await?;
+            Ok::<(), CalmError>(())
+        }
+        .await;
+        if let Err(e) = initial_turn_result {
+            // Rollback: the goal never reached the thread. Boot takeover
+            // would otherwise treat this card as resumable with no record
+            // that the wave title was lost.
+            if let Err(rollback_err) = s.repo.card_codex_thread_delete_by_card(spec_card_id).await
+            {
+                tracing::warn!(
+                    target: "shared_codex_daemon::spec_card",
+                    card_id = %spec_card_id,
+                    thread_id = %thread_id,
+                    rollback_error = %rollback_err,
+                    "card_codex_thread delete failed during turn_start rollback"
+                );
+            }
+            if let Err(rollback_err) =
+                clear_shared_spec_runtime_fields(s, spec_card_id, wave).await
+            {
+                tracing::warn!(
+                    target: "shared_codex_daemon::spec_card",
+                    card_id = %spec_card_id,
+                    thread_id = %thread_id,
+                    rollback_error = %rollback_err,
+                    "payload clear failed during turn_start rollback"
+                );
+            }
+            return Err(e);
+        }
         Some(thread_id)
     };
 
@@ -1137,6 +1172,66 @@ async fn persist_shared_spec_runtime_fields(
                     "push_watermark".into(),
                     serde_json::Value::Number(0i64.into()),
                 );
+                let card = card_update_tx(
+                    tx,
+                    &card_id_for_tx,
+                    CardPatch {
+                        kind: None,
+                        sort: None,
+                        payload: Some(payload),
+                        deletable: None,
+                    },
+                )
+                .await?;
+                Ok((card.clone(), Event::CardUpdated(card)))
+            })
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+/// Reverts the stamping done by [`persist_shared_spec_runtime_fields`]
+/// when `turn_start` / initial-lifecycle fails for a non-empty shared
+/// spec wave. Clears `codex_source`, `codex_thread_id`, and the
+/// `appserver_*` shared-marker fields so boot takeover doesn't treat
+/// the card as a resumable shared thread (the wave goal was never
+/// delivered to the thread). The caller has already deleted the
+/// `card_codex_threads` row separately.
+async fn clear_shared_spec_runtime_fields(
+    s: &AppState,
+    spec_card_id: &str,
+    wave: &Wave,
+) -> Result<()> {
+    let scope = EventScope::Card {
+        card: spec_card_id.into(),
+        wave: wave.id.clone(),
+        cove: wave.cove_id.clone(),
+    };
+    let card_id_for_tx = spec_card_id.to_string();
+    let (_card, _id) = write_with_event_typed(
+        s.repo.as_ref(),
+        ActorId::Kernel,
+        scope,
+        None,
+        &s.events,
+        &s.card_role_cache,
+        &s.wave_cove_cache,
+        move |tx| {
+            Box::pin(async move {
+                let mut payload = s_repo_card_get(tx, &card_id_for_tx).await?;
+                let Some(map) = payload.as_object_mut() else {
+                    return Err(CalmError::Internal(format!(
+                        "spec card {card_id_for_tx} payload is not a JSON object; cannot clear shared codex runtime fields"
+                    )));
+                };
+                map.remove("codex_source");
+                map.remove("codex_thread_id");
+                map.remove("appserver_sock");
+                map.remove("appserver_pgid");
+                map.remove("appserver_start_time");
+                map.remove("appserver_boot_id");
+                map.remove("appserver_needs_initial_prompt");
                 let card = card_update_tx(
                     tx,
                     &card_id_for_tx,
