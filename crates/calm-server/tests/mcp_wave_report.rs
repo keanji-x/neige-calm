@@ -41,7 +41,7 @@ use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::wave_report::{
     TOOL_REPORT_EDIT, TOOL_REPORT_READ, TOOL_REPORT_WRITE,
 };
-use calm_server::mcp_server::{CardIdentity, ToolRegistry};
+use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::wave_report::WaveReportPayload;
@@ -158,27 +158,31 @@ async fn boot() -> Boot {
 async fn call_tool(
     boot: &Boot,
     name: &str,
-    identity: CardIdentity,
+    identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
     let handler = boot
         .registry
         .lookup(name)
         .unwrap_or_else(|| panic!("tool not registered: {name}"));
-    handler(boot.ctx.clone(), identity, None, args).await
+    handler(boot.ctx.clone(), identity, args).await
 }
 
-fn spec_identity(boot: &Boot) -> CardIdentity {
-    CardIdentity {
-        card_id: boot.spec_card_id.clone(),
+fn spec_identity(boot: &Boot) -> ToolCallIdentity {
+    ToolCallIdentity {
+        card_id: boot.spec_card_id.as_str().to_string(),
         role: CardRole::Spec,
+        wave_id: Some(boot.wave_id.as_str().to_string()),
+        thread_id: "spec-thread".to_string(),
     }
 }
 
-fn worker_identity(boot: &Boot) -> CardIdentity {
-    CardIdentity {
-        card_id: boot.worker_card_id.clone(),
+fn worker_identity(boot: &Boot) -> ToolCallIdentity {
+    ToolCallIdentity {
+        card_id: boot.worker_card_id.as_str().to_string(),
         role: CardRole::Worker,
+        wave_id: Some(boot.wave_id.as_str().to_string()),
+        thread_id: "worker-thread".to_string(),
     }
 }
 
@@ -916,9 +920,11 @@ async fn spec_from_different_wave_cannot_reach_this_wave_report() {
         .insert(spec2.id.clone(), CardRole::Spec, wave2.id.clone());
 
     // Call from spec2's identity.
-    let spec2_identity = CardIdentity {
-        card_id: spec2.id,
+    let spec2_identity = ToolCallIdentity {
+        card_id: spec2.id.as_str().to_string(),
         role: CardRole::Spec,
+        wave_id: Some(wave2.id.as_str().to_string()),
+        thread_id: "spec2-thread".to_string(),
     };
     call_tool(
         &boot,

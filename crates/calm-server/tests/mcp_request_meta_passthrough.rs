@@ -1,8 +1,8 @@
 //! PR3a (#410) — MCP request `_meta` passthrough infrastructure.
 //!
 //! These tests drive the real kernel-as-MCP-server transport over UDS.
-//! Handlers receive per-request `_meta`, but production handlers still
-//! ignore it and continue using the handshake-bound `CardIdentity`.
+//! PR3b consumes per-request `_meta.threadId` to resolve identity before
+//! invoking handlers.
 
 #![cfg(unix)]
 
@@ -14,10 +14,13 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, card_with_codex_create_tx};
 use calm_server::event::EventBus;
-use calm_server::mcp_server::registry::{ToolDescriptor, ToolHandler, ToolHandlerFuture};
+use calm_server::mcp_server::registry::{
+    ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture,
+};
 use calm_server::mcp_server::tools::wave_state::TOOL_GET_WAVE_STATE;
 use calm_server::mcp_server::{McpServer, ToolRegistry, build_default_registry};
 use calm_server::model::{CardRole, NewCove, NewWave};
+use calm_server::plugin_host::mcp::RpcError;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -32,6 +35,8 @@ struct Boot {
     socket_path: PathBuf,
     raw_token: String,
     wave_id: String,
+    card_id: String,
+    thread_id: String,
     _tmp: TempDir,
 }
 
@@ -70,7 +75,7 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
     let mut tx = sqlx_repo.pool().begin().await.unwrap();
     let (_card, _term, mcp_token) = card_with_codex_create_tx(
         &mut tx,
-        card_id,
+        card_id.clone(),
         wave.id.clone(),
         None,
         "/workspace".into(),
@@ -86,6 +91,15 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
     .await
     .expect("mint spec card");
     tx.commit().await.unwrap();
+    let thread_id = format!("thread-{card_id}");
+    repo.card_codex_thread_upsert(
+        card_id.as_str(),
+        thread_id.as_str(),
+        CardRole::Spec,
+        Some(wave.id.as_str()),
+    )
+    .await
+    .unwrap();
 
     let events = EventBus::new();
     let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
@@ -107,27 +121,27 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
         socket_path,
         raw_token: mcp_token.expect("Spec card must mint a token"),
         wave_id: wave.id.as_str().to_string(),
+        card_id,
+        thread_id,
         _tmp: tmp,
     }
 }
 
-fn meta_capture_registry() -> (Arc<ToolRegistry>, mpsc::UnboundedReceiver<Option<Value>>) {
+fn identity_capture_registry() -> (Arc<ToolRegistry>, mpsc::UnboundedReceiver<ToolCallIdentity>) {
     let (tx, rx) = mpsc::unbounded_channel();
     let mut registry = ToolRegistry::new();
-    let handler: ToolHandler = Arc::new(
-        move |_ctx, _identity, request_meta, _args| -> ToolHandlerFuture {
-            let tx = tx.clone();
-            Box::pin(async move {
-                tx.send(request_meta)
-                    .expect("meta capture receiver should still be alive");
-                Ok(json!({ "status": "ok" }))
-            })
-        },
-    );
+    let handler: ToolHandler = Arc::new(move |_ctx, identity, _args| -> ToolHandlerFuture {
+        let tx = tx.clone();
+        Box::pin(async move {
+            tx.send(identity)
+                .expect("identity capture receiver should still be alive");
+            Ok(json!({ "status": "ok" }))
+        })
+    });
     registry.register(
         ToolDescriptor {
-            name: "test.echo_meta".into(),
-            description: "Capture request metadata for PR3a tests.".into(),
+            name: "test.echo_identity".into(),
+            description: "Capture resolved identity for PR3b tests.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {}
@@ -204,69 +218,75 @@ async fn initialized_client(
     (rd, wr)
 }
 
-async fn recv_meta(rx: &mut mpsc::UnboundedReceiver<Option<Value>>) -> Option<Value> {
+async fn recv_identity(rx: &mut mpsc::UnboundedReceiver<ToolCallIdentity>) -> ToolCallIdentity {
     timeout(TEST_BUDGET, rx.recv())
         .await
-        .expect("handler should send metadata within budget")
-        .expect("metadata channel should remain open")
+        .expect("handler should send identity within budget")
+        .expect("identity channel should remain open")
 }
 
 #[tokio::test]
-async fn meta_field_flows_from_request_to_handler() {
-    let (registry, mut rx) = meta_capture_registry();
+async fn thread_id_flows_from_meta_to_identity() {
+    let (registry, mut rx) = identity_capture_registry();
     let boot = boot_with_registry(registry).await;
     let (mut rd, mut wr) = initialized_client(&boot).await;
 
-    let mut params_meta = tools_call_frame(2, "test.echo_meta", json!({ "x": 1 }));
-    params_meta["params"]["_meta"] = json!({ "threadId": "abc" });
+    let mut params_meta = tools_call_frame(2, "test.echo_identity", json!({ "x": 1 }));
+    params_meta["params"]["_meta"] = json!({ "threadId": boot.thread_id });
     send_frame(&mut wr, params_meta).await;
     let resp = recv_frame(&mut rd).await;
     assert!(resp.get("error").is_none(), "tools/call errored: {resp:#?}");
-    assert_eq!(recv_meta(&mut rx).await, Some(json!({ "threadId": "abc" })));
+    let identity = recv_identity(&mut rx).await;
+    assert_eq!(identity.card_id, boot.card_id);
+    assert_eq!(identity.role, CardRole::Spec);
+    assert_eq!(identity.wave_id.as_deref(), Some(boot.wave_id.as_str()));
 
-    let mut top_level_meta = tools_call_frame(3, "test.echo_meta", json!({ "x": 2 }));
-    top_level_meta["_meta"] = json!({ "threadId": "top-level" });
+    let mut top_level_meta = tools_call_frame(3, "test.echo_identity", json!({ "x": 2 }));
+    top_level_meta["_meta"] = json!({ "threadId": boot.thread_id });
     send_frame(&mut wr, top_level_meta).await;
     let resp = recv_frame(&mut rd).await;
     assert!(resp.get("error").is_none(), "tools/call errored: {resp:#?}");
-    assert_eq!(
-        recv_meta(&mut rx).await,
-        Some(json!({ "threadId": "top-level" }))
+    assert_eq!(recv_identity(&mut rx).await.thread_id, boot.thread_id);
+
+    let _ = &boot.server;
+}
+
+#[tokio::test]
+async fn request_without_meta_rejects_before_handler() {
+    let (registry, mut rx) = identity_capture_registry();
+    let boot = boot_with_registry(registry).await;
+    let (mut rd, mut wr) = initialized_client(&boot).await;
+
+    send_frame(
+        &mut wr,
+        tools_call_frame(2, "test.echo_identity", json!({ "x": 1 })),
+    )
+    .await;
+    let resp = recv_frame(&mut rd).await;
+    assert_eq!(resp["error"]["code"], json!(RpcError::INVALID_PARAMS));
+    assert!(
+        rx.try_recv().is_err(),
+        "handler must not run without threadId"
     );
 
     let _ = &boot.server;
 }
 
 #[tokio::test]
-async fn request_without_meta_yields_none() {
-    let (registry, mut rx) = meta_capture_registry();
+async fn meta_with_non_object_rejects_before_handler() {
+    let (registry, mut rx) = identity_capture_registry();
     let boot = boot_with_registry(registry).await;
     let (mut rd, mut wr) = initialized_client(&boot).await;
 
-    send_frame(
-        &mut wr,
-        tools_call_frame(2, "test.echo_meta", json!({ "x": 1 })),
-    )
-    .await;
-    let resp = recv_frame(&mut rd).await;
-    assert!(resp.get("error").is_none(), "tools/call errored: {resp:#?}");
-    assert_eq!(recv_meta(&mut rx).await, None);
-
-    let _ = &boot.server;
-}
-
-#[tokio::test]
-async fn meta_with_non_object_yields_none() {
-    let (registry, mut rx) = meta_capture_registry();
-    let boot = boot_with_registry(registry).await;
-    let (mut rd, mut wr) = initialized_client(&boot).await;
-
-    let mut frame = tools_call_frame(2, "test.echo_meta", json!({ "x": 1 }));
+    let mut frame = tools_call_frame(2, "test.echo_identity", json!({ "x": 1 }));
     frame["params"]["_meta"] = json!("not-an-object");
     send_frame(&mut wr, frame).await;
     let resp = recv_frame(&mut rd).await;
-    assert!(resp.get("error").is_none(), "tools/call errored: {resp:#?}");
-    assert_eq!(recv_meta(&mut rx).await, None);
+    assert_eq!(resp["error"]["code"], json!(RpcError::INVALID_PARAMS));
+    assert!(
+        rx.try_recv().is_err(),
+        "handler must not run without threadId"
+    );
 
     let _ = &boot.server;
 }
@@ -280,13 +300,13 @@ async fn existing_handlers_unchanged_when_meta_present() {
     send_frame(&mut wr, without_meta).await;
     let without_resp = recv_frame(&mut rd).await;
     assert!(
-        without_resp.get("error").is_none(),
-        "get_wave_state without meta errored: {without_resp:#?}"
+        without_resp.get("error").is_some(),
+        "get_wave_state without meta should reject: {without_resp:#?}"
     );
 
     let mut with_meta = tools_call_frame(3, TOOL_GET_WAVE_STATE, json!({}));
     with_meta["params"]["_meta"] = json!({
-        "threadId": "ignored-by-pr3a",
+        "threadId": boot.thread_id,
         "card_id": "not-the-bound-card"
     });
     send_frame(&mut wr, with_meta).await;
@@ -296,11 +316,8 @@ async fn existing_handlers_unchanged_when_meta_present() {
         "get_wave_state with meta errored: {with_resp:#?}"
     );
 
-    let without_result = &without_resp["result"]["structuredContent"];
     let with_result = &with_resp["result"]["structuredContent"];
-    assert_eq!(without_result["wave"]["id"], json!(boot.wave_id));
     assert_eq!(with_result["wave"]["id"], json!(boot.wave_id));
-    assert_eq!(without_result, with_result);
 
     let _ = &boot.server;
 }

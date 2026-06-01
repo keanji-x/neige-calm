@@ -9,8 +9,7 @@
 //!   * `initialize` with a bogus token → `-32401` error + connection close.
 //!   * `tools/call` before `initialize` → `-32002` error.
 //!   * Multiple `tools/call`s on one connection → all succeed with the
-//!     same bound `CardIdentity` (verified through the event row's
-//!     actor + scope_card).
+//!     same per-call `_meta.threadId` identity mapping.
 //!
 //! Test budget: 5 seconds per case (UDS bind/connect is sub-ms; the
 //! budget exists only to bound runaway hangs).
@@ -42,6 +41,7 @@ struct Boot {
     events: EventBus,
     /// Spec card id minted at boot.
     card_id: String,
+    thread_id: String,
     /// Raw per-card MCP token (kept in memory only — never persisted).
     raw_token: String,
     socket_path: PathBuf,
@@ -115,6 +115,15 @@ async fn boot() -> Boot {
     .expect("mint spec card");
     tx.commit().await.unwrap();
     let raw_token = mcp_token.expect("Spec card must mint a token");
+    let thread_id = format!("thread-{card_id}");
+    repo.card_codex_thread_upsert(
+        card_id.as_str(),
+        thread_id.as_str(),
+        CardRole::Spec,
+        Some(wave.id.as_str()),
+    )
+    .await
+    .unwrap();
 
     let events = EventBus::new();
     let registry = build_default_registry();
@@ -137,6 +146,7 @@ async fn boot() -> Boot {
         repo,
         events,
         card_id,
+        thread_id,
         raw_token,
         socket_path,
         _tmp: tmp,
@@ -205,12 +215,16 @@ fn initialize_frame_without_token(id: i64) -> Value {
     })
 }
 
-fn tools_call_frame(id: i64, name: &str, args: Value) -> Value {
+fn tools_call_frame(id: i64, name: &str, thread_id: &str, args: Value) -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": id,
         "method": "tools/call",
-        "params": { "name": name, "arguments": args }
+        "params": {
+            "name": name,
+            "arguments": args,
+            "_meta": { "threadId": thread_id }
+        }
     })
 }
 
@@ -297,7 +311,12 @@ async fn tools_call_before_initialize_is_rejected() {
     // should refuse with -32002 ("not initialized").
     send_frame(
         &mut wr,
-        tools_call_frame(3, "calm.task_completed", json!({"idempotency_key": "x"})),
+        tools_call_frame(
+            3,
+            "calm.task_completed",
+            "pre-init-thread",
+            json!({"idempotency_key": "x"}),
+        ),
     )
     .await;
     let resp = recv_frame(&mut rd).await;
@@ -331,6 +350,7 @@ async fn two_tools_calls_on_one_connection_share_identity() {
         tools_call_frame(
             10,
             "calm.task_completed",
+            &b.thread_id,
             json!({"idempotency_key": "tc-1", "result": "ok"}),
         ),
     )
@@ -348,6 +368,7 @@ async fn two_tools_calls_on_one_connection_share_identity() {
         tools_call_frame(
             11,
             "calm.task_completed",
+            &b.thread_id,
             json!({"idempotency_key": "tc-2", "result": "ok"}),
         ),
     )
@@ -380,7 +401,7 @@ async fn two_tools_calls_on_one_connection_share_identity() {
             EventScope::Card { card, .. } => assert_eq!(
                 card.as_str(),
                 b.card_id.as_str(),
-                "both emissions should bind to the handshake-bound card"
+                "both emissions should bind to the thread-mapped card"
             ),
             other => panic!("expected Card scope; got {other:?}"),
         }
@@ -402,7 +423,7 @@ async fn wave_file_tools_support_two_calls_on_one_connection() {
 
     send_frame(
         &mut wr,
-        tools_call_frame(20, "calm.wave.ls", json!({"path": "/"})),
+        tools_call_frame(20, "calm.wave.ls", &b.thread_id, json!({"path": "/"})),
     )
     .await;
     let r1 = recv_frame(&mut rd).await;
@@ -420,7 +441,12 @@ async fn wave_file_tools_support_two_calls_on_one_connection() {
 
     send_frame(
         &mut wr,
-        tools_call_frame(21, "calm.wave.cat", json!({"path": "index.md"})),
+        tools_call_frame(
+            21,
+            "calm.wave.cat",
+            &b.thread_id,
+            json!({"path": "index.md"}),
+        ),
     )
     .await;
     let r2 = recv_frame(&mut rd).await;

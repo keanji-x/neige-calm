@@ -16,7 +16,7 @@
 //!
 //! ## Authorization
 //!
-//! All three tools require the caller's connection-bound card to be a
+//! All three tools require the caller's per-call card to be a
 //! `CardRole::Spec`. We re-use [`require_role`] for the soft gate; the
 //! eventized write itself routes through `card_update_tx` on the
 //! wave-report card row, which doesn't itself touch the role gate (the
@@ -55,7 +55,7 @@ use crate::error::CalmError;
 use crate::event::EditAuthor;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
-    AppContext, CardIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
+    AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     require_role,
 };
 use crate::model::{Card, CardRole, Wave};
@@ -76,14 +76,10 @@ pub fn register_into(registry: &mut ToolRegistry) {
 /// Boxed-future wrapper, same shape as the other tool modules.
 fn wrap<F, Fut>(f: F) -> ToolHandler
 where
-    F: Fn(Arc<AppContext>, CardIdentity, Value) -> Fut + Send + Sync + 'static,
+    F: Fn(Arc<AppContext>, ToolCallIdentity, Value) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<Value, RpcError>> + Send + 'static,
 {
-    Arc::new(
-        move |ctx, identity, _request_meta, args| -> ToolHandlerFuture {
-            Box::pin(f(ctx, identity, args))
-        },
-    )
+    Arc::new(move |ctx, identity, args| -> ToolHandlerFuture { Box::pin(f(ctx, identity, args)) })
 }
 
 // ---------------------------------------------------------------------------
@@ -108,7 +104,7 @@ fn read_descriptor() -> ToolDescriptor {
 
 pub(crate) async fn report_read(
     ctx: Arc<AppContext>,
-    identity: CardIdentity,
+    identity: ToolCallIdentity,
     _args: Value,
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Spec)?;
@@ -149,7 +145,7 @@ fn write_descriptor() -> ToolDescriptor {
 
 async fn report_write(
     ctx: Arc<AppContext>,
-    identity: CardIdentity,
+    identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Spec)?;
@@ -213,7 +209,7 @@ fn edit_descriptor() -> ToolDescriptor {
 
 async fn report_edit(
     ctx: Arc<AppContext>,
-    identity: CardIdentity,
+    identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Spec)?;
@@ -308,7 +304,7 @@ fn count_matches(haystack: &str, needle: &str) -> usize {
 }
 
 /// Resolve the (wave, spec card, report card, current payload) tuple
-/// for the connection-bound spec identity. Errors:
+/// for the per-call spec identity. Errors:
 ///   * spec card row missing (delete-while-active race) → InternalError;
 ///   * wave row missing under that spec card → InternalError;
 ///   * no wave-report card on the wave → InternalError (the invariant
@@ -318,7 +314,7 @@ fn count_matches(haystack: &str, needle: &str) -> usize {
 ///     mean someone wrote past the validator).
 async fn resolve_report_for_caller(
     ctx: &Arc<AppContext>,
-    identity: &CardIdentity,
+    identity: &ToolCallIdentity,
 ) -> Result<(Wave, Card, Card, WaveReportPayload), RpcError> {
     let card_id_str = identity.card_id.as_str().to_string();
     let spec_card = ctx
@@ -386,7 +382,7 @@ pub(crate) async fn load_report_for_wave(
 
 /// MCP-side thin wrapper around [`crate::wave_report::persist_report`].
 ///
-/// Resolves the actor from the connection-bound [`CardIdentity`] (always
+/// Resolves the actor from the per-call [`ToolCallIdentity`] (always
 /// maps to `ActorId::AiSpec` here — `require_role` upstream guarantees
 /// the role is Spec by the time we reach this site), tags every write
 /// with [`EditAuthor::Spec`] (the spec-MCP tools are the only `Spec`
@@ -403,7 +399,7 @@ pub(crate) async fn load_report_for_wave(
 /// same invariant, with the corresponding drift risk.
 async fn call_persist_report(
     ctx: &Arc<AppContext>,
-    identity: &CardIdentity,
+    identity: &ToolCallIdentity,
     wave: Wave,
     report_card: Card,
     current_payload: WaveReportPayload,

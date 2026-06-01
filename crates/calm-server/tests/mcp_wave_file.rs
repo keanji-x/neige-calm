@@ -2,7 +2,7 @@
 //!
 //! Drives `calm.wave.ls` / `calm.wave.cat` through the default registry
 //! against an in-memory repo. The tools derive scope from the
-//! connection-bound `CardIdentity`; none of the calls accepts a wave id.
+//! per-call `ToolCallIdentity`; none of the calls accepts a wave id.
 
 #![cfg(unix)]
 
@@ -17,7 +17,7 @@ use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::wave_file::{TOOL_WAVE_CAT, TOOL_WAVE_LS};
 use calm_server::mcp_server::tools::wave_report::TOOL_REPORT_READ;
 use calm_server::mcp_server::tools::wave_state::TOOL_UPDATE_TASK_META;
-use calm_server::mcp_server::{CardIdentity, ToolRegistry};
+use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::wave_report::WaveReportPayload;
@@ -177,34 +177,40 @@ async fn boot() -> Boot {
 async fn call_tool(
     boot: &Boot,
     name: &str,
-    identity: CardIdentity,
+    identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
     let handler = boot
         .registry
         .lookup(name)
         .unwrap_or_else(|| panic!("tool not registered: {name}"));
-    handler(boot.ctx.clone(), identity, None, args).await
+    handler(boot.ctx.clone(), identity, args).await
 }
 
-fn spec_identity(boot: &Boot) -> CardIdentity {
-    CardIdentity {
-        card_id: boot.spec_card_id.clone(),
+fn spec_identity(boot: &Boot) -> ToolCallIdentity {
+    ToolCallIdentity {
+        card_id: boot.spec_card_id.as_str().to_string(),
         role: CardRole::Spec,
+        wave_id: Some(boot.wave_id.as_str().to_string()),
+        thread_id: "spec-thread".to_string(),
     }
 }
 
-fn worker_identity(boot: &Boot) -> CardIdentity {
-    CardIdentity {
-        card_id: boot.worker_card_id.clone(),
+fn worker_identity(boot: &Boot) -> ToolCallIdentity {
+    ToolCallIdentity {
+        card_id: boot.worker_card_id.as_str().to_string(),
         role: CardRole::Worker,
+        wave_id: Some(boot.wave_id.as_str().to_string()),
+        thread_id: "worker-thread".to_string(),
     }
 }
 
-fn other_spec_identity(boot: &Boot) -> CardIdentity {
-    CardIdentity {
-        card_id: boot.other_spec_card_id.clone(),
+fn other_spec_identity(boot: &Boot) -> ToolCallIdentity {
+    ToolCallIdentity {
+        card_id: boot.other_spec_card_id.as_str().to_string(),
         role: CardRole::Spec,
+        wave_id: Some("other-wave".to_string()),
+        thread_id: "other-spec-thread".to_string(),
     }
 }
 

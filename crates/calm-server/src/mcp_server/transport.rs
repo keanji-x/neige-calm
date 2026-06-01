@@ -7,11 +7,11 @@
 //!   1. Reads line-delimited JSON frames from the socket via
 //!      [`crate::mcp_server::framing::parse_frame`].
 //!   2. Waits for the first `initialize` request, drives
-//!      [`crate::mcp_server::handshake::handle_initialize`] to bind a
-//!      [`CardIdentity`] to the connection, and sends the response.
+//!      [`crate::mcp_server::handshake::handle_initialize`] to verify
+//!      daemon-level trust, and sends the response.
 //!   3. After handshake, treats every subsequent `tools/call` as an
-//!      invocation of a [`ToolRegistry`] handler, passing the pinned
-//!      [`CardIdentity`].
+//!      invocation of a [`ToolRegistry`] handler, resolving identity
+//!      from per-call `_meta.threadId`.
 //!   4. Responds to `tools/list` from the registry's descriptors.
 //!   5. Echoes a `MethodNotFound` for any other request method.
 //!
@@ -37,7 +37,7 @@ use crate::mcp_server::framing::{
     Frame, RequestId, RpcError, build_error_response_frame, build_ok_response_frame, parse_frame,
 };
 use crate::mcp_server::handshake::handle_initialize;
-use crate::mcp_server::registry::{AppContext, CardIdentity, ToolHandler, ToolRegistry};
+use crate::mcp_server::registry::{AppContext, ToolCallIdentity, ToolHandler, ToolRegistry};
 use crate::wave_cove_cache::WaveCoveCache;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -229,7 +229,7 @@ async fn handle_connection(
     // gets a `MethodNotFound`-shaped error. We don't bind an identity
     // until `initialize` succeeds — every other request before then is
     // unauthenticated and rejected.
-    let identity = loop {
+    let daemon_trust = loop {
         line.clear();
         let n = reader.read_line(&mut line).await?;
         if n == 0 {
@@ -251,19 +251,14 @@ async fn handle_connection(
             Frame::Request {
                 id, method, params, ..
             } if method == "initialize" => {
-                match handle_initialize(
-                    ctx.repo.as_ref(),
-                    &ctx.card_role_cache,
-                    &params,
-                    KERNEL_MCP_PROTOCOL_VERSION,
-                )
-                .await
+                match handle_initialize(ctx.repo.as_ref(), &params, KERNEL_MCP_PROTOCOL_VERSION)
+                    .await
                 {
                     Ok(ok) => {
                         let frame = build_ok_response_frame(&id, &ok.result_payload);
                         wr.write_all(&frame).await?;
                         wr.flush().await?;
-                        break ok.identity;
+                        break ok.daemon_trust;
                     }
                     Err(rpc_err) => {
                         let frame = build_error_response_frame(&id, &rpc_err);
@@ -297,13 +292,13 @@ async fn handle_connection(
     };
 
     tracing::info!(
-        card_id = %identity.card_id.as_str(),
-        role = ?identity.role,
-        "mcp_server: connection bound to card identity"
+        daemon_trust,
+        "mcp_server: connection initialized with daemon trust"
     );
 
     // Phase 2: post-initialize message pump. Any request after this
-    // sees the pinned `identity` value.
+    // sees only the daemon trust marker; tools/call resolves identity
+    // from `_meta.threadId`.
     loop {
         line.clear();
         let n = reader.read_line(&mut line).await?;
@@ -335,7 +330,7 @@ async fn handle_connection(
                     params,
                     request_meta,
                     &ctx,
-                    &identity,
+                    daemon_trust,
                     &registry,
                 )
                 .await;
@@ -368,7 +363,7 @@ async fn dispatch_request(
     params: Value,
     request_meta: Option<Value>,
     ctx: &Arc<AppContext>,
-    identity: &CardIdentity,
+    _daemon_trust: bool,
     registry: &Arc<ToolRegistry>,
 ) -> Result<Value, RpcError> {
     match method {
@@ -390,6 +385,8 @@ async fn dispatch_request(
         }
         "tools/call" => {
             let request_meta = request_meta.or_else(|| extract_request_meta(&params));
+            let thread_id = extract_thread_id(request_meta.as_ref())
+                .ok_or_else(|| RpcError::invalid_params("tools/call requires _meta.threadId"))?;
             let name = params
                 .get("name")
                 .and_then(|n| n.as_str())
@@ -401,7 +398,27 @@ async fn dispatch_request(
             let handler: ToolHandler = registry
                 .lookup(name)
                 .ok_or_else(|| RpcError::method_not_found(&format!("tools/call: {name}")))?;
-            let fut = handler(ctx.clone(), identity.clone(), request_meta, arguments);
+            let row = ctx
+                .repo
+                .card_codex_thread_get_by_thread(thread_id)
+                .await
+                .map_err(|e| RpcError::internal(format!("tools/call thread lookup: {e}")))?
+                .ok_or_else(|| {
+                    tracing::warn!(
+                        target: "shared_codex_daemon::mcp_identity_miss",
+                        thread_id,
+                        tool = %name,
+                        "mcp_server: tools/call thread id did not resolve to a card"
+                    );
+                    RpcError::method_not_found(&format!("unknown thread_id: {thread_id}"))
+                })?;
+            let identity = ToolCallIdentity {
+                card_id: row.card_id,
+                role: row.role,
+                wave_id: row.wave_id,
+                thread_id: row.thread_id,
+            };
+            let fut = handler(ctx.clone(), identity, arguments);
             let raw = fut.await?;
             // Wrap the handler's raw payload in the MCP `CallToolResult`
             // envelope so codex's MCP client parses it. The kernel's
@@ -416,12 +433,21 @@ async fn dispatch_request(
                 "isError": false,
             }))
         }
+        "resources/list" => Ok(json!({ "resources": [] })),
+        "prompts/list" => Ok(json!({ "prompts": [] })),
         other => Err(RpcError::method_not_found(other)),
     }
 }
 
 fn extract_request_meta(params: &Value) -> Option<Value> {
     params.get("_meta").filter(|v| v.is_object()).cloned()
+}
+
+fn extract_thread_id(request_meta: Option<&Value>) -> Option<&str> {
+    request_meta
+        .and_then(|meta| meta.get("threadId"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
 }
 
 /// Helper used by integration tests to resolve the kernel-side socket

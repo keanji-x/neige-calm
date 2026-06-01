@@ -15,26 +15,10 @@
 //!     home parent (already on `AppState`, factored down to the minimum
 //!     surface the MCP server needs so the registry doesn't take a
 //!     full `AppState` clone);
-//!   * a [`CardIdentity`] — *bound at the handshake*. The transport
-//!     resolves which card minted the per-connection token in
-//!     `handshake.rs`, and that identity rides on the connection for
-//!     the rest of its lifetime. Tools never read the card id out of
-//!     the JSON-RPC params; trying to "spoof" via params is a no-op
-//!     because the registry shadow-overrides whatever the tool sees.
-//!   * per-request MCP `_meta` — infrastructure-only passthrough for
-//!     call metadata. Current handlers intentionally ignore it and keep
-//!     using the connection-bound identity.
-//!
-//! ## Why identity is connection-level (not param-level)
-//!
-//! The codex daemon's MCP client multiplexes every tool call on one
-//! socket, but a single daemon is bound to exactly one card (its
-//! `NEIGE_CARD_ID` env). Threading a card_id through every tool param
-//! would let a compromised plugin claim a different card identity by
-//! editing the JSON it sends — a clear sandbox break. By resolving the
-//! identity once at `initialize` (from the per-card MCP token row), we
-//! make the binding cryptographic + per-connection: the token alone is
-//! sufficient and any in-band `card_id` field is ignored.
+//!   * a [`ToolCallIdentity`] — resolved for each `tools/call` from
+//!     `_meta.threadId` via `card_codex_threads`. The `initialize`
+//!     token only proves daemon-level trust; it no longer pins a card
+//!     to the socket.
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::RouteRepo;
@@ -88,6 +72,28 @@ impl CardIdentity {
     }
 }
 
+/// Identity resolved for one MCP `tools/call` from the request's
+/// `_meta.threadId`. All fields except `wave_id` are required because
+/// every authorized tool call must map to a concrete persisted thread
+/// row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolCallIdentity {
+    pub card_id: String,
+    pub role: CardRole,
+    pub wave_id: Option<String>,
+    pub thread_id: String,
+}
+
+impl ToolCallIdentity {
+    pub fn to_actor_id(&self) -> ActorId {
+        let card_id = CardId::from(self.card_id.clone());
+        match self.role {
+            CardRole::Spec => ActorId::AiSpec(card_id),
+            CardRole::Worker | CardRole::Plain | CardRole::ReportCard => ActorId::AiCodex(card_id),
+        }
+    }
+}
+
 /// PR7b (#136) — soft role gate for spec-only MCP tools.
 ///
 /// The *real* boundary is [`crate::role_gate::enforce_role`], which runs
@@ -103,7 +109,7 @@ impl CardIdentity {
 /// Use at the top of every spec-only handler. `calm.get_wave_state` is
 /// callable by both Spec and Worker (a worker may need to peek wave
 /// metadata before reporting), so it skips this gate.
-pub fn require_role(identity: &CardIdentity, required: CardRole) -> Result<(), RpcError> {
+pub fn require_role(identity: &ToolCallIdentity, required: CardRole) -> Result<(), RpcError> {
     if identity.role != required {
         return Err(RpcError::custom(
             RpcError::INVALID_PARAMS,
@@ -118,7 +124,7 @@ pub fn require_role(identity: &CardIdentity, required: CardRole) -> Result<(), R
 
 /// Variant of [`require_role`] for read-only tools shared by a small
 /// fixed set of roles.
-pub fn require_role_any(identity: &CardIdentity, allowed: &[CardRole]) -> Result<(), RpcError> {
+pub fn require_role_any(identity: &ToolCallIdentity, allowed: &[CardRole]) -> Result<(), RpcError> {
     if allowed.contains(&identity.role) {
         return Ok(());
     }
@@ -160,15 +166,11 @@ pub type ToolHandlerFuture =
     Pin<Box<dyn Future<Output = Result<Value, RpcError>> + Send + 'static>>;
 
 /// One tool's invocation contract. The transport calls this with the
-/// per-connection [`CardIdentity`] (immutable, established at
-/// handshake), the optional per-request `_meta`, and the raw `arguments`
-/// JSON value from the `tools/call` params. Handlers are responsible for
-/// shape-validating `arguments` and translating internal errors into
-/// [`RpcError`] (almost always `RpcError::invalid_params` /
-/// `RpcError::internal`).
-pub type ToolHandler = Arc<
-    dyn Fn(Arc<AppContext>, CardIdentity, Option<Value>, Value) -> ToolHandlerFuture + Send + Sync,
->;
+/// per-call [`ToolCallIdentity`] and the raw `arguments` JSON value from
+/// the `tools/call` params. Handlers are responsible for shape-validating
+/// `arguments` and translating internal errors into [`RpcError`].
+pub type ToolHandler =
+    Arc<dyn Fn(Arc<AppContext>, ToolCallIdentity, Value) -> ToolHandlerFuture + Send + Sync>;
 
 /// `tools/list` descriptor — the JSON shape codex's MCP client expects.
 /// We store the description + the JSON schema for `inputSchema` here
@@ -226,12 +228,12 @@ impl Default for ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::CardId;
-
-    fn identity_with_role(role: CardRole) -> CardIdentity {
-        CardIdentity {
-            card_id: CardId::from("card-1"),
+    fn identity_with_role(role: CardRole) -> ToolCallIdentity {
+        ToolCallIdentity {
+            card_id: "card-1".to_string(),
             role,
+            wave_id: Some("wave-1".to_string()),
+            thread_id: "thread-1".to_string(),
         }
     }
 

@@ -2,14 +2,14 @@
 //!
 //! `calm.wave.ls` and `calm.wave.cat` expose a small path-based view
 //! rooted at the wave bound to the caller's MCP connection. The wave is
-//! always derived from [`CardIdentity`]; callers never provide a
+//! always derived from [`ToolCallIdentity`]; callers never provide a
 //! `wave_id`.
 
 use crate::card_role_cache::CardRoleCache;
 use crate::ids::ActorId;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
-    AppContext, CardIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
+    AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     require_role_any,
 };
 use crate::mcp_server::tools::wave_report;
@@ -30,14 +30,10 @@ pub fn register_into(registry: &mut ToolRegistry) {
 
 fn wrap<F, Fut>(f: F) -> ToolHandler
 where
-    F: Fn(Arc<AppContext>, CardIdentity, Value) -> Fut + Send + Sync + 'static,
+    F: Fn(Arc<AppContext>, ToolCallIdentity, Value) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<Value, RpcError>> + Send + 'static,
 {
-    Arc::new(
-        move |ctx, identity, _request_meta, args| -> ToolHandlerFuture {
-            Box::pin(f(ctx, identity, args))
-        },
-    )
+    Arc::new(move |ctx, identity, args| -> ToolHandlerFuture { Box::pin(f(ctx, identity, args)) })
 }
 
 /// Return-shape contract consumed by `neige`: `calm.wave.ls` returns a bare
@@ -84,7 +80,7 @@ fn cat_descriptor() -> ToolDescriptor {
 
 async fn wave_ls(
     ctx: Arc<AppContext>,
-    identity: CardIdentity,
+    identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
     require_role_any(&identity, &[CardRole::Spec, CardRole::Worker])?;
@@ -144,7 +140,7 @@ async fn wave_ls(
 
 async fn wave_cat(
     ctx: Arc<AppContext>,
-    identity: CardIdentity,
+    identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
     require_role_any(&identity, &[CardRole::Spec, CardRole::Worker])?;
@@ -242,7 +238,7 @@ fn normalize_path(path: &str) -> String {
 
 async fn resolve_wave_for_identity(
     ctx: &Arc<AppContext>,
-    identity: &CardIdentity,
+    identity: &ToolCallIdentity,
 ) -> Result<(Card, Wave), RpcError> {
     let card_id_str = identity.card_id.as_str().to_string();
     let card = ctx

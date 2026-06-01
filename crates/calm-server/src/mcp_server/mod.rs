@@ -31,7 +31,7 @@
 //!     `plugin_host::mcp`, keeping the layering one-way.
 //!   * [`handshake`] — `initialize` request handler: token lookup +
 //!     card-identity binding.
-//!   * [`registry`]  — `ToolRegistry` + `AppContext` + `CardIdentity`.
+//!   * [`registry`]  — `ToolRegistry` + `AppContext` + per-call identity.
 //!   * [`transport`] — UDS listener, per-connection task, JSON-RPC
 //!     message pump, `McpServer` + `McpShimConfig`.
 //!   * [`tools`]     — the three PR7a emit tools (`calm.dispatch_request`,
@@ -50,7 +50,7 @@ pub mod registry;
 pub mod tools;
 pub mod transport;
 
-pub use registry::{AppContext, CardIdentity, ToolRegistry};
+pub use registry::{AppContext, CardIdentity, ToolCallIdentity, ToolRegistry};
 pub use transport::{McpServer, McpShimConfig};
 
 use std::sync::Arc;
