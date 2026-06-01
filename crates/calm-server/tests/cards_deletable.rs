@@ -33,7 +33,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
+use calm_server::model::{CardRole, NewCard, NewCove, NewOverlay, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, DaemonClient};
@@ -429,6 +429,71 @@ async fn wave_delete_cascades_to_undeletable_spec_card() {
     assert!(after_wave.is_none());
     let after_card = boot.repo.card_get(&spec_card_id).await.unwrap();
     assert!(after_card.is_none(), "spec card cascade-deleted with wave");
+}
+
+#[tokio::test]
+async fn wave_delete_route_sweeps_card_wave_and_view_overlays() {
+    let boot = boot().await;
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        json!({"cove_id": boot.cove_id, "title": "w", "cwd": "/tmp/issue-454-route-overlay-test", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
+    let wave_id = body["id"].as_str().unwrap().to_string();
+    let card = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: wave_id.clone().into(),
+            kind: "terminal".into(),
+            sort: None,
+            payload: json!({"title": "plain"}),
+        })
+        .await
+        .unwrap();
+
+    for (entity_kind, entity_id) in [
+        ("card", card.id.as_str()),
+        ("wave", wave_id.as_str()),
+        ("view", wave_id.as_str()),
+    ] {
+        boot.repo
+            .overlay_upsert(NewOverlay {
+                plugin_id: "route-test".into(),
+                entity_kind: entity_kind.into(),
+                entity_id: entity_id.into(),
+                kind: "status".into(),
+                payload: json!({"schemaVersion": 1, "state": "idle"}),
+            })
+            .await
+            .unwrap();
+    }
+
+    let status = delete(boot.app.clone(), &format!("/api/waves/{wave_id}")).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    assert!(
+        boot.repo
+            .overlays_for("card", card.id.as_str())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        boot.repo
+            .overlays_for("wave", &wave_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        boot.repo
+            .overlays_for("view", &wave_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 // ---------------------------------------------------------------------------

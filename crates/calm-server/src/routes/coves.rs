@@ -20,7 +20,8 @@
 
 use crate::actor::Actor;
 use crate::db::sqlite::{
-    cove_create_system_tx, cove_create_tx, cove_delete_tx, cove_update_tx, terminal_delete_tx,
+    cove_create_system_tx, cove_create_tx, cove_delete_tx, cove_update_tx,
+    overlay_delete_by_entity_tx, overlay_delete_subtree_by_cove_tx, terminal_delete_tx,
 };
 use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
@@ -316,9 +317,8 @@ pub(crate) async fn delete_cove(
     // a cove delete that would orphan a terminal row aborts the
     // surrounding txn unless we drain the table first. Walk
     // waves → cards → terminal_get_by_card; reap the daemon + socket
-    // for each; collect the terminal ids for the in-txn row delete.
-    // Same shape as `routes::waves::delete_wave` but extended one
-    // level deeper.
+    // for each; collect the terminal ids for the in-txn row delete. The
+    // overlay sweep derives current wave/card ids inside the write txn.
     let waves = s.repo.waves_by_cove(&id).await?;
     let mut terminal_ids: Vec<String> = Vec::new();
     for wave in &waves {
@@ -353,6 +353,8 @@ pub(crate) async fn delete_cove(
                         Err(e) => return Err(e),
                     }
                 }
+                overlay_delete_subtree_by_cove_tx(tx, &id).await?;
+                overlay_delete_by_entity_tx(tx, "cove", &id).await?;
                 cove_delete_tx(tx, &id).await?;
                 Ok(((), Event::CoveDeleted { id: id.into() }))
             })

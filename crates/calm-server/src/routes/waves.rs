@@ -61,7 +61,8 @@ use crate::actor::Actor;
 use crate::auth::Principal;
 use crate::db::sqlite::{
     card_codex_thread_upsert_tx, card_create_with_id_tx, card_mcp_token_set_tx, card_update_tx,
-    card_with_codex_create_tx, cove_folder_create_tx, overlay_upsert_tx,
+    card_with_codex_create_tx, cove_folder_create_tx, overlay_delete_by_entity_tx,
+    overlay_delete_card_overlays_by_wave_tx, overlay_upsert_tx,
     spec_card_set_appserver_after_reset_tx, terminal_delete_tx, wave_create_tx, wave_delete_tx,
     wave_update_tx,
 };
@@ -1376,14 +1377,11 @@ pub(crate) async fn delete_wave(
     //      cascade away from the wave; the FK to terminals is honored
     //      because we've already drained the table for this subtree.
     //
-    // Reading outside the txn is fine — there's no concurrent write
-    // that could change `wave.cove_id` or grow the card list under us
-    // (the FK locks established by the wave-delete txn would serialize
-    // any racing create against the same wave). Worst case a racing
-    // `POST /api/cards` lands a new card on the wave between our read
-    // and the write — that card won't have a terminal row yet (the
-    // 3-step create takes another HTTP round trip), so the wave-delete
-    // FK cascade handles it.
+    // The outside-txn card walk is only for terminal process reaping.
+    // Overlay cleanup happens inside the delete transaction via a DB
+    // subquery, so a card+overlay created after this snapshot but before
+    // the wave delete commits is still swept before the FK cascade drops
+    // the card.
     let wave = s
         .repo
         .wave_get(&id)
@@ -1401,8 +1399,8 @@ pub(crate) async fn delete_wave(
     // rows drop.
     reap_spec_push(&s, &wave_id).await;
 
-    let cards = s.repo.cards_by_wave(wave_id.as_str()).await?;
     let mut terminal_ids: Vec<String> = Vec::new();
+    let cards = s.repo.cards_by_wave(wave_id.as_str()).await?;
     for card in &cards {
         if let Some(t) = s.repo.terminal_get_by_card(card.id.as_str()).await? {
             reap_terminal_artifacts(&s, &t).await;
@@ -1436,6 +1434,9 @@ pub(crate) async fn delete_wave(
                         Err(e) => return Err(e),
                     }
                 }
+                overlay_delete_card_overlays_by_wave_tx(tx, wave_id.as_str()).await?;
+                overlay_delete_by_entity_tx(tx, "wave", wave_id.as_str()).await?;
+                overlay_delete_by_entity_tx(tx, "view", wave_id.as_str()).await?;
                 wave_delete_tx(tx, wave_id.as_ref(), &wcc_for_tx).await?;
                 Ok((
                     (),
