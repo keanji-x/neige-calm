@@ -1,4 +1,5 @@
-import { lazy, Suspense, useEffect } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { z } from 'zod';
 import { CardHead } from '../CardHead';
 import type { CardEntry } from '../registry';
@@ -11,6 +12,10 @@ import type {
 import * as api from '../../api/calm';
 import { CalmApiError } from '../../api/calm';
 import { useTheme } from '../../app/theme';
+import {
+  overlayStateQueryKey,
+  useOverlayState,
+} from '../../hooks/useOverlayState';
 import { useState } from '../../shared/state';
 
 const LazyCodePane = lazy(() =>
@@ -26,6 +31,7 @@ const fileViewerPayloadSchema = z.object({
 
 type Tab = 'code' | 'diff';
 
+const FILE_VIEWER_NAV_SCHEMA_VERSION = 1;
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'file-viewer:sidebar-collapsed';
 const IMAGE_EXTENSIONS = [
   '.png',
@@ -43,6 +49,24 @@ type FileState =
   | { kind: 'loaded'; path: string; text: string; truncated: boolean }
   | { kind: 'image'; path: string }
   | { kind: 'error'; message: string };
+
+interface FileViewerNavOverlay {
+  schemaVersion: 1;
+  tab: Tab;
+  folderPath: string;
+  selectedPath: string | null;
+  diffSelected: string | null;
+}
+
+function seedNav(path: string): FileViewerNavOverlay {
+  return {
+    schemaVersion: FILE_VIEWER_NAV_SCHEMA_VERSION,
+    tab: 'code',
+    folderPath: path,
+    selectedPath: path,
+    diffSelected: null,
+  };
+}
 
 function isImagePath(path: string): boolean {
   const lower = path.toLowerCase();
@@ -77,19 +101,35 @@ function FileViewerCard({
   onClose?: () => void;
 }) {
   const { resolved: theme } = useTheme();
-  const [tab, setTab] = useState<Tab>('code');
+  const queryClient = useQueryClient();
+  const defaultNav = useMemo(() => seedNav(card.path), [card.path]);
+  const navOverlayQueryKey = overlayStateQueryKey(
+    'kernel',
+    'card',
+    card.id,
+    'file-viewer-nav',
+  );
+  // The hook returns this seed for one render while persisted nav hydrates,
+  // matching the pre-overlay first paint.
+  const [nav, setNav] = useOverlayState<FileViewerNavOverlay>({
+    entity_kind: 'card',
+    entity_id: card.id,
+    kind: 'file-viewer-nav',
+    default: defaultNav,
+  });
+  const navOverlayReady =
+    queryClient.getQueryState(navOverlayQueryKey)?.status === 'success';
+  const { tab, folderPath, selectedPath, diffSelected } = nav;
+  const didMountRef = useRef(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     readPersistedSidebarCollapsed,
   );
-  const [folderPath, setFolderPath] = useState(card.path);
-  const [selectedPath, setSelectedPath] = useState<string | null>(card.path);
   const [listing, setListing] = useState<ListdirResponse | null>(null);
   const [listingLoading, setListingLoading] = useState(false);
   const [listingError, setListingError] = useState<string | null>(null);
   const [fileState, setFileState] = useState<FileState>({ kind: 'idle' });
   const [gitRoot, setGitRoot] = useState<string | null>(null);
   const [changedFiles, setChangedFiles] = useState<GitChangedFile[]>([]);
-  const [diffSelected, setDiffSelected] = useState<string | null>(null);
   const [diffListState, setDiffListState] = useState<
     'idle' | 'loading' | 'loaded'
   >('idle');
@@ -98,11 +138,13 @@ function FileViewerCard({
   const [diffLoading, setDiffLoading] = useState(false);
 
   useEffect(() => {
-    setFolderPath(card.path);
-    setSelectedPath(card.path);
+    if (!didMountRef.current) {
+      didMountRef.current = true;
+      return;
+    }
+    setNav(seedNav(card.path));
     setListing(null);
-    setDiffSelected(null);
-  }, [card.path]);
+  }, [card.path, setNav]);
 
   useEffect(() => {
     writePersistedSidebarCollapsed(sidebarCollapsed);
@@ -117,16 +159,27 @@ function FileViewerCard({
       .then((res) => {
         if (cancelled) return;
         setListing(res);
-        setFolderPath(res.path);
-        if (folderPath === card.path) {
-          setSelectedPath(null);
+        if (navOverlayReady && res.path !== folderPath) {
+          setNav((cur) => ({
+            ...cur,
+            folderPath: res.path,
+            selectedPath:
+              cur.selectedPath === folderPath ? res.path : cur.selectedPath,
+          }));
         }
       })
       .catch((err: unknown) => {
         if (cancelled) return;
         const parent = parentPath(folderPath);
-        if (folderPath === card.path && parent && parent !== folderPath) {
-          setFolderPath(parent);
+        if (navOverlayReady && parent && parent !== folderPath) {
+          setNav((cur) => ({
+            ...cur,
+            folderPath: parent,
+            selectedPath:
+              folderPath !== card.path && cur.selectedPath === folderPath
+                ? parent
+                : cur.selectedPath,
+          }));
           return;
         }
         setListing(null);
@@ -138,18 +191,24 @@ function FileViewerCard({
     return () => {
       cancelled = true;
     };
-  }, [card.path, folderPath]);
+  }, [card.path, folderPath, navOverlayReady, setNav]);
+
+  const selectedCodePath =
+    selectedPath === folderPath &&
+    (listingLoading || !listing || listing.path === selectedPath)
+      ? null
+      : selectedPath;
 
   useEffect(() => {
-    if (tab !== 'code' || !selectedPath) return;
-    if (isImagePath(selectedPath)) {
-      setFileState({ kind: 'image', path: selectedPath });
+    if (tab !== 'code' || !selectedCodePath) return;
+    if (isImagePath(selectedCodePath)) {
+      setFileState({ kind: 'image', path: selectedCodePath });
       return;
     }
     let cancelled = false;
     setFileState({ kind: 'loading' });
     api
-      .readFile(selectedPath)
+      .readFile(selectedCodePath)
       .then((res) => {
         if (cancelled) return;
         setFileState({
@@ -170,7 +229,7 @@ function FileViewerCard({
     return () => {
       cancelled = true;
     };
-  }, [selectedPath, tab]);
+  }, [selectedCodePath, tab]);
 
   useEffect(() => {
     if (tab !== 'diff') return;
@@ -184,24 +243,26 @@ function FileViewerCard({
         setGitRoot(res.repo_root);
         setChangedFiles(res.files);
         setDiffListState('loaded');
-        setDiffSelected((cur) =>
-          cur && res.files.some((f) => f.path === cur)
-            ? cur
-            : (res.files[0]?.path ?? null),
-        );
+        setNav((cur) => ({
+          ...cur,
+          diffSelected:
+            cur.diffSelected && res.files.some((f) => f.path === cur.diffSelected)
+              ? cur.diffSelected
+              : (res.files[0]?.path ?? null),
+        }));
       })
       .catch((err: unknown) => {
         if (cancelled) return;
         setGitRoot(null);
         setChangedFiles([]);
-        setDiffSelected(null);
+        setNav((cur) => ({ ...cur, diffSelected: null }));
         setDiffListState('loaded');
         setDiffError(formatError(err, 'Failed to load git status'));
       });
     return () => {
       cancelled = true;
     };
-  }, [folderPath, tab]);
+  }, [folderPath, setNav, tab]);
 
   useEffect(() => {
     if (tab !== 'diff' || !gitRoot || !diffSelected) {
@@ -235,6 +296,7 @@ function FileViewerCard({
   const sidebarToggleLabel = sidebarCollapsed
     ? 'Expand file tree'
     : 'Collapse file tree';
+  const codeSelectionLabel = selectedCodePath ?? 'Select a file';
 
   return (
     <div className="file-viewer-card" data-wheel-file-viewer-tab={tab}>
@@ -251,7 +313,10 @@ function FileViewerCard({
               <button
                 type="button"
                 className="file-viewer-up"
-                onClick={() => listing?.parent && setFolderPath(listing.parent)}
+                onClick={() =>
+                  listing?.parent &&
+                  setNav((cur) => ({ ...cur, folderPath: listing.parent! }))
+                }
                 disabled={!listing?.parent || listingLoading}
                 title="Parent directory"
                 aria-label="Parent directory"
@@ -282,11 +347,17 @@ function FileViewerCard({
                       }`}
                       onClick={() => {
                         if (ent.is_dir) {
-                          setSelectedPath(null);
-                          setFolderPath(path);
+                          setNav((cur) => ({
+                            ...cur,
+                            folderPath: path,
+                            selectedPath: null,
+                          }));
                         } else {
-                          setSelectedPath(path);
-                          setTab('code');
+                          setNav((cur) => ({
+                            ...cur,
+                            tab: 'code',
+                            selectedPath: path,
+                          }));
                         }
                       }}
                       title={ent.name}
@@ -322,7 +393,7 @@ function FileViewerCard({
                 role="tab"
                 aria-selected={tab === 'code'}
                 className={tab === 'code' ? 'active' : ''}
-                onClick={() => setTab('code')}
+                onClick={() => setNav((cur) => ({ ...cur, tab: 'code' }))}
               >
                 Code
               </button>
@@ -331,27 +402,29 @@ function FileViewerCard({
                 role="tab"
                 aria-selected={tab === 'diff'}
                 className={tab === 'diff' ? 'active' : ''}
-                onClick={() => setTab('diff')}
+                onClick={() => setNav((cur) => ({ ...cur, tab: 'diff' }))}
               >
                 Diff
               </button>
             </div>
             <span
               className="file-viewer-selection"
-              title={tab === 'diff' ? diffSelected ?? '' : selectedPath ?? ''}
+              title={tab === 'diff' ? diffSelected ?? '' : selectedCodePath ?? ''}
             >
               {tab === 'diff'
                 ? diffSelected ?? 'No changed file selected'
-                : selectedPath ?? 'Select a file'}
+                : codeSelectionLabel}
             </span>
           </div>
           {tab === 'code' ? (
-            <CodeTab state={fileState} selectedPath={selectedPath} theme={theme} />
+            <CodeTab state={fileState} selectedPath={selectedCodePath} theme={theme} />
           ) : (
             <DiffTab
               files={changedFiles}
               selected={diffSelected}
-              onSelect={setDiffSelected}
+              onSelect={(path) =>
+                setNav((cur) => ({ ...cur, diffSelected: path }))
+              }
               listState={diffListState}
               error={diffError}
               diff={diff}
