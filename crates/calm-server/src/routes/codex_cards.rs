@@ -17,8 +17,9 @@
 //!    `spawn_terminal_for` helper the terminal-card endpoint uses. Empty
 //!    prompt cards still seed per-card `CODEX_HOME` before the legacy bare
 //!    `codex` spawn. Non-empty prompt cards use the shared app-server when
-//!    enabled: the kernel creates a thread, sends turn #1, waits for the
-//!    first lifecycle notification, and spawns a remote `codex resume` TUI.
+//!    explicitly enabled for prompt cards: the kernel creates a thread,
+//!    sends turn #1, waits for the first lifecycle notification, and spawns
+//!    a remote `codex resume` TUI.
 //!    A renderer-start failure returns 500 to the client but does NOT roll
 //!    back the persisted rows: the orphan-terminal sweeper reaps them within
 //!    ~60s.
@@ -65,10 +66,10 @@ pub fn router() -> Router<AppState> {
 /// `cwd` falls back to `$HOME` then the server's cwd.
 ///
 /// `prompt` is the hands-free entry point: when non-empty and the shared
-/// codex app-server is enabled, the kernel starts a shared thread, persists
-/// its id on both the payload and `card_codex_threads`, sends the prompt via
-/// `turn/start`, waits for `turn/started` or `turn/completed`, and starts the
-/// TUI as `codex resume <thread_id> --remote unix://...`.
+/// codex prompt-card path is enabled, the kernel starts a shared thread,
+/// persists its id on both the payload and `card_codex_threads`, sends the
+/// prompt via `turn/start`, waits for `turn/started` or `turn/completed`,
+/// and starts the TUI as `codex resume <thread_id> --remote unix://...`.
 ///
 /// If the shared-daemon rollback flag is disabled, a non-empty prompt stays
 /// on the legacy path: pass it to codex CLI as positional `[PROMPT]`, write
@@ -189,7 +190,9 @@ pub(crate) async fn create_codex_card(
         .filter(|s| !s.is_empty())
         .map(String::from);
 
-    let use_shared_prompt_path = prompt.is_some() && s.shared_codex_appserver.is_enabled();
+    let use_shared_prompt_path = prompt.is_some()
+        && s.shared_codex_prompt_cards_enabled
+        && s.shared_codex_appserver.is_enabled();
 
     // 4. Assemble the env map the daemon will forward to the PTY child:
     //    CODEX_HOME / NEIGE_CARD_ID / NEIGE_CALM_BASE_URL plus proxy vars

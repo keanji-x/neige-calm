@@ -31,6 +31,12 @@ async fn main() -> anyhow::Result<()> {
         println!("{}", serde_json::to_string_pretty(&compatibility)?);
         return Ok(());
     }
+    if !cfg.shared_codex_prompt_cards_enabled {
+        tracing::info!(
+            target: "shared_codex_daemon::config",
+            "shared_codex_prompt_cards_enabled=false - user prompt cards stay on legacy path until PR3c"
+        );
+    }
     warn_if_worker_hook_callback_is_not_loopback(&cfg);
 
     // Storage. `mock` keeps the in-memory backend for dev — it now resolves to

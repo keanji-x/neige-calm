@@ -36,7 +36,7 @@ fn fake_codex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_osc-probe-child")
 }
 
-fn cfg(root: &TempDir, enabled: bool) -> Config {
+fn cfg(root: &TempDir, appserver_enabled: bool, prompt_cards_enabled: bool) -> Config {
     let mut cfg = Config::parse_from([
         "calm-server",
         "--data-dir",
@@ -48,11 +48,12 @@ fn cfg(root: &TempDir, enabled: bool) -> Config {
         "--shared-codex-appserver-restart-max-delay-ms",
         "50",
     ]);
-    cfg.shared_codex_appserver_enabled = enabled;
+    cfg.shared_codex_appserver_enabled = appserver_enabled;
+    cfg.shared_codex_prompt_cards_enabled = prompt_cards_enabled;
     cfg
 }
 
-async fn boot(shared_enabled: bool) -> Boot {
+async fn boot(appserver_enabled: bool, prompt_cards_enabled: bool) -> Boot {
     let tmp = TempDir::new().expect("tempdir");
     let repo = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -105,8 +106,10 @@ async fn boot(shared_enabled: bool) -> Boot {
         None,
     );
 
-    if shared_enabled {
-        let cfg = cfg(&tmp, true);
+    state = state.with_shared_codex_prompt_cards_enabled(prompt_cards_enabled);
+
+    if appserver_enabled {
+        let cfg = cfg(&tmp, true, prompt_cards_enabled);
         let home = calm_server::shared_codex_home::SharedCodexHome::new(
             cfg.data_dir_resolved().join("codex-home"),
             cfg.data_dir_resolved().join("codex-homes"),
@@ -185,7 +188,7 @@ async fn create_prompt_card_calls_shared_daemon_thread_start() {
     unsafe {
         std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
     }
-    let boot = boot(true).await;
+    let boot = boot(true, true).await;
 
     let (status, card) = post(
         boot.app.clone(),
@@ -219,7 +222,7 @@ async fn create_prompt_card_calls_shared_daemon_thread_start() {
 #[tokio::test]
 async fn create_prompt_card_persists_thread_mapping_to_table_and_payload() {
     let _guard = ENV_LOCK.lock().await;
-    let boot = boot(true).await;
+    let boot = boot(true, true).await;
     let (status, card) = post(
         boot.app.clone(),
         &boot.wave_id,
@@ -243,7 +246,7 @@ async fn create_prompt_card_persists_thread_mapping_to_table_and_payload() {
 #[tokio::test]
 async fn create_prompt_card_spawns_remote_resume_tui() {
     let _guard = ENV_LOCK.lock().await;
-    let boot = boot(true).await;
+    let boot = boot(true, true).await;
     let (status, card) = post(
         boot.app.clone(),
         &boot.wave_id,
@@ -267,7 +270,7 @@ async fn create_prompt_card_spawns_remote_resume_tui() {
 #[tokio::test]
 async fn create_prompt_card_skips_per_card_codex_home_seeding() {
     let _guard = ENV_LOCK.lock().await;
-    let boot = boot(true).await;
+    let boot = boot(true, true).await;
     let (status, card) = post(
         boot.app.clone(),
         &boot.wave_id,
@@ -285,7 +288,7 @@ async fn create_prompt_card_skips_per_card_codex_home_seeding() {
 #[tokio::test]
 async fn create_empty_codex_card_still_uses_legacy_path() {
     let _guard = ENV_LOCK.lock().await;
-    let boot = boot(true).await;
+    let boot = boot(true, true).await;
     let (status, card) = post(
         boot.app.clone(),
         &boot.wave_id,
@@ -309,9 +312,45 @@ async fn create_empty_codex_card_still_uses_legacy_path() {
 }
 
 #[tokio::test]
-async fn create_prompt_card_with_shared_daemon_disabled_falls_back_to_legacy() {
+async fn create_prompt_card_with_shared_codex_prompt_cards_disabled_falls_back_to_legacy() {
     let _guard = ENV_LOCK.lock().await;
-    let boot = boot(false).await;
+    let boot = boot(false, false).await;
+    let (status, card) = post(
+        boot.app.clone(),
+        &boot.wave_id,
+        json!({ "cwd": "/workspace", "prompt": "legacy prompt", "theme": theme() }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={card:?}");
+    assert!(card["payload"].get("codex_thread_id").is_none());
+    let card_id = card["id"].as_str().unwrap();
+    assert!(
+        boot.codex_homes_dir
+            .join(card_id)
+            .join("config.toml")
+            .exists()
+    );
+    assert!(
+        boot.repo
+            .card_codex_thread_get_by_card(card_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let terminal_id = card["payload"]["terminal_id"].as_str().unwrap();
+    let entry = boot
+        .state
+        .terminal_renderer
+        .get(terminal_id)
+        .expect("renderer entry");
+    assert_eq!(entry.config().args[1], "codex 'legacy prompt'");
+}
+
+#[tokio::test]
+async fn create_prompt_card_with_shared_daemon_enabled_but_prompt_cards_disabled_falls_back_to_legacy()
+ {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot(true, false).await;
     let (status, card) = post(
         boot.app.clone(),
         &boot.wave_id,
