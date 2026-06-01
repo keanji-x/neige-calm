@@ -1,7 +1,7 @@
 export interface XtermWheelTarget {
   root: HTMLElement;
   mode(): 'scrollback' | 'passthrough';
-  scrollback(deltaY: number, deltaMode: number): void;
+  scrollback(deltaY: number, deltaMode: number): boolean;
 }
 
 export interface XtermWheelState {
@@ -11,6 +11,7 @@ export interface XtermWheelState {
   buffer?: {
     active?: {
       type?: string;
+      viewportY?: number;
     };
   };
 }
@@ -52,9 +53,12 @@ export function createXtermWheelTarget(args: {
     },
     scrollback: (deltaY, deltaMode) => {
       const term = terminalRef.current;
-      if (!term) return;
+      if (!term) return false;
       const lines = deltaYToLines(deltaY, deltaMode);
-      if (lines !== 0) term.scrollLines(lines);
+      if (lines === 0) return false;
+      const beforeY = term.buffer?.active?.viewportY;
+      term.scrollLines(lines);
+      return term.buffer?.active?.viewportY !== beforeY;
     },
   };
 }
