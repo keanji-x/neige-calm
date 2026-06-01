@@ -2302,6 +2302,16 @@ impl RepoRead for SqlxRepo {
     async fn shared_spec_cards_for_initial_prompt_takeover(
         &self,
     ) -> Result<Vec<(String, String, String, i64)>> {
+        // Join `terminals` and require a LIVE row so a card whose TUI was
+        // already reaped (reconcile_supervisor_on_boot marked it exited,
+        // or a SIGKILL set signal_killed=1) is NOT re-registered into the
+        // pending FIFO. A dead TUI can never emit thread/started, so
+        // re-registering would leave the entry stranded until TTL expiry
+        // — and worse, the entry would absorb a later thread/started
+        // attribution intended for a different empty card (until
+        // on_thread_started's stale-front-drop catches it). This was the
+        // R7 P2 #1 followup; CI reproduced it because the terminal gets
+        // reaped before the next boot's takeover query runs.
         let rows: Vec<(String, String, String, Option<i64>)> = sqlx::query_as(
             r#"SELECT c.id,
                       c.wave_id,
@@ -2309,14 +2319,16 @@ impl RepoRead for SqlxRepo {
                       json_extract(c.payload, '$.push_watermark')
                FROM cards c
                JOIN waves w ON w.id = c.wave_id
+               JOIN terminals t ON t.id = json_extract(c.payload, '$.terminal_id')
                WHERE c.role = 'spec'
                  AND COALESCE(json_extract(c.payload, '$.appserver_needs_initial_prompt'), 0) = 1
                  AND COALESCE(json_extract(c.payload, '$.codex_source'), 'legacy') = 'shared'
-                 AND json_extract(c.payload, '$.terminal_id') IS NOT NULL
+                 AND t.exit_code IS NULL
+                 AND COALESCE(t.signal_killed, 0) = 0
                  AND NOT EXISTS (
                        SELECT 1
-                         FROM card_codex_threads t
-                        WHERE t.card_id = c.id
+                         FROM card_codex_threads ct
+                        WHERE ct.card_id = c.id
                  )
                  AND w.lifecycle NOT IN ('done', 'canceled', 'failed')
                ORDER BY c.created_at ASC, c.id ASC"#,

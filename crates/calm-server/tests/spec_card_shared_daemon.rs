@@ -374,6 +374,18 @@ async fn empty_shared_spec_boot_takeover_reparks_pending_without_legacy_bootstra
     assert_eq!(status, StatusCode::CREATED, "body={wave:?}");
     let wave_id = wave["id"].as_str().unwrap().to_string();
     let spec = spec_card(&boot.repo, &wave_id).await;
+    // Force the terminal row "alive" — under CI's daemon spawn pipeline the
+    // PTY TUI exits quickly and reconcile/sweeper races mark the terminal
+    // dead before the test asserts. The takeover SQL (intentionally) skips
+    // dead terminals; this test exercises the *alive-terminal* re-park
+    // path, so reset exit_code+signal_killed here. terminal_set_exit with
+    // (None, false) writes UPDATE terminals SET exit_code=NULL,
+    // signal_killed=0 — effectively "resurrecting" the row for the test.
+    let terminal_id = spec.payload["terminal_id"].as_str().unwrap();
+    boot.repo
+        .terminal_set_exit(terminal_id, None, false)
+        .await
+        .unwrap();
     let pending = boot.state.pending_codex_threads.as_ref().unwrap();
     assert!(pending.remove_by_card(spec.id.as_str()).await);
     drop(boot.state.spec_push.remove(&wave_id.clone().into()));
