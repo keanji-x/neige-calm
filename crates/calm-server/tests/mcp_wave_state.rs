@@ -152,7 +152,7 @@ async fn call_tool(
         .registry
         .lookup(name)
         .unwrap_or_else(|| panic!("tool not registered: {name}"));
-    handler(boot.ctx.clone(), identity, args).await
+    handler(boot.ctx.clone(), identity, None, args).await
 }
 
 fn spec_identity(boot: &Boot) -> CardIdentity {

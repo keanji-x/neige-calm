@@ -248,7 +248,9 @@ async fn handle_connection(
             }
         };
         match frame {
-            Frame::Request { id, method, params } if method == "initialize" => {
+            Frame::Request {
+                id, method, params, ..
+            } if method == "initialize" => {
                 match handle_initialize(
                     ctx.repo.as_ref(),
                     &ctx.card_role_cache,
@@ -321,8 +323,22 @@ async fn handle_connection(
         };
 
         match frame {
-            Frame::Request { id, method, params } => {
-                let resp = dispatch_request(&id, &method, params, &ctx, &identity, &registry).await;
+            Frame::Request {
+                id,
+                method,
+                params,
+                request_meta,
+            } => {
+                let resp = dispatch_request(
+                    &id,
+                    &method,
+                    params,
+                    request_meta,
+                    &ctx,
+                    &identity,
+                    &registry,
+                )
+                .await;
                 let bytes = match resp {
                     Ok(value) => build_ok_response_frame(&id, &value),
                     Err(err) => build_error_response_frame(&id, &err),
@@ -350,6 +366,7 @@ async fn dispatch_request(
     _id: &RequestId,
     method: &str,
     params: Value,
+    request_meta: Option<Value>,
     ctx: &Arc<AppContext>,
     identity: &CardIdentity,
     registry: &Arc<ToolRegistry>,
@@ -372,6 +389,7 @@ async fn dispatch_request(
             Ok(json!({ "tools": tools }))
         }
         "tools/call" => {
+            let request_meta = request_meta.or_else(|| extract_request_meta(&params));
             let name = params
                 .get("name")
                 .and_then(|n| n.as_str())
@@ -383,7 +401,7 @@ async fn dispatch_request(
             let handler: ToolHandler = registry
                 .lookup(name)
                 .ok_or_else(|| RpcError::method_not_found(&format!("tools/call: {name}")))?;
-            let fut = handler(ctx.clone(), identity.clone(), arguments);
+            let fut = handler(ctx.clone(), identity.clone(), request_meta, arguments);
             let raw = fut.await?;
             // Wrap the handler's raw payload in the MCP `CallToolResult`
             // envelope so codex's MCP client parses it. The kernel's
@@ -400,6 +418,10 @@ async fn dispatch_request(
         }
         other => Err(RpcError::method_not_found(other)),
     }
+}
+
+fn extract_request_meta(params: &Value) -> Option<Value> {
+    params.get("_meta").filter(|v| v.is_object()).cloned()
 }
 
 /// Helper used by integration tests to resolve the kernel-side socket
