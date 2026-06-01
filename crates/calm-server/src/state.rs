@@ -250,6 +250,12 @@ impl AppState {
         }
     }
 
+    #[cfg(feature = "fixtures")]
+    pub fn with_shared_codex_appserver(mut self, shared: Arc<SharedCodexAppServer>) -> Self {
+        self.shared_codex_appserver = shared;
+        self
+    }
+
     /// Real boot-time constructor. Loads the plugin manifest registry from
     /// `cfg.plugins_dir`, creating the directory if it doesn't exist (fresh
     /// install path), wires up `DaemonClient` + `EventBus` + `PluginHost`,

@@ -18,7 +18,9 @@ use tokio::net::UnixStream;
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, broadcast};
 
-use crate::codex_appserver::{ClientInfo, CodexAppServer, InputItem, Notification};
+use crate::codex_appserver::{
+    ClientInfo, CodexAppServer, InputItem, Notification, ThreadStartParams,
+};
 use crate::config::Config;
 use crate::db::{Repo, SharedCodexDaemonUpdate};
 use crate::error::{CalmError, Result};
@@ -82,8 +84,11 @@ pub struct SharedDaemonStatus {
     pub last_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SharedThreadStartParams {
+    pub cwd: String,
+    pub approval_policy: String,
+    pub sandbox_mode: String,
     pub developer_instructions: Option<String>,
 }
 
@@ -275,7 +280,12 @@ impl SharedCodexAppServer {
     ) -> Result<String> {
         let client = self.client().await?;
         let thread = client
-            .thread_start(params.developer_instructions.as_deref())
+            .thread_start_with_params(ThreadStartParams {
+                cwd: params.cwd,
+                approval_policy: params.approval_policy,
+                sandbox_mode: params.sandbox_mode,
+                developer_instructions: params.developer_instructions,
+            })
             .await?;
         let thread_id = thread
             .thread_id()
@@ -315,6 +325,14 @@ impl SharedCodexAppServer {
 
     pub fn subscribe_notifications(&self) -> broadcast::Receiver<Notification> {
         self.notifications.subscribe()
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub fn remote_uri(&self) -> String {
+        format!("unix://{}", self.sock.display())
     }
 
     pub fn status_snapshot(&self) -> SharedDaemonStatus {

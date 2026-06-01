@@ -1,5 +1,12 @@
-//! `codex_auto_submit` — kernel-side subscriber that submits the
+//! `codex_auto_submit` — legacy kernel-side subscriber that submits the
 //! composer-pre-filled prompt for a freshly-spawned codex card.
+//!
+//! After #410 PR5 this module only exists for codex cards that still use the
+//! legacy PTY-first path (empty prompt cards, plus non-empty prompt cards when
+//! the shared-daemon rollback flag is disabled). The PR5 shared prompt path
+//! sends the first prompt via `turn/start`, so there is no composer text to
+//! submit with `\r`. PR6 is expected to retire this module with the remaining
+//! legacy route.
 //!
 //! ## What it does
 //!
