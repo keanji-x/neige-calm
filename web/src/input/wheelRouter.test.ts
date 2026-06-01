@@ -144,7 +144,7 @@ describe('resolveWheelRoute', () => {
     expect(route).toEqual({ kind: 'native-scroll', target: textarea });
   });
 
-  it('routes a card with no native scrollable target to the page scroll container', () => {
+  it('sinks a card with no native scrollable target', () => {
     const { scrollRoot, activeCard } = fixture();
     const body = document.createElement('div');
     activeCard.append(body);
@@ -156,7 +156,7 @@ describe('resolveWheelRoute', () => {
         eventTarget: body,
         deltaY: 120,
       }),
-    ).toEqual({ kind: 'native-scroll', target: scrollRoot });
+    ).toEqual({ kind: 'sink' });
   });
 
   it('lets modal targets keep their dialog scroll behavior', () => {
@@ -219,7 +219,7 @@ describe('resolveWheelRoute', () => {
     unregisterXtermShell(activeCard);
   });
 
-  it('routes xterm with no scrollback down to the page scroll container', () => {
+  it('sinks xterm with no scrollback', () => {
     const { scrollRoot, activeCard } = fixture();
     const xtermTarget: XtermWheelTarget = {
       root: document.createElement('div'),
@@ -237,11 +237,11 @@ describe('resolveWheelRoute', () => {
       deltaMode: WheelEvent.DOM_DELTA_PIXEL,
     });
 
-    expect(route).toEqual({ kind: 'native-scroll', target: scrollRoot });
+    expect(route).toEqual({ kind: 'sink' });
     unregisterXtermShell(activeCard);
   });
 
-  it('routes xterm at the top of scrollback wheel up to the page scroll container', () => {
+  it('sinks xterm at the top of scrollback wheel up', () => {
     const { scrollRoot, activeCard } = fixture();
     const xtermTarget: XtermWheelTarget = {
       root: document.createElement('div'),
@@ -259,7 +259,7 @@ describe('resolveWheelRoute', () => {
       deltaMode: WheelEvent.DOM_DELTA_PIXEL,
     });
 
-    expect(route).toEqual({ kind: 'native-scroll', target: scrollRoot });
+    expect(route).toEqual({ kind: 'sink' });
     unregisterXtermShell(activeCard);
   });
 
@@ -307,7 +307,7 @@ describe('resolveWheelRoute', () => {
     unregisterXtermShell(activeCard);
   });
 
-  it('routes xterm at the bottom of scrollback wheel down to the page scroll container', () => {
+  it('sinks xterm at the bottom of scrollback wheel down', () => {
     const { scrollRoot, activeCard } = fixture();
     const xtermTarget: XtermWheelTarget = {
       root: document.createElement('div'),
@@ -325,11 +325,11 @@ describe('resolveWheelRoute', () => {
       deltaMode: WheelEvent.DOM_DELTA_PIXEL,
     });
 
-    expect(route).toEqual({ kind: 'native-scroll', target: scrollRoot });
+    expect(route).toEqual({ kind: 'sink' });
     unregisterXtermShell(activeCard);
   });
 
-  it('routes an xterm card to the page scroll container when the xterm handle has not registered yet', () => {
+  it('sinks an xterm card when the xterm handle has not registered yet', () => {
     const { scrollRoot, activeCard } = fixture();
     const xtermRoot = document.createElement('div');
     xtermRoot.className = 'xterm-view';
@@ -342,7 +342,7 @@ describe('resolveWheelRoute', () => {
         eventTarget: scrollRoot,
         deltaY: 120,
       }),
-    ).toEqual({ kind: 'native-scroll', target: scrollRoot });
+    ).toEqual({ kind: 'sink' });
   });
 
   it('routes file-viewer wheel over CodeMirror to the cm scroller', () => {
@@ -543,7 +543,7 @@ describe('useWheelRouter', () => {
     }
   });
 
-  it('scrolls the page container when xterm scrollback cannot consume the wheel', () => {
+  it('sinks when xterm scrollback cannot consume the wheel', () => {
     const { scrollRoot, activeCard } = fixture();
     const scrollback = vi.fn(() => false);
     const xtermTarget: XtermWheelTarget = {
@@ -564,14 +564,14 @@ describe('useWheelRouter', () => {
 
       expect(event.defaultPrevented).toBe(true);
       expect(scrollback).not.toHaveBeenCalled();
-      expect(scrollRoot.scrollTop).toBe(768);
+      expect(scrollRoot.scrollTop).toBe(0);
     } finally {
       restore();
       unregisterXtermShell(activeCard);
     }
   });
 
-  it('scrolls the page container for cards with no in-card wheel target', () => {
+  it('sinks cards with no in-card wheel target', () => {
     const { scrollRoot, activeCard } = fixture();
     const body = document.createElement('div');
     activeCard.append(body);
@@ -582,13 +582,13 @@ describe('useWheelRouter', () => {
       const event = dispatchWheel(body);
 
       expect(event.defaultPrevented).toBe(true);
-      expect(scrollRoot.scrollTop).toBe(120);
+      expect(scrollRoot.scrollTop).toBe(0);
     } finally {
       restore();
     }
   });
 
-  it('scrolls the page container for xterm cards before their handle registers', () => {
+  it('sinks xterm cards before their handle registers', () => {
     const { scrollRoot, activeCard } = fixture();
     const xtermRoot = document.createElement('div');
     xtermRoot.className = 'xterm-view';
@@ -600,7 +600,7 @@ describe('useWheelRouter', () => {
       const event = dispatchWheel(xtermRoot);
 
       expect(event.defaultPrevented).toBe(true);
-      expect(scrollRoot.scrollTop).toBe(120);
+      expect(scrollRoot.scrollTop).toBe(0);
     } finally {
       restore();
     }

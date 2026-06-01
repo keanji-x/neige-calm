@@ -27,6 +27,11 @@ export function useWheelRouter(scrollRef: RefObject<HTMLElement | null>): void {
 
       if (route.kind === 'page' || route.kind === 'xterm-passthrough') return;
 
+      if (route.kind === 'sink') {
+        event.preventDefault();
+        return;
+      }
+
       if (route.kind === 'native-scroll') {
         event.preventDefault();
         const { x, y } = pixelDelta(event);

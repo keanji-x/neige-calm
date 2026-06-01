@@ -3,6 +3,7 @@ import { getXtermForShell } from './wheelTargets';
 
 export type WheelRoute =
   | { kind: 'page' }
+  | { kind: 'sink' }
   | { kind: 'native-scroll'; target: HTMLElement }
   | { kind: 'xterm-scrollback'; target: XtermWheelTarget }
   | { kind: 'xterm-passthrough'; target: XtermWheelTarget };
@@ -132,12 +133,10 @@ export function resolveWheelRoute(args: {
     if (xtermTarget.canScrollback(deltaY, deltaMode)) {
       return { kind: 'xterm-scrollback', target: xtermTarget };
     }
-    // Xterm can't consume this wheel in this direction. Scroll the page
-    // container directly so the .xterm-viewport overflow box cannot absorb it.
-    return { kind: 'native-scroll', target: scrollRoot };
+    return { kind: 'sink' };
   }
   if (activeCard.querySelector<HTMLElement>(XTERM_ROOT_SELECTOR)) {
-    return { kind: 'native-scroll', target: scrollRoot };
+    return { kind: 'sink' };
   }
 
   const fileViewerPane = fileViewerPaneFor(activeCard, target);
@@ -145,5 +144,5 @@ export function resolveWheelRoute(args: {
     return { kind: 'native-scroll', target: fileViewerPane };
   }
 
-  return { kind: 'native-scroll', target: scrollRoot };
+  return { kind: 'sink' };
 }
