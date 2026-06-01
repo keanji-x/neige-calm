@@ -392,6 +392,9 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         latestThemeRef.current === 'dark' ? DARK_THEME : LIGHT_THEME,
       fontFamily: MONO_STACK,
       fontSize: 12.5,
+      // Match the server's SCROLLBACK_MAX_LINES so daemon-retained
+      // history is not trimmed by xterm's default 1000-row ring.
+      scrollback: 2000,
       convertEol: true,
       allowProposedApi: true,
       cursorBlink: true,
@@ -572,8 +575,9 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
             pixel_height: null,
           },
           cell_size: null,
-          // 'All' restores daemon-retained scrollback on remount;
-          // bounded server-side by SCROLLBACK_MAX_LINES. Fixes #457.
+          // 'All' restores daemon-retained scrollback on remount (wave nav
+          // remounts XtermView); server bound is SCROLLBACK_MAX_LINES so
+          // this is not unbounded.
           initial_scrollback: 'All',
           resume_from: null,
           // The browser is the user's primary interaction surface, so we
@@ -636,6 +640,11 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         }
         if (sh.snapshot.scrollback) {
           term.write(Uint8Array.from(sh.snapshot.scrollback));
+          // Flush viewport into xterm's scrollback ring before the next
+          // write: snapshot.data leads with ED 2 (`\x1b[2J`), which would
+          // otherwise erase the tail of replayed history still sitting in
+          // the visible viewport.
+          term.write('\r\n'.repeat(term.rows));
         }
         term.write(Uint8Array.from(sh.snapshot.data));
         renderRev = sh.snapshot.render_rev;

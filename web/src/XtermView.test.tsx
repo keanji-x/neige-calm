@@ -79,6 +79,7 @@ interface MockTerm {
 
 let mockTerm: MockTerm;
 let terminalConstructCount = 0;
+let terminalConstructorOptions: Record<string, unknown> | null = null;
 let mockFitSize: { cols: number; rows: number } | null = null;
 
 vi.mock('@xterm/xterm', () => {
@@ -116,8 +117,9 @@ vi.mock('@xterm/xterm', () => {
       (this as unknown as MockTerm).__dataCb = cb;
       return { dispose: () => {} };
     }
-    constructor() {
+    constructor(options: Record<string, unknown>) {
       terminalConstructCount += 1;
+      terminalConstructorOptions = options;
       mockTerm = this as unknown as MockTerm;
     }
   }
@@ -254,6 +256,7 @@ beforeEach(() => {
   wsInstances = [];
   stateMocks.statusSetCalls.length = 0;
   terminalConstructCount = 0;
+  terminalConstructorOptions = null;
   mockFitSize = null;
   MockResizeObserver.instances = [];
   setMockLayout(800, 400);
@@ -498,6 +501,11 @@ describe('XtermView v4 handshake', () => {
     expect(hello.desired_size.rows).toBe(24);
   });
 
+  it('configures xterm scrollback to match the server-retained history bound', () => {
+    render(<XtermView terminalId="term_test" />);
+    expect(terminalConstructorOptions?.scrollback).toBe(2000);
+  });
+
   it("shows 'handshaking…' between WS open and ServerHello", () => {
     render(<XtermView terminalId="term_test" />);
     const ws = currentWs();
@@ -549,12 +557,16 @@ describe('XtermView v4 handshake', () => {
         }),
       );
     });
-    const writeCalls = mockTerm.write.mock.calls.map((c: unknown[]) =>
-      Array.from(c[0] as Uint8Array),
-    );
-    expect(writeCalls.length).toBeGreaterThanOrEqual(2);
-    expect(writeCalls[0]).toEqual(scrollbackBytes);
-    expect(writeCalls[1]).toEqual(dataBytes);
+    const writeCalls = mockTerm.write.mock.calls.map((c: unknown[]) => c[0]);
+    expect(writeCalls.length).toBeGreaterThanOrEqual(3);
+    expect(Array.from(writeCalls[0] as Uint8Array)).toEqual(scrollbackBytes);
+    const flush = writeCalls[1] as Uint8Array | string;
+    const flushStr =
+      typeof flush === 'string'
+        ? flush
+        : String.fromCharCode(...Array.from(flush));
+    expect(flushStr).toBe('\r\n'.repeat(24));
+    expect(Array.from(writeCalls[2] as Uint8Array)).toEqual(dataBytes);
   });
 
   it('resizes the local term if the snapshot size differs', () => {

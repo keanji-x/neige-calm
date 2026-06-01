@@ -6,18 +6,30 @@
 //! JSON↔bincode bridge is exercised in-process.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::routing::get;
+use calm_server::db::prelude::*;
+use calm_server::db::sqlite::SqlxRepo;
+use calm_server::event::EventBus;
+use calm_server::model::{NewCard, NewCove, NewTerminal, NewWave, Terminal};
+use calm_server::plugin_host::{PluginHost, PluginRegistry};
+use calm_server::routes::theme::RequestTheme;
+use calm_server::state::{AppState, CodexClient, DaemonClient};
+use calm_server::terminal_renderer::RendererConfig;
+use calm_server::ws;
 use calm_server::ws::terminal::pump;
 use calm_session::{
     ClientCapabilities, ClientMsg, DaemonMsg, InitialScrollback, PROTOCOL_VERSION, PtySize,
     RenderEncoding, RenderPatch, RenderSnapshot, read_frame, write_frame,
 };
 use futures_util::{SinkExt, StreamExt};
+use serde_json::json;
+use tempfile::TempDir;
 use tokio::io::DuplexStream;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
@@ -103,6 +115,220 @@ fn empty_snapshot() -> RenderSnapshot {
         encoding: RenderEncoding::Vt,
         data: Vec::new(),
         scrollback: None,
+    }
+}
+
+struct RendererWsFixture {
+    _tmp: TempDir,
+    repo: Arc<dyn Repo>,
+    state: AppState,
+    addr: SocketAddr,
+}
+
+async fn boot_renderer_ws() -> RendererWsFixture {
+    let tmp = TempDir::new().expect("tempdir");
+    let repo: Arc<dyn Repo> = Arc::new(
+        SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite"),
+    );
+    let events = EventBus::new();
+    let state = AppState::from_parts(
+        repo.clone(),
+        events.clone(),
+        Arc::new(DaemonClient {
+            data_dir: tmp.path().to_path_buf(),
+            proc_supervisor_sock: Some(tmp.path().join("missing-proc-supervisor.sock")),
+        }),
+        Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            repo.clone(),
+            PathBuf::new(),
+            tmp.path().join("plugins-data"),
+            Vec::new(),
+            events,
+            calm_server::card_role_cache::CardRoleCache::new(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
+        )),
+        Arc::new(CodexClient::new_stub()),
+        None,
+        None,
+    );
+
+    let app = Router::new()
+        .merge(ws::terminal::router())
+        .with_state(state.clone());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    RendererWsFixture {
+        _tmp: tmp,
+        repo,
+        state,
+        addr,
+    }
+}
+
+async fn seed_terminal_with_scrollback(fixture: &RendererWsFixture, label: &str) -> Terminal {
+    let cove = fixture
+        .repo
+        .cove_create(NewCove {
+            name: format!("scrollback-{label}"),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .expect("create cove");
+    let wave = fixture
+        .repo
+        .wave_create(NewWave {
+            cove_id: cove.id,
+            title: format!("scrollback-{label}"),
+            sort: None,
+            cwd: fixture._tmp.path().display().to_string(),
+            attach_folder: false,
+            theme: RequestTheme::default_dark(),
+        })
+        .await
+        .expect("create wave");
+    let card = fixture
+        .repo
+        .card_create(NewCard {
+            wave_id: wave.id,
+            kind: "terminal".into(),
+            sort: None,
+            payload: json!({}),
+        })
+        .await
+        .expect("create card");
+    let term = fixture
+        .repo
+        .terminal_create(NewTerminal {
+            card_id: card.id,
+            program: "/bin/sh".into(),
+            cwd: fixture._tmp.path().display().to_string(),
+            env: json!({}),
+            theme: RequestTheme::default_dark(),
+        })
+        .await
+        .expect("create terminal");
+
+    let entry = fixture
+        .state
+        .terminal_renderer
+        .insert_test_entry(RendererConfig {
+            terminal_id: term.id.clone(),
+            cols: 10,
+            rows: 2,
+            buffer_bytes: 1 << 20,
+            terminal_fg: (216, 219, 226),
+            terminal_bg: (15, 20, 24),
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 30".into()],
+            envs: Vec::new(),
+            cwd: fixture._tmp.path().display().to_string(),
+            supervisor_sock: fixture
+                .state
+                .daemon
+                .proc_supervisor_sock
+                .clone()
+                .expect("supervisor sock"),
+        });
+
+    {
+        let mut render_plane = entry.handle.render_plane.lock().expect("render plane");
+        for i in 0..7 {
+            render_plane.on_pty_chunk(format!("line{i}\n").into_bytes());
+        }
+    }
+
+    term
+}
+
+async fn attach_and_read_server_hello(
+    addr: SocketAddr,
+    term: &Terminal,
+    initial_scrollback: InitialScrollback,
+) -> DaemonMsg {
+    let url = format!("ws://{addr}/api/terminals/{}", term.id);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("ws connect");
+    let hello = ClientMsg::ClientHello {
+        protocol_version: PROTOCOL_VERSION,
+        terminal_id: term.id.clone(),
+        client_id: Uuid::new_v4(),
+        desired_size: PtySize {
+            cols: 10,
+            rows: 2,
+            pixel_width: None,
+            pixel_height: None,
+        },
+        cell_size: None,
+        initial_scrollback,
+        resume_from: None,
+        role_hint: None,
+        capabilities: ClientCapabilities {
+            render_encodings: vec![RenderEncoding::Vt],
+            supports_scrollback: true,
+            supports_sixel: false,
+            supports_images: false,
+            kernel_originated_input: false,
+        },
+    };
+    ws.send(TMessage::Text(serde_json::to_string(&hello).unwrap()))
+        .await
+        .unwrap();
+
+    let msg = tokio::time::timeout(Duration::from_secs(2), ws.next())
+        .await
+        .expect("ws recv timed out")
+        .expect("ws closed unexpectedly")
+        .expect("ws error");
+    match msg {
+        TMessage::Text(t) => serde_json::from_str(&t.to_string()).expect("server hello json"),
+        other => panic!("expected text, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn initial_scrollback_all_round_trips_into_server_hello_snapshot() {
+    let fixture = boot_renderer_ws().await;
+    let with_all = seed_terminal_with_scrollback(&fixture, "all").await;
+    let with_none = seed_terminal_with_scrollback(&fixture, "none").await;
+
+    let msg = attach_and_read_server_hello(fixture.addr, &with_all, InitialScrollback::All).await;
+    match msg {
+        DaemonMsg::ServerHello { snapshot, .. } => {
+            let scrollback = snapshot
+                .scrollback
+                .expect("InitialScrollback::All should populate snapshot.scrollback");
+            assert!(
+                !scrollback.is_empty(),
+                "scrollback bytes should be non-empty"
+            );
+        }
+        other => panic!("expected ServerHello for All, got {other:?}"),
+    }
+
+    let msg = attach_and_read_server_hello(fixture.addr, &with_none, InitialScrollback::None).await;
+    match msg {
+        DaemonMsg::ServerHello { snapshot, .. } => {
+            assert!(
+                snapshot.scrollback.is_none(),
+                "InitialScrollback::None should leave snapshot.scrollback empty"
+            );
+        }
+        other => panic!("expected ServerHello for None, got {other:?}"),
     }
 }
 
