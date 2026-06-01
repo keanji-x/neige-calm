@@ -51,6 +51,43 @@ async fn server(root: &tempfile::TempDir, repo: Arc<dyn Repo>) -> Arc<SharedCode
     SharedCodexAppServer::new(&cfg, Arc::new(home), repo)
 }
 
+#[tokio::test]
+async fn start_new_process_passes_ingest_url_and_proxy_env_without_card_id() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    repo.settings_upsert("http_proxy", "http://proxy.local:3128")
+        .await
+        .unwrap();
+    repo.settings_upsert("https_proxy", "http://secure-proxy.local:3129")
+        .await
+        .unwrap();
+
+    let mut cfg = cfg(&root);
+    cfg.codex_ingest_url = Some("http://127.0.0.1:8765".into());
+    let home = calm_server::shared_codex_home::SharedCodexHome::new(
+        cfg.data_dir_resolved().join("codex-home"),
+        cfg.data_dir_resolved().join("codex-homes"),
+    );
+    home.seed().unwrap();
+
+    let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo.clone());
+    let env = daemon.spawn_env_for_test().await.unwrap();
+
+    let get = |key: &str| env.get(key).and_then(|v| v.as_deref());
+    let expected_codex_home = cfg
+        .data_dir_resolved()
+        .join("codex-home")
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(get("CODEX_HOME"), Some(expected_codex_home.as_str()));
+    assert_eq!(get("NEIGE_CALM_BASE_URL"), Some("http://127.0.0.1:8765"));
+    assert_eq!(get("HTTP_PROXY"), Some("http://proxy.local:3128"));
+    assert_eq!(get("http_proxy"), Some("http://proxy.local:3128"));
+    assert_eq!(get("HTTPS_PROXY"), Some("http://secure-proxy.local:3129"));
+    assert_eq!(get("https_proxy"), Some("http://secure-proxy.local:3129"));
+    assert!(!env.contains_key("NEIGE_CARD_ID"));
+}
+
 async fn persist_running_daemon(
     repo: &SqlxRepo,
     root: &tempfile::TempDir,

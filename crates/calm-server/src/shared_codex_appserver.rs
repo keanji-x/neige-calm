@@ -25,6 +25,7 @@ use crate::config::Config;
 use crate::db::{Repo, SharedCodexDaemonUpdate};
 use crate::error::{CalmError, Result};
 use crate::model::{CardRole, now_ms};
+use crate::routes::settings::load_settings;
 use crate::shared_codex_home::SharedCodexHome;
 use crate::spec_appserver::{
     read_boot_id, read_proc_start_time, signal_process_group, verify_owned_pid,
@@ -187,6 +188,7 @@ pub struct SharedCodexAppServer {
     restart_lock: Mutex<()>,
     restart_count: std::sync::atomic::AtomicU64,
     last_error: Arc<Mutex<Option<String>>>,
+    ingest_url: String,
 }
 
 impl SharedCodexAppServer {
@@ -216,6 +218,7 @@ impl SharedCodexAppServer {
             restart_lock: Mutex::new(()),
             restart_count: std::sync::atomic::AtomicU64::new(0),
             last_error: Arc::new(Mutex::new(None)),
+            ingest_url: "http://127.0.0.1:0".into(),
         })
     }
 
@@ -243,6 +246,7 @@ impl SharedCodexAppServer {
             restart_lock: Mutex::new(()),
             restart_count: std::sync::atomic::AtomicU64::new(0),
             last_error: Arc::new(Mutex::new(None)),
+            ingest_url: cfg.codex_ingest_url_resolved(),
         })
     }
 
@@ -454,12 +458,12 @@ impl SharedCodexAppServer {
         cmd.arg("app-server")
             .arg("--listen")
             .arg(&listen)
-            .env("CODEX_HOME", self.home.path())
             .stdin(Stdio::null())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
             .process_group(0)
             .kill_on_drop(true);
+        self.apply_spawn_env(&mut cmd).await?;
         let child = cmd.spawn().map_err(|e| {
             CalmError::CodexAppServer(format!("spawn shared codex app-server: {e}"))
         })?;
@@ -527,6 +531,21 @@ impl SharedCodexAppServer {
             home = %self.home.path().display(),
             "shared codex app-server running"
         );
+        Ok(())
+    }
+
+    async fn apply_spawn_env(&self, cmd: &mut Command) -> Result<()> {
+        cmd.env("CODEX_HOME", self.home.path())
+            .env("NEIGE_CALM_BASE_URL", &self.ingest_url);
+
+        let settings = load_settings(self.repo.as_ref()).await?;
+        if let Some(p) = settings.http_proxy.as_deref().filter(|s| !s.is_empty()) {
+            cmd.env("HTTP_PROXY", p).env("http_proxy", p);
+        }
+        if let Some(p) = settings.https_proxy.as_deref().filter(|s| !s.is_empty()) {
+            cmd.env("HTTPS_PROXY", p).env("https_proxy", p);
+        }
+
         Ok(())
     }
 
@@ -893,6 +912,23 @@ async fn connect_initialized(
 impl SharedCodexAppServer {
     pub fn sock_path(&self) -> &Path {
         &self.sock
+    }
+
+    pub async fn spawn_env_for_test(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, Option<String>>> {
+        let mut cmd = Command::new(&self.codex_bin);
+        self.apply_spawn_env(&mut cmd).await?;
+        Ok(cmd
+            .as_std()
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect())
     }
 }
 
