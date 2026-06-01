@@ -20,9 +20,8 @@ use calm_server::model::{CardPatch, CardRole, NewCove, NewWave, new_id};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::routes::settings::Settings;
-use calm_server::spec_appserver::{
-    TurnWatchdogConfig, spawn_spec_appserver_with_watchdog_config_and_recovery,
-};
+use calm_server::spec_appserver::spawn_spec_appserver_with_watchdog_config_and_recovery;
+use calm_server::spec_push::TurnWatchdogConfig;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::wave_cove_cache::WaveCoveCache;
 use serde_json::{Value, json};

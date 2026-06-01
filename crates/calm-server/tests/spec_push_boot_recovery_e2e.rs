@@ -306,7 +306,7 @@ async fn count_turn_starts(
 /// is between turns, or the budget elapses (see the sibling dispatch E2E
 /// for rationale). Uses the non-destructive `status` read.
 async fn wait_until_idle(state: &AppState, wave_id: &str, budget: Duration) {
-    use calm_server::spec_appserver::SpecPushPhase;
+    use calm_server::spec_push::SpecPushPhase;
     let key: WaveId = wave_id.to_string().into();
     let deadline = Instant::now() + budget;
     loop {
@@ -514,7 +514,7 @@ async fn run_recovery_scenario(
     //      (6): kicker → wait for TurnRunning → queued envelope →
     //      assert watermark unchanged → wait_until_idle (flush) →
     //      assert watermark advanced past queued.
-    use calm_server::spec_appserver::SpecPushPhase as SpecPushPhaseB2;
+    use calm_server::spec_push::SpecPushPhase as SpecPushPhaseB2;
     eprintln!(
         "[spec-push-boot-recovery-e2e] (2b) B2 create-wave sink check: \
          exercising enqueue→flush on the ORIGINAL (no-restart) handle"
@@ -869,7 +869,7 @@ async fn run_recovery_scenario(
     // turn from (4) might still be running. To keep the test
     // deterministic we instead skip this scenario if we can't observe
     // the phase as TurnRunning and document the limitation.
-    use calm_server::spec_appserver::SpecPushPhase;
+    use calm_server::spec_push::SpecPushPhase;
     let key: WaveId = wave_id.to_string().into();
     let phase_now = state.spec_push.status(&key).await.map(|s| s.phase);
     eprintln!(

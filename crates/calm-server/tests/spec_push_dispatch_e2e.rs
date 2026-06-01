@@ -477,7 +477,7 @@ async fn spec_push_dispatch_pushes_turn_and_dedups() {
 
 #[tokio::test]
 async fn spec_push_empty_title_boots_idle_without_initial_turn() {
-    use calm_server::spec_appserver::SpecPushPhase;
+    use calm_server::spec_push::SpecPushPhase;
 
     let Some(codex_bin) = resolve_codex_bin() else {
         skip!("codex binary not found (set NEIGE_CODEX_BIN); push path needs it");
@@ -710,7 +710,7 @@ async fn run_push_scenario(
 /// window with no handle registered where a concurrent dispatcher push would
 /// be silently dropped, making the test timing-fragile.
 async fn wait_until_idle(state: &AppState, wave_id: &str, budget: Duration) {
-    use calm_server::spec_appserver::SpecPushPhase;
+    use calm_server::spec_push::SpecPushPhase;
     let key: WaveId = wave_id.to_string().into();
     let deadline = Instant::now() + budget;
     loop {

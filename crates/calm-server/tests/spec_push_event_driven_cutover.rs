@@ -10,20 +10,17 @@
 use std::time::{Duration, Instant};
 
 use calm_server::spec_appserver::{
-    SpecPushPhase, TurnWatchdogConfig, spawn_spec_appserver,
-    spawn_spec_appserver_with_watchdog_config,
+    spawn_spec_appserver, spawn_spec_appserver_with_watchdog_config,
     spawn_spec_appserver_with_watchdog_config_and_recovery,
 };
+use calm_server::spec_push::{SpecPushPhase, TurnWatchdogConfig};
 use serde_json::json;
 
 fn fake_codex_bin() -> String {
     env!("CARGO_BIN_EXE_osc-probe-child").to_string()
 }
 
-async fn wait_for_phase(
-    handle: &calm_server::spec_appserver::SpecPushHandle,
-    phase: SpecPushPhase,
-) {
+async fn wait_for_phase(handle: &calm_server::spec_push::SpecPushHandle, phase: SpecPushPhase) {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         if handle.status().await.phase == phase {

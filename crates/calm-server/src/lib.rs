@@ -723,7 +723,7 @@ async fn bootstrap_empty_goal_spec_appserver(
             "",
             &sock,
             None,
-            spec_appserver::TurnWatchdogConfig::default(),
+            spec_push::TurnWatchdogConfig::default(),
             Some(recovery_signal),
             Some(wave_id),
         )
@@ -815,14 +815,14 @@ pub(crate) fn wire_spec_push_recovery_supervisor(
     settings: &crate::routes::settings::Settings,
     card_id: &str,
     wave_id: crate::ids::WaveId,
-) -> spec_appserver::SpecRecoverySignal {
+) -> spec_push::SpecRecoverySignal {
     wire_spec_push_recovery_supervisor_with_budget(
         state,
         settings,
         card_id,
         wave_id,
         RuntimeRecoveryBudget::default(),
-        spec_appserver::TurnWatchdogConfig::default(),
+        spec_push::TurnWatchdogConfig::default(),
     )
 }
 
@@ -833,7 +833,7 @@ pub fn wire_spec_push_recovery_supervisor_for_test(
     settings: &crate::routes::settings::Settings,
     card_id: &str,
     wave_id: crate::ids::WaveId,
-) -> spec_appserver::SpecRecoverySignal {
+) -> spec_push::SpecRecoverySignal {
     wire_spec_push_recovery_supervisor(state, settings, card_id, wave_id)
 }
 
@@ -844,8 +844,8 @@ pub fn wire_spec_push_recovery_supervisor_with_watchdog_for_test(
     settings: &crate::routes::settings::Settings,
     card_id: &str,
     wave_id: crate::ids::WaveId,
-    watchdog: spec_appserver::TurnWatchdogConfig,
-) -> spec_appserver::SpecRecoverySignal {
+    watchdog: spec_push::TurnWatchdogConfig,
+) -> spec_push::SpecRecoverySignal {
     wire_spec_push_recovery_supervisor_with_budget(
         state,
         settings,
@@ -862,9 +862,9 @@ fn wire_spec_push_recovery_supervisor_with_budget(
     card_id: &str,
     wave_id: crate::ids::WaveId,
     budget: RuntimeRecoveryBudget,
-    watchdog: spec_appserver::TurnWatchdogConfig,
-) -> spec_appserver::SpecRecoverySignal {
-    let (signal, rx) = spec_appserver::recovery_signal_channel(wave_id.clone());
+    watchdog: spec_push::TurnWatchdogConfig,
+) -> spec_push::SpecRecoverySignal {
+    let (signal, rx) = spec_push::recovery_signal_channel(wave_id.clone());
     let ctx = RuntimeRecoveryContext {
         state: state.clone(),
         settings: settings.clone(),
@@ -883,12 +883,12 @@ struct RuntimeRecoveryContext {
     card_id: String,
     wave_id: crate::ids::WaveId,
     budget: RuntimeRecoveryBudget,
-    watchdog: spec_appserver::TurnWatchdogConfig,
+    watchdog: spec_push::TurnWatchdogConfig,
 }
 
 async fn runtime_spec_push_recovery_supervisor(
     ctx: RuntimeRecoveryContext,
-    mut rx: tokio::sync::mpsc::Receiver<spec_appserver::SpecRecoveryRequest>,
+    mut rx: tokio::sync::mpsc::Receiver<spec_push::SpecRecoveryRequest>,
 ) {
     let Some(request) = rx.recv().await else {
         return;
@@ -1282,7 +1282,7 @@ async fn try_takeover_one_wave(
         watermark,
         Some(RuntimeRecoveryBudget::default()),
         false,
-        spec_appserver::TurnWatchdogConfig::default(),
+        spec_push::TurnWatchdogConfig::default(),
         "takeover",
     )
     .await
@@ -1298,7 +1298,7 @@ async fn resume_and_register_spec_appserver(
     watermark: i64,
     recovery_budget: Option<RuntimeRecoveryBudget>,
     reset_cursor_to_watermark: bool,
-    watchdog: spec_appserver::TurnWatchdogConfig,
+    watchdog: spec_push::TurnWatchdogConfig,
     log_prefix: &'static str,
 ) -> TakeoverOutcome {
     // Build the env the way `create_wave` does, point at the per-card
@@ -1594,7 +1594,7 @@ async fn register_and_catch_up(
     card_id: &str,
     wave_id: &crate::ids::WaveId,
     watermark: i64,
-    handle: spec_appserver::SpecPushHandle,
+    handle: spec_push::SpecPushHandle,
     reset_cursor_to_watermark: bool,
 ) {
     let card_key: crate::ids::CardId = card_id.to_string().into();
@@ -1902,6 +1902,7 @@ pub mod shared_codex_appserver;
 pub mod shared_codex_home;
 pub mod spec_appserver;
 pub mod spec_card;
+pub mod spec_push;
 pub mod state;
 pub mod terminal_renderer;
 pub mod terminal_sweeper;
