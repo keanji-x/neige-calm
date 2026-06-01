@@ -242,6 +242,45 @@ async fn takeover_handshake_failure_reaps_verified_daemon_before_relaunch() {
 }
 
 #[tokio::test]
+async fn stale_socket_with_live_listener_reaped_before_relaunch() {
+    let root = tempfile::tempdir().unwrap();
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+
+    let mut child = Command::new(fake_codex_bin())
+        .arg("app-server")
+        .arg("--listen")
+        .arg(format!("unix://{}", sock.display()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn orphaned fake app-server listener");
+    let old_pid = i32::try_from(child.id().expect("fake app-server pid")).expect("pid fits i32");
+    let _ = wait_for_start_time_and_socket(old_pid, &sock).await;
+
+    let repo = repo().await;
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+
+    tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .expect("live listener on stale socket should be reaped before relaunch")
+        .expect("wait old fake app-server");
+
+    let snapshot = daemon.status_snapshot();
+    assert_eq!(snapshot.state, SharedDaemonState::Running);
+    let new_pid = snapshot
+        .runtime
+        .as_ref()
+        .map(|runtime| runtime.pid)
+        .unwrap();
+    assert_ne!(new_pid, old_pid);
+}
+
+#[tokio::test]
 async fn takeover_rebuilds_thread_cache_from_db() {
     let root = tempfile::tempdir().unwrap();
     let repo = repo().await;

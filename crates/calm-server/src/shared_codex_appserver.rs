@@ -4,6 +4,7 @@
 //! server. It deliberately does not route any card traffic to this daemon yet;
 //! later PRs switch callers over through the public methods here.
 
+use std::os::unix::io::AsRawFd;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -13,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use serde::Serialize;
+use tokio::net::UnixStream;
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, broadcast};
 
@@ -257,9 +259,7 @@ impl SharedCodexAppServer {
             return Ok(());
         }
 
-        if self.sock.exists() {
-            let _ = std::fs::remove_file(&self.sock);
-        }
+        self.remove_stale_socket_before_spawn().await?;
         self.start_new_process(SharedDaemonState::Starting, false, None)
             .await?;
         self.spawn_spawned_child_watcher();
@@ -355,9 +355,9 @@ impl SharedCodexAppServer {
         ) else {
             return Ok(false);
         };
-        if !matches!(
+        if matches!(
             SharedDaemonState::from_db_str(&record.state),
-            SharedDaemonState::Running
+            SharedDaemonState::Idle | SharedDaemonState::Failed
         ) {
             return Ok(false);
         }
@@ -413,9 +413,7 @@ impl SharedCodexAppServer {
         *self.state.lock().await = state;
         std::fs::create_dir_all(self.sock.parent().unwrap_or_else(|| Path::new(".")))?;
         std::fs::create_dir_all(&self.log_dir)?;
-        if self.sock.exists() {
-            let _ = std::fs::remove_file(&self.sock);
-        }
+        self.remove_stale_socket_before_spawn().await?;
 
         let listen = format!("unix://{}", self.sock.display());
         let stdout = std::fs::OpenOptions::new()
@@ -451,6 +449,16 @@ impl SharedCodexAppServer {
         let boot_id = read_boot_id().unwrap_or_default();
         let started_at = now_ms();
         let mut spawn_guard = SpawnedChildGuard::new(child, pgid);
+
+        self.persist_runtime_starting(
+            pid,
+            pgid,
+            process_start_time,
+            &boot_id,
+            started_at,
+            last_error.clone(),
+        )
+        .await?;
 
         let (client, notifications) = self.poll_connect_initialized().await?;
         let runtime = SharedDaemonRuntime {
@@ -495,6 +503,39 @@ impl SharedCodexAppServer {
             "shared codex app-server running"
         );
         Ok(())
+    }
+
+    async fn remove_stale_socket_before_spawn(&self) -> Result<()> {
+        if self.sock.exists() {
+            reap_listener_if_alive(&self.sock).await?;
+            let _ = std::fs::remove_file(&self.sock);
+        }
+        Ok(())
+    }
+
+    async fn persist_runtime_starting(
+        &self,
+        pid: i32,
+        pgid: i32,
+        process_start_time: u64,
+        boot_id: &str,
+        started_at: i64,
+        last_error: Option<String>,
+    ) -> Result<()> {
+        self.repo
+            .shared_daemon_runtime_set(SharedCodexDaemonUpdate {
+                state: SharedDaemonState::Starting.as_db_str().to_string(),
+                pid: Some(pid),
+                pgid: Some(pgid),
+                sock_path: Some(self.sock.display().to_string()),
+                codex_home_path: Some(self.home.path().display().to_string()),
+                process_start_time: Some(process_start_time),
+                boot_id: Some(boot_id.to_string()),
+                started_at: Some(started_at),
+                last_error,
+                increment_restart_count: false,
+            })
+            .await
     }
 
     async fn poll_connect_initialized(
@@ -691,6 +732,51 @@ async fn reap_verified_process_group(pid: i32, pgid: i32, start_time: u64, boot_
         signal_process_group(pgid, libc::SIGKILL);
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+}
+
+async fn reap_listener_if_alive(sock_path: &Path) -> Result<()> {
+    let Ok(stream) = UnixStream::connect(sock_path).await else {
+        return Ok(());
+    };
+
+    let fd = stream.as_raw_fd();
+    let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut cred_len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let rc = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            &mut cred as *mut _ as *mut libc::c_void,
+            &mut cred_len,
+        )
+    };
+    if rc != 0 {
+        let err = std::io::Error::last_os_error();
+        tracing::warn!(
+            target: "shared_codex_daemon::stop",
+            error = %err,
+            sock = %sock_path.display(),
+            "SO_PEERCRED failed; proceeding to unlink listener-bound socket without reap"
+        );
+        return Ok(());
+    }
+
+    let pid = cred.pid;
+    tracing::warn!(
+        target: "shared_codex_daemon::stop",
+        pid,
+        sock = %sock_path.display(),
+        "stale socket has live listener; reaping orphaned daemon pgid before unlink"
+    );
+    signal_process_group(pid, libc::SIGTERM);
+    drop(stream);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    if UnixStream::connect(sock_path).await.is_ok() {
+        signal_process_group(pid, libc::SIGKILL);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    Ok(())
 }
 
 struct SpawnedChildGuard {
