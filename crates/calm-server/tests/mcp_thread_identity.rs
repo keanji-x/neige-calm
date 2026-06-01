@@ -301,6 +301,12 @@ async fn call_with_token(
     recv_frame(&mut rd).await
 }
 
+async fn raw_call_with_token(boot: &Boot, token: &str, frame: Value) -> Value {
+    let (mut rd, mut wr) = initialized_client_with_token(boot, token).await;
+    send_frame(&mut wr, frame).await;
+    recv_frame(&mut rd).await
+}
+
 #[tokio::test]
 async fn tools_call_with_known_thread_id_uses_mapped_card_identity() {
     let (registry, mut rx) = capture_identity_registry();
@@ -378,6 +384,64 @@ async fn tools_call_without_thread_id_falls_back_to_legacy_token_identity() {
     assert_eq!(identity.role, CardRole::Spec);
     assert_eq!(identity.wave_id.as_deref(), Some(boot.wave_id.as_str()));
     assert_eq!(identity.thread_id, "legacy-token-fallback");
+    let _ = &boot.server;
+}
+
+#[tokio::test]
+async fn tools_call_malformed_meta_rejects_even_when_legacy_token_present() {
+    let boot = boot_with_registry(build_default_registry()).await;
+
+    let resp = raw_call_with_token(
+        &boot,
+        &boot.raw_token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "_meta": "not-an-object",
+            "params": {
+                "name": "calm.get_wave_state",
+                "arguments": {}
+            }
+        }),
+    )
+    .await;
+
+    let err = resp
+        .get("error")
+        .expect("must reject malformed request-level _meta");
+    assert_eq!(
+        err["code"],
+        json!(RpcError::INVALID_PARAMS),
+        "must be INVALID_PARAMS, not legacy fallback"
+    );
+    let _ = &boot.server;
+}
+
+#[tokio::test]
+async fn tools_call_malformed_params_meta_also_rejects() {
+    let boot = boot_with_registry(build_default_registry()).await;
+
+    let resp = raw_call_with_token(
+        &boot,
+        &boot.raw_token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "calm.get_wave_state",
+                "arguments": {},
+                "_meta": ["array-not-object"]
+            }
+        }),
+    )
+    .await;
+
+    let err = resp
+        .get("error")
+        .expect("must reject malformed params._meta");
+    assert_eq!(err["code"], json!(RpcError::INVALID_PARAMS));
     let _ = &boot.server;
 }
 

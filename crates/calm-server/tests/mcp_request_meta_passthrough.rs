@@ -22,6 +22,7 @@ use calm_server::mcp_server::{McpServer, ToolRegistry, build_default_registry};
 use calm_server::model::{CardRole, NewCove, NewWave};
 use calm_server::plugin_host::mcp::RpcError;
 use serde_json::{Value, json};
+use sqlx::Executor;
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -41,6 +42,14 @@ struct Boot {
 }
 
 async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
+    boot_with_registry_options(registry, true).await
+}
+
+async fn boot_with_registry_without_legacy_identity(registry: Arc<ToolRegistry>) -> Boot {
+    boot_with_registry_options(registry, false).await
+}
+
+async fn boot_with_registry_options(registry: Arc<ToolRegistry>, seed_legacy_card: bool) -> Boot {
     let tmp = TempDir::new().expect("tempdir for MCP socket");
     let socket_path = tmp.path().join("kernel.sock");
 
@@ -91,15 +100,28 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
     .await
     .expect("mint spec card");
     tx.commit().await.unwrap();
+    let raw_token = mcp_token.expect("Spec card must mint a token");
+    if !seed_legacy_card {
+        let mut conn = sqlx_repo.pool().acquire().await.unwrap();
+        conn.execute("PRAGMA foreign_keys = OFF").await.unwrap();
+        sqlx::query("DELETE FROM cards WHERE id = ?1")
+            .bind(card_id.as_str())
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        conn.execute("PRAGMA foreign_keys = ON").await.unwrap();
+    }
     let thread_id = format!("thread-{card_id}");
-    repo.card_codex_thread_upsert(
-        card_id.as_str(),
-        thread_id.as_str(),
-        CardRole::Spec,
-        Some(wave.id.as_str()),
-    )
-    .await
-    .unwrap();
+    if seed_legacy_card {
+        repo.card_codex_thread_upsert(
+            card_id.as_str(),
+            thread_id.as_str(),
+            CardRole::Spec,
+            Some(wave.id.as_str()),
+        )
+        .await
+        .unwrap();
+    }
 
     let events = EventBus::new();
     let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
@@ -119,7 +141,7 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
     Boot {
         server,
         socket_path,
-        raw_token: mcp_token.expect("Spec card must mint a token"),
+        raw_token,
         wave_id: wave.id.as_str().to_string(),
         card_id,
         thread_id,
@@ -252,9 +274,9 @@ async fn thread_id_flows_from_meta_to_identity() {
 }
 
 #[tokio::test]
-async fn request_without_meta_rejects_before_handler() {
+async fn request_without_meta_and_without_legacy_rejects() {
     let (registry, mut rx) = identity_capture_registry();
-    let boot = boot_with_registry(registry).await;
+    let boot = boot_with_registry_without_legacy_identity(registry).await;
     let (mut rd, mut wr) = initialized_client(&boot).await;
 
     send_frame(
@@ -300,8 +322,12 @@ async fn existing_handlers_unchanged_when_meta_present() {
     send_frame(&mut wr, without_meta).await;
     let without_resp = recv_frame(&mut rd).await;
     assert!(
-        without_resp.get("error").is_some(),
-        "get_wave_state without meta should reject: {without_resp:#?}"
+        without_resp.get("error").is_none(),
+        "get_wave_state without meta should use legacy fallback: {without_resp:#?}"
+    );
+    assert_eq!(
+        without_resp["result"]["structuredContent"]["wave"]["id"],
+        json!(boot.wave_id)
     );
 
     let mut with_meta = tools_call_frame(3, TOOL_GET_WAVE_STATE, json!({}));

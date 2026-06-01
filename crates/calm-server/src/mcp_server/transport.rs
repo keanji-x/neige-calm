@@ -402,9 +402,14 @@ async fn dispatch_tools_call(
     legacy_identity: Option<&CardIdentity>,
     registry: &Arc<ToolRegistry>,
 ) -> Result<Value, RpcError> {
-    let params_meta = extract_request_meta(&params);
-    let thread_id = extract_thread_id(request_meta.as_ref())
-        .or_else(|| extract_thread_id(params_meta.as_ref()));
+    let top_meta = request_meta_outcome(request_meta.as_ref());
+    let params_meta = extract_request_meta_outcome(&params);
+    for outcome in [&top_meta, &params_meta] {
+        if matches!(outcome, MetaLookupOutcome::Malformed) {
+            return Err(RpcError::invalid_params("_meta must be an object"));
+        }
+    }
+    let thread_id = thread_id_from(&top_meta).or_else(|| thread_id_from(&params_meta));
     let name = params
         .get("name")
         .and_then(|n| n.as_str())
@@ -476,15 +481,33 @@ async fn resolve_thread_identity(
     })
 }
 
-fn extract_request_meta(params: &Value) -> Option<Value> {
-    params.get("_meta").filter(|v| v.is_object()).cloned()
+#[derive(Clone, Copy)]
+enum MetaLookupOutcome<'a> {
+    Absent,
+    Object(&'a Value),
+    Malformed,
 }
 
-fn extract_thread_id(request_meta: Option<&Value>) -> Option<&str> {
-    request_meta
-        .and_then(|meta| meta.get("threadId"))
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
+fn extract_request_meta_outcome(params: &Value) -> MetaLookupOutcome<'_> {
+    request_meta_outcome(params.get("_meta"))
+}
+
+fn request_meta_outcome(meta: Option<&Value>) -> MetaLookupOutcome<'_> {
+    match meta {
+        None => MetaLookupOutcome::Absent,
+        Some(v) if v.is_object() => MetaLookupOutcome::Object(v),
+        Some(_) => MetaLookupOutcome::Malformed,
+    }
+}
+
+fn thread_id_from<'a>(request_meta: &MetaLookupOutcome<'a>) -> Option<&'a str> {
+    match request_meta {
+        MetaLookupOutcome::Object(meta) => meta
+            .get("threadId")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty()),
+        MetaLookupOutcome::Absent | MetaLookupOutcome::Malformed => None,
+    }
 }
 
 /// Helper used by integration tests to resolve the kernel-side socket
