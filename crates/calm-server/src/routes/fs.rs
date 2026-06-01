@@ -363,6 +363,8 @@ async fn read_file_raw_response(raw: &Path) -> Result<Response> {
         [
             (header::CONTENT_TYPE, content_type),
             (header::CACHE_CONTROL, "no-store"),
+            (header::CONTENT_SECURITY_POLICY, "sandbox"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
         ],
         bytes,
     )
@@ -857,12 +859,20 @@ mod tests {
             parts.headers.get(header::CACHE_CONTROL).unwrap(),
             "no-store"
         );
+        assert_eq!(
+            parts.headers.get(header::CONTENT_SECURITY_POLICY).unwrap(),
+            "sandbox"
+        );
+        assert_eq!(
+            parts.headers.get(header::X_CONTENT_TYPE_OPTIONS).unwrap(),
+            "nosniff"
+        );
         let bytes = body.collect().await.unwrap().to_bytes();
         assert_eq!(&bytes[..], PNG_1X1);
     }
 
     #[tokio::test]
-    async fn readfile_raw_svg_sets_svg_content_type() {
+    async fn readfile_raw_svg_carries_sandbox_csp() {
         let tmp = tempfile::tempdir().unwrap();
         let file = tmp.path().join("icon.svg");
         let svg = br#"<svg xmlns="http://www.w3.org/2000/svg"></svg>"#;
@@ -874,6 +884,14 @@ mod tests {
         assert_eq!(
             parts.headers.get(header::CONTENT_TYPE).unwrap(),
             "image/svg+xml"
+        );
+        assert_eq!(
+            parts.headers.get(header::CONTENT_SECURITY_POLICY).unwrap(),
+            "sandbox"
+        );
+        assert_eq!(
+            parts.headers.get(header::X_CONTENT_TYPE_OPTIONS).unwrap(),
+            "nosniff"
         );
         let bytes = body.collect().await.unwrap().to_bytes();
         assert_eq!(&bytes[..], svg);
