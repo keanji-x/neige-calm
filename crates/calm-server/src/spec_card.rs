@@ -651,8 +651,11 @@ pub(crate) struct SpecPushDaemonArgs {
     /// `codex_thread_id` — the shared thread; `codex resume <thread_id>`.
     /// `None` means empty-goal fresh start: `codex --remote <sock>`.
     pub thread_id: Option<String>,
-    /// The `app-server` listen socket; `--remote unix://<sock>`.
-    pub sock: PathBuf,
+    /// The app-server remote URI; `--remote unix://<sock>`.
+    pub sock_uri: String,
+    /// Whether spawning the TUI should seed a per-card CODEX_HOME first.
+    /// Shared-daemon cards use the server-wide home and set this false.
+    pub seed_codex_home: bool,
 }
 
 impl SpecPushDaemonArgs {
@@ -661,14 +664,13 @@ impl SpecPushDaemonArgs {
     /// before. Empty goals use `codex --remote unix://<sock>` so the TUI
     /// fresh-starts instead of trying to resume a rollout-less thread.
     pub(crate) fn command_line(&self) -> String {
-        let remote = format!("unix://{}", self.sock.display());
         match &self.thread_id {
             Some(thread_id) => format!(
                 "codex resume {} --remote {}",
                 shell_single_quote(thread_id),
-                shell_single_quote(&remote),
+                shell_single_quote(&self.sock_uri),
             ),
-            None => format!("codex --remote {}", shell_single_quote(&remote)),
+            None => format!("codex --remote {}", shell_single_quote(&self.sock_uri)),
         }
     }
 }
@@ -775,14 +777,16 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
 ) -> Result<()> {
     // 1. Seed `$CODEX_HOME` for the spec card. Filesystem-only — fast,
     //    bounded by a handful of mkdir + small write_alls.
-    if let Err(e) = seed_codex_home_for_card(
-        &state,
-        &spec_card_id,
-        &cwd,
-        &wave_id,
-        SeededCardRole::Spec,
-        mcp_token.as_deref(),
-    ) {
+    if push.seed_codex_home
+        && let Err(e) = seed_codex_home_for_card(
+            &state,
+            &spec_card_id,
+            &cwd,
+            &wave_id,
+            SeededCardRole::Spec,
+            mcp_token.as_deref(),
+        )
+    {
         tracing::warn!(
             card_id = %spec_card_id,
             wave_id = %wave_id,
@@ -871,7 +875,8 @@ mod tests {
     fn push_mode_command_line_is_codex_resume_remote() {
         let args = SpecPushDaemonArgs {
             thread_id: Some("thread-abc123".into()),
-            sock: PathBuf::from("/home/u/.local/share/neige-calm/appserver/card-9/app.sock"),
+            sock_uri: "unix:///home/u/.local/share/neige-calm/appserver/card-9/app.sock".into(),
+            seed_codex_home: true,
         };
         assert_eq!(
             args.command_line(),
@@ -887,7 +892,8 @@ mod tests {
     fn push_mode_command_line_quotes_metacharacters() {
         let args = SpecPushDaemonArgs {
             thread_id: Some("a b; rm -rf /".into()),
-            sock: PathBuf::from("/tmp/has space/app.sock"),
+            sock_uri: "unix:///tmp/has space/app.sock".into(),
+            seed_codex_home: true,
         };
         let line = args.command_line();
         assert!(
@@ -902,7 +908,8 @@ mod tests {
     fn empty_goal_command_line_is_codex_remote_fresh_start() {
         let args = SpecPushDaemonArgs {
             thread_id: None,
-            sock: PathBuf::from("/tmp/has space/app.sock"),
+            sock_uri: "unix:///tmp/has space/app.sock".into(),
+            seed_codex_home: true,
         };
         assert_eq!(
             args.command_line(),
@@ -1273,7 +1280,8 @@ mod tests {
 
         let push = SpecPushDaemonArgs {
             thread_id: None,
-            sock: PathBuf::from("/tmp/reseed-existing-spec/app.sock"),
+            sock_uri: "unix:///tmp/reseed-existing-spec/app.sock".into(),
+            seed_codex_home: true,
         };
         let err = spawn_spec_daemon_for_existing_seed(
             &state,

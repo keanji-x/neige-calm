@@ -425,6 +425,111 @@ pub async fn takeover_spec_appservers_on_boot(state: &state::AppState) {
     );
 }
 
+pub async fn takeover_shared_spec_cards_on_boot(state: &state::AppState) {
+    if !state.shared_codex_appserver.is_running() {
+        return;
+    }
+    let mappings = match state.repo.card_codex_threads_active().await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(
+                target: "shared_codex_daemon::spec_card",
+                error = %e,
+                "shared spec boot takeover query failed; skipping"
+            );
+            return;
+        }
+    };
+    let mut resumed = 0usize;
+    for mapping in mappings {
+        if mapping.role != crate::model::CardRole::Spec {
+            continue;
+        }
+        let Some(wave_id) = mapping.wave_id.clone() else {
+            continue;
+        };
+        let Some(card) = (match state.repo.card_get(&mapping.card_id).await {
+            Ok(card) => card,
+            Err(e) => {
+                tracing::warn!(
+                    target: "shared_codex_daemon::spec_card",
+                    card_id = %mapping.card_id,
+                    error = %e,
+                    "shared spec boot takeover card lookup failed"
+                );
+                continue;
+            }
+        }) else {
+            continue;
+        };
+        if !payload_codex_source_is_shared(&card.payload) {
+            continue;
+        }
+        let Some(wave) = (match state.repo.wave_get(&wave_id).await {
+            Ok(wave) => wave,
+            Err(e) => {
+                tracing::warn!(
+                    target: "shared_codex_daemon::spec_card",
+                    wave_id = %wave_id,
+                    error = %e,
+                    "shared spec boot takeover wave lookup failed"
+                );
+                continue;
+            }
+        }) else {
+            continue;
+        };
+        if matches!(
+            wave.lifecycle,
+            crate::model::WaveLifecycle::Done
+                | crate::model::WaveLifecycle::Canceled
+                | crate::model::WaveLifecycle::Failed
+        ) {
+            continue;
+        }
+        let watermark = boot_takeover_payload_fields(&card.payload).4;
+        let wave_key: crate::ids::WaveId = wave_id.clone().into();
+        let status: spec_push::SharedStatus =
+            std::sync::Arc::new(tokio::sync::Mutex::new(spec_push::SpecPushStatus {
+                phase: spec_push::SpecPushPhase::Resumed,
+                last_thread_id: Some(mapping.thread_id.clone()),
+                last_turn_id: None,
+            }));
+        let mut handle = spec_push::park_shared_handle(
+            state.shared_codex_appserver.clone(),
+            Some(mapping.thread_id.clone()),
+            state.shared_codex_appserver.subscribe_notifications(),
+            status.clone(),
+            spec_push::TurnWatchdogConfig::default(),
+        );
+        handle.resume_reconciler = Some(tokio::spawn(spec_push::resume_reconcile_task(
+            spec_push::RESUMED_RECONCILE_BUDGET,
+            mapping.thread_id.clone(),
+            status,
+            handle.pusher().source,
+            handle.queue.clone(),
+            handle.watermark_sink.clone(),
+            handle.queue_persist.clone(),
+        )));
+        register_and_catch_up(state, &mapping.card_id, &wave_key, watermark, handle, true).await;
+        tracing::info!(
+            target: "shared_codex_daemon::spec_card",
+            card_id = %mapping.card_id,
+            wave_id = %wave_id,
+            thread_id = %mapping.thread_id,
+            "shared spec boot takeover re-parked handle"
+        );
+        resumed += 1;
+    }
+    if resumed > 0 {
+        tracing::info!(
+            target: "shared_codex_daemon::spec_card",
+            resumed,
+            "shared spec boot takeover complete"
+        );
+    }
+}
+
 type BootTakeoverSpecCard = (
     String,
     String,
@@ -470,6 +575,9 @@ pub(crate) async fn spec_cards_for_boot_takeover_table_first(
         let Some(card) = repo.card_get(&mapping.card_id).await? else {
             continue;
         };
+        if payload_codex_source_is_shared(&card.payload) {
+            continue;
+        }
         if payload_needs_initial_prompt(&card.payload) {
             continue;
         }
@@ -500,6 +608,13 @@ fn payload_needs_initial_prompt(payload: &serde_json::Value) -> bool {
     payload
         .get("appserver_needs_initial_prompt")
         .is_some_and(|value| value.as_i64() == Some(1) || value.as_bool() == Some(true))
+}
+
+fn payload_codex_source_is_shared(payload: &serde_json::Value) -> bool {
+    payload
+        .get("codex_source")
+        .and_then(serde_json::Value::as_str)
+        == Some("shared")
 }
 
 fn boot_takeover_payload_fields(
@@ -742,10 +857,13 @@ async fn bootstrap_empty_goal_spec_appserver(
         .repo
         .spec_card_set_empty_goal_bootstrap_pending_state(
             card_id,
-            handle.pgid,
-            &handle.sock.to_string_lossy(),
-            handle.start_time,
-            handle.boot_id.as_deref(),
+            handle.legacy_pgid().unwrap_or_default(),
+            &handle
+                .legacy_sock()
+                .map(|sock| sock.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            handle.legacy_start_time(),
+            handle.legacy_boot_id(),
             watermark,
         )
         .await
@@ -758,7 +876,11 @@ async fn bootstrap_empty_goal_spec_appserver(
     }
     let push = crate::spec_card::SpecPushDaemonArgs {
         thread_id: None,
-        sock: handle.sock.clone(),
+        sock_uri: handle
+            .legacy_sock()
+            .map(|sock| format!("unix://{}", sock.display()))
+            .unwrap_or_default(),
+        seed_codex_home: true,
     };
     register_and_catch_up(state, card_id, wave_id, watermark, handle, false).await;
     let mcp_token = env_map
@@ -1368,10 +1490,13 @@ async fn resume_and_register_spec_appserver(
             persist_post_respawn_fields(
                 state,
                 card_id,
-                handle.pgid,
-                &handle.sock.to_string_lossy(),
-                handle.start_time,
-                handle.boot_id.as_deref(),
+                handle.legacy_pgid().unwrap_or_default(),
+                &handle
+                    .legacy_sock()
+                    .map(|sock| sock.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                handle.legacy_start_time(),
+                handle.legacy_boot_id(),
             )
             .await;
             register_and_catch_up(

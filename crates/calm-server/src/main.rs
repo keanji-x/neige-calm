@@ -43,6 +43,12 @@ async fn main() -> anyhow::Result<()> {
             "shared_codex_empty_cards_enabled=false - empty user codex cards stay on legacy path until PR3c"
         );
     }
+    if !cfg.shared_codex_spec_cards_enabled {
+        tracing::info!(
+            target: "shared_codex_daemon::config",
+            "shared_codex_spec_cards_enabled=false - spec cards use the legacy per-wave codex path"
+        );
+    }
     warn_if_worker_hook_callback_is_not_loopback(&cfg);
 
     // Storage. `mock` keeps the in-memory backend for dev — it now resolves to
@@ -86,6 +92,7 @@ async fn main() -> anyhow::Result<()> {
     // Failures are non-fatal per wave; the kernel boot proceeds regardless.
     // Runs before the listener binds so a request landing mid-takeover
     // can't race a half-registered handle.
+    calm_server::takeover_shared_spec_cards_on_boot(&state).await;
     calm_server::takeover_spec_appservers_on_boot(&state).await;
 
     // Optional session-recording — when `RECORD_SESSION=<path>` is set,

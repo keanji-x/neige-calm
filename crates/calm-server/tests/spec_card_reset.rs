@@ -10,7 +10,7 @@ use calm_server::db::sqlite::{SqlxRepo, card_with_codex_create_tx};
 use calm_server::event::Event;
 use calm_server::event::EventBus;
 use calm_server::ids::WaveId;
-use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave, Terminal, new_id};
+use calm_server::model::{Card, CardPatch, CardRole, NewCard, NewCove, NewWave, Terminal, new_id};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::routes::theme::RequestTheme;
@@ -287,6 +287,31 @@ async fn reset_spec_card_rejects_wrong_kind_card() {
     let (status, body) = post_empty(boot.app, &format!("/api/cards/{}/spec/reset", card.id)).await;
 
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+}
+
+#[tokio::test]
+async fn reset_spec_card_rejects_shared_source_card() {
+    let boot = boot().await;
+    let (card, _terminal, _capture) = seed_spec_card(&boot, 0, false).await;
+    let mut payload = card.payload.clone();
+    payload["codex_source"] = json!("shared");
+    boot.repo
+        .card_update(
+            card.id.as_str(),
+            CardPatch {
+                kind: None,
+                sort: None,
+                payload: Some(payload),
+                deletable: None,
+            },
+        )
+        .await
+        .expect("mark card shared");
+
+    let (status, body) = post_empty(boot.app, &format!("/api/cards/{}/spec/reset", card.id)).await;
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body={body}");
+    assert_eq!(body["code"], json!("spec_reset_unsupported_in_shared_mode"));
 }
 
 #[tokio::test]

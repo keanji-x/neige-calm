@@ -59,6 +59,7 @@
 
 use crate::actor::Actor;
 use crate::auth::Principal;
+use crate::codex_appserver::{InputItem, Notification};
 use crate::db::sqlite::{
     card_codex_thread_upsert_tx, card_create_with_id_tx, card_mcp_token_set_tx, card_update_tx,
     card_with_codex_create_tx, cove_folder_create_tx, overlay_delete_by_entity_tx,
@@ -74,11 +75,12 @@ use crate::model::{
     CardPatch, CardRole, CoveKind, FolderConflict, FolderConflictKind, NewCard, NewOverlay,
     NewWave, Wave, WaveDetail, WavePatch, new_id,
 };
+use crate::pending_codex_threads::PendingEntry;
 use crate::routes::cove_folders::{is_descendant_of, normalize_path};
 use crate::routes::settings::{Settings, load_settings};
 use crate::spec_appserver::spawn_spec_appserver_with_watchdog_config_and_recovery_for_wave;
 use crate::spec_card::{SpecPushDaemonArgs, build_codex_env_map, seed_and_spawn_spec_daemon};
-use crate::spec_push::TurnWatchdogConfig;
+use crate::spec_push::{self, SharedStatus, SpecPushPhase, SpecPushStatus, TurnWatchdogConfig};
 use crate::state::AppState;
 use crate::terminal_sweeper::{reap_spec_push, reap_terminal_artifacts};
 use crate::wave_lifecycle::validate_transition;
@@ -743,30 +745,66 @@ pub(crate) async fn create_wave(
     // inert wave is safe. Pre-cutover the PTY path tolerated codex failing
     // (it only 500'd if the daemon BINARY was missing); this restores that
     // tolerance for the push path so codex-free UI jobs get a 201.
-    let push_args = match spawn_push_appserver(
-        &s,
-        &spec_card_id,
-        &wave,
-        &env_for_spawn,
-        &settings,
-        mcp_token.as_deref(),
-        SpawnPushAppserverMode::CreateWave,
-    )
-    .await
-    {
-        Ok(args) => Some(args),
-        Err(e) => {
-            // Non-fatal: the app-server's `SpawnRollback` guard already
-            // reaped its process group + socket dir on the way out (no
-            // orphan). Log the wave as created-but-inert and fall through
-            // to return 201 with the wave; we skip the daemon spawn below.
-            tracing::warn!(
-                card_id = %spec_card_id,
-                wave_id = %wave.id,
-                error = %e,
-                "spec push app-server failed to boot on wave create; wave created but the spec agent is NOT running (inert wave, recoverable via retry/delete) — returning 201",
-            );
-            None
+    let shared_spec_requested = s.shared_codex_spec_cards_enabled;
+    let use_shared_spec_path = shared_spec_requested && s.shared_codex_appserver.is_running();
+    if shared_spec_requested && !use_shared_spec_path {
+        tracing::warn!(
+            target: "shared_codex_daemon::spec_card",
+            card_id = %spec_card_id,
+            wave_id = %wave.id,
+            daemon_running = s.shared_codex_appserver.is_running(),
+            "shared spec-card path enabled but unavailable; falling back to legacy per-wave app-server"
+        );
+    }
+    let mut spec_tui_env = env_for_spawn.clone();
+    if use_shared_spec_path && let Some(map) = spec_tui_env.as_object_mut() {
+        map.insert(
+            "CODEX_HOME".into(),
+            serde_json::Value::String(s.codex.codex_home_dir().to_string_lossy().to_string()),
+        );
+        map.remove("NEIGE_MCP_TOKEN");
+    }
+
+    let push_args = if use_shared_spec_path {
+        match spawn_push_via_shared_daemon(&s, &spec_card_id, &wave).await {
+            Ok(args) => Some(args),
+            Err(e) => {
+                tracing::warn!(
+                    target: "shared_codex_daemon::spec_card",
+                    card_id = %spec_card_id,
+                    wave_id = %wave.id,
+                    error = %e,
+                    "spec card via shared daemon failed; wave created but the spec agent is inert",
+                );
+                None
+            }
+        }
+    } else {
+        match spawn_push_appserver(
+            &s,
+            &spec_card_id,
+            &wave,
+            &env_for_spawn,
+            &settings,
+            mcp_token.as_deref(),
+            SpawnPushAppserverMode::CreateWave,
+        )
+        .await
+        {
+            Ok(args) => Some(args),
+            Err(e) => {
+                // Non-fatal: the app-server's `SpawnRollback` guard already
+                // reaped its process group + socket dir on the way out (no
+                // orphan). Log the wave as created-but-inert and fall through
+                // to return 201 with the wave; we skip the daemon spawn below.
+                tracing::warn!(
+                    card_id = %spec_card_id,
+                    wave_id = %wave.id,
+                    error = %e,
+                    "spec push app-server failed to boot on wave create; wave created but the spec agent is NOT running (inert wave, recoverable via retry/delete) — returning 201",
+                );
+                None
+            }
         }
     };
 
@@ -782,7 +820,7 @@ pub(crate) async fn create_wave(
             spec_card_id.clone(),
             wave.id.as_str().to_string(),
             wave.cwd.clone(),
-            env_for_spawn,
+            spec_tui_env,
             mcp_token.clone(),
             push_args,
         )
@@ -840,6 +878,256 @@ pub(crate) enum SpawnPushAppserverMode {
     ResetExisting { mcp_token: String },
 }
 
+pub(crate) async fn spawn_push_via_shared_daemon(
+    s: &AppState,
+    spec_card_id: &str,
+    wave: &Wave,
+) -> Result<SpecPushDaemonArgs> {
+    let needs_initial_prompt = wave.title.trim().is_empty();
+    let mut notifications = s.shared_codex_appserver.subscribe_notifications();
+    let status: SharedStatus = if needs_initial_prompt {
+        std::sync::Arc::new(tokio::sync::Mutex::new(SpecPushStatus {
+            phase: SpecPushPhase::PendingThreadStart,
+            last_thread_id: None,
+            last_turn_id: None,
+        }))
+    } else {
+        std::sync::Arc::new(tokio::sync::Mutex::new(SpecPushStatus::default()))
+    };
+
+    let thread_id = if needs_initial_prompt {
+        let terminal = s
+            .repo
+            .terminal_get_by_card(spec_card_id)
+            .await?
+            .ok_or_else(|| {
+                CalmError::Internal(format!("spec terminal row missing for card {spec_card_id}"))
+            })?;
+        let pending = s.pending_codex_threads.as_ref().ok_or_else(|| {
+            CalmError::Internal("shared spec-card path enabled without pending registry".into())
+        })?;
+        pending
+            .register(
+                PendingEntry::new(
+                    spec_card_id.to_string(),
+                    Some(wave.id.to_string()),
+                    terminal.id.to_string(),
+                )
+                .with_role(CardRole::Spec),
+            )
+            .await?;
+        None
+    } else {
+        let developer_instructions = crate::spec_card::render_system_prompt(
+            crate::spec_card::SeededCardRole::Spec.prompt_template(),
+            wave.id.as_str(),
+        );
+        let thread_id = s
+            .shared_codex_appserver
+            .thread_start_for_card(
+                spec_card_id,
+                CardRole::Spec,
+                Some(wave.id.as_str()),
+                crate::shared_codex_appserver::SharedThreadStartParams {
+                    cwd: wave.cwd.clone(),
+                    approval_policy: "never".into(),
+                    sandbox_mode: "workspace-write".into(),
+                    developer_instructions: Some(developer_instructions),
+                },
+            )
+            .await?;
+        {
+            let mut g = status.lock().await;
+            g.last_thread_id = Some(thread_id.clone());
+        }
+        s.shared_codex_appserver
+            .turn_start(&thread_id, vec![InputItem::text(wave.title.trim())])
+            .await?;
+        await_shared_spec_initial_turn_lifecycle(&mut notifications, &thread_id, &status).await?;
+        Some(thread_id)
+    };
+
+    persist_shared_spec_runtime_fields(s, spec_card_id, wave, thread_id.as_deref()).await?;
+
+    let handle = spec_push::park_shared_handle(
+        s.shared_codex_appserver.clone(),
+        thread_id.clone(),
+        notifications,
+        status,
+        TurnWatchdogConfig::default(),
+    );
+    install_spec_push_sinks_and_park(s, spec_card_id, wave, handle).await;
+
+    tracing::info!(
+        target: "shared_codex_daemon::spec_card",
+        card_id = %spec_card_id,
+        wave_id = %wave.id,
+        thread_id = %thread_id.as_deref().unwrap_or("<pending>"),
+        needs_initial_prompt,
+        "spec card routed through shared codex daemon"
+    );
+
+    Ok(SpecPushDaemonArgs {
+        thread_id,
+        sock_uri: s.shared_codex_appserver.remote_uri(),
+        seed_codex_home: false,
+    })
+}
+
+async fn await_shared_spec_initial_turn_lifecycle(
+    rx: &mut tokio::sync::broadcast::Receiver<Notification>,
+    thread_id: &str,
+    status: &SharedStatus,
+) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err(CalmError::CodexAppServer(format!(
+                "timed out awaiting initial turn lifecycle notification for shared spec thread {thread_id}"
+            )));
+        }
+        match tokio::time::timeout(deadline - now, rx.recv()).await {
+            Ok(Ok(n)) => {
+                if spec_push::notification_thread_id(&n) == Some(thread_id) {
+                    spec_push::record(status, &n).await;
+                    if matches!(
+                        n,
+                        Notification::TurnStarted { .. } | Notification::TurnCompleted { .. }
+                    ) {
+                        return Ok(());
+                    }
+                }
+            }
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped))) => {
+                tracing::warn!(
+                    target: "shared_codex_daemon::spec_card",
+                    skipped,
+                    thread_id,
+                    "shared spec initial lifecycle subscriber lagged"
+                );
+            }
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                return Err(CalmError::CodexAppServer(format!(
+                    "shared app-server notification channel closed before initial lifecycle for {thread_id}"
+                )));
+            }
+            Err(_) => {
+                return Err(CalmError::CodexAppServer(format!(
+                    "timed out awaiting initial turn lifecycle notification for shared spec thread {thread_id}"
+                )));
+            }
+        }
+    }
+}
+
+async fn persist_shared_spec_runtime_fields(
+    s: &AppState,
+    spec_card_id: &str,
+    wave: &Wave,
+    thread_id: Option<&str>,
+) -> Result<()> {
+    let scope = EventScope::Card {
+        card: spec_card_id.into(),
+        wave: wave.id.clone(),
+        cove: wave.cove_id.clone(),
+    };
+    let card_id_for_tx = spec_card_id.to_string();
+    let thread_id_for_tx = thread_id.map(str::to_string);
+    let remote_uri = s.shared_codex_appserver.remote_uri();
+    let needs_initial_prompt = thread_id.is_none();
+    let (_card, _id) = write_with_event_typed(
+        s.repo.as_ref(),
+        ActorId::Kernel,
+        scope,
+        None,
+        &s.events,
+        &s.card_role_cache,
+        &s.wave_cove_cache,
+        move |tx| {
+            Box::pin(async move {
+                let mut payload = s_repo_card_get(tx, &card_id_for_tx).await?;
+                let Some(map) = payload.as_object_mut() else {
+                    return Err(CalmError::Internal(format!(
+                        "spec card {card_id_for_tx} payload is not a JSON object; cannot persist shared codex runtime fields"
+                    )));
+                };
+                if let Some(thread_id) = thread_id_for_tx.as_deref() {
+                    map.insert(
+                        "codex_thread_id".into(),
+                        serde_json::Value::String(thread_id.to_string()),
+                    );
+                } else {
+                    map.remove("codex_thread_id");
+                }
+                map.insert(
+                    "codex_source".into(),
+                    serde_json::Value::String("shared".into()),
+                );
+                map.insert("appserver_sock".into(), serde_json::Value::String(remote_uri));
+                map.insert("appserver_pgid".into(), serde_json::Value::Null);
+                map.insert("appserver_start_time".into(), serde_json::Value::Null);
+                map.insert("appserver_boot_id".into(), serde_json::Value::Null);
+                if needs_initial_prompt {
+                    map.insert(
+                        "appserver_needs_initial_prompt".into(),
+                        serde_json::Value::Bool(true),
+                    );
+                } else {
+                    map.remove("appserver_needs_initial_prompt");
+                }
+                map.insert(
+                    "push_watermark".into(),
+                    serde_json::Value::Number(0i64.into()),
+                );
+                let card = card_update_tx(
+                    tx,
+                    &card_id_for_tx,
+                    CardPatch {
+                        kind: None,
+                        sort: None,
+                        payload: Some(payload),
+                        deletable: None,
+                    },
+                )
+                .await?;
+                Ok((card.clone(), Event::CardUpdated(card)))
+            })
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+async fn install_spec_push_sinks_and_park(
+    s: &AppState,
+    spec_card_id: &str,
+    wave: &Wave,
+    handle: spec_push::SpecPushHandle,
+) {
+    let card_key: crate::ids::CardId = spec_card_id.to_string().into();
+    let sink = s.dispatcher.watermark_sink_for(card_key.clone());
+    handle.install_watermark_sink(sink).await;
+    let initial_prompt_ready = if handle.thread_id.is_none() {
+        s.dispatcher.initial_prompt_ready_sink_for(
+            card_key.clone(),
+            wave.id.clone(),
+            wave.cove_id.clone(),
+        )
+    } else {
+        s.dispatcher.initial_prompt_clear_sink_for(card_key.clone())
+    };
+    handle
+        .install_initial_prompt_ready_sink(initial_prompt_ready)
+        .await;
+    let persist = s.dispatcher.queue_persist_for(card_key);
+    handle.install_queue_persist(persist).await;
+    s.spec_push
+        .park(wave.id.clone(), handle, s.aspects.as_ref())
+        .await;
+}
+
+// PR7c owns deleting the legacy helper family: spawn_spec_appserver|spawn_push_appserver.
 pub(crate) async fn spawn_push_appserver(
     s: &AppState,
     spec_card_id: &str,
@@ -912,8 +1200,13 @@ pub(crate) async fn spawn_push_appserver(
             )
         })?)
     };
-    let sock_for_args = handle.sock.clone();
-    let pgid = handle.pgid;
+    let sock_for_args = handle
+        .legacy_sock()
+        .ok_or_else(|| CalmError::Internal("legacy spawn returned shared spec handle".into()))?
+        .to_path_buf();
+    let pgid = handle
+        .legacy_pgid()
+        .ok_or_else(|| CalmError::Internal("legacy spawn returned shared spec handle".into()))?;
     // #318 INV-5 (R3-B1) — identity stamp captured by
     // `spawn_spec_appserver` from `/proc/<pgid>/stat` field 22 (start_time)
     // and `/proc/sys/kernel/random/boot_id` (boot_id) at spawn. Both
@@ -922,8 +1215,8 @@ pub(crate) async fn spawn_push_appserver(
     // cross-reboot boot_id mismatch) before signaling it. `None` on
     // non-Linux / ENOENT-at-spawn → field is JSON null below; boot-
     // recovery treats an absent stamp as "skip the kill" (conservative).
-    let start_time = handle.start_time;
-    let boot_id = handle.boot_id.clone();
+    let start_time = handle.legacy_start_time();
+    let boot_id = handle.legacy_boot_id().map(str::to_string);
 
     // Persist app-server runtime fields on
     // the spec card payload (merge into the existing payload —
@@ -1028,6 +1321,10 @@ pub(crate) async fn spawn_push_appserver(
                 } else {
                     map.remove("codex_thread_id");
                 }
+                map.insert(
+                    "codex_source".into(),
+                    serde_json::Value::String("legacy".into()),
+                );
                 if needs_initial_prompt {
                     map.insert(
                         "appserver_needs_initial_prompt".into(),
@@ -1202,7 +1499,8 @@ pub(crate) async fn spawn_push_appserver(
 
     Ok(SpecPushDaemonArgs {
         thread_id,
-        sock: sock_for_args,
+        sock_uri: format!("unix://{}", sock_for_args.display()),
+        seed_codex_home: true,
     })
 }
 

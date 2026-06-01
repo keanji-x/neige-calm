@@ -89,6 +89,9 @@ pub enum CalmError {
     #[error("plugin kernel too old: {0}")]
     PluginKernelTooOld(String),
 
+    #[error("spec reset unsupported in shared mode: {0}")]
+    SpecResetUnsupportedInSharedMode(String),
+
     #[error("database error: {0}")]
     Db(#[from] sqlx::Error),
 
@@ -126,6 +129,9 @@ impl CalmError {
             CalmError::PluginPermission(_) => "plugin_permission",
             CalmError::PluginConflict(_) => "plugin_conflict",
             CalmError::PluginKernelTooOld(_) => "plugin_kernel_too_old",
+            CalmError::SpecResetUnsupportedInSharedMode(_) => {
+                "spec_reset_unsupported_in_shared_mode"
+            }
             CalmError::Db(_) => "db_error",
             CalmError::Io(_) => "io_error",
             CalmError::Serde(_) => "serde_error",
@@ -143,7 +149,9 @@ impl CalmError {
             CalmError::BadRequest(_) | CalmError::PluginInstall(_) => StatusCode::BAD_REQUEST,
             CalmError::Unauthorized => StatusCode::UNAUTHORIZED,
             CalmError::Forbidden(_) | CalmError::PluginPermission(_) => StatusCode::FORBIDDEN,
-            CalmError::PluginKernelTooOld(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            CalmError::PluginKernelTooOld(_) | CalmError::SpecResetUnsupportedInSharedMode(_) => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
             CalmError::Db(_)
             | CalmError::Io(_)
             | CalmError::Serde(_)

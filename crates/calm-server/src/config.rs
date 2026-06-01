@@ -162,6 +162,16 @@ pub struct Config {
     )]
     pub shared_codex_empty_cards_enabled: bool,
 
+    /// Route spec cards created by `POST /api/waves` through the shared
+    /// codex app-server when `true`. Default false preserves the legacy
+    /// per-wave app-server path until PR7b is explicitly enabled.
+    #[arg(
+        long,
+        env = "CALM_SHARED_CODEX_SPEC_CARDS_ENABLED",
+        default_value_t = false
+    )]
+    pub shared_codex_spec_cards_enabled: bool,
+
     /// Initial delay before restarting the shared codex app-server after a crash.
     #[arg(
         long,

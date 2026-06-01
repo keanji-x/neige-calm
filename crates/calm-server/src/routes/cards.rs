@@ -463,6 +463,16 @@ pub(crate) async fn reset_spec_card(
             "card {id} is not a spec codex card",
         )));
     }
+    if card
+        .payload
+        .get("codex_source")
+        .and_then(serde_json::Value::as_str)
+        == Some("shared")
+    {
+        return Err(CalmError::SpecResetUnsupportedInSharedMode(format!(
+            "card {id} was created on the shared codex daemon; reset support is deferred"
+        )));
+    }
 
     let terminal = s
         .repo
