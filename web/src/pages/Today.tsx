@@ -12,7 +12,6 @@ import { isRunning, waveNeedsUserAttention } from '../shared/lifecycle';
 import { lifecycleLabel } from '../shared/components/WaveLifecycleBadge';
 import { waveDisplayTitle } from '../shared/waveTitle';
 import type { Cove, Route, Wave } from '../types';
-import { handleWheelCardPointerDown } from '../input/cardShell';
 import { useXtermWheelTargetRef } from '../input/useXtermWheelTarget';
 
 // xterm.js is heavy and only mounts when the Today home panel resolves a
@@ -308,9 +307,7 @@ function TodayTerminalPanel({
   return (
     <div
       className="today-term"
-      tabIndex={-1}
       data-wheel-card
-      onPointerDownCapture={handleWheelCardPointerDown}
     >
       <CardHead
         className="today-term-head"

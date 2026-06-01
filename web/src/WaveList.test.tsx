@@ -246,24 +246,6 @@ describe('WaveList — keyboard navigation', () => {
     await waitFor(() => expect(document.activeElement).toBe(items[0]));
   });
 
-  it('clicking a row syncs the roving index before the next arrow key', async () => {
-    render(
-      <Wrapper client={makeClient()}>
-        <WaveList
-          waveId="w1"
-          cards={[slot('a', 10), slot('b', 20), slot('c', 30)]}
-          onRemoveCard={() => {}}
-        />
-      </Wrapper>,
-    );
-
-    const items = screen.getAllByRole('listitem');
-    fireEvent.pointerDown(items[1]);
-    await waitFor(() => expect(document.activeElement).toBe(items[1]));
-
-    fireEvent.keyDown(items[1], { key: 'ArrowDown' });
-    await waitFor(() => expect(document.activeElement).toBe(items[2]));
-  });
 });
 
 describe('WaveList — reorder via Alt+ArrowUp/Down', () => {

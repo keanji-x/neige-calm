@@ -1561,11 +1561,6 @@ input, textarea { font: inherit; color: inherit; }
   display: flex;
   flex-direction: column;
 }
-.wave-card:focus-within {
-  outline: 2px solid var(--accent);
-  outline-offset: var(--space-1);
-  border-radius: var(--r);
-}
 
 /* Inside a grid cell, cards drop their stacked-layout margin and stretch
    to fill the wrapper. The wrapper owns the gap (RGL `margin` prop). */
@@ -3189,11 +3184,6 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   overflow: hidden;
 }
 [data-theme="dark"] .today-term { background: var(--surface-terminal); }
-.today-term:focus-within {
-  outline: 2px solid var(--accent);
-  outline-offset: var(--space-1);
-  border-radius: var(--r);
-}
 
 /* `.card-head` (applied via `<CardHead>`) supplies display/align/gap/
    padding/border/background. `flex-shrink: 0` is load-bearing inside the
@@ -3906,11 +3896,6 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
      fully-content-empty card (e.g. a freshly-spawned terminal before
      any output) collapses to its header. */
   outline: none;
-}
-.wave-list-item:focus-within {
-  outline: 2px solid var(--accent);
-  outline-offset: var(--space-1);
-  border-radius: var(--r);
 }
 .wave-list-item:focus-visible {
   /* Soft accent ring on the focused row — matches the rename-button

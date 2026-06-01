@@ -89,17 +89,14 @@ function fileViewerPaneFor(
 export function getActiveCardShell(
   scrollRoot: HTMLElement,
   ownerDocument: Document,
+  clientX: number,
+  clientY: number,
 ): HTMLElement | null {
-  const focusedShell = ownerDocument.querySelector<HTMLElement>(
-    `${WHEEL_CARD_SELECTOR}:focus-within`,
-  );
-  const activeCard =
-    focusedShell ??
-    (ownerDocument.activeElement instanceof HTMLElement
-      ? ownerDocument.activeElement.closest<HTMLElement>(WHEEL_CARD_SELECTOR)
-      : null);
-  if (!activeCard) return null;
-  return scrollRoot.contains(activeCard) ? activeCard : null;
+  const el = ownerDocument.elementFromPoint(clientX, clientY);
+  if (!el) return null;
+  const shell = el.closest<HTMLElement>(WHEEL_CARD_SELECTOR);
+  if (!shell) return null;
+  return scrollRoot.contains(shell) ? shell : null;
 }
 
 export function resolveWheelRoute(args: {
