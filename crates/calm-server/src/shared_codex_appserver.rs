@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use serde::Serialize;
@@ -89,7 +89,9 @@ pub struct SharedThreadStartParams {
 pub struct BackoffState {
     initial: Duration,
     max: Duration,
+    stable_window: Duration,
     attempts: std::sync::atomic::AtomicU64,
+    last_relaunch_at: std::sync::Mutex<Option<Instant>>,
 }
 
 impl BackoffState {
@@ -99,17 +101,56 @@ impl BackoffState {
         Self {
             initial,
             max,
+            stable_window: Duration::from_secs(60),
             attempts: std::sync::atomic::AtomicU64::new(0),
+            last_relaunch_at: std::sync::Mutex::new(None),
         }
     }
 
     pub fn reset(&self) {
         self.attempts.store(0, Ordering::SeqCst);
+        *self
+            .last_relaunch_at
+            .lock()
+            .expect("backoff relaunch timestamp mutex poisoned") = None;
+    }
+
+    pub fn note_relaunch_now(&self) {
+        *self
+            .last_relaunch_at
+            .lock()
+            .expect("backoff relaunch timestamp mutex poisoned") = Some(Instant::now());
     }
 
     pub fn next_delay(&self) -> Duration {
+        self.reset_if_stable();
         let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
         bounded_exponential_backoff(self.initial, self.max, attempt)
+    }
+
+    fn reset_if_stable(&self) {
+        let Some(last_relaunch_at) = *self
+            .last_relaunch_at
+            .lock()
+            .expect("backoff relaunch timestamp mutex poisoned")
+        else {
+            return;
+        };
+        if last_relaunch_at.elapsed() >= self.stable_window {
+            self.reset();
+        }
+    }
+
+    #[cfg(any(test, feature = "fixtures"))]
+    pub fn simulate_stable_run_for(&self, duration: Duration) {
+        *self
+            .last_relaunch_at
+            .lock()
+            .expect("backoff relaunch timestamp mutex poisoned") = Some(
+            Instant::now()
+                .checked_sub(duration)
+                .unwrap_or_else(Instant::now),
+        );
     }
 }
 
@@ -210,7 +251,9 @@ impl SharedCodexAppServer {
         self.rebuild_thread_cache_from_db().await?;
         let record = self.repo.shared_daemon_runtime_get().await?;
         if self.try_takeover_live(&record).await? {
-            self.spawn_monitor();
+            if let Some(runtime) = self.runtime.lock().await.clone() {
+                self.spawn_taken_over_pid_watcher(runtime);
+            }
             return Ok(());
         }
 
@@ -219,7 +262,7 @@ impl SharedCodexAppServer {
         }
         self.start_new_process(SharedDaemonState::Starting, false, None)
             .await?;
-        self.spawn_monitor();
+        self.spawn_spawned_child_watcher();
         Ok(())
     }
 
@@ -409,7 +452,7 @@ impl SharedCodexAppServer {
         };
         *self.runtime.lock().await = Some(runtime.clone());
         *self.state.lock().await = SharedDaemonState::Running;
-        self.restart_backoff.reset();
+        self.restart_backoff.note_relaunch_now();
         if increment_restart_count {
             self.restart_count.fetch_add(1, Ordering::SeqCst);
         }
@@ -500,51 +543,91 @@ impl SharedCodexAppServer {
         }
     }
 
-    fn spawn_monitor(self: &Arc<Self>) {
+    fn spawn_spawned_child_watcher(self: &Arc<Self>) {
         if self.monitor_started.swap(true, Ordering::SeqCst) {
             return;
         }
         let this = Arc::downgrade(self);
         tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_millis(500)).await;
+            Self::watch_spawned_child(this).await;
+        });
+    }
+
+    fn spawn_taken_over_pid_watcher(self: &Arc<Self>, runtime: SharedDaemonRuntime) {
+        if self.monitor_started.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let this = Arc::downgrade(self);
+        tokio::spawn(async move {
+            Self::watch_taken_over_pid(this.clone(), runtime).await;
+            Self::watch_spawned_child(this).await;
+        });
+    }
+
+    async fn watch_spawned_child(this: std::sync::Weak<Self>) {
+        loop {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let Some(this) = this.upgrade() else {
+                return;
+            };
+            let exited = {
+                let mut guard = this.child.lock().await;
+                match guard
+                    .as_mut()
+                    .and_then(|child| child.try_wait().ok())
+                    .flatten()
+                {
+                    Some(status) => {
+                        *guard = None;
+                        Some(status)
+                    }
+                    None => None,
+                }
+            };
+            if let Some(status) = exited {
+                let uptime_sec = this
+                    .runtime
+                    .lock()
+                    .await
+                    .as_ref()
+                    .map(|runtime| (now_ms() - runtime.started_at).max(0) / 1000)
+                    .unwrap_or(0);
+                let error = format!("shared codex app-server exited: {status}");
+                tracing::warn!(
+                    target = "shared_codex_daemon::stop",
+                    uptime_sec,
+                    exit_code = status.code(),
+                    signal = status.signal(),
+                    "shared codex app-server stopped"
+                );
+                this.restart_after_crash(error).await;
+            }
+        }
+    }
+
+    async fn watch_taken_over_pid(this: std::sync::Weak<Self>, runtime: SharedDaemonRuntime) {
+        loop {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if !verify_owned_pid(runtime.pid, runtime.process_start_time, &runtime.boot_id) {
                 let Some(this) = this.upgrade() else {
                     return;
                 };
-                let exited = {
-                    let mut guard = this.child.lock().await;
-                    match guard
-                        .as_mut()
-                        .and_then(|child| child.try_wait().ok())
-                        .flatten()
-                    {
-                        Some(status) => {
-                            *guard = None;
-                            Some(status)
-                        }
-                        None => None,
-                    }
-                };
-                if let Some(status) = exited {
-                    let uptime_sec = this
-                        .runtime
-                        .lock()
-                        .await
-                        .as_ref()
-                        .map(|runtime| (now_ms() - runtime.started_at).max(0) / 1000)
-                        .unwrap_or(0);
-                    let error = format!("shared codex app-server exited: {status}");
-                    tracing::warn!(
-                        target = "shared_codex_daemon::stop",
-                        uptime_sec,
-                        exit_code = status.code(),
-                        signal = status.signal(),
-                        "shared codex app-server stopped"
-                    );
-                    this.restart_after_crash(error).await;
-                }
+                let uptime_sec = (now_ms() - runtime.started_at).max(0) / 1000;
+                let error = format!(
+                    "taken-over shared codex app-server exited: pid {}",
+                    runtime.pid
+                );
+                tracing::warn!(
+                    target = "shared_codex_daemon::stop",
+                    pid = runtime.pid,
+                    uptime_sec,
+                    reason = "taken-over daemon exited",
+                    "shared codex app-server takeover pid exited"
+                );
+                this.restart_after_crash(error).await;
+                return;
             }
-        });
+        }
     }
 
     async fn restart_after_crash(&self, error: String) {

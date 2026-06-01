@@ -4,13 +4,16 @@ use std::time::Duration;
 use calm_server::config::Config;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::db::{Repo, RepoOutOfDomain, RepoSyncDomainRaw, SharedCodexDaemonUpdate};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
+use calm_server::model::{CardRole, NewCard, NewCove, NewWave, now_ms};
 use calm_server::routes::theme::RequestTheme;
 use calm_server::shared_codex_appserver::{
     BackoffState, SharedCodexAppServer, SharedDaemonState, bounded_exponential_backoff,
 };
+use calm_server::spec_appserver::{read_boot_id, read_proc_start_time};
 use clap::Parser;
 use serde_json::json;
+use std::process::Stdio;
+use tokio::process::Command;
 
 fn fake_codex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_osc-probe-child")
@@ -208,4 +211,113 @@ fn bounded_exponential_backoff_caps_at_max() {
         last = state.next_delay();
     }
     assert_eq!(last, max);
+}
+
+#[test]
+fn backoff_does_not_reset_within_stable_window() {
+    let state = BackoffState::new(Duration::from_millis(250), Duration::from_secs(10));
+
+    let d1 = state.next_delay();
+    state.note_relaunch_now();
+    let d2_no_stable = state.next_delay();
+
+    assert!(
+        d2_no_stable > d1,
+        "backoff must grow without stable window: {d1:?} -> {d2_no_stable:?}"
+    );
+}
+
+#[test]
+fn backoff_resets_after_stable_window() {
+    let state = BackoffState::new(Duration::from_millis(250), Duration::from_secs(10));
+    let _ = state.next_delay();
+    let _ = state.next_delay();
+    let _ = state.next_delay();
+    state.note_relaunch_now();
+    state.simulate_stable_run_for(Duration::from_secs(61));
+
+    let d_after_stable = state.next_delay();
+
+    assert_eq!(
+        d_after_stable,
+        Duration::from_millis(250),
+        "backoff must reset to initial after stable window: got {d_after_stable:?}"
+    );
+}
+
+#[tokio::test]
+async fn taken_over_daemon_exit_triggers_restart() {
+    let root = tempfile::tempdir().unwrap();
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+
+    let mut child = Command::new(fake_codex_bin())
+        .arg("app-server")
+        .arg("--listen")
+        .arg(format!("unix://{}", sock.display()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn fake app-server for takeover");
+    let pid = i32::try_from(child.id().expect("fake app-server pid")).expect("pid fits i32");
+
+    let mut process_start_time = None;
+    for _ in 0..40 {
+        process_start_time = read_proc_start_time(pid);
+        if process_start_time.is_some() && sock.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let process_start_time = process_start_time.expect("fake app-server start time");
+    assert!(sock.exists(), "fake app-server must bind takeover socket");
+
+    let repo = repo().await;
+    repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
+        state: "running".into(),
+        pid: Some(pid),
+        pgid: Some(pid),
+        sock_path: Some(sock.display().to_string()),
+        codex_home_path: Some(root.path().join("codex-home").display().to_string()),
+        process_start_time: Some(process_start_time),
+        boot_id: Some(read_boot_id().unwrap_or_default()),
+        started_at: Some(now_ms()),
+        last_error: None,
+        increment_restart_count: false,
+    })
+    .await
+    .unwrap();
+
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+    let snapshot = daemon.status_snapshot();
+    assert_eq!(snapshot.state, SharedDaemonState::Running);
+    assert_eq!(
+        snapshot.runtime.as_ref().map(|runtime| runtime.pid),
+        Some(pid)
+    );
+
+    child.kill().await.expect("kill taken-over fake app-server");
+    let _ = child.wait().await;
+
+    let restarted = tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            let snapshot = daemon.status_snapshot();
+            let restarted_pid = snapshot.runtime.as_ref().map(|runtime| runtime.pid);
+            if snapshot.state == SharedDaemonState::Running
+                && snapshot.restart_count >= 1
+                && restarted_pid != Some(pid)
+            {
+                return snapshot;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("taken-over daemon exit should trigger restart");
+
+    assert_eq!(restarted.restart_count, 1);
 }
