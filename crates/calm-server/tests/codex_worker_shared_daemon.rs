@@ -442,21 +442,31 @@ async fn worker_turn_start_failure_rolls_back_mapping_and_payload() {
     }
     failed.expect("task.failed");
 
-    let card = boot
-        .repo
-        .card_get(card.id.as_str())
-        .await
-        .unwrap()
-        .expect("card remains inert");
-    assert!(card.payload.get("codex_source").is_none());
-    assert!(card.payload.get("codex_thread_id").is_none());
-    assert!(card.payload.get("appserver_sock").is_none());
-    assert!(card.payload.get("appserver_pgid").is_none());
+    // After PR7b-worker R2: the shared-worker turn_start failure rollback
+    // now reaps the PTY and DELETES the card row (via rollback_orphan_worker
+    // Deleted branch). This clears the idempotency_key so a retry of the
+    // same job can succeed — leaving an inert card stamped with markers
+    // would let find_card_by_idempotency_key_tx short-circuit the retry as
+    // already-done.
+    assert!(
+        boot.repo.card_get(card.id.as_str()).await.unwrap().is_none(),
+        "turn_start rollback must delete the worker card so idempotency_key clears"
+    );
     assert!(
         boot.repo
             .card_codex_thread_get_by_card(card.id.as_str())
             .await
             .unwrap()
-            .is_none()
+            .is_none(),
+        "turn_start rollback must delete the card_codex_threads mapping"
+    );
+    // Retry the same idempotency_key — should now succeed (no short-circuit).
+    // FAKE_CODEX_FAIL_TURN_START was removed above; the retry's thread/start
+    // + turn/start should accept the work.
+    dispatch(&boot, "turn-fail-1", "retry should succeed").await;
+    let retry = wait_for_card(&boot, "turn-fail-1").await;
+    assert_ne!(
+        retry.id, card.id,
+        "retry must mint a fresh card row (old one was deleted)"
     );
 }

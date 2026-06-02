@@ -2556,52 +2556,14 @@ async fn spawn_codex_worker_via_shared_daemon(
         "thread_start_succeeded"
     );
 
-    // Persist before the resumed TUI starts so codex_auto_submit sees the
-    // thread id on hook.codex.session_start and skips the legacy Enter
-    // injection.
+    // Persist the runtime markers (codex_source, codex_thread_id, ...) BEFORE
+    // the PTY spawn so codex_auto_submit's session_start hook sees
+    // codex_thread_id present and skips the legacy Enter injection. The
+    // persist is SILENT (no CardUpdated event) — wave subscribers refetch on
+    // CardUpdated and could mount the card before its renderer entry is live
+    // (issue #310 race). CardAdded remains the first visible event, emitted
+    // by the caller after spawn succeeds.
     persist_shared_worker_runtime_fields(inner, ctx.card, &thread_id, &remote_uri).await?;
-
-    let initial_turn_result = async {
-        inner
-            .shared_codex_appserver
-            .turn_start(
-                &thread_id,
-                vec![InputItem::text(ctx.rendered_prompt.trim())],
-            )
-            .await?;
-        await_shared_worker_initial_turn_started(&mut notifications, &thread_id).await?;
-        Ok::<(), CalmError>(())
-    }
-    .await;
-    if let Err(e) = initial_turn_result {
-        tracing::warn!(
-            target: "shared_codex_daemon::worker",
-            card_id,
-            wave_id = %ctx.wave_id,
-            thread_id = %thread_id,
-            error = %e,
-            "turn_start_failed"
-        );
-        if let Err(rollback_err) = inner.repo.card_codex_thread_delete_by_card(card_id).await {
-            tracing::warn!(
-                target: "shared_codex_daemon::worker",
-                card_id,
-                thread_id = %thread_id,
-                rollback_error = %rollback_err,
-                "card_codex_thread delete failed during turn_start rollback"
-            );
-        }
-        if let Err(rollback_err) = clear_shared_worker_runtime_fields(inner, ctx.card).await {
-            tracing::warn!(
-                target: "shared_codex_daemon::worker",
-                card_id,
-                thread_id = %thread_id,
-                rollback_error = %rollback_err,
-                "payload clear failed during turn_start rollback"
-            );
-        }
-        return Err(e);
-    }
 
     let mut env_for_spawn = ctx.legacy_env.clone();
     if let Some(map) = env_for_spawn.as_object_mut() {
@@ -2630,6 +2592,14 @@ async fn spawn_codex_worker_via_shared_daemon(
         shell_single_quote(&thread_id),
         shell_single_quote(&remote_uri)
     );
+
+    // Spawn the PTY FIRST, then deliver the goal via turn_start. This avoids
+    // a class of orphan-turn bugs: if turn_start runs before spawn and the
+    // PTY then fails to launch, the shared daemon would keep running the
+    // user's job with no visible card or recovery path. Running turn_start
+    // after the PTY is live means a turn_start failure can be rolled back
+    // by reaping the (just-spawned) PTY + deleting the card — no orphan
+    // work persists.
     if let Err(e) = spawn_terminal_with_parts(
         inner.daemon.as_ref(),
         inner.terminal_renderer.as_ref(),
@@ -2675,6 +2645,83 @@ async fn spawn_codex_worker_via_shared_daemon(
                 );
             }
         }
+    }
+
+    // turn_start AFTER spawn. On failure (the shared daemon refuses or the
+    // initial lifecycle never arrives), reap the PTY and delete the card so
+    // the idempotency_key clears and a retry can succeed; otherwise the
+    // worker would be visible-but-empty and the dispatcher would later emit
+    // task.failed for a job that was never actually started.
+    let initial_turn_result = async {
+        inner
+            .shared_codex_appserver
+            .turn_start(
+                &thread_id,
+                vec![InputItem::text(ctx.rendered_prompt.trim())],
+            )
+            .await?;
+        await_shared_worker_initial_turn_started(&mut notifications, &thread_id).await?;
+        Ok::<(), CalmError>(())
+    }
+    .await;
+    if let Err(e) = initial_turn_result {
+        tracing::warn!(
+            target: "shared_codex_daemon::worker",
+            card_id,
+            wave_id = %ctx.wave_id,
+            thread_id = %thread_id,
+            error = %e,
+            "turn_start_failed"
+        );
+        let outcome = rollback_orphan_worker(
+            inner.repo.as_ref(),
+            inner.terminal_renderer.as_ref(),
+            &inner.card_role_cache,
+            card_id,
+            ctx.term.id.as_str(),
+        )
+        .await;
+        if let Err(rollback_err) = inner.repo.card_codex_thread_delete_by_card(card_id).await {
+            tracing::warn!(
+                target: "shared_codex_daemon::worker",
+                card_id,
+                thread_id = %thread_id,
+                rollback_error = %rollback_err,
+                "card_codex_thread delete failed during turn_start rollback"
+            );
+        }
+        match outcome {
+            RollbackOutcome::Deleted => {
+                tracing::error!(
+                    target: "shared_codex_daemon::worker",
+                    card_id,
+                    wave_id = %ctx.wave_id,
+                    terminal_id = %ctx.term.id,
+                    thread_id = %thread_id,
+                    error = %e,
+                    "worker_turn_start_rolled_back"
+                );
+            }
+            RollbackOutcome::Preserved => {
+                // The PTY had already fast-exited before rollback ran;
+                // the card stays for the post-mortem (its payload still
+                // has codex_thread_id pointing at a thread that never got
+                // a turn — clear it so the next boot doesn't try to
+                // resume it).
+                if let Err(clear_err) =
+                    clear_shared_worker_runtime_fields(inner, card_id).await
+                {
+                    tracing::warn!(
+                        target: "shared_codex_daemon::worker",
+                        card_id,
+                        thread_id = %thread_id,
+                        clear_err = %clear_err,
+                        "payload clear failed on PreservedRollback turn_start path"
+                    );
+                }
+            }
+        }
+        return Err(e);
     }
 
     tracing::info!(
@@ -2742,109 +2789,86 @@ async fn persist_shared_worker_runtime_fields(
     thread_id: &str,
     remote_uri: &str,
 ) -> crate::error::Result<()> {
-    let scope = crate::routes::cards::card_scope(
-        inner.repo.as_ref(),
-        card.id.clone(),
-        card.wave_id.clone(),
-    )
-    .await?;
     let card_id_for_tx = card.id.to_string();
     let thread_id_for_tx = thread_id.to_string();
     let remote_uri_for_tx = remote_uri.to_string();
-    let (_card, _id) = write_with_event_typed(
-        inner.repo.as_ref(),
-        ActorId::KernelDispatcher,
-        scope,
-        None,
-        &inner.events,
-        &inner.card_role_cache,
-        &inner.wave_cove_cache,
-        move |tx| {
-            Box::pin(async move {
-                let mut payload = dispatcher_card_payload_get(tx, &card_id_for_tx).await?;
-                let Some(map) = payload.as_object_mut() else {
-                    return Err(CalmError::Internal(format!(
-                        "worker card {card_id_for_tx} payload is not a JSON object; cannot persist shared codex runtime fields"
-                    )));
-                };
-                map.insert(
-                    "codex_source".into(),
-                    serde_json::Value::String("shared".into()),
-                );
-                map.insert(
-                    "codex_thread_id".into(),
-                    serde_json::Value::String(thread_id_for_tx),
-                );
-                map.insert(
-                    "appserver_sock".into(),
-                    serde_json::Value::String(remote_uri_for_tx),
-                );
-                map.insert("appserver_pgid".into(), serde_json::Value::Null);
-                let updated = card_update_tx(
-                    tx,
-                    &card_id_for_tx,
-                    CardPatch {
-                        kind: None,
-                        sort: None,
-                        payload: Some(payload),
-                        deletable: None,
-                    },
-                )
-                .await?;
-                Ok((updated.clone(), Event::CardUpdated(updated)))
-            })
-        },
-    )
+    // SILENT update: `write_in_tx_typed` (not `write_with_event_typed`).
+    // CardAdded is the first visible event the broadcaster emits for a worker
+    // card (Stage 3, after spawn succeeds); emitting CardUpdated here would
+    // pre-empt the renderer-mount race protection (issue #310) — wave
+    // subscribers refetch on CardUpdated and could mount the card before its
+    // terminal renderer entry is live.
+    let _ = write_in_tx_typed::<crate::model::Card, _>(inner.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            let mut payload = dispatcher_card_payload_get(tx, &card_id_for_tx).await?;
+            let Some(map) = payload.as_object_mut() else {
+                return Err(CalmError::Internal(format!(
+                    "worker card {card_id_for_tx} payload is not a JSON object; cannot persist shared codex runtime fields"
+                )));
+            };
+            map.insert(
+                "codex_source".into(),
+                serde_json::Value::String("shared".into()),
+            );
+            map.insert(
+                "codex_thread_id".into(),
+                serde_json::Value::String(thread_id_for_tx),
+            );
+            map.insert(
+                "appserver_sock".into(),
+                serde_json::Value::String(remote_uri_for_tx),
+            );
+            map.insert("appserver_pgid".into(), serde_json::Value::Null);
+            let updated = card_update_tx(
+                tx,
+                &card_id_for_tx,
+                CardPatch {
+                    kind: None,
+                    sort: None,
+                    payload: Some(payload),
+                    deletable: None,
+                },
+            )
+            .await?;
+            Ok(updated)
+        })
+    })
     .await?;
     Ok(())
 }
 
 async fn clear_shared_worker_runtime_fields(
     inner: &Arc<Inner>,
-    card: &crate::model::Card,
+    card_id: &str,
 ) -> crate::error::Result<()> {
-    let scope = crate::routes::cards::card_scope(
-        inner.repo.as_ref(),
-        card.id.clone(),
-        card.wave_id.clone(),
-    )
-    .await?;
-    let card_id_for_tx = card.id.to_string();
-    let (_card, _id) = write_with_event_typed(
-        inner.repo.as_ref(),
-        ActorId::KernelDispatcher,
-        scope,
-        None,
-        &inner.events,
-        &inner.card_role_cache,
-        &inner.wave_cove_cache,
-        move |tx| {
-            Box::pin(async move {
-                let mut payload = dispatcher_card_payload_get(tx, &card_id_for_tx).await?;
-                let Some(map) = payload.as_object_mut() else {
-                    return Err(CalmError::Internal(format!(
-                        "worker card {card_id_for_tx} payload is not a JSON object; cannot clear shared codex runtime fields"
-                    )));
-                };
-                map.remove("codex_source");
-                map.remove("codex_thread_id");
-                map.remove("appserver_sock");
-                map.remove("appserver_pgid");
-                let updated = card_update_tx(
-                    tx,
-                    &card_id_for_tx,
-                    CardPatch {
-                        kind: None,
-                        sort: None,
-                        payload: Some(payload),
-                        deletable: None,
-                    },
-                )
-                .await?;
-                Ok((updated.clone(), Event::CardUpdated(updated)))
-            })
-        },
-    )
+    let card_id_for_tx = card_id.to_string();
+    // Silent for the same reason as persist_shared_worker_runtime_fields.
+    let _ = write_in_tx_typed::<crate::model::Card, _>(inner.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            let mut payload = dispatcher_card_payload_get(tx, &card_id_for_tx).await?;
+            let Some(map) = payload.as_object_mut() else {
+                return Err(CalmError::Internal(format!(
+                    "worker card {card_id_for_tx} payload is not a JSON object; cannot clear shared codex runtime fields"
+                )));
+            };
+            map.remove("codex_source");
+            map.remove("codex_thread_id");
+            map.remove("appserver_sock");
+            map.remove("appserver_pgid");
+            let updated = card_update_tx(
+                tx,
+                &card_id_for_tx,
+                CardPatch {
+                    kind: None,
+                    sort: None,
+                    payload: Some(payload),
+                    deletable: None,
+                },
+            )
+            .await?;
+            Ok(updated)
+        })
+    })
     .await?;
     Ok(())
 }
