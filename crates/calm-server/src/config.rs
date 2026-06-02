@@ -172,6 +172,16 @@ pub struct Config {
     )]
     pub shared_codex_spec_cards_enabled: bool,
 
+    /// Route dispatcher-spawned worker codex cards through the shared
+    /// codex app-server when `true`. Default false preserves the legacy
+    /// per-card daemon path until PR7b-worker is explicitly enabled.
+    #[arg(
+        long,
+        env = "CALM_SHARED_CODEX_WORKER_CARDS_ENABLED",
+        default_value_t = false
+    )]
+    pub shared_codex_worker_cards_enabled: bool,
+
     /// Initial delay before restarting the shared codex app-server after a crash.
     #[arg(
         long,
