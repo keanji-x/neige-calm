@@ -350,11 +350,7 @@ async fn seed_shared_spec_card(boot: &Boot, watermark: i64) -> (Card, Terminal, 
         .await
         .expect("seed old shared thread mapping");
     (
-        boot.repo
-            .card_get(card.id.as_str())
-            .await
-            .unwrap()
-            .unwrap(),
+        boot.repo.card_get(card.id.as_str()).await.unwrap().unwrap(),
         terminal,
         capture,
     )

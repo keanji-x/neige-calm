@@ -10,8 +10,8 @@
 //! the direct-create fields).
 
 use crate::actor::Actor;
-use crate::db::RepoRead;
 use crate::codex_appserver::{InputItem, Notification};
+use crate::db::RepoRead;
 use crate::db::sqlite::{
     card_create_with_id_tx, card_delete_tx, card_mcp_token_set_tx, card_update_tx,
     terminal_delete_tx,
@@ -859,7 +859,8 @@ async fn spawn_reset_via_shared_daemon(
                     "failed to restore old card_codex_thread mapping after shared reset turn_start failure"
                 );
             }
-        } else if let Err(rollback_err) = s.repo.card_codex_thread_delete_by_card(spec_card_id).await
+        } else if let Err(rollback_err) =
+            s.repo.card_codex_thread_delete_by_card(spec_card_id).await
         {
             tracing::warn!(
                 target: "shared_codex_daemon::spec_card_reset",
