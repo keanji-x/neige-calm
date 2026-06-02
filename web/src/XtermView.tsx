@@ -392,6 +392,12 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         latestThemeRef.current === 'dark' ? DARK_THEME : LIGHT_THEME,
       fontFamily: MONO_STACK,
       fontSize: 12.5,
+      // Mirrors `SCROLLBACK_MAX_LINES` in
+      // `crates/calm-server/src/terminal_renderer/mod.rs` — must be kept in
+      // lockstep so this local ring isn't smaller than the server cap on
+      // ServerHello.snapshot.scrollback. If we ever bump one side, bump
+      // the other.
+      scrollback: 2000,
       convertEol: true,
       allowProposedApi: true,
       cursorBlink: true,
@@ -572,10 +578,10 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
             pixel_height: null,
           },
           cell_size: null,
-          // None = just current viewport. We deliberately don't ask for
-          // history yet — the server-side scrollback story (CellGrid
-          // patches, line-granular replay) lands in a follow-up PR.
-          initial_scrollback: 'None',
+          // 'All' restores daemon-retained scrollback on remount (wave nav
+          // remounts XtermView); server bound is SCROLLBACK_MAX_LINES so
+          // this is not unbounded.
+          initial_scrollback: 'All',
           resume_from: null,
           // The browser is the user's primary interaction surface, so we
           // hint Owner. The daemon may still hand us Observer if someone
@@ -637,6 +643,11 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         }
         if (sh.snapshot.scrollback) {
           term.write(Uint8Array.from(sh.snapshot.scrollback));
+          // Flush viewport into xterm's scrollback ring before the next
+          // write: snapshot.data leads with ED 2 (`\x1b[2J`), which would
+          // otherwise erase the tail of replayed history still sitting in
+          // the visible viewport.
+          term.write('\r\n'.repeat(term.rows));
         }
         term.write(Uint8Array.from(sh.snapshot.data));
         renderRev = sh.snapshot.render_rev;

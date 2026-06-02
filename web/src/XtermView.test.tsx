@@ -79,6 +79,7 @@ interface MockTerm {
 
 let mockTerm: MockTerm;
 let terminalConstructCount = 0;
+let terminalConstructorOptions: Record<string, unknown> | null = null;
 let mockFitSize: { cols: number; rows: number } | null = null;
 
 vi.mock('@xterm/xterm', () => {
@@ -116,8 +117,9 @@ vi.mock('@xterm/xterm', () => {
       (this as unknown as MockTerm).__dataCb = cb;
       return { dispose: () => {} };
     }
-    constructor() {
+    constructor(options: Record<string, unknown>) {
       terminalConstructCount += 1;
+      terminalConstructorOptions = options;
       mockTerm = this as unknown as MockTerm;
     }
   }
@@ -254,6 +256,7 @@ beforeEach(() => {
   wsInstances = [];
   stateMocks.statusSetCalls.length = 0;
   terminalConstructCount = 0;
+  terminalConstructorOptions = null;
   mockFitSize = null;
   MockResizeObserver.instances = [];
   setMockLayout(800, 400);
@@ -492,10 +495,15 @@ describe('XtermView v4 handshake', () => {
     expect(hello.capabilities.render_encodings).toEqual(['Vt']);
     expect(hello.capabilities.supports_sixel).toBe(false);
     expect(hello.capabilities.supports_images).toBe(false);
-    expect(hello.initial_scrollback).toBe('None');
+    expect(hello.initial_scrollback).toBe('All');
     expect(hello.resume_from).toBeNull();
     expect(hello.desired_size.cols).toBe(80);
     expect(hello.desired_size.rows).toBe(24);
+  });
+
+  it('configures xterm scrollback to match the server-retained history bound', () => {
+    render(<XtermView terminalId="term_test" />);
+    expect(terminalConstructorOptions?.scrollback).toBe(2000);
   });
 
   it("shows 'handshaking…' between WS open and ServerHello", () => {
@@ -523,6 +531,69 @@ describe('XtermView v4 handshake', () => {
     expect(Array.from(firstWriteArg)).toEqual([104, 105]);
     // The 'connected' state hides the handshaking overlay.
     expect(screen.queryByText(/handshaking/i)).not.toBeInTheDocument();
+  });
+
+  it('writes snapshot.scrollback before snapshot.data on ServerHello (#457)', () => {
+    render(<XtermView terminalId="term_test" />);
+    const ws = currentWs();
+    act(() => {
+      ws.fireOpen();
+    });
+    // 'sb' = scrollback bytes, 'hi' = visible-frame bytes.
+    const scrollbackBytes = [115, 98];
+    const dataBytes = [104, 105];
+    act(() => {
+      ws.push(
+        serverHello({
+          snapshot: {
+            render_rev: 1,
+            pty_seq: 0,
+            cols: 80,
+            rows: 24,
+            encoding: 'Vt',
+            data: dataBytes,
+            scrollback: scrollbackBytes,
+          },
+        }),
+      );
+    });
+    const writeCalls = mockTerm.write.mock.calls.map((c: unknown[]) => c[0]);
+    expect(writeCalls.length).toBeGreaterThanOrEqual(3);
+    expect(Array.from(writeCalls[0] as Uint8Array)).toEqual(scrollbackBytes);
+    const flush = writeCalls[1] as Uint8Array | string;
+    const flushStr =
+      typeof flush === 'string'
+        ? flush
+        : String.fromCharCode(...Array.from(flush));
+    expect(flushStr).toBe('\r\n'.repeat(24));
+    expect(Array.from(writeCalls[2] as Uint8Array)).toEqual(dataBytes);
+  });
+
+  it('writes only snapshot.data when ServerHello snapshot.scrollback is null (#457)', () => {
+    render(<XtermView terminalId="term_test" />);
+    const ws = currentWs();
+    act(() => {
+      ws.fireOpen();
+    });
+    const dataBytes = [111, 107]; // 'ok'
+    act(() => {
+      ws.push(
+        serverHello({
+          snapshot: {
+            render_rev: 1,
+            pty_seq: 0,
+            cols: 80,
+            rows: 24,
+            encoding: 'Vt',
+            data: dataBytes,
+            scrollback: null,
+          },
+        }),
+      );
+    });
+    const writeCalls = mockTerm.write.mock.calls.map((c: unknown[]) => c[0]);
+    expect(writeCalls).toHaveLength(1);
+    expect(Array.from(writeCalls[0] as Uint8Array)).toEqual(dataBytes);
   });
 
   it('resizes the local term if the snapshot size differs', () => {
