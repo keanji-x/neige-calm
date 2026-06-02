@@ -305,11 +305,15 @@ impl AppState {
         self
     }
 
-    #[cfg(feature = "fixtures")]
-    pub fn with_shared_codex_worker_cards_enabled(mut self, enabled: bool) -> Self {
-        self.shared_codex_worker_cards_enabled = enabled;
-        self
-    }
+    // NOTE: there is intentionally no `with_shared_codex_worker_cards_enabled`
+    // fixture setter, even though the field is public. Unlike the other
+    // shared-codex flags (read at request time inside route handlers),
+    // the worker flag is captured by the Dispatcher at spawn time inside
+    // `from_parts`/`new`, so a post-spawn mutation on AppState would NOT
+    // reach the dispatcher's already-captured value. Fixtures that want
+    // the shared worker path enabled must pass the flag directly to
+    // `Dispatcher::spawn[_with_terminal_renderer]` (see
+    // tests/codex_worker_shared_daemon.rs::spawn_dispatcher for the pattern).
 
     #[cfg(feature = "fixtures")]
     pub fn with_pending_codex_threads(

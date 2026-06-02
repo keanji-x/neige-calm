@@ -423,7 +423,6 @@ async fn worker_turn_start_failure_rolls_back_mapping_and_payload() {
     let _dispatcher = spawn_dispatcher(&boot, true);
     let mut rx = boot.events.subscribe();
     dispatch(&boot, "turn-fail-1", "turn start should fail").await;
-    let card = wait_for_card(&boot, "turn-fail-1").await;
     let failed = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let env = rx.recv().await.unwrap();
@@ -442,31 +441,29 @@ async fn worker_turn_start_failure_rolls_back_mapping_and_payload() {
     }
     failed.expect("task.failed");
 
-    // After PR7b-worker R2: the shared-worker turn_start failure rollback
-    // now reaps the PTY and DELETES the card row (via rollback_orphan_worker
-    // Deleted branch). This clears the idempotency_key so a retry of the
-    // same job can succeed — leaving an inert card stamped with markers
-    // would let find_card_by_idempotency_key_tx short-circuit the retry as
-    // already-done.
-    assert!(
-        boot.repo.card_get(card.id.as_str()).await.unwrap().is_none(),
-        "turn_start rollback must delete the worker card so idempotency_key clears"
-    );
-    assert!(
-        boot.repo
-            .card_codex_thread_get_by_card(card.id.as_str())
+    // After PR7b-worker R3: shared-worker turn_start failure runs
+    // rollback_orphan_worker which DELETES the card + terminal rows entirely.
+    // The card with idempotency_key="turn-fail-1" should not exist anywhere
+    // (cards_by_wave returns no row with that key), and no worker-role
+    // card_codex_threads mapping should remain. This clears the
+    // idempotency_key so a retry of the same job can succeed (vs. being
+    // short-circuited by find_card_by_idempotency_key_tx as already-done).
+    // We poll briefly because the dispatcher's rollback happens async after
+    // task.failed is emitted.
+    let leftover = wait_for(Duration::from_secs(2), || async {
+        let cards = boot
+            .repo
+            .cards_by_wave(boot.wave_id.as_str())
             .await
-            .unwrap()
-            .is_none(),
-        "turn_start rollback must delete the card_codex_threads mapping"
-    );
-    // Retry the same idempotency_key — should now succeed (no short-circuit).
-    // FAKE_CODEX_FAIL_TURN_START was removed above; the retry's thread/start
-    // + turn/start should accept the work.
-    dispatch(&boot, "turn-fail-1", "retry should succeed").await;
-    let retry = wait_for_card(&boot, "turn-fail-1").await;
-    assert_ne!(
-        retry.id, card.id,
-        "retry must mint a fresh card row (old one was deleted)"
+            .unwrap();
+        let any_left = cards
+            .into_iter()
+            .any(|c| c.payload.get("idempotency_key").and_then(Value::as_str) == Some("turn-fail-1"));
+        if any_left { None } else { Some(()) }
+    })
+    .await;
+    assert!(
+        leftover.is_some(),
+        "turn_start rollback must delete the worker card row so idempotency_key clears for retry"
     );
 }

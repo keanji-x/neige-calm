@@ -2560,10 +2560,73 @@ async fn spawn_codex_worker_via_shared_daemon(
     // the PTY spawn so codex_auto_submit's session_start hook sees
     // codex_thread_id present and skips the legacy Enter injection. The
     // persist is SILENT (no CardUpdated event) — wave subscribers refetch on
-    // CardUpdated and could mount the card before its renderer entry is live
-    // (issue #310 race). CardAdded remains the first visible event, emitted
-    // by the caller after spawn succeeds.
+    // CardUpdated and could mount the card before its renderer entry is
+    // live (issue #310 race). CardAdded remains the first visible event,
+    // emitted by the caller after spawn succeeds.
     persist_shared_worker_runtime_fields(inner, ctx.card, &thread_id, &remote_uri).await?;
+
+    // turn_start BEFORE spawn — codex 0.135's `codex resume <thread_id>
+    // --remote ...` REQUIRES the thread to have at least one turn before a
+    // second connection can resume it; a `codex resume` against a fresh
+    // thread/start (no rollout yet) exits immediately. PR5/PR7b spec take
+    // the same order; PR7b-worker mirrors. The cost: if the subsequent PTY
+    // spawn fails, the shared daemon keeps running the worker's turn with
+    // no visible card — documented as a followup gate for PR8 (same class
+    // of issue PR7b spec deferred). On in-process turn_start failure we
+    // delete the orphan card so its idempotency_key clears for retry.
+    let initial_turn_result = async {
+        inner
+            .shared_codex_appserver
+            .turn_start(
+                &thread_id,
+                vec![InputItem::text(ctx.rendered_prompt.trim())],
+            )
+            .await?;
+        await_shared_worker_initial_turn_started(&mut notifications, &thread_id).await?;
+        Ok::<(), CalmError>(())
+    }
+    .await;
+    if let Err(e) = initial_turn_result {
+        tracing::warn!(
+            target: "shared_codex_daemon::worker",
+            card_id,
+            wave_id = %ctx.wave_id,
+            thread_id = %thread_id,
+            error = %e,
+            "turn_start_failed"
+        );
+        // No PTY has been spawned yet; rollback_orphan_worker's pre-spawn
+        // fallthrough (case 1a: term present, no pid, no renderer) deletes
+        // both the card and terminal rows. This clears the idempotency_key
+        // so a retry can mint a fresh card row.
+        let _ = rollback_orphan_worker(
+            inner.repo.as_ref(),
+            inner.terminal_renderer.as_ref(),
+            &inner.card_role_cache,
+            card_id,
+            ctx.term.id.as_str(),
+        )
+        .await;
+        if let Err(rollback_err) = inner.repo.card_codex_thread_delete_by_card(card_id).await {
+            tracing::warn!(
+                target: "shared_codex_daemon::worker",
+                card_id,
+                thread_id = %thread_id,
+                rollback_error = %rollback_err,
+                "card_codex_thread delete failed during turn_start rollback"
+            );
+        }
+        tracing::error!(
+            target: "shared_codex_daemon::worker",
+            card_id,
+            wave_id = %ctx.wave_id,
+            terminal_id = %ctx.term.id,
+            thread_id = %thread_id,
+            error = %e,
+            "worker_turn_start_rolled_back"
+        );
+        return Err(e);
+    }
 
     let mut env_for_spawn = ctx.legacy_env.clone();
     if let Some(map) = env_for_spawn.as_object_mut() {
@@ -2592,14 +2655,6 @@ async fn spawn_codex_worker_via_shared_daemon(
         shell_single_quote(&thread_id),
         shell_single_quote(&remote_uri)
     );
-
-    // Spawn the PTY FIRST, then deliver the goal via turn_start. This avoids
-    // a class of orphan-turn bugs: if turn_start runs before spawn and the
-    // PTY then fails to launch, the shared daemon would keep running the
-    // user's job with no visible card or recovery path. Running turn_start
-    // after the PTY is live means a turn_start failure can be rolled back
-    // by reaping the (just-spawned) PTY + deleting the card — no orphan
-    // work persists.
     if let Err(e) = spawn_terminal_with_parts(
         inner.daemon.as_ref(),
         inner.terminal_renderer.as_ref(),
@@ -2611,6 +2666,13 @@ async fn spawn_codex_worker_via_shared_daemon(
     )
     .await
     {
+        // FOLLOWUP GATE (PR8): turn_start has already delivered the worker
+        // job to the shared daemon, so a PTY spawn failure leaves an
+        // orphan turn running. Same shape as the PR7b spec card path's
+        // deferred followup. For now we still reap the card/terminal so
+        // the idempotency_key clears for retry; the shared turn finishing
+        // hooks will fail to resolve the (deleted) card and the bridge
+        // logs the resolution miss.
         match rollback_orphan_worker(
             inner.repo.as_ref(),
             inner.terminal_renderer.as_ref(),
@@ -2629,7 +2691,7 @@ async fn spawn_codex_worker_via_shared_daemon(
                     terminal_id = %ctx.term.id,
                     thread_id = %thread_id,
                     error = %e,
-                    "worker_spawn_failed"
+                    "worker_spawn_failed_with_orphan_turn"
                 );
                 return Err(e);
             }
@@ -2645,83 +2707,6 @@ async fn spawn_codex_worker_via_shared_daemon(
                 );
             }
         }
-    }
-
-    // turn_start AFTER spawn. On failure (the shared daemon refuses or the
-    // initial lifecycle never arrives), reap the PTY and delete the card so
-    // the idempotency_key clears and a retry can succeed; otherwise the
-    // worker would be visible-but-empty and the dispatcher would later emit
-    // task.failed for a job that was never actually started.
-    let initial_turn_result = async {
-        inner
-            .shared_codex_appserver
-            .turn_start(
-                &thread_id,
-                vec![InputItem::text(ctx.rendered_prompt.trim())],
-            )
-            .await?;
-        await_shared_worker_initial_turn_started(&mut notifications, &thread_id).await?;
-        Ok::<(), CalmError>(())
-    }
-    .await;
-    if let Err(e) = initial_turn_result {
-        tracing::warn!(
-            target: "shared_codex_daemon::worker",
-            card_id,
-            wave_id = %ctx.wave_id,
-            thread_id = %thread_id,
-            error = %e,
-            "turn_start_failed"
-        );
-        let outcome = rollback_orphan_worker(
-            inner.repo.as_ref(),
-            inner.terminal_renderer.as_ref(),
-            &inner.card_role_cache,
-            card_id,
-            ctx.term.id.as_str(),
-        )
-        .await;
-        if let Err(rollback_err) = inner.repo.card_codex_thread_delete_by_card(card_id).await {
-            tracing::warn!(
-                target: "shared_codex_daemon::worker",
-                card_id,
-                thread_id = %thread_id,
-                rollback_error = %rollback_err,
-                "card_codex_thread delete failed during turn_start rollback"
-            );
-        }
-        match outcome {
-            RollbackOutcome::Deleted => {
-                tracing::error!(
-                    target: "shared_codex_daemon::worker",
-                    card_id,
-                    wave_id = %ctx.wave_id,
-                    terminal_id = %ctx.term.id,
-                    thread_id = %thread_id,
-                    error = %e,
-                    "worker_turn_start_rolled_back"
-                );
-            }
-            RollbackOutcome::Preserved => {
-                // The PTY had already fast-exited before rollback ran;
-                // the card stays for the post-mortem (its payload still
-                // has codex_thread_id pointing at a thread that never got
-                // a turn — clear it so the next boot doesn't try to
-                // resume it).
-                if let Err(clear_err) =
-                    clear_shared_worker_runtime_fields(inner, card_id).await
-                {
-                    tracing::warn!(
-                        target: "shared_codex_daemon::worker",
-                        card_id,
-                        thread_id = %thread_id,
-                        clear_err = %clear_err,
-                        "payload clear failed on PreservedRollback turn_start path"
-                    );
-                }
-            }
-        }
-        return Err(e);
     }
 
     tracing::info!(
@@ -2837,41 +2822,11 @@ async fn persist_shared_worker_runtime_fields(
     Ok(())
 }
 
-async fn clear_shared_worker_runtime_fields(
-    inner: &Arc<Inner>,
-    card_id: &str,
-) -> crate::error::Result<()> {
-    let card_id_for_tx = card_id.to_string();
-    // Silent for the same reason as persist_shared_worker_runtime_fields.
-    let _ = write_in_tx_typed::<crate::model::Card, _>(inner.repo.as_ref(), move |tx| {
-        Box::pin(async move {
-            let mut payload = dispatcher_card_payload_get(tx, &card_id_for_tx).await?;
-            let Some(map) = payload.as_object_mut() else {
-                return Err(CalmError::Internal(format!(
-                    "worker card {card_id_for_tx} payload is not a JSON object; cannot clear shared codex runtime fields"
-                )));
-            };
-            map.remove("codex_source");
-            map.remove("codex_thread_id");
-            map.remove("appserver_sock");
-            map.remove("appserver_pgid");
-            let updated = card_update_tx(
-                tx,
-                &card_id_for_tx,
-                CardPatch {
-                    kind: None,
-                    sort: None,
-                    payload: Some(payload),
-                    deletable: None,
-                },
-            )
-            .await?;
-            Ok(updated)
-        })
-    })
-    .await?;
-    Ok(())
-}
+// NOTE: an earlier R2 iteration also defined `clear_shared_worker_runtime_fields`
+// to revert the silent persist on turn_start failure WITHOUT deleting the
+// card row. R3 replaced that path with rollback_orphan_worker (which deletes
+// the card + terminal rows entirely) so the helper is gone — the card row
+// rollback subsumes the payload clear.
 
 async fn dispatcher_card_payload_get(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
