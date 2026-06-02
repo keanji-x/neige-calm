@@ -1072,7 +1072,7 @@ pub(crate) async fn spawn_push_via_shared_daemon(
     })
 }
 
-async fn await_shared_spec_initial_turn_lifecycle(
+pub(crate) async fn await_shared_spec_initial_turn_lifecycle(
     rx: &mut tokio::sync::broadcast::Receiver<Notification>,
     thread_id: &str,
     status: &SharedStatus,
@@ -1257,7 +1257,7 @@ async fn clear_shared_spec_runtime_fields(
     Ok(())
 }
 
-async fn install_spec_push_sinks_and_park(
+pub(crate) async fn install_spec_push_sinks_and_park(
     s: &AppState,
     spec_card_id: &str,
     wave: &Wave,
