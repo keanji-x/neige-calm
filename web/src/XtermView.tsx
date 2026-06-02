@@ -392,8 +392,11 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         latestThemeRef.current === 'dark' ? DARK_THEME : LIGHT_THEME,
       fontFamily: MONO_STACK,
       fontSize: 12.5,
-      // Match the server's SCROLLBACK_MAX_LINES so daemon-retained
-      // history is not trimmed by xterm's default 1000-row ring.
+      // Mirrors `SCROLLBACK_MAX_LINES` in
+      // `crates/calm-server/src/terminal_renderer/mod.rs` — must be kept in
+      // lockstep so this local ring isn't smaller than the server cap on
+      // ServerHello.snapshot.scrollback. If we ever bump one side, bump
+      // the other.
       scrollback: 2000,
       convertEol: true,
       allowProposedApi: true,

@@ -29,6 +29,10 @@ pub type SharedRenderPlane = Arc<StdMutex<RenderPlane>>;
 pub type SharedOwnerRegistry = Arc<StdMutex<OwnerRegistry>>;
 pub type SharedExitState = Arc<StdMutex<Option<TerminalExitInfo>>>;
 
+// Mirrors `scrollback` in xterm.js Terminal config at
+// `web/src/XtermView.tsx` — must be kept in lockstep so the client's
+// local ring isn't smaller than the server cap (which would silently
+// trim daemon-retained history on the way to the user's screen).
 pub(crate) const SCROLLBACK_MAX_LINES: usize = 2000;
 
 /// One work item on the PTY-writer channel. Carries the bytes to write

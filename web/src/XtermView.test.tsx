@@ -569,6 +569,33 @@ describe('XtermView v4 handshake', () => {
     expect(Array.from(writeCalls[2] as Uint8Array)).toEqual(dataBytes);
   });
 
+  it('writes only snapshot.data when ServerHello snapshot.scrollback is null (#457)', () => {
+    render(<XtermView terminalId="term_test" />);
+    const ws = currentWs();
+    act(() => {
+      ws.fireOpen();
+    });
+    const dataBytes = [111, 107]; // 'ok'
+    act(() => {
+      ws.push(
+        serverHello({
+          snapshot: {
+            render_rev: 1,
+            pty_seq: 0,
+            cols: 80,
+            rows: 24,
+            encoding: 'Vt',
+            data: dataBytes,
+            scrollback: null,
+          },
+        }),
+      );
+    });
+    const writeCalls = mockTerm.write.mock.calls.map((c: unknown[]) => c[0]);
+    expect(writeCalls).toHaveLength(1);
+    expect(Array.from(writeCalls[0] as Uint8Array)).toEqual(dataBytes);
+  });
+
   it('resizes the local term if the snapshot size differs', () => {
     render(<XtermView terminalId="term_test" />);
     const ws = currentWs();
