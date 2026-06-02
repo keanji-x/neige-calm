@@ -279,6 +279,7 @@ pub struct SpecRecoveryRequest {
 /// env/settings, and per-wave locking context needed to reuse the boot
 /// recovery path without bypassing invariants.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct SpecRecoverySignal {
     wave_id: WaveId,
     tx: mpsc::Sender<SpecRecoveryRequest>,
@@ -397,7 +398,7 @@ pub(crate) struct QueuedObservation {
 /// observations through the durable `spec_push_queue` table without
 /// importing `crate::Repo` into this module. Mirrors the
 /// [`WatermarkSink`] callback pattern: the install site
-/// (`routes/waves.rs::spawn_push_appserver` for create-wave,
+/// (`routes/waves.rs::legacy spec spawner` for create-wave,
 /// `lib.rs::register_and_catch_up` for boot-takeover) captures `repo` +
 /// `card_id` at handle-construction time and builds the closures.
 ///
@@ -564,11 +565,10 @@ pub struct SpecPushHandle {
     /// Installed via [`install_queue_persist`](Self::install_queue_persist)
     /// at the same sites that install the watermark sink.
     pub(crate) queue_persist: QueuePersistSlot,
-    /// Persists the TUI-created thread id and clears
-    /// `appserver_needs_initial_prompt` after the first observed turn
-    /// lifecycle on this thread. This is intentionally independent from
-    /// push watermark advancement because manual TUI input creates a rollout
-    /// without touching the push channel.
+    /// Persists the TUI-created thread id after the first observed turn
+    /// lifecycle on this thread. This is intentionally independent from push
+    /// watermark advancement because manual TUI input creates a rollout without
+    /// touching the push channel.
     pub(crate) initial_prompt_ready_sink: InitialPromptReadySinkSlot,
 }
 
@@ -1026,7 +1026,7 @@ impl SpecPushHandle {
 
     /// #318 INV-3 — install the durable enqueue/dequeue/list callbacks.
     /// Called by both production install sites
-    /// (`routes/waves.rs::spawn_push_appserver` and
+    /// (`routes/waves.rs::legacy spec spawner` and
     /// `lib.rs::register_and_catch_up`) right after `install_watermark_sink`,
     /// so a push landing immediately after registration has both the
     /// persist path AND the watermark path available.
@@ -1499,7 +1499,7 @@ pub(crate) async fn resume_reconcile_task(
 /// live [`SpecPushHandle`]. Kept intentionally minimal — the only thing
 /// that differs across paths is whether a turn was driven before this
 /// runs.
-#[allow(clippy::too_many_arguments)]
+#[allow(dead_code, clippy::too_many_arguments)]
 pub(crate) fn park_handle(
     child: Child,
     pgid: i32,
@@ -1773,8 +1773,7 @@ pub(crate) fn notification_thread_id(n: &Notification) -> Option<&str> {
 /// PR3a/PR3b consumer: drain the stream, tracking lifecycle status into
 /// shared state for the dispatcher to read, warn loudly if an
 /// approval-shaped notification ever arrives (it should not — the spec
-/// cards run with `approval_policy = "never"` per
-/// [`crate::spec_card::build_role_codex_config_toml`]), and — PR3b — **flush the push
+/// cards run with `approval_policy = "never"`), and — PR3b — **flush the push
 /// queue on each `turn/completed`**: drain any buffered observations into a
 /// single coalesced `turn/start`.
 ///
@@ -1786,7 +1785,7 @@ pub(crate) struct ActiveTurnWatchdog {
     pub(crate) deadline: TokioInstant,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(dead_code, clippy::too_many_arguments)]
 pub(crate) async fn consume_notifications(
     notifs: NotificationStream,
     thread_id_slot: ThreadIdSlot,
@@ -1817,6 +1816,7 @@ pub(crate) async fn consume_notifications(
     state.run().await;
 }
 
+#[allow(dead_code)]
 pub(crate) struct NotificationConsumer {
     pub(crate) notifs: NotificationStream,
     pub(crate) thread_id_slot: ThreadIdSlot,
@@ -1832,6 +1832,7 @@ pub(crate) struct NotificationConsumer {
     pub(crate) initial_prompt_ready_attempted: bool,
 }
 
+#[allow(dead_code)]
 impl NotificationConsumer {
     async fn current_thread_id(&self) -> Option<String> {
         self.thread_id_slot.lock().await.clone()
@@ -2209,10 +2210,12 @@ fn turn_id(turn: &Value) -> Option<&str> {
     turn.get("id").and_then(Value::as_str)
 }
 
+#[allow(dead_code)]
 fn turn_status(turn: &Value) -> Option<&str> {
     turn.get("status").and_then(Value::as_str)
 }
 
+#[allow(dead_code)]
 fn is_completion_for_turn(n: &Notification, expected_turn_id: &str) -> bool {
     let Notification::TurnCompleted { turn, .. } = n else {
         return false;
@@ -2220,6 +2223,7 @@ fn is_completion_for_turn(n: &Notification, expected_turn_id: &str) -> bool {
     turn_id(turn) == Some(expected_turn_id)
 }
 
+#[allow(dead_code)]
 fn is_interrupted_completion_for_turn(n: &Notification, expected_turn_id: &str) -> bool {
     let Notification::TurnCompleted { turn, .. } = n else {
         return false;
@@ -2377,7 +2381,7 @@ pub(crate) async fn flush_push_queue(
     // cause boot catch-up to redeliver items codex already accepted. The
     // sink is `None` only in test paths that don't exercise persistence.
     // The two production install sites are:
-    //   * `routes/waves.rs::spawn_push_appserver` — for create-wave path,
+    //   * `routes/waves.rs::legacy spec spawner` — for create-wave path,
     //   * `lib.rs::register_and_catch_up`        — for boot-takeover path.
     // Both install BEFORE the handle is reachable by any push, so by the
     // time a flush runs the sink slot is always populated in production.

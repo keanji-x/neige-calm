@@ -190,7 +190,6 @@ pub struct SharedCodexAppServer {
     kernel_thread_start_serial: Arc<Mutex<()>>,
     codex_bin: String,
     log_dir: PathBuf,
-    enabled: bool,
     client: Arc<Mutex<Option<Arc<CodexAppServer>>>>,
     child: Arc<Mutex<Option<Child>>>,
     monitor_started: AtomicBool,
@@ -241,7 +240,6 @@ impl SharedCodexAppServer {
             kernel_thread_start_serial: Arc::new(Mutex::new(())),
             codex_bin: "codex".into(),
             log_dir: root.join("logs/shared-codex-appserver"),
-            enabled: false,
             client: Arc::new(Mutex::new(None)),
             child: Arc::new(Mutex::new(None)),
             monitor_started: AtomicBool::new(false),
@@ -284,7 +282,6 @@ impl SharedCodexAppServer {
             kernel_thread_start_serial: Arc::new(Mutex::new(())),
             codex_bin: cfg.codex_bin.clone(),
             log_dir: cfg.shared_codex_appserver_log_dir_resolved(),
-            enabled: cfg.shared_codex_appserver_enabled,
             client: Arc::new(Mutex::new(None)),
             child: Arc::new(Mutex::new(None)),
             monitor_started: AtomicBool::new(false),
@@ -298,14 +295,6 @@ impl SharedCodexAppServer {
     }
 
     pub async fn start_or_takeover(self: &Arc<Self>) -> Result<()> {
-        if !self.enabled {
-            tracing::info!(
-                target = "shared_codex_daemon::start",
-                "shared codex app-server disabled; skipping boot"
-            );
-            return Ok(());
-        }
-
         self.rebuild_thread_cache_from_db().await?;
         let record = self.repo.shared_daemon_runtime_get().await?;
         if self.try_takeover_live(&record).await? {
@@ -426,16 +415,10 @@ impl SharedCodexAppServer {
             .map(|row| row.thread_id))
     }
 
-    pub fn is_enabled(&self) -> bool {
-        self.enabled
-    }
-
     pub fn is_running(&self) -> bool {
-        self.enabled
-            && self
-                .state
-                .try_lock()
-                .is_ok_and(|state| *state == SharedDaemonState::Running)
+        self.state
+            .try_lock()
+            .is_ok_and(|state| *state == SharedDaemonState::Running)
     }
 
     pub fn remote_uri(&self) -> String {

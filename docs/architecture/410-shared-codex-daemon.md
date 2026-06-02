@@ -16,25 +16,12 @@ lives at `<data_dir>/codex-home/` and card-to-thread ownership is persisted in
 the `card_codex_threads` SQLite table
 ([migration](../../crates/calm-server/migrations/0025_card_codex_threads.sql)).
 
-## Flags
+## Runtime
 
-Five flags control the rollout. After PR8 all are default-on in
-`Config` ([source](../../crates/calm-server/src/config.rs)) and
-`AppState::from_parts` fixture defaults
-([source](../../crates/calm-server/src/state.rs)). Legacy paths remain behind
-explicit `false` overrides for emergency rollback.
-
-| Flag | Default | Off behavior |
-|---|---|---|
-| `shared_codex_appserver_enabled` | true (PR4) | Do not spawn the shared daemon; cards fall back to legacy spawn paths |
-| `shared_codex_prompt_cards_enabled` | **true** (PR8) | Prompt user card create spawns standalone `codex <prompt>` PTY per legacy |
-| `shared_codex_empty_cards_enabled` | **true** (PR8) | Empty user card create spawns standalone `codex` PTY per legacy |
-| `shared_codex_spec_cards_enabled` | **true** (PR8) | Spec card create-wave spawns per-wave `codex app-server` per legacy |
-| `shared_codex_worker_cards_enabled` | **true** (PR8) | Dispatcher worker spawns standalone `codex <prompt>` PTY per legacy |
-
-When any card-kind flag is disabled at boot, `main.rs` emits a warning under
-`shared_codex_daemon::flag` so production rollbacks are visible
-([source](../../crates/calm-server/src/main.rs)).
+The shared codex app-server is mandatory. `Config`
+([source](../../crates/calm-server/src/config.rs)) controls restart backoff,
+log location, and codex binary resolution, but there is no supported off mode
+or legacy per-card/per-wave rollback path.
 
 ## Data flow per card type
 

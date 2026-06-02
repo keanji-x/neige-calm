@@ -61,11 +61,9 @@ use crate::actor::Actor;
 use crate::auth::Principal;
 use crate::codex_appserver::{InputItem, Notification};
 use crate::db::sqlite::{
-    card_codex_thread_upsert_tx, card_create_with_id_tx, card_mcp_token_set_tx, card_update_tx,
-    card_with_codex_create_tx, cove_folder_create_tx, overlay_delete_by_entity_tx,
-    overlay_delete_card_overlays_by_wave_tx, overlay_upsert_tx,
-    spec_card_set_appserver_after_reset_tx, terminal_delete_tx, wave_create_tx, wave_delete_tx,
-    wave_update_tx,
+    card_create_with_id_tx, card_update_tx, card_with_codex_create_tx, cove_folder_create_tx,
+    overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_wave_tx, overlay_upsert_tx,
+    terminal_delete_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
 };
 use crate::db::{write_with_event_typed, write_with_events_typed};
 use crate::error::{CalmError, ErrorBody, Result};
@@ -78,8 +76,7 @@ use crate::model::{
 use crate::pending_codex_threads::PendingEntry;
 use crate::routes::cards::interrupt_shared_card_active_turn;
 use crate::routes::cove_folders::{is_descendant_of, normalize_path};
-use crate::routes::settings::{Settings, load_settings};
-use crate::spec_appserver::spawn_spec_appserver_with_watchdog_config_and_recovery_for_wave;
+use crate::routes::settings::load_settings;
 use crate::spec_card::{SpecPushDaemonArgs, build_codex_env_map, seed_and_spawn_spec_daemon};
 use crate::spec_push::{self, SharedStatus, SpecPushPhase, SpecPushStatus, TurnWatchdogConfig};
 use crate::state::AppState;
@@ -485,7 +482,7 @@ pub(crate) async fn create_wave(
                 // Issue #251 — the wave title is the user's prompt /
                 // goal for the spec agent. Stamping it as the codex
                 // card's `payload.prompt` does two things:
-                //   1. surfaces it to `codex_auto_submit`, which gates
+                //   1. surfaces it to `legacy auto-submit`, which gates
                 //      its `\r` injection on a non-empty payload prompt
                 //      (so the composer-pre-filled goal is submitted
                 //      the moment the codex TUI is ready); and
@@ -700,11 +697,7 @@ pub(crate) async fn create_wave(
     // Issue #251 — thread the wave title through as codex's positional
     // `[PROMPT]` arg. The same value lives in the spec card's
     // `payload.prompt` (stamped inside the tx above) so the
-    // `codex_auto_submit` subscriber's gate (non-empty payload.prompt
-    // → inject `\r`) fires for spec cards just like it does for plain
-    // hands-free cards. Together: composer mounts pre-filled with the
-    // goal, `\r` is injected on `hook.codex.session_start`, spec
-    // agent's loop starts.
+    // shared app-server receives the goal directly via `turn/start`.
     // Issue #250 PR 2 — the spec daemon now spawns in `wave.cwd`,
     // not `default_cwd()`. The committed wave's `cwd` is the
     // authoritative source even though the route had its own
@@ -732,33 +725,18 @@ pub(crate) async fn create_wave(
     // a transient model/auth hiccup, or the S1 layer-3 init/boot wedge
     // backstop firing across socket connect, WS handshake, initialize,
     // turn setup, or the initial lifecycle wait — we DO NOT return 500.
-    // `spawn_push_appserver`'s internal `SpawnRollback` guard has already
-    // torn down the failed app-server process group + socket dir (no
-    // orphan), so on the error arm we simply `warn!` that the spec agent
-    // couldn't start, SKIP the
-    // `codex_thread_id` persist + registry insert + `--remote` TUI spawn
-    // (all of which live in `spawn_push_appserver` / the
-    // `seed_and_spawn_spec_daemon` call below), and return **201 with the
-    // created wave**. The wave/spec-card/report/terminal rows already
-    // committed stay; the spec card simply has no `codex_thread_id` and no
-    // running daemon (inert / not-running, recoverable by retry or delete).
+    // on the error arm we simply `warn!` that the spec agent couldn't start,
+    // SKIP the `codex_thread_id` persist + registry insert + `--remote` TUI
+    // spawn, and return **201 with the created wave**. The wave/spec-card/
+    // report/terminal rows already committed stay; the spec card simply has
+    // no `codex_thread_id` and no running daemon (inert / not-running,
+    // recoverable by retry or delete).
     // The dispatcher's missing-handle path already warns (no crash), so an
     // inert wave is safe. Pre-cutover the PTY path tolerated codex failing
     // (it only 500'd if the daemon BINARY was missing); this restores that
     // tolerance for the push path so codex-free UI jobs get a 201.
-    let shared_spec_requested = s.shared_codex_spec_cards_enabled;
-    let use_shared_spec_path = shared_spec_requested && s.shared_codex_appserver.is_running();
-    if shared_spec_requested && !use_shared_spec_path {
-        tracing::warn!(
-            target: "shared_codex_daemon::spec_card",
-            card_id = %spec_card_id,
-            wave_id = %wave.id,
-            daemon_running = s.shared_codex_appserver.is_running(),
-            "shared spec-card path enabled but unavailable; falling back to legacy per-wave app-server"
-        );
-    }
     let mut spec_tui_env = env_for_spawn.clone();
-    if use_shared_spec_path && let Some(map) = spec_tui_env.as_object_mut() {
+    if let Some(map) = spec_tui_env.as_object_mut() {
         map.insert(
             "CODEX_HOME".into(),
             serde_json::Value::String(s.codex.codex_home_dir().to_string_lossy().to_string()),
@@ -771,53 +749,24 @@ pub(crate) async fn create_wave(
         // NEIGE_MCP_TOKEN explicitly.
     }
 
-    let serialize_shared_empty_spec_spawn = use_shared_spec_path && wave.title.trim().is_empty();
+    let serialize_shared_empty_spec_spawn = wave.title.trim().is_empty();
     let _pending_spawn_serial_guard = if serialize_shared_empty_spec_spawn {
         Some(s.pending_codex_threads_spawn_serial.lock().await)
     } else {
         None
     };
 
-    let push_args = if use_shared_spec_path {
-        match spawn_push_via_shared_daemon(&s, &spec_card_id, &wave).await {
-            Ok(args) => Some(args),
-            Err(e) => {
-                tracing::warn!(
-                    target: "shared_codex_daemon::spec_card",
-                    card_id = %spec_card_id,
-                    wave_id = %wave.id,
-                    error = %e,
-                    "spec card via shared daemon failed; wave created but the spec agent is inert",
-                );
-                None
-            }
-        }
-    } else {
-        match spawn_push_appserver(
-            &s,
-            &spec_card_id,
-            &wave,
-            &env_for_spawn,
-            &settings,
-            mcp_token.as_deref(),
-            SpawnPushAppserverMode::CreateWave,
-        )
-        .await
-        {
-            Ok(args) => Some(args),
-            Err(e) => {
-                // Non-fatal: the app-server's `SpawnRollback` guard already
-                // reaped its process group + socket dir on the way out (no
-                // orphan). Log the wave as created-but-inert and fall through
-                // to return 201 with the wave; we skip the daemon spawn below.
-                tracing::warn!(
-                    card_id = %spec_card_id,
-                    wave_id = %wave.id,
-                    error = %e,
-                    "spec push app-server failed to boot on wave create; wave created but the spec agent is NOT running (inert wave, recoverable via retry/delete) — returning 201",
-                );
-                None
-            }
+    let push_args = match spawn_push_via_shared_daemon(&s, &spec_card_id, &wave).await {
+        Ok(args) => Some(args),
+        Err(e) => {
+            tracing::warn!(
+                target: "shared_codex_daemon::spec_card",
+                card_id = %spec_card_id,
+                wave_id = %wave.id,
+                error = %e,
+                "spec card via shared daemon failed; wave created but the spec agent is inert",
+            );
+            None
         }
     };
 
@@ -828,7 +777,7 @@ pub(crate) async fn create_wave(
     // — there is no socket to attach to, so we skip the daemon spawn entirely
     // and return the created wave.
     if let Some(push_args) = push_args {
-        let rollback_shared_pending = use_shared_spec_path && push_args.thread_id.is_none();
+        let rollback_shared_pending = push_args.thread_id.is_none();
         if let Err(e) = seed_and_spawn_spec_daemon(
             s.clone(),
             spec_card_id.clone(),
@@ -847,21 +796,13 @@ pub(crate) async fn create_wave(
             // Empty shared specs have no TUI-owned thread yet, so roll back
             // their pending registry entry and parked handle immediately.
             if rollback_shared_pending {
-                let pending_removed = if let Some(pending) = s.pending_codex_threads.as_ref() {
-                    pending.remove_by_card(spec_card_id.as_ref()).await
-                } else {
-                    false
-                };
+                let pending_removed = s
+                    .pending_codex_threads
+                    .remove_by_card(spec_card_id.as_ref())
+                    .await;
                 let handle_removed = s.spec_push.remove(&wave.id).is_some();
-                // Clear ALL shared markers — not just needs_initial_prompt.
-                // Otherwise the card is permanently inert: legacy takeover
-                // skips codex_source="shared", shared takeover skips because
-                // needs_initial_prompt=false + no card_codex_threads row, and
-                // reset is rejected for shared cards. clear_shared_spec_runtime_fields
-                // removes codex_source, codex_thread_id, appserver_*, and
-                // appserver_needs_initial_prompt so the card becomes a plain
-                // inert spec card the user can delete (or hand back to the
-                // legacy reset path once #410 PR7b-reset lands).
+                // Clear all shared markers so the failed spec card becomes a
+                // plain inert row the user can delete.
                 let payload_cleared =
                     clear_shared_spec_runtime_fields(&s, spec_card_id.as_ref(), &wave)
                         .await
@@ -900,29 +841,6 @@ pub(crate) async fn create_wave(
     Ok((StatusCode::CREATED, Json(wave)).into_response())
 }
 
-/// PR3a (#293) — DECISION A's create-wave blocking sequence for the push
-/// path. Boots the kernel-owned `codex app-server`. Non-empty titles start
-/// a codex thread, run turn #1 with that title, and await `turn/started` so
-/// a rollout exists on disk for the `--remote` TUI to resume. Empty titles
-/// skip `thread/start`; the TUI fresh-starts and the notification consumer
-/// backfills `codex_thread_id` from the first turn lifecycle. The function
-/// persists app-server runtime fields on the spec card payload (eventized —
-/// same audited `write_with_event_typed` path every other write uses), parks
-/// the handle in `state.spec_push`, and returns the [`SpecPushDaemonArgs`]
-/// the PTY daemon spawn needs.
-///
-/// On any failure the `SpawnRollback` guard in `spawn_spec_appserver`
-/// reaps the failed app-server's process group + socket dir, and this
-/// function's `?` propagates the error. The caller (`create_wave`) treats
-/// that error as **non-fatal** (issue #293 / PR #311): it logs a warning,
-/// skips the daemon spawn, and returns 201 with an inert wave — the
-/// persisted rows survive and the sweeper reaps the orphan terminal.
-#[derive(Debug, Clone)]
-pub(crate) enum SpawnPushAppserverMode {
-    CreateWave,
-    ResetExisting { mcp_token: String },
-}
-
 pub(crate) async fn spawn_push_via_shared_daemon(
     s: &AppState,
     spec_card_id: &str,
@@ -948,9 +866,6 @@ pub(crate) async fn spawn_push_via_shared_daemon(
             .ok_or_else(|| {
                 CalmError::Internal(format!("spec terminal row missing for card {spec_card_id}"))
             })?;
-        let pending = s.pending_codex_threads.as_ref().ok_or_else(|| {
-            CalmError::Internal("shared spec-card path enabled without pending registry".into())
-        })?;
         s.shared_codex_appserver
             .ensure_respawn_for_current_settings()
             .await?;
@@ -959,7 +874,7 @@ pub(crate) async fn spawn_push_via_shared_daemon(
         // FIFO mutates. If this persist fails, no stale pending entry can
         // consume a later unrelated thread/started notification.
         persist_shared_spec_runtime_fields(s, spec_card_id, wave, None).await?;
-        pending
+        s.pending_codex_threads
             .register(
                 PendingEntry::new(
                     spec_card_id.to_string(),
@@ -1064,7 +979,6 @@ pub(crate) async fn spawn_push_via_shared_daemon(
     Ok(SpecPushDaemonArgs {
         thread_id,
         sock_uri: s.shared_codex_appserver.remote_uri(),
-        seed_codex_home: false,
         developer_instructions: needs_initial_prompt.then(|| {
             crate::spec_card::render_system_prompt(
                 crate::spec_card::SeededCardRole::Spec.prompt_template(),
@@ -1146,7 +1060,6 @@ async fn persist_shared_spec_runtime_fields(
     let card_id_for_tx = spec_card_id.to_string();
     let thread_id_for_tx = thread_id.map(str::to_string);
     let remote_uri = s.shared_codex_appserver.remote_uri();
-    let needs_initial_prompt = thread_id.is_none();
     let (_card, _id) = write_with_event_typed(
         s.repo.as_ref(),
         ActorId::Kernel,
@@ -1176,17 +1089,10 @@ async fn persist_shared_spec_runtime_fields(
                     serde_json::Value::String("shared".into()),
                 );
                 map.insert("appserver_sock".into(), serde_json::Value::String(remote_uri));
-                map.insert("appserver_pgid".into(), serde_json::Value::Null);
-                map.insert("appserver_start_time".into(), serde_json::Value::Null);
-                map.insert("appserver_boot_id".into(), serde_json::Value::Null);
-                if needs_initial_prompt {
-                    map.insert(
-                        "appserver_needs_initial_prompt".into(),
-                        serde_json::Value::Bool(true),
-                    );
-                } else {
-                    map.remove("appserver_needs_initial_prompt");
-                }
+                map.remove("appserver_pgid");
+                map.remove("appserver_start_time");
+                map.remove("appserver_boot_id");
+                map.remove("appserver_needs_initial_prompt");
                 map.insert(
                     "push_watermark".into(),
                     serde_json::Value::Number(0i64.into()),
@@ -1212,11 +1118,7 @@ async fn persist_shared_spec_runtime_fields(
 
 /// Reverts the stamping done by [`persist_shared_spec_runtime_fields`]
 /// when `turn_start` / initial-lifecycle fails for a non-empty shared
-/// spec wave. Clears `codex_source`, `codex_thread_id`, and the
-/// `appserver_*` shared-marker fields so boot takeover doesn't treat
-/// the card as a resumable shared thread (the wave goal was never
-/// delivered to the thread). The caller has already deleted the
-/// `card_codex_threads` row separately.
+/// spec wave.
 async fn clear_shared_spec_runtime_fields(
     s: &AppState,
     spec_card_id: &str,
@@ -1298,386 +1200,7 @@ pub(crate) async fn install_spec_push_sinks_and_park(
         .await;
 }
 
-// PR7c owns deleting the legacy helper family: spawn_spec_appserver|spawn_push_appserver.
-pub(crate) async fn spawn_push_appserver(
-    s: &AppState,
-    spec_card_id: &str,
-    wave: &Wave,
-    env_for_spawn: &serde_json::Value,
-    settings: &Settings,
-    mcp_token: Option<&str>,
-    mode: SpawnPushAppserverMode,
-) -> Result<SpecPushDaemonArgs> {
-    // Seed the spec card's `$CODEX_HOME` FIRST. The kernel-owned
-    // `app-server` is spawned with `CODEX_HOME = <codex_homes_dir>/<card_id>`
-    // (in `env_for_spawn`); codex exits at boot with "CODEX_HOME … does not
-    // exist" if the dir (with its seeded auth.json + config.toml) isn't
-    // there yet. The legacy path seeds inside `seed_and_spawn_spec_daemon`,
-    // but in push mode the app-server boots BEFORE that call, so we seed
-    // here. The later `seed_and_spawn_spec_daemon` re-seed is idempotent
-    // (the copy is skipped on the now-existing dir; config.toml is
-    // rewritten identically).
-    crate::spec_card::seed_codex_home_for_card(
-        s,
-        spec_card_id,
-        &wave.cwd,
-        wave.id.as_str(),
-        crate::spec_card::SeededCardRole::Spec,
-        mcp_token,
-    )?;
-
-    // Per-card listen socket under the user-owned data dir (the server
-    // 0700-chmods the socket's parent dir; `appserver_sock_dir` resolves
-    // it to `<data_dir>/appserver/<card_id>/`, never the shared root).
-    // Create the dir now so `spawn_spec_appserver` can bind into it.
-    let sock = s.daemon.appserver_sock_path(spec_card_id);
-    let sock_dir = s.daemon.appserver_sock_dir(spec_card_id);
-    std::fs::create_dir_all(&sock_dir).map_err(|e| {
-        CalmError::Internal(format!(
-            "mkdir appserver sock dir {}: {e}",
-            sock_dir.display()
-        ))
-    })?;
-
-    // DECISION A's boot sequence for non-empty goals remains unchanged
-    // (boot → connect → initialize → thread/start → turn/start(goal) →
-    // initial lifecycle wait). Empty goals intentionally stop after
-    // initialize; the remote TUI fresh-starts the thread and this handle
-    // observes the first turn lifecycle before activating push delivery.
-    let recovery_signal =
-        crate::wire_spec_push_recovery_supervisor(s, settings, spec_card_id, wave.id.clone());
-    let developer_instructions = crate::spec_card::render_system_prompt(
-        crate::spec_card::SeededCardRole::Spec.prompt_template(),
-        wave.id.as_str(),
-    );
-    let handle = spawn_spec_appserver_with_watchdog_config_and_recovery_for_wave(
-        &s.codex.codex_bin,
-        env_for_spawn,
-        &wave.title,
-        &sock,
-        Some(&developer_instructions),
-        TurnWatchdogConfig::default(),
-        Some(recovery_signal),
-        Some(&wave.id),
-    )
-    .await?;
-    let needs_initial_prompt = wave.title.trim().is_empty();
-    let thread_id = if needs_initial_prompt {
-        None
-    } else {
-        Some(handle.thread_id.clone().ok_or_else(|| {
-            CalmError::Internal(
-                "spec app-server returned no thread id for non-empty wave".to_string(),
-            )
-        })?)
-    };
-    let sock_for_args = handle
-        .legacy_sock()
-        .ok_or_else(|| CalmError::Internal("legacy spawn returned shared spec handle".into()))?
-        .to_path_buf();
-    let pgid = handle
-        .legacy_pgid()
-        .ok_or_else(|| CalmError::Internal("legacy spawn returned shared spec handle".into()))?;
-    // #318 INV-5 (R3-B1) — identity stamp captured by
-    // `spawn_spec_appserver` from `/proc/<pgid>/stat` field 22 (start_time)
-    // and `/proc/sys/kernel/random/boot_id` (boot_id) at spawn. Both
-    // persisted alongside `appserver_pgid` so boot-recovery can verify
-    // the pid hasn't been recycled (same-boot stamp mismatch OR
-    // cross-reboot boot_id mismatch) before signaling it. `None` on
-    // non-Linux / ENOENT-at-spawn → field is JSON null below; boot-
-    // recovery treats an absent stamp as "skip the kill" (conservative).
-    let start_time = handle.legacy_start_time();
-    let boot_id = handle.legacy_boot_id().map(str::to_string);
-
-    // Persist app-server runtime fields on
-    // the spec card payload (merge into the existing payload —
-    // `card_update_tx` replaces the whole `payload` column, so we
-    // read-modify-write). For non-empty goals, `codex_thread_id` is also
-    // the `codex_auto_submit` skip signal: the kernel already drove turn
-    // #1, so no `\r` is injected into the resumed TUI. Empty goals do NOT
-    // write `codex_thread_id` yet; the notification consumer backfills the
-    // TUI-created id after the first `turn/started`. `appserver_pgid` is the
-    // crash-recovery reuse target — `takeover_spec_appservers_on_boot`
-    // reads it to `kill(-pgid, …)` a leaked group after a hard crash.
-    //
-    // NOTE: this persists AFTER the handle is built but BEFORE it is parked
-    // in the registry. If this write fails (`?`), `handle` is dropped on
-    // the early return → its `Drop` fires a group SIGTERM (B1), so the
-    // freshly-booted app-server is reaped rather than leaked, and nothing
-    // is parked in the registry. The socket dir is left for the sweeper /
-    // next boot recovery (the pgid was not persisted, so boot-recovery
-    // can't see it; but the Drop already killed the group, so there is no
-    // live server to leak — only an empty stale socket file, harmless).
-    // The wave is in hand, so the card scope needs no extra DB round-trip.
-    let scope = EventScope::Card {
-        card: spec_card_id.into(),
-        wave: wave.id.clone(),
-        cove: wave.cove_id.clone(),
-    };
-    let card_id_for_tx = spec_card_id.to_string();
-    let thread_id_for_tx = thread_id.clone();
-    let sock_str = sock_for_args.to_string_lossy().to_string();
-    let mode_for_tx = mode.clone();
-    let (_card, _id) = write_with_event_typed(
-        s.repo.as_ref(),
-        ActorId::Kernel,
-        scope,
-        None,
-        &s.events,
-        &s.card_role_cache,
-        &s.wave_cove_cache,
-        move |tx| {
-            Box::pin(async move {
-                if let SpawnPushAppserverMode::ResetExisting { mcp_token } = mode_for_tx {
-                    // Reset semantics require a fresh thread_id; main's
-                    // #424 made the empty-goal recovery path keep
-                    // `thread_id` absent (TUI fresh-starts and the
-                    // notification consumer backfills later), but Reset
-                    // is destructive by design — there is nothing
-                    // meaningful to reset on a wave whose initial turn
-                    // has not yet produced a rollout. Fail with a 500
-                    // (Internal) here; the frontend gate (wave title
-                    // non-empty) is the user-facing guard.
-                    let thread_id_for_reset = thread_id_for_tx
-                        .as_deref()
-                        .ok_or_else(|| {
-                            CalmError::Internal(
-                                "reset path requires a thread_id; empty-goal waves cannot be reset before their first turn".to_string(),
-                            )
-                        })?;
-                    let hashed = crate::mcp_server::auth::hash_token(&mcp_token);
-                    card_mcp_token_set_tx(tx, &card_id_for_tx, &hashed).await?;
-                    let card = spec_card_set_appserver_after_reset_tx(
-                        tx,
-                        &card_id_for_tx,
-                        thread_id_for_reset,
-                        pgid,
-                        &sock_str,
-                        start_time,
-                        boot_id.as_deref(),
-                        needs_initial_prompt,
-                    )
-                    .await?;
-                    card_codex_thread_upsert_tx(
-                        tx,
-                        &card_id_for_tx,
-                        thread_id_for_reset,
-                        CardRole::Spec,
-                        Some(card.wave_id.as_str()),
-                    )
-                    .await?;
-                    return Ok((card.clone(), Event::CardUpdated(card)));
-                }
-
-                // Read current payload, merge the push fields, write back.
-                // N1: a spec card's payload must be a JSON object — the
-                // push fields can only be inserted into one. If it isn't
-                // (corruption / unexpected shape), fail loudly rather than
-                // silently dropping `codex_thread_id` (which would hand the
-                // `--remote` TUI a `codex resume` argv with no persisted
-                // thread id and leave the booted app-server parked but
-                // unreferenceable).
-                let mut payload = s_repo_card_get(tx, &card_id_for_tx).await?;
-                let Some(map) = payload.as_object_mut() else {
-                    return Err(CalmError::Internal(format!(
-                        "spec card {card_id_for_tx} payload is not a JSON object; \
-                         cannot persist codex_thread_id/appserver_sock/appserver_pgid",
-                    )));
-                };
-                if let Some(thread_id) = thread_id_for_tx {
-                    map.insert(
-                        "codex_thread_id".into(),
-                        serde_json::Value::String(thread_id),
-                    );
-                } else {
-                    map.remove("codex_thread_id");
-                }
-                map.insert(
-                    "codex_source".into(),
-                    serde_json::Value::String("legacy".into()),
-                );
-                if needs_initial_prompt {
-                    map.insert(
-                        "appserver_needs_initial_prompt".into(),
-                        serde_json::Value::Bool(true),
-                    );
-                } else {
-                    map.remove("appserver_needs_initial_prompt");
-                }
-                map.insert("appserver_sock".into(), serde_json::Value::String(sock_str));
-                map.insert(
-                    "appserver_pgid".into(),
-                    serde_json::Value::Number(pgid.into()),
-                );
-                // #318 INV-5 (R3-B1) — pid identity stamp. Persist as a
-                // JSON number when available; on non-Linux / `/proc`
-                // read failure (`start_time == None`) we EXPLICITLY
-                // write JSON null so a future boot reads it as absent
-                // and conservatively skips the kill rather than
-                // matching against a missing key with undefined
-                // semantics. `serde_json::Number::from(u64)` is
-                // infallible for u64 (JSON numbers losslessly hold u64).
-                map.insert(
-                    "appserver_start_time".into(),
-                    start_time
-                        .map(|v| serde_json::Value::Number(serde_json::Number::from(v)))
-                        .unwrap_or(serde_json::Value::Null),
-                );
-                // #318 INV-5 (R3-B1) — kernel boot UUID companion. The
-                // start_time stamp is jiffies-since-boot, so a reboot
-                // resets it; the boot_id distinguishes "same kernel,
-                // pid recycled" from "host rebooted entirely". Same
-                // explicit-null posture on absence (conservative
-                // skip-the-kill).
-                map.insert(
-                    "appserver_boot_id".into(),
-                    boot_id
-                        .map(serde_json::Value::String)
-                        .unwrap_or(serde_json::Value::Null),
-                );
-                // #313 problem #1 — initialize the persisted push watermark
-                // to 0 (the "no events pushed yet" sentinel). The dispatcher
-                // bumps this field atomically alongside `push_cursor.bump`
-                // every time it pushes (see `dispatcher::push_to_spec`); on
-                // boot recovery, [`crate::takeover_spec_appservers_on_boot`]
-                // seeds the in-memory `EventCursorCache` from this field and
-                // replays every event with `id > watermark` so a kernel
-                // restart can't silently drop already-acked-by-codex catch-up
-                // events. 0 is correct on first persist because no push has
-                // happened yet — the very first push will bump it to the
-                // envelope's id.
-                map.insert(
-                    "push_watermark".into(),
-                    serde_json::Value::Number(0i64.into()),
-                );
-                let card = card_update_tx(
-                    tx,
-                    &card_id_for_tx,
-                    CardPatch {
-                        kind: None,
-                        sort: None,
-                        payload: Some(payload),
-                        deletable: None,
-                    },
-                )
-                .await?;
-                if let Some(thread_id) = card
-                    .payload
-                    .get("codex_thread_id")
-                    .and_then(serde_json::Value::as_str)
-                    .filter(|tid| !tid.trim().is_empty())
-                {
-                    card_codex_thread_upsert_tx(
-                        tx,
-                        &card_id_for_tx,
-                        thread_id,
-                        CardRole::Spec,
-                        Some(card.wave_id.as_str()),
-                    )
-                    .await?;
-                }
-                Ok((card.clone(), Event::CardUpdated(card)))
-            })
-        },
-    )
-    .await?;
-
-    // #313 problem #1 round-3 (B2) — install the watermark sink on the
-    // freshly-created handle BEFORE parking it in the registry. The
-    // round-2 boot-takeover path (`lib.rs::register_and_catch_up`) wired
-    // this for resumed handles, but the symmetric create-wave path was
-    // missed: a push landing while the freshly-created spec turn is
-    // active would hit `Enqueue` (the spec is mid-turn-1, the
-    // dispatcher's `Inner::push_to_spec` cannot issue a second
-    // `turn/start`), the consumer's later `flush_push_queue` would
-    // deliver the queued items, and — with no sink installed — the
-    // durable `push_watermark` would NEVER advance for those flushed
-    // ids. A subsequent restart would replay them all (boot catch-up
-    // uses `id > watermark` strictly), causing the spec thread to see
-    // already-delivered events twice.
-    //
-    // `Dispatcher::watermark_sink_for` is the single source of truth for
-    // the sink closure shape (it captures repo + the push cursor cache
-    // for in-process dedup symmetry); both this site and
-    // `register_and_catch_up` go through it.
-    let card_key: crate::ids::CardId = spec_card_id.to_string().into();
-    let sink = s.dispatcher.watermark_sink_for(card_key.clone());
-    handle.install_watermark_sink(sink).await;
-    debug_assert!(
-        handle.has_watermark_sink().await,
-        "spawn_push_appserver: install_watermark_sink did not take effect — \
-         a future refactor split the install from the assert; queued-then-\
-         flushed envelopes would silently fail to persist their watermark"
-    );
-    let initial_prompt_ready = if needs_initial_prompt {
-        s.dispatcher.initial_prompt_ready_sink_for(
-            card_key.clone(),
-            wave.id.clone(),
-            wave.cove_id.clone(),
-        )
-    } else {
-        s.dispatcher.initial_prompt_clear_sink_for(card_key.clone())
-    };
-    handle
-        .install_initial_prompt_ready_sink(initial_prompt_ready)
-        .await;
-
-    // #318 INV-3 (R2-B1) — install the durable queue-persist callbacks
-    // BEFORE parking the handle in the registry, symmetric with the
-    // watermark sink above. A push landing immediately after registration
-    // hits `SpecPusher::push_observation`, whose `Enqueue` arm persists to
-    // `spec_push_queue` BEFORE the in-memory `push_back` — so a kernel
-    // crash between persist and the consumer task's flush leaves a
-    // recoverable row that boot-takeover's `rehydrate_queue_from_persist`
-    // re-delivers on the next process.
-    //
-    // The sister install lives in `lib.rs::register_and_catch_up` for the
-    // boot-takeover path (INV-6 — symmetric startup hooks across both
-    // entry points; #318).
-    let persist = s.dispatcher.queue_persist_for(card_key);
-    handle.install_queue_persist(persist).await;
-    debug_assert!(
-        handle.has_queue_persist().await,
-        "spawn_push_appserver: install_queue_persist did not take effect — \
-         enqueued-but-not-yet-flushed observations would not be durable, \
-         silently re-introducing the INV-3 (#318) regression"
-    );
-
-    // Park the handle so PR3b's dispatcher can resolve the wave's
-    // app-server client + thread, and so wave-delete / sweeper teardown
-    // kills the child via `kill_on_drop`.
-    //
-    // #322 — `park` (not the bare `insert`) runs the aspect framework's
-    // `BeforeHandleParkInRegistry` checks first; INV-6
-    // (`WatermarkSinkInstalledAspect`) panics in release if a future
-    // refactor drops the `install_watermark_sink` call above. The
-    // `debug_assert!` above is the local fast-fail at the install site;
-    // the aspect is the framework-level enforcement at the park site
-    // (belt + suspenders, both pointing at INV-6).
-    s.spec_push
-        .park(wave.id.clone(), handle, s.aspects.as_ref())
-        .await;
-
-    let thread_id_log = thread_id.as_deref().unwrap_or("<pending>");
-    tracing::info!(
-        card_id = %spec_card_id,
-        wave_id = %wave.id,
-        thread_id = %thread_id_log,
-        sock = %sock_for_args.display(),
-        needs_initial_prompt,
-        "spec push: app-server booted, runtime fields persisted",
-    );
-
-    Ok(SpecPushDaemonArgs {
-        thread_id,
-        sock_uri: format!("unix://{}", sock_for_args.display()),
-        seed_codex_home: true,
-        developer_instructions: None,
-    })
-}
-
-/// Fetch a card's current `payload` JSON inside a transaction (read step
-/// of the read-modify-write payload merge in [`spawn_push_appserver`]).
+/// Fetch a card's current `payload` JSON inside a transaction.
 async fn s_repo_card_get(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     card_id: &str,

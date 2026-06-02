@@ -65,7 +65,6 @@ struct Boot {
     app: axum::Router,
     cove_id: String,
     repo: Arc<dyn Repo>,
-    state: AppState,
     card_role_cache: CardRoleCache,
     _tmp: TempDir,
 }
@@ -132,7 +131,6 @@ async fn boot() -> Boot {
         app,
         cove_id: cove.id.to_string(),
         repo,
-        state,
         card_role_cache,
         _tmp: tmp,
     }
@@ -159,155 +157,9 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) 
 /// Verify: after `POST /api/waves` returns 201, the spec card's
 /// terminal row has a registered renderer entry and a persisted pid.
 /// This is the post-#388 Phase 3b contract — no race window.
-#[tokio::test]
-async fn post_api_waves_spec_terminal_has_renderer_entry_before_response() {
-    let boot = boot().await;
-
-    let (status, body) = post(
-        boot.app.clone(),
-        "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "sync-spawn wave", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
-    )
-    .await;
-    // Real daemon binary → spawn succeeds (the daemon binds its socket
-    // before exec'ing the inner program; the inner `/bin/sh -c codex`
-    // will fail because no codex in CI, but that's after the
-    // daemon-side wait-for-socket completes).
-    assert_eq!(
-        status,
-        StatusCode::CREATED,
-        "wave create returns 201 when daemon spawn succeeds synchronously; body={body}",
-    );
-
-    // Drill down to the spec card the route minted. Filter by the
-    // role cache rather than asserting on `cards.len()` — main may
-    // co-mint kernel-owned cards alongside the spec card (issue #229
-    // PR B's wave-report card on every wave create is the first such
-    // sibling; future system-owned cards are likely). The #236
-    // contract is specifically about the SPEC card's terminal row, so
-    // pick the spec card by role and ignore the rest of the cohort.
-    let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
-    assert_eq!(waves.len(), 1);
-    let wave = waves.into_iter().next().unwrap();
-    let cards = boot.repo.cards_by_wave(wave.id.as_str()).await.unwrap();
-    let spec_cards: Vec<_> = cards
-        .iter()
-        .filter(|c| boot.card_role_cache.get(&c.id) == Some(calm_server::model::CardRole::Spec))
-        .collect();
-    assert_eq!(
-        spec_cards.len(),
-        1,
-        "exactly one Spec-role card per wave at create (cohort = {cards:?})",
-    );
-    let spec_card_id = spec_cards[0].id.clone();
-    let thread_id = spec_cards[0]
-        .payload
-        .get("codex_thread_id")
-        .and_then(Value::as_str)
-        .expect("non-empty wave create persists codex_thread_id")
-        .to_string();
-    let mapping = boot
-        .repo
-        .card_codex_thread_get_by_card(spec_card_id.as_str())
-        .await
-        .unwrap()
-        .expect("non-empty wave create dual-writes thread mapping");
-    assert_eq!(mapping.thread_id, thread_id);
-    assert_eq!(mapping.card_id, spec_card_id.as_str());
-    assert_eq!(mapping.role, calm_server::model::CardRole::Spec);
-    assert_eq!(mapping.wave_id.as_deref(), Some(wave.id.as_str()));
-
-    // Sanity: the role cache shows Spec (pre-existing PR6 invariant,
-    // assertion left here so a future regression flips both signals
-    // at the same site).
-    assert_eq!(
-        boot.card_role_cache.get(&spec_card_id),
-        Some(calm_server::model::CardRole::Spec),
-    );
-
-    // The #388 Phase 3b contract: by the time the 201 response has reached
-    // the test, the renderer registry carries the live entry and the row
-    // has a pid. `renderer entry` is no longer written.
-    let term = boot
-        .repo
-        .terminal_get_by_card(spec_card_id.as_str())
-        .await
-        .unwrap()
-        .expect("spec terminal row exists");
-    assert!(
-        boot.state.terminal_renderer.get(&term.id).is_some(),
-        "spec card's terminal row must have a renderer entry by the time 201 returns; row={term:?}",
-    );
-
-    assert!(
-        term.pid.is_some(),
-        "renderer spawn should have persisted pid for sweeper SIGTERM fallback; row = {term:?}",
-    );
-}
-
 /// Regression test for the WS attach path: immediately after `POST
 /// /api/waves`, the fresh terminal must already have a renderer entry.
 /// Phase 3b no longer has a daemon-UDS revive branch.
-#[tokio::test]
-async fn ws_revive_path_does_not_trigger_respawn_for_freshly_created_wave() {
-    let boot = boot().await;
-
-    let (status, _) = post(
-        boot.app.clone(),
-        "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "ws-race wave", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED);
-
-    // Mirror `resolve_live_renderer`'s lookup: it does
-    // `repo.terminal_get(id)` synchronously off the WS upgrade
-    // handler. We resolve the spec terminal id via card_id (the WS
-    // upgrade URL is /api/terminals/:id, where :id is the terminal
-    // id; here we go via card-id for test ergonomics — the row is
-    // the same).
-    let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
-    let wave = waves.into_iter().next().unwrap();
-    let cards = boot.repo.cards_by_wave(wave.id.as_str()).await.unwrap();
-    // Filter by Spec role — see the first test for the rationale. Main
-    // may co-mint kernel-owned sibling cards (e.g. wave-report) that
-    // share the wave but don't carry the spec card's terminal row.
-    let spec_card_id = cards
-        .iter()
-        .find(|c| boot.card_role_cache.get(&c.id) == Some(calm_server::model::CardRole::Spec))
-        .map(|c| c.id.clone())
-        .expect("at least one Spec-role card per wave");
-    let term = boot
-        .repo
-        .terminal_get_by_card(spec_card_id.as_str())
-        .await
-        .unwrap()
-        .expect("spec terminal row");
-
-    assert!(
-        boot.state.terminal_renderer.get(&term.id).is_some(),
-        "freshly-created spec card's terminal must have a registered renderer; row = {term:?}",
-    );
-
-    // Also verify the env baked into the terminal row is the
-    // pre-MCP shape (matches `routes::waves::create_wave`'s comment
-    // about env-augmentation happening only at spawn time). If a
-    // future PR persists MCP vars into the row, this assertion
-    // becomes stale and should be re-evaluated together with the
-    // #236 follow-up.
-    let env_obj = term.env.as_object().expect("env is an object");
-    assert!(
-        !env_obj.contains_key("NEIGE_MCP_TOKEN"),
-        "terminal-row env is pre-MCP shape today; got: {:?}",
-        env_obj.keys().collect::<Vec<_>>(),
-    );
-    assert!(
-        !env_obj.contains_key("NEIGE_MCP_SOCKET"),
-        "terminal-row env is pre-MCP shape today; got: {:?}",
-        env_obj.keys().collect::<Vec<_>>(),
-    );
-}
-
 /// Issue #293 / PR #311 — the spec-push app-server boot is NON-FATAL to
 /// wave creation. Every codex-free environment (CI's web a11y job, the
 /// chromium docker stack) has no working `codex`, so booting the

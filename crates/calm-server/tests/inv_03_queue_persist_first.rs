@@ -129,7 +129,6 @@ async fn dispatcher_for(repo: Arc<SqlxRepo>) -> Dispatcher {
         None, // mcp_server: not exercised by queue_persist_for
         spec_push,
         shared,
-        false,
         4, // permits — value irrelevant for these tests
     )
 }

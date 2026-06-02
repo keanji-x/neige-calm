@@ -36,12 +36,11 @@ struct Boot {
     _tmp: TempDir,
 }
 
-async fn boot(shared_enabled: bool, start_shared: bool) -> Boot {
-    boot_with_proc_supervisor(shared_enabled, start_shared, None).await
+async fn boot(start_shared: bool) -> Boot {
+    boot_with_proc_supervisor(start_shared, None).await
 }
 
 async fn boot_with_proc_supervisor(
-    shared_enabled: bool,
     start_shared: bool,
     proc_supervisor_sock: Option<PathBuf>,
 ) -> Boot {
@@ -79,8 +78,7 @@ async fn boot_with_proc_supervisor(
         Arc::new(common::fake_codex_client()),
         Some(role_cache),
         Some(wave_cove_cache),
-    )
-    .with_shared_codex_spec_cards_enabled(shared_enabled);
+    );
 
     let fake_codex_bin = common::fake_codex_bin();
     let cfg = Config::parse_from([
@@ -115,7 +113,7 @@ async fn boot_with_proc_supervisor(
     }
     let state = state
         .with_shared_codex_appserver(shared)
-        .with_pending_codex_threads(Some(pending));
+        .with_pending_codex_threads(pending);
     let app = routes::router()
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
@@ -215,23 +213,8 @@ fn reloaded_state_from_boot(boot: &Boot) -> AppState {
         Some(role_cache),
         Some(wave_cove_cache),
     )
-    .with_shared_codex_spec_cards_enabled(true)
     .with_shared_codex_appserver(boot.state.shared_codex_appserver.clone())
     .with_pending_codex_threads(boot.state.pending_codex_threads.clone())
-}
-
-#[test]
-fn spec_card_shared_daemon_flag_defaults_to_true() {
-    let tmp = TempDir::new().unwrap();
-    let fake_codex_bin = common::fake_codex_bin();
-    let cfg = Config::parse_from([
-        "calm-server",
-        "--data-dir",
-        tmp.path().to_str().unwrap(),
-        "--codex-bin",
-        fake_codex_bin.as_str(),
-    ]);
-    assert!(cfg.shared_codex_spec_cards_enabled);
 }
 
 #[tokio::test]
@@ -242,7 +225,7 @@ async fn non_empty_wave_routes_spec_card_to_shared_daemon() {
     unsafe {
         std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
     }
-    let boot = boot(true, true).await;
+    let boot = boot(true).await;
     let (status, wave) = post_wave(boot.app.clone(), &boot.cove_id, "shared spec goal").await;
     unsafe {
         std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
@@ -252,7 +235,7 @@ async fn non_empty_wave_routes_spec_card_to_shared_daemon() {
     let spec = spec_card(&boot.repo, wave["id"].as_str().unwrap()).await;
     assert_eq!(spec.payload["codex_source"], "shared");
     assert_eq!(spec.payload["codex_thread_id"], "fake-thread-0001");
-    assert!(spec.payload["appserver_pgid"].is_null());
+    assert!(spec.payload.get("appserver_pgid").is_none());
     let mapping = boot
         .repo
         .card_codex_thread_get_by_card(spec.id.as_str())
@@ -278,14 +261,14 @@ async fn non_empty_wave_routes_spec_card_to_shared_daemon() {
 #[tokio::test]
 async fn empty_wave_registers_pending_spec_thread_without_thread_id() {
     let _guard = ENV_LOCK.lock().await;
-    let boot = boot(true, true).await;
+    let boot = boot(true).await;
     let (status, wave) = post_wave(boot.app.clone(), &boot.cove_id, "").await;
     assert_eq!(status, StatusCode::CREATED, "body={wave:?}");
     let wave_id = wave["id"].as_str().unwrap().to_string();
     let spec = spec_card(&boot.repo, wave["id"].as_str().unwrap()).await;
     assert_eq!(spec.payload["codex_source"], "shared");
     assert!(spec.payload.get("codex_thread_id").is_none());
-    assert_eq!(spec.payload["appserver_needs_initial_prompt"], true);
+    assert!(spec.payload.get("appserver_needs_initial_prompt").is_none());
     assert!(
         boot.repo
             .card_codex_thread_get_by_card(spec.id.as_str())
@@ -293,15 +276,7 @@ async fn empty_wave_registers_pending_spec_thread_without_thread_id() {
             .unwrap()
             .is_none()
     );
-    assert_eq!(
-        boot.state
-            .pending_codex_threads
-            .as_ref()
-            .unwrap()
-            .pending_count()
-            .await,
-        1
-    );
+    assert_eq!(boot.state.pending_codex_threads.pending_count().await, 1);
     let terminal_id = spec.payload["terminal_id"].as_str().unwrap();
     let entry = boot
         .state
@@ -330,7 +305,7 @@ async fn empty_wave_registers_pending_spec_thread_without_thread_id() {
 #[tokio::test]
 async fn empty_shared_spec_respawns_daemon_when_proxy_changed() {
     let _guard = ENV_LOCK.lock().await;
-    let boot = boot(true, true).await;
+    let boot = boot(true).await;
     let old_pid = boot
         .state
         .shared_codex_appserver
@@ -360,21 +335,13 @@ async fn empty_shared_spec_respawns_daemon_when_proxy_changed() {
             .shared_codex_appserver
             .needs_respawn_on_next_thread_start_for_test()
     );
-    assert_eq!(
-        boot.state
-            .pending_codex_threads
-            .as_ref()
-            .unwrap()
-            .pending_count()
-            .await,
-        1
-    );
+    assert_eq!(boot.state.pending_codex_threads.pending_count().await, 1);
 }
 
 #[tokio::test]
 async fn empty_shared_spec_respawn_failure_does_not_leave_card_stamped() {
     let _guard = ENV_LOCK.lock().await;
-    let boot = boot(true, true).await;
+    let boot = boot(true).await;
     unsafe {
         std::env::set_var("FAKE_CODEX_FAIL_INITIALIZE", "1");
     }
@@ -390,22 +357,14 @@ async fn empty_shared_spec_respawn_failure_does_not_leave_card_stamped() {
     let spec = spec_card(&boot.repo, &wave_id).await;
     assert!(spec.payload.get("codex_source").is_none());
     assert!(spec.payload.get("appserver_needs_initial_prompt").is_none());
-    assert_eq!(
-        boot.state
-            .pending_codex_threads
-            .as_ref()
-            .unwrap()
-            .pending_count()
-            .await,
-        0
-    );
+    assert_eq!(boot.state.pending_codex_threads.pending_count().await, 0);
     assert!(!boot.state.spec_push.contains(&wave_id.clone().into()));
 }
 
 #[tokio::test]
 async fn empty_shared_spec_pending_register_waits_for_spawn_serial_lock() {
     let _guard = ENV_LOCK.lock().await;
-    let boot = boot(true, true).await;
+    let boot = boot(true).await;
     let serial_guard = boot.state.pending_codex_threads_spawn_serial.lock().await;
     let pending_post = post_wave(boot.app.clone(), &boot.cove_id, "");
     tokio::pin!(pending_post);
@@ -417,12 +376,7 @@ async fn empty_shared_spec_pending_register_waits_for_spawn_serial_lock() {
     }
 
     assert_eq!(
-        boot.state
-            .pending_codex_threads
-            .as_ref()
-            .unwrap()
-            .pending_count()
-            .await,
+        boot.state.pending_codex_threads.pending_count().await,
         0,
         "pending spec registration must be inside the spawn-serial critical section"
     );
@@ -430,21 +384,13 @@ async fn empty_shared_spec_pending_register_waits_for_spawn_serial_lock() {
     drop(serial_guard);
     let (status, wave) = pending_post.await;
     assert_eq!(status, StatusCode::CREATED, "body={wave:?}");
-    assert_eq!(
-        boot.state
-            .pending_codex_threads
-            .as_ref()
-            .unwrap()
-            .pending_count()
-            .await,
-        1
-    );
+    assert_eq!(boot.state.pending_codex_threads.pending_count().await, 1);
 }
 
 #[tokio::test]
 async fn empty_shared_spec_boot_takeover_reparks_pending_without_legacy_bootstrap() {
     let _guard = ENV_LOCK.lock().await;
-    let boot = boot(true, true).await;
+    let boot = boot(true).await;
     let (status, wave) = post_wave(boot.app.clone(), &boot.cove_id, "").await;
     assert_eq!(status, StatusCode::CREATED, "body={wave:?}");
     let wave_id = wave["id"].as_str().unwrap().to_string();
@@ -461,45 +407,19 @@ async fn empty_shared_spec_boot_takeover_reparks_pending_without_legacy_bootstra
         .terminal_set_exit(terminal_id, None, false)
         .await
         .unwrap();
-    let pending = boot.state.pending_codex_threads.as_ref().unwrap();
+    let pending = &boot.state.pending_codex_threads;
     assert!(pending.remove_by_card(spec.id.as_str()).await);
     drop(boot.state.spec_push.remove(&wave_id.clone().into()));
 
-    assert!(
-        boot.repo
-            .spec_cards_for_initial_prompt_bootstrap()
-            .await
-            .unwrap()
-            .is_empty(),
-        "shared empty specs must be excluded from legacy initial-prompt bootstrap"
-    );
     let reloaded = reloaded_state_from_boot(&boot);
-    assert_eq!(
-        reloaded
-            .pending_codex_threads
-            .as_ref()
-            .unwrap()
-            .pending_count()
-            .await,
-        0
-    );
+    assert_eq!(reloaded.pending_codex_threads.pending_count().await, 0);
     calm_server::takeover_shared_spec_cards_on_boot(&reloaded).await;
     assert!(reloaded.spec_push.contains(&wave_id.clone().into()));
-    assert_eq!(
-        reloaded
-            .pending_codex_threads
-            .as_ref()
-            .unwrap()
-            .pending_count()
-            .await,
-        1
-    );
+    assert_eq!(reloaded.pending_codex_threads.pending_count().await, 1);
 
     assert_eq!(
         reloaded
             .pending_codex_threads
-            .as_ref()
-            .unwrap()
             .on_thread_started("T-spec-reloaded")
             .await
             .unwrap()
@@ -524,27 +444,17 @@ async fn empty_shared_spec_tui_spawn_failure_rolls_back_pending_state() {
         "/tmp/neige-calm-missing-supervisor-{}.sock",
         calm_server::model::new_id()
     ));
-    let boot = boot_with_proc_supervisor(true, true, Some(bad_supervisor_sock)).await;
+    let boot = boot_with_proc_supervisor(true, Some(bad_supervisor_sock)).await;
     let (status, wave) = post_wave(boot.app.clone(), &boot.cove_id, "").await;
     assert_eq!(status, StatusCode::CREATED, "body={wave:?}");
     let wave_id = wave["id"].as_str().unwrap().to_string();
     let spec = spec_card(&boot.repo, &wave_id).await;
 
-    assert_eq!(
-        boot.state
-            .pending_codex_threads
-            .as_ref()
-            .unwrap()
-            .pending_count()
-            .await,
-        0
-    );
+    assert_eq!(boot.state.pending_codex_threads.pending_count().await, 0);
     assert!(!boot.state.spec_push.contains(&wave_id.clone().into()));
     assert!(
         boot.state
             .pending_codex_threads
-            .as_ref()
-            .unwrap()
             .on_thread_started("T-orphan")
             .await
             .unwrap()
@@ -558,7 +468,7 @@ async fn empty_shared_spec_tui_spawn_failure_rolls_back_pending_state() {
 #[tokio::test]
 async fn empty_shared_spec_persist_failure_rolls_back_pending_entry() {
     let _guard = ENV_LOCK.lock().await;
-    let boot = boot(true, true).await;
+    let boot = boot(true).await;
     let wave = boot
         .repo
         .wave_create(NewWave {
@@ -608,7 +518,7 @@ async fn empty_shared_spec_persist_failure_rolls_back_pending_entry() {
     .await;
 
     assert!(result.is_err());
-    let pending = boot.state.pending_codex_threads.as_ref().unwrap();
+    let pending = &boot.state.pending_codex_threads;
     assert_eq!(pending.pending_count().await, 0);
     assert!(
         pending
@@ -636,21 +546,21 @@ async fn empty_shared_spec_persist_failure_rolls_back_pending_entry() {
 }
 
 #[tokio::test]
-async fn flag_on_but_shared_daemon_stopped_falls_back_to_legacy() {
+async fn shared_daemon_stopped_leaves_inert_spec_card() {
     let _guard = ENV_LOCK.lock().await;
-    let boot = boot(true, false).await;
-    let (status, wave) = post_wave(boot.app.clone(), &boot.cove_id, "legacy fallback").await;
+    let boot = boot(false).await;
+    let (status, wave) = post_wave(boot.app.clone(), &boot.cove_id, "shared daemon stopped").await;
     assert_eq!(status, StatusCode::CREATED, "body={wave:?}");
     let spec = spec_card(&boot.repo, wave["id"].as_str().unwrap()).await;
-    assert_eq!(spec.payload["codex_source"], "legacy");
-    assert!(spec.payload["appserver_pgid"].as_i64().is_some());
-    let mapping = boot
-        .repo
-        .card_codex_thread_get_by_card(spec.id.as_str())
-        .await
-        .unwrap()
-        .expect("legacy mapping");
-    assert_eq!(mapping.role, CardRole::Spec);
+    assert!(spec.payload.get("codex_source").is_none());
+    assert!(spec.payload.get("appserver_pgid").is_none());
+    assert!(
+        boot.repo
+            .card_codex_thread_get_by_card(spec.id.as_str())
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -662,7 +572,7 @@ async fn shared_spec_takeover_reparks_handle_and_pushes_via_shared_daemon() {
         std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
         std::env::set_var("FAKE_CODEX_TURN_COMPLETED_DELAY_MS", "25");
     }
-    let boot = boot(true, true).await;
+    let boot = boot(true).await;
     let (status, wave) = post_wave(boot.app.clone(), &boot.cove_id, "shared takeover goal").await;
     assert_eq!(status, StatusCode::CREATED, "body={wave:?}");
 

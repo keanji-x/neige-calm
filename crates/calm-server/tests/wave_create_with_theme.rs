@@ -40,8 +40,6 @@ struct Boot {
     app: axum::Router,
     cove_id: String,
     _daemon_data_dir: PathBuf,
-    repo: Arc<dyn Repo>,
-    state: AppState,
     _tmp: TempDir,
 }
 
@@ -102,8 +100,6 @@ async fn boot() -> Boot {
         app,
         cove_id: cove.id.to_string(),
         _daemon_data_dir: daemon_data_dir,
-        repo,
-        state,
         _tmp: tmp,
     }
 }
@@ -134,61 +130,6 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value, 
 /// Happy path: wave-create body carries `theme: { fg, bg }` — the
 /// spec card's renderer config must carry the dark-theme RGB the web
 /// client stamps for a dark host browser.
-#[tokio::test]
-async fn wave_create_with_theme_stamps_terminal_fg_bg_args() {
-    let boot = boot().await;
-
-    // POST /api/waves with the dark-theme RGB the web client uses
-    // (`DARK_THEME_RGB` in `web/src/shared/themeRgb.ts`).
-    let (status, body, _text) = post(
-        boot.app.clone(),
-        "/api/waves",
-        json!({
-            "cove_id": boot.cove_id,
-            "title": "theme wave",
-            "cwd": "/tmp/issue-250-pr2-test",
-            "attach_folder": true,
-            "theme": {
-                "fg": [216, 219, 226],
-                "bg": [15, 20, 24]
-            }
-        }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "body={body}");
-
-    let wave_id = body["id"].as_str().expect("wave id");
-    let cards = boot.repo.cards_by_wave(wave_id).await.unwrap();
-    let spec_card = cards
-        .iter()
-        .find(|c| c.kind == "codex")
-        .expect("spec codex card");
-    let terminal_id = spec_card.payload["terminal_id"]
-        .as_str()
-        .expect("spec payload terminal_id");
-    let entry = boot
-        .state
-        .terminal_renderer
-        .get(terminal_id)
-        .expect("spec renderer entry registered");
-    assert_eq!(entry.config().terminal_fg, (216, 219, 226));
-    assert_eq!(entry.config().terminal_bg, (15, 20, 24));
-    let term = boot
-        .repo
-        .terminal_get(terminal_id)
-        .await
-        .expect("read terminal row")
-        .expect("terminal row must exist");
-    assert_eq!(
-        term.theme_fg, "216,219,226",
-        "spec-card terminal row must remember its host theme fg"
-    );
-    assert_eq!(
-        term.theme_bg, "15,20,24",
-        "spec-card terminal row must remember its host theme bg"
-    );
-}
-
 /// Required-field gate (#177 followup): wave-create body without
 /// `theme` must be rejected at the deserialize layer. Previously this
 /// test asserted back-compat — the route silently fell back to "no

@@ -10,8 +10,8 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::dispatcher::Dispatcher;
 use calm_server::event::{Event, EventBus, EventScope};
-use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
-use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave};
+use calm_server::ids::{ActorId, CoveId, WaveId};
+use calm_server::model::{CardRole, NewCove, NewWave};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{CodexClient, DaemonClient};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
@@ -114,7 +114,11 @@ async fn boot(start_shared: bool) -> Boot {
     }
 }
 
-fn spawn_dispatcher(boot: &Boot, shared_worker_enabled: bool) -> Dispatcher {
+fn spawn_dispatcher(boot: &Boot) -> Dispatcher {
+    spawn_dispatcher_with_permits(boot, 4)
+}
+
+fn spawn_dispatcher_with_permits(boot: &Boot, permits: usize) -> Dispatcher {
     Dispatcher::spawn_with_terminal_renderer(
         boot.repo.clone(),
         boot.events.clone(),
@@ -126,8 +130,7 @@ fn spawn_dispatcher(boot: &Boot, shared_worker_enabled: bool) -> Dispatcher {
         None,
         calm_server::spec_push::SpecPushRegistry::new(),
         boot.shared.clone(),
-        shared_worker_enabled,
-        4,
+        permits,
     )
 }
 
@@ -160,21 +163,6 @@ async fn dispatch(boot: &Boot, idem: &str, goal: &str) {
         )
         .await
         .unwrap();
-}
-
-async fn wait_for_card(boot: &Boot, idem: &str) -> Card {
-    wait_for(Duration::from_secs(5), || async {
-        let cards = boot
-            .repo
-            .cards_by_wave(boot.wave_id.as_str())
-            .await
-            .unwrap();
-        cards
-            .into_iter()
-            .find(|c| c.payload.get("idempotency_key").and_then(Value::as_str) == Some(idem))
-    })
-    .await
-    .expect("worker card")
 }
 
 async fn wait_for<F, Fut, T>(timeout: Duration, mut f: F) -> Option<T>
@@ -210,18 +198,109 @@ async fn wait_for_requests(path: &Path, min_count: usize) -> Vec<Value> {
     panic!("timed out waiting for fake codex requests");
 }
 
-#[test]
-fn worker_shared_daemon_flag_defaults_to_true() {
-    let tmp = TempDir::new().unwrap();
-    let fake_codex_bin = fake_codex_bin();
-    let cfg = Config::parse_from([
-        "calm-server",
-        "--data-dir",
-        tmp.path().to_str().unwrap(),
-        "--codex-bin",
-        fake_codex_bin.as_str(),
-    ]);
-    assert!(cfg.shared_codex_worker_cards_enabled);
+async fn worker_card_count_by_idem(boot: &Boot, idem: &str) -> usize {
+    boot.repo
+        .cards_by_wave(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|card| card.payload.get("idempotency_key").and_then(Value::as_str) == Some(idem))
+        .count()
+}
+
+async fn worker_card_count_with_prefix(boot: &Boot, prefix: &str) -> usize {
+    boot.repo
+        .cards_by_wave(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|card| {
+            card.payload
+                .get("idempotency_key")
+                .and_then(Value::as_str)
+                .is_some_and(|idem| idem.starts_with(prefix))
+        })
+        .count()
+}
+
+#[tokio::test]
+async fn worker_via_shared_daemon_dedupes_same_idempotency_key() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot(true).await;
+    let _dispatcher = spawn_dispatcher(&boot);
+
+    let idem = "shared-dup-key";
+    dispatch(&boot, idem, "dedup shared worker").await;
+    dispatch(&boot, idem, "dedup shared worker").await;
+
+    wait_for(Duration::from_secs(5), || async {
+        (worker_card_count_by_idem(&boot, idem).await == 1).then_some(())
+    })
+    .await
+    .expect("first shared worker card minted");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    assert_eq!(
+        worker_card_count_by_idem(&boot, idem).await,
+        1,
+        "duplicate shared-worker idempotency_key must create exactly one card"
+    );
+}
+
+#[tokio::test]
+async fn worker_via_shared_daemon_dedupes_under_real_concurrent_race() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot(true).await;
+    let _dispatcher = spawn_dispatcher(&boot);
+
+    let idem = "shared-race-key";
+    tokio::join!(
+        dispatch(&boot, idem, "race shared worker"),
+        dispatch(&boot, idem, "race shared worker"),
+    );
+
+    wait_for(Duration::from_secs(5), || async {
+        (worker_card_count_by_idem(&boot, idem).await == 1).then_some(())
+    })
+    .await
+    .expect("one shared worker card minted after concurrent duplicate requests");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    assert_eq!(
+        worker_card_count_by_idem(&boot, idem).await,
+        1,
+        "concurrent duplicate shared-worker dispatches must not both mint cards"
+    );
+}
+
+#[tokio::test]
+async fn worker_via_shared_daemon_semaphore_caps_concurrent_spawns() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot(true).await;
+    let dispatcher = spawn_dispatcher_with_permits(&boot, 1);
+    assert_eq!(dispatcher.permits(), 1);
+    let sem = dispatcher.semaphore();
+    let held_permit = sem.clone().acquire_owned().await.unwrap();
+
+    for i in 0..2 {
+        dispatch(&boot, &format!("shared-cap-{i}"), "cap shared worker").await;
+    }
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(
+        worker_card_count_with_prefix(&boot, "shared-cap-").await,
+        0,
+        "shared workers must wait while the only permit is occupied"
+    );
+    assert_eq!(sem.available_permits(), 0);
+
+    drop(held_permit);
+
+    wait_for(Duration::from_secs(10), || async {
+        (worker_card_count_with_prefix(&boot, "shared-cap-").await >= 1).then_some(())
+    })
+    .await
+    .expect("a queued shared worker should mint after the permit is released");
 }
 
 #[tokio::test]
@@ -233,7 +312,7 @@ async fn worker_via_shared_daemon_persists_thread_mapping() {
         std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
     }
     let boot = boot(true).await;
-    let _dispatcher = spawn_dispatcher(&boot, true);
+    let _dispatcher = spawn_dispatcher(&boot);
     dispatch(&boot, "shared-worker-1", "do shared worker thing").await;
     let card = wait_for(Duration::from_secs(5), || async {
         let cards = boot
@@ -255,7 +334,7 @@ async fn worker_via_shared_daemon_persists_thread_mapping() {
     assert_eq!(card.payload["codex_source"], "shared");
     assert_eq!(card.payload["codex_thread_id"], "fake-thread-0001");
     assert_eq!(card.payload["appserver_sock"], boot.shared.remote_uri());
-    assert!(card.payload["appserver_pgid"].is_null());
+    assert!(card.payload.get("appserver_pgid").is_none());
     let mapping = boot
         .repo
         .card_codex_thread_get_by_card(card.id.as_str())
@@ -320,100 +399,40 @@ async fn worker_via_shared_daemon_persists_thread_mapping() {
 }
 
 #[tokio::test]
-async fn worker_codex_auto_submit_skipped_in_shared_mode() {
-    let tmp = TempDir::new().unwrap();
-    let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
-            name: "auto-submit".into(),
-            color: "#000".into(),
-            sort: None,
-        })
-        .await
-        .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
-            cove_id: cove.id,
-            title: "auto-submit".into(),
-            sort: None,
-            cwd: String::new(),
-            attach_folder: false,
-            theme: calm_server::routes::theme::RequestTheme::default_dark(),
-        })
-        .await
-        .unwrap();
-    let card = repo
-        .card_create(NewCard {
-            wave_id: wave.id,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({
-                "schemaVersion": 1,
-                "terminal_id": "terminal-shared-worker",
-                "prompt": "this would be submitted in legacy mode",
-                "codex_thread_id": "fake-thread-0001"
-            }),
-        })
-        .await
-        .unwrap();
-    let events = EventBus::new();
-    let daemon = Arc::new(DaemonClient {
-        data_dir: tmp.path().join("terminals"),
-        proc_supervisor_sock: None,
-    });
-    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
-    let renderer = TerminalRendererRegistry::new_with_repo(route_repo);
-    calm_server::codex_auto_submit::spawn_with_terminal_renderer(
-        repo.clone(),
-        daemon,
-        renderer.clone(),
-        events.clone(),
-    );
-    events.emit(
-        ActorId::AiCodex(CardId::from("test")),
-        Event::CodexHook {
-            card_id: card.id,
-            kind: "hook.codex.session_start".into(),
-            payload: json!({}),
-        },
-    );
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(
-        renderer.get("terminal-shared-worker").is_none(),
-        "shared-mode codex_thread_id should skip auto-submit before renderer injection"
-    );
-}
-
-#[tokio::test]
-async fn worker_flag_on_but_shared_daemon_stopped_falls_back_to_legacy() {
+async fn worker_shared_daemon_stopped_rolls_back_card() {
     // ENV_LOCK protects against env-var pollution from concurrent tests
     // (FAKE_CODEX_CAPTURE_REQUESTS / FAKE_CODEX_PTY_FAIL / etc) that would
     // affect the fake daemon and the renderer-entry expectation here.
     let _guard = ENV_LOCK.lock().await;
     let boot = boot(false).await;
-    let _dispatcher = spawn_dispatcher(&boot, true);
-    dispatch(&boot, "legacy-fallback-1", "legacy fallback").await;
-    let card = wait_for_card(&boot, "legacy-fallback-1").await;
-
-    assert!(card.payload.get("codex_source").is_none());
-    assert!(card.payload.get("codex_thread_id").is_none());
-    assert!(
-        boot.repo
-            .card_codex_thread_get_by_card(card.id.as_str())
-            .await
-            .unwrap()
-            .is_none()
-    );
-    let terminal_id = card.payload["terminal_id"].as_str().unwrap();
-    let entry = wait_for(Duration::from_secs(3), || async {
-        boot.renderer.get(terminal_id)
+    let _dispatcher = spawn_dispatcher(&boot);
+    let mut rx = boot.events.subscribe();
+    dispatch(&boot, "shared-stopped-1", "shared daemon stopped").await;
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let env = rx.recv().await.unwrap();
+            if let Event::TaskFailed {
+                idempotency_key, ..
+            } = env.event
+                && idempotency_key == "shared-stopped-1"
+            {
+                break;
+            }
+        }
     })
     .await
-    .expect("legacy renderer entry");
+    .expect("task.failed");
+
+    let cards = boot
+        .repo
+        .cards_by_wave(boot.wave_id.as_str())
+        .await
+        .unwrap();
     assert!(
-        entry.config().args[1].contains("codex '"),
-        "legacy fallback must keep positional prompt argv: {:?}",
-        entry.config().args
+        cards.iter().all(|card| {
+            card.payload.get("idempotency_key").and_then(Value::as_str) != Some("shared-stopped-1")
+        }),
+        "failed shared worker spawn must roll back orphan worker card"
     );
 }
 
@@ -424,7 +443,7 @@ async fn worker_turn_start_failure_rolls_back_mapping_and_payload() {
         std::env::set_var("FAKE_CODEX_FAIL_TURN_START", "1");
     }
     let boot = boot(true).await;
-    let _dispatcher = spawn_dispatcher(&boot, true);
+    let _dispatcher = spawn_dispatcher(&boot);
     let mut rx = boot.events.subscribe();
     dispatch(&boot, "turn-fail-1", "turn start should fail").await;
     let failed = tokio::time::timeout(Duration::from_secs(3), async {
@@ -482,7 +501,7 @@ async fn worker_spawn_fail_after_turn_start_interrupts_turn() {
         std::env::set_var("FAKE_CODEX_PTY_FAIL", "1");
     }
     let boot = boot(true).await;
-    let _dispatcher = spawn_dispatcher(&boot, true);
+    let _dispatcher = spawn_dispatcher(&boot);
     let mut rx = boot.events.subscribe();
     dispatch(&boot, "pty-fail-1", "turn starts but pty fails").await;
     let failed = tokio::time::timeout(Duration::from_secs(3), async {

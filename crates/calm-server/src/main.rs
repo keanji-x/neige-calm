@@ -31,30 +31,6 @@ async fn main() -> anyhow::Result<()> {
         println!("{}", serde_json::to_string_pretty(&compatibility)?);
         return Ok(());
     }
-    if !cfg.shared_codex_prompt_cards_enabled {
-        tracing::warn!(
-            target: "shared_codex_daemon::flag",
-            "shared_codex_prompt_cards_enabled DISABLED - fallback to legacy per-card daemon"
-        );
-    }
-    if !cfg.shared_codex_empty_cards_enabled {
-        tracing::warn!(
-            target: "shared_codex_daemon::flag",
-            "shared_codex_empty_cards_enabled DISABLED - fallback to legacy per-card daemon"
-        );
-    }
-    if !cfg.shared_codex_spec_cards_enabled {
-        tracing::warn!(
-            target: "shared_codex_daemon::flag",
-            "shared_codex_spec_cards_enabled DISABLED - fallback to legacy per-wave daemon"
-        );
-    }
-    if !cfg.shared_codex_worker_cards_enabled {
-        tracing::warn!(
-            target: "shared_codex_daemon::flag",
-            "shared_codex_worker_cards_enabled DISABLED - fallback to legacy per-card daemon"
-        );
-    }
     warn_if_worker_hook_callback_is_not_loopback(&cfg);
 
     // Storage. `mock` keeps the in-memory backend for dev — it now resolves to
@@ -71,9 +47,15 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState::new(&cfg, repo).await?;
 
-    // #410 PR4 — shared codex app-server boot/takeover. Failure is a
-    // degradation path in PR4: no card routes use this daemon yet, and the
-    // rollback flag can disable it while legacy per-wave app-servers continue.
+    // #410 PR7c - pre-shared-daemon cleanup for pre-PR8 legacy spec rows.
+    // This must run before `start_or_takeover()`: the shared daemon rebuilds
+    // its thread cache from `card_codex_threads`, and legacy per-card rows are
+    // explicitly not resumable by the PR7c shared-daemon path.
+    calm_server::cleanup_legacy_spec_rows_on_boot(&state).await;
+
+    // #410 — shared codex app-server boot/takeover. The shared daemon is the
+    // only codex app-server path; failures are logged so boot can still bind
+    // and routes surface the daemon failure when a codex card is used.
     if let Err(e) = state.shared_codex_appserver.start_or_takeover().await {
         tracing::error!(
             error = %e,
@@ -85,21 +67,17 @@ async fn main() -> anyhow::Result<()> {
     // supervisor PTY registry. No daemon binary respawn happens here.
     calm_server::reconcile_supervisor_on_boot(&state).await;
 
-    // #313 problem #1 — boot-time **takeover** of in-flight spec waves.
-    // Replaces the previous "kill-on-boot" sweep
-    // (`reap_orphan_appserver_groups_on_boot`). For every spec card whose
-    // `card_codex_threads` spec mapping exists and whose wave is not in a
-    // terminal lifecycle state: re-attach (reuse the persisted live
-    // app-server if its socket+pgid are still alive, else respawn fresh),
-    // `initialize` + `thread/resume(<thread_id>)`, register a fresh
-    // `SpecPushHandle`, then replay every persisted event with
-    // `id > push_watermark` through the dispatcher's push path so the
-    // spec thread catches up on what happened while the kernel was down.
-    // Failures are non-fatal per wave; the kernel boot proceeds regardless.
-    // Runs before the listener binds so a request landing mid-takeover
-    // can't race a half-registered handle.
+    // #313/#410 - boot-time **takeover** of in-flight shared spec waves.
+    // Legacy per-card spec rows were cleaned above before the shared daemon
+    // rebuilt its thread cache. For every remaining shared spec card whose
+    // `card_codex_threads` mapping exists and whose wave is not in a terminal
+    // lifecycle state: reuse the shared daemon thread, register a fresh
+    // `SpecPushHandle`, then replay persisted events after `push_watermark`
+    // through the dispatcher's push path so the spec thread catches up on what
+    // happened while the kernel was down. Failures are non-fatal per wave; the
+    // kernel boot proceeds regardless. Runs before the listener binds so a
+    // request landing mid-takeover can't race a half-registered handle.
     calm_server::takeover_shared_spec_cards_on_boot(&state).await;
-    calm_server::takeover_spec_appservers_on_boot(&state).await;
 
     // Optional session-recording — when `RECORD_SESSION=<path>` is set,
     // every event broadcast on the bus is appended to that file as
