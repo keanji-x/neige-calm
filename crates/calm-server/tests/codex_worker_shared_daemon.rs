@@ -386,6 +386,10 @@ async fn worker_codex_auto_submit_skipped_in_shared_mode() {
 
 #[tokio::test]
 async fn worker_flag_on_but_shared_daemon_stopped_falls_back_to_legacy() {
+    // ENV_LOCK protects against env-var pollution from concurrent tests
+    // (FAKE_CODEX_CAPTURE_REQUESTS / FAKE_CODEX_PTY_FAIL / etc) that would
+    // affect the fake daemon and the renderer-entry expectation here.
+    let _guard = ENV_LOCK.lock().await;
     let boot = boot(false).await;
     let _dispatcher = spawn_dispatcher(&boot, true);
     dispatch(&boot, "legacy-fallback-1", "legacy fallback").await;
