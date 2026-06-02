@@ -87,11 +87,28 @@ pub(crate) async fn put_settings(
     State(s): State<AppState>,
     Json(p): Json<SettingsPutBody>,
 ) -> Result<Json<SettingsBag>> {
+    let before = load_settings(s.repo.as_ref()).await?;
+    let mut proxy_changed = false;
     for (key, maybe_val) in p.settings.iter() {
         // Skip empty keys silently — a malformed JSON object with "" keys
         // shouldn't break the call; we just refuse to persist them.
         if key.is_empty() {
             continue;
+        }
+        match key.as_str() {
+            "http_proxy" | "HTTP_PROXY" => {
+                let next = maybe_val.as_deref().filter(|v| !v.is_empty());
+                if before.http_proxy.as_deref() != next {
+                    proxy_changed = true;
+                }
+            }
+            "https_proxy" | "HTTPS_PROXY" => {
+                let next = maybe_val.as_deref().filter(|v| !v.is_empty());
+                if before.https_proxy.as_deref() != next {
+                    proxy_changed = true;
+                }
+            }
+            _ => {}
         }
         match maybe_val.as_deref() {
             Some(v) if !v.is_empty() => {
@@ -102,6 +119,9 @@ pub(crate) async fn put_settings(
                 s.repo.settings_delete(key).await?;
             }
         }
+    }
+    if proxy_changed {
+        s.shared_codex_appserver.mark_needs_respawn();
     }
     let rows = s.repo.settings_get_all().await?;
     let mut map = BTreeMap::new();

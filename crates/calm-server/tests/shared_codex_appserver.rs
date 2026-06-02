@@ -10,8 +10,8 @@ use calm_server::db::{
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, now_ms};
 use calm_server::routes::theme::RequestTheme;
 use calm_server::shared_codex_appserver::{
-    BackoffState, SharedCodexAppServer, SharedDaemonState, bounded_exponential_backoff,
-    drop_spawned_child_guard_for_test,
+    BackoffState, SharedCodexAppServer, SharedDaemonState, SharedThreadStartParams,
+    bounded_exponential_backoff, drop_spawned_child_guard_for_test,
 };
 use calm_server::spec_appserver::{read_boot_id, read_proc_start_time};
 use clap::Parser;
@@ -620,6 +620,46 @@ async fn restart_resumes_rollout_backed_threads() {
     }
     let requests = std::fs::read_to_string(capture).unwrap();
     assert!(requests.contains("\"method\":\"thread/resume\""));
+}
+
+#[tokio::test]
+async fn thread_start_for_card_respects_needs_respawn_flag() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+    let old_pid = daemon.status_snapshot().runtime.unwrap().pid;
+    let card_id = seed_card(&repo, 1).await;
+
+    daemon.mark_needs_respawn();
+    assert!(daemon.needs_respawn_on_next_thread_start_for_test());
+    let thread_id = daemon
+        .thread_start_for_card(
+            &card_id,
+            CardRole::Plain,
+            None,
+            SharedThreadStartParams {
+                cwd: "/tmp".into(),
+                approval_policy: "never".into(),
+                sandbox_mode: "workspace-write".into(),
+                developer_instructions: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(thread_id, "fake-thread-0001");
+    assert!(!daemon.needs_respawn_on_next_thread_start_for_test());
+    let new_pid = daemon.status_snapshot().runtime.unwrap().pid;
+    assert_ne!(new_pid, old_pid);
+    assert_eq!(
+        repo.card_codex_thread_get_by_card(&card_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .thread_id,
+        "fake-thread-0001"
+    );
 }
 
 #[test]

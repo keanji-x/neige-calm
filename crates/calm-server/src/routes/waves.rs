@@ -950,6 +950,11 @@ pub(crate) async fn spawn_push_via_shared_daemon(
         let pending = s.pending_codex_threads.as_ref().ok_or_else(|| {
             CalmError::Internal("shared spec-card path enabled without pending registry".into())
         })?;
+        // Empty-goal path: thread is fresh-started by TUI; payload needs the
+        // shared marker stamped here without a thread_id before the pending
+        // FIFO mutates. If this persist fails, no stale pending entry can
+        // consume a later unrelated thread/started notification.
+        persist_shared_spec_runtime_fields(s, spec_card_id, wave, None).await?;
         pending
             .register(
                 PendingEntry::new(
@@ -1033,13 +1038,6 @@ pub(crate) async fn spawn_push_via_shared_daemon(
         Some(thread_id)
     };
 
-    if thread_id.is_none() {
-        // Empty-goal path: thread is fresh-started by TUI; payload needs the
-        // shared marker stamped here without a thread_id (it'll be backfilled
-        // by the registry attribution + initial_prompt_ready_sink).
-        persist_shared_spec_runtime_fields(s, spec_card_id, wave, None).await?;
-    }
-
     let handle = spec_push::park_shared_handle(
         s.shared_codex_appserver.clone(),
         thread_id.clone(),
@@ -1070,6 +1068,17 @@ pub(crate) async fn spawn_push_via_shared_daemon(
             )
         }),
     })
+}
+
+#[cfg(feature = "fixtures")]
+pub async fn spawn_push_via_shared_daemon_for_test(
+    s: &AppState,
+    spec_card_id: &str,
+    wave: &Wave,
+) -> Result<()> {
+    spawn_push_via_shared_daemon(s, spec_card_id, wave)
+        .await
+        .map(|_| ())
 }
 
 pub(crate) async fn await_shared_spec_initial_turn_lifecycle(

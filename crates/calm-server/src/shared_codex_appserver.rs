@@ -194,6 +194,7 @@ pub struct SharedCodexAppServer {
     monitor_started: AtomicBool,
     restart_lock: Mutex<()>,
     restart_count: std::sync::atomic::AtomicU64,
+    needs_respawn_on_next_thread_start: Arc<AtomicBool>,
     last_error: Arc<Mutex<Option<String>>>,
     ingest_url: String,
 }
@@ -242,6 +243,7 @@ impl SharedCodexAppServer {
             monitor_started: AtomicBool::new(false),
             restart_lock: Mutex::new(()),
             restart_count: std::sync::atomic::AtomicU64::new(0),
+            needs_respawn_on_next_thread_start: Arc::new(AtomicBool::new(false)),
             last_error: Arc::new(Mutex::new(None)),
             ingest_url: "http://127.0.0.1:0".into(),
         })
@@ -282,6 +284,7 @@ impl SharedCodexAppServer {
             monitor_started: AtomicBool::new(false),
             restart_lock: Mutex::new(()),
             restart_count: std::sync::atomic::AtomicU64::new(0),
+            needs_respawn_on_next_thread_start: Arc::new(AtomicBool::new(false)),
             last_error: Arc::new(Mutex::new(None)),
             ingest_url: cfg.codex_ingest_url_resolved(),
         })
@@ -320,6 +323,12 @@ impl SharedCodexAppServer {
         params: SharedThreadStartParams,
     ) -> Result<String> {
         let _start_guard = self.kernel_thread_start_serial.lock().await;
+        if self
+            .needs_respawn_on_next_thread_start
+            .load(Ordering::SeqCst)
+        {
+            self.reap_and_respawn_with_current_settings().await?;
+        }
         let client = self.client().await?;
         let thread = client
             .thread_start_with_params(ThreadStartParams {
@@ -395,6 +404,11 @@ impl SharedCodexAppServer {
 
     pub fn remote_uri(&self) -> String {
         format!("unix://{}", self.sock.display())
+    }
+
+    pub fn mark_needs_respawn(&self) {
+        self.needs_respawn_on_next_thread_start
+            .store(true, Ordering::SeqCst);
     }
 
     pub fn status_snapshot(&self) -> SharedDaemonStatus {
@@ -669,6 +683,63 @@ impl SharedCodexAppServer {
         }
 
         Ok(())
+    }
+
+    async fn reap_and_respawn_with_current_settings(&self) -> Result<()> {
+        if !self
+            .needs_respawn_on_next_thread_start
+            .load(Ordering::SeqCst)
+        {
+            return Ok(());
+        }
+
+        tracing::info!(
+            target: "shared_codex_daemon::restart",
+            "respawning shared codex app-server before thread/start because runtime settings changed"
+        );
+        *self.client.lock().await = None;
+        let runtime = self.runtime.lock().await.take();
+        *self.state.lock().await = SharedDaemonState::Restarting;
+
+        if let Some(runtime) = runtime.as_ref() {
+            self.reap_current_child_or_runtime(runtime).await;
+        }
+
+        self.start_new_process(SharedDaemonState::Restarting, true, None)
+            .await?;
+        self.needs_respawn_on_next_thread_start
+            .store(false, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn reap_current_child_or_runtime(&self, runtime: &SharedDaemonRuntime) {
+        let child = self.child.lock().await.take();
+        if let Some(mut child) = child {
+            signal_process_group(runtime.pgid, libc::SIGTERM);
+            match tokio::time::timeout(Duration::from_millis(500), child.wait()).await {
+                Ok(Ok(_status)) => return,
+                Ok(Err(e)) => {
+                    tracing::warn!(
+                        target: "shared_codex_daemon::stop",
+                        pgid = runtime.pgid,
+                        error = %e,
+                        "failed waiting for shared codex app-server after SIGTERM; escalating"
+                    );
+                }
+                Err(_) => {}
+            }
+            signal_process_group(runtime.pgid, libc::SIGKILL);
+            let _ = tokio::time::timeout(Duration::from_millis(500), child.wait()).await;
+            return;
+        }
+
+        reap_verified_process_group(
+            runtime.pid,
+            runtime.pgid,
+            runtime.process_start_time,
+            &runtime.boot_id,
+        )
+        .await;
     }
 
     async fn remove_stale_socket_before_spawn(&self) -> Result<()> {
@@ -1185,6 +1256,11 @@ impl SharedCodexAppServer {
                 )
             })
             .collect())
+    }
+
+    pub fn needs_respawn_on_next_thread_start_for_test(&self) -> bool {
+        self.needs_respawn_on_next_thread_start
+            .load(Ordering::SeqCst)
     }
 }
 

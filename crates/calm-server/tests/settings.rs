@@ -212,3 +212,66 @@ async fn settings_loader_picks_up_proxy_for_codex_spawn() {
     assert_eq!(s.http_proxy.as_deref(), Some("http://corp.proxy:8080"));
     assert!(s.https_proxy.is_none());
 }
+
+#[tokio::test]
+async fn settings_proxy_update_marks_needs_respawn() {
+    let (state, _repo) = fresh_state().await;
+    let shared = state.shared_codex_appserver.clone();
+    let app = axum::Router::new()
+        .merge(routes::router())
+        .with_state(state);
+
+    let body = serde_json::json!({
+        "settings": {
+            "http_proxy": "http://proxy.changed:3128"
+        }
+    })
+    .to_string();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/settings")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    assert!(shared.needs_respawn_on_next_thread_start_for_test());
+}
+
+#[tokio::test]
+async fn settings_proxy_update_with_unchanged_value_does_not_mark() {
+    let (state, repo) = fresh_state().await;
+    repo.settings_upsert("http_proxy", "http://proxy.same:3128")
+        .await
+        .unwrap();
+    let shared = state.shared_codex_appserver.clone();
+    let app = axum::Router::new()
+        .merge(routes::router())
+        .with_state(state);
+
+    let body = serde_json::json!({
+        "settings": {
+            "http_proxy": "http://proxy.same:3128"
+        }
+    })
+    .to_string();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/settings")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    assert!(!shared.needs_respawn_on_next_thread_start_for_test());
+}

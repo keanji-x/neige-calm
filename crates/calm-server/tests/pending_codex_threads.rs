@@ -199,10 +199,30 @@ async fn expire_drops_abandoned_entries_past_ttl() {
 
     assert_eq!(registry.expire(Duration::from_secs(10)).await, 1);
     assert_eq!(registry.pending_count().await, 1);
+    let old_card = repo.card_get(&old).await.unwrap().expect("old card row");
+    assert_eq!(old_card.payload["codex_thread_status"], "failed_to_spawn");
     assert_eq!(
         registry.on_thread_started("T-fresh").await.unwrap(),
         Some(fresh.clone())
     );
+}
+
+#[tokio::test]
+async fn ttl_expire_clears_pending_status_payload() {
+    let (repo, events, wave_id) = boot().await;
+    let registry = PendingThreadStartRegistry::new(repo.clone(), events);
+    let card_id = seed_card(&repo, &wave_id, "term-ttl").await;
+    let mut old_entry = entry(&card_id, &wave_id, "term-ttl");
+    old_entry.registered_at = Instant::now()
+        .checked_sub(Duration::from_secs(30))
+        .expect("instant subtraction");
+    registry.register(old_entry).await.unwrap();
+
+    assert_eq!(registry.expire(Duration::from_secs(10)).await, 1);
+
+    let card = repo.card_get(&card_id).await.unwrap().expect("card row");
+    assert_eq!(card.payload["codex_thread_status"], "failed_to_spawn");
+    assert_eq!(registry.pending_count().await, 0);
 }
 
 #[tokio::test]

@@ -12,7 +12,7 @@ use calm_server::config::Config;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{CardRole, NewCove};
+use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
@@ -478,6 +478,86 @@ async fn empty_shared_spec_tui_spawn_failure_rolls_back_pending_state() {
     );
     let spec = boot.repo.card_get(spec.id.as_str()).await.unwrap().unwrap();
     assert!(spec.payload.get("appserver_needs_initial_prompt").is_none());
+}
+
+#[tokio::test]
+async fn empty_shared_spec_persist_failure_rolls_back_pending_entry() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot(true, true).await;
+    let wave = boot
+        .repo
+        .wave_create(NewWave {
+            cove_id: boot.cove_id.clone().into(),
+            title: "".into(),
+            sort: None,
+            cwd: "/tmp/spec-shared".into(),
+            attach_folder: true,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let spec = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: wave.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!("not-an-object"),
+        })
+        .await
+        .unwrap();
+    let theme = calm_server::routes::theme::RequestTheme::default_dark();
+    let terminal_id = format!("term-{}", calm_server::model::new_id());
+    sqlx::query(
+        r#"INSERT INTO terminals
+               (id, card_id, program, cwd, env, pid, theme_fg, theme_bg, created_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)"#,
+    )
+    .bind(&terminal_id)
+    .bind(spec.id.as_str())
+    .bind("bash")
+    .bind("/tmp/spec-shared")
+    .bind("{}")
+    .bind(theme.fg_arg())
+    .bind(theme.bg_arg())
+    .bind(0_i64)
+    .execute(boot.repo.pool())
+    .await
+    .unwrap();
+
+    let result = calm_server::routes::waves::spawn_push_via_shared_daemon_for_test(
+        &boot.state,
+        spec.id.as_str(),
+        &wave,
+    )
+    .await;
+
+    assert!(result.is_err());
+    let pending = boot.state.pending_codex_threads.as_ref().unwrap();
+    assert_eq!(pending.pending_count().await, 0);
+    assert!(
+        pending
+            .on_thread_started("T-unrelated")
+            .await
+            .unwrap()
+            .is_none(),
+        "failed persist must not consume a later thread/started"
+    );
+    assert!(
+        boot.repo
+            .card_codex_thread_get_by_card(spec.id.as_str())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let terminal = boot
+        .repo
+        .terminal_get(&terminal_id)
+        .await
+        .unwrap()
+        .expect("terminal row remains");
+    assert!(terminal.exit_code.is_none());
+    assert!(!terminal.signal_killed);
 }
 
 #[tokio::test]
