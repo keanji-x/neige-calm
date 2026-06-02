@@ -139,58 +139,6 @@ pub struct Config {
     )]
     pub shared_codex_appserver_enabled: bool,
 
-    /// Route prompt-bearing user codex cards through the shared codex
-    /// app-server when `true`. PR8 flips this default on; setting it false is
-    /// an emergency rollback to the legacy per-card codex path.
-    #[arg(
-        long,
-        env = "CALM_SHARED_CODEX_PROMPT_CARDS_ENABLED",
-        default_value_t = true,
-        action = clap::ArgAction::Set,
-        num_args = 0..=1,
-        default_missing_value = "true",
-    )]
-    pub shared_codex_prompt_cards_enabled: bool,
-
-    /// Route empty user codex cards through the shared codex app-server when
-    /// `true`. PR8 flips this default on; setting it false is an emergency
-    /// rollback to the legacy per-card codex path.
-    #[arg(
-        long,
-        env = "CALM_SHARED_CODEX_EMPTY_CARDS_ENABLED",
-        default_value_t = true,
-        action = clap::ArgAction::Set,
-        num_args = 0..=1,
-        default_missing_value = "true",
-    )]
-    pub shared_codex_empty_cards_enabled: bool,
-
-    /// Route spec cards created by `POST /api/waves` through the shared
-    /// codex app-server when `true`. PR8 flips this default on; setting it
-    /// false is an emergency rollback to the legacy per-wave app-server path.
-    #[arg(
-        long,
-        env = "CALM_SHARED_CODEX_SPEC_CARDS_ENABLED",
-        default_value_t = true,
-        action = clap::ArgAction::Set,
-        num_args = 0..=1,
-        default_missing_value = "true",
-    )]
-    pub shared_codex_spec_cards_enabled: bool,
-
-    /// Route dispatcher-spawned worker codex cards through the shared
-    /// codex app-server when `true`. PR8 flips this default on; setting it
-    /// false is an emergency rollback to the legacy per-card daemon path.
-    #[arg(
-        long,
-        env = "CALM_SHARED_CODEX_WORKER_CARDS_ENABLED",
-        default_value_t = true,
-        action = clap::ArgAction::Set,
-        num_args = 0..=1,
-        default_missing_value = "true",
-    )]
-    pub shared_codex_worker_cards_enabled: bool,
-
     /// Initial delay before restarting the shared codex app-server after a crash.
     #[arg(
         long,
@@ -269,64 +217,5 @@ impl Config {
         self.shared_codex_appserver_log_dir
             .clone()
             .unwrap_or_else(|| self.data_dir_resolved().join("logs/shared-codex-appserver"))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// PR8 R1 regression guard: the default-on shared-codex flags must
-    /// accept `--flag=false` on the CLI for the documented rollback path.
-    /// Without `action = ArgAction::Set + num_args = 1`, clap treats them
-    /// as SetTrue presence flags and rejects values with "unexpected
-    /// value 'false'".
-    #[test]
-    fn shared_codex_flags_accept_cli_false_override() {
-        let cfg = Config::parse_from([
-            "calm-server",
-            "--shared-codex-prompt-cards-enabled=false",
-            "--shared-codex-empty-cards-enabled=false",
-            "--shared-codex-spec-cards-enabled=false",
-            "--shared-codex-worker-cards-enabled=false",
-            "--shared-codex-appserver-enabled=false",
-        ]);
-        assert!(!cfg.shared_codex_prompt_cards_enabled);
-        assert!(!cfg.shared_codex_empty_cards_enabled);
-        assert!(!cfg.shared_codex_spec_cards_enabled);
-        assert!(!cfg.shared_codex_worker_cards_enabled);
-        assert!(!cfg.shared_codex_appserver_enabled);
-    }
-
-    #[test]
-    fn shared_codex_flags_default_to_true_post_pr8() {
-        let cfg = Config::parse_from(["calm-server"]);
-        assert!(cfg.shared_codex_prompt_cards_enabled);
-        assert!(cfg.shared_codex_empty_cards_enabled);
-        assert!(cfg.shared_codex_spec_cards_enabled);
-        assert!(cfg.shared_codex_worker_cards_enabled);
-        assert!(cfg.shared_codex_appserver_enabled);
-    }
-
-    /// PR8 R2 regression guard: legacy launch commands that use bare
-    /// `--flag` (no value) for the pre-PR8 opt-in must still work. With
-    /// num_args = 1 this would have failed clap parsing pre-boot; the
-    /// num_args = 0..=1 + default_missing_value = "true" combo restores
-    /// bare-flag compatibility while still accepting `--flag=false`.
-    #[test]
-    fn shared_codex_flags_bare_form_remains_compatible() {
-        let cfg = Config::parse_from([
-            "calm-server",
-            "--shared-codex-prompt-cards-enabled",
-            "--shared-codex-empty-cards-enabled",
-            "--shared-codex-spec-cards-enabled",
-            "--shared-codex-worker-cards-enabled",
-            "--shared-codex-appserver-enabled",
-        ]);
-        assert!(cfg.shared_codex_prompt_cards_enabled);
-        assert!(cfg.shared_codex_empty_cards_enabled);
-        assert!(cfg.shared_codex_spec_cards_enabled);
-        assert!(cfg.shared_codex_worker_cards_enabled);
-        assert!(cfg.shared_codex_appserver_enabled);
     }
 }

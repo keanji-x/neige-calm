@@ -338,68 +338,6 @@ pub trait RepoRead: Send + Sync + 'static {
     /// Used by boot-time supervisor reconciliation after #388 Phase 3b.
     async fn terminals_running(&self) -> Result<Vec<Terminal>>;
 
-    /// #313 problem #1 (boot takeover) — return every spec card whose
-    /// `card_codex_threads` spec mapping exists and whose parent wave is
-    /// not in a terminal lifecycle state (`done` / `canceled` / `failed`), as
-    /// `(card_id, wave_id, codex_thread_id, appserver_pgid, appserver_sock,
-    /// appserver_start_time, appserver_boot_id, push_watermark)`.
-    ///
-    /// `appserver_pgid` / `appserver_sock` / `appserver_start_time` /
-    /// `appserver_boot_id` may be missing if a prior boot only persisted
-    /// a subset (defensive — every code path that writes a legacy spec
-    /// mapping today also writes the first two, and #318 added the
-    /// start_time + boot_id identity stamp); `push_watermark`
-    /// defaults to 0 when absent (waves persisted before #313 didn't have
-    /// the field, and 0 means "replay every event for this wave on
-    /// recovery" — the correct conservative default).
-    ///
-    /// `(appserver_start_time, appserver_boot_id)` is the identity stamp
-    /// captured at spawn:
-    ///   * `appserver_start_time` — field 22 (1-indexed) of
-    ///     `/proc/<pid>/stat`, clock-ticks since boot.
-    ///   * `appserver_boot_id` — `/proc/sys/kernel/random/boot_id`, a
-    ///     per-boot UUID. Distinguishes "host rebooted, every prior pid
-    ///     is dead" from "same boot, possible mid-boot pid recycle".
-    ///
-    /// The boot-recovery path verifies BOTH against the live `/proc`
-    /// entries before signaling the persisted pgid (#318 INV-5 / R3-B1).
-    ///
-    /// Used exclusively by [`crate::takeover_spec_appservers_on_boot`] during
-    /// startup to re-establish the push channel for in-flight waves (boot
-    /// takeover replaces today's boot kill).
-    async fn spec_cards_for_boot_takeover(
-        &self,
-    ) -> Result<
-        Vec<(
-            String,
-            String,
-            String,
-            Option<i32>,
-            Option<String>,
-            Option<u64>,
-            Option<String>,
-            i64,
-        )>,
-    >;
-
-    /// Empty-goal spec cards whose app-server created a thread but
-    /// intentionally issued no initial `turn/start`. They cannot be
-    /// recovered with `thread/resume` because no rollout exists yet; boot
-    /// should spawn a fresh idle app-server and replace the runtime fields.
-    async fn spec_cards_for_initial_prompt_bootstrap(
-        &self,
-    ) -> Result<
-        Vec<(
-            String,
-            String,
-            String,
-            Option<i32>,
-            Option<String>,
-            Option<u64>,
-            Option<String>,
-            i64,
-        )>,
-    >;
 
     /// Shared-daemon empty-goal spec cards that still need the TUI to
     /// fresh-start their first thread. These are excluded from the legacy
@@ -788,87 +726,17 @@ pub trait RepoOutOfDomain: RepoRead {
     /// hot path narrow.
     ///
     /// The write is a JSON merge so it never clobbers `codex_thread_id` /
-    /// `appserver_sock` / `appserver_pgid` / other payload fields. A
+    /// `appserver_sock` / other payload fields. A
     /// missing card row is a no-op (the wave was deleted between the bump
     /// and the persist).
     ///
-    // TODO(runtime-state-table): push_watermark — along with appserver_pgid,
-    // appserver_sock, codex_thread_id — is kernel-private runtime bookkeeping
-    // living on the card payload via OutOfDomain (no CardUpdated event). When
-    // the dedicated runtime-state table lands, migrate these fields out of
-    // card payload into it. Acceptable short-term per #315 review.
+    // TODO(runtime-state-table): push_watermark — along with appserver_sock and
+    // codex_thread_id — is kernel-private runtime bookkeeping living on the
+    // card payload via OutOfDomain (no CardUpdated event). When the dedicated
+    // runtime-state table lands, migrate these fields out of card payload into
+    // it. Acceptable short-term per #315 review.
     async fn spec_card_set_push_watermark(&self, card_id: &str, watermark: i64) -> Result<()>;
 
-    /// Clear the empty-goal bootstrap marker once any observed turn
-    /// lifecycle proves the codex side has created a resumable rollout.
-    /// Idempotent and eventless: this is kernel-private runtime
-    /// bookkeeping, same as `spec_card_set_push_watermark`.
-    async fn spec_card_clear_needs_initial_prompt(&self, card_id: &str) -> Result<()>;
-
-    /// #313 problem #1 — clear a spec card's `codex_thread_id` (and the
-    /// related push fields) when boot takeover finds the persisted thread
-    /// can no longer be resumed (`-32600 "no rollout found"` from
-    /// `thread/resume`). Leaves the rest of the payload intact. The wave
-    /// stays in its current lifecycle (matches today's "inert wave"
-    /// posture — issue #313 problem #2 covers re-running these; not in
-    /// this PR).
-    async fn spec_card_clear_push_state(&self, card_id: &str) -> Result<()>;
-
-    /// Clear reset-created runtime fields after a reset partially succeeds
-    /// but the terminal daemon fails to spawn. Preserves `push_watermark`
-    /// and `spec_push_queue` rows so a later recovery can replay from the
-    /// durable floor without misleading boot takeover with a dead app-server.
-    async fn spec_card_clear_runtime_after_reset_failure(&self, card_id: &str) -> Result<()>;
-
-    /// #313 problem #1 — after boot takeover RESPAWNS a fresh codex
-    /// app-server for a spec card, persist the new launcher pgid + sock
-    /// (+ #318 INV-5 `(start_time, boot_id)` identity stamp) so the NEXT
-    /// boot cycle (or a graceful teardown) targets the right process.
-    /// Single-statement JSON-merge; touches only `appserver_pgid` +
-    /// `appserver_sock` + `appserver_start_time` + `appserver_boot_id`.
-    /// Does NOT touch `codex_thread_id` or `push_watermark`.
-    ///
-    /// `start_time` / `boot_id` are `Option` because non-Linux targets /
-    /// transient `/proc` read failures yield no stamp; in that case the
-    /// field is removed from the payload (NULL), and boot-recovery
-    /// conservatively skips the kill (same posture as a mismatch).
-    async fn spec_card_set_appserver_after_takeover(
-        &self,
-        card_id: &str,
-        pgid: i32,
-        sock: &str,
-        start_time: Option<u64>,
-        boot_id: Option<&str>,
-    ) -> Result<()>;
-
-    /// Persist a reset-created spec runtime: replace `codex_thread_id`
-    /// plus app-server identity fields while preserving the durable
-    /// `push_watermark` and queued observations.
-    #[allow(clippy::too_many_arguments)]
-    async fn spec_card_set_appserver_after_reset(
-        &self,
-        card_id: &str,
-        thread_id: &str,
-        pgid: i32,
-        sock: &str,
-        start_time: Option<u64>,
-        boot_id: Option<&str>,
-        needs_initial_prompt: bool,
-    ) -> Result<()>;
-
-    /// Persist fresh runtime state for an empty-goal bootstrap while keeping
-    /// `codex_thread_id` absent. The TUI will fresh-start over `--remote`,
-    /// and the notification consumer backfills the created thread id after
-    /// the first turn lifecycle proves a rollout exists.
-    async fn spec_card_set_empty_goal_bootstrap_pending_state(
-        &self,
-        card_id: &str,
-        pgid: i32,
-        sock: &str,
-        start_time: Option<u64>,
-        boot_id: Option<&str>,
-        watermark: i64,
-    ) -> Result<()>;
 
     async fn card_codex_thread_upsert(
         &self,
@@ -897,11 +765,10 @@ pub trait RepoOutOfDomain: RepoRead {
     // emission, no sync-domain entry) — they live on `RepoOutOfDomain`
     // alongside `spec_card_set_push_watermark` for the same reason.
     //
-    // TODO(runtime-state-table): along with `push_watermark`,
-    // `appserver_pgid`, `appserver_sock`, `codex_thread_id`, this is
-    // kernel-private runtime bookkeeping. When the dedicated runtime-
-    // state table lands, `spec_push_queue` can move into the same
-    // surface (or stay separate — it's row-shaped, not card-payload
+    // TODO(runtime-state-table): along with `push_watermark`, `appserver_sock`,
+    // and `codex_thread_id`, this is kernel-private runtime bookkeeping. When
+    // the dedicated runtime-state table lands, `spec_push_queue` can move into
+    // the same surface (or stay separate — it's row-shaped, not card-payload
     // shaped, so a separate table is already correct).
 
     /// #318 INV-3 — persist one observation onto the durable spec push

@@ -549,7 +549,7 @@ pub enum Event {
     ///
     /// This closes the R1-B1 "no-skip" observability gap from #315
     /// review: when takeover marks a wave inert, the spec card is
-    /// excluded from `spec_cards_for_boot_takeover` on subsequent boots,
+    /// excluded from `legacy spec takeover query` on subsequent boots,
     /// so any wave-scoped event already persisted in the events log
     /// (with `events.id > push_watermark`) would otherwise sit stranded
     /// forever — the events row stays, but nothing will ever deliver it

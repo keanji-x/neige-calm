@@ -6,33 +6,24 @@
 //! and the one whose Codex daemon runs with a system prompt scoped to
 //! the wave's goal + acceptance criteria.
 //!
-//! This module owns two things:
+//! This module owns the role-specific prompts and shared-remote TUI command
+//! construction:
 //!
 //!   1. [`SPEC_SYSTEM_PROMPT_TEMPLATE`] — the system prompt used when
 //!      starting the spec card's Codex thread. PR6 ships a minimal
 //!      placeholder; PR7a flips on the kernel-as-MCP-server config
 //!      block here.
-//!   2. [`seed_codex_home_for_card`] — a reusable helper that mirrors
-//!      what `routes::codex_cards` does (mkdir `$CODEX_HOME`, optional
-//!      host seed, write `config.toml`), but with a
-//!      [`crate::model::CardRole`] discriminator so spec cards get the
-//!      spec system prompt and worker cards get their own template
-//!      (PR8 wires the worker prompt; PR6 leaves it as a stub). Hooks
-//!      come from `/etc/codex/requirements.toml` (policy-managed) so no
-//!      per-card `hooks.json` is written here.
 //!
 //! Atomicity story for the spec card itself lives in
 //! `routes::waves::create_wave` — the spec card row, its terminal row,
 //! and both `Event::WaveUpdated` / `Event::CardAdded` envelopes are
 //! produced in a single `write_with_events_typed` transaction. The
-//! daemon spawn + filesystem seeding happen post-commit; on failure the
-//! orphan-terminal sweeper reaps the persisted rows (~60s) per the same
-//! recovery semantics as `routes::codex_cards::create_codex_card`.
-
-use std::path::PathBuf;
+//! daemon spawn happens post-commit; on failure the orphan-terminal sweeper
+//! reaps the persisted rows (~60s) per the same recovery semantics as
+//! `routes::codex_cards::create_codex_card`.
 
 use crate::error::{CalmError, Result};
-use crate::routes::codex_cards::{copy_dir_recursive, host_codex_dir, shell_single_quote};
+use crate::routes::codex_cards::shell_single_quote;
 use crate::routes::terminal::spawn_terminal_for;
 use crate::state::{AppState, CodexClient};
 
@@ -314,8 +305,7 @@ pub(crate) fn build_codex_env_map(
     mcp_token: Option<&str>,
     mcp_socket_path: Option<&std::path::Path>,
 ) -> serde_json::Value {
-    let codex_home = codex.codex_homes_dir.join(card_id);
-    let codex_home_path = codex_home.to_string_lossy().to_string();
+    let codex_home_path = codex.codex_home_dir().to_string_lossy().to_string();
     let mut env_map = serde_json::Map::new();
     env_map.insert(
         "CODEX_HOME".to_string(),
@@ -367,138 +357,6 @@ pub(crate) fn build_codex_env_map(
     serde_json::Value::Object(env_map)
 }
 
-/// Per-spawn `$CODEX_HOME/config.toml` body for spec/worker roles.
-///
-/// Same shape as `routes::codex_cards::build_codex_config_toml` but with
-/// three additions:
-///   * Optional `developer_instructions = ...` baking. Spec cards need
-///     this for empty-goal fresh-starts where the remote TUI creates the
-///     thread; worker cards use the same channel for their role prompt.
-///   * `[mcp_servers.calm]` + `[mcp_servers.calm.env]` (PR7a, #236
-///     followup) — points codex at the `neige-mcp-stdio-shim` binary
-///     which bridges stdio JSON-RPC to the kernel's UDS, and bakes
-///     `NEIGE_MCP_SOCKET` / `NEIGE_MCP_TOKEN` directly into the
-///     subprocess env. Pre-followup we relied on codex inheriting
-///     these from the daemon's env, but empirically (codex CLI 0.132)
-///     codex spawns MCP server subprocesses with a clean env: the
-///     shim would exit immediately with `missing NEIGE_MCP_SOCKET`.
-///     Baking the env into the toml block bypasses that boundary.
-///     Omitted entirely when `mcp_block` is `None` (Plain cards
-///     still hit `routes::codex_cards::build_codex_config_toml`
-///     which has no MCP block).
-///   * Plain `[projects."<cwd>"] trust_level = "trusted"` matches the
-///     Plain helper.
-///
-/// `baked_instructions` controls the config.toml developer-instructions
-/// channel used by remote TUI-created threads.
-///
-/// `mcp_block` pairs the shim config with the per-card raw MCP token:
-/// both are required together (a token without a socket is unusable,
-/// a socket without a token can't authenticate), so we take them as
-/// one `Option<(&McpShimConfig, &str)>` rather than two independent
-/// `Option`s. The single-option shape also forbids the only mis-paired
-/// state ("shim set, token forgotten") at the type level.
-///
-/// Plain cards (the user-facing `POST /codex-cards` route) keep using
-/// `routes::codex_cards::build_codex_config_toml` and pass no
-/// role prompt; this helper handles the role-typed paths.
-/// PR1 (#410): legacy per-card path. Shared replacement is in
-/// `crate::shared_codex_home::SharedCodexHome::ensure_config_for_cwd`,
-/// but callers are not switched until later #410 PRs.
-pub(crate) fn build_role_codex_config_toml(
-    cwd: &str,
-    baked_instructions: Option<&str>,
-    mcp_block: Option<(&crate::mcp_server::McpShimConfig, &str)>,
-) -> String {
-    fn escape_toml_basic_string(value: &str) -> String {
-        value.replace('\\', "\\\\").replace('"', "\\\"")
-    }
-
-    // Hand-written TOML (no `toml` crate in the workspace). `cwd` needs
-    // its `"` / `\` escaped for basic-string safety; codex's TOML parser
-    // otherwise rejects the file at boot and the daemon spawn fails
-    // opaquely.
-    let escaped_cwd = escape_toml_basic_string(cwd);
-
-    let mut out = "# Generated by neige-calm per-spawn — silences codex's first-run\n\
-         # dialogs so an auto-submitted \\r lands on the composer.\n\
-         approval_policy = \"never\"\n\
-         sandbox_mode = \"workspace-write\"\n"
-        .to_string();
-
-    if mcp_block.is_some() {
-        // Opening this workspace-write sandbox is deliberately broader
-        // than "allow this one Unix-domain socket": Codex 0.134's
-        // seccomp layer gates SYS_connect through the network policy,
-        // so `network_access = true` grants full outbound network
-        // access as well as UDS connect. The spec/worker shell also
-        // receives NEIGE_MCP_TOKEN below, so a prompt-injected command
-        // could exfiltrate that token once outbound networking is
-        // enabled. We accept that tradeoff only for kernel MCP-backed
-        // cards because their shell `neige` CLI needs to reach the
-        // kernel socket. Codex workspace-write already exposes `/`
-        // read-only in the bwrap filesystem view, so the socket parent
-        // does not need an extra writable_roots entry for visibility.
-        out.push_str("sandbox_workspace_write.network_access = true\n");
-    }
-
-    if let Some(prompt) = baked_instructions {
-        let escaped_prompt = escape_toml_basic_string(prompt);
-        let one_line_prompt = escaped_prompt.replace('\n', "\\n");
-        out.push_str(&format!("developer_instructions = \"{one_line_prompt}\"\n"));
-    }
-
-    out.push_str(&format!(
-        "\n\
-         [projects.\"{escaped_cwd}\"]\n\
-         trust_level = \"trusted\"\n"
-    ));
-
-    if let Some((shim, token)) = mcp_block {
-        // PR7a + #236 followup — emit `[mcp_servers.calm]` plus an
-        // explicit `[mcp_servers.calm.env]` table. Codex's MCP client
-        // spec:
-        //   * `command` = absolute path to the shim binary.
-        //   * `args` = optional argv tail (we ship empty — the shim
-        //     reads the socket from the env).
-        //   * `env` table = exact env the shim subprocess sees. We
-        //     used to omit this and rely on the codex daemon's own
-        //     env being inherited; codex CLI 0.132 spawns MCP server
-        //     subprocesses with a clean env, so the shim's
-        //     `missing NEIGE_MCP_SOCKET` exit was the symptom. Baking
-        //     both vars here bypasses the inheritance boundary
-        //     entirely.
-        let escaped_shim = escape_toml_basic_string(&shim.shim_bin.to_string_lossy());
-        let escaped_socket = escape_toml_basic_string(&shim.socket_path.to_string_lossy());
-        // The token is a base64url-ish opaque string today (see
-        // `mcp_server::auth::mint_token`), but escape defensively
-        // anyway in case the format ever picks up a `"` or `\`.
-        let escaped_token = escape_toml_basic_string(token);
-        out.push_str(&format!(
-            "\n\
-             [mcp_servers.calm]\n\
-             command = \"{escaped_shim}\"\n\
-             args = []\n\
-             \n\
-             [mcp_servers.calm.env]\n\
-             NEIGE_MCP_SOCKET = \"{escaped_socket}\"\n\
-             NEIGE_MCP_TOKEN = \"{escaped_token}\"\n"
-        ));
-        // Codex does not pass the daemon's NEIGE_MCP_* into exec
-        // shells (the mcp_servers.calm.env table above only feeds the
-        // MCP server subprocess); depending on ignore_default_excludes,
-        // it may also drop `*TOKEN*`. Force-inject both vars after all
-        // inherit/exclude filtering so shell `neige` can reach the kernel.
-        out.push_str(&format!(
-            "\n\
-             [shell_environment_policy.set]\n\
-             NEIGE_MCP_SOCKET = \"{escaped_socket}\"\n\
-             NEIGE_MCP_TOKEN = \"{escaped_token}\"\n"
-        ));
-    }
-
-    out
-}
 
 /// Roles that legitimately need role-specific Codex setup.
 /// Carved out of [`crate::model::CardRole`] so the seeding helper can
@@ -529,116 +387,6 @@ impl SeededCardRole {
     }
 }
 
-/// Reusable codex `$CODEX_HOME` seeding helper. Carved out of
-/// `routes::codex_cards::create_codex_card` so the wave-create path
-/// (PR6 Component A) and the dispatcher's worker-card spawn (PR6
-/// Component B) share one seeding recipe.
-///
-/// The recipe is identical to what the plain user-create route did
-/// pre-PR6:
-///   1. `mkdir -p` the per-card CODEX_HOME under
-///      `<codex_homes_dir>/<card_id>/`.
-///   2. On a fresh dir, best-effort recursive copy from
-///      `$HOME/.codex/` (so the spec/worker session reuses the
-///      operator's auth.json and any preconfigured MCP servers).
-///   3. Write `config.toml` with role-specific MCP wiring and project
-///      trust.
-///
-/// Hooks are NOT seeded here — they come from
-/// `/etc/codex/requirements.toml` (bind-mounted, policy-managed). Per-card
-/// `$CODEX_HOME/hooks.json` would be treated as untrusted by codex and
-/// would re-arm the "Hooks need review" startup modal.
-///
-/// Returns the resolved `CODEX_HOME` path so the caller can build the
-/// env map (`CODEX_HOME = <path>`) for `spawn_terminal_for`.
-///
-/// `mcp_token` is the per-card raw MCP token minted at card-create
-/// time (returned from `card_with_codex_create_tx`). When MCP is
-/// wired up on the AppState **and** the token is `Some`, the per-card
-/// `config.toml` gets a `[mcp_servers.calm].env` block baking the
-/// token + socket directly into the shim subprocess env (issue #236
-/// followup — codex CLI 0.132 doesn't inherit the daemon env into MCP
-/// server subprocesses, so the env must live in the config.toml).
-///
-/// Only [`SeededCardRole`] values are accepted — Plain cards must
-/// route through `routes::codex_cards` instead.
-///
-/// PR1 (#410): this remains the legacy per-card seeder. The shared
-/// CODEX_HOME seeder lives in `crate::shared_codex_home`, but callers are
-/// not switched until later #410 PRs.
-pub(crate) fn seed_codex_home_for_card(
-    s: &AppState,
-    card_id: &str,
-    cwd: &str,
-    wave_id: &str,
-    role: SeededCardRole,
-    mcp_token: Option<&str>,
-) -> Result<PathBuf> {
-    let shim = s.mcp_server.as_ref().map(|m| m.shim_config.clone());
-    // Pair shim + token: only emit the `[mcp_servers.calm]` block
-    // when *both* are present. Missing either side leaves the
-    // config.toml MCP-less (codex won't try to start the shim).
-    let mcp_block = match (shim.as_ref(), mcp_token) {
-        (Some(s), Some(t)) => Some((s, t)),
-        _ => None,
-    };
-    seed_codex_home_with_parts(s.codex.as_ref(), card_id, cwd, wave_id, role, mcp_block)
-}
-
-/// PR6 (#136) — lower-level seam over [`seed_codex_home_for_card`] that
-/// takes a [`CodexClient`] directly. Used by the dispatcher, which
-/// doesn't own an `AppState`.
-///
-/// `mcp_block` carries the shim config + per-card raw MCP token as a
-/// single pair: `Some((&shim_config, &raw_token))` for production
-/// callers that boot the kernel-as-MCP-server (`AppState::new`) and
-/// have a token in scope (every Spec/Worker card_with_codex_create_tx
-/// mints one); `None` for test paths that don't boot the MCP server
-/// (`from_parts`). When `Some`, the per-card config.toml gets a
-/// matching `[mcp_servers.calm]` block including an `env` table that
-/// bakes `NEIGE_MCP_SOCKET` / `NEIGE_MCP_TOKEN` into the shim
-/// subprocess env (#236 followup — see `build_role_codex_config_toml`).
-pub(crate) fn seed_codex_home_with_parts(
-    codex: &CodexClient,
-    card_id: &str,
-    cwd: &str,
-    wave_id: &str,
-    role: SeededCardRole,
-    mcp_block: Option<(&crate::mcp_server::McpShimConfig, &str)>,
-) -> Result<PathBuf> {
-    let codex_home = codex.codex_homes_dir.join(card_id);
-    let is_fresh = !codex_home.exists();
-    std::fs::create_dir_all(&codex_home).map_err(|e| {
-        CalmError::Internal(format!("mkdir codex_home {}: {e}", codex_home.display()))
-    })?;
-    if is_fresh
-        && let Some(src) = host_codex_dir()
-        && src.exists()
-        && let Err(e) = copy_dir_recursive(&src, &codex_home)
-    {
-        tracing::warn!(error = %e, src = %src.display(), "codex seed copy failed; continuing without it");
-    }
-
-    // Hooks come from `/etc/codex/requirements.toml` (policy-managed,
-    // bind-mounted via docker-compose). No per-card hooks.json — codex
-    // would treat that as untrusted and re-arm the trust modal.
-
-    // config.toml — role-typed. Plain cards are unrepresentable at this
-    // seam by construction (see [`SeededCardRole`]).
-    let rendered_prompt;
-    let baked_instructions = match role {
-        SeededCardRole::Spec | SeededCardRole::Worker => {
-            rendered_prompt = render_system_prompt(role.prompt_template(), wave_id);
-            Some(rendered_prompt.as_str())
-        }
-    };
-    let cfg_text = build_role_codex_config_toml(cwd, baked_instructions, mcp_block);
-    let cfg_path = codex_home.join("config.toml");
-    std::fs::write(&cfg_path, cfg_text)
-        .map_err(|e| CalmError::Internal(format!("write config.toml: {e}")))?;
-
-    Ok(codex_home)
-}
 
 /// PR3a (#293) — push-mode PTY daemon arguments for
 /// [`seed_and_spawn_spec_daemon`]. Carries the `app-server` listen socket
@@ -654,9 +402,6 @@ pub(crate) struct SpecPushDaemonArgs {
     pub thread_id: Option<String>,
     /// The app-server remote URI; `--remote unix://<sock>`.
     pub sock_uri: String,
-    /// Whether spawning the TUI should seed a per-card CODEX_HOME first.
-    /// Shared-daemon cards use the server-wide home and set this false.
-    pub seed_codex_home: bool,
     /// Optional role prompt for remote fresh-starts that do not use a
     /// per-card CODEX_HOME. Passed via `codex -c developer_instructions=...`.
     pub developer_instructions: Option<String>,
@@ -699,52 +444,8 @@ fn developer_instructions_config_override(value: &str) -> String {
     format!("developer_instructions=\"{escaped}\"")
 }
 
-pub(crate) async fn spawn_spec_daemon_for_existing_seed(
-    state: &AppState,
-    spec_card_id: &str,
-    wave_id: &str,
-    cwd: &str,
-    env: &serde_json::Value,
-    mcp_token: Option<&str>,
-    push: &SpecPushDaemonArgs,
-) -> Result<()> {
-    if let Err(e) = seed_codex_home_for_card(
-        state,
-        spec_card_id,
-        cwd,
-        wave_id,
-        SeededCardRole::Spec,
-        mcp_token,
-    ) {
-        tracing::warn!(
-            card_id = %spec_card_id,
-            wave_id = %wave_id,
-            error = %e,
-            "spec card CODEX_HOME re-seed failed during empty-goal boot recovery",
-        );
-        return Err(e);
-    }
 
-    let term = state
-        .repo
-        .terminal_get_by_card(spec_card_id)
-        .await?
-        .ok_or_else(|| {
-            CalmError::Internal(format!("spec terminal row missing for card {spec_card_id}"))
-        })?;
-    let command_line = push.command_line();
-    crate::routes::terminal::spawn_terminal_for(state, &term, &command_line, cwd, env).await?;
-    tracing::info!(
-        card_id = %spec_card_id,
-        wave_id = %wave_id,
-        terminal_id = %term.id,
-        "spec card daemon spawned for existing empty-goal wave",
-    );
-    Ok(())
-}
-
-/// Seed `$CODEX_HOME` for the spec card, then spawn the codex daemon
-/// bound to its terminal row.
+/// Spawn the spec card's shared-remote TUI daemon bound to its terminal row.
 ///
 /// Issue #236 (closes): this used to be invoked from `tokio::spawn`
 /// off the response hot path. That opened a TOCTOU race against
@@ -768,15 +469,6 @@ pub(crate) async fn spawn_spec_daemon_for_existing_seed(
 /// for back-compat with prior `tokio::spawn` callsites; the
 /// `'static`-future cost is one clone of each at the route boundary.
 ///
-/// `mcp_token` is the per-card raw MCP token freshly minted inside
-/// the `create_wave` transaction (returned from
-/// `card_with_codex_create_tx`). It's `Option` only because tests
-/// using `AppState::from_parts` without an MCP server still flow
-/// through this path; in production it's always `Some` for Spec
-/// cards. The token is threaded down into the per-card config.toml's
-/// `[mcp_servers.calm].env` block (#236 followup) so the shim
-/// subprocess sees it even though codex CLI 0.132 doesn't pass the
-/// daemon env through.
 // The create-wave path threads several owned inputs through to the
 // post-commit spawn (state, ids, cwd, env, token, push args). Bundling them
 // buys nothing here (each is used once, at the single route call site) and
@@ -789,7 +481,7 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
     wave_id: String,
     cwd: String,
     env: serde_json::Value,
-    mcp_token: Option<String>,
+    _mcp_token: Option<String>,
     // #293/#419 — push-mode arguments. Non-empty goals use the original
     // resume path: `create_wave` has already booted the kernel-owned
     // `codex app-server`, run turn #1, and persisted the thread id; the
@@ -799,28 +491,7 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
     // thread id after observing the first turn lifecycle.
     push: SpecPushDaemonArgs,
 ) -> Result<()> {
-    // 1. Seed `$CODEX_HOME` for the spec card. Filesystem-only — fast,
-    //    bounded by a handful of mkdir + small write_alls.
-    if push.seed_codex_home
-        && let Err(e) = seed_codex_home_for_card(
-            &state,
-            &spec_card_id,
-            &cwd,
-            &wave_id,
-            SeededCardRole::Spec,
-            mcp_token.as_deref(),
-        )
-    {
-        tracing::warn!(
-            card_id = %spec_card_id,
-            wave_id = %wave_id,
-            error = %e,
-            "spec card CODEX_HOME seed failed; orphan terminal will be reaped by sweeper",
-        );
-        return Err(e);
-    }
-
-    // 2. Look up the terminal row. Guaranteed to exist post-commit
+    // 1. Look up the terminal row. Guaranteed to exist post-commit
     //    (the row was written inside the same tx as the spec card).
     let term = match state.repo.terminal_get_by_card(&spec_card_id).await {
         Ok(Some(t)) => t,
@@ -845,7 +516,7 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
         }
     };
 
-    // 3. Spawn the daemon. For non-empty goals, the spec agent's prompt was
+    // 2. Spawn the daemon. For non-empty goals, the spec agent's prompt was
     //    already sent through the kernel-owned app-server thread/start call.
     //    For empty goals, the TUI fresh-start path creates the thread using
     //    the developer_instructions baked into this card's config.toml, and
@@ -856,8 +527,7 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
     //    Empty goals omit `resume` and let the TUI create the thread, while
     //    queued spec pushes wait for the observed thread id. Shared-home
     //    empty goals pass their role prompt through `-c
-    //    developer_instructions=...`; legacy empty goals get the same prompt
-    //    from the per-card config.toml seeded above.
+    //    developer_instructions=...`.
     //
     //    `spawn_terminal_for` waits for deterministic daemon readiness on the
     //    response hot path. Since #236, that synchronous wait is intentional:
@@ -885,15 +555,6 @@ pub(crate) async fn seed_and_spawn_spec_daemon(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-
-    use crate::card_role_cache::CardRoleCache;
-    use crate::db::prelude::Repo;
-    use crate::db::sqlite::SqlxRepo;
-    use crate::event::EventBus;
-    use crate::plugin_host::{PluginHost, PluginRegistry};
-    use crate::state::DaemonClient;
-    use crate::wave_cove_cache::WaveCoveCache;
 
     /// PR3a (#293) — push-mode command is `codex resume <tid> --remote
     /// unix://<sock>`, with both the thread id and the `unix://` URI
@@ -903,7 +564,6 @@ mod tests {
         let args = SpecPushDaemonArgs {
             thread_id: Some("thread-abc123".into()),
             sock_uri: "unix:///home/u/.local/share/neige-calm/appserver/card-9/app.sock".into(),
-            seed_codex_home: true,
             developer_instructions: None,
         };
         assert_eq!(
@@ -921,7 +581,6 @@ mod tests {
         let args = SpecPushDaemonArgs {
             thread_id: Some("a b; rm -rf /".into()),
             sock_uri: "unix:///tmp/has space/app.sock".into(),
-            seed_codex_home: true,
             developer_instructions: None,
         };
         let line = args.command_line();
@@ -938,7 +597,6 @@ mod tests {
         let args = SpecPushDaemonArgs {
             thread_id: None,
             sock_uri: "unix:///tmp/has space/app.sock".into(),
-            seed_codex_home: true,
             developer_instructions: None,
         };
         assert_eq!(
@@ -952,7 +610,6 @@ mod tests {
         let args = SpecPushDaemonArgs {
             thread_id: None,
             sock_uri: "unix:///tmp/spec/app.sock".into(),
-            seed_codex_home: false,
             developer_instructions: Some("line 1\nsay \"hi\" and don't expand $HOME".into()),
         };
         assert_eq!(
@@ -1100,284 +757,4 @@ mod tests {
         );
     }
 
-    /// PR6 baseline: `mcp_shim = None` produces no `[mcp_servers]`
-    /// block. PR7a (#136) adds the positive case below; the negative
-    /// case here is now a `mcp_shim=None` regression guard rather
-    /// than a "no MCP block ever exists" statement.
-    #[test]
-    fn role_config_toml_has_no_mcp_servers_block_when_shim_absent() {
-        let s = build_role_codex_config_toml("/workspace", None, None);
-        assert!(
-            !s.contains("[mcp_servers"),
-            "role-typed config.toml must not contain mcp_servers blocks when mcp_shim is None; got:\n{s}"
-        );
-        assert!(
-            !s.contains("shell_environment_policy"),
-            "role-typed config.toml must not contain shell env overrides when mcp_shim is None; got:\n{s}"
-        );
-        assert!(
-            !s.contains("sandbox_workspace_write"),
-            "role-typed config.toml must not contain sandbox workspace-write overrides when mcp_shim is None; got:\n{s}"
-        );
-    }
-
-    /// PR7a (#136) + #236 followup — `Some((shim, token))` injects a
-    /// `[mcp_servers.calm]` block pointing at the resolved shim binary
-    /// **and** an `[mcp_servers.calm.env]` table baking the socket
-    /// path + per-card raw token into the shim subprocess env. The
-    /// env-in-config-toml approach replaces the original "codex
-    /// forwards the daemon env by default" assumption, which turned
-    /// out to be wrong on codex CLI 0.132 (subprocesses got a clean
-    /// env and the shim exited with `missing NEIGE_MCP_SOCKET`).
-    #[test]
-    fn role_config_toml_has_mcp_servers_block_when_shim_present() {
-        let shim = crate::mcp_server::McpShimConfig {
-            shim_bin: std::path::PathBuf::from("/usr/local/bin/neige-mcp-stdio-shim"),
-            socket_path: std::path::PathBuf::from("/var/lib/neige/mcp/kernel.sock"),
-        };
-        let s = build_role_codex_config_toml("/workspace", None, Some((&shim, "tok-abc123")));
-        assert!(
-            s.contains("[mcp_servers.calm]"),
-            "role-typed config.toml must contain the calm mcp_servers block when mcp_block is Some; got:\n{s}"
-        );
-        assert!(
-            s.contains("command = \"/usr/local/bin/neige-mcp-stdio-shim\""),
-            "shim binary path must appear as the command; got:\n{s}"
-        );
-        assert!(
-            s.contains("[mcp_servers.calm.env]"),
-            "role-typed config.toml must contain the calm mcp_servers env block (#236 followup); got:\n{s}"
-        );
-        assert!(
-            s.contains("NEIGE_MCP_SOCKET = \"/var/lib/neige/mcp/kernel.sock\""),
-            "env block must bake socket path so shim subprocess sees it; got:\n{s}"
-        );
-        assert!(
-            s.contains("NEIGE_MCP_TOKEN = \"tok-abc123\""),
-            "env block must bake per-card token so shim authenticates; got:\n{s}"
-        );
-        assert!(
-            s.contains("[shell_environment_policy.set]"),
-            "role-typed config.toml must force-inject MCP env into codex exec shells; got:\n{s}"
-        );
-        assert!(
-            s.contains(
-                "[shell_environment_policy.set]\nNEIGE_MCP_SOCKET = \"/var/lib/neige/mcp/kernel.sock\"\nNEIGE_MCP_TOKEN = \"tok-abc123\""
-            ),
-            "shell env override block must reuse the mcp socket/token values; got:\n{s}"
-        );
-    }
-
-    #[test]
-    fn role_typed_config_toml_emits_network_access_when_mcp_shim_provided() {
-        let shim = crate::mcp_server::McpShimConfig {
-            shim_bin: std::path::PathBuf::from("/usr/local/bin/neige-mcp-stdio-shim"),
-            socket_path: std::path::PathBuf::from("/var/lib/neige/mcp/kernel.sock"),
-        };
-        let s = build_role_codex_config_toml("/workspace", None, Some((&shim, "tok-abc123")));
-
-        assert!(
-            s.contains("sandbox_workspace_write.network_access = true"),
-            "role-typed config.toml must open Codex exec network policy for shell neige; got:\n{s}"
-        );
-        assert!(
-            !s.contains("sandbox_workspace_write.writable_roots"),
-            "workspace-write already exposes / read-only; no socket-parent writable root is needed; got:\n{s}"
-        );
-        assert!(
-            s.find("sandbox_workspace_write.network_access = true")
-                < s.find("[projects.\"/workspace\"]"),
-            "sandbox_workspace_write dotted keys must appear before TOML table headers; got:\n{s}"
-        );
-    }
-
-    #[test]
-    fn role_typed_config_toml_omits_network_access_when_no_mcp_shim() {
-        let s = build_role_codex_config_toml("/workspace", None, None);
-
-        assert!(
-            !s.contains("sandbox_workspace_write.network_access"),
-            "role-typed config.toml must not open network access when mcp_block is None; got:\n{s}"
-        );
-    }
-
-    /// #236 followup — the env block must escape `"` and `\` in both
-    /// the socket path and the token. A pathological token containing
-    /// `"` would otherwise close the TOML basic string mid-value and
-    /// codex would reject the file with an opaque parse error.
-    #[test]
-    fn role_config_toml_escapes_env_block_values() {
-        let shim = crate::mcp_server::McpShimConfig {
-            shim_bin: std::path::PathBuf::from("/usr/local/bin/neige-mcp-stdio-shim"),
-            // Forward slashes only on unix — a `"` in a path is
-            // unusual but valid; defensive escape covers it.
-            socket_path: std::path::PathBuf::from(r#"/tmp/odd"path/kernel.sock"#),
-        };
-        let s =
-            build_role_codex_config_toml("/workspace", None, Some((&shim, r#"tok"with-quote"#)));
-        assert!(
-            s.contains(r#"NEIGE_MCP_SOCKET = "/tmp/odd\"path/kernel.sock""#),
-            "socket path with embedded quote must be escaped; got:\n{s}"
-        );
-        assert!(
-            s.contains(r#"NEIGE_MCP_TOKEN = "tok\"with-quote""#),
-            "token with embedded quote must be escaped; got:\n{s}"
-        );
-        assert_eq!(
-            s.matches(r#"NEIGE_MCP_SOCKET = "/tmp/odd\"path/kernel.sock""#)
-                .count(),
-            2,
-            "escaped socket should appear in mcp env and shell env blocks; got:\n{s}"
-        );
-        assert_eq!(
-            s.matches(r#"NEIGE_MCP_TOKEN = "tok\"with-quote""#).count(),
-            2,
-            "escaped token should appear in mcp env and shell env blocks; got:\n{s}"
-        );
-    }
-
-    #[test]
-    fn role_config_toml_pre_trusts_cwd() {
-        let s = build_role_codex_config_toml("/workspace", None, None);
-        assert!(s.contains("approval_policy = \"never\""));
-        assert!(s.contains("sandbox_mode = \"workspace-write\""));
-        assert!(s.contains("[projects.\"/workspace\"]"));
-        assert!(s.contains("trust_level = \"trusted\""));
-    }
-
-    #[test]
-    fn role_config_toml_escapes_quotes_in_cwd() {
-        let s = build_role_codex_config_toml(r#"/w/has"quote"#, None, None);
-        assert!(
-            s.contains(r#"[projects."/w/has\"quote"]"#),
-            "expected escaped quote inside project path; got:\n{s}"
-        );
-    }
-
-    #[test]
-    fn spec_role_seed_bakes_developer_instructions_for_remote_fresh_start() {
-        let codex = CodexClient::new_stub();
-        let home = seed_codex_home_with_parts(
-            &codex,
-            "spec-card-1",
-            "/workspace",
-            "wave-abc",
-            SeededCardRole::Spec,
-            None,
-        )
-        .expect("seed spec CODEX_HOME");
-        let config = std::fs::read_to_string(home.join("config.toml")).expect("read config.toml");
-        assert!(
-            config.contains("developer_instructions = \""),
-            "spec role config must bake developer_instructions for remote fresh-start threads; got:\n{config}"
-        );
-        assert!(
-            config.contains("You are the spec agent for wave `wave-abc`."),
-            "spec baked developer_instructions must include rendered wave id; got:\n{config}"
-        );
-        assert!(
-            config.contains("calm.update_wave_state"),
-            "spec baked developer_instructions must include the wave-state contract; got:\n{config}"
-        );
-    }
-
-    #[tokio::test]
-    async fn existing_seed_spawn_reseeds_legacy_spec_config_with_developer_instructions() {
-        let card_id = "legacy-spec-card";
-        let wave_id = "legacy-wave";
-        let cwd = "/workspace";
-        let codex = CodexClient::new_stub();
-        let codex_home = codex.codex_homes_dir.join(card_id);
-        std::fs::create_dir_all(&codex_home).expect("create legacy CODEX_HOME");
-        let cfg_path = codex_home.join("config.toml");
-        std::fs::write(
-            &cfg_path,
-            "# legacy pre-#419 seed\napproval_policy = \"never\"\n",
-        )
-        .expect("write legacy config.toml");
-
-        let typed: Arc<SqlxRepo> = Arc::new(
-            SqlxRepo::open("sqlite::memory:")
-                .await
-                .expect("open in-memory sqlite"),
-        );
-        let repo: Arc<dyn Repo> = typed;
-        let card_role_cache = CardRoleCache::new();
-        let wave_cove_cache = WaveCoveCache::new();
-        let state = AppState::from_parts(
-            repo.clone(),
-            EventBus::new(),
-            Arc::new(DaemonClient::new_stub()),
-            Arc::new(PluginHost::new_full(
-                Arc::new(PluginRegistry::empty()),
-                repo,
-                PathBuf::new(),
-                std::env::temp_dir().join("calm-plugins-data-existing-seed-reseed"),
-                Vec::new(),
-                EventBus::new(),
-                card_role_cache.clone(),
-                wave_cove_cache.clone(),
-            )),
-            Arc::new(codex),
-            Some(card_role_cache),
-            Some(wave_cove_cache),
-        );
-
-        let push = SpecPushDaemonArgs {
-            thread_id: None,
-            sock_uri: "unix:///tmp/reseed-existing-spec/app.sock".into(),
-            seed_codex_home: true,
-            developer_instructions: None,
-        };
-        let err = spawn_spec_daemon_for_existing_seed(
-            &state,
-            card_id,
-            wave_id,
-            cwd,
-            &serde_json::json!({}),
-            None,
-            &push,
-        )
-        .await
-        .expect_err("terminal lookup should fail after re-seed in this focused test");
-        assert!(
-            matches!(&err, CalmError::Internal(_)),
-            "expected missing-terminal error after re-seed, got: {err}"
-        );
-
-        let config = std::fs::read_to_string(&cfg_path).expect("read re-seeded config.toml");
-        assert!(
-            config.contains("developer_instructions = \""),
-            "existing-seed spawn must re-seed legacy config.toml with developer_instructions; got:\n{config}"
-        );
-        assert!(
-            config.contains("You are the spec agent for wave `legacy-wave`."),
-            "re-seeded developer_instructions must include rendered wave id; got:\n{config}"
-        );
-        assert!(
-            config.contains("calm.update_wave_state"),
-            "re-seeded developer_instructions must include the wave-state contract; got:\n{config}"
-        );
-    }
-
-    #[test]
-    fn worker_role_config_toml_bakes_worker_system_prompt() {
-        let s = build_role_codex_config_toml(
-            "/workspace",
-            Some(WORKER_SYSTEM_PROMPT_PLACEHOLDER),
-            None,
-        );
-        assert!(
-            s.contains("developer_instructions = \""),
-            "worker role config must bake developer_instructions into config.toml; got:\n{s}"
-        );
-        assert!(
-            s.contains("calm.task_completed"),
-            "worker baked instructions must include the worker completion contract; got:\n{s}"
-        );
-        assert!(
-            s.contains("\\n"),
-            "worker baked instructions must normalize newlines for TOML basic strings; got:\n{s}"
-        );
-    }
 }

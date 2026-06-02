@@ -69,9 +69,7 @@ const SOCKET_MODE: u32 = 0o600;
 const LIVE_LISTENER_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// Configuration the codex daemon needs to know about the kernel's MCP
-/// server. Threaded into `build_role_codex_config_toml` so each
-/// Spec/Worker `$CODEX_HOME/config.toml` gets a `[mcp_servers.calm]`
-/// block pointing at the right socket + shim binary.
+/// server, including the shim binary and Unix socket path.
 ///
 /// `Clone` is cheap (two small `PathBuf`s).
 #[derive(Clone, Debug)]

@@ -8,7 +8,6 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::config::Config;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, card_with_codex_create_tx};
-use calm_server::event::Event;
 use calm_server::event::EventBus;
 use calm_server::ids::WaveId;
 use calm_server::model::{Card, CardPatch, CardRole, NewCard, NewCove, NewWave, Terminal, new_id};
@@ -156,8 +155,7 @@ async fn boot_shared() -> Boot {
         Arc::new(common::fake_codex_client()),
         Some(card_role_cache),
         Some(wave_cove_cache),
-    )
-    .with_shared_codex_spec_cards_enabled(true);
+    );
 
     let cfg = Config::parse_from([
         "calm-server",
@@ -304,18 +302,6 @@ async fn seed_spec_card(
     .expect("create spec card + terminal");
     tx.commit().await.expect("commit spec card");
     boot.repo
-        .spec_card_set_appserver_after_reset(
-            card.id.as_str(),
-            "thread-old",
-            12345,
-            "/tmp/old-appserver.sock",
-            Some(67890),
-            Some("boot-old"),
-            false,
-        )
-        .await
-        .expect("seed old runtime fields");
-    boot.repo
         .spec_card_set_push_watermark(card.id.as_str(), watermark)
         .await
         .expect("seed old watermark");
@@ -334,9 +320,9 @@ async fn seed_shared_spec_card(boot: &Boot, watermark: i64) -> (Card, Terminal, 
     payload["codex_source"] = json!("shared");
     payload["codex_thread_id"] = json!("thread-old");
     payload["appserver_sock"] = json!(boot.state.shared_codex_appserver.remote_uri());
-    payload["appserver_pgid"] = Value::Null;
-    payload["appserver_start_time"] = Value::Null;
-    payload["appserver_boot_id"] = Value::Null;
+    payload["appserver_pgid"] = json!(12345);
+    payload["appserver_start_time"] = json!(67890);
+    payload["appserver_boot_id"] = json!("boot-old");
     payload
         .as_object_mut()
         .unwrap()
@@ -655,7 +641,7 @@ async fn shared_reset_swaps_thread_mapping_and_persists_new_thread_id() {
     assert_eq!(got.payload["codex_source"], json!("shared"));
     assert_eq!(got.payload["codex_thread_id"], json!("fake-thread-0001"));
     assert_eq!(got.payload["push_watermark"], json!(42));
-    assert!(got.payload["appserver_pgid"].is_null());
+    assert!(got.payload.get("appserver_pgid").is_none());
 
     let entry = boot
         .state
@@ -773,271 +759,4 @@ async fn shared_reset_turn_start_failure_does_not_swap_mapping() {
     let got = boot.repo.card_get(card.id.as_str()).await.unwrap().unwrap();
     assert_eq!(got.payload["codex_thread_id"], json!("thread-old"));
     assert_eq!(got.payload["push_watermark"], json!(17));
-}
-
-#[tokio::test]
-async fn reset_spec_card_happy_path_preserves_identity_and_emits_card_updated_only() {
-    let boot = boot().await;
-    let (card, terminal, _capture) = seed_spec_card(&boot, 42, false).await;
-    let queue_id = boot
-        .repo
-        .spec_card_enqueue_observation(card.id.as_str(), 43, "pending while wedged")
-        .await
-        .expect("seed queued observation");
-
-    let (status, body) = post_empty(
-        boot.app.clone(),
-        &format!("/api/cards/{}/spec/reset", card.id),
-    )
-    .await;
-
-    assert_eq!(status, StatusCode::OK, "body={body}");
-    assert_eq!(body["card_id"], json!(card.id.as_str()));
-    assert_eq!(body["terminal_id"], json!(terminal.id.as_str()));
-    assert_ne!(body["new_thread_id"], json!("thread-old"));
-
-    let got = boot
-        .repo
-        .card_get(card.id.as_str())
-        .await
-        .unwrap()
-        .expect("card after reset");
-    assert_eq!(got.id, card.id, "card id must not change");
-    assert_eq!(got.payload["terminal_id"], json!(terminal.id.as_str()));
-    assert_eq!(got.payload["push_watermark"], json!(42));
-    assert_ne!(got.payload["codex_thread_id"], json!("thread-old"));
-
-    let term_after = boot
-        .repo
-        .terminal_get_by_card(card.id.as_str())
-        .await
-        .unwrap()
-        .expect("terminal survives reset");
-    assert_eq!(
-        term_after.id, terminal.id,
-        "terminal row must not be replaced"
-    );
-
-    let queued = boot
-        .repo
-        .spec_card_queued_observations(card.id.as_str())
-        .await
-        .expect("queued observations after reset");
-    assert_eq!(
-        queued,
-        vec![(queue_id, 43, "pending while wedged".into())],
-        "reset must not delete durable queue rows as part of runtime replacement",
-    );
-
-    assert!(
-        boot.state
-            .spec_push
-            .contains(&WaveId::from(boot.wave_id.clone())),
-        "new app-server handle should be parked after successful reset"
-    );
-
-    let events = boot.repo.events_since(0, None).await.expect("events");
-    let card_updated = events
-        .iter()
-        .filter(|(_, _, _, ev)| matches!(ev, Event::CardUpdated(c) if c.id == card.id))
-        .count();
-    let card_added = events
-        .iter()
-        .filter(|(_, _, _, ev)| matches!(ev, Event::CardAdded(c) if c.id == card.id))
-        .count();
-    let wave_updated = events
-        .iter()
-        .filter(
-            |(_, _, _, ev)| matches!(ev, Event::WaveUpdated(w) if w.id.as_str() == boot.wave_id),
-        )
-        .count();
-    assert_eq!(card_updated, 1, "reset should emit exactly one CardUpdated");
-    assert_eq!(card_added, 0, "reset must not emit CardAdded");
-    assert_eq!(wave_updated, 0, "reset must not emit WaveUpdated");
-
-    calm_server::terminal_sweeper::reap_spec_push(&boot.state, &WaveId::from(boot.wave_id.clone()))
-        .await;
-}
-
-#[tokio::test]
-async fn reset_spec_card_rehydrates_queue_and_flushes_pending_observation() {
-    let boot = boot().await;
-    let (card, _terminal, capture) = seed_spec_card(&boot, 0, true).await;
-    boot.repo
-        .spec_card_enqueue_observation(card.id.as_str(), 77, "queued reset observation")
-        .await
-        .expect("seed queued observation");
-
-    let (status, body) = post_empty(
-        boot.app.clone(),
-        &format!("/api/cards/{}/spec/reset", card.id),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "body={body}");
-
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let rows = request_lines(&capture).await;
-        if turn_start_contains(&rows, "queued reset observation") {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "new reset-created thread never received the rehydrated queued observation; rows={rows:?}",
-        );
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-
-    calm_server::terminal_sweeper::reap_spec_push(&boot.state, &WaveId::from(boot.wave_id.clone()))
-        .await;
-}
-
-#[tokio::test]
-async fn reset_spec_card_rereads_watermark_after_push_lock_entry() {
-    let boot = boot().await;
-    let (card, _terminal, _capture) = seed_spec_card(&boot, 5, false).await;
-    let wave_id = WaveId::from(boot.wave_id.clone());
-    let card_id = card.id.clone();
-
-    let (held_tx, held_rx) = tokio::sync::oneshot::channel();
-    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-    let dispatcher = boot.state.dispatcher.clone();
-    let wave_for_lock = wave_id.clone();
-    let lock_task = tokio::spawn(async move {
-        dispatcher
-            .with_push_lock(&wave_for_lock, async move {
-                let _ = held_tx.send(());
-                let _ = release_rx.await;
-            })
-            .await;
-    });
-    held_rx.await.expect("lock held");
-
-    let app = boot.app.clone();
-    let reset_card_id = card_id.clone();
-    let reset_task = tokio::spawn(async move {
-        post_empty(app, &format!("/api/cards/{reset_card_id}/spec/reset")).await
-    });
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    boot.repo
-        .spec_card_set_push_watermark(card.id.as_str(), 88)
-        .await
-        .expect("advance durable watermark while reset waits on lock");
-    release_tx.send(()).expect("release lock");
-    lock_task.await.expect("lock task joins");
-    let (_status, _body) = reset_task.await.expect("reset joins");
-
-    assert_eq!(
-        boot.state.dispatcher.push_cursor_for_test(&card.id),
-        88,
-        "reset must seed the in-memory cursor from the watermark read inside the push lock",
-    );
-
-    calm_server::terminal_sweeper::reap_spec_push(&boot.state, &wave_id).await;
-}
-
-#[tokio::test]
-async fn reset_spec_card_appserver_spawn_failure_clears_stale_terminal_exit_and_pid() {
-    let boot = boot().await;
-    let (card, terminal, _capture) = seed_spec_card(&boot, 9, false).await;
-    boot.repo
-        .terminal_set_pid(terminal.id.as_str(), Some(4242))
-        .await
-        .expect("seed terminal pid");
-    boot.repo
-        .terminal_set_exit(terminal.id.as_str(), Some(7), false)
-        .await
-        .expect("seed terminal exit");
-    let mut codex = common::fake_codex_client();
-    codex.codex_bin = "/definitely/not/a/codex".into();
-    let failed_state = AppState::from_parts(
-        boot.repo.clone(),
-        EventBus::new(),
-        boot.state.daemon.clone(),
-        boot.state.plugin.clone(),
-        Arc::new(codex),
-        Some(boot.state.card_role_cache.clone()),
-        Some(boot.state.wave_cove_cache.clone()),
-    );
-    let failed_app = routes::router()
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
-        .with_state(failed_state);
-
-    let (status, _body) =
-        post_empty(failed_app, &format!("/api/cards/{}/spec/reset", card.id)).await;
-    assert!(status.is_server_error(), "expected 5xx, got {status}");
-
-    let term_after = boot
-        .repo
-        .terminal_get_by_card(card.id.as_str())
-        .await
-        .unwrap()
-        .expect("terminal row survives failed reset");
-    assert_eq!(term_after.id, terminal.id);
-    assert_eq!(term_after.pid, None, "stale pid must be cleared");
-    assert_eq!(
-        term_after.exit_code, None,
-        "stale exit code must be cleared"
-    );
-    assert!(
-        !term_after.signal_killed,
-        "stale signal flag must be cleared"
-    );
-
-    let got = boot
-        .repo
-        .card_get(card.id.as_str())
-        .await
-        .unwrap()
-        .expect("card survives failed reset");
-    assert_eq!(got.payload["codex_thread_id"], json!("thread-old"));
-    assert_eq!(got.payload["push_watermark"], json!(9));
-}
-
-#[tokio::test]
-async fn reset_spec_card_terminal_spawn_failure_reaps_new_appserver_and_clears_runtime_fields() {
-    let boot = boot().await;
-    let (card, _terminal, _capture) = seed_spec_card(&boot, 11, false).await;
-    let failed_daemon = Arc::new(DaemonClient {
-        data_dir: boot.state.daemon.data_dir.clone(),
-        proc_supervisor_sock: Some(boot.tmp.path().join("missing-proc-supervisor.sock")),
-    });
-    let failed_state = AppState::from_parts(
-        boot.repo.clone(),
-        EventBus::new(),
-        failed_daemon,
-        boot.state.plugin.clone(),
-        boot.state.codex.clone(),
-        Some(boot.state.card_role_cache.clone()),
-        Some(boot.state.wave_cove_cache.clone()),
-    );
-    let failed_app = routes::router()
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
-        .with_state(failed_state.clone());
-
-    let (status, _body) =
-        post_empty(failed_app, &format!("/api/cards/{}/spec/reset", card.id)).await;
-    assert!(status.is_server_error(), "expected 5xx, got {status}");
-
-    let wave_id = WaveId::from(boot.wave_id.clone());
-    assert!(
-        !failed_state.spec_push.contains(&wave_id),
-        "terminal spawn failure must explicitly reap the reset-created app-server handle"
-    );
-    let got = boot
-        .repo
-        .card_get(card.id.as_str())
-        .await
-        .unwrap()
-        .expect("card survives failed reset");
-    assert!(
-        got.payload.get("codex_thread_id").is_none(),
-        "partial reset failure should clear the new dead thread id"
-    );
-    assert_eq!(got.payload["push_watermark"], json!(11));
 }

@@ -329,16 +329,12 @@ pub async fn wait_for_pid_exit(pid: i64, timeout: Duration) -> WaitForPidExit {
 ///   4. drop the handle (the [`SpecPushHandle::drop`] safety-net group
 ///      SIGTERM is a no-op by now, plus consumer/reader task aborts).
 ///
-/// ## Hard-crash orphan gap → closed by pgid persistence + boot takeover
+/// ## Hard-crash orphan gap
 ///
-/// If the kernel is `SIGKILL`ed (or the box loses power) the in-process
-/// reap never runs. The pgid is **persisted** on the spec-card payload
-/// (`appserver_pgid`, written alongside `codex_thread_id` / `appserver_sock`
-/// on the create-wave hot path); the boot-time recovery sweep
-/// [`crate::takeover_spec_appservers_on_boot`] reads it back and EITHER
-/// adopts the still-alive group (re-attaching via `thread/resume`) OR
-/// respawns a fresh app-server and kills the stale group as part of the
-/// fallback — see #313 problem #1.
+/// If the kernel is `SIGKILL`ed (or the box loses power) the in-process reap
+/// never runs. PR7c removed the legacy per-card appserver takeover path, so
+/// shared spec-card recovery is now handled by the shared appserver supervisor
+/// and thread-mapping takeover.
 pub async fn reap_spec_push(state: &AppState, wave_id: &WaveId) {
     let Some(handle) = state.spec_push.remove(wave_id) else {
         return;

@@ -87,7 +87,7 @@ use crate::routes::codex_cards::shell_single_quote;
 use crate::routes::settings::load_settings;
 use crate::routes::terminal::spawn_terminal_with_parts;
 use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams};
-use crate::spec_card::{SeededCardRole, build_codex_env_map, seed_codex_home_with_parts};
+use crate::spec_card::build_codex_env_map;
 use crate::spec_push::SpecPushRegistry;
 use crate::state::{CodexClient, DaemonClient};
 use crate::terminal_renderer::TerminalRendererRegistry;
@@ -177,7 +177,7 @@ impl Dispatcher {
     /// seeding can only ratchet the cache UP (a lower id is a no-op),
     /// never down, so the seed is race-safe against a freshly-registered
     /// handle's first push. Called once per wave from
-    /// [`crate::takeover_spec_appservers_on_boot`].
+    /// [`crate::legacy spec takeover`].
     pub fn seed_push_cursor(&self, spec_card_id: CardId, watermark: i64) {
         self.inner.push_cursor.bump(spec_card_id, watermark);
     }
@@ -385,22 +385,13 @@ impl Dispatcher {
         &self,
         spec_card_id: CardId,
     ) -> crate::spec_push::InitialPromptReadySink {
-        let repo = Arc::clone(&self.inner.repo);
         Arc::new(move |_thread_id: String| {
-            let repo = Arc::clone(&repo);
             let spec_card_id = spec_card_id.clone();
             Box::pin(async move {
-                if let Err(e) = repo
-                    .spec_card_clear_needs_initial_prompt(spec_card_id.as_str())
-                    .await
-                {
-                    tracing::warn!(
-                        spec_card_id = %spec_card_id,
-                        error = %e,
-                        "spec push lifecycle: clear initial-prompt marker failed; \
-                         next boot may fresh-spawn instead of resuming this rollout"
-                    );
-                }
+                tracing::debug!(
+                    spec_card_id = %spec_card_id,
+                    "spec push lifecycle: no legacy initial-prompt marker to clear"
+                );
             })
         })
     }
@@ -424,7 +415,7 @@ impl Dispatcher {
     ///
     /// Installed by both production sites alongside
     /// [`Self::watermark_sink_for`]:
-    ///   * `routes/waves.rs::spawn_push_appserver` — create-wave path,
+    ///   * `routes/waves.rs::legacy spec spawner` — create-wave path,
     ///   * `lib.rs::register_and_catch_up`        — boot-takeover path.
     pub fn queue_persist_for(&self, spec_card_id: CardId) -> crate::spec_push::QueuePersist {
         let repo_e = Arc::clone(&self.inner.repo);
@@ -500,7 +491,7 @@ impl Dispatcher {
     /// `(envelope_id, scope, event)` through the dispatcher's push path,
     /// **without** going through the broadcast bus.
     ///
-    /// Used exclusively by [`crate::takeover_spec_appservers_on_boot`] to
+    /// Used exclusively by [`crate::legacy spec takeover`] to
     /// catch a freshly-resumed spec thread up with events that landed while
     /// the kernel was down. Reuses the exact same `Inner::push_to_spec`
     /// helper that live envelopes go through (dedup against the persisted
@@ -538,7 +529,7 @@ impl Dispatcher {
     /// scope — the dedup `(get → compare → bump)` is non-atomic without
     /// the lock and would race with concurrent live pushes.
     ///
-    /// Used by [`crate::takeover_spec_appservers_on_boot`] to replay
+    /// Used by [`crate::legacy spec takeover`] to replay
     /// catch-up events under the same lock that gates a concurrently-
     /// arriving live event.
     pub async fn catch_up_push_under_lock(
@@ -572,7 +563,7 @@ impl Dispatcher {
     /// MCP wiring. When `Some`, the dispatcher folds `NEIGE_MCP_TOKEN` +
     /// `NEIGE_MCP_SOCKET` into the env it hands to `spawn_terminal_with_parts`
     /// for codex workers, and threads the shim config into
-    /// `seed_codex_home_with_parts` so each worker's `$CODEX_HOME/config.toml`
+    /// `per-card CODEX_HOME seeding` so each worker's `$CODEX_HOME/config.toml`
     /// carries a `[mcp_servers.calm]` block — mirroring the spec card path
     /// in `routes::waves::create_wave`. PR7a.1 (#136 followup) wired this
     /// in; PR7a registered the MCP server but left the dispatcher's
@@ -598,7 +589,6 @@ impl Dispatcher {
         mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
         spec_push: SpecPushRegistry,
         shared_codex_appserver: Arc<SharedCodexAppServer>,
-        shared_codex_worker_cards_enabled: bool,
         permits: usize,
     ) -> Self {
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
@@ -614,7 +604,6 @@ impl Dispatcher {
             mcp_server,
             spec_push,
             shared_codex_appserver,
-            shared_codex_worker_cards_enabled,
             permits,
         )
     }
@@ -636,7 +625,6 @@ impl Dispatcher {
         // `push_to_spec`.
         spec_push: SpecPushRegistry,
         shared_codex_appserver: Arc<SharedCodexAppServer>,
-        shared_codex_worker_cards_enabled: bool,
         permits: usize,
     ) -> Self {
         let permits = if permits == 0 {
@@ -665,7 +653,6 @@ impl Dispatcher {
             mcp_server,
             spec_push,
             shared_codex_appserver,
-            shared_codex_worker_cards_enabled,
             // #293 PR3b — a DEDICATED push watermark cache. Intentionally
             // a SEPARATE instance from anything else: keyed by the spec
             // `CardId`;
@@ -787,13 +774,8 @@ struct Inner {
     /// `push_observation` on it. Empty when a kernel restart lost the
     /// in-memory handle (no crash-recovery — see `push_to_spec`).
     spec_push: SpecPushRegistry,
-    /// PR4 shared codex daemon. PR7b-worker uses this to start dispatcher
-    /// worker threads when the worker-card gate is enabled and the daemon is
-    /// already running.
+    /// PR4 shared codex daemon. Worker codex cards start through this daemon.
     shared_codex_appserver: Arc<SharedCodexAppServer>,
-    /// Default-off gate for routing dispatcher-spawned worker codex cards
-    /// through [`SharedCodexAppServer`].
-    shared_codex_worker_cards_enabled: bool,
     /// #293 PR3b — DEDICATED push watermark cache keyed by the spec
     /// `CardId`. A push fires only when `envelope_id > cursor`, then bumps;
     /// this makes pushes idempotent under at-least-once broadcast delivery
@@ -1102,7 +1084,7 @@ impl Inner {
     ///   3. **Resolve the handle** — `spec_push.pusher(wave_id)`. If absent
     ///      (a kernel restart lost the in-memory handle), `warn!` and return
     ///      — never crash. #313 problem #1: boot takeover
-    ///      ([`crate::takeover_spec_appservers_on_boot`]) re-registers a
+    ///      ([`crate::legacy spec takeover`]) re-registers a
     ///      handle for every non-terminal wave with a persisted
     ///      `codex_thread_id` and replays events above the durable
     ///      watermark, so a missing handle here just means "boot takeover
@@ -1210,7 +1192,7 @@ impl Inner {
 
         // Resolve the live push handle. Absent → warn + return (no crash).
         // #313 problem #1: this is no longer the "permanent failure" state —
-        // boot takeover ([`crate::takeover_spec_appservers_on_boot`]) re-
+        // boot takeover ([`crate::legacy spec takeover`]) re-
         // registers the handle for every non-terminal wave with a persisted
         // `codex_thread_id`. A missing handle here means EITHER (a) boot
         // takeover hasn't run yet (we're mid-boot — the route layer isn't
@@ -1480,7 +1462,7 @@ impl Inner {
 
         // Render the user-facing prompt from goal+context+AC. This
         // becomes both the worker card's `payload.prompt` (so
-        // `codex_auto_submit` fires the composer `\r` on
+        // `legacy auto-submit` fires the composer `\r` on
         // `hook.codex.session_start`) and the positional `[PROMPT]`
         // arg on the codex daemon's argv (so the composer mounts
         // pre-filled). Without this the worker hangs forever with an
@@ -1532,7 +1514,7 @@ impl Inner {
         // Issue #310 — two-stage spawn. Stage 1: a tx that mints the
         // worker card + terminal row (`renderer entry = NULL`).
         // **Does NOT emit `CardAdded` here.** Stage 2 (post-commit,
-        // below): `seed_codex_home_with_parts` + `spawn_terminal_with_parts`
+        // below): `per-card CODEX_HOME seeding` + `spawn_terminal_with_parts`
         // (writes `renderer entry`, spawns daemon, probes readiness).
         // Stage 3 (post-spawn-success): broadcast `CardAdded` via
         // `log_pure_event` so subscribers see the card only after the
@@ -1673,7 +1655,7 @@ impl Inner {
         // `routes::waves::create_wave` does for the spec card:
         //
         //   1. Pass the kernel's `McpShimConfig` to
-        //      `seed_codex_home_with_parts` so the worker's
+        //      `per-card CODEX_HOME seeding` so the worker's
         //      `$CODEX_HOME/config.toml` carries a `[mcp_servers.calm]`
         //      block. Without it, codex's MCP client never tries to
         //      connect and the worker can't call `calm.task_completed`
@@ -1689,18 +1671,6 @@ impl Inner {
         // Both folds are gated on `self.mcp_server.is_some()` so test
         // fixtures (which pass `None`) still exercise the rest of the
         // path without needing a live MCP server.
-        let mcp_shim = self.mcp_server.as_ref().map(|m| m.shim_config.clone());
-        // #236 followup — pair shim + token so the worker's config.toml
-        // gets a `[mcp_servers.calm].env` block too. Same rationale as
-        // the spec card: codex CLI 0.132 doesn't inherit the daemon
-        // env into MCP server subprocesses, so the env must be baked
-        // into config.toml. Missing either side leaves the worker
-        // without an MCP wire (a token-less worker can't authenticate
-        // anyway).
-        let mcp_block = match (mcp_shim.as_ref(), mcp_token.as_deref()) {
-            (Some(s), Some(t)) => Some((s, t)),
-            _ => None,
-        };
         // Fetch the terminal row the helper just minted. Guaranteed
         // to exist post-commit. Pulled up BEFORE the seed step so the
         // failure-rollback below has a `term.id` to delete by — keeping
@@ -1751,84 +1721,8 @@ impl Inner {
             );
         }
 
-        let use_shared_worker =
-            self.shared_codex_worker_cards_enabled && self.shared_codex_appserver.is_running();
-        if self.shared_codex_worker_cards_enabled && !use_shared_worker {
-            tracing::info!(
-                target: "shared_codex_daemon::worker",
-                card_id = %card_id,
-                wave_id = %wave_id,
-                "fallback_to_legacy"
-            );
-        }
-        if use_shared_worker {
-            spawn_codex_worker_via_shared_daemon(
-                self,
-                SharedWorkerSpawn {
-                    card: &card,
-                    term: &term,
-                    wave_id: &wave_id,
-                    mcp_token: mcp_token.as_deref(),
-                    rendered_prompt: &user_prompt,
-                    cwd: &cwd,
-                    legacy_env: &env_for_spawn,
-                },
-            )
-            .await?;
-            let card_for_added = self
-                .repo
-                .card_get(card_id.as_str())
-                .await?
-                .unwrap_or_else(|| card.clone());
-            if let Err(e) = self
-                .repo
-                .log_pure_event(
-                    ActorId::KernelDispatcher,
-                    scope,
-                    None,
-                    &self.events,
-                    &self.card_role_cache,
-                    &self.wave_cove_cache,
-                    Event::CardAdded(card_for_added),
-                )
-                .await
-            {
-                tracing::error!(
-                    card_id = %card_id,
-                    wave_id = %wave_id,
-                    terminal_id = %term.id,
-                    error = %e,
-                    "worker codex card.added broadcast failed; card + shared daemon live, subscribers stale",
-                );
-            }
-            return Ok(());
-        }
-
-        if let Err(e) = seed_codex_home_with_parts(
-            codex.as_ref(),
-            card_id.as_str(),
-            &cwd,
-            wave_id.as_str(),
-            SeededCardRole::Worker,
-            mcp_block,
-        ) {
-            // Issue #310 followup — the row-creation tx already
-            // committed (event-less); seeding the per-card CODEX_HOME
-            // failed post-commit. Without rollback, the card+terminal
-            // are orphans whose `idempotency_key` blocks a retry. Drop
-            // both rows so `run_one`'s outer retry loop / a user
-            // re-dispatch with the same key isn't short-circuited on
-            // the abandoned row.
-            //
-            // No fast-exit-preserve case can land on this branch: the
-            // CODEX_HOME seed is a synchronous in-process filesystem
-            // op that runs BEFORE any daemon is spawned, so the
-            // terminal row never has a `renderer entry` here. The
-            // helper still returns `RollbackOutcome::Deleted` and we
-            // surface the original Err — but we drop the explicit
-            // pattern match below since `_ =` is enough; clippy's
-            // `must_use` flags an unused outcome and we want the
-            // explicit ack.
+        if !self.shared_codex_appserver.is_running() {
+            let err = CalmError::Internal("shared codex app-server is not running".into());
             let _ = rollback_orphan_worker(
                 self.repo.as_ref(),
                 self.terminal_renderer.as_ref(),
@@ -1837,98 +1731,28 @@ impl Inner {
                 term.id.as_str(),
             )
             .await;
-            tracing::error!(
-                card_id = %card_id,
-                wave_id = %wave_id,
-                terminal_id = %term.id,
-                error = %e,
-                "worker codex CODEX_HOME seed failed; rolled back card + terminal",
-            );
-            return Err(e);
+            return Err(err);
         }
 
-        // Mirror the spec card path: hand codex the rendered prompt as
-        // its positional `[PROMPT]` arg so the composer mounts pre-filled.
-        // `shell_single_quote` ships the whole string as one literal sh
-        // word (`spawn_terminal_with_parts` ultimately funnels through
-        // `sh -c`). `codex_auto_submit` then sees the non-empty
-        // `payload.prompt` and injects a `\r` on `hook.codex.session_start`.
-        let command_line = format!("codex {}", shell_single_quote(&user_prompt));
-        if let Err(e) = spawn_terminal_with_parts(
-            self.daemon.as_ref(),
-            self.terminal_renderer.as_ref(),
-            self.repo.as_ref(),
-            &term,
-            &command_line,
-            &cwd,
-            &env_for_spawn,
+        spawn_codex_worker_via_shared_daemon(
+            self,
+            SharedWorkerSpawn {
+                card: &card,
+                term: &term,
+                wave_id: &wave_id,
+                mcp_token: mcp_token.as_deref(),
+                rendered_prompt: &user_prompt,
+                cwd: &cwd,
+                legacy_env: &env_for_spawn,
+            },
         )
-        .await
-        {
-            // Issue #310 followup — daemon spawn failed after the
-            // row-creation tx committed. The helper discriminates:
-            //
-            //   * `Deleted` (case 1 / 3) — real spawn failure (bad
-            //     binary, hung daemon, etc.). Surface the original
-            //     Err so `run_one` emits `task.failed` (matches the
-            //     pre-#310-followup behavior). Rollback unblocks the
-            //     idempotency_key for a retry.
-            //
-            //   * `Preserved` (case 2) — fast-exit: the daemon DID
-            //     spawn, ran codex (which exited cleanly e.g. on a
-            //     missing API key / instant abort), wrote `.exit`,
-            //     and exited before the ready-fd/child-exit race resolved.
-            //     Rows stay, exit_code is now persisted on the row, and we
-            //     broadcast `CardAdded` + return Ok(()) so the user
-            //     sees the card with its exit badge — NOT a spurious
-            //     `task.failed` for a worker that completed.
-            match rollback_orphan_worker(
-                self.repo.as_ref(),
-                self.terminal_renderer.as_ref(),
-                &self.card_role_cache,
-                card_id.as_str(),
-                term.id.as_str(),
-            )
-            .await
-            {
-                RollbackOutcome::Deleted => {
-                    tracing::error!(
-                        card_id = %card_id,
-                        wave_id = %wave_id,
-                        terminal_id = %term.id,
-                        error = %e,
-                        "worker codex daemon spawn failed; rolled back card + terminal",
-                    );
-                    return Err(e);
-                }
-                RollbackOutcome::Preserved => {
-                    tracing::info!(
-                        card_id = %card_id,
-                        wave_id = %wave_id,
-                        terminal_id = %term.id,
-                        spawn_err = %e,
-                        "worker codex fast-exit (sidecar present); preserving card + terminal",
-                    );
-                    // Fall through to the post-spawn-success
-                    // CardAdded broadcast below, which now fires for
-                    // the fast-exit success path too. Without this
-                    // broadcast, a preserved row would be event-less
-                    // — exactly the codex P2 #2 shape we're explicitly
-                    // avoiding for the fast-exit case.
-                }
-            }
-        }
+        .await?;
 
-        // Issue #310 — Stage 3: broadcast `CardAdded` only after
-        // `spawn_terminal_with_parts` has written `renderer entry` and
-        // probed daemon readiness. Subscribers (the spec card on the
-        // requesting wave page) now see the new worker card with a
-        // populated `renderer entry`; the WS attach in
-        // `ws::terminal::resolve_live_renderer` resolves to `Alive` (or,
-        // for a genuine fast-exit, the existing `ChildExited` branch)
-        // — never the spurious "no renderer entry = clean child exit"
-        // path that #304 introduced for actual zero-handle rows. See
-        // module-level doc comment for the cross-PR rationale.
+        let card_for_added = self
+            .repo
+            .card_get(card_id.as_str())
+            .await?
+            .unwrap_or_else(|| card.clone());
         if let Err(e) = self
             .repo
             .log_pure_event(
@@ -1938,7 +1762,7 @@ impl Inner {
                 &self.events,
                 &self.card_role_cache,
                 &self.wave_cove_cache,
-                Event::CardAdded(card),
+                Event::CardAdded(card_for_added),
             )
             .await
         {
@@ -1954,7 +1778,7 @@ impl Inner {
                 wave_id = %wave_id,
                 terminal_id = %term.id,
                 error = %e,
-                "worker codex card.added broadcast failed; card + daemon live, subscribers stale",
+                "worker codex card.added broadcast failed; card + shared daemon live, subscribers stale",
             );
         }
 
@@ -1962,8 +1786,7 @@ impl Inner {
             idempotency_key = %idempotency_key,
             card_id = %card_id,
             terminal_id = %term.id,
-            codex_bin = %codex.codex_bin,
-            "dispatcher: worker codex card + daemon spawned"
+            "dispatcher: worker codex card + shared daemon thread spawned"
         );
 
         Ok(())
@@ -2588,7 +2411,7 @@ async fn spawn_codex_worker_via_shared_daemon(
     );
 
     // Persist the runtime markers (codex_source, codex_thread_id, ...) BEFORE
-    // the PTY spawn so codex_auto_submit's session_start hook sees
+    // the PTY spawn so legacy auto-submit's session_start hook sees
     // codex_thread_id present and skips the legacy Enter injection. The
     // persist is SILENT (no CardUpdated event) — wave subscribers refetch on
     // CardUpdated and could mount the card before its renderer entry is
@@ -2875,7 +2698,7 @@ async fn persist_shared_worker_runtime_fields(
                 "appserver_sock".into(),
                 serde_json::Value::String(remote_uri_for_tx),
             );
-            map.insert("appserver_pgid".into(), serde_json::Value::Null);
+            map.remove("appserver_pgid");
             let updated = card_update_tx(
                 tx,
                 &card_id_for_tx,
@@ -3077,7 +2900,7 @@ fn _route_repo_marker<R: RouteRepo>(_r: &R) {}
 
 /// Render the worker codex's first user message from the dispatcher
 /// payload. Becomes both the `payload.prompt` field (so
-/// `codex_auto_submit` fires the composer `\r`) and codex's positional
+/// `legacy auto-submit` fires the composer `\r`) and codex's positional
 /// `[PROMPT]` arg (so the composer mounts pre-filled). Mirrors the spec
 /// card path in `routes::waves::create_wave` which feeds the wave title
 /// through the same channel; the system prompt
@@ -3269,7 +3092,7 @@ mod tests {
     // worker codex's first composer message. Each empty/non-empty
     // combination is exercised so a future refactor that drops a
     // section trips loudly. The non-empty output is the source of
-    // truth for both `payload.prompt` (consumed by `codex_auto_submit`)
+    // truth for both `payload.prompt` (consumed by `legacy auto-submit`)
     // and codex's `[PROMPT]` argv (rendered via `shell_single_quote`),
     // so a regression here breaks the worker hand-off end-to-end.
     // ---------------------------------------------------------------

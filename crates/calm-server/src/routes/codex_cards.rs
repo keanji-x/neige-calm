@@ -14,24 +14,14 @@
 //!    `payload=null` flash for the renderer's "Codex is starting…"
 //!    placeholder to react to.
 //! 2. After commit, the handler starts the terminal renderer via the same
-//!    `spawn_terminal_for` helper the terminal-card endpoint uses. Empty
-//!    prompt cards still seed per-card `CODEX_HOME` before the legacy bare
-//!    `codex` spawn. Non-empty prompt cards use the shared app-server when
-//!    explicitly enabled for prompt cards: the kernel creates a thread,
-//!    sends turn #1, waits for the first lifecycle notification, and spawns
-//!    a remote `codex resume` TUI.
+//!    `spawn_terminal_for` helper the terminal-card endpoint uses. All codex
+//!    cards route through the shared app-server: prompt cards start a shared
+//!    thread and attach `codex resume`; empty cards register pending FIFO
+//!    attribution and spawn `codex --remote`.
 //!    A renderer-start failure returns 500 to the client but does NOT roll
 //!    back the persisted rows: the orphan-terminal sweeper reaps them within
 //!    ~60s.
 //!
-//! Why a pre-minted card_id (design option C)? The `CODEX_HOME` path is
-//! `<codex_homes_dir>/<card_id>/` — keyed on the card id so the renderer
-//! sees the same auth.json / state across container restarts. Pre-minting
-//! the id lets us derive that path *before* the row hits the DB and
-//! propagate it into the env map without a post-commit "stamp env" round
-//! trip. The seeding I/O still happens after commit (outside the
-//! transaction) because copying `$HOME/.codex` shouldn't hold a write
-//! txn open.
 
 use crate::actor::Actor;
 use crate::codex_appserver::{InputItem, Notification};
@@ -52,7 +42,6 @@ use axum::{
     routing::post,
 };
 use serde::Deserialize;
-use std::path::Path as StdPath;
 use std::time::Duration;
 use utoipa::ToSchema;
 
@@ -66,18 +55,15 @@ pub fn router() -> Router<AppState> {
 /// stamps `{schemaVersion, terminal_id, cwd?, prompt?}` itself). Empty
 /// `cwd` falls back to `$HOME` then the server's cwd.
 ///
-/// `prompt` is the hands-free entry point: when non-empty and the shared
-/// codex prompt-card path is enabled, the kernel starts a shared thread,
+/// `prompt` is the hands-free entry point: when non-empty, the kernel starts
+/// a shared thread,
 /// persists its id on both the payload and `card_codex_threads`, sends the
 /// prompt via `turn/start`, waits for `turn/started` or `turn/completed`,
 /// and starts the TUI as `codex resume <thread_id> --remote unix://...`.
 ///
-/// If the shared-daemon rollback flag is disabled, a non-empty prompt stays
-/// on the legacy path: pass it to codex CLI as positional `[PROMPT]`, write
-/// per-card `config.toml`, and let `codex_auto_submit` inject `\r`.
-///
 /// Empty / absent `prompt` reverts to the user-initiated flow: codex
-/// boots, the composer is empty, the user types and hits Enter.
+/// boots through the shared remote, the composer is empty, the user types
+/// and hits Enter.
 ///
 /// Note: the old `initial_prompt` field (which had been a documented
 /// no-op since the codex-TUI port) was removed; serde rejects unknown
@@ -151,11 +137,9 @@ pub(crate) async fn create_codex_card(
 
     // Validate `cwd` at the request boundary: a value containing ASCII
     // control characters (`\n`, `\r`, `\t`, `\0`, `\x7f`, ...) would
-    // produce TOML-spec-invalid output when `build_codex_config_toml`
-    // hand-escapes it into a basic string, and codex's config parser
-    // would crash at spawn time. Reject up front with 400 so the caller
-    // gets a deterministic, debuggable signal instead of a daemon spawn
-    // failure deep in the pipeline. Only validates when the caller
+    // produce invalid downstream process state. Reject up front with 400 so
+    // the caller gets a deterministic, debuggable signal instead of a daemon
+    // spawn failure deep in the pipeline. Only validates when the caller
     // supplied a value — `None` / empty string still falls back to
     // `default_cwd()` below.
     if let Some(raw) = p.cwd.as_deref()
@@ -168,8 +152,7 @@ pub(crate) async fn create_codex_card(
     let icon_bg = normalize_optional_css_color(p.icon_bg.as_deref(), "icon_bg")?;
     let icon_fg = normalize_optional_css_color(p.icon_fg.as_deref(), "icon_fg")?;
 
-    // 2. Pre-mint the card id so we can derive `CODEX_HOME` (keyed on
-    //    card id, see module-level doc) before the row hits the DB.
+    // 2. Pre-mint the card id before the row hits the DB.
     let card_id = new_id();
 
     // 3. Resolve cwd — empty / missing falls back to `$HOME`.
@@ -191,19 +174,15 @@ pub(crate) async fn create_codex_card(
         .filter(|s| !s.is_empty())
         .map(String::from);
 
-    let shared_prompt_requested = prompt.is_some() && s.shared_codex_prompt_cards_enabled;
-    let use_shared_prompt_path = shared_prompt_requested && s.shared_codex_appserver.is_running();
-    let use_shared_empty_path = prompt.is_none()
-        && s.shared_codex_empty_cards_enabled
-        && s.shared_codex_appserver.is_running()
-        && s.pending_codex_threads.is_some();
-    if prompt.is_none() && s.shared_codex_empty_cards_enabled && !use_shared_empty_path {
-        tracing::info!(
-            target = "shared_codex_daemon::empty_card_fallback",
-            daemon_running = s.shared_codex_appserver.is_running(),
-            pending_registry = s.pending_codex_threads.is_some(),
-            "shared empty-card path enabled but unavailable; falling back to legacy spawn"
-        );
+    if !s.shared_codex_appserver.is_running() {
+        return Err(CalmError::Internal(
+            "shared codex app-server is not running".into(),
+        ));
+    }
+    if prompt.is_none() && s.pending_codex_threads.is_none() {
+        return Err(CalmError::Internal(
+            "shared empty-card path requires pending thread registry".into(),
+        ));
     }
 
     // 4. Assemble the env map the daemon will forward to the PTY child:
@@ -211,12 +190,7 @@ pub(crate) async fn create_codex_card(
     //    pulled from `load_settings`. Only inject HTTP(S)_PROXY when the
     //    user has a non-empty override — empty would *clear* the container
     //    default which is the opposite of what the user expects.
-    let codex_home = s.codex.codex_homes_dir.join(&card_id);
-    let codex_home_path = if use_shared_prompt_path || use_shared_empty_path {
-        s.codex.codex_home_dir().to_string_lossy().to_string()
-    } else {
-        codex_home.to_string_lossy().to_string()
-    };
+    let codex_home_path = s.codex.codex_home_dir().to_string_lossy().to_string();
     let settings = load_settings(s.repo.as_ref()).await?;
     let mut env_map = serde_json::Map::new();
     env_map.insert(
@@ -341,213 +315,183 @@ pub(crate) async fn create_codex_card(
             ))
         })?;
 
-    if shared_prompt_requested && !use_shared_prompt_path {
-        tracing::warn!(
-            target: "shared_codex_daemon::fallback_to_legacy",
-            card_id = %card.id,
-            reason = "shared codex app-server not running",
-            "PR3c degraded fallback: legacy per-card path used"
-        );
-    }
-
-    let _pending_spawn_serial_guard = if use_shared_empty_path {
+    let _pending_spawn_serial_guard = if prompt.is_none() {
         Some(s.pending_codex_threads_spawn_serial.lock().await)
     } else {
         None
     };
 
     let command_line = if let Some(prompt_text) = prompt.as_deref() {
-        if use_shared_prompt_path {
-            // PR5 new path: non-empty user prompt cards run turn #1 on the
-            // server-wide shared app-server, then the PTY TUI attaches to
-            // that durable thread via `codex resume ... --remote`.
-            let mut notifs = s.shared_codex_appserver.subscribe_notifications();
-            let thread_id = match s
-                .shared_codex_appserver
-                .thread_start_for_card(
-                    card.id.as_ref(),
-                    CardRole::Plain,
-                    Some(wave_id.as_str()),
-                    crate::shared_codex_appserver::SharedThreadStartParams {
-                        cwd: cwd.clone(),
-                        approval_policy: "never".into(),
-                        sandbox_mode: "workspace-write".into(),
-                        developer_instructions: None,
-                    },
-                )
-                .await
-            {
-                Ok(thread_id) => thread_id,
-                Err(e) => {
-                    tracing::error!(
-                        target = "shared_codex_daemon::user_prompt_card_start_failed",
-                        card_id = %card.id,
-                        error = %e,
-                    );
-                    return Err(e);
-                }
-            };
-
-            let mut payload = card.payload.clone();
-            let Some(map) = payload.as_object_mut() else {
-                return Err(CalmError::Internal(format!(
-                    "codex card {} payload is not a JSON object; cannot persist codex_thread_id",
-                    card.id
-                )));
-            };
-            map.insert(
-                "codex_thread_id".into(),
-                serde_json::Value::String(thread_id.clone()),
-            );
-
-            let scope = card_scope(s.repo.as_ref(), card.id.clone(), card.wave_id.clone()).await?;
-            let card_id_for_tx = card.id.to_string();
-            let thread_id_for_tx = thread_id.clone();
-            let wave_id_for_tx = wave_id.clone();
-            let payload_for_tx = payload;
-            let (updated, _id) = write_with_event_typed(
-                s.repo.as_ref(),
-                actor.to_actor_id(),
-                scope,
-                None,
-                &s.events,
-                &s.card_role_cache,
-                &s.wave_cove_cache,
-                move |tx| {
-                    Box::pin(async move {
-                        card_codex_thread_upsert_tx(
-                            tx,
-                            &card_id_for_tx,
-                            &thread_id_for_tx,
-                            CardRole::Plain,
-                            Some(wave_id_for_tx.as_str()),
-                        )
-                        .await?;
-                        let card = card_update_tx(
-                            tx,
-                            &card_id_for_tx,
-                            CardPatch {
-                                kind: None,
-                                sort: None,
-                                payload: Some(payload_for_tx),
-                                deletable: None,
-                            },
-                        )
-                        .await?;
-                        Ok((card.clone(), Event::CardUpdated(card)))
-                    })
+        // Non-empty user prompt cards run turn #1 on the server-wide shared
+        // app-server, then the PTY TUI attaches to that durable thread via
+        // `codex resume ... --remote`.
+        let mut notifs = s.shared_codex_appserver.subscribe_notifications();
+        let thread_id = match s
+            .shared_codex_appserver
+            .thread_start_for_card(
+                card.id.as_ref(),
+                CardRole::Plain,
+                Some(wave_id.as_str()),
+                crate::shared_codex_appserver::SharedThreadStartParams {
+                    cwd: cwd.clone(),
+                    approval_policy: "never".into(),
+                    sandbox_mode: "workspace-write".into(),
+                    developer_instructions: None,
                 },
             )
+            .await
+        {
+            Ok(thread_id) => thread_id,
+            Err(e) => {
+                tracing::error!(
+                    target = "shared_codex_daemon::user_prompt_card_start_failed",
+                    card_id = %card.id,
+                    error = %e,
+                );
+                return Err(e);
+            }
+        };
+
+        let mut payload = card.payload.clone();
+        let Some(map) = payload.as_object_mut() else {
+            return Err(CalmError::Internal(format!(
+                "codex card {} payload is not a JSON object; cannot persist codex_thread_id",
+                card.id
+            )));
+        };
+        map.insert(
+            "codex_thread_id".into(),
+            serde_json::Value::String(thread_id.clone()),
+        );
+
+        let scope = card_scope(s.repo.as_ref(), card.id.clone(), card.wave_id.clone()).await?;
+        let card_id_for_tx = card.id.to_string();
+        let thread_id_for_tx = thread_id.clone();
+        let wave_id_for_tx = wave_id.clone();
+        let payload_for_tx = payload;
+        let (updated, _id) = write_with_event_typed(
+            s.repo.as_ref(),
+            actor.to_actor_id(),
+            scope,
+            None,
+            &s.events,
+            &s.card_role_cache,
+            &s.wave_cove_cache,
+            move |tx| {
+                Box::pin(async move {
+                    card_codex_thread_upsert_tx(
+                        tx,
+                        &card_id_for_tx,
+                        &thread_id_for_tx,
+                        CardRole::Plain,
+                        Some(wave_id_for_tx.as_str()),
+                    )
+                    .await?;
+                    let card = card_update_tx(
+                        tx,
+                        &card_id_for_tx,
+                        CardPatch {
+                            kind: None,
+                            sort: None,
+                            payload: Some(payload_for_tx),
+                            deletable: None,
+                        },
+                    )
+                    .await?;
+                    Ok((card.clone(), Event::CardUpdated(card)))
+                })
+            },
+        )
+        .await?;
+        card = updated;
+
+        s.shared_codex_appserver
+            .turn_start(&thread_id, vec![InputItem::text(prompt_text)])
             .await?;
-            card = updated;
+        await_shared_initial_turn_lifecycle(&mut notifs, &thread_id).await?;
 
-            s.shared_codex_appserver
-                .turn_start(&thread_id, vec![InputItem::text(prompt_text)])
-                .await?;
-            await_shared_initial_turn_lifecycle(&mut notifs, &thread_id).await?;
-
-            tracing::info!(
-                target = "shared_codex_daemon::user_prompt_card_started",
-                card_id = %card.id,
-                wave_id = %wave_id,
-                thread_id = %thread_id,
-                prompt_len = prompt_text.len(),
-            );
-            format!(
-                "codex resume {} --remote {}",
-                shell_single_quote(&thread_id),
-                shell_single_quote(&s.shared_codex_appserver.remote_uri()),
-            )
-        } else {
-            // Rollback knob path: PR5 shared daemon is disabled, so a
-            // non-empty prompt keeps the legacy argv/config/auto-submit flow.
-            seed_legacy_codex_home(&codex_home, Some(&cwd))?;
-            format!("codex {}", shell_single_quote(prompt_text))
-        }
+        tracing::info!(
+            target = "shared_codex_daemon::user_prompt_card_started",
+            card_id = %card.id,
+            wave_id = %wave_id,
+            thread_id = %thread_id,
+            prompt_len = prompt_text.len(),
+        );
+        format!(
+            "codex resume {} --remote {}",
+            shell_single_quote(&thread_id),
+            shell_single_quote(&s.shared_codex_appserver.remote_uri()),
+        )
     } else {
-        if use_shared_empty_path {
-            let pending = s.pending_codex_threads.as_ref().ok_or_else(|| {
-                CalmError::Internal(
-                    "shared empty-card path enabled without pending registry".into(),
-                )
-            })?;
-            s.shared_codex_appserver
-                .ensure_respawn_for_current_settings()
-                .await?;
-
-            let mut payload = card.payload.clone();
-            let Some(map) = payload.as_object_mut() else {
-                return Err(CalmError::Internal(format!(
-                    "codex card {} payload is not a JSON object; cannot persist pending status",
-                    card.id
-                )));
-            };
-            map.insert(
-                "codex_thread_status".into(),
-                serde_json::Value::String("pending_thread_start".into()),
-            );
-
-            let scope = card_scope(s.repo.as_ref(), card.id.clone(), card.wave_id.clone()).await?;
-            let card_id_for_tx = card.id.to_string();
-            let payload_for_tx = payload;
-            let (updated, _id) = write_with_event_typed(
-                s.repo.as_ref(),
-                actor.to_actor_id(),
-                scope,
-                None,
-                &s.events,
-                &s.card_role_cache,
-                &s.wave_cove_cache,
-                move |tx| {
-                    Box::pin(async move {
-                        let card = card_update_tx(
-                            tx,
-                            &card_id_for_tx,
-                            CardPatch {
-                                kind: None,
-                                sort: None,
-                                payload: Some(payload_for_tx),
-                                deletable: None,
-                            },
-                        )
-                        .await?;
-                        Ok((card.clone(), Event::CardUpdated(card)))
-                    })
-                },
-            )
+        let pending = s
+            .pending_codex_threads
+            .as_ref()
+            .ok_or_else(|| CalmError::Internal("missing pending thread registry".into()))?;
+        s.shared_codex_appserver
+            .ensure_respawn_for_current_settings()
             .await?;
-            card = updated;
 
-            pending
-                .register(PendingEntry::new(
-                    card.id.to_string(),
-                    Some(wave_id.clone()),
-                    term.id.to_string(),
-                ))
-                .await?;
+        let mut payload = card.payload.clone();
+        let Some(map) = payload.as_object_mut() else {
+            return Err(CalmError::Internal(format!(
+                "codex card {} payload is not a JSON object; cannot persist pending status",
+                card.id
+            )));
+        };
+        map.insert(
+            "codex_thread_status".into(),
+            serde_json::Value::String("pending_thread_start".into()),
+        );
 
-            format!(
-                "codex --remote {}",
-                shell_single_quote(&s.shared_codex_appserver.remote_uri()),
-            )
-        } else {
-            // Flag-off PR6 path: empty prompt cards stay on the legacy bare
-            // codex spawn with a per-card CODEX_HOME seeded from the host.
-            seed_legacy_codex_home(&codex_home, None)?;
-            tracing::info!(
-                target = "codex_auto_submit::spawned",
-                card_id = %card.id,
-                source = "empty-codex-card",
-                "legacy empty codex card spawned"
-            );
-            "codex".to_string()
-        }
+        let scope = card_scope(s.repo.as_ref(), card.id.clone(), card.wave_id.clone()).await?;
+        let card_id_for_tx = card.id.to_string();
+        let payload_for_tx = payload;
+        let (updated, _id) = write_with_event_typed(
+            s.repo.as_ref(),
+            actor.to_actor_id(),
+            scope,
+            None,
+            &s.events,
+            &s.card_role_cache,
+            &s.wave_cove_cache,
+            move |tx| {
+                Box::pin(async move {
+                    let card = card_update_tx(
+                        tx,
+                        &card_id_for_tx,
+                        CardPatch {
+                            kind: None,
+                            sort: None,
+                            payload: Some(payload_for_tx),
+                            deletable: None,
+                        },
+                    )
+                    .await?;
+                    Ok((card.clone(), Event::CardUpdated(card)))
+                })
+            },
+        )
+        .await?;
+        card = updated;
+
+        pending
+            .register(PendingEntry::new(
+                card.id.to_string(),
+                Some(wave_id.clone()),
+                term.id.to_string(),
+            ))
+            .await?;
+
+        format!(
+            "codex --remote {}",
+            shell_single_quote(&s.shared_codex_appserver.remote_uri()),
+        )
     };
 
     // 7. Persisted rows remain on spawn failure, but shared empty-card
     //    pending state must be rolled back immediately.
     if let Err(e) = spawn_terminal_for(&s, &term, &command_line, &cwd, &env).await {
-        if use_shared_empty_path && let Some(pending) = s.pending_codex_threads.as_ref() {
+        if prompt.is_none() && let Some(pending) = s.pending_codex_threads.as_ref() {
             let removed = pending.remove_by_card(card.id.as_ref()).await;
             let payload_rolled_back =
                 card_payload_clear_pending_status(s.repo.as_ref(), &s.events, card.id.as_ref())
@@ -570,8 +514,8 @@ pub(crate) async fn create_codex_card(
         terminal_id = %term.id,
         cwd = %cwd,
         hands_free = prompt.is_some(),
-        shared_prompt_thread = use_shared_prompt_path,
-        shared_empty_thread_pending = use_shared_empty_path,
+        shared_prompt_thread = prompt.is_some(),
+        shared_empty_thread_pending = prompt.is_none(),
         "spawned interactive codex"
     );
 
@@ -584,12 +528,6 @@ pub(crate) async fn create_codex_card(
 // loopback route + its query-param struct.
 // ---------------------------------------------------------------------------
 
-/// `~/.codex` on the host — visible inside the docker container thanks to
-/// the `${HOME}:${HOME}` bind mount in docker-compose.yml.
-pub(crate) fn host_codex_dir() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".codex"))
-}
-
 /// Resolve the codex cwd default. `$HOME` if set, else the server's cwd.
 pub(crate) fn default_cwd() -> String {
     std::env::var("HOME")
@@ -601,28 +539,6 @@ pub(crate) fn default_cwd() -> String {
                 .to_string_lossy()
                 .to_string()
         })
-}
-
-fn seed_legacy_codex_home(codex_home: &StdPath, config_cwd: Option<&str>) -> Result<()> {
-    let is_fresh = !codex_home.exists();
-    std::fs::create_dir_all(codex_home).map_err(|e| {
-        CalmError::Internal(format!("mkdir codex_home {}: {e}", codex_home.display()))
-    })?;
-    if is_fresh
-        && let Some(src) = host_codex_dir()
-        && src.exists()
-        && let Err(e) = copy_dir_recursive(&src, codex_home)
-    {
-        tracing::warn!(error = %e, src = %src.display(), "codex seed copy failed; continuing without it");
-    }
-
-    if let Some(cwd) = config_cwd {
-        let cfg_path = codex_home.join("config.toml");
-        let cfg_text = build_codex_config_toml(cwd);
-        std::fs::write(&cfg_path, cfg_text)
-            .map_err(|e| CalmError::Internal(format!("write config.toml: {e}")))?;
-    }
-    Ok(())
 }
 
 async fn await_shared_initial_turn_lifecycle(
@@ -662,29 +578,6 @@ async fn await_shared_initial_turn_lifecycle(
             }
         }
     }
-}
-
-/// Recursively copy `src` to `dst`. Minimal walker — no symlink chasing,
-/// no perm propagation beyond what `std::fs::copy` does. Enough to seed
-/// `auth.json` / `config.toml` / `models_cache.json` and any sibling
-/// dirs codex caches there.
-pub(crate) fn copy_dir_recursive(src: &StdPath, dst: &StdPath) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        let ft = entry.file_type()?;
-        if ft.is_dir() {
-            copy_dir_recursive(&from, &to)?;
-        } else if ft.is_file() {
-            std::fs::copy(&from, &to)?;
-        }
-        // Symlinks intentionally skipped — copying them would either chase
-        // them (potential cycles into $HOME) or leave dangling references
-        // inside the per-card dir.
-    }
-    Ok(())
 }
 
 /// Wrap a string in POSIX-shell single quotes, escaping any embedded
@@ -735,47 +628,6 @@ pub(crate) fn normalize_optional_css_color(
     Ok(Some(trimmed.to_string()))
 }
 
-/// Per-spawn `$CODEX_HOME/config.toml` body. Silences the three
-/// first-run dialogs that would otherwise gate composer mount for a
-/// fresh CODEX_HOME:
-///
-///   - `approval_policy = "never"` — don't ask before each command.
-///   - `sandbox_mode = "workspace-write"` — confirms the sandbox
-///     posture so codex doesn't prompt for it on first run.
-///   - `[projects."<cwd>"] trust_level = "trusted"` — pre-trusts the
-///     spawn cwd so the "Trust this directory?" modal doesn't appear
-///     before the composer is mounted; the auto-submitted `\r` would
-///     otherwise land on that modal.
-///
-/// Deliberately omits any `[mcp_servers.*]` blocks. MCP server config
-/// is seeded from the host `$HOME/.codex/config.toml` via
-/// `copy_dir_recursive`; emitting one here would shadow the user's
-/// real config in this per-card CODEX_HOME. The
-/// `config_toml_has_no_mcp_servers_block` regression test below guards
-/// this.
-/// PR1 (#410): legacy per-card path. Shared replacement is in
-/// `crate::shared_codex_home::SharedCodexHome::ensure_config_for_cwd`,
-/// but callers are not switched until later #410 PRs.
-pub(crate) fn build_codex_config_toml(cwd: &str) -> String {
-    // We hand-write the TOML (no `toml` crate in the workspace) — the
-    // payload is small enough to be readable, and the only field that
-    // can contain anything wild is `cwd`. TOML basic strings allow
-    // most characters but require escaping `"` and `\`. Backslash
-    // shows up on Windows-style paths (which the codex container does
-    // not see, but the test fixture path is a tempdir so we keep the
-    // escape minimal-but-correct).
-    let escaped_cwd = cwd.replace('\\', "\\\\").replace('"', "\\\"");
-    format!(
-        "# Generated by neige-calm per-spawn — silences codex's first-run\n\
-         # dialogs so an auto-submitted \\r lands on the composer.\n\
-         approval_policy = \"never\"\n\
-         sandbox_mode = \"workspace-write\"\n\
-         \n\
-         [projects.\"{escaped_cwd}\"]\n\
-         trust_level = \"trusted\"\n"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -815,41 +667,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn config_toml_pre_trusts_cwd_and_silences_dialogs() {
-        let s = build_codex_config_toml("/workspace");
-        assert!(s.contains("approval_policy = \"never\""));
-        assert!(s.contains("sandbox_mode = \"workspace-write\""));
-        assert!(s.contains("[projects.\"/workspace\"]"));
-        assert!(s.contains("trust_level = \"trusted\""));
-    }
-
-    /// Regression guard: per-spawn config.toml must NEVER contain a
-    /// `[mcp_servers.*]` block. MCP config is seeded from the host
-    /// `$HOME/.codex/config.toml` via `copy_dir_recursive`; emitting
-    /// one here would shadow the user's real config.
-    ///
-    /// PR7a will flip this when `[mcp_servers.calm]` block lands for
-    /// Spec/Worker cards (kernel-as-MCP-server). Plain cards (this
-    /// route's product) stay free of the block — they never expose
-    /// the kernel tools.
-    #[test]
-    fn config_toml_has_no_mcp_servers_block() {
-        let s = build_codex_config_toml("/workspace");
-        assert!(
-            !s.contains("[mcp_servers"),
-            "per-spawn config.toml must not contain mcp_servers blocks; got:\n{s}"
-        );
-    }
-
-    #[test]
-    fn config_toml_escapes_quoted_cwd() {
-        // A cwd with a `"` would otherwise break the TOML table header.
-        let s = build_codex_config_toml(r#"/work"dir"#);
-        // The cwd is inside a basic string, so `"` must be `\"`.
-        assert!(
-            s.contains("[projects.\"/work\\\"dir\"]"),
-            "expected escaped quote in projects header; got:\n{s}"
-        );
-    }
 }

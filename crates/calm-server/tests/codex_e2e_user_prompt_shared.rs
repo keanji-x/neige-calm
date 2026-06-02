@@ -35,7 +35,6 @@ fn cfg(root: &tempfile::TempDir) -> Config {
         "codex",
     ]);
     cfg.shared_codex_appserver_enabled = true;
-    cfg.shared_codex_prompt_cards_enabled = true;
     cfg
 }
 
@@ -101,8 +100,7 @@ async fn user_prompt_card_first_turn_true_binary() {
         None,
         None,
     )
-    .with_shared_codex_appserver(shared)
-    .with_shared_codex_prompt_cards_enabled(cfg.shared_codex_prompt_cards_enabled);
+    .with_shared_codex_appserver(shared);
     let app = routes::router()
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,

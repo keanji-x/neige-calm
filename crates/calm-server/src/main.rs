@@ -31,30 +31,6 @@ async fn main() -> anyhow::Result<()> {
         println!("{}", serde_json::to_string_pretty(&compatibility)?);
         return Ok(());
     }
-    if !cfg.shared_codex_prompt_cards_enabled {
-        tracing::warn!(
-            target: "shared_codex_daemon::flag",
-            "shared_codex_prompt_cards_enabled DISABLED - fallback to legacy per-card daemon"
-        );
-    }
-    if !cfg.shared_codex_empty_cards_enabled {
-        tracing::warn!(
-            target: "shared_codex_daemon::flag",
-            "shared_codex_empty_cards_enabled DISABLED - fallback to legacy per-card daemon"
-        );
-    }
-    if !cfg.shared_codex_spec_cards_enabled {
-        tracing::warn!(
-            target: "shared_codex_daemon::flag",
-            "shared_codex_spec_cards_enabled DISABLED - fallback to legacy per-wave daemon"
-        );
-    }
-    if !cfg.shared_codex_worker_cards_enabled {
-        tracing::warn!(
-            target: "shared_codex_daemon::flag",
-            "shared_codex_worker_cards_enabled DISABLED - fallback to legacy per-card daemon"
-        );
-    }
     warn_if_worker_hook_callback_is_not_loopback(&cfg);
 
     // Storage. `mock` keeps the in-memory backend for dev — it now resolves to
@@ -99,7 +75,6 @@ async fn main() -> anyhow::Result<()> {
     // Runs before the listener binds so a request landing mid-takeover
     // can't race a half-registered handle.
     calm_server::takeover_shared_spec_cards_on_boot(&state).await;
-    calm_server::takeover_spec_appservers_on_boot(&state).await;
 
     // Optional session-recording — when `RECORD_SESSION=<path>` is set,
     // every event broadcast on the bus is appended to that file as

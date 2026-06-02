@@ -1140,7 +1140,7 @@ pub async fn card_with_terminal_create_tx(
 /// [`card_with_terminal_create_tx`] / [`card_with_codex_create_tx`].
 ///
 /// **Use site** is the dispatcher's post-commit failure cleanup: when
-/// `seed_codex_home_with_parts` or `spawn_daemon_with_parts` returns
+/// `per-card CODEX_HOME seeding` or `spawn_daemon_with_parts` returns
 /// Err *after* the row-creation tx has already committed, the worker
 /// card + terminal row are orphans — the card payload references a
 /// terminal whose daemon never came up, and a retry with the same
@@ -1288,7 +1288,7 @@ pub async fn card_with_codex_create_tx(
     if !cwd.is_empty() {
         payload.insert("cwd".into(), serde_json::Value::String(cwd));
     }
-    // `prompt` — surfaces to the `codex_auto_submit` subscriber, which
+    // `prompt` — surfaces to the `legacy auto-submit` subscriber, which
     // gates auto-Enter on this being a non-empty string. An empty /
     // missing value here is the "user spawned codex without a hands-free
     // prompt" path, identical to pre-#110 behaviour. Trimmed and empty-
@@ -1514,62 +1514,6 @@ pub async fn card_codex_thread_delete_by_card_tx(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn spec_card_set_appserver_after_reset_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    card_id: &str,
-    thread_id: &str,
-    pgid: i32,
-    sock: &str,
-    start_time: Option<u64>,
-    boot_id: Option<&str>,
-    needs_initial_prompt: bool,
-) -> Result<Card> {
-    let now = now_ms();
-    let st_i64 = start_time.and_then(|v| i64::try_from(v).ok());
-    let payload_expr = if needs_initial_prompt {
-        r#"json_set(
-              COALESCE(payload, '{}'),
-              '$.codex_thread_id', ?1,
-              '$.appserver_pgid', ?2,
-              '$.appserver_sock', ?3,
-              '$.appserver_start_time', ?4,
-              '$.appserver_boot_id', ?5,
-              '$.appserver_needs_initial_prompt', 1
-           )"#
-    } else {
-        r#"json_remove(
-              json_set(
-                COALESCE(payload, '{}'),
-                '$.codex_thread_id', ?1,
-                '$.appserver_pgid', ?2,
-                '$.appserver_sock', ?3,
-                '$.appserver_start_time', ?4,
-                '$.appserver_boot_id', ?5
-              ),
-              '$.appserver_needs_initial_prompt'
-           )"#
-    };
-    let sql = format!(
-        r#"UPDATE cards
-              SET payload = {payload_expr},
-                  updated_at = ?6
-            WHERE id = ?7
-            RETURNING id, wave_id, kind, sort, payload, deletable, created_at, updated_at"#
-    );
-    let card = sqlx::query_as::<_, Card>(&sql)
-        .bind(thread_id)
-        .bind(pgid)
-        .bind(sock)
-        .bind(st_i64)
-        .bind(boot_id)
-        .bind(now)
-        .bind(card_id)
-        .fetch_optional(&mut **tx)
-        .await?
-        .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
-    Ok(card)
-}
 
 pub async fn overlay_upsert_tx(tx: &mut Transaction<'_, Sqlite>, p: NewOverlay) -> Result<Overlay> {
     let now = now_ms();
@@ -2134,172 +2078,6 @@ impl RepoRead for SqlxRepo {
         Ok(rows)
     }
 
-    async fn spec_cards_for_boot_takeover(
-        &self,
-    ) -> Result<
-        Vec<(
-            String,
-            String,
-            String,
-            Option<i32>,
-            Option<String>,
-            Option<u64>,
-            Option<String>,
-            i64,
-        )>,
-    > {
-        // #313 problem #1 — boot takeover input. Spec cards whose thread
-        // mapping exists in `card_codex_threads`, JOINed against `waves` so
-        // we can filter out terminal-lifecycle waves in SQL rather than
-        // re-querying per card from Rust. Shared-daemon cards are excluded
-        // because they are owned by `takeover_shared_spec_cards_on_boot`,
-        // not the legacy per-wave app-server path. Empty-goal rows marked
-        // `appserver_needs_initial_prompt` are excluded because their
-        // thread has no rollout yet and must be fresh-started by
-        // `spec_cards_for_initial_prompt_bootstrap`, never resumed.
-        // `appserver_pgid` / `appserver_sock` /
-        // `appserver_start_time` / `appserver_boot_id` are nullable in the
-        // projection (defensive — every write that lands a legacy spec
-        // mapping today also writes the first two, and #318 added the
-        // start_time + boot_id companion; a malformed or pre-#318 row
-        // shouldn't strand the whole boot sweep). `push_watermark` defaults
-        // to 0 when
-        // absent — 0 is the "no events pushed yet" sentinel the in-memory
-        // `EventCursorCache` returns for an unknown card, so a missing
-        // field produces identical replay behavior (replay every event
-        // for this wave, then bump).
-        //
-        // #318 (R3-B1) — `(appserver_start_time, appserver_boot_id)` is
-        // the identity stamp from `/proc/<pid>/stat` field 22 and
-        // `/proc/sys/kernel/random/boot_id` at spawn. The boot-recovery
-        // path (`try_takeover_one_wave`) verifies BOTH against the live
-        // `/proc` entries BEFORE signaling the persisted pgid (defends
-        // against same-boot pid recycling AND cross-reboot recycling).
-        // A missing stamp falls through to "skip the kill"
-        // (conservative).
-        //
-        // #315 round-4 (B1) — `c.role = 'spec'` is REQUIRED. Plugin and
-        // opaque card payloads can legitimately carry arbitrary keys; a
-        // non-spec card that happens to have a `codex_thread_id` key in its
-        // payload (e.g. an MCP tool result echoing a codex id, a debug
-        // marker, a plugin storing an unrelated codex handle) MUST NOT be
-        // treated as a takeover candidate. Without the role predicate,
-        // takeover would respawn an app-server for a wave it doesn't own,
-        // register the handle under the wave's slot, and start sending
-        // pushes / watermark updates against the wrong thread (and, when
-        // a real spec card also matches for the same wave, the row order
-        // would decide which handle "wins" the spec_push registry slot
-        // — non-deterministic and silent). The role column is the
-        // canonical authorization label (migration 0008); lowercase
-        // string form per `CardRole` serde (migration 0008 comment) and
-        // matches the other spec-role SQL in the codebase
-        // (`migrations/0013_cards_deletable.sql`, `migrations/0014_*`).
-        let rows: Vec<(
-            String,
-            String,
-            String,
-            Option<i64>,
-            Option<String>,
-            Option<i64>,
-            Option<String>,
-            Option<i64>,
-        )> = sqlx::query_as(
-            r#"SELECT c.id,
-                      c.wave_id,
-                      t.thread_id,
-                      json_extract(c.payload, '$.appserver_pgid'),
-                      json_extract(c.payload, '$.appserver_sock'),
-                      json_extract(c.payload, '$.appserver_start_time'),
-                      json_extract(c.payload, '$.appserver_boot_id'),
-                      json_extract(c.payload, '$.push_watermark')
-               FROM cards c
-               JOIN waves w ON w.id = c.wave_id
-               JOIN card_codex_threads t ON t.card_id = c.id
-               WHERE c.role = 'spec'
-                 AND t.role = 'spec'
-                 AND COALESCE(json_extract(c.payload, '$.codex_source'), 'legacy') != 'shared'
-                 AND COALESCE(json_extract(c.payload, '$.appserver_needs_initial_prompt'), 0) != 1
-                 AND w.lifecycle NOT IN ('done', 'canceled', 'failed')"#,
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(
-                |(card_id, wave_id, thread_id, pgid, sock, start_time, boot_id, watermark)| {
-                    let pgid = pgid.and_then(|v| i32::try_from(v).ok());
-                    // #318 INV-5 — `starttime` in `/proc/<pid>/stat` is
-                    // jiffies-since-boot (unsigned long in the kernel).
-                    // We persist it as a JSON number; SQLite hands it back
-                    // as i64. Negative values would be corruption — drop
-                    // them (treat as missing → skip kill conservatively).
-                    let start_time =
-                        start_time.and_then(|v| if v >= 0 { Some(v as u64) } else { None });
-                    let watermark = watermark.unwrap_or(0);
-                    (
-                        card_id, wave_id, thread_id, pgid, sock, start_time, boot_id, watermark,
-                    )
-                },
-            )
-            .collect())
-    }
-
-    async fn spec_cards_for_initial_prompt_bootstrap(
-        &self,
-    ) -> Result<
-        Vec<(
-            String,
-            String,
-            String,
-            Option<i32>,
-            Option<String>,
-            Option<u64>,
-            Option<String>,
-            i64,
-        )>,
-    > {
-        let rows: Vec<(
-            String,
-            String,
-            String,
-            Option<i64>,
-            Option<String>,
-            Option<i64>,
-            Option<String>,
-            Option<i64>,
-        )> = sqlx::query_as(
-            r#"SELECT c.id,
-                      c.wave_id,
-                      w.cwd,
-                      json_extract(c.payload, '$.appserver_pgid'),
-                      json_extract(c.payload, '$.appserver_sock'),
-                      json_extract(c.payload, '$.appserver_start_time'),
-                      json_extract(c.payload, '$.appserver_boot_id'),
-                      json_extract(c.payload, '$.push_watermark')
-               FROM cards c
-               JOIN waves w ON w.id = c.wave_id
-               WHERE c.role = 'spec'
-                 AND COALESCE(json_extract(c.payload, '$.appserver_needs_initial_prompt'), 0) = 1
-                 AND COALESCE(json_extract(c.payload, '$.codex_source'), 'legacy') != 'shared'
-                 AND w.lifecycle NOT IN ('done', 'canceled', 'failed')"#,
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(
-                |(card_id, wave_id, cwd, pgid, sock, start_time, boot_id, watermark)| {
-                    let pgid = pgid.and_then(|v| i32::try_from(v).ok());
-                    let start_time =
-                        start_time.and_then(|v| if v >= 0 { Some(v as u64) } else { None });
-                    let watermark = watermark.unwrap_or(0);
-                    (
-                        card_id, wave_id, cwd, pgid, sock, start_time, boot_id, watermark,
-                    )
-                },
-            )
-            .collect())
-    }
 
     async fn shared_spec_cards_for_initial_prompt_takeover(
         &self,
@@ -2323,7 +2101,6 @@ impl RepoRead for SqlxRepo {
                JOIN waves w ON w.id = c.wave_id
                JOIN terminals t ON t.id = json_extract(c.payload, '$.terminal_id')
                WHERE c.role = 'spec'
-                 AND COALESCE(json_extract(c.payload, '$.appserver_needs_initial_prompt'), 0) = 1
                  AND COALESCE(json_extract(c.payload, '$.codex_source'), 'legacy') = 'shared'
                  AND t.exit_code IS NULL
                  AND COALESCE(t.signal_killed, 0) = 0
@@ -2686,9 +2463,9 @@ impl RepoOutOfDomain for SqlxRepo {
     }
 
     async fn spec_card_set_push_watermark(&self, card_id: &str, watermark: i64) -> Result<()> {
-        // JSON merge so we only touch `payload.push_watermark` — never
-        // clobber `codex_thread_id` / `appserver_sock` / `appserver_pgid` /
-        // any other field. `json_set(p, '$.k', v)` upserts the key in place.
+        // JSON merge so we only touch `payload.push_watermark` — never clobber
+        // `codex_thread_id` / `appserver_sock` / any other field.
+        // `json_set(p, '$.k', v)` upserts the key in place.
         // A missing row is silently a no-op (the wave was deleted between
         // the dispatcher's bump and the persist; nothing to do).
         //
@@ -2711,101 +2488,30 @@ impl RepoOutOfDomain for SqlxRepo {
         // ids in [old, new]" and re-push.
         //
         // The `CASE` preserves the stored watermark when it is already
-        // at-or-above the proposed one; the `WHERE` still allows a write
-        // in that case only when it needs to remove
-        // `appserver_needs_initial_prompt`. SQLite evaluates the WHERE
-        // and CASE atomically under the same row lock, so the
-        // read-modify-write race is closed without blocking the lifecycle
-        // marker cleanup.
+        // at-or-above the proposed one. SQLite evaluates the WHERE and CASE
+        // atomically under the same row lock, so the read-modify-write race
+        // is closed.
         let now = now_ms();
         let _ = sqlx::query(
             r#"UPDATE cards
-                  SET payload    = json_remove(
-                                      json_set(
-                                          COALESCE(payload, '{}'),
-                                          '$.push_watermark',
-                                          CASE
-                                              WHEN COALESCE(json_extract(payload, '$.push_watermark'), 0) < ?1
-                                              THEN ?1
-                                              ELSE COALESCE(json_extract(payload, '$.push_watermark'), 0)
-                                          END
-                                      ),
-                                      '$.appserver_needs_initial_prompt'
+                  SET payload    = json_set(
+                                      COALESCE(payload, '{}'),
+                                      '$.push_watermark',
+                                      CASE
+                                          WHEN COALESCE(json_extract(payload, '$.push_watermark'), 0) < ?1
+                                          THEN ?1
+                                          ELSE COALESCE(json_extract(payload, '$.push_watermark'), 0)
+                                      END
                                    ),
                       updated_at = ?2
                 WHERE id = ?3
-                  AND (
-                      COALESCE(json_extract(payload, '$.push_watermark'), 0) < ?1
-                      OR COALESCE(json_extract(payload, '$.appserver_needs_initial_prompt'), 0) = 1
-                  )"#,
+                  AND COALESCE(json_extract(payload, '$.push_watermark'), 0) < ?1"#,
         )
         .bind(watermark)
         .bind(now)
         .bind(card_id)
         .execute(&self.pool)
         .await?;
-        Ok(())
-    }
-
-    async fn spec_card_clear_needs_initial_prompt(&self, card_id: &str) -> Result<()> {
-        let now = now_ms();
-        let _ = sqlx::query(
-            r#"UPDATE cards
-                  SET payload    = json_remove(
-                                      COALESCE(payload, '{}'),
-                                      '$.appserver_needs_initial_prompt'
-                                   ),
-                      updated_at = ?1
-                WHERE id = ?2
-                  AND COALESCE(json_extract(payload, '$.appserver_needs_initial_prompt'), 0) = 1"#,
-        )
-        .bind(now)
-        .bind(card_id)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    async fn spec_card_set_empty_goal_bootstrap_pending_state(
-        &self,
-        card_id: &str,
-        pgid: i32,
-        sock: &str,
-        start_time: Option<u64>,
-        boot_id: Option<&str>,
-        watermark: i64,
-    ) -> Result<()> {
-        let now = now_ms();
-        let st_i64 = start_time.and_then(|v| i64::try_from(v).ok());
-        let mut tx = self.pool.begin().await?;
-        let _ = sqlx::query(
-            r#"UPDATE cards
-                  SET payload = json_remove(
-                                    json_set(
-                                        COALESCE(payload, '{}'),
-                                        '$.appserver_pgid', ?1,
-                                        '$.appserver_sock', ?2,
-                                        '$.appserver_start_time', ?3,
-                                        '$.appserver_boot_id', ?4,
-                                        '$.push_watermark', ?5,
-                                        '$.appserver_needs_initial_prompt', 1
-                                    ),
-                                    '$.codex_thread_id'
-                                ),
-                      updated_at = ?6
-                WHERE id = ?7"#,
-        )
-        .bind(pgid)
-        .bind(sock)
-        .bind(st_i64)
-        .bind(boot_id)
-        .bind(watermark)
-        .bind(now)
-        .bind(card_id)
-        .execute(&mut *tx)
-        .await?;
-        card_codex_thread_delete_by_card_tx(&mut tx, card_id).await?;
-        tx.commit().await?;
         Ok(())
     }
 
@@ -2890,149 +2596,6 @@ impl RepoOutOfDomain for SqlxRepo {
         Ok(())
     }
 
-    async fn spec_card_set_appserver_after_takeover(
-        &self,
-        card_id: &str,
-        pgid: i32,
-        sock: &str,
-        start_time: Option<u64>,
-        boot_id: Option<&str>,
-    ) -> Result<()> {
-        // Four-key JSON merge — leaves `codex_thread_id` and
-        // `push_watermark` untouched. Missing row is a no-op (the wave
-        // was deleted between takeover and persist).
-        //
-        // #318 INV-5 (R3-B1) — `appserver_start_time` + `appserver_boot_id`
-        // are the identity stamp captured at respawn. SQLite has no
-        // native u64 so start_time is bound as i64; jiffies-since-boot
-        // fits comfortably (i64::MAX jiffies is ~3 trillion years at
-        // HZ=100). When the spawn-time `/proc` read failed (non-Linux /
-        // transient ENOENT) we EXPLICITLY null the field via
-        // `json_set(..., NULL)` so a prior stale stamp doesn't outlive
-        // its process. SQLite's `json_set` writes JSON `null` for a
-        // NULL bind value, which `json_extract` returns as NULL → boot
-        // recovery skips the kill (correct conservative posture).
-        let now = now_ms();
-        let st_i64 = start_time.and_then(|v| i64::try_from(v).ok());
-        let _ = sqlx::query(
-            r#"UPDATE cards
-                  SET payload = json_set(
-                                    COALESCE(payload, '{}'),
-                                    '$.appserver_pgid', ?1,
-                                    '$.appserver_sock', ?2,
-                                    '$.appserver_start_time', ?3,
-                                    '$.appserver_boot_id', ?4
-                                ),
-                      updated_at = ?5
-                WHERE id = ?6"#,
-        )
-        .bind(pgid)
-        .bind(sock)
-        .bind(st_i64)
-        .bind(boot_id)
-        .bind(now)
-        .bind(card_id)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn spec_card_set_appserver_after_reset(
-        &self,
-        card_id: &str,
-        thread_id: &str,
-        pgid: i32,
-        sock: &str,
-        start_time: Option<u64>,
-        boot_id: Option<&str>,
-        needs_initial_prompt: bool,
-    ) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
-        let card = spec_card_set_appserver_after_reset_tx(
-            &mut tx,
-            card_id,
-            thread_id,
-            pgid,
-            sock,
-            start_time,
-            boot_id,
-            needs_initial_prompt,
-        )
-        .await?;
-        card_codex_thread_upsert_tx(
-            &mut tx,
-            card_id,
-            thread_id,
-            CardRole::Spec,
-            Some(card.wave_id.as_str()),
-        )
-        .await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
-    async fn spec_card_clear_push_state(&self, card_id: &str) -> Result<()> {
-        // Remove the six push-related fields so the next boot doesn't
-        // re-attempt the stale thread/resume. Leaves everything else in
-        // the payload intact. `json_remove` on a missing key is a no-op,
-        // so the SQL stays one statement.
-        //
-        // #318 INV-5 (R3-B1) — `appserver_start_time` +
-        // `appserver_boot_id` are the identity stamp; they go out with
-        // the rest of the push state so a re-spawned-from-scratch wave
-        // doesn't carry a stale stamp.
-        let now = now_ms();
-        let mut tx = self.pool.begin().await?;
-        let _ = sqlx::query(
-            r#"UPDATE cards
-                  SET payload    = json_remove(
-                                       COALESCE(payload, '{}'),
-                                       '$.codex_thread_id',
-                                       '$.appserver_sock',
-                                       '$.appserver_pgid',
-                                       '$.appserver_start_time',
-                                       '$.appserver_boot_id',
-                                       '$.push_watermark',
-                                       '$.appserver_needs_initial_prompt'
-                                   ),
-                      updated_at = ?1
-                WHERE id = ?2"#,
-        )
-        .bind(now)
-        .bind(card_id)
-        .execute(&mut *tx)
-        .await?;
-        card_codex_thread_delete_by_card_tx(&mut tx, card_id).await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
-    async fn spec_card_clear_runtime_after_reset_failure(&self, card_id: &str) -> Result<()> {
-        let now = now_ms();
-        let mut tx = self.pool.begin().await?;
-        let _ = sqlx::query(
-            r#"UPDATE cards
-                  SET payload    = json_remove(
-                                       COALESCE(payload, '{}'),
-                                       '$.codex_thread_id',
-                                       '$.appserver_sock',
-                                       '$.appserver_pgid',
-                                       '$.appserver_start_time',
-                                       '$.appserver_boot_id',
-                                       '$.appserver_needs_initial_prompt'
-                                   ),
-                      updated_at = ?1
-                WHERE id = ?2"#,
-        )
-        .bind(now)
-        .bind(card_id)
-        .execute(&mut *tx)
-        .await?;
-        card_codex_thread_delete_by_card_tx(&mut tx, card_id).await?;
-        tx.commit().await?;
-        Ok(())
-    }
 
     // ---- spec push queue (#318 INV-3 / R2-B1) ---------------------------
 

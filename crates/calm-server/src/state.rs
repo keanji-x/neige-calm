@@ -85,9 +85,8 @@ pub struct AppState {
     /// socket under `<data_dir>/mcp/kernel.sock`; per-card codex daemons
     /// connect through `neige-mcp-stdio-shim` and authenticate via the
     /// per-card token in `card_mcp_tokens`. The handle's `shim_config`
-    /// is read by `spec_card::build_role_codex_config_toml` so
-    /// the per-card `$CODEX_HOME/config.toml` carries a matching
-    /// `[mcp_servers.calm]` block.
+    /// is passed through card MCP token setup so codex-launched shim
+    /// processes can reach the kernel MCP server.
     ///
     /// `Option` because `from_parts` (replay / unit tests) skips the
     /// listener boot — neither the replay binary nor most integration
@@ -104,25 +103,8 @@ pub struct AppState {
     /// (`Arc<DashMap<…>>` inside); the dispatcher push path resolves a wave's
     /// client through this registry.
     pub spec_push: SpecPushRegistry,
-    /// PR4 (#410) — one server-wide codex app-server supervisor. Constructed
-    /// at boot but started explicitly from `main` after shared CODEX_HOME seed
-    /// and MCP server setup; PR4 does not route cards through it yet.
+    /// PR4 (#410) — one server-wide codex app-server supervisor.
     pub shared_codex_appserver: Arc<SharedCodexAppServer>,
-    /// Gate for routing user prompt cards through the shared codex daemon.
-    /// Config and fixture defaults are true; tests may override through
-    /// `with_shared_codex_prompt_cards_enabled`.
-    pub shared_codex_prompt_cards_enabled: bool,
-    /// Gate for routing empty user codex cards through the shared codex
-    /// daemon. Config and fixture defaults are true; tests may override
-    /// through `with_shared_codex_empty_cards_enabled`.
-    pub shared_codex_empty_cards_enabled: bool,
-    /// Gate for routing spec cards created by `POST /api/waves` through the
-    /// shared codex daemon. Config and fixture defaults are true; tests may
-    /// override through `with_shared_codex_spec_cards_enabled`.
-    pub shared_codex_spec_cards_enabled: bool,
-    /// Gate for routing dispatcher-spawned worker codex cards through the
-    /// shared codex daemon. Config and fixture defaults are true.
-    pub shared_codex_worker_cards_enabled: bool,
     /// FIFO attribution registry for empty cards that fresh-start a thread
     /// through the shared daemon's TUI. Present only when the shared daemon is
     /// enabled for this boot.
@@ -240,7 +222,6 @@ impl AppState {
             // #293 — share the push registry (push is the only path now).
             spec_push.clone(),
             shared_codex_appserver.clone(),
-            true,
             Dispatcher::permits_from_env(8),
         ));
         Self {
@@ -266,10 +247,6 @@ impl AppState {
             // Same instance the dispatcher above holds a clone of.
             spec_push,
             shared_codex_appserver,
-            shared_codex_prompt_cards_enabled: true,
-            shared_codex_empty_cards_enabled: true,
-            shared_codex_spec_cards_enabled: true,
-            shared_codex_worker_cards_enabled: true,
             pending_codex_threads: None,
             pending_codex_threads_spawn_serial: Arc::new(Mutex::new(())),
             // #322 — aspect registry. Identical set in test/replay and
@@ -287,34 +264,6 @@ impl AppState {
         self.shared_codex_appserver = shared;
         self
     }
-
-    #[cfg(feature = "fixtures")]
-    pub fn with_shared_codex_prompt_cards_enabled(mut self, enabled: bool) -> Self {
-        self.shared_codex_prompt_cards_enabled = enabled;
-        self
-    }
-
-    #[cfg(feature = "fixtures")]
-    pub fn with_shared_codex_empty_cards_enabled(mut self, enabled: bool) -> Self {
-        self.shared_codex_empty_cards_enabled = enabled;
-        self
-    }
-
-    #[cfg(feature = "fixtures")]
-    pub fn with_shared_codex_spec_cards_enabled(mut self, enabled: bool) -> Self {
-        self.shared_codex_spec_cards_enabled = enabled;
-        self
-    }
-
-    // NOTE: there is intentionally no `with_shared_codex_worker_cards_enabled`
-    // fixture setter, even though the field is public. Unlike the other
-    // shared-codex flags (read at request time inside route handlers),
-    // the worker flag is captured by the Dispatcher at spawn time inside
-    // `from_parts`/`new`, so a post-spawn mutation on AppState would NOT
-    // reach the dispatcher's already-captured value. Fixtures that want
-    // the shared worker path enabled must pass the flag directly to
-    // `Dispatcher::spawn[_with_terminal_renderer]` (see
-    // tests/codex_worker_shared_daemon.rs::spawn_dispatcher for the pattern).
 
     #[cfg(feature = "fixtures")]
     pub fn with_pending_codex_threads(
@@ -503,7 +452,6 @@ impl AppState {
             // #293 — share the push registry (push is the only path now).
             spec_push.clone(),
             shared_codex_appserver.clone(),
-            cfg.shared_codex_worker_cards_enabled,
             crate::dispatcher::Dispatcher::permits_from_env(8),
         ));
 
@@ -544,10 +492,6 @@ impl AppState {
             // instance for its push path.
             spec_push,
             shared_codex_appserver,
-            shared_codex_prompt_cards_enabled: cfg.shared_codex_prompt_cards_enabled,
-            shared_codex_empty_cards_enabled: cfg.shared_codex_empty_cards_enabled,
-            shared_codex_spec_cards_enabled: cfg.shared_codex_spec_cards_enabled,
-            shared_codex_worker_cards_enabled: cfg.shared_codex_worker_cards_enabled,
             pending_codex_threads,
             pending_codex_threads_spawn_serial: Arc::new(Mutex::new(())),
             // #322 — aspect registry, boot-installed once and shared via
@@ -563,18 +507,6 @@ impl AppState {
         // pipeline every other write uses so the cleanup is audited. See
         // `terminal_sweeper` module docs and `docs/sync-engine-design.md` §10.
         crate::terminal_sweeper::spawn(state.clone());
-
-        // Codex hands-free auto-submit subscriber. Watches the bus for
-        // `hook.codex.session_start` and, when the originating card has
-        // a non-empty `payload.prompt`, injects `\r` to the codex daemon
-        // via `DaemonClient::inject_stdin`. Empty / absent prompt → no-op
-        // (the user spawned codex without a hands-free prompt).
-        crate::codex_auto_submit::spawn_with_terminal_renderer(
-            state.repo.clone(),
-            state.daemon.clone(),
-            state.terminal_renderer.clone(),
-            state.events.clone(),
-        );
 
         Ok(state)
     }

@@ -23,10 +23,8 @@ use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::new_id;
 use crate::model::{Card, CardPatch, CardRole, NewCard};
 use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
-use crate::routes::settings::load_settings;
 use crate::routes::waves::{
-    SpawnPushAppserverMode, await_shared_spec_initial_turn_lifecycle,
-    install_spec_push_sinks_and_park, spawn_push_appserver,
+    await_shared_spec_initial_turn_lifecycle, install_spec_push_sinks_and_park,
 };
 use crate::spec_card::{SpecPushDaemonArgs, seed_and_spawn_spec_daemon};
 use crate::spec_push::{self, SpecPushPhase, SpecPushStatus};
@@ -492,137 +490,8 @@ pub(crate) async fn reset_spec_card(
             "card {id} is not a spec codex card",
         )));
     }
-    if card
-        .payload
-        .get("codex_source")
-        .and_then(serde_json::Value::as_str)
-        == Some("shared")
-    {
-        let response = reset_spec_card_shared(s, card).await?;
-        return Ok(Json(response));
-    }
-
-    let terminal = s
-        .repo
-        .terminal_get_by_card(card.id.as_str())
-        .await?
-        .ok_or_else(|| {
-            CalmError::Internal(format!("spec terminal row missing for card {}", card.id))
-        })?;
-    let wave = s
-        .repo
-        .wave_get(card.wave_id.as_str())
-        .await?
-        .ok_or_else(|| CalmError::NotFound(format!("wave {}", card.wave_id)))?;
-    let settings = load_settings(s.repo.as_ref()).await?;
-    let mcp_token = crate::mcp_server::auth::CardMcpToken::generate().into_inner();
-    if s.mcp_server.is_some() {
-        let card_id_for_tx = card.id.to_string();
-        let hashed = crate::mcp_server::auth::hash_token(&mcp_token);
-        write_in_tx_typed(s.repo.as_ref(), move |tx| {
-            Box::pin(async move {
-                card_mcp_token_set_tx(tx, &card_id_for_tx, &hashed).await?;
-                Ok(())
-            })
-        })
-        .await?;
-    }
-    let mut env_for_spawn = terminal.env.clone();
-    if let (Some(server), Some(map)) = (s.mcp_server.as_ref(), env_for_spawn.as_object_mut()) {
-        map.insert(
-            "NEIGE_MCP_TOKEN".into(),
-            serde_json::Value::String(mcp_token.clone()),
-        );
-        map.insert(
-            "NEIGE_MCP_SOCKET".into(),
-            serde_json::Value::String(server.shim_config.socket_path.to_string_lossy().to_string()),
-        );
-    }
-
-    let card_id = card.id.clone();
-    let wave_id = card.wave_id.clone();
-    let terminal_id = terminal.id.clone();
-    let dispatcher = s.dispatcher.clone();
-    let reset = dispatcher
-        .with_push_lock(&wave_id, async {
-            reap_spec_push(&s, &wave_id).await;
-            reap_terminal_artifacts(&s, &terminal).await;
-            s.repo.terminal_set_pid(&terminal.id, None).await?;
-            s.repo.terminal_set_exit(&terminal.id, None, false).await?;
-            let card_at_lock = s
-                .repo
-                .card_get(card_id.as_str())
-                .await?
-                .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
-            let watermark = push_watermark_from_payload(&card_at_lock.payload);
-
-            let push_args = spawn_push_appserver(
-                &s,
-                card_id.as_str(),
-                &wave,
-                &env_for_spawn,
-                &settings,
-                Some(mcp_token.as_str()),
-                SpawnPushAppserverMode::ResetExisting {
-                    mcp_token: mcp_token.clone(),
-                },
-            )
-            .await?;
-
-            crate::rehydrate_and_catch_up_parked_spec_push_under_lock(
-                &s,
-                card_id.as_str(),
-                &wave_id,
-                watermark,
-            )
-            .await;
-
-            if let Err(e) = seed_and_spawn_spec_daemon(
-                s.clone(),
-                card_id.to_string(),
-                wave_id.to_string(),
-                wave.cwd.clone(),
-                env_for_spawn,
-                Some(mcp_token),
-                push_args.clone(),
-            )
-            .await
-            {
-                reap_spec_push(&s, &wave_id).await;
-                if let Err(clear_err) = s.repo.spec_card_clear_runtime_after_reset_failure(card_id.as_str()).await {
-                    tracing::warn!(
-                        card_id = %card_id,
-                        error = %clear_err,
-                        "spec reset: failed to clear reset-created appserver fields after terminal daemon spawn failure",
-                    );
-                }
-                return Err(e);
-            }
-
-            // #421 + #424 reconciliation: `SpecPushDaemonArgs.thread_id`
-            // is `Option<String>` post-#424 to cover empty-goal recovery
-            // (no rollout yet → TUI fresh-starts and the notification
-            // consumer backfills). Reset's contract is the inverse: it
-            // destroys the existing conversation and mints a fresh one,
-            // so a missing `thread_id` here means the path was driven
-            // for an empty-goal wave that shouldn't be reset. Surface
-            // an Internal error; the matching guard inside
-            // `spawn_push_appserver`'s ResetExisting branch fails
-            // earlier with the same shape.
-            let new_thread_id = push_args.thread_id.ok_or_else(|| {
-                CalmError::Internal(
-                    "reset succeeded without a thread_id; empty-goal waves cannot be reset before their first turn".to_string(),
-                )
-            })?;
-            Ok::<_, CalmError>(new_thread_id)
-        })
-        .await?;
-
-    Ok(Json(ResetSpecCardResponse {
-        card_id,
-        terminal_id,
-        new_thread_id: reset,
-    }))
+    let response = reset_spec_card_shared(s, card).await?;
+    Ok(Json(response))
 }
 
 fn push_watermark_from_payload(payload: &serde_json::Value) -> i64 {
@@ -929,7 +798,6 @@ async fn spawn_reset_via_shared_daemon(
         push_args: SpecPushDaemonArgs {
             thread_id: Some(thread_id),
             sock_uri: s.shared_codex_appserver.remote_uri(),
-            seed_codex_home: false,
             developer_instructions: None,
         },
     })
@@ -948,6 +816,7 @@ async fn persist_shared_reset_runtime_fields(
     };
     let card_id_for_tx = spec_card_id.to_string();
     let thread_id_for_tx = thread_id.to_string();
+    let remote_uri = s.shared_codex_appserver.remote_uri();
     let (_card, _id) = write_with_event_typed(
         s.repo.as_ref(),
         ActorId::Kernel,
@@ -972,9 +841,10 @@ async fn persist_shared_reset_runtime_fields(
                     "codex_source".into(),
                     serde_json::Value::String("shared".into()),
                 );
-                map.insert("appserver_pgid".into(), serde_json::Value::Null);
-                map.insert("appserver_start_time".into(), serde_json::Value::Null);
-                map.insert("appserver_boot_id".into(), serde_json::Value::Null);
+                map.insert("appserver_sock".into(), serde_json::Value::String(remote_uri));
+                map.remove("appserver_pgid");
+                map.remove("appserver_start_time");
+                map.remove("appserver_boot_id");
                 map.remove("appserver_needs_initial_prompt");
                 let card = card_update_tx(
                     tx,

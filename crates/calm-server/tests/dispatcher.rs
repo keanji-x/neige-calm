@@ -37,7 +37,7 @@ use calm_server::event::{
     ArtifactRef, Event, EventBus, EventScope, SubscribeFilter, SubscribeScope,
 };
 use calm_server::ids::{ActorId, CoveId, WaveId};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
+use calm_server::model::{NewCard, NewCove, NewWave};
 use calm_server::state::{CodexClient, DaemonClient};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::wave_cove_cache::WaveCoveCache;
@@ -152,7 +152,6 @@ async fn dispatcher_initial_prompt_ready_sink_persists_thread_id_and_broadcasts_
         None,
         calm_server::spec_push::SpecPushRegistry::new(),
         stub_shared(&repo),
-        false,
         4,
     );
     let mut rx = events.subscribe();
@@ -231,7 +230,6 @@ async fn dispatcher_initial_prompt_ready_sink_failure_does_not_broadcast_or_muta
         None,
         calm_server::spec_push::SpecPushRegistry::new(),
         stub_shared(&repo),
-        false,
         4,
     );
     let mut rx = events.subscribe();
@@ -380,147 +378,6 @@ async fn subscribe_filtered_skips_lagged_without_panic() {
 // 2. Dispatcher happy path.
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
-async fn dispatcher_happy_path_mints_worker_card() {
-    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
-    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
-
-    // #310 followup — the dispatcher now rolls back the worker card +
-    // terminal row when `spawn_terminal_with_parts` returns Err (orphan
-    // cleanup; see `rollback_orphan_worker`). Pre-rollback we could
-    // use a missing proc-supervisor socket here and catch the orphan
-    // card with `wait_for` because it stuck around; post-rollback the
-    // card is deleted before `wait_for` can poll for it, making this
-    // happy-path test flaky. Let the fixture-backed proc supervisor
-    // satisfy EnsureProc so spawn succeeds and the card stays.
-    let codex = stub_codex();
-    let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
-    let daemon = Arc::new(calm_server::state::DaemonClient {
-        data_dir: tmp.path().to_path_buf(),
-        proc_supervisor_sock: None,
-    });
-    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
-    let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo);
-    let _dispatcher = Dispatcher::spawn_with_terminal_renderer(
-        repo.clone(),
-        events.clone(),
-        cache.clone(),
-        wcc.clone(),
-        codex.clone(),
-        daemon,
-        terminal_renderer.clone(),
-        None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
-        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
-        stub_shared(&repo),
-        false,
-        4, // permits
-    );
-
-    // Emit a Wave-scoped CodexJobRequested envelope by going through
-    // log_pure_event. Actor = User (unrestricted in the role gate).
-    let idem = "happy-1";
-    let req = codex_req(idem, "do thing");
-    let scope = wave_scope(&wave_id, &cove_id);
-    repo.log_pure_event(ActorId::User, scope, None, &events, &cache, &wcc, req)
-        .await
-        .unwrap();
-
-    // Poll for the worker card landing in the cards table.
-    let card = wait_for(Duration::from_secs(3), || async {
-        let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
-        cards
-            .into_iter()
-            .find(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem))
-    })
-    .await
-    .expect("worker card minted within 3s");
-
-    assert_eq!(card.kind, "codex");
-    assert_eq!(
-        card.payload.get("goal").and_then(|v| v.as_str()),
-        Some("do thing")
-    );
-    assert_eq!(
-        card.payload.get("role_request").and_then(|v| v.as_str()),
-        Some("codex")
-    );
-
-    // `payload.prompt` must be non-empty and quote the goal —
-    // `codex_auto_submit` reads this field to decide whether to fire the
-    // composer `\r`; an empty value silently hangs the worker. The
-    // goal text is part of the rendered prompt, so a regression in the
-    // render helper (or in dispatcher wiring it into bookkeeping) trips
-    // here.
-    let prompt = card
-        .payload
-        .get("prompt")
-        .and_then(|v| v.as_str())
-        .expect("worker card payload.prompt must be present");
-    assert!(
-        prompt.contains("do thing"),
-        "payload.prompt must carry the goal; got: {prompt:?}"
-    );
-
-    // Verify the cards.role column carries 'worker' via the role cache
-    // (write-through invariant in `card_create_with_id_tx`).
-    assert_eq!(cache.get(&card.id), Some(CardRole::Worker));
-}
-
-#[tokio::test]
-async fn dispatcher_role_is_worker_via_role_cache() {
-    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
-    // Variant of the happy-path test that doesn't need to crack open
-    // the pool — we verify role=Worker via `card_role_cache.get(...)`.
-    //
-    // #310 followup — see `dispatcher_happy_path_mints_worker_card`:
-    // the rollback path deletes the card on spawn failure, so a happy-
-    // path assertion needs the recorder fixture to make spawn succeed.
-    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
-    let codex = stub_codex();
-    let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
-    let daemon = Arc::new(calm_server::state::DaemonClient {
-        data_dir: tmp.path().to_path_buf(),
-        proc_supervisor_sock: None,
-    });
-    let _dispatcher = Dispatcher::spawn(
-        repo.clone(),
-        events.clone(),
-        cache.clone(),
-        wcc.clone(),
-        codex.clone(),
-        daemon,
-        None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
-        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
-        stub_shared(&repo),
-        false,
-        4,
-    );
-
-    let idem = "role-check";
-    repo.log_pure_event(
-        ActorId::User,
-        wave_scope(&wave_id, &cove_id),
-        None,
-        &events,
-        &cache,
-        &wcc,
-        codex_req(idem, "g"),
-    )
-    .await
-    .unwrap();
-
-    let card = wait_for(Duration::from_secs(3), || async {
-        let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
-        cards
-            .into_iter()
-            .find(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem))
-    })
-    .await
-    .expect("worker card minted within 3s");
-
-    assert_eq!(cache.get(&card.id), Some(CardRole::Worker));
-}
-
 // ---------------------------------------------------------------------------
 // 3. Dispatcher idempotency.
 // ---------------------------------------------------------------------------
@@ -544,251 +401,9 @@ async fn dispatcher_role_is_worker_via_role_cache() {
 /// disappears. We use the fixture-backed proc supervisor so the first
 /// dispatch succeeds end-to-end (no rollback, no task.failed) and the
 /// dedup'd second emit silently short-circuits as it should.
-#[tokio::test]
-async fn dispatcher_dedup_does_not_double_emit_task_failed() {
-    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
-    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
-    let codex = stub_codex();
-    let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
-    let daemon = Arc::new(calm_server::state::DaemonClient {
-        data_dir: tmp.path().to_path_buf(),
-        proc_supervisor_sock: None,
-    });
-    let _dispatcher = Dispatcher::spawn(
-        repo.clone(),
-        events.clone(),
-        cache.clone(),
-        wcc.clone(),
-        codex.clone(),
-        daemon,
-        None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
-        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
-        stub_shared(&repo),
-        false,
-        4,
-    );
-
-    // Subscribe before emitting so we don't miss a fast task.failed.
-    let mut rx = events.subscribe();
-
-    let idem = "dedup-single-fail";
-    for _ in 0..2 {
-        repo.log_pure_event(
-            ActorId::User,
-            wave_scope(&wave_id, &cove_id),
-            None,
-            &events,
-            &cache,
-            &wcc,
-            codex_req(idem, "g"),
-        )
-        .await
-        .unwrap();
-    }
-
-    // Give the dispatcher time to drain both emits — first one spawns
-    // a real worker through the recorder fixture; second one dedups.
-    tokio::time::sleep(Duration::from_millis(1500)).await;
-
-    // Drain the bus and count `task.failed` events carrying our idem.
-    let mut failed_count = 0usize;
-    while let Ok(Ok(env)) = tokio::time::timeout(Duration::from_millis(50), rx.recv()).await {
-        if let Event::TaskFailed {
-            idempotency_key, ..
-        } = &env.event
-            && idempotency_key == idem
-        {
-            failed_count += 1;
-        }
-    }
-    // Zero — both dispatches must complete cleanly. The first spawns
-    // through the recorder fixture (success); the second short-circuits
-    // on the IdempotencyCollision catch arm (also success). A task.failed
-    // here would indicate either a real spawn-pipeline regression OR the
-    // catch arm misfiring and the second emit re-running the spawn chain
-    // against a now-bound socket (which would still succeed but should
-    // never have re-entered the spawn path).
-    assert_eq!(
-        failed_count, 0,
-        "expected zero task.failed events (both dispatches must complete cleanly); got {failed_count}. \
-         A non-zero count indicates a regression in either the spawn pipeline or the \
-         IdempotencyCollision catch arm."
-    );
-
-    // Sanity check: exactly one worker card landed.
-    let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
-    let worker_cards: Vec<_> = cards
-        .iter()
-        .filter(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem))
-        .collect();
-    assert_eq!(
-        worker_cards.len(),
-        1,
-        "exactly one worker card for the dedup'd key"
-    );
-}
-
-#[tokio::test]
-async fn dispatcher_dedupes_same_idempotency_key() {
-    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
-    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
-    let codex = stub_codex();
-    // #310 followup — see `dispatcher_dedup_does_not_double_emit_task_failed`
-    // for why this test needs a real (recorder) daemon now: the orphan-row
-    // rollback wipes the card on spawn failure, so testing dedup against
-    // a failing daemon no longer leaves the "exactly one card" signal.
-    let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
-    let daemon = Arc::new(calm_server::state::DaemonClient {
-        data_dir: tmp.path().to_path_buf(),
-        proc_supervisor_sock: None,
-    });
-    let _dispatcher = Dispatcher::spawn(
-        repo.clone(),
-        events.clone(),
-        cache.clone(),
-        wcc.clone(),
-        codex.clone(),
-        daemon,
-        None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
-        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
-        stub_shared(&repo),
-        false,
-        4,
-    );
-
-    let idem = "dup-key";
-    // Fire two requests with the same key in quick succession.
-    for _ in 0..2 {
-        repo.log_pure_event(
-            ActorId::User,
-            wave_scope(&wave_id, &cove_id),
-            None,
-            &events,
-            &cache,
-            &wcc,
-            codex_req(idem, "g"),
-        )
-        .await
-        .unwrap();
-    }
-
-    // Give the dispatcher time to process both (recorder readiness
-    // takes ~50-300ms; 1.5s is generous).
-    tokio::time::sleep(Duration::from_millis(1500)).await;
-
-    let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
-    let worker_cards: Vec<_> = cards
-        .iter()
-        .filter(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem))
-        .collect();
-    assert_eq!(
-        worker_cards.len(),
-        1,
-        "exactly one worker card for the duplicate idempotency key, got {} ({:?})",
-        worker_cards.len(),
-        worker_cards
-    );
-}
-
 // ---------------------------------------------------------------------------
 // 4. Semaphore cap.
 // ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn dispatcher_semaphore_caps_concurrent_spawns() {
-    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
-    let _ = tracing_subscriber::fmt::try_init();
-    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
-    // Permits = 2. The dispatcher's spawn-side acquire_owned holds a
-    // permit across the work; with idempotency keys unique per
-    // emission, 5 emits should all eventually succeed, but the
-    // semaphore's `available_permits()` should never go below 0
-    // (it can't by construction) and shouldn't exceed 2 minus the
-    // number currently held — i.e. `available <= 2` at any sample.
-    //
-    // #310 followup — needs a real (recorder) daemon: with the
-    // orphan-row rollback, a failing daemon spawn no longer leaves the
-    // worker card behind, so the "5 cards land" tail assertion needs
-    // an actually-succeeding spawn path. The semaphore-cap assertion
-    // is orthogonal to daemon success/failure — what we care about is
-    // that 5 emits eventually settle through the permit pool.
-    let codex = stub_codex();
-    let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
-    let daemon = Arc::new(calm_server::state::DaemonClient {
-        data_dir: tmp.path().to_path_buf(),
-        proc_supervisor_sock: None,
-    });
-    let dispatcher = Arc::new(Dispatcher::spawn(
-        repo.clone(),
-        events.clone(),
-        cache.clone(),
-        wcc.clone(),
-        codex.clone(),
-        daemon,
-        None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
-        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
-        stub_shared(&repo),
-        false,
-        2,
-    ));
-    assert_eq!(dispatcher.permits(), 2);
-    let sem = dispatcher.semaphore();
-
-    // Fire five distinct requests.
-    for i in 0..5 {
-        repo.log_pure_event(
-            ActorId::User,
-            wave_scope(&wave_id, &cove_id),
-            None,
-            &events,
-            &cache,
-            &wcc,
-            codex_req(&format!("idem-{i}"), "g"),
-        )
-        .await
-        .unwrap();
-    }
-
-    // Sample available_permits at multiple times during processing.
-    // The semaphore was constructed with 2 permits, so the value
-    // should always satisfy: 0 <= available <= 2.
-    for _ in 0..30 {
-        let avail = sem.available_permits();
-        assert!(
-            avail <= 2,
-            "semaphore over-issued permits: available={avail}, max=2"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-
-    // Wait for all five to complete.
-    let result = wait_for(Duration::from_secs(5), || async {
-        let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
-        let n = cards
-            .iter()
-            .filter(|c| c.payload.get("role_request").and_then(|v| v.as_str()) == Some("codex"))
-            .count();
-        if n == 5 { Some(()) } else { None }
-    })
-    .await;
-
-    if result.is_none() {
-        // Debug dump for triage.
-        let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
-        let n: Vec<_> = cards
-            .iter()
-            .filter_map(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()))
-            .collect();
-        panic!("expected 5 worker cards, found {}: keys={:?}", n.len(), n);
-    }
-
-    // After settle, semaphore should be back to full.
-    assert_eq!(
-        sem.available_permits(),
-        2,
-        "all permits released after work done"
-    );
-}
 
 // ---------------------------------------------------------------------------
 // 5. TaskFailed on spawn error.
@@ -812,7 +427,6 @@ async fn dispatcher_emits_task_failed_on_bad_scope() {
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         stub_shared(&repo),
-        false,
         4,
     );
 
@@ -874,63 +488,6 @@ async fn dispatcher_emits_task_failed_on_bad_scope() {
 // 6. Touch-test: dispatcher's CardAdded passes through enforce_role.
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
-async fn dispatcher_card_added_emit_passes_role_gate() {
-    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
-    // The role gate's `KernelDispatcher` arm is documented as
-    // unrestricted (see `role_gate.rs:110`). This test verifies that
-    // the dispatcher's actual write path (which goes through
-    // `write_with_event` → `enforce_role`) doesn't get rejected.
-    //
-    // #310 followup — same recorder-fixture switch as the other happy-
-    // path tests: the orphan rollback now wipes the worker card on
-    // spawn failure, so a happy-path "card lands" probe needs the
-    // recorder to make spawn succeed.
-    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
-    let codex = stub_codex();
-    let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
-    let daemon = Arc::new(calm_server::state::DaemonClient {
-        data_dir: tmp.path().to_path_buf(),
-        proc_supervisor_sock: None,
-    });
-    let _dispatcher = Dispatcher::spawn(
-        repo.clone(),
-        events.clone(),
-        cache.clone(),
-        wcc.clone(),
-        codex.clone(),
-        daemon,
-        None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
-        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
-        stub_shared(&repo),
-        false,
-        4,
-    );
-
-    let idem = "role-gate-ok";
-    repo.log_pure_event(
-        ActorId::User,
-        wave_scope(&wave_id, &cove_id),
-        None,
-        &events,
-        &cache,
-        &wcc,
-        codex_req(idem, "g"),
-    )
-    .await
-    .unwrap();
-
-    // If enforce_role rejected the dispatcher write, no card would land.
-    let _card = wait_for(Duration::from_secs(3), || async {
-        let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
-        cards
-            .into_iter()
-            .find(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem))
-    })
-    .await
-    .expect("dispatcher write must pass enforce_role for ActorId::KernelDispatcher");
-}
-
 // ---------------------------------------------------------------------------
 // PR6 (#136) — Real concurrent idempotency-race test.
 //
@@ -940,110 +497,6 @@ async fn dispatcher_card_added_emit_passes_role_gate() {
 // dispatcher tasks at the same moment after both have already
 // acquired their semaphore permit and entered the spawn fn.
 // ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn dispatcher_dedupes_under_real_concurrent_race() {
-    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
-    let _ = tracing_subscriber::fmt::try_init();
-    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
-    // Permits >= 2 so both racers can run concurrently.
-    //
-    // #310 followup: switched from a missing proc-supervisor socket
-    // (every spawn fails) to the fixture-backed proc supervisor.
-    // Pre-rollback the failing winning racer left an orphan card the
-    // assertion below counted as "exactly one"; post-rollback that
-    // orphan is wiped, so we need EnsureProc to succeed for the
-    // "exactly one card lands" dedup signal to remain meaningful.
-    let codex = stub_codex();
-    let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
-    let daemon = Arc::new(calm_server::state::DaemonClient {
-        data_dir: tmp.path().to_path_buf(),
-        proc_supervisor_sock: None,
-    });
-    let _dispatcher = Dispatcher::spawn(
-        repo.clone(),
-        events.clone(),
-        cache.clone(),
-        wcc.clone(),
-        codex.clone(),
-        daemon,
-        None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
-        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
-        stub_shared(&repo),
-        false,
-        4,
-    );
-
-    let idem = "race-key-pr6";
-    // Fire two emissions through `log_pure_event` from two parallel
-    // tokio tasks released by a barrier. Each task acquires a
-    // permit on a shared `Notify` after the barrier so the second
-    // emit lands on the bus only nanoseconds after the first.
-    let barrier = Arc::new(tokio::sync::Barrier::new(2));
-
-    let emit_once = |label: &'static str| {
-        let repo = repo.clone();
-        let events = events.clone();
-        let cache = cache.clone();
-        let wcc = wcc.clone();
-        let scope = wave_scope(&wave_id, &cove_id);
-        let barrier = barrier.clone();
-        async move {
-            // Synchronize so both tasks call log_pure_event at as
-            // close to the same instant as the scheduler allows.
-            barrier.wait().await;
-            repo.log_pure_event(
-                ActorId::User,
-                scope,
-                None,
-                &events,
-                &cache,
-                &wcc,
-                codex_req(idem, label),
-            )
-            .await
-            .expect("log_pure_event ok");
-        }
-    };
-
-    let (a, b) = tokio::join!(
-        tokio::spawn(emit_once("racer-a")),
-        tokio::spawn(emit_once("racer-b"))
-    );
-    a.unwrap();
-    b.unwrap();
-
-    // Give the dispatcher time to drain both envelopes through the
-    // spawn pipeline. We use `wait_for` not a fixed sleep so this
-    // doesn't hang the suite on a slow runner.
-    let _ = wait_for(Duration::from_secs(3), || async {
-        let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
-        let n = cards
-            .iter()
-            .filter(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem))
-            .count();
-        if n >= 1 { Some(n) } else { None }
-    })
-    .await;
-
-    // Settle: count worker cards.
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
-    let worker_cards: Vec<_> = cards
-        .iter()
-        .filter(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem))
-        .collect();
-    assert_eq!(
-        worker_cards.len(),
-        1,
-        "exactly one worker card under barrier-synchronized concurrent emit; got {} cards: {:?}",
-        worker_cards.len(),
-        worker_cards
-            .iter()
-            .map(|c| c.id.as_str())
-            .collect::<Vec<_>>(),
-    );
-}
 
 // ---------------------------------------------------------------------------
 // 7. ArtifactRef use-site exercise (keeps the import live).
@@ -1056,155 +509,6 @@ fn artifact_ref_smoke() {
     let a = ArtifactRef::from("a-1");
     assert_eq!(a.as_str(), "a-1");
 }
-#[tokio::test]
-async fn dispatcher_codex_worker_spawns_with_dark_theme_default() {
-    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
-    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
-
-    // Use the fixture-backed proc supervisor so the dispatcher's spawn
-    // actually completes. `stub_daemon()` points at a nonexistent
-    // proc_supervisor_sock, so EnsureProc fails before renderer state
-    // can be observed.
-    let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
-    let daemon = Arc::new(calm_server::state::DaemonClient {
-        data_dir: tmp.path().to_path_buf(),
-        proc_supervisor_sock: None,
-    });
-
-    let codex = stub_codex();
-    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
-    let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo);
-    let _dispatcher = Dispatcher::spawn_with_terminal_renderer(
-        repo.clone(),
-        events.clone(),
-        cache.clone(),
-        wcc.clone(),
-        codex.clone(),
-        daemon,
-        terminal_renderer.clone(),
-        None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
-        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
-        stub_shared(&repo),
-        false,
-        4, // permits
-    );
-
-    // Emit a Wave-scoped CodexJobRequested envelope; the dispatcher
-    // picks it up, mints a worker card with `RequestTheme::default_dark()`
-    // on the terminal row, then ensures the renderer. `spawn_terminal_with_parts`
-    // reads the row's theme_fg/_bg and carries those RGB values into
-    // the renderer config.
-    let idem = "dispatcher-theme-default";
-    let req = codex_req(idem, "do thing");
-    let scope = wave_scope(&wave_id, &cove_id);
-    repo.log_pure_event(ActorId::User, scope, None, &events, &cache, &wcc, req)
-        .await
-        .unwrap();
-
-    let card = wait_for(Duration::from_secs(5), || async {
-        let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
-        cards
-            .into_iter()
-            .find(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem))
-    })
-    .await
-    .expect("worker card minted within 5s");
-    let terminal_id = card.payload["terminal_id"]
-        .as_str()
-        .expect("payload.terminal_id stamped");
-    // Same dispatcher-spawn race as the carries_prompt_argv test above:
-    // the card-mint DB write can win against renderer.ensure() inserting
-    // into the registry by a tick or two.
-    let entry = wait_for(Duration::from_secs(3), || async {
-        terminal_renderer.get(terminal_id)
-    })
-    .await
-    .expect("renderer entry registered before CardAdded within 3s");
-    assert_eq!(entry.config().terminal_fg, (216, 219, 226));
-    assert_eq!(entry.config().terminal_bg, (15, 20, 24));
-}
-
-// ---------------------------------------------------------------------------
-// 9. Dispatcher's worker codex spawn must hand the rendered prompt to
-//    codex as its positional `[PROMPT]` arg — NOT a bare `codex`. Without
-//    this, the worker mounts an empty composer and `codex_auto_submit`
-//    has nothing to submit; the worker hangs forever. Mirrors the spec
-//    card path (issue #251) for the worker side.
-//
-// We inspect the renderer config produced by `spawn_terminal_with_parts`;
-// its shell command is `/bin/sh -c "<program>"`, so the rendered prompt
-// lands inside that program string starting with `codex `.
-// ---------------------------------------------------------------------------
-#[tokio::test]
-async fn dispatcher_codex_worker_spawn_carries_prompt_argv() {
-    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
-    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
-
-    let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
-    let daemon = Arc::new(calm_server::state::DaemonClient {
-        data_dir: tmp.path().to_path_buf(),
-        proc_supervisor_sock: None,
-    });
-
-    let codex = stub_codex();
-    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
-    let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo);
-    let _dispatcher = Dispatcher::spawn_with_terminal_renderer(
-        repo.clone(),
-        events.clone(),
-        cache.clone(),
-        wcc.clone(),
-        codex.clone(),
-        daemon,
-        terminal_renderer.clone(),
-        None,
-        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
-        stub_shared(&repo),
-        false,
-        4,
-    );
-
-    let idem = "prompt-argv";
-    // Distinctive goal text so the substring assertion below pins us to
-    // this exact dispatch (rather than `do thing` which a sibling test
-    // also uses).
-    let req = codex_req(idem, "fix issue 251 for the worker path");
-    let scope = wave_scope(&wave_id, &cove_id);
-    repo.log_pure_event(ActorId::User, scope, None, &events, &cache, &wcc, req)
-        .await
-        .unwrap();
-
-    let card = wait_for(Duration::from_secs(5), || async {
-        let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
-        cards
-            .into_iter()
-            .find(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem))
-    })
-    .await
-    .expect("worker card minted within 5s");
-    let terminal_id = card.payload["terminal_id"]
-        .as_str()
-        .expect("payload.terminal_id stamped");
-    // Dispatcher's spawn races against the card-mint write — the card
-    // can land in the DB a tick before the renderer's ensure() completes
-    // its registry insert. Poll briefly.
-    let entry = wait_for(Duration::from_secs(3), || async {
-        terminal_renderer.get(terminal_id)
-    })
-    .await
-    .expect("renderer entry registered for worker within 3s");
-    let argv_text = entry.config().args.join("\n");
-    assert!(
-        argv_text.contains("codex '"),
-        "expected renderer argv to start the program with `codex '<prompt>'`; \
-         got bare `codex` or missing quoting: {argv_text:?}"
-    );
-    assert!(
-        argv_text.contains("fix issue 251 for the worker path"),
-        "codex argv must carry the goal as a positional prompt; got: {argv_text:?}"
-    );
-}
-
 // ---------------------------------------------------------------------------
 // 10. Issue #310 — `CardAdded` ordering contract: the dispatcher must NOT
 //     broadcast `Event::CardAdded` for a worker card until AFTER
@@ -1230,93 +534,6 @@ async fn dispatcher_codex_worker_spawn_carries_prompt_argv() {
 //     inside the tx (e.g. by routing it through `write_with_event_typed`
 //     again), this test trips loudly.
 // ---------------------------------------------------------------------------
-#[tokio::test]
-async fn dispatcher_codex_card_added_after_renderer_entry_set_issue_310() {
-    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
-    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
-
-    let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
-    let daemon = Arc::new(calm_server::state::DaemonClient {
-        data_dir: tmp.path().to_path_buf(),
-        proc_supervisor_sock: None,
-    });
-
-    let codex = stub_codex();
-    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
-    let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo);
-    let _dispatcher = Dispatcher::spawn_with_terminal_renderer(
-        repo.clone(),
-        events.clone(),
-        cache.clone(),
-        wcc.clone(),
-        codex.clone(),
-        daemon,
-        terminal_renderer.clone(),
-        None,
-        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
-        stub_shared(&repo),
-        false,
-        4,
-    );
-
-    // Subscribe BEFORE emitting so we don't race past the CardAdded
-    // frame. Filter on the kind below so the dispatch's own
-    // `CodexJobRequested` echo doesn't show up as the "first" event.
-    let mut rx = events.subscribe();
-
-    let idem = "issue-310-ordering";
-    let req = codex_req(idem, "verify ordering contract");
-    let scope = wave_scope(&wave_id, &cove_id);
-    repo.log_pure_event(ActorId::User, scope, None, &events, &cache, &wcc, req)
-        .await
-        .unwrap();
-
-    // Drain the bus until we see the worker's CardAdded. Skip the
-    // initial CodexJobRequested envelope we just emitted; skip any
-    // unrelated kinds.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut worker_card: Option<calm_server::model::Card> = None;
-    while Instant::now() < deadline {
-        match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
-            Ok(Ok(env)) => {
-                if let Event::CardAdded(card) = &env.event
-                    && card.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem)
-                {
-                    worker_card = Some(card.clone());
-                    break;
-                }
-            }
-            Ok(Err(_)) => break,
-            Err(_) => continue,
-        }
-    }
-    let card =
-        worker_card.expect("dispatcher must broadcast CardAdded for the worker card within 5s");
-
-    // The card's payload carries the terminal_id (canonical layout
-    // stamped by `card_with_codex_create_tx`); use it to fetch the
-    // terminal row and assert the renderer entry + pid are present AT
-    // THE MOMENT the bus delivered CardAdded.
-    let terminal_id = card
-        .payload
-        .get("terminal_id")
-        .and_then(|v| v.as_str())
-        .expect("worker card payload.terminal_id must be set");
-    let term = repo
-        .terminal_get(terminal_id)
-        .await
-        .unwrap()
-        .expect("terminal row for the worker card must exist post-CardAdded");
-    assert!(
-        terminal_renderer.get(terminal_id).is_some(),
-        "issue #310 regression: renderer entry MUST be registered by the time CardAdded reaches subscribers",
-    );
-    assert!(
-        term.pid.is_some(),
-        "terminal pid must be persisted by the time CardAdded reaches subscribers; got {term:?}"
-    );
-}
-
 // ---------------------------------------------------------------------------
 // 11. Issue #310 — same ordering contract as test 10, but for the
 //     terminal-worker path (`spawn_terminal_worker`). The pre-fix bug
@@ -1355,7 +572,6 @@ async fn dispatcher_terminal_card_added_after_renderer_entry_set_issue_310() {
         None,
         calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         stub_shared(&repo),
-        false,
         4,
     );
 
@@ -1453,178 +669,6 @@ async fn dispatcher_terminal_card_added_after_renderer_entry_set_issue_310() {
 //     maps it to `CalmError::Internal`. Then we swap to the fixture-backed
 //     proc supervisor for the retry leg.
 // ---------------------------------------------------------------------------
-#[tokio::test]
-async fn dispatcher_rolls_back_card_on_codex_daemon_spawn_failure_issue_310() {
-    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
-    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
-
-    // First dispatcher uses a bogus daemon path → spawn always fails.
-    let codex = stub_codex();
-    let dispatcher_fail = Dispatcher::spawn(
-        repo.clone(),
-        events.clone(),
-        cache.clone(),
-        wcc.clone(),
-        codex.clone(),
-        stub_daemon(), // proc_supervisor_sock = missing socket
-        None,
-        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
-        stub_shared(&repo),
-        false,
-        4,
-    );
-
-    let idem = "rollback-codex-1";
-    let req = codex_req(idem, "rollback-test");
-    let scope = wave_scope(&wave_id, &cove_id);
-
-    // Subscribe before emitting so we can confirm task.failed fired.
-    let mut rx = events.subscribe();
-
-    repo.log_pure_event(
-        ActorId::User,
-        scope.clone(),
-        None,
-        &events,
-        &cache,
-        &wcc,
-        req,
-    )
-    .await
-    .unwrap();
-
-    // Wait for the dispatcher to drain → emit task.failed (the canonical
-    // signal that the spawn pipeline ran to its failure end). The
-    // rollback runs synchronously inside the spawn fn before Err
-    // propagates, so by the time task.failed is on the bus, the orphan
-    // row must already be gone.
-    let mut saw_failed = false;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
-            Ok(Ok(env)) => {
-                if let Event::TaskFailed {
-                    idempotency_key, ..
-                } = &env.event
-                    && idempotency_key == idem
-                {
-                    saw_failed = true;
-                    break;
-                }
-            }
-            Ok(Err(_)) => break,
-            Err(_) => continue,
-        }
-    }
-    assert!(
-        saw_failed,
-        "expected dispatcher to emit task.failed after spawn failure"
-    );
-
-    // Leg (a) + (b): no worker card under our idempotency key — the
-    // row was rolled back.
-    let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
-    let leftover: Vec<_> = cards
-        .iter()
-        .filter(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem))
-        .collect();
-    assert!(
-        leftover.is_empty(),
-        "expected card row to be rolled back after spawn failure; \
-         found {} leftover cards: {:?}",
-        leftover.len(),
-        leftover.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
-    );
-
-    // Leg (c): retry with the SAME idempotency_key against a fresh
-    // dispatcher whose proc-supervisor fixture accepts EnsureProc.
-    // Pre-rollback, the orphan row would short-circuit this on
-    // `IdempotencyCollision`; post-rollback, the SELECT inside the tx
-    // sees no match and the spawn proceeds normally.
-    //
-    // We deliberately spin up a FRESH `EventBus` for the retry leg.
-    // `dispatcher_fail`'s background task subscribes to `events` and
-    // doesn't shut down on `drop()` — its `Dispatcher::spawn` task
-    // only exits on broadcast `Closed`, which we can't trigger without
-    // dropping every sender. If we re-emitted into `events`, both
-    // dispatchers would race for the retry envelope; the failing one
-    // could win the in-tx SELECT, spawn-fail, and roll back the
-    // success-side dispatcher's card. A dedicated retry bus side-
-    // steps the race entirely — the failing dispatcher only ever sees
-    // the original (failed) envelope; the retry envelope goes solely
-    // to the success dispatcher.
-    drop(dispatcher_fail);
-    let events_retry = calm_server::event::EventBus::new();
-    // Intentionally leak the tempdir (`TempDir::keep()` consumes the
-    // guard without scheduling cleanup) so dispatcher-owned background
-    // tasks do not race tempdir deletion at the end of the test. The
-    // fixture-backed proc supervisor can outlive this scope under load;
-    // keeping the data dir avoids noisy cleanup failures that mask real
-    // failures in adjacent tests.
-    let tmp_path = tempfile::TempDir::new()
-        .expect("tempdir for daemon sockets")
-        .keep();
-    let daemon_ok = Arc::new(calm_server::state::DaemonClient {
-        data_dir: tmp_path,
-        proc_supervisor_sock: None,
-    });
-    let _dispatcher_ok = Dispatcher::spawn(
-        repo.clone(),
-        events_retry.clone(),
-        cache.clone(),
-        wcc.clone(),
-        codex.clone(),
-        daemon_ok,
-        None,
-        calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
-        stub_shared(&repo),
-        false,
-        4,
-    );
-
-    repo.log_pure_event(
-        ActorId::User,
-        scope,
-        None,
-        &events_retry,
-        &cache,
-        &wcc,
-        codex_req(idem, "rollback-test-retry"),
-    )
-    .await
-    .unwrap();
-
-    // The retry should mint a card carrying our idempotency_key. If
-    // the rollback didn't fire, the orphan row would short-circuit and
-    // no NEW card lands — `wait_for` returns None and we panic.
-    let card = wait_for(Duration::from_secs(5), || async {
-        let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
-        cards
-            .into_iter()
-            .find(|c| c.payload.get("idempotency_key").and_then(|v| v.as_str()) == Some(idem))
-    })
-    .await
-    .expect(
-        "retry with the same idempotency_key MUST succeed in spawning a fresh worker card \
-         — if this times out, the orphan row from the failed first attempt is short-\
-         circuiting the retry (the rollback didn't fire or didn't remove the row)",
-    );
-
-    // Sanity: the card was actually freshly created (the post-rollback
-    // SELECT-in-tx found nothing → `card_with_codex_create_tx` minted a
-    // new row). The goal text differentiates this from the first
-    // (failed) dispatch.
-    assert_eq!(
-        card.payload.get("goal").and_then(|v| v.as_str()),
-        Some("rollback-test-retry"),
-        "retry must mint a NEW card with the retry's goal, not return the orphan",
-    );
-    assert!(
-        repo.card_get(card.id.as_ref()).await.unwrap().is_some(),
-        "the retry's card must be live in the DB",
-    );
-}
-
 // ---------------------------------------------------------------------------
 // 13. Issue #310 followup — terminal-worker mirror of test 12. The codex
 //     path AND terminal path share the post-commit / pre-spawn orphan
@@ -1655,7 +699,6 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
         None,
         calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         stub_shared(&repo),
-        false,
         4,
     );
 
@@ -1742,7 +785,6 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
         None,
         calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         stub_shared(&repo),
-        false,
         4,
     );
 
@@ -1837,7 +879,6 @@ async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
         None,
         calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         stub_shared(&repo),
-        false,
         4,
     );
 
@@ -1962,7 +1003,6 @@ async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
         None,
         calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
         stub_shared(&repo),
-        false,
         4,
     );
 
