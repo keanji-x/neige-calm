@@ -2594,7 +2594,33 @@ async fn spawn_codex_worker_via_shared_daemon(
     // CardUpdated and could mount the card before its renderer entry is
     // live (issue #310 race). CardAdded remains the first visible event,
     // emitted by the caller after spawn succeeds.
-    persist_shared_worker_runtime_fields(inner, ctx.card, &thread_id, &remote_uri).await?;
+    if let Err(e) =
+        persist_shared_worker_runtime_fields(inner, ctx.card, &thread_id, &remote_uri).await
+    {
+        // The thread/start succeeded but persisting the runtime markers
+        // failed (e.g. SQLite IO error). Without rollback, the card +
+        // terminal rows stay with idempotency_key intact and short-circuit
+        // future retries; the card_codex_threads mapping was already
+        // upserted by thread_start_for_card and must be reaped too.
+        let _ = rollback_orphan_worker(
+            inner.repo.as_ref(),
+            inner.terminal_renderer.as_ref(),
+            &inner.card_role_cache,
+            card_id,
+            ctx.term.id.as_str(),
+        )
+        .await;
+        let _ = inner.repo.card_codex_thread_delete_by_card(card_id).await;
+        tracing::warn!(
+            target: "shared_codex_daemon::worker",
+            card_id,
+            wave_id = %ctx.wave_id,
+            thread_id = %thread_id,
+            error = %e,
+            "persist_shared_runtime_fields_failed_rolled_back"
+        );
+        return Err(e);
+    }
 
     // turn_start BEFORE spawn — codex 0.135's `codex resume <thread_id>
     // --remote ...` REQUIRES the thread to have at least one turn before a
