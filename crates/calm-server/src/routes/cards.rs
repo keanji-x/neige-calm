@@ -67,6 +67,29 @@ pub(crate) async fn card_scope(
     })
 }
 
+fn is_shared_codex_card(card: &Card) -> bool {
+    card.payload.get("codex_source").and_then(Value::as_str) == Some("shared")
+}
+
+pub(crate) async fn interrupt_shared_card_active_turn(s: &AppState, card: &Card) {
+    if !is_shared_codex_card(card) {
+        return;
+    }
+    if let Err(e) = s
+        .shared_codex_appserver
+        .interrupt_active_turn_for_card(card.id.as_str())
+        .await
+    {
+        tracing::warn!(
+            target: "shared_codex_daemon::orphan_turn",
+            card_id = %card.id,
+            wave_id = %card.wave_id,
+            error = %e,
+            "failed to interrupt active shared codex turn during card teardown"
+        );
+    }
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route(
@@ -840,7 +863,7 @@ async fn spawn_reset_via_shared_daemon(
     }
     .await;
     if let Err(e) = turn_result {
-        if let Some(row) = old_mapping {
+        if let Some(row) = old_mapping.as_ref() {
             if let Err(rollback_err) = s
                 .repo
                 .card_codex_thread_upsert(
@@ -879,6 +902,24 @@ async fn spawn_reset_via_shared_daemon(
             "turn_start_failed_rolled_back"
         );
         return Err(e);
+    }
+
+    if let Some(row) = old_mapping.as_ref()
+        && row.thread_id != thread_id
+        && let Err(e) = s
+            .shared_codex_appserver
+            .interrupt_active_turn(&row.thread_id)
+            .await
+    {
+        tracing::warn!(
+            target: "shared_codex_daemon::spec_card_reset",
+            card_id = %spec_card_id,
+            wave_id = %wave.id,
+            old_thread_id = %row.thread_id,
+            new_thread_id = %thread_id,
+            error = %e,
+            "failed to interrupt old active shared codex turn after reset"
+        );
     }
 
     Ok(SharedResetStarted {
@@ -1004,6 +1045,8 @@ pub(crate) async fn delete_card(
     let card_id = card.id.clone();
     let wave_id = card.wave_id.clone();
     let scope = card_scope(s.repo.as_ref(), card_id.clone(), wave_id.clone()).await?;
+
+    interrupt_shared_card_active_turn(&s, &card).await;
 
     // Issue #197 — eager teardown. The `terminals.card_id` FK is
     // `ON DELETE RESTRICT` (migration 0011); the row must be removed,

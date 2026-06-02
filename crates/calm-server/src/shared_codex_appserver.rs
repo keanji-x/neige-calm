@@ -182,6 +182,7 @@ pub struct SharedCodexAppServer {
     runtime: Arc<Mutex<Option<SharedDaemonRuntime>>>,
     repo: Arc<dyn Repo>,
     thread_cache: Arc<DashMap<String, String>>,
+    active_turns: Arc<DashMap<String, String>>,
     restart_backoff: BackoffState,
     notifications: NotificationFanout,
     pending_codex_threads_handle: Option<Arc<PendingThreadStartRegistry>>,
@@ -232,6 +233,7 @@ impl SharedCodexAppServer {
             runtime: Arc::new(Mutex::new(None)),
             repo,
             thread_cache: Arc::new(DashMap::new()),
+            active_turns: Arc::new(DashMap::new()),
             restart_backoff: BackoffState::new(Duration::from_millis(250), Duration::from_secs(10)),
             notifications: tx,
             pending_codex_threads_handle,
@@ -271,6 +273,7 @@ impl SharedCodexAppServer {
             runtime: Arc::new(Mutex::new(None)),
             repo,
             thread_cache: Arc::new(DashMap::new()),
+            active_turns: Arc::new(DashMap::new()),
             restart_backoff: BackoffState::new(
                 Duration::from_millis(cfg.shared_codex_appserver_restart_initial_delay_ms),
                 Duration::from_millis(cfg.shared_codex_appserver_restart_max_delay_ms),
@@ -384,6 +387,29 @@ impl SharedCodexAppServer {
             .ok_or_else(|| CalmError::CodexAppServer("turn/start returned no turn.id".into()))
     }
 
+    pub async fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> Result<()> {
+        let client = self.client().await?;
+        client.turn_interrupt(thread_id, turn_id).await
+    }
+
+    pub async fn interrupt_active_turn(&self, thread_id: &str) -> Result<()> {
+        let Some(turn_id) = self
+            .active_turns
+            .get(thread_id)
+            .map(|entry| entry.value().clone())
+        else {
+            return Ok(());
+        };
+        self.turn_interrupt(thread_id, &turn_id).await
+    }
+
+    pub async fn interrupt_active_turn_for_card(&self, card_id: &str) -> Result<()> {
+        let Some(row) = self.repo.card_codex_thread_get_by_card(card_id).await? else {
+            return Ok(());
+        };
+        self.interrupt_active_turn(&row.thread_id).await
+    }
+
     pub fn subscribe_notifications(&self) -> broadcast::Receiver<Notification> {
         self.notifications.subscribe()
     }
@@ -440,6 +466,19 @@ impl SharedCodexAppServer {
 
     pub fn cached_card_for_thread(&self, thread_id: &str) -> Option<String> {
         self.thread_cache.get(thread_id).map(|v| v.value().clone())
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn active_turn_for_test(&self, thread_id: &str) -> Option<String> {
+        self.active_turns
+            .get(thread_id)
+            .map(|entry| entry.value().clone())
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn set_active_turn_for_test(&self, thread_id: &str, turn_id: &str) {
+        self.active_turns
+            .insert(thread_id.to_string(), turn_id.to_string());
     }
 
     pub fn effective_proxy_env(settings_value: Option<&str>, env_keys: &[&str]) -> Option<String> {
@@ -823,6 +862,7 @@ impl SharedCodexAppServer {
         let pending = self.pending_codex_threads_handle.clone();
         let repo = self.repo.clone();
         let thread_cache = self.thread_cache.clone();
+        let active_turns = self.active_turns.clone();
         let kernel_initiated_threads = self.kernel_initiated_threads.clone();
         let kernel_thread_start_serial = self.kernel_thread_start_serial.clone();
         tokio::spawn(async move {
@@ -850,6 +890,7 @@ impl SharedCodexAppServer {
                         }
                     }
                 }
+                track_active_turn(&active_turns, &notification);
                 if let Some(thread_id) = turn_completed_thread_id(&notification) {
                     kernel_initiated_threads.lock().await.remove(thread_id);
                 }
@@ -1094,6 +1135,48 @@ fn turn_completed_thread_id(notification: &Notification) -> Option<&str> {
     match notification {
         Notification::TurnCompleted { thread_id, .. } => Some(thread_id),
         _ => None,
+    }
+}
+
+fn turn_id(turn: &serde_json::Value) -> Option<&str> {
+    turn.get("id").and_then(serde_json::Value::as_str)
+}
+
+fn other_turn_id(params: &serde_json::Value) -> Option<&str> {
+    params
+        .get("turn")
+        .and_then(turn_id)
+        .or_else(|| params.get("turnId").and_then(serde_json::Value::as_str))
+}
+
+fn other_thread_id(params: &serde_json::Value) -> Option<&str> {
+    params.get("threadId").and_then(serde_json::Value::as_str)
+}
+
+fn track_active_turn(active_turns: &DashMap<String, String>, notification: &Notification) {
+    match notification {
+        Notification::TurnStarted { thread_id, turn } => {
+            if let Some(turn_id) = turn_id(turn) {
+                active_turns.insert(thread_id.clone(), turn_id.to_string());
+            }
+        }
+        Notification::TurnCompleted { thread_id, turn } => {
+            if let Some(turn_id) = turn_id(turn) {
+                active_turns.remove_if(thread_id, |_, active| active == turn_id);
+            } else {
+                active_turns.remove(thread_id);
+            }
+        }
+        Notification::Other { method, params } if method == "turn/aborted" => {
+            if let Some(thread_id) = other_thread_id(params) {
+                if let Some(turn_id) = other_turn_id(params) {
+                    active_turns.remove_if(thread_id, |_, active| active == turn_id);
+                } else {
+                    active_turns.remove(thread_id);
+                }
+            }
+        }
+        _ => {}
     }
 }
 

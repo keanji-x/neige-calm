@@ -467,3 +467,63 @@ async fn worker_turn_start_failure_rolls_back_mapping_and_payload() {
         "turn_start rollback must delete the worker card row so idempotency_key clears for retry"
     );
 }
+
+#[tokio::test]
+async fn worker_spawn_fail_after_turn_start_interrupts_turn() {
+    let _guard = ENV_LOCK.lock().await;
+    let capture = TempDir::new().unwrap();
+    let capture_file = capture.path().join("requests.ndjson");
+    unsafe {
+        std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
+        std::env::set_var("FAKE_CODEX_PTY_FAIL", "1");
+    }
+    let boot = boot(true).await;
+    let _dispatcher = spawn_dispatcher(&boot, true);
+    let mut rx = boot.events.subscribe();
+    dispatch(&boot, "pty-fail-1", "turn starts but pty fails").await;
+    let failed = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let env = rx.recv().await.unwrap();
+            if let Event::TaskFailed {
+                idempotency_key, ..
+            } = env.event
+                && idempotency_key == "pty-fail-1"
+            {
+                break;
+            }
+        }
+    })
+    .await;
+    let rows = wait_for_requests(&capture_file, 4).await;
+    unsafe {
+        std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
+        std::env::remove_var("FAKE_CODEX_PTY_FAIL");
+    }
+    failed.expect("task.failed");
+
+    assert!(
+        rows.iter().any(|row| {
+            row.get("method").and_then(Value::as_str) == Some("turn/interrupt")
+                && row.pointer("/params/threadId").and_then(Value::as_str)
+                    == Some("fake-thread-0001")
+                && row.pointer("/params/turnId").and_then(Value::as_str) == Some("fake-turn-0001")
+        }),
+        "worker PTY spawn failure must interrupt the in-flight shared turn: {rows:?}"
+    );
+    let leftover = wait_for(Duration::from_secs(2), || async {
+        let cards = boot
+            .repo
+            .cards_by_wave(boot.wave_id.as_str())
+            .await
+            .unwrap();
+        let any_left = cards.into_iter().any(|c| {
+            c.payload.get("idempotency_key").and_then(Value::as_str) == Some("pty-fail-1")
+        });
+        if any_left { None } else { Some(()) }
+    })
+    .await;
+    assert!(
+        leftover.is_some(),
+        "PTY spawn rollback must delete the worker card row so idempotency_key clears for retry"
+    );
+}
