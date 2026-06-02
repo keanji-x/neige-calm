@@ -132,7 +132,9 @@ pub struct Config {
     #[arg(
         long,
         env = "CALM_SHARED_CODEX_APPSERVER_ENABLED",
-        default_value_t = true
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        num_args = 1,
     )]
     pub shared_codex_appserver_enabled: bool,
 
@@ -142,7 +144,9 @@ pub struct Config {
     #[arg(
         long,
         env = "CALM_SHARED_CODEX_PROMPT_CARDS_ENABLED",
-        default_value_t = true
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        num_args = 1,
     )]
     pub shared_codex_prompt_cards_enabled: bool,
 
@@ -152,7 +156,9 @@ pub struct Config {
     #[arg(
         long,
         env = "CALM_SHARED_CODEX_EMPTY_CARDS_ENABLED",
-        default_value_t = true
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        num_args = 1,
     )]
     pub shared_codex_empty_cards_enabled: bool,
 
@@ -162,7 +168,9 @@ pub struct Config {
     #[arg(
         long,
         env = "CALM_SHARED_CODEX_SPEC_CARDS_ENABLED",
-        default_value_t = true
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        num_args = 1,
     )]
     pub shared_codex_spec_cards_enabled: bool,
 
@@ -172,7 +180,9 @@ pub struct Config {
     #[arg(
         long,
         env = "CALM_SHARED_CODEX_WORKER_CARDS_ENABLED",
-        default_value_t = true
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        num_args = 1,
     )]
     pub shared_codex_worker_cards_enabled: bool,
 
@@ -254,5 +264,42 @@ impl Config {
         self.shared_codex_appserver_log_dir
             .clone()
             .unwrap_or_else(|| self.data_dir_resolved().join("logs/shared-codex-appserver"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// PR8 R1 regression guard: the default-on shared-codex flags must
+    /// accept `--flag=false` on the CLI for the documented rollback path.
+    /// Without `action = ArgAction::Set + num_args = 1`, clap treats them
+    /// as SetTrue presence flags and rejects values with "unexpected
+    /// value 'false'".
+    #[test]
+    fn shared_codex_flags_accept_cli_false_override() {
+        let cfg = Config::parse_from([
+            "calm-server",
+            "--shared-codex-prompt-cards-enabled=false",
+            "--shared-codex-empty-cards-enabled=false",
+            "--shared-codex-spec-cards-enabled=false",
+            "--shared-codex-worker-cards-enabled=false",
+            "--shared-codex-appserver-enabled=false",
+        ]);
+        assert!(!cfg.shared_codex_prompt_cards_enabled);
+        assert!(!cfg.shared_codex_empty_cards_enabled);
+        assert!(!cfg.shared_codex_spec_cards_enabled);
+        assert!(!cfg.shared_codex_worker_cards_enabled);
+        assert!(!cfg.shared_codex_appserver_enabled);
+    }
+
+    #[test]
+    fn shared_codex_flags_default_to_true_post_pr8() {
+        let cfg = Config::parse_from(["calm-server"]);
+        assert!(cfg.shared_codex_prompt_cards_enabled);
+        assert!(cfg.shared_codex_empty_cards_enabled);
+        assert!(cfg.shared_codex_spec_cards_enabled);
+        assert!(cfg.shared_codex_worker_cards_enabled);
+        assert!(cfg.shared_codex_appserver_enabled);
     }
 }
