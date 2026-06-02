@@ -118,6 +118,7 @@ async fn dispatcher_for(repo: Arc<SqlxRepo>) -> Dispatcher {
         proc_supervisor_sock: None,
     });
     let spec_push = SpecPushRegistry::new();
+    let shared = calm_server::shared_codex_appserver::SharedCodexAppServer::new_stub(repo.clone());
     Dispatcher::spawn(
         Arc::clone(&repo) as Arc<dyn Repo>,
         bus,
@@ -127,6 +128,8 @@ async fn dispatcher_for(repo: Arc<SqlxRepo>) -> Dispatcher {
         daemon,
         None, // mcp_server: not exercised by queue_persist_for
         spec_push,
+        shared,
+        false,
         4, // permits — value irrelevant for these tests
     )
 }

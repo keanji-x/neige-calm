@@ -189,6 +189,10 @@ async fn serve_conn(stream: tokio::net::UnixStream, control: WedgeControl) -> Re
                 .await?;
             }
             "turn/start" => {
+                if env_flag("FAKE_CODEX_FAIL_TURN_START") {
+                    send_error(&mut write, &id, -32000, "forced turn/start failure").await?;
+                    continue;
+                }
                 // Ack with the turn object first…
                 send_result(&mut write, &id, json!({ "turn": { "id": turn_id } })).await?;
                 if env_flag("FAKE_CODEX_EXIT_AFTER_TURN_ACK") {

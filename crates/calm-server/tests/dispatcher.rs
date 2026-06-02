@@ -42,6 +42,8 @@ use calm_server::state::{CodexClient, DaemonClient};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::wave_cove_cache::WaveCoveCache;
 
+static DISPATCHER_DAEMON_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn boot() -> (
     Arc<dyn Repo>,
     EventBus,
@@ -102,6 +104,12 @@ fn stub_codex() -> Arc<CodexClient> {
     Arc::new(CodexClient::new_stub())
 }
 
+fn stub_shared(
+    repo: &Arc<dyn Repo>,
+) -> Arc<calm_server::shared_codex_appserver::SharedCodexAppServer> {
+    calm_server::shared_codex_appserver::SharedCodexAppServer::new_stub(repo.clone())
+}
+
 fn codex_req(idem: &str, goal: &str) -> Event {
     Event::CodexJobRequested {
         idempotency_key: idem.into(),
@@ -143,6 +151,8 @@ async fn dispatcher_initial_prompt_ready_sink_persists_thread_id_and_broadcasts_
         stub_daemon(),
         None,
         calm_server::spec_push::SpecPushRegistry::new(),
+        stub_shared(&repo),
+        false,
         4,
     );
     let mut rx = events.subscribe();
@@ -220,6 +230,8 @@ async fn dispatcher_initial_prompt_ready_sink_failure_does_not_broadcast_or_muta
         stub_daemon(),
         None,
         calm_server::spec_push::SpecPushRegistry::new(),
+        stub_shared(&repo),
+        false,
         4,
     );
     let mut rx = events.subscribe();
@@ -370,6 +382,7 @@ async fn subscribe_filtered_skips_lagged_without_panic() {
 
 #[tokio::test]
 async fn dispatcher_happy_path_mints_worker_card() {
+    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
 
     // #310 followup — the dispatcher now rolls back the worker card +
@@ -398,7 +411,9 @@ async fn dispatcher_happy_path_mints_worker_card() {
         terminal_renderer.clone(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
-        4,    // permits
+        stub_shared(&repo),
+        false,
+        4, // permits
     );
 
     // Emit a Wave-scoped CodexJobRequested envelope by going through
@@ -453,6 +468,7 @@ async fn dispatcher_happy_path_mints_worker_card() {
 
 #[tokio::test]
 async fn dispatcher_role_is_worker_via_role_cache() {
+    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
     // Variant of the happy-path test that doesn't need to crack open
     // the pool — we verify role=Worker via `card_role_cache.get(...)`.
     //
@@ -475,6 +491,8 @@ async fn dispatcher_role_is_worker_via_role_cache() {
         daemon,
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
+        stub_shared(&repo),
+        false,
         4,
     );
 
@@ -528,6 +546,7 @@ async fn dispatcher_role_is_worker_via_role_cache() {
 /// dedup'd second emit silently short-circuits as it should.
 #[tokio::test]
 async fn dispatcher_dedup_does_not_double_emit_task_failed() {
+    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
     let codex = stub_codex();
     let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
@@ -544,6 +563,8 @@ async fn dispatcher_dedup_does_not_double_emit_task_failed() {
         daemon,
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
+        stub_shared(&repo),
+        false,
         4,
     );
 
@@ -609,6 +630,7 @@ async fn dispatcher_dedup_does_not_double_emit_task_failed() {
 
 #[tokio::test]
 async fn dispatcher_dedupes_same_idempotency_key() {
+    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
     let codex = stub_codex();
     // #310 followup — see `dispatcher_dedup_does_not_double_emit_task_failed`
@@ -629,6 +651,8 @@ async fn dispatcher_dedupes_same_idempotency_key() {
         daemon,
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
+        stub_shared(&repo),
+        false,
         4,
     );
 
@@ -672,6 +696,7 @@ async fn dispatcher_dedupes_same_idempotency_key() {
 
 #[tokio::test]
 async fn dispatcher_semaphore_caps_concurrent_spawns() {
+    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
     let _ = tracing_subscriber::fmt::try_init();
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
     // Permits = 2. The dispatcher's spawn-side acquire_owned holds a
@@ -702,6 +727,8 @@ async fn dispatcher_semaphore_caps_concurrent_spawns() {
         daemon,
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
+        stub_shared(&repo),
+        false,
         2,
     ));
     assert_eq!(dispatcher.permits(), 2);
@@ -769,6 +796,7 @@ async fn dispatcher_semaphore_caps_concurrent_spawns() {
 
 #[tokio::test]
 async fn dispatcher_emits_task_failed_on_bad_scope() {
+    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
     // EventScope::System has no wave/cove — the dispatcher can't mint
     // a worker card without a parent wave, so it bails and emits a
     // task.failed event with the reason.
@@ -783,6 +811,8 @@ async fn dispatcher_emits_task_failed_on_bad_scope() {
         stub_daemon(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
+        stub_shared(&repo),
+        false,
         4,
     );
 
@@ -846,6 +876,7 @@ async fn dispatcher_emits_task_failed_on_bad_scope() {
 
 #[tokio::test]
 async fn dispatcher_card_added_emit_passes_role_gate() {
+    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
     // The role gate's `KernelDispatcher` arm is documented as
     // unrestricted (see `role_gate.rs:110`). This test verifies that
     // the dispatcher's actual write path (which goes through
@@ -871,6 +902,8 @@ async fn dispatcher_card_added_emit_passes_role_gate() {
         daemon,
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
+        stub_shared(&repo),
+        false,
         4,
     );
 
@@ -910,6 +943,7 @@ async fn dispatcher_card_added_emit_passes_role_gate() {
 
 #[tokio::test]
 async fn dispatcher_dedupes_under_real_concurrent_race() {
+    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
     let _ = tracing_subscriber::fmt::try_init();
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
     // Permits >= 2 so both racers can run concurrently.
@@ -935,6 +969,8 @@ async fn dispatcher_dedupes_under_real_concurrent_race() {
         daemon,
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
+        stub_shared(&repo),
+        false,
         4,
     );
 
@@ -1022,6 +1058,7 @@ fn artifact_ref_smoke() {
 }
 #[tokio::test]
 async fn dispatcher_codex_worker_spawns_with_dark_theme_default() {
+    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
 
     // Use the fixture-backed proc supervisor so the dispatcher's spawn
@@ -1047,7 +1084,9 @@ async fn dispatcher_codex_worker_spawns_with_dark_theme_default() {
         terminal_renderer.clone(),
         None, // mcp_server: PR7a.1 — test fixture, no MCP wiring
         calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
-        4,    // permits
+        stub_shared(&repo),
+        false,
+        4, // permits
     );
 
     // Emit a Wave-scoped CodexJobRequested envelope; the dispatcher
@@ -1098,6 +1137,7 @@ async fn dispatcher_codex_worker_spawns_with_dark_theme_default() {
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn dispatcher_codex_worker_spawn_carries_prompt_argv() {
+    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
 
     let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
@@ -1119,6 +1159,8 @@ async fn dispatcher_codex_worker_spawn_carries_prompt_argv() {
         terminal_renderer.clone(),
         None,
         calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
+        stub_shared(&repo),
+        false,
         4,
     );
 
@@ -1190,6 +1232,7 @@ async fn dispatcher_codex_worker_spawn_carries_prompt_argv() {
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn dispatcher_codex_card_added_after_renderer_entry_set_issue_310() {
+    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
 
     let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
@@ -1211,6 +1254,8 @@ async fn dispatcher_codex_card_added_after_renderer_entry_set_issue_310() {
         terminal_renderer.clone(),
         None,
         calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
+        stub_shared(&repo),
+        false,
         4,
     );
 
@@ -1287,6 +1332,7 @@ async fn dispatcher_codex_card_added_after_renderer_entry_set_issue_310() {
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn dispatcher_terminal_card_added_after_renderer_entry_set_issue_310() {
+    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
 
     let tmp = tempfile::TempDir::new().expect("tempdir for daemon sockets");
@@ -1308,6 +1354,8 @@ async fn dispatcher_terminal_card_added_after_renderer_entry_set_issue_310() {
         terminal_renderer.clone(),
         None,
         calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
+        stub_shared(&repo),
+        false,
         4,
     );
 
@@ -1407,6 +1455,7 @@ async fn dispatcher_terminal_card_added_after_renderer_entry_set_issue_310() {
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn dispatcher_rolls_back_card_on_codex_daemon_spawn_failure_issue_310() {
+    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
 
     // First dispatcher uses a bogus daemon path → spawn always fails.
@@ -1420,6 +1469,8 @@ async fn dispatcher_rolls_back_card_on_codex_daemon_spawn_failure_issue_310() {
         stub_daemon(), // proc_supervisor_sock = missing socket
         None,
         calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
+        stub_shared(&repo),
+        false,
         4,
     );
 
@@ -1526,6 +1577,8 @@ async fn dispatcher_rolls_back_card_on_codex_daemon_spawn_failure_issue_310() {
         daemon_ok,
         None,
         calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
+        stub_shared(&repo),
+        false,
         4,
     );
 
@@ -1588,6 +1641,7 @@ async fn dispatcher_rolls_back_card_on_codex_daemon_spawn_failure_issue_310() {
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310() {
+    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
 
     let codex = stub_codex();
@@ -1600,6 +1654,8 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
         stub_daemon(),
         None,
         calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
+        stub_shared(&repo),
+        false,
         4,
     );
 
@@ -1685,6 +1741,8 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
         daemon_ok,
         None,
         calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
+        stub_shared(&repo),
+        false,
         4,
     );
 
@@ -1755,6 +1813,7 @@ async fn dispatcher_rolls_back_card_on_terminal_daemon_spawn_failure_issue_310()
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
+    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
 
     let tmp_path = tempfile::TempDir::new().expect("tempdir for daemon sockets");
@@ -1777,6 +1836,8 @@ async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
         terminal_renderer.clone(),
         None,
         calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
+        stub_shared(&repo),
+        false,
         4,
     );
 
@@ -1876,6 +1937,7 @@ async fn dispatcher_reaps_daemon_on_rollback_after_partial_spawn_issue_310() {
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
+    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
     let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
 
     // Same intentional keep-alive pattern as nearby dispatcher tests:
@@ -1899,6 +1961,8 @@ async fn dispatcher_preserves_fast_exit_terminal_card_issue_310() {
         daemon,
         None,
         calm_server::spec_push::SpecPushRegistry::new(), // #293: empty push registry
+        stub_shared(&repo),
+        false,
         4,
     );
 
