@@ -221,7 +221,7 @@ fn reloaded_state_from_boot(boot: &Boot) -> AppState {
 }
 
 #[test]
-fn spec_card_shared_daemon_flag_defaults_to_false() {
+fn spec_card_shared_daemon_flag_defaults_to_true() {
     let tmp = TempDir::new().unwrap();
     let fake_codex_bin = common::fake_codex_bin();
     let cfg = Config::parse_from([
@@ -231,7 +231,7 @@ fn spec_card_shared_daemon_flag_defaults_to_false() {
         "--codex-bin",
         fake_codex_bin.as_str(),
     ]);
-    assert!(!cfg.shared_codex_spec_cards_enabled);
+    assert!(cfg.shared_codex_spec_cards_enabled);
 }
 
 #[tokio::test]

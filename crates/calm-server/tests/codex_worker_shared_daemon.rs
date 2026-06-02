@@ -211,7 +211,7 @@ async fn wait_for_requests(path: &Path, min_count: usize) -> Vec<Value> {
 }
 
 #[test]
-fn worker_shared_daemon_flag_defaults_to_false() {
+fn worker_shared_daemon_flag_defaults_to_true() {
     let tmp = TempDir::new().unwrap();
     let fake_codex_bin = fake_codex_bin();
     let cfg = Config::parse_from([
@@ -221,7 +221,7 @@ fn worker_shared_daemon_flag_defaults_to_false() {
         "--codex-bin",
         fake_codex_bin.as_str(),
     ]);
-    assert!(!cfg.shared_codex_worker_cards_enabled);
+    assert!(cfg.shared_codex_worker_cards_enabled);
 }
 
 #[tokio::test]
