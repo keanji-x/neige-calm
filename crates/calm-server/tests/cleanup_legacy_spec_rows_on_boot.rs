@@ -5,7 +5,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{NewCard, NewCove, NewWave, WaveLifecycle};
+use calm_server::model::{CardRole, NewCard, NewCove, NewWave, WaveLifecycle};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes::theme::RequestTheme;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -88,6 +88,18 @@ async fn seed_spec(repo: &SqlxRepo, payload: Value, lifecycle: WaveLifecycle) ->
     card.id.to_string()
 }
 
+async fn seed_thread_mapping(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
+    let card = repo.card_get(card_id).await.unwrap().unwrap();
+    repo.card_codex_thread_upsert(
+        card_id,
+        thread_id,
+        CardRole::Spec,
+        Some(card.wave_id.as_str()),
+    )
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn cleanup_legacy_spec_rows_on_boot_marks_legacy_specs_as_failed_to_spawn() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -103,6 +115,66 @@ async fn cleanup_legacy_spec_rows_on_boot_marks_legacy_specs_as_failed_to_spawn(
 
     let card = repo.card_get(&card_id).await.unwrap().unwrap();
     assert_eq!(card.payload["codex_thread_status"], "failed_to_spawn");
+}
+
+#[tokio::test]
+async fn cleanup_legacy_spec_rows_on_boot_skips_reap_for_unverified_pgid() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let card_id = seed_spec(
+        &repo,
+        json!({
+            "codex_source": "legacy",
+            "prompt": "pre-pr8",
+            "appserver_pgid": 2,
+            "appserver_start_time": 0,
+            "appserver_boot_id": "not-this-boot"
+        }),
+        WaveLifecycle::Draft,
+    )
+    .await;
+    seed_thread_mapping(&repo, &card_id, "thread-unverified").await;
+    let state = state(repo.clone()).await;
+
+    calm_server::cleanup_legacy_spec_rows_on_boot(&state).await;
+
+    let card = repo.card_get(&card_id).await.unwrap().unwrap();
+    assert_eq!(card.payload["codex_thread_status"], "failed_to_spawn");
+    assert!(
+        repo.card_codex_thread_get_by_card(&card_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn cleanup_legacy_spec_rows_on_boot_skips_reap_for_init_pgid() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let card_id = seed_spec(
+        &repo,
+        json!({
+            "codex_source": "legacy",
+            "prompt": "pre-pr8",
+            "appserver_pgid": 1,
+            "appserver_start_time": 0,
+            "appserver_boot_id": "not-this-boot"
+        }),
+        WaveLifecycle::Draft,
+    )
+    .await;
+    seed_thread_mapping(&repo, &card_id, "thread-init").await;
+    let state = state(repo.clone()).await;
+
+    calm_server::cleanup_legacy_spec_rows_on_boot(&state).await;
+
+    let card = repo.card_get(&card_id).await.unwrap().unwrap();
+    assert_eq!(card.payload["codex_thread_status"], "failed_to_spawn");
+    assert!(
+        repo.card_codex_thread_get_by_card(&card_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]

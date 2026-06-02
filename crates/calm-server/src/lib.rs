@@ -456,6 +456,17 @@ pub async fn cleanup_legacy_spec_rows_on_boot(state: &state::AppState) {
                     sigterm_sent,
                     "legacy spec row had verified live app-server pgid; sent SIGTERM before marking failed"
                 );
+                if sigterm_sent {
+                    tokio::time::sleep(GROUP_KILL_GRACE).await;
+                    let sigkill_sent = spec_appserver::signal_process_group(pgid, libc::SIGKILL);
+                    tracing::warn!(
+                        card_id = %card.id,
+                        wave_id = %card.wave_id,
+                        pgid,
+                        sigkill_sent,
+                        "legacy spec row app-server pgid grace elapsed; sent SIGKILL"
+                    );
+                }
             } else {
                 tracing::info!(
                     card_id = %card.id,
@@ -532,6 +543,43 @@ pub async fn cleanup_legacy_spec_rows_on_boot(state: &state::AppState) {
 
         match result {
             Ok((_card, _event_id)) => {
+                let mapping = match state.repo.card_codex_thread_get_by_card(&log_card_id).await {
+                    Ok(mapping) => mapping,
+                    Err(e) => {
+                        tracing::warn!(
+                            card_id = %log_card_id,
+                            wave_id = %log_wave_id,
+                            error = %e,
+                            "legacy spec boot cleanup failed to fetch card_codex_threads row before delete"
+                        );
+                        None
+                    }
+                };
+
+                match state
+                    .repo
+                    .card_codex_thread_delete_by_card(&log_card_id)
+                    .await
+                {
+                    Ok(()) => {
+                        if let Some(mapping) = mapping {
+                            tracing::warn!(
+                                card_id = %log_card_id,
+                                wave_id = %log_wave_id,
+                                thread_id = %mapping.thread_id,
+                                "legacy spec boot cleanup deleted stale card_codex_threads row"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            card_id = %log_card_id,
+                            wave_id = %log_wave_id,
+                            error = %e,
+                            "legacy spec boot cleanup failed to delete stale card_codex_threads row"
+                        );
+                    }
+                }
                 tracing::warn!(
                     card_id = %log_card_id,
                     wave_id = %log_wave_id,
@@ -549,6 +597,10 @@ pub async fn cleanup_legacy_spec_rows_on_boot(state: &state::AppState) {
         }
     }
 }
+
+/// Mirrors the private terminal/shared-daemon grace window before forcing a
+/// process group down after SIGTERM.
+const GROUP_KILL_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
 
 fn payload_codex_source_is_shared(payload: &serde_json::Value) -> bool {
     payload
