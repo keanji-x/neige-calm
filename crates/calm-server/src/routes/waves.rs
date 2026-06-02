@@ -796,11 +796,10 @@ pub(crate) async fn create_wave(
             // Empty shared specs have no TUI-owned thread yet, so roll back
             // their pending registry entry and parked handle immediately.
             if rollback_shared_pending {
-                let pending_removed = if let Some(pending) = s.pending_codex_threads.as_ref() {
-                    pending.remove_by_card(spec_card_id.as_ref()).await
-                } else {
-                    false
-                };
+                let pending_removed = s
+                    .pending_codex_threads
+                    .remove_by_card(spec_card_id.as_ref())
+                    .await;
                 let handle_removed = s.spec_push.remove(&wave.id).is_some();
                 // Clear all shared markers so the failed spec card becomes a
                 // plain inert row the user can delete.
@@ -867,9 +866,6 @@ pub(crate) async fn spawn_push_via_shared_daemon(
             .ok_or_else(|| {
                 CalmError::Internal(format!("spec terminal row missing for card {spec_card_id}"))
             })?;
-        let pending = s.pending_codex_threads.as_ref().ok_or_else(|| {
-            CalmError::Internal("shared spec-card path enabled without pending registry".into())
-        })?;
         s.shared_codex_appserver
             .ensure_respawn_for_current_settings()
             .await?;
@@ -878,7 +874,7 @@ pub(crate) async fn spawn_push_via_shared_daemon(
         // FIFO mutates. If this persist fails, no stale pending entry can
         // consume a later unrelated thread/started notification.
         persist_shared_spec_runtime_fields(s, spec_card_id, wave, None).await?;
-        pending
+        s.pending_codex_threads
             .register(
                 PendingEntry::new(
                     spec_card_id.to_string(),

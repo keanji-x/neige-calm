@@ -27,15 +27,13 @@ fn codex_available() -> bool {
 }
 
 fn cfg(root: &tempfile::TempDir) -> Config {
-    let mut cfg = Config::parse_from([
+    Config::parse_from([
         "calm-server",
         "--data-dir",
         root.path().to_str().unwrap(),
         "--codex-bin",
         "codex",
-    ]);
-    cfg.shared_codex_appserver_enabled = true;
-    cfg
+    ])
 }
 
 #[tokio::test]

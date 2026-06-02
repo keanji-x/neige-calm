@@ -183,7 +183,7 @@ async fn boot_shared() -> Boot {
     shared.start_or_takeover().await.unwrap();
     let state = state
         .with_shared_codex_appserver(shared)
-        .with_pending_codex_threads(Some(pending));
+        .with_pending_codex_threads(pending);
     let app = routes::router()
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,

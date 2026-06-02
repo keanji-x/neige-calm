@@ -127,18 +127,6 @@ pub struct Config {
     #[arg(long, env = "CALM_DEV_AUTOLOGIN", default_value_t = false)]
     pub auth_dev_autologin: bool,
 
-    /// PR4 (#410) — boot one shared `codex app-server` for future card routes.
-    /// Rollback switch: when false, no shared daemon is started or taken over.
-    #[arg(
-        long,
-        env = "CALM_SHARED_CODEX_APPSERVER_ENABLED",
-        default_value_t = true,
-        action = clap::ArgAction::Set,
-        num_args = 0..=1,
-        default_missing_value = "true",
-    )]
-    pub shared_codex_appserver_enabled: bool,
-
     /// Initial delay before restarting the shared codex app-server after a crash.
     #[arg(
         long,

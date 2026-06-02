@@ -106,9 +106,8 @@ pub struct AppState {
     /// PR4 (#410) — one server-wide codex app-server supervisor.
     pub shared_codex_appserver: Arc<SharedCodexAppServer>,
     /// FIFO attribution registry for empty cards that fresh-start a thread
-    /// through the shared daemon's TUI. Present only when the shared daemon is
-    /// enabled for this boot.
-    pub pending_codex_threads: Option<Arc<PendingThreadStartRegistry>>,
+    /// through the shared daemon's TUI.
+    pub pending_codex_threads: Arc<PendingThreadStartRegistry>,
     /// Serializes the shared empty-card `(pending register, PTY spawn)` pair
     /// so FIFO pending attribution matches actual TUI fresh-start order.
     pub pending_codex_threads_spawn_serial: Arc<Mutex<()>>,
@@ -208,6 +207,10 @@ impl AppState {
         // path resolves the same handles `create_wave` parks here.
         let spec_push = SpecPushRegistry::new();
         let shared_codex_appserver = SharedCodexAppServer::new_stub(repo.clone());
+        let pending_codex_threads = Arc::new(PendingThreadStartRegistry::new(
+            repo.clone(),
+            events.clone(),
+        ));
         let dispatcher = Arc::new(Dispatcher::spawn_with_terminal_renderer(
             repo.clone(),
             events.clone(),
@@ -247,7 +250,7 @@ impl AppState {
             // Same instance the dispatcher above holds a clone of.
             spec_push,
             shared_codex_appserver,
-            pending_codex_threads: None,
+            pending_codex_threads,
             pending_codex_threads_spawn_serial: Arc::new(Mutex::new(())),
             // #322 — aspect registry. Identical set in test/replay and
             // production (see `build_aspect_registry` doc) so a test
@@ -266,10 +269,7 @@ impl AppState {
     }
 
     #[cfg(feature = "fixtures")]
-    pub fn with_pending_codex_threads(
-        mut self,
-        pending: Option<Arc<PendingThreadStartRegistry>>,
-    ) -> Self {
+    pub fn with_pending_codex_threads(mut self, pending: Arc<PendingThreadStartRegistry>) -> Self {
         self.pending_codex_threads = pending;
         self
     }
@@ -418,24 +418,20 @@ impl AppState {
         // dispatcher spawn so the dispatcher's push path and the route both
         // touch the same `Arc<DashMap>`.
         let spec_push = SpecPushRegistry::new();
-        let pending_codex_threads = cfg.shared_codex_appserver_enabled.then(|| {
-            Arc::new(PendingThreadStartRegistry::new(
-                repo.clone(),
-                events.clone(),
-            ))
-        });
-        if let Some(registry) = pending_codex_threads.clone() {
-            spawn_periodic_expire_task(
-                registry,
-                Duration::from_secs(60),
-                Duration::from_secs(60 * 60 * 6),
-            );
-        }
+        let pending_codex_threads = Arc::new(PendingThreadStartRegistry::new(
+            repo.clone(),
+            events.clone(),
+        ));
+        spawn_periodic_expire_task(
+            pending_codex_threads.clone(),
+            Duration::from_secs(60),
+            Duration::from_secs(60 * 60 * 6),
+        );
         let shared_codex_appserver = SharedCodexAppServer::new_with_pending(
             cfg,
             codex.shared_codex_home.clone(),
             repo.clone(),
-            pending_codex_threads.clone(),
+            Some(pending_codex_threads.clone()),
         );
         let dispatcher = Arc::new(crate::dispatcher::Dispatcher::spawn_with_terminal_renderer(
             repo.clone(),

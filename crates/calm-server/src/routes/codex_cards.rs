@@ -179,11 +179,6 @@ pub(crate) async fn create_codex_card(
             "shared codex app-server is not running".into(),
         ));
     }
-    if prompt.is_none() && s.pending_codex_threads.is_none() {
-        return Err(CalmError::Internal(
-            "shared empty-card path requires pending thread registry".into(),
-        ));
-    }
 
     // 4. Assemble the env map the daemon will forward to the PTY child:
     //    CODEX_HOME / NEIGE_CARD_ID / NEIGE_CALM_BASE_URL plus proxy vars
@@ -423,10 +418,6 @@ pub(crate) async fn create_codex_card(
             shell_single_quote(&s.shared_codex_appserver.remote_uri()),
         )
     } else {
-        let pending = s
-            .pending_codex_threads
-            .as_ref()
-            .ok_or_else(|| CalmError::Internal("missing pending thread registry".into()))?;
         s.shared_codex_appserver
             .ensure_respawn_for_current_settings()
             .await?;
@@ -474,7 +465,7 @@ pub(crate) async fn create_codex_card(
         .await?;
         card = updated;
 
-        pending
+        s.pending_codex_threads
             .register(PendingEntry::new(
                 card.id.to_string(),
                 Some(wave_id.clone()),
@@ -491,8 +482,11 @@ pub(crate) async fn create_codex_card(
     // 7. Persisted rows remain on spawn failure, but shared empty-card
     //    pending state must be rolled back immediately.
     if let Err(e) = spawn_terminal_for(&s, &term, &command_line, &cwd, &env).await {
-        if prompt.is_none() && let Some(pending) = s.pending_codex_threads.as_ref() {
-            let removed = pending.remove_by_card(card.id.as_ref()).await;
+        if prompt.is_none() {
+            let removed = s
+                .pending_codex_threads
+                .remove_by_card(card.id.as_ref())
+                .await;
             let payload_rolled_back =
                 card_payload_clear_pending_status(s.repo.as_ref(), &s.events, card.id.as_ref())
                     .await
@@ -666,5 +660,4 @@ mod tests {
             }
         }
     }
-
 }

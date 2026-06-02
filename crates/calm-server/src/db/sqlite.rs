@@ -1514,7 +1514,6 @@ pub async fn card_codex_thread_delete_by_card_tx(
     Ok(())
 }
 
-
 pub async fn overlay_upsert_tx(tx: &mut Transaction<'_, Sqlite>, p: NewOverlay) -> Result<Overlay> {
     let now = now_ms();
     let new_id_str = new_id();
@@ -2078,7 +2077,6 @@ impl RepoRead for SqlxRepo {
         Ok(rows)
     }
 
-
     async fn shared_spec_cards_for_initial_prompt_takeover(
         &self,
     ) -> Result<Vec<(String, String, String, i64)>> {
@@ -2120,6 +2118,28 @@ impl RepoRead for SqlxRepo {
                 (card_id, wave_id, terminal_id, watermark.unwrap_or(0))
             })
             .collect())
+    }
+
+    async fn legacy_spec_cards_for_boot_cleanup(&self) -> Result<Vec<Card>> {
+        let rows = sqlx::query_as::<_, Card>(
+            r#"SELECT c.id,
+                      c.wave_id,
+                      c.kind,
+                      c.sort,
+                      c.payload,
+                      c.deletable,
+                      c.created_at,
+                      c.updated_at
+               FROM cards c
+               JOIN waves w ON w.id = c.wave_id
+               WHERE c.role = 'spec'
+                 AND COALESCE(json_extract(c.payload, '$.codex_source'), 'legacy') = 'legacy'
+                 AND w.lifecycle NOT IN ('done', 'canceled', 'failed')
+               ORDER BY c.created_at ASC, c.id ASC"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
     }
 
     // --------------------------------------------------------------- plugins
@@ -2595,7 +2615,6 @@ impl RepoOutOfDomain for SqlxRepo {
         .await?;
         Ok(())
     }
-
 
     // ---- spec push queue (#318 INV-3 / R2-B1) ---------------------------
 

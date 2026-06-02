@@ -113,7 +113,7 @@ async fn boot_with_proc_supervisor(
     }
     let state = state
         .with_shared_codex_appserver(shared)
-        .with_pending_codex_threads(Some(pending));
+        .with_pending_codex_threads(pending);
     let app = routes::router()
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
@@ -276,15 +276,7 @@ async fn empty_wave_registers_pending_spec_thread_without_thread_id() {
             .unwrap()
             .is_none()
     );
-    assert_eq!(
-        boot.state
-            .pending_codex_threads
-            .as_ref()
-            .unwrap()
-            .pending_count()
-            .await,
-        1
-    );
+    assert_eq!(boot.state.pending_codex_threads.pending_count().await, 1);
     let terminal_id = spec.payload["terminal_id"].as_str().unwrap();
     let entry = boot
         .state
@@ -343,15 +335,7 @@ async fn empty_shared_spec_respawns_daemon_when_proxy_changed() {
             .shared_codex_appserver
             .needs_respawn_on_next_thread_start_for_test()
     );
-    assert_eq!(
-        boot.state
-            .pending_codex_threads
-            .as_ref()
-            .unwrap()
-            .pending_count()
-            .await,
-        1
-    );
+    assert_eq!(boot.state.pending_codex_threads.pending_count().await, 1);
 }
 
 #[tokio::test]
@@ -373,15 +357,7 @@ async fn empty_shared_spec_respawn_failure_does_not_leave_card_stamped() {
     let spec = spec_card(&boot.repo, &wave_id).await;
     assert!(spec.payload.get("codex_source").is_none());
     assert!(spec.payload.get("appserver_needs_initial_prompt").is_none());
-    assert_eq!(
-        boot.state
-            .pending_codex_threads
-            .as_ref()
-            .unwrap()
-            .pending_count()
-            .await,
-        0
-    );
+    assert_eq!(boot.state.pending_codex_threads.pending_count().await, 0);
     assert!(!boot.state.spec_push.contains(&wave_id.clone().into()));
 }
 
@@ -400,12 +376,7 @@ async fn empty_shared_spec_pending_register_waits_for_spawn_serial_lock() {
     }
 
     assert_eq!(
-        boot.state
-            .pending_codex_threads
-            .as_ref()
-            .unwrap()
-            .pending_count()
-            .await,
+        boot.state.pending_codex_threads.pending_count().await,
         0,
         "pending spec registration must be inside the spawn-serial critical section"
     );
@@ -413,15 +384,7 @@ async fn empty_shared_spec_pending_register_waits_for_spawn_serial_lock() {
     drop(serial_guard);
     let (status, wave) = pending_post.await;
     assert_eq!(status, StatusCode::CREATED, "body={wave:?}");
-    assert_eq!(
-        boot.state
-            .pending_codex_threads
-            .as_ref()
-            .unwrap()
-            .pending_count()
-            .await,
-        1
-    );
+    assert_eq!(boot.state.pending_codex_threads.pending_count().await, 1);
 }
 
 #[tokio::test]
@@ -444,37 +407,19 @@ async fn empty_shared_spec_boot_takeover_reparks_pending_without_legacy_bootstra
         .terminal_set_exit(terminal_id, None, false)
         .await
         .unwrap();
-    let pending = boot.state.pending_codex_threads.as_ref().unwrap();
+    let pending = &boot.state.pending_codex_threads;
     assert!(pending.remove_by_card(spec.id.as_str()).await);
     drop(boot.state.spec_push.remove(&wave_id.clone().into()));
 
     let reloaded = reloaded_state_from_boot(&boot);
-    assert_eq!(
-        reloaded
-            .pending_codex_threads
-            .as_ref()
-            .unwrap()
-            .pending_count()
-            .await,
-        0
-    );
+    assert_eq!(reloaded.pending_codex_threads.pending_count().await, 0);
     calm_server::takeover_shared_spec_cards_on_boot(&reloaded).await;
     assert!(reloaded.spec_push.contains(&wave_id.clone().into()));
-    assert_eq!(
-        reloaded
-            .pending_codex_threads
-            .as_ref()
-            .unwrap()
-            .pending_count()
-            .await,
-        1
-    );
+    assert_eq!(reloaded.pending_codex_threads.pending_count().await, 1);
 
     assert_eq!(
         reloaded
             .pending_codex_threads
-            .as_ref()
-            .unwrap()
             .on_thread_started("T-spec-reloaded")
             .await
             .unwrap()
@@ -505,21 +450,11 @@ async fn empty_shared_spec_tui_spawn_failure_rolls_back_pending_state() {
     let wave_id = wave["id"].as_str().unwrap().to_string();
     let spec = spec_card(&boot.repo, &wave_id).await;
 
-    assert_eq!(
-        boot.state
-            .pending_codex_threads
-            .as_ref()
-            .unwrap()
-            .pending_count()
-            .await,
-        0
-    );
+    assert_eq!(boot.state.pending_codex_threads.pending_count().await, 0);
     assert!(!boot.state.spec_push.contains(&wave_id.clone().into()));
     assert!(
         boot.state
             .pending_codex_threads
-            .as_ref()
-            .unwrap()
             .on_thread_started("T-orphan")
             .await
             .unwrap()
@@ -583,7 +518,7 @@ async fn empty_shared_spec_persist_failure_rolls_back_pending_entry() {
     .await;
 
     assert!(result.is_err());
-    let pending = boot.state.pending_codex_threads.as_ref().unwrap();
+    let pending = &boot.state.pending_codex_threads;
     assert_eq!(pending.pending_count().await, 0);
     assert!(
         pending

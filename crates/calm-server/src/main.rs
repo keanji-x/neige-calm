@@ -47,9 +47,9 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState::new(&cfg, repo).await?;
 
-    // #410 PR4 — shared codex app-server boot/takeover. Failure is a
-    // degradation path in PR4: no card routes use this daemon yet, and the
-    // rollback flag can disable it while legacy per-wave app-servers continue.
+    // #410 — shared codex app-server boot/takeover. The shared daemon is the
+    // only codex app-server path; failures are logged so boot can still bind
+    // and routes surface the daemon failure when a codex card is used.
     if let Err(e) = state.shared_codex_appserver.start_or_takeover().await {
         tracing::error!(
             error = %e,
@@ -75,6 +75,7 @@ async fn main() -> anyhow::Result<()> {
     // Runs before the listener binds so a request landing mid-takeover
     // can't race a half-registered handle.
     calm_server::takeover_shared_spec_cards_on_boot(&state).await;
+    calm_server::cleanup_legacy_spec_rows_on_boot(&state).await;
 
     // Optional session-recording — when `RECORD_SESSION=<path>` is set,
     // every event broadcast on the bus is appended to that file as

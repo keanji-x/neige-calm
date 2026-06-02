@@ -345,6 +345,10 @@ pub trait RepoRead: Send + Sync + 'static {
     async fn shared_spec_cards_for_initial_prompt_takeover(
         &self,
     ) -> Result<Vec<(String, String, String, i64)>>;
+    /// Pre-PR8 spec rows that were never migrated onto the shared daemon.
+    /// Boot marks these failed instead of silently leaving dispatcher
+    /// observations without a registered `SpecPushHandle`.
+    async fn legacy_spec_cards_for_boot_cleanup(&self) -> Result<Vec<Card>>;
 
     // ---- plugins (read-only)
     async fn plugins_list(&self) -> Result<Vec<Plugin>>;

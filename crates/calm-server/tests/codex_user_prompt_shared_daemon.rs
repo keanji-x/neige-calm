@@ -37,8 +37,8 @@ fn fake_codex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_osc-probe-child")
 }
 
-fn cfg(root: &TempDir, appserver_enabled: bool) -> Config {
-    let mut cfg = Config::parse_from([
+fn cfg(root: &TempDir) -> Config {
+    Config::parse_from([
         "calm-server",
         "--data-dir",
         root.path().to_str().unwrap(),
@@ -48,16 +48,14 @@ fn cfg(root: &TempDir, appserver_enabled: bool) -> Config {
         "10",
         "--shared-codex-appserver-restart-max-delay-ms",
         "50",
-    ]);
-    cfg.shared_codex_appserver_enabled = appserver_enabled;
-    cfg
+    ])
 }
 
-async fn boot(appserver_enabled: bool) -> Boot {
-    boot_with_shared_daemon(appserver_enabled, appserver_enabled).await
+async fn boot() -> Boot {
+    boot_with_shared_daemon(true).await
 }
 
-async fn boot_with_shared_daemon(appserver_enabled: bool, start_appserver: bool) -> Boot {
+async fn boot_with_shared_daemon(start_appserver: bool) -> Boot {
     let tmp = TempDir::new().expect("tempdir");
     let repo = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -110,29 +108,27 @@ async fn boot_with_shared_daemon(appserver_enabled: bool, start_appserver: bool)
         None,
     );
 
-    if appserver_enabled {
-        let cfg = cfg(&tmp, true);
-        let home = calm_server::shared_codex_home::SharedCodexHome::new(
-            cfg.data_dir_resolved().join("codex-home"),
-            cfg.data_dir_resolved().join("codex-homes"),
-        );
-        home.seed().unwrap();
-        let pending = Arc::new(PendingThreadStartRegistry::new(
-            repo.clone(),
-            events.clone(),
-        ));
-        let shared = SharedCodexAppServer::new_with_pending(
-            &cfg,
-            Arc::new(home),
-            repo.clone(),
-            Some(pending.clone()),
-        );
-        if start_appserver {
-            shared.start_or_takeover().await.unwrap();
-        }
-        state = state.with_shared_codex_appserver(shared);
-        state = state.with_pending_codex_threads(Some(pending));
+    let cfg = cfg(&tmp);
+    let home = calm_server::shared_codex_home::SharedCodexHome::new(
+        cfg.data_dir_resolved().join("codex-home"),
+        cfg.data_dir_resolved().join("codex-homes"),
+    );
+    home.seed().unwrap();
+    let pending = Arc::new(PendingThreadStartRegistry::new(
+        repo.clone(),
+        events.clone(),
+    ));
+    let shared = SharedCodexAppServer::new_with_pending(
+        &cfg,
+        Arc::new(home),
+        repo.clone(),
+        Some(pending.clone()),
+    );
+    if start_appserver {
+        shared.start_or_takeover().await.unwrap();
     }
+    state = state.with_shared_codex_appserver(shared);
+    state = state.with_pending_codex_threads(pending);
 
     let app = routes::router()
         .layer(axum::middleware::from_fn(
@@ -202,7 +198,7 @@ async fn create_prompt_card_calls_shared_daemon_thread_start() {
     unsafe {
         std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
     }
-    let boot = boot(true).await;
+    let boot = boot().await;
 
     let (status, card) = post(
         boot.app.clone(),
@@ -236,7 +232,7 @@ async fn create_prompt_card_calls_shared_daemon_thread_start() {
 #[tokio::test]
 async fn create_prompt_card_persists_thread_mapping_to_table_and_payload() {
     let _guard = ENV_LOCK.lock().await;
-    let boot = boot(true).await;
+    let boot = boot().await;
     let (status, card) = post(
         boot.app.clone(),
         &boot.wave_id,
@@ -260,7 +256,7 @@ async fn create_prompt_card_persists_thread_mapping_to_table_and_payload() {
 #[tokio::test]
 async fn create_prompt_card_spawns_remote_resume_tui() {
     let _guard = ENV_LOCK.lock().await;
-    let boot = boot(true).await;
+    let boot = boot().await;
     let (status, card) = post(
         boot.app.clone(),
         &boot.wave_id,
@@ -284,7 +280,7 @@ async fn create_prompt_card_spawns_remote_resume_tui() {
 #[tokio::test]
 async fn create_prompt_card_skips_per_card_codex_home_seeding() {
     let _guard = ENV_LOCK.lock().await;
-    let boot = boot(true).await;
+    let boot = boot().await;
     let (status, card) = post(
         boot.app.clone(),
         &boot.wave_id,
@@ -302,7 +298,7 @@ async fn create_prompt_card_skips_per_card_codex_home_seeding() {
 #[tokio::test]
 async fn empty_path_errors_when_shared_daemon_not_running() {
     let _guard = ENV_LOCK.lock().await;
-    let boot = boot(false).await;
+    let boot = boot_with_shared_daemon(false).await;
     let (status, body) = post(
         boot.app.clone(),
         &boot.wave_id,
@@ -310,13 +306,19 @@ async fn empty_path_errors_when_shared_daemon_not_running() {
     )
     .await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body:?}");
-    assert!(boot.repo.cards_by_wave(&boot.wave_id).await.unwrap().is_empty());
+    assert!(
+        boot.repo
+            .cards_by_wave(&boot.wave_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
 async fn create_empty_card_with_empty_cards_flag_enabled_uses_shared_daemon_pending_register() {
     let _guard = ENV_LOCK.lock().await;
-    let boot = boot(true).await;
+    let boot = boot().await;
     let (status, card) = post(
         boot.app.clone(),
         &boot.wave_id,
@@ -341,15 +343,7 @@ async fn create_empty_card_with_empty_cards_flag_enabled_uses_shared_daemon_pend
             .unwrap()
             .is_none()
     );
-    assert_eq!(
-        boot.state
-            .pending_codex_threads
-            .as_ref()
-            .expect("pending registry")
-            .pending_count()
-            .await,
-        1
-    );
+    assert_eq!(boot.state.pending_codex_threads.pending_count().await, 1);
     let terminal_id = card["payload"]["terminal_id"].as_str().unwrap();
     let entry = boot
         .state
@@ -370,7 +364,7 @@ async fn create_empty_card_with_empty_cards_flag_enabled_uses_shared_daemon_pend
 #[tokio::test]
 async fn empty_user_card_respawns_daemon_when_proxy_changed() {
     let _guard = ENV_LOCK.lock().await;
-    let boot = boot(true).await;
+    let boot = boot().await;
     let old_pid = boot
         .state
         .shared_codex_appserver
@@ -408,21 +402,13 @@ async fn empty_user_card_respawns_daemon_when_proxy_changed() {
             .shared_codex_appserver
             .needs_respawn_on_next_thread_start_for_test()
     );
-    assert_eq!(
-        boot.state
-            .pending_codex_threads
-            .as_ref()
-            .expect("pending registry")
-            .pending_count()
-            .await,
-        1
-    );
+    assert_eq!(boot.state.pending_codex_threads.pending_count().await, 1);
 }
 
 #[tokio::test]
 async fn empty_user_card_respawn_failure_does_not_leave_card_stuck_pending() {
     let _guard = ENV_LOCK.lock().await;
-    let boot = boot(true).await;
+    let boot = boot().await;
     unsafe {
         std::env::set_var("FAKE_CODEX_FAIL_INITIALIZE", "1");
     }
@@ -439,15 +425,7 @@ async fn empty_user_card_respawn_failure_does_not_leave_card_stuck_pending() {
     }
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body:?}");
-    assert_eq!(
-        boot.state
-            .pending_codex_threads
-            .as_ref()
-            .expect("pending registry")
-            .pending_count()
-            .await,
-        0
-    );
+    assert_eq!(boot.state.pending_codex_threads.pending_count().await, 0);
     let cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
     assert_eq!(cards.len(), 1);
     assert!(
@@ -466,7 +444,7 @@ async fn empty_card_spawn_failure_removes_pending_entry() {
     unsafe {
         std::env::set_var("CALM_TEST_PROC_SUPERVISOR_SOCK", &missing_sock);
     }
-    let boot = boot(true).await;
+    let boot = boot().await;
     unsafe {
         std::env::remove_var("CALM_TEST_PROC_SUPERVISOR_SOCK");
     }
@@ -478,11 +456,7 @@ async fn empty_card_spawn_failure_removes_pending_entry() {
     )
     .await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={failed:?}");
-    let pending = boot
-        .state
-        .pending_codex_threads
-        .as_ref()
-        .expect("pending registry");
+    let pending = &boot.state.pending_codex_threads;
     assert_eq!(pending.pending_count().await, 0);
     let failed_cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
     assert_eq!(failed_cards.len(), 1);
@@ -532,7 +506,7 @@ async fn empty_card_spawn_failure_removes_pending_entry() {
 #[tokio::test]
 async fn create_prompt_card_errors_when_shared_daemon_not_running() {
     let _guard = ENV_LOCK.lock().await;
-    let boot = boot_with_shared_daemon(true, false).await;
+    let boot = boot_with_shared_daemon(false).await;
     assert!(!boot.state.shared_codex_appserver.is_running());
 
     let (status, body) = post(
@@ -543,5 +517,11 @@ async fn create_prompt_card_errors_when_shared_daemon_not_running() {
     .await;
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body:?}");
-    assert!(boot.repo.cards_by_wave(&boot.wave_id).await.unwrap().is_empty());
+    assert!(
+        boot.repo
+            .cards_by_wave(&boot.wave_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }

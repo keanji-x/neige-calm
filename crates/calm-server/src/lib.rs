@@ -354,16 +354,8 @@ pub async fn takeover_shared_spec_cards_on_boot(state: &state::AppState) {
         resumed += 1;
     }
     for (card_id, wave_id, terminal_id, watermark) in pending_initial_prompt_cards {
-        let Some(pending) = state.pending_codex_threads.as_ref() else {
-            tracing::warn!(
-                target: "shared_codex_daemon::spec_card",
-                card_id,
-                wave_id,
-                "shared spec pending boot takeover requires pending registry; skipping"
-            );
-            continue;
-        };
-        if let Err(e) = pending
+        if let Err(e) = state
+            .pending_codex_threads
             .register(
                 crate::pending_codex_threads::PendingEntry::new(
                     card_id.clone(),
@@ -416,6 +408,103 @@ pub async fn takeover_shared_spec_cards_on_boot(state: &state::AppState) {
             pending_reparked,
             "shared spec boot takeover complete"
         );
+    }
+}
+
+pub async fn cleanup_legacy_spec_rows_on_boot(state: &state::AppState) {
+    let cards = match state.repo.legacy_spec_cards_for_boot_cleanup().await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "legacy spec boot cleanup query failed; skipping"
+            );
+            return;
+        }
+    };
+
+    for card in cards {
+        let mut payload = card.payload.clone();
+        let Some(map) = payload.as_object_mut() else {
+            tracing::warn!(
+                card_id = %card.id,
+                wave_id = %card.wave_id,
+                "legacy spec boot cleanup found non-object payload; leaving row unchanged"
+            );
+            continue;
+        };
+        map.insert(
+            "codex_thread_status".into(),
+            serde_json::Value::String("failed_to_spawn".into()),
+        );
+
+        let scope = match routes::cards::card_scope(
+            state.repo.as_ref(),
+            card.id.clone(),
+            card.wave_id.clone(),
+        )
+        .await
+        {
+            Ok(scope) => scope,
+            Err(e) => {
+                tracing::warn!(
+                    card_id = %card.id,
+                    wave_id = %card.wave_id,
+                    error = %e,
+                    "legacy spec boot cleanup failed to resolve card scope; leaving row unchanged"
+                );
+                continue;
+            }
+        };
+
+        let card_id = card.id.to_string();
+        let wave_id = card.wave_id.to_string();
+        let log_card_id = card_id.clone();
+        let log_wave_id = wave_id.clone();
+        let result = db::write_with_event_typed(
+            state.repo.as_ref(),
+            crate::ids::ActorId::Kernel,
+            scope,
+            None,
+            &state.events,
+            &state.card_role_cache,
+            &state.wave_cove_cache,
+            move |tx| {
+                Box::pin(async move {
+                    let updated = db::sqlite::card_update_tx(
+                        tx,
+                        &card_id,
+                        crate::model::CardPatch {
+                            kind: None,
+                            sort: None,
+                            payload: Some(payload),
+                            deletable: None,
+                        },
+                    )
+                    .await?;
+                    Ok((updated.clone(), crate::event::Event::CardUpdated(updated)))
+                })
+            },
+        )
+        .await;
+
+        match result {
+            Ok((_card, _event_id)) => {
+                tracing::warn!(
+                    card_id = %log_card_id,
+                    wave_id = %log_wave_id,
+                    "legacy spec row cannot be taken over by shared daemon; marked failed_to_spawn"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    card_id = %log_card_id,
+                    wave_id = %log_wave_id,
+                    error = %e,
+                    "legacy spec boot cleanup failed to mark row failed_to_spawn"
+                );
+            }
+        }
     }
 }
 
