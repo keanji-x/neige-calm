@@ -10,6 +10,7 @@
 //! the direct-create fields).
 
 use crate::actor::Actor;
+use crate::codex_appserver::{InputItem, Notification};
 use crate::db::RepoRead;
 use crate::db::sqlite::{
     card_create_with_id_tx, card_delete_tx, card_mcp_token_set_tx, card_update_tx,
@@ -23,8 +24,12 @@ use crate::model::new_id;
 use crate::model::{Card, CardPatch, CardRole, NewCard};
 use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
 use crate::routes::settings::load_settings;
-use crate::routes::waves::{SpawnPushAppserverMode, spawn_push_appserver};
-use crate::spec_card::seed_and_spawn_spec_daemon;
+use crate::routes::waves::{
+    SpawnPushAppserverMode, await_shared_spec_initial_turn_lifecycle,
+    install_spec_push_sinks_and_park, spawn_push_appserver,
+};
+use crate::spec_card::{SpecPushDaemonArgs, seed_and_spawn_spec_daemon};
+use crate::spec_push::{self, SpecPushPhase, SpecPushStatus};
 use crate::state::AppState;
 use crate::terminal_sweeper::{reap_spec_push, reap_terminal_artifacts};
 use crate::validation::validate_card_payload;
@@ -38,6 +43,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tokio::sync::broadcast;
 use utoipa::ToSchema;
 
 /// Resolve the (wave, cove) ancestor pair for a wave id, returning a
@@ -469,9 +475,8 @@ pub(crate) async fn reset_spec_card(
         .and_then(serde_json::Value::as_str)
         == Some("shared")
     {
-        return Err(CalmError::SpecResetUnsupportedInSharedMode(format!(
-            "card {id} was created on the shared codex daemon; reset support is deferred"
-        )));
+        let response = reset_spec_card_shared(s, card).await?;
+        return Ok(Json(response));
     }
 
     let terminal = s
@@ -602,6 +607,366 @@ fn push_watermark_from_payload(payload: &serde_json::Value) -> i64 {
         .get("push_watermark")
         .and_then(serde_json::Value::as_i64)
         .unwrap_or(0)
+}
+
+struct SharedResetStarted {
+    thread_id: String,
+    notifications: broadcast::Receiver<Notification>,
+    status: spec_push::SharedStatus,
+    push_args: SpecPushDaemonArgs,
+}
+
+async fn reset_spec_card_shared(s: AppState, card: Card) -> Result<ResetSpecCardResponse> {
+    if !s.shared_codex_appserver.is_running() {
+        return Err(CalmError::Internal(format!(
+            "shared codex daemon is not running for spec card reset {}",
+            card.id
+        )));
+    }
+    let terminal = s
+        .repo
+        .terminal_get_by_card(card.id.as_str())
+        .await?
+        .ok_or_else(|| {
+            CalmError::Internal(format!("spec terminal row missing for card {}", card.id))
+        })?;
+    let wave = s
+        .repo
+        .wave_get(card.wave_id.as_str())
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("wave {}", card.wave_id)))?;
+    if wave.title.trim().is_empty() {
+        return Err(CalmError::Internal(
+            "reset succeeded without a thread_id; empty-goal waves cannot be reset before their first turn".to_string(),
+        ));
+    }
+
+    // Token rotation is DEFERRED until after spawn_reset_via_shared_daemon's
+    // lifecycle wait has succeeded — otherwise an early thread_start/turn_start
+    // failure would leave the still-running OLD TUI with an invalidated
+    // NEIGE_MCP_TOKEN (the new token hash is already in card_mcp_tokens, and
+    // the OLD TUI can no longer authenticate MCP calls). After the shared
+    // thread is committed, the OLD TUI is reaped a few lines later so
+    // invalidating its token is safe.
+
+    let card_id = card.id.clone();
+    let wave_id = card.wave_id.clone();
+    let terminal_id = terminal.id.clone();
+    let dispatcher = s.dispatcher.clone();
+    let reset = dispatcher
+        .with_push_lock(&wave_id, async {
+            tracing::info!(
+                target: "shared_codex_daemon::spec_card_reset",
+                card_id = %card_id,
+                wave_id = %wave_id,
+                "reset_started"
+            );
+            let card_at_lock = s
+                .repo
+                .card_get(card_id.as_str())
+                .await?
+                .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
+            let watermark = push_watermark_from_payload(&card_at_lock.payload);
+
+            let started = spawn_reset_via_shared_daemon(&s, card_id.as_str(), &wave).await?;
+            // Rotate the per-card MCP token only AFTER the shared thread is
+            // committed (thread_start + turn_start + lifecycle all passed).
+            // From here on the OLD TUI is going to be reaped immediately, so
+            // invalidating its token is the safe ordering.
+            let mcp_token = crate::mcp_server::auth::CardMcpToken::generate().into_inner();
+            if s.mcp_server.is_some() {
+                let card_id_for_tx = card.id.to_string();
+                let hashed = crate::mcp_server::auth::hash_token(&mcp_token);
+                write_in_tx_typed(s.repo.as_ref(), move |tx| {
+                    Box::pin(async move {
+                        card_mcp_token_set_tx(tx, &card_id_for_tx, &hashed).await?;
+                        Ok(())
+                    })
+                })
+                .await?;
+            }
+            let mut env_for_spawn = terminal.env.clone();
+            if let Some(map) = env_for_spawn.as_object_mut() {
+                map.insert(
+                    "CODEX_HOME".into(),
+                    serde_json::Value::String(
+                        s.codex.codex_home_dir().to_string_lossy().to_string(),
+                    ),
+                );
+                if let Some(server) = s.mcp_server.as_ref() {
+                    map.insert(
+                        "NEIGE_MCP_TOKEN".into(),
+                        serde_json::Value::String(mcp_token.clone()),
+                    );
+                    map.insert(
+                        "NEIGE_MCP_SOCKET".into(),
+                        serde_json::Value::String(
+                            server.shim_config.socket_path.to_string_lossy().to_string(),
+                        ),
+                    );
+                }
+            }
+            reap_spec_push(&s, &wave_id).await;
+            reap_terminal_artifacts(&s, &terminal).await;
+            s.repo.terminal_set_pid(&terminal.id, None).await?;
+            s.repo.terminal_set_exit(&terminal.id, None, false).await?;
+            persist_shared_reset_runtime_fields(&s, card_id.as_str(), &wave, &started.thread_id)
+                .await?;
+
+            let handle = spec_push::park_shared_handle(
+                s.shared_codex_appserver.clone(),
+                Some(started.thread_id.clone()),
+                started.notifications,
+                started.status,
+                None,
+                spec_push::TurnWatchdogConfig::default(),
+            );
+            install_spec_push_sinks_and_park(&s, card_id.as_str(), &wave, handle).await;
+            tracing::info!(
+                target: "shared_codex_daemon::spec_card_reset",
+                card_id = %card_id,
+                wave_id = %wave_id,
+                thread_id = %started.thread_id,
+                "handle_replaced"
+            );
+
+            crate::rehydrate_and_catch_up_parked_spec_push_under_lock(
+                &s,
+                card_id.as_str(),
+                &wave_id,
+                watermark,
+            )
+            .await;
+
+            if let Err(e) = seed_and_spawn_spec_daemon(
+                s.clone(),
+                card_id.to_string(),
+                wave_id.to_string(),
+                wave.cwd.clone(),
+                env_for_spawn,
+                Some(mcp_token),
+                started.push_args.clone(),
+            )
+            .await
+            {
+                // TUI spawn failed but the shared thread + handle are healthy.
+                // KEEP the handle parked — without it, the new thread's
+                // notifications would have no consumer until a server restart
+                // re-parked it, stranding spec output and queue catch-up.
+                // The card payload + card_codex_threads row continue to point
+                // at the new thread; the user retries the reset (or reloads
+                // the card UI to remount the xterm onto the now-orphaned
+                // backend). The 5xx response signals the partial failure.
+                tracing::warn!(
+                    target: "shared_codex_daemon::spec_card_reset",
+                    card_id = %card_id,
+                    wave_id = %wave_id,
+                    thread_id = %started.thread_id,
+                    error = %e,
+                    "tui_spawn_failed_handle_kept_parked"
+                );
+                return Err(e);
+            }
+
+            tracing::info!(
+                target: "shared_codex_daemon::spec_card_reset",
+                card_id = %card_id,
+                wave_id = %wave_id,
+                thread_id = %started.thread_id,
+                "reset_completed"
+            );
+            Ok::<_, CalmError>(started.thread_id)
+        })
+        .await?;
+
+    Ok(ResetSpecCardResponse {
+        card_id,
+        terminal_id,
+        new_thread_id: reset,
+    })
+}
+
+async fn spawn_reset_via_shared_daemon(
+    s: &AppState,
+    spec_card_id: &str,
+    wave: &crate::model::Wave,
+) -> Result<SharedResetStarted> {
+    if wave.title.trim().is_empty() {
+        return Err(CalmError::Internal(
+            "reset succeeded without a thread_id; empty-goal waves cannot be reset before their first turn".to_string(),
+        ));
+    }
+    let old_mapping = s.repo.card_codex_thread_get_by_card(spec_card_id).await?;
+    let mut notifications = s.shared_codex_appserver.subscribe_notifications();
+    let status: spec_push::SharedStatus =
+        std::sync::Arc::new(tokio::sync::Mutex::new(SpecPushStatus::default()));
+    let developer_instructions = crate::spec_card::render_system_prompt(
+        crate::spec_card::SeededCardRole::Spec.prompt_template(),
+        wave.id.as_str(),
+    );
+    let thread_id = s
+        .shared_codex_appserver
+        .thread_start_for_card(
+            spec_card_id,
+            CardRole::Spec,
+            Some(wave.id.as_str()),
+            crate::shared_codex_appserver::SharedThreadStartParams {
+                cwd: wave.cwd.clone(),
+                approval_policy: "never".into(),
+                sandbox_mode: "workspace-write".into(),
+                developer_instructions: Some(developer_instructions),
+            },
+        )
+        .await?;
+    {
+        let mut g = status.lock().await;
+        g.phase = SpecPushPhase::Issuing;
+        g.last_thread_id = Some(thread_id.clone());
+    }
+    tracing::info!(
+        target: "shared_codex_daemon::spec_card_reset",
+        card_id = %spec_card_id,
+        wave_id = %wave.id,
+        thread_id = %thread_id,
+        "new_thread_started"
+    );
+
+    let turn_result = async {
+        s.shared_codex_appserver
+            .turn_start(&thread_id, vec![InputItem::text(wave.title.trim())])
+            .await?;
+        await_shared_spec_initial_turn_lifecycle(&mut notifications, &thread_id, &status).await?;
+        Ok::<(), CalmError>(())
+    }
+    .await;
+    if let Err(e) = turn_result {
+        if let Some(row) = old_mapping {
+            if let Err(rollback_err) = s
+                .repo
+                .card_codex_thread_upsert(
+                    spec_card_id,
+                    &row.thread_id,
+                    row.role,
+                    row.wave_id.as_deref(),
+                )
+                .await
+            {
+                tracing::warn!(
+                    target: "shared_codex_daemon::spec_card_reset",
+                    card_id = %spec_card_id,
+                    thread_id = %thread_id,
+                    rollback_error = %rollback_err,
+                    "failed to restore old card_codex_thread mapping after shared reset turn_start failure"
+                );
+            }
+        } else if let Err(rollback_err) =
+            s.repo.card_codex_thread_delete_by_card(spec_card_id).await
+        {
+            tracing::warn!(
+                target: "shared_codex_daemon::spec_card_reset",
+                card_id = %spec_card_id,
+                thread_id = %thread_id,
+                rollback_error = %rollback_err,
+                "failed to delete new card_codex_thread mapping after shared reset turn_start failure"
+            );
+        }
+        tracing::warn!(
+            target: "shared_codex_daemon::spec_card_reset",
+            card_id = %spec_card_id,
+            wave_id = %wave.id,
+            thread_id = %thread_id,
+            error = %e,
+            "turn_start_failed_rolled_back"
+        );
+        return Err(e);
+    }
+
+    Ok(SharedResetStarted {
+        thread_id: thread_id.clone(),
+        notifications,
+        status,
+        push_args: SpecPushDaemonArgs {
+            thread_id: Some(thread_id),
+            sock_uri: s.shared_codex_appserver.remote_uri(),
+            seed_codex_home: false,
+            developer_instructions: None,
+        },
+    })
+}
+
+async fn persist_shared_reset_runtime_fields(
+    s: &AppState,
+    spec_card_id: &str,
+    wave: &crate::model::Wave,
+    thread_id: &str,
+) -> Result<()> {
+    let scope = EventScope::Card {
+        card: spec_card_id.into(),
+        wave: wave.id.clone(),
+        cove: wave.cove_id.clone(),
+    };
+    let card_id_for_tx = spec_card_id.to_string();
+    let thread_id_for_tx = thread_id.to_string();
+    let (_card, _id) = write_with_event_typed(
+        s.repo.as_ref(),
+        ActorId::Kernel,
+        scope,
+        None,
+        &s.events,
+        &s.card_role_cache,
+        &s.wave_cove_cache,
+        move |tx| {
+            Box::pin(async move {
+                let mut payload = s_repo_card_get(tx, &card_id_for_tx).await?;
+                let Some(map) = payload.as_object_mut() else {
+                    return Err(CalmError::Internal(format!(
+                        "spec card {card_id_for_tx} payload is not a JSON object; cannot persist shared reset runtime fields"
+                    )));
+                };
+                map.insert(
+                    "codex_thread_id".into(),
+                    serde_json::Value::String(thread_id_for_tx),
+                );
+                map.insert(
+                    "codex_source".into(),
+                    serde_json::Value::String("shared".into()),
+                );
+                map.insert("appserver_pgid".into(), serde_json::Value::Null);
+                map.insert("appserver_start_time".into(), serde_json::Value::Null);
+                map.insert("appserver_boot_id".into(), serde_json::Value::Null);
+                map.remove("appserver_needs_initial_prompt");
+                let card = card_update_tx(
+                    tx,
+                    &card_id_for_tx,
+                    CardPatch {
+                        kind: None,
+                        sort: None,
+                        payload: Some(payload),
+                        deletable: None,
+                    },
+                )
+                .await?;
+                Ok((card.clone(), Event::CardUpdated(card)))
+            })
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+async fn s_repo_card_get(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    card_id: &str,
+) -> Result<serde_json::Value> {
+    let row: Option<(String,)> = sqlx::query_as("SELECT payload FROM cards WHERE id = ?1")
+        .bind(card_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    let payload_text = row
+        .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?
+        .0;
+    serde_json::from_str(&payload_text)
+        .map_err(|e| CalmError::Internal(format!("card {card_id} payload is not valid JSON: {e}")))
 }
 
 #[utoipa::path(

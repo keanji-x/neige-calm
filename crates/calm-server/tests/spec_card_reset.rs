@@ -5,22 +5,28 @@ use std::time::{Duration, Instant};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use calm_server::card_role_cache::CardRoleCache;
+use calm_server::config::Config;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, card_with_codex_create_tx};
 use calm_server::event::Event;
 use calm_server::event::EventBus;
 use calm_server::ids::WaveId;
 use calm_server::model::{Card, CardPatch, CardRole, NewCard, NewCove, NewWave, Terminal, new_id};
+use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::routes::theme::RequestTheme;
+use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, DaemonClient};
+use clap::Parser;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
 mod common;
+
+static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct Boot {
     app: axum::Router,
@@ -83,6 +89,103 @@ async fn boot() -> Boot {
         Some(card_role_cache),
         Some(wave_cove_cache),
     );
+    let app = routes::router()
+        .layer(axum::middleware::from_fn(
+            calm_server::actor::actor_middleware,
+        ))
+        .with_state(state.clone());
+
+    Boot {
+        app,
+        state,
+        repo,
+        wave_id: wave.id.to_string(),
+        tmp,
+    }
+}
+
+async fn boot_shared() -> Boot {
+    let tmp = TempDir::new().expect("tempdir");
+    let repo = Arc::new(
+        SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite"),
+    );
+    let cove = repo
+        .cove_create(NewCove {
+            name: "spec-card-reset-shared".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo
+        .wave_create(NewWave {
+            cove_id: cove.id,
+            title: "shared reset goal".into(),
+            sort: None,
+            cwd: "/tmp/spec-card-reset-shared".into(),
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+
+    let events = EventBus::new();
+    let card_role_cache = CardRoleCache::new();
+    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    repo.seed_card_role_cache(&card_role_cache).await.unwrap();
+    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let state = AppState::from_parts(
+        repo.clone(),
+        events.clone(),
+        Arc::new(DaemonClient {
+            data_dir: tmp.path().join("terminals"),
+            proc_supervisor_sock: None,
+        }),
+        Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            repo.clone(),
+            PathBuf::new(),
+            tmp.path().join("plugins-data"),
+            Vec::new(),
+            EventBus::new(),
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+        )),
+        Arc::new(common::fake_codex_client()),
+        Some(card_role_cache),
+        Some(wave_cove_cache),
+    )
+    .with_shared_codex_spec_cards_enabled(true);
+
+    let cfg = Config::parse_from([
+        "calm-server",
+        "--data-dir",
+        tmp.path().to_str().unwrap(),
+        "--codex-bin",
+        common::fake_codex_bin().as_str(),
+        "--shared-codex-appserver-restart-initial-delay-ms",
+        "10",
+        "--shared-codex-appserver-restart-max-delay-ms",
+        "50",
+    ]);
+    let home = calm_server::shared_codex_home::SharedCodexHome::new(
+        cfg.data_dir_resolved().join("codex-home"),
+        cfg.data_dir_resolved().join("codex-homes"),
+    );
+    home.seed_from(None).unwrap();
+    let pending = Arc::new(PendingThreadStartRegistry::new(repo.clone(), events));
+    let shared = SharedCodexAppServer::new_with_pending(
+        &cfg,
+        Arc::new(home),
+        repo.clone(),
+        Some(pending.clone()),
+    );
+    shared.start_or_takeover().await.unwrap();
+    let state = state
+        .with_shared_codex_appserver(shared)
+        .with_pending_codex_threads(Some(pending));
     let app = routes::router()
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
@@ -206,6 +309,53 @@ async fn seed_spec_card(
     (card, terminal, capture)
 }
 
+async fn seed_shared_spec_card(boot: &Boot, watermark: i64) -> (Card, Terminal, PathBuf) {
+    let (card, terminal, capture) = seed_spec_card(boot, watermark, false).await;
+    let mut payload = boot
+        .repo
+        .card_get(card.id.as_str())
+        .await
+        .unwrap()
+        .unwrap()
+        .payload;
+    payload["codex_source"] = json!("shared");
+    payload["codex_thread_id"] = json!("thread-old");
+    payload["appserver_sock"] = json!(boot.state.shared_codex_appserver.remote_uri());
+    payload["appserver_pgid"] = Value::Null;
+    payload["appserver_start_time"] = Value::Null;
+    payload["appserver_boot_id"] = Value::Null;
+    payload
+        .as_object_mut()
+        .unwrap()
+        .remove("appserver_needs_initial_prompt");
+    boot.repo
+        .card_update(
+            card.id.as_str(),
+            CardPatch {
+                kind: None,
+                sort: None,
+                payload: Some(payload),
+                deletable: None,
+            },
+        )
+        .await
+        .expect("mark shared spec card");
+    boot.repo
+        .card_codex_thread_upsert(
+            card.id.as_str(),
+            "thread-old",
+            CardRole::Spec,
+            Some(boot.wave_id.as_str()),
+        )
+        .await
+        .expect("seed old shared thread mapping");
+    (
+        boot.repo.card_get(card.id.as_str()).await.unwrap().unwrap(),
+        terminal,
+        capture,
+    )
+}
+
 async fn request_lines(path: &PathBuf) -> Vec<Value> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -290,28 +440,160 @@ async fn reset_spec_card_rejects_wrong_kind_card() {
 }
 
 #[tokio::test]
-async fn reset_spec_card_rejects_shared_source_card() {
-    let boot = boot().await;
-    let (card, _terminal, _capture) = seed_spec_card(&boot, 0, false).await;
-    let mut payload = card.payload.clone();
-    payload["codex_source"] = json!("shared");
-    boot.repo
-        .card_update(
-            card.id.as_str(),
-            CardPatch {
-                kind: None,
-                sort: None,
-                payload: Some(payload),
-                deletable: None,
-            },
-        )
+async fn shared_reset_swaps_thread_mapping_and_persists_new_thread_id() {
+    let _guard = ENV_LOCK.lock().await;
+    let capture = TempDir::new().unwrap();
+    let capture_file = capture.path().join("requests.ndjson");
+    unsafe {
+        std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
+    }
+    let boot = boot_shared().await;
+    let (card, terminal, _capture) = seed_shared_spec_card(&boot, 42).await;
+
+    let (status, body) = post_empty(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/reset", card.id),
+    )
+    .await;
+    unsafe {
+        std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
+    }
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["card_id"], json!(card.id.as_str()));
+    assert_eq!(body["terminal_id"], json!(terminal.id.as_str()));
+    assert_eq!(body["new_thread_id"], json!("fake-thread-0001"));
+
+    let mapping = boot
+        .repo
+        .card_codex_thread_get_by_card(card.id.as_str())
         .await
-        .expect("mark card shared");
+        .unwrap()
+        .expect("new shared mapping");
+    assert_eq!(mapping.thread_id, "fake-thread-0001");
+    assert_eq!(mapping.role, CardRole::Spec);
+    let got = boot.repo.card_get(card.id.as_str()).await.unwrap().unwrap();
+    assert_eq!(got.payload["codex_source"], json!("shared"));
+    assert_eq!(got.payload["codex_thread_id"], json!("fake-thread-0001"));
+    assert_eq!(got.payload["push_watermark"], json!(42));
+    assert!(got.payload["appserver_pgid"].is_null());
 
-    let (status, body) = post_empty(boot.app, &format!("/api/cards/{}/spec/reset", card.id)).await;
+    let entry = boot
+        .state
+        .terminal_renderer
+        .get(terminal.id.as_str())
+        .expect("respawned terminal renderer");
+    let shell_line = &entry.config().args[1];
+    assert!(
+        shell_line.contains("codex resume 'fake-thread-0001' --remote 'unix://"),
+        "shared reset TUI should resume the new shared thread: {shell_line}",
+    );
 
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body={body}");
-    assert_eq!(body["code"], json!("spec_reset_unsupported_in_shared_mode"));
+    calm_server::terminal_sweeper::reap_spec_push(&boot.state, &WaveId::from(boot.wave_id.clone()))
+        .await;
+}
+
+#[tokio::test]
+async fn shared_reset_replaces_spec_push_handle_with_new_thread_id_consumer() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot_shared().await;
+    let (card, _terminal, _capture) = seed_shared_spec_card(&boot, 0).await;
+
+    let (status, body) = post_empty(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/reset", card.id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+
+    let handle = boot
+        .state
+        .spec_push
+        .remove(&WaveId::from(boot.wave_id.clone()))
+        .expect("new parked shared handle");
+    assert!(handle.is_shared());
+    assert_eq!(handle.thread_id.as_deref(), Some("fake-thread-0001"));
+}
+
+#[tokio::test]
+async fn shared_reset_with_goal_sends_title_via_turn_start() {
+    let _guard = ENV_LOCK.lock().await;
+    let capture = TempDir::new().unwrap();
+    let capture_file = capture.path().join("requests.ndjson");
+    unsafe {
+        std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
+    }
+    let boot = boot_shared().await;
+    let (card, _terminal, _capture) = seed_shared_spec_card(&boot, 0).await;
+
+    let (status, body) = post_empty(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/reset", card.id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let rows = request_lines(&capture_file).await;
+    unsafe {
+        std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
+    }
+    assert!(
+        turn_start_contains(&rows, "shared reset goal"),
+        "shared reset must send the wave title via turn/start: {rows:?}",
+    );
+
+    calm_server::terminal_sweeper::reap_spec_push(&boot.state, &WaveId::from(boot.wave_id.clone()))
+        .await;
+}
+
+#[tokio::test]
+async fn shared_reset_preserves_push_watermark() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot_shared().await;
+    let (card, _terminal, _capture) = seed_shared_spec_card(&boot, 88).await;
+
+    let (status, body) = post_empty(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/reset", card.id),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let got = boot.repo.card_get(card.id.as_str()).await.unwrap().unwrap();
+    assert_eq!(got.payload["push_watermark"], json!(88));
+
+    calm_server::terminal_sweeper::reap_spec_push(&boot.state, &WaveId::from(boot.wave_id.clone()))
+        .await;
+}
+
+#[tokio::test]
+async fn shared_reset_turn_start_failure_does_not_swap_mapping() {
+    let _guard = ENV_LOCK.lock().await;
+    unsafe {
+        std::env::set_var("FAKE_CODEX_FAIL_TURN_START", "1");
+    }
+    let boot = boot_shared().await;
+    let (card, _terminal, _capture) = seed_shared_spec_card(&boot, 17).await;
+
+    let (status, _body) = post_empty(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/reset", card.id),
+    )
+    .await;
+    unsafe {
+        std::env::remove_var("FAKE_CODEX_FAIL_TURN_START");
+    }
+
+    assert!(status.is_server_error(), "expected 5xx, got {status}");
+    let mapping = boot
+        .repo
+        .card_codex_thread_get_by_card(card.id.as_str())
+        .await
+        .unwrap()
+        .expect("old mapping restored");
+    assert_eq!(mapping.thread_id, "thread-old");
+    let got = boot.repo.card_get(card.id.as_str()).await.unwrap().unwrap();
+    assert_eq!(got.payload["codex_thread_id"], json!("thread-old"));
+    assert_eq!(got.payload["push_watermark"], json!(17));
 }
 
 #[tokio::test]
