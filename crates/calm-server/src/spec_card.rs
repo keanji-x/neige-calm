@@ -357,7 +357,6 @@ pub(crate) fn build_codex_env_map(
     serde_json::Value::Object(env_map)
 }
 
-
 /// Roles that legitimately need role-specific Codex setup.
 /// Carved out of [`crate::model::CardRole`] so the seeding helper can
 /// only ever be handed a value that maps to a system-prompt template
@@ -386,7 +385,6 @@ impl SeededCardRole {
         }
     }
 }
-
 
 /// PR3a (#293) — push-mode PTY daemon arguments for
 /// [`seed_and_spawn_spec_daemon`]. Carries the `app-server` listen socket
@@ -443,7 +441,6 @@ fn developer_instructions_config_override(value: &str) -> String {
         .replace('\n', "\\n");
     format!("developer_instructions=\"{escaped}\"")
 }
-
 
 /// Spawn the spec card's shared-remote TUI daemon bound to its terminal row.
 ///
@@ -756,5 +753,4 @@ mod tests {
             "worker prompt must constrain neige reads to read-only own-wave views"
         );
     }
-
 }

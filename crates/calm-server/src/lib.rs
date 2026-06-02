@@ -424,6 +424,48 @@ pub async fn cleanup_legacy_spec_rows_on_boot(state: &state::AppState) {
     };
 
     for card in cards {
+        // R3 P2: before marking the row failed, reap any live legacy
+        // app-server process group that survived the upgrade. The legacy
+        // takeover path (deleted in PR7c) used to verify the identity
+        // stamp + signal the pgid; here we replicate just the reap so an
+        // orphaned codex daemon doesn't keep running while the UI shows
+        // the spec card as failed. boot-recovery utilities in
+        // spec_appserver.rs (verify_owned_pid / signal_process_group)
+        // were intentionally kept post-PR7c for this kind of one-shot
+        // use.
+        let pgid = card
+            .payload
+            .get("appserver_pgid")
+            .and_then(serde_json::Value::as_i64)
+            .and_then(|v| i32::try_from(v).ok());
+        let start_time = card
+            .payload
+            .get("appserver_start_time")
+            .and_then(serde_json::Value::as_u64);
+        let boot_id = card
+            .payload
+            .get("appserver_boot_id")
+            .and_then(serde_json::Value::as_str);
+        if let (Some(pgid), Some(start_time), Some(boot_id)) = (pgid, start_time, boot_id) {
+            if pgid > 1 && spec_appserver::verify_owned_pid(pgid, start_time, boot_id) {
+                let sigterm_sent = spec_appserver::signal_process_group(pgid, libc::SIGTERM);
+                tracing::warn!(
+                    card_id = %card.id,
+                    wave_id = %card.wave_id,
+                    pgid,
+                    sigterm_sent,
+                    "legacy spec row had verified live app-server pgid; sent SIGTERM before marking failed"
+                );
+            } else {
+                tracing::info!(
+                    card_id = %card.id,
+                    wave_id = %card.wave_id,
+                    ?pgid,
+                    "legacy spec row's persisted pgid did not verify (stale or recycled); skipping reap"
+                );
+            }
+        }
+
         let mut payload = card.payload.clone();
         let Some(map) = payload.as_object_mut() else {
             tracing::warn!(
