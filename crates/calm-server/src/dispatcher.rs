@@ -2534,7 +2534,7 @@ async fn spawn_codex_worker_via_shared_daemon(
         crate::spec_card::SeededCardRole::Worker.prompt_template(),
         ctx.wave_id.as_str(),
     );
-    let thread_id = inner
+    let thread_id = match inner
         .shared_codex_appserver
         .thread_start_for_card(
             card_id,
@@ -2547,7 +2547,38 @@ async fn spawn_codex_worker_via_shared_daemon(
                 developer_instructions: Some(worker_instructions),
             },
         )
-        .await?;
+        .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            // thread_start failed (transport error, daemon crash, mapping
+            // write failure inside thread_start_for_card). The card +
+            // terminal rows were already committed with the idempotency_key
+            // — without rollback they'd permanently short-circuit retries.
+            // rollback_orphan_worker's pre-spawn fallthrough deletes both
+            // rows; thread_start_for_card may have partially written
+            // card_codex_threads, so reap that too. card_codex_thread is
+            // independent of rollback_orphan_worker so we delete it
+            // explicitly.
+            let _ = rollback_orphan_worker(
+                inner.repo.as_ref(),
+                inner.terminal_renderer.as_ref(),
+                &inner.card_role_cache,
+                card_id,
+                ctx.term.id.as_str(),
+            )
+            .await;
+            let _ = inner.repo.card_codex_thread_delete_by_card(card_id).await;
+            tracing::warn!(
+                target: "shared_codex_daemon::worker",
+                card_id,
+                wave_id = %ctx.wave_id,
+                error = %e,
+                "thread_start_failed_rolled_back"
+            );
+            return Err(e);
+        }
+    };
     tracing::info!(
         target: "shared_codex_daemon::worker",
         card_id,
