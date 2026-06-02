@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::{path::Path, process::Stdio};
 
+use calm_server::codex_appserver::InputItem;
 use calm_server::config::Config;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::db::{
@@ -218,6 +219,23 @@ async fn wait_proc_gone(pid: i32) -> bool {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     false
+}
+
+async fn wait_for_active_turn(
+    daemon: &SharedCodexAppServer,
+    thread_id: &str,
+    expected: Option<&str>,
+) {
+    for _ in 0..80 {
+        if daemon.active_turn_for_test(thread_id).as_deref() == expected {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!(
+        "timed out waiting for active turn {expected:?}; got {:?}",
+        daemon.active_turn_for_test(thread_id)
+    );
 }
 
 async fn read_pid_line(out: tokio::process::ChildStdout) -> i32 {
@@ -590,10 +608,12 @@ async fn takeover_rebuilds_thread_cache_from_db() {
     }
 
     let daemon = server(&root, repo.clone()).await;
+    daemon.set_active_turn_for_test("stale-thread", "stale-turn");
     daemon.start_or_takeover().await.unwrap();
     for (thread_id, card_id) in pairs {
         assert_eq!(daemon.cached_card_for_thread(&thread_id), Some(card_id));
     }
+    assert_eq!(daemon.active_turn_for_test("stale-thread"), None);
 }
 
 #[tokio::test]
@@ -1042,4 +1062,137 @@ async fn cleanup_guard_drop_kills_pgid() {
         waitpid_reaped(pid).await,
         "SpawnedChildGuard drop must reap the child process group"
     );
+}
+
+#[tokio::test]
+async fn interrupt_active_turn_is_noop_when_no_active_turn() {
+    let repo = repo().await;
+    let daemon = SharedCodexAppServer::new_stub(repo);
+
+    daemon
+        .interrupt_active_turn("thread-without-active-turn")
+        .await
+        .expect("missing active turn should be a no-op");
+}
+
+#[tokio::test]
+async fn turn_start_seeds_active_turns_synchronously() {
+    let _guard = ENV_LOCK.lock().await;
+    unsafe {
+        std::env::set_var("FAKE_CODEX_SKIP_TURN_STARTED", "1");
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let card_id = seed_card(&repo, 1).await;
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+    let thread_id = daemon
+        .thread_start_for_card(
+            &card_id,
+            CardRole::Plain,
+            None,
+            SharedThreadStartParams {
+                cwd: "/tmp".into(),
+                approval_policy: "never".into(),
+                sandbox_mode: "workspace-write".into(),
+                developer_instructions: None,
+            },
+        )
+        .await
+        .unwrap();
+    let turn_id = daemon
+        .turn_start(&thread_id, vec![InputItem::text("seed active turn")])
+        .await
+        .unwrap();
+
+    unsafe {
+        std::env::remove_var("FAKE_CODEX_SKIP_TURN_STARTED");
+    }
+
+    assert_eq!(
+        daemon.active_turn_for_test(&thread_id).as_deref(),
+        Some(turn_id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn interrupt_active_turn_immediately_after_turn_start_succeeds() {
+    let _guard = ENV_LOCK.lock().await;
+    let root = tempfile::tempdir().unwrap();
+    let interrupt_marker = root.path().join("interrupt-marker");
+    unsafe {
+        std::env::set_var("FAKE_CODEX_SKIP_TURN_STARTED", "1");
+        std::env::set_var("FAKE_CODEX_INTERRUPT_MARKER", &interrupt_marker);
+    }
+
+    let repo = repo().await;
+    let card_id = seed_card(&repo, 1).await;
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+    let thread_id = daemon
+        .thread_start_for_card(
+            &card_id,
+            CardRole::Plain,
+            None,
+            SharedThreadStartParams {
+                cwd: "/tmp".into(),
+                approval_policy: "never".into(),
+                sandbox_mode: "workspace-write".into(),
+                developer_instructions: None,
+            },
+        )
+        .await
+        .unwrap();
+    daemon
+        .turn_start(&thread_id, vec![InputItem::text("interrupt active turn")])
+        .await
+        .unwrap();
+    daemon.interrupt_active_turn(&thread_id).await.unwrap();
+
+    unsafe {
+        std::env::remove_var("FAKE_CODEX_SKIP_TURN_STARTED");
+        std::env::remove_var("FAKE_CODEX_INTERRUPT_MARKER");
+    }
+
+    assert_eq!(std::fs::read_to_string(interrupt_marker).unwrap(), "1");
+}
+
+#[tokio::test]
+async fn active_turns_map_tracks_turn_started_and_completed() {
+    let _guard = ENV_LOCK.lock().await;
+    unsafe {
+        std::env::set_var("FAKE_CODEX_TURN_COMPLETED_DELAY_MS", "250");
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let card_id = seed_card(&repo, 1).await;
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+    let thread_id = daemon
+        .thread_start_for_card(
+            &card_id,
+            CardRole::Plain,
+            None,
+            SharedThreadStartParams {
+                cwd: "/tmp".into(),
+                approval_policy: "never".into(),
+                sandbox_mode: "workspace-write".into(),
+                developer_instructions: None,
+            },
+        )
+        .await
+        .unwrap();
+    let turn_id = daemon
+        .turn_start(&thread_id, vec![InputItem::text("track active turn")])
+        .await
+        .unwrap();
+
+    wait_for_active_turn(&daemon, &thread_id, Some(&turn_id)).await;
+    wait_for_active_turn(&daemon, &thread_id, None).await;
+
+    unsafe {
+        std::env::remove_var("FAKE_CODEX_TURN_COMPLETED_DELAY_MS");
+    }
 }

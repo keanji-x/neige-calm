@@ -2623,16 +2623,14 @@ async fn spawn_codex_worker_via_shared_daemon(
     }
 
     // turn_start BEFORE spawn — codex 0.135's `codex resume <thread_id>
-    // --remote ...` REQUIRES the thread to have at least one turn before a
-    // second connection can resume it; a `codex resume` against a fresh
-    // thread/start (no rollout yet) exits immediately. PR5/PR7b spec take
-    // the same order; PR7b-worker mirrors. The cost: if the subsequent PTY
-    // spawn fails, the shared daemon keeps running the worker's turn with
-    // no visible card — documented as a followup gate for PR8 (same class
-    // of issue PR7b spec deferred). On in-process turn_start failure we
-    // delete the orphan card so its idempotency_key clears for retry.
+    // --remote ...` REQUIRES at least one prior turn on the thread before
+    // a second connection can resume it. PR5/PR7b spec take the same
+    // order; PR7b-worker mirrors. If the subsequent PTY spawn fails, the
+    // shared daemon's turn is interrupted via turn/interrupt — see the
+    // spawn-fail rollback below. On in-process turn_start failure we delete
+    // the orphan card so its idempotency_key clears for retry.
     let initial_turn_result = async {
-        inner
+        let turn_id = inner
             .shared_codex_appserver
             .turn_start(
                 &thread_id,
@@ -2640,50 +2638,53 @@ async fn spawn_codex_worker_via_shared_daemon(
             )
             .await?;
         await_shared_worker_initial_turn_started(&mut notifications, &thread_id).await?;
-        Ok::<(), CalmError>(())
+        Ok::<String, CalmError>(turn_id)
     }
     .await;
-    if let Err(e) = initial_turn_result {
-        tracing::warn!(
-            target: "shared_codex_daemon::worker",
-            card_id,
-            wave_id = %ctx.wave_id,
-            thread_id = %thread_id,
-            error = %e,
-            "turn_start_failed"
-        );
-        // No PTY has been spawned yet; rollback_orphan_worker's pre-spawn
-        // fallthrough (case 1a: term present, no pid, no renderer) deletes
-        // both the card and terminal rows. This clears the idempotency_key
-        // so a retry can mint a fresh card row.
-        let _ = rollback_orphan_worker(
-            inner.repo.as_ref(),
-            inner.terminal_renderer.as_ref(),
-            &inner.card_role_cache,
-            card_id,
-            ctx.term.id.as_str(),
-        )
-        .await;
-        if let Err(rollback_err) = inner.repo.card_codex_thread_delete_by_card(card_id).await {
+    let initial_turn_id = match initial_turn_result {
+        Ok(turn_id) => turn_id,
+        Err(e) => {
             tracing::warn!(
                 target: "shared_codex_daemon::worker",
                 card_id,
+                wave_id = %ctx.wave_id,
                 thread_id = %thread_id,
-                rollback_error = %rollback_err,
-                "card_codex_thread delete failed during turn_start rollback"
+                error = %e,
+                "turn_start_failed"
             );
+            // No PTY has been spawned yet; rollback_orphan_worker's pre-spawn
+            // fallthrough (case 1a: term present, no pid, no renderer) deletes
+            // both the card and terminal rows. This clears the idempotency_key
+            // so a retry can mint a fresh card row.
+            let _ = rollback_orphan_worker(
+                inner.repo.as_ref(),
+                inner.terminal_renderer.as_ref(),
+                &inner.card_role_cache,
+                card_id,
+                ctx.term.id.as_str(),
+            )
+            .await;
+            if let Err(rollback_err) = inner.repo.card_codex_thread_delete_by_card(card_id).await {
+                tracing::warn!(
+                    target: "shared_codex_daemon::worker",
+                    card_id,
+                    thread_id = %thread_id,
+                    rollback_error = %rollback_err,
+                    "card_codex_thread delete failed during turn_start rollback"
+                );
+            }
+            tracing::error!(
+                target: "shared_codex_daemon::worker",
+                card_id,
+                wave_id = %ctx.wave_id,
+                terminal_id = %ctx.term.id,
+                thread_id = %thread_id,
+                error = %e,
+                "worker_turn_start_rolled_back"
+            );
+            return Err(e);
         }
-        tracing::error!(
-            target: "shared_codex_daemon::worker",
-            card_id,
-            wave_id = %ctx.wave_id,
-            terminal_id = %ctx.term.id,
-            thread_id = %thread_id,
-            error = %e,
-            "worker_turn_start_rolled_back"
-        );
-        return Err(e);
-    }
+    };
 
     let mut env_for_spawn = ctx.legacy_env.clone();
     if let Some(map) = env_for_spawn.as_object_mut() {
@@ -2723,13 +2724,10 @@ async fn spawn_codex_worker_via_shared_daemon(
     )
     .await
     {
-        // FOLLOWUP GATE (PR8): turn_start has already delivered the worker
-        // job to the shared daemon, so a PTY spawn failure leaves an
-        // orphan turn running. Same shape as the PR7b spec card path's
-        // deferred followup. For now we still reap the card/terminal so
-        // the idempotency_key clears for retry; the shared turn finishing
-        // hooks will fail to resolve the (deleted) card and the bridge
-        // logs the resolution miss.
+        // turn_start has already delivered the worker job to the shared
+        // daemon. If the PTY spawn fails, delete the card/terminal rows so
+        // the idempotency_key clears for retry, then interrupt the in-flight
+        // shared turn so it cannot keep modifying the workspace invisibly.
         match rollback_orphan_worker(
             inner.repo.as_ref(),
             inner.terminal_renderer.as_ref(),
@@ -2740,6 +2738,22 @@ async fn spawn_codex_worker_via_shared_daemon(
         .await
         {
             RollbackOutcome::Deleted => {
+                if let Err(interrupt_err) = inner
+                    .shared_codex_appserver
+                    .turn_interrupt(&thread_id, &initial_turn_id)
+                    .await
+                {
+                    tracing::warn!(
+                        target: "shared_codex_daemon::worker",
+                        card_id,
+                        wave_id = %ctx.wave_id,
+                        terminal_id = %ctx.term.id,
+                        thread_id = %thread_id,
+                        turn_id = %initial_turn_id,
+                        error = %interrupt_err,
+                        "failed to interrupt shared worker turn after TUI spawn failure"
+                    );
+                }
                 let _ = inner.repo.card_codex_thread_delete_by_card(card_id).await;
                 tracing::error!(
                     target: "shared_codex_daemon::worker",
@@ -2747,8 +2761,9 @@ async fn spawn_codex_worker_via_shared_daemon(
                     wave_id = %ctx.wave_id,
                     terminal_id = %ctx.term.id,
                     thread_id = %thread_id,
+                    turn_id = %initial_turn_id,
                     error = %e,
-                    "worker_spawn_failed_with_orphan_turn"
+                    "worker_spawn_failed_turn_interrupted"
                 );
                 return Err(e);
             }

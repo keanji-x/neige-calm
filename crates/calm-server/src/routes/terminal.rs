@@ -86,6 +86,16 @@ pub(crate) async fn spawn_terminal_with_parts(
     cwd: &str,
     env: &serde_json::Value,
 ) -> Result<Arc<RendererEntry>> {
+    #[cfg(feature = "fixtures")]
+    if matches!(
+        std::env::var("FAKE_CODEX_PTY_FAIL").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+    ) {
+        return Err(CalmError::Internal(
+            "forced PTY spawn failure via FAKE_CODEX_PTY_FAIL".into(),
+        ));
+    }
+
     let proc_supervisor_sock =
         crate::proc_supervisor::resolve_control_sock(daemon.proc_supervisor_sock.as_deref())
             .await?;

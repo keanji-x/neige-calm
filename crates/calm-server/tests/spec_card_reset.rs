@@ -218,6 +218,19 @@ async fn post_empty(app: axum::Router, uri: &str) -> (StatusCode, Value) {
     (status, body)
 }
 
+async fn delete_empty(app: axum::Router, uri: &str) -> StatusCode {
+    app.oneshot(
+        Request::builder()
+            .method("DELETE")
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+    .status()
+}
+
 fn stage_fake_codex_on_path(tmp: &TempDir) -> String {
     let bin_dir = tmp.path().join("bin");
     std::fs::create_dir_all(&bin_dir).expect("create fake codex bin dir");
@@ -356,6 +369,33 @@ async fn seed_shared_spec_card(boot: &Boot, watermark: i64) -> (Card, Terminal, 
     )
 }
 
+async fn seed_shared_plain_card(boot: &Boot, label: &str, thread_id: &str) -> Card {
+    let card = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: WaveId::from(boot.wave_id.clone()),
+            kind: "plugin:test:plain".into(),
+            sort: None,
+            payload: json!({
+                "label": label,
+                "codex_source": "shared",
+                "codex_thread_id": thread_id,
+            }),
+        })
+        .await
+        .expect("seed shared plain card");
+    boot.repo
+        .card_codex_thread_upsert(
+            card.id.as_str(),
+            thread_id,
+            CardRole::Plain,
+            Some(boot.wave_id.as_str()),
+        )
+        .await
+        .expect("seed shared plain mapping");
+    card
+}
+
 async fn request_lines(path: &PathBuf) -> Vec<Value> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -375,11 +415,150 @@ async fn request_lines(path: &PathBuf) -> Vec<Value> {
     }
 }
 
+async fn request_lines_containing(path: &PathBuf, method: &str, count: usize) -> Vec<Value> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(raw) = std::fs::read_to_string(path) {
+            let matching = raw
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .filter(|row| row.get("method").and_then(Value::as_str) == Some(method))
+                .collect::<Vec<_>>();
+            if matching.len() >= count || Instant::now() >= deadline {
+                return matching;
+            }
+        }
+        if Instant::now() >= deadline {
+            return Vec::new();
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 fn turn_start_contains(rows: &[Value], needle: &str) -> bool {
     rows.iter().any(|row| {
         row.get("method").and_then(Value::as_str) == Some("turn/start")
             && row.to_string().contains(needle)
     })
+}
+
+fn has_interrupt(rows: &[Value], thread_id: &str, turn_id: &str) -> bool {
+    rows.iter().any(|row| {
+        row.get("method").and_then(Value::as_str) == Some("turn/interrupt")
+            && row.pointer("/params/threadId").and_then(Value::as_str) == Some(thread_id)
+            && row.pointer("/params/turnId").and_then(Value::as_str) == Some(turn_id)
+    })
+}
+
+#[tokio::test]
+async fn shared_card_delete_interrupts_active_turn() {
+    let _guard = ENV_LOCK.lock().await;
+    let capture = TempDir::new().unwrap();
+    let capture_file = capture.path().join("requests.ndjson");
+    unsafe {
+        std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
+    }
+    let boot = boot_shared().await;
+    let card = seed_shared_plain_card(&boot, "delete", "thread-delete").await;
+    boot.state
+        .shared_codex_appserver
+        .set_active_turn_for_test("thread-delete", "turn-delete");
+
+    let status = delete_empty(boot.app.clone(), &format!("/api/cards/{}", card.id)).await;
+    let rows = request_lines_containing(&capture_file, "turn/interrupt", 1).await;
+    unsafe {
+        std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
+    }
+
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(
+        has_interrupt(&rows, "thread-delete", "turn-delete"),
+        "card delete must interrupt active shared turn: {rows:?}"
+    );
+}
+
+#[tokio::test]
+async fn shared_wave_delete_interrupts_all_child_turns() {
+    let _guard = ENV_LOCK.lock().await;
+    let capture = TempDir::new().unwrap();
+    let capture_file = capture.path().join("requests.ndjson");
+    unsafe {
+        std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
+    }
+    let boot = boot_shared().await;
+    let card_a = seed_shared_plain_card(&boot, "wave-a", "thread-wave-a").await;
+    let card_b = seed_shared_plain_card(&boot, "wave-b", "thread-wave-b").await;
+    boot.state
+        .shared_codex_appserver
+        .set_active_turn_for_test("thread-wave-a", "turn-wave-a");
+    boot.state
+        .shared_codex_appserver
+        .set_active_turn_for_test("thread-wave-b", "turn-wave-b");
+
+    let status = delete_empty(boot.app.clone(), &format!("/api/waves/{}", boot.wave_id)).await;
+    let rows = request_lines_containing(&capture_file, "turn/interrupt", 2).await;
+    unsafe {
+        std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
+    }
+
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(
+        has_interrupt(&rows, "thread-wave-a", "turn-wave-a"),
+        "wave delete must interrupt first active shared turn: {rows:?}"
+    );
+    assert!(
+        has_interrupt(&rows, "thread-wave-b", "turn-wave-b"),
+        "wave delete must interrupt second active shared turn: {rows:?}"
+    );
+    assert!(
+        boot.repo
+            .card_get(card_a.id.as_str())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        boot.repo
+            .card_get(card_b.id.as_str())
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn shared_spec_reset_interrupts_old_thread_turn() {
+    let _guard = ENV_LOCK.lock().await;
+    let capture = TempDir::new().unwrap();
+    let capture_file = capture.path().join("requests.ndjson");
+    unsafe {
+        std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
+    }
+    let boot = boot_shared().await;
+    let (card, _terminal, _capture) = seed_shared_spec_card(&boot, 7).await;
+    boot.state
+        .shared_codex_appserver
+        .set_active_turn_for_test("thread-old", "turn-old");
+
+    let (status, body) = post_empty(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/reset", card.id),
+    )
+    .await;
+    let rows = request_lines_containing(&capture_file, "turn/interrupt", 1).await;
+    unsafe {
+        std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
+    }
+
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert!(
+        has_interrupt(&rows, "thread-old", "turn-old"),
+        "shared reset must interrupt old active thread: {rows:?}"
+    );
+    assert!(
+        !has_interrupt(&rows, "fake-thread-0001", "turn-old"),
+        "shared reset must not interrupt the new thread with the old turn id: {rows:?}"
+    );
 }
 
 #[tokio::test]

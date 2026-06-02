@@ -76,6 +76,7 @@ use crate::model::{
     NewWave, Wave, WaveDetail, WavePatch, new_id,
 };
 use crate::pending_codex_threads::PendingEntry;
+use crate::routes::cards::interrupt_shared_card_active_turn;
 use crate::routes::cove_folders::{is_descendant_of, normalize_path};
 use crate::routes::settings::{Settings, load_settings};
 use crate::spec_appserver::spawn_spec_appserver_with_watchdog_config_and_recovery_for_wave;
@@ -1871,6 +1872,7 @@ pub(crate) async fn delete_wave(
     let mut terminal_ids: Vec<String> = Vec::new();
     let cards = s.repo.cards_by_wave(wave_id.as_str()).await?;
     for card in &cards {
+        interrupt_shared_card_active_turn(&s, card).await;
         if let Some(t) = s.repo.terminal_get_by_card(card.id.as_str()).await? {
             reap_terminal_artifacts(&s, &t).await;
             terminal_ids.push(t.id);
