@@ -124,7 +124,29 @@ impl PendingThreadStartRegistry {
                 };
                 self.drop_stale_entry(dropped, "thread_started_stale_front")
                     .await;
-                continue;
+                // Followup gate #3 (PR6 R6 P2-A pragmatic mitigation):
+                // STOP after dropping a stale front rather than looping with
+                // the SAME thread_id. The next-in-queue entry (if any) is
+                // soft-deterministically tied to a DIFFERENT pending PTY
+                // spawn — binding it to THIS thread_id would be a cross-
+                // attribution: the new card would receive a thread that the
+                // dropped card's TUI requested.
+                //
+                // codex 0.135 has no opaque request-id passthrough in
+                // thread/start / thread/started, so we cannot harden the
+                // FIFO attribution any further. Treating the thread_id as
+                // an orphan here is the least-surprising failure mode —
+                // the legitimate next-in-queue entry must wait for its OWN
+                // thread/started event (the daemon will emit one per
+                // outstanding thread/start RPC). Some empty cards may miss
+                // a bind, but no card receives a thread that wasn't its
+                // own.
+                tracing::warn!(
+                    target = "shared_codex_daemon::pending_orphan_thread_started",
+                    %thread_id,
+                    "stale front pending entry dropped; treating thread_id as orphan rather than cross-attributing to the next-in-queue entry"
+                );
+                return Ok(None);
             }
 
             let entry = {
