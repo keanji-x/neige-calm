@@ -231,6 +231,14 @@ impl RuntimeHarness {
         )
         .await
         .unwrap();
+        repo.card_codex_thread_upsert(
+            spec_card_id.as_str(),
+            thread_id.as_str(),
+            CardRole::Spec,
+            Some(wave.id.as_str()),
+        )
+        .await
+        .expect("persist spec thread mapping");
 
         let card_key: CardId = spec_card_id.clone().into();
         handle

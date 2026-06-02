@@ -82,7 +82,7 @@ async fn main() -> anyhow::Result<()> {
     // #313 problem #1 — boot-time **takeover** of in-flight spec waves.
     // Replaces the previous "kill-on-boot" sweep
     // (`reap_orphan_appserver_groups_on_boot`). For every spec card whose
-    // payload carries a `codex_thread_id` AND whose wave is not in a
+    // `card_codex_threads` spec mapping exists and whose wave is not in a
     // terminal lifecycle state: re-attach (reuse the persisted live
     // app-server if its socket+pgid are still alive, else respawn fresh),
     // `initialize` + `thread/resume(<thread_id>)`, register a fresh

@@ -1697,6 +1697,14 @@ async fn spec_cards_for_boot_takeover_filters_to_spec_role() {
     .await
     .expect("create spec card");
     tx.commit().await.unwrap();
+    repo.card_codex_thread_upsert(
+        spec.id.as_str(),
+        "thread-real-spec",
+        CardRole::Spec,
+        Some(w.id.as_str()),
+    )
+    .await
+    .expect("seed spec thread mapping");
 
     // (2) Non-spec (plain) card in the SAME wave whose payload mimics
     // the collision shape — every field the takeover query reads is
@@ -1724,6 +1732,14 @@ async fn spec_cards_for_boot_takeover_filters_to_spec_role() {
     .await
     .expect("create plain card");
     tx.commit().await.unwrap();
+    repo.card_codex_thread_upsert(
+        plain.id.as_str(),
+        "thread-collision-bait",
+        CardRole::Plain,
+        Some(w.id.as_str()),
+    )
+    .await
+    .expect("seed plain thread mapping");
 
     // (3) Run the takeover query. Result MUST be exactly the spec card.
     let rows = repo
@@ -1762,6 +1778,48 @@ async fn spec_cards_for_boot_takeover_filters_to_spec_role() {
     assert!(
         got_plain.is_some(),
         "plain card must still exist; takeover query is read-only"
+    );
+}
+
+#[tokio::test]
+async fn spec_cards_for_boot_takeover_requires_card_codex_threads_row() {
+    use calm_server::card_role_cache::CardRoleCache;
+    use calm_server::model::{CardRole, NewCard};
+
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "table-required").await;
+    let w = make_wave(&repo, c.id.as_str(), "table-required").await;
+    let cache = CardRoleCache::new();
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    let _spec = calm_server::db::sqlite::card_create_with_id_tx(
+        &mut tx,
+        calm_server::model::new_id(),
+        NewCard {
+            wave_id: w.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({
+                "codex_thread_id": "thread-payload-only",
+                "appserver_pgid": 99_991,
+                "appserver_sock": "/tmp/calm-payload-only.sock",
+                "push_watermark": 17,
+            }),
+        },
+        CardRole::Spec,
+        false,
+        &cache,
+    )
+    .await
+    .expect("create payload-only spec card");
+    tx.commit().await.unwrap();
+
+    assert!(
+        repo.spec_cards_for_boot_takeover()
+            .await
+            .expect("takeover query")
+            .is_empty(),
+        "payload.codex_thread_id alone is not authoritative for boot takeover"
     );
 }
 
@@ -1950,6 +2008,14 @@ async fn spec_cards_for_boot_takeover_excludes_initial_prompt_cards() {
     .await
     .expect("create initial-prompt spec card");
     tx.commit().await.unwrap();
+    repo.card_codex_thread_upsert(
+        spec.id.as_str(),
+        "thread-empty-no-rollout",
+        CardRole::Spec,
+        Some(w.id.as_str()),
+    )
+    .await
+    .expect("seed initial-prompt thread mapping");
 
     assert!(
         repo.spec_cards_for_boot_takeover()
@@ -2003,7 +2069,7 @@ async fn legacy_spec_boot_queries_exclude_shared_cards() {
 
     let pending_card_id = calm_server::model::new_id();
     let mut tx = repo.pool().begin().await.unwrap();
-    let _mapped = calm_server::db::sqlite::card_create_with_id_tx(
+    let mapped = calm_server::db::sqlite::card_create_with_id_tx(
         &mut tx,
         calm_server::model::new_id(),
         NewCard {
@@ -2044,6 +2110,14 @@ async fn legacy_spec_boot_queries_exclude_shared_cards() {
     .await
     .expect("create pending shared spec card");
     tx.commit().await.unwrap();
+    repo.card_codex_thread_upsert(
+        mapped.id.as_str(),
+        "T-shared-mapped",
+        CardRole::Spec,
+        Some(mapped_wave.id.as_str()),
+    )
+    .await
+    .expect("seed mapped shared thread mapping");
 
     // Shared takeover requires a LIVE terminal row (R7 P2 #1 / CI fix):
     // the SQL JOINs terminals and filters exit_code IS NULL AND
@@ -2301,6 +2375,14 @@ async fn spec_cards_for_boot_takeover_round_trips_identity_stamp() {
     .await
     .expect("create spec card");
     tx.commit().await.unwrap();
+    repo.card_codex_thread_upsert(
+        spec.id.as_str(),
+        "thread-id-rt",
+        CardRole::Spec,
+        Some(w.id.as_str()),
+    )
+    .await
+    .expect("seed identity round-trip thread mapping");
 
     // Sanity: the initial row reads back with None for the identity
     // slots (legacy-row posture).

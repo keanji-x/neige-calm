@@ -40,9 +40,9 @@
 //!
 //! Plants the spec card via direct SQL (`UPDATE cards SET role='spec',
 //! payload=…`) — same pattern as `tests/role_enforcement.rs`. The
-//! takeover query selects on `c.role = 'spec' AND
-//! json_extract(payload,'$.codex_thread_id') IS NOT NULL AND
-//! w.lifecycle NOT IN ('done','canceled','failed')`.
+//! takeover query selects on `c.role = 'spec'`, a matching
+//! `card_codex_threads` spec row, and
+//! `w.lifecycle NOT IN ('done','canceled','failed')`.
 
 #![cfg(unix)]
 
@@ -55,7 +55,7 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{ArtifactRef, BroadcastEnvelope, Event, EventBus, EventScope};
 use calm_server::ids::{ActorId, WaveId};
-use calm_server::model::{NewCard, NewCove, NewWave};
+use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::wave_cove_cache::WaveCoveCache;
@@ -178,6 +178,15 @@ async fn inv1_stranded_envelope_must_be_observable() {
         .execute(typed.pool())
         .await
         .expect("plant spec role + codex_thread_id");
+    typed
+        .card_codex_thread_upsert(
+            card.id.as_str(),
+            "thr-inv-01",
+            CardRole::Spec,
+            Some(wave.id.as_str()),
+        )
+        .await
+        .expect("plant spec thread mapping");
 
     // Re-seed caches now that the row is shaped.
     repo.seed_card_role_cache(&card_role_cache).await.unwrap();
@@ -360,6 +369,15 @@ async fn empty_goal_initial_prompt_bootstrap_does_not_emit_abandoned_or_resume_s
         .execute(typed.pool())
         .await
         .expect("plant empty-goal spec card");
+    typed
+        .card_codex_thread_upsert(
+            card.id.as_str(),
+            "stale-thread-without-rollout",
+            CardRole::Spec,
+            Some(wave.id.as_str()),
+        )
+        .await
+        .expect("plant empty-goal spec thread mapping");
     repo.seed_card_role_cache(&card_role_cache).await.unwrap();
     repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
 
