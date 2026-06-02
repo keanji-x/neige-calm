@@ -2148,21 +2148,22 @@ impl RepoRead for SqlxRepo {
             i64,
         )>,
     > {
-        // #313 problem #1 — boot takeover input. Spec cards whose payload
-        // carries `codex_thread_id`, JOINed against `waves` so we can filter
-        // out terminal-lifecycle waves in SQL rather than re-querying per
-        // card from Rust. Shared-daemon cards are excluded because they are
-        // owned by `takeover_shared_spec_cards_on_boot`, not the legacy
-        // per-wave app-server path. Empty-goal rows marked
+        // #313 problem #1 — boot takeover input. Spec cards whose thread
+        // mapping exists in `card_codex_threads`, JOINed against `waves` so
+        // we can filter out terminal-lifecycle waves in SQL rather than
+        // re-querying per card from Rust. Shared-daemon cards are excluded
+        // because they are owned by `takeover_shared_spec_cards_on_boot`,
+        // not the legacy per-wave app-server path. Empty-goal rows marked
         // `appserver_needs_initial_prompt` are excluded because their
         // thread has no rollout yet and must be fresh-started by
         // `spec_cards_for_initial_prompt_bootstrap`, never resumed.
         // `appserver_pgid` / `appserver_sock` /
         // `appserver_start_time` / `appserver_boot_id` are nullable in the
-        // projection (defensive — every write that lands `codex_thread_id`
-        // today also writes the first two, and #318 added the start_time +
-        // boot_id companion; a malformed or pre-#318 row shouldn't strand
-        // the whole boot sweep). `push_watermark` defaults to 0 when
+        // projection (defensive — every write that lands a legacy spec
+        // mapping today also writes the first two, and #318 added the
+        // start_time + boot_id companion; a malformed or pre-#318 row
+        // shouldn't strand the whole boot sweep). `push_watermark` defaults
+        // to 0 when
         // absent — 0 is the "no events pushed yet" sentinel the in-memory
         // `EventCursorCache` returns for an unknown card, so a missing
         // field produces identical replay behavior (replay every event
@@ -2205,7 +2206,7 @@ impl RepoRead for SqlxRepo {
         )> = sqlx::query_as(
             r#"SELECT c.id,
                       c.wave_id,
-                      json_extract(c.payload, '$.codex_thread_id'),
+                      t.thread_id,
                       json_extract(c.payload, '$.appserver_pgid'),
                       json_extract(c.payload, '$.appserver_sock'),
                       json_extract(c.payload, '$.appserver_start_time'),
@@ -2213,8 +2214,9 @@ impl RepoRead for SqlxRepo {
                       json_extract(c.payload, '$.push_watermark')
                FROM cards c
                JOIN waves w ON w.id = c.wave_id
+               JOIN card_codex_threads t ON t.card_id = c.id
                WHERE c.role = 'spec'
-                 AND json_extract(c.payload, '$.codex_thread_id') IS NOT NULL
+                 AND t.role = 'spec'
                  AND COALESCE(json_extract(c.payload, '$.codex_source'), 'legacy') != 'shared'
                  AND COALESCE(json_extract(c.payload, '$.appserver_needs_initial_prompt'), 0) != 1
                  AND w.lifecycle NOT IN ('done', 'canceled', 'failed')"#,

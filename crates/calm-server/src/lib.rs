@@ -244,14 +244,15 @@ mod claude_boot_revive_tests {
 ///
 /// Replaces the previous "boot-time kill" sweep
 /// (`reap_orphan_appserver_groups_on_boot` — see the parent design in
-/// issue #313). Today's posture is: every spec card whose payload carries
-/// a `codex_thread_id` AND whose wave is **not terminal** gets:
+/// issue #313). Today's posture is: every spec card with a
+/// `card_codex_threads` spec mapping AND whose wave is **not terminal**
+/// gets:
 ///
 ///   1. A live `codex app-server` re-established for it — reused if the
 ///      previous process is still bound to its persisted socket (kernel
 ///      hard-crash → systemd reparenting), else freshly respawned (graceful
 ///      teardown / `kill_on_drop` reaped it on the way down).
-///   2. `initialize` + `thread/resume(<codex_thread_id>)` on that server —
+///   2. `initialize` + `thread/resume(<thread_id>)` on that server —
 ///      based on the on-disk rollout. Empty-goal waves that intentionally
 ///      skipped the first turn carry `appserver_needs_initial_prompt` and
 ///      are excluded from this resume path; boot starts a fresh idle thread
@@ -280,8 +281,8 @@ mod claude_boot_revive_tests {
 ///     warn, leave the wave inert. The next boot will retry.
 ///   * The wave's lifecycle is terminal — SQL `WHERE` already filtered it
 ///     out; this path never sees it.
-///   * `codex_thread_id` is absent — SQL `WHERE` filtered it out; this
-///     path never sees it either.
+///   * `card_codex_threads` mapping is absent — SQL `JOIN` filtered it
+///     out; this path never sees it either.
 ///   * Any individual wave's takeover failing must NOT fail the kernel
 ///     boot.
 ///
@@ -618,70 +619,7 @@ type BootTakeoverSpecCard = (
 pub(crate) async fn spec_cards_for_boot_takeover_table_first(
     repo: &dyn crate::db::RepoRead,
 ) -> crate::error::Result<Vec<BootTakeoverSpecCard>> {
-    let mappings = repo.card_codex_threads_active().await?;
-    let mapped_card_ids: std::collections::HashSet<String> =
-        mappings.iter().map(|row| row.card_id.clone()).collect();
-    let mut rows = Vec::new();
-
-    for mapping in mappings {
-        if mapping.role != crate::model::CardRole::Spec {
-            continue;
-        }
-        let Some(wave_id) = mapping.wave_id.clone() else {
-            tracing::warn!(
-                card_id = %mapping.card_id,
-                thread_id = %mapping.thread_id,
-                "takeover_spec_appservers_on_boot: spec thread mapping has no wave_id; skipping"
-            );
-            continue;
-        };
-        let Some(wave) = repo.wave_get(&wave_id).await? else {
-            continue;
-        };
-        if matches!(
-            wave.lifecycle,
-            crate::model::WaveLifecycle::Done
-                | crate::model::WaveLifecycle::Canceled
-                | crate::model::WaveLifecycle::Failed
-        ) {
-            continue;
-        }
-        let Some(card) = repo.card_get(&mapping.card_id).await? else {
-            continue;
-        };
-        if payload_codex_source_is_shared(&card.payload) {
-            continue;
-        }
-        if payload_needs_initial_prompt(&card.payload) {
-            continue;
-        }
-        let (pgid, sock, start_time, boot_id, watermark) =
-            boot_takeover_payload_fields(&card.payload);
-        rows.push((
-            mapping.card_id,
-            wave_id,
-            mapping.thread_id,
-            pgid,
-            sock,
-            start_time,
-            boot_id,
-            watermark,
-        ));
-    }
-
-    for legacy in repo.spec_cards_for_boot_takeover().await? {
-        if !mapped_card_ids.contains(&legacy.0) {
-            rows.push(legacy);
-        }
-    }
-
-    Ok(rows)
-}
-
-fn payload_needs_initial_prompt(payload: &serde_json::Value) -> bool {
-    payload
-        .get("appserver_needs_initial_prompt")
-        .is_some_and(|value| value.as_i64() == Some(1) || value.as_bool() == Some(true))
+    repo.spec_cards_for_boot_takeover().await
 }
 
 fn payload_codex_source_is_shared(payload: &serde_json::Value) -> bool {

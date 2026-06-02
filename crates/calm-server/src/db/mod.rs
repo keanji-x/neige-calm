@@ -339,16 +339,16 @@ pub trait RepoRead: Send + Sync + 'static {
     async fn terminals_running(&self) -> Result<Vec<Terminal>>;
 
     /// #313 problem #1 (boot takeover) — return every spec card whose
-    /// payload carries a `codex_thread_id` whose parent wave is not in a
-    /// terminal lifecycle state (`done` / `canceled` / `failed`), as
+    /// `card_codex_threads` spec mapping exists and whose parent wave is
+    /// not in a terminal lifecycle state (`done` / `canceled` / `failed`), as
     /// `(card_id, wave_id, codex_thread_id, appserver_pgid, appserver_sock,
     /// appserver_start_time, appserver_boot_id, push_watermark)`.
     ///
     /// `appserver_pgid` / `appserver_sock` / `appserver_start_time` /
     /// `appserver_boot_id` may be missing if a prior boot only persisted
-    /// a subset (defensive — every code path that writes
-    /// `codex_thread_id` today also writes the first two, and #318 added
-    /// the start_time + boot_id identity stamp); `push_watermark`
+    /// a subset (defensive — every code path that writes a legacy spec
+    /// mapping today also writes the first two, and #318 added the
+    /// start_time + boot_id identity stamp); `push_watermark`
     /// defaults to 0 when absent (waves persisted before #313 didn't have
     /// the field, and 0 means "replay every event for this wave on
     /// recovery" — the correct conservative default).
