@@ -699,13 +699,15 @@ impl SharedCodexAppServer {
             return Ok(());
         }
 
-        let runtime = self.runtime.lock().await.take();
-        let Some(runtime) = runtime else {
+        let result = self.reap_and_respawn_with_current_settings_inner().await;
+        if result.is_err() {
             self.needs_respawn_on_next_thread_start
                 .store(true, Ordering::Release);
-            return Ok(());
-        };
+        }
+        result
+    }
 
+    async fn reap_and_respawn_with_current_settings_inner(self: &Arc<Self>) -> Result<()> {
         tracing::info!(
             target: "shared_codex_daemon::restart",
             "respawning shared codex app-server before thread/start because runtime settings changed"
@@ -713,41 +715,47 @@ impl SharedCodexAppServer {
         *self.client.lock().await = None;
         *self.state.lock().await = SharedDaemonState::Restarting;
 
-        self.reap_current_child_or_runtime(&runtime).await;
+        self.reap_current_child_or_runtime().await;
 
-        if let Err(e) = self
-            .start_new_process(SharedDaemonState::Restarting, true, None)
-            .await
-        {
-            self.needs_respawn_on_next_thread_start
-                .store(true, Ordering::Release);
-            return Err(e);
-        }
+        self.start_new_process(SharedDaemonState::Restarting, true, None)
+            .await?;
         self.spawn_spawned_child_watcher();
         Ok(())
     }
 
-    async fn reap_current_child_or_runtime(&self, runtime: &SharedDaemonRuntime) {
+    async fn reap_current_child_or_runtime(&self) {
+        let runtime = self.runtime.lock().await.take();
         let child = self.child.lock().await.take();
         if let Some(mut child) = child {
-            signal_process_group(runtime.pgid, libc::SIGTERM);
+            let pgid = runtime
+                .as_ref()
+                .map(|runtime| runtime.pgid)
+                .or_else(|| child.id().and_then(|pid| i32::try_from(pid).ok()));
+            if let Some(pgid) = pgid {
+                signal_process_group(pgid, libc::SIGTERM);
+            }
             match tokio::time::timeout(Duration::from_millis(500), child.wait()).await {
                 Ok(Ok(_status)) => return,
                 Ok(Err(e)) => {
                     tracing::warn!(
                         target: "shared_codex_daemon::stop",
-                        pgid = runtime.pgid,
+                        ?pgid,
                         error = %e,
                         "failed waiting for shared codex app-server after SIGTERM; escalating"
                     );
                 }
                 Err(_) => {}
             }
-            signal_process_group(runtime.pgid, libc::SIGKILL);
+            if let Some(pgid) = pgid {
+                signal_process_group(pgid, libc::SIGKILL);
+            }
             let _ = tokio::time::timeout(Duration::from_millis(500), child.wait()).await;
             return;
         }
 
+        let Some(runtime) = runtime else {
+            return;
+        };
         self.abort_taken_over_pid_watcher().await;
         reap_verified_process_group(
             runtime.pid,

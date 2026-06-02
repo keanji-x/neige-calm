@@ -753,6 +753,52 @@ async fn concurrent_mark_during_respawn_is_preserved() {
 }
 
 #[tokio::test]
+async fn respawn_failure_then_retry_succeeds() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let bin_dir = root.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let codex_link = bin_dir.join("codex");
+    std::os::unix::fs::symlink(fake_codex_bin(), &codex_link).unwrap();
+
+    let mut cfg = cfg(&root);
+    cfg.codex_bin = codex_link.display().to_string();
+    let home = calm_server::shared_codex_home::SharedCodexHome::new(
+        cfg.data_dir_resolved().join("codex-home"),
+        cfg.data_dir_resolved().join("codex-homes"),
+    );
+    home.seed().unwrap();
+    let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo);
+
+    daemon.start_or_takeover().await.unwrap();
+    let old_pid = daemon.status_snapshot().runtime.unwrap().pid;
+
+    std::fs::remove_file(&codex_link).unwrap();
+    daemon.mark_needs_respawn();
+    assert!(daemon.ensure_respawn_for_current_settings().await.is_err());
+    let failed = daemon.status_snapshot();
+    assert!(
+        failed.runtime.is_none(),
+        "failed respawn must leave no installed runtime"
+    );
+    assert!(
+        daemon.needs_respawn_on_next_thread_start_for_test(),
+        "failed respawn must stay retryable"
+    );
+
+    std::os::unix::fs::symlink(fake_codex_bin(), &codex_link).unwrap();
+    daemon.ensure_respawn_for_current_settings().await.unwrap();
+    let recovered = daemon.status_snapshot();
+    assert_eq!(recovered.state, SharedDaemonState::Running);
+    assert!(!daemon.needs_respawn_on_next_thread_start_for_test());
+    assert_ne!(
+        recovered.runtime.as_ref().map(|runtime| runtime.pid),
+        Some(old_pid)
+    );
+    assert!(recovered.runtime.is_some());
+}
+
+#[tokio::test]
 async fn manual_respawn_aborts_taken_over_pid_watcher() {
     let root = tempfile::tempdir().unwrap();
     let sock = root.path().join("run/codex-appserver.sock");
