@@ -302,7 +302,10 @@ async fn on_thread_started_stale_drop_does_not_cross_attribute_to_live_next() {
     let bound = registry.on_thread_started("T-live").await.unwrap();
 
     // Was the front (dead) entry dropped? Yes.
-    assert_eq!(bound, None, "thread_id must be orphaned, not cross-attributed");
+    assert_eq!(
+        bound, None,
+        "thread_id must be orphaned, not cross-attributed"
+    );
     let dead = repo.card_get(&dead_card).await.unwrap().expect("dead card");
     assert_eq!(dead.payload["codex_thread_status"], "failed_to_spawn");
     assert!(
@@ -350,11 +353,17 @@ async fn on_thread_started_stale_front_drop_orphans_only_one_per_event() {
             .unwrap();
     }
 
-    assert_eq!(registry.on_thread_started("T-orphan-1").await.unwrap(), None);
+    assert_eq!(
+        registry.on_thread_started("T-orphan-1").await.unwrap(),
+        None
+    );
     // Only the front (term-dead-a) was dropped; term-dead-b remains.
     assert_eq!(registry.pending_count().await, 1);
     // A second thread/started drops the next one.
-    assert_eq!(registry.on_thread_started("T-orphan-2").await.unwrap(), None);
+    assert_eq!(
+        registry.on_thread_started("T-orphan-2").await.unwrap(),
+        None
+    );
     assert_eq!(registry.pending_count().await, 0);
 }
 
