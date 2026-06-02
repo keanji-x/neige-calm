@@ -134,7 +134,8 @@ pub struct Config {
         env = "CALM_SHARED_CODEX_APPSERVER_ENABLED",
         default_value_t = true,
         action = clap::ArgAction::Set,
-        num_args = 1,
+        num_args = 0..=1,
+        default_missing_value = "true",
     )]
     pub shared_codex_appserver_enabled: bool,
 
@@ -146,7 +147,8 @@ pub struct Config {
         env = "CALM_SHARED_CODEX_PROMPT_CARDS_ENABLED",
         default_value_t = true,
         action = clap::ArgAction::Set,
-        num_args = 1,
+        num_args = 0..=1,
+        default_missing_value = "true",
     )]
     pub shared_codex_prompt_cards_enabled: bool,
 
@@ -158,7 +160,8 @@ pub struct Config {
         env = "CALM_SHARED_CODEX_EMPTY_CARDS_ENABLED",
         default_value_t = true,
         action = clap::ArgAction::Set,
-        num_args = 1,
+        num_args = 0..=1,
+        default_missing_value = "true",
     )]
     pub shared_codex_empty_cards_enabled: bool,
 
@@ -170,7 +173,8 @@ pub struct Config {
         env = "CALM_SHARED_CODEX_SPEC_CARDS_ENABLED",
         default_value_t = true,
         action = clap::ArgAction::Set,
-        num_args = 1,
+        num_args = 0..=1,
+        default_missing_value = "true",
     )]
     pub shared_codex_spec_cards_enabled: bool,
 
@@ -182,7 +186,8 @@ pub struct Config {
         env = "CALM_SHARED_CODEX_WORKER_CARDS_ENABLED",
         default_value_t = true,
         action = clap::ArgAction::Set,
-        num_args = 1,
+        num_args = 0..=1,
+        default_missing_value = "true",
     )]
     pub shared_codex_worker_cards_enabled: bool,
 
@@ -296,6 +301,28 @@ mod tests {
     #[test]
     fn shared_codex_flags_default_to_true_post_pr8() {
         let cfg = Config::parse_from(["calm-server"]);
+        assert!(cfg.shared_codex_prompt_cards_enabled);
+        assert!(cfg.shared_codex_empty_cards_enabled);
+        assert!(cfg.shared_codex_spec_cards_enabled);
+        assert!(cfg.shared_codex_worker_cards_enabled);
+        assert!(cfg.shared_codex_appserver_enabled);
+    }
+
+    /// PR8 R2 regression guard: legacy launch commands that use bare
+    /// `--flag` (no value) for the pre-PR8 opt-in must still work. With
+    /// num_args = 1 this would have failed clap parsing pre-boot; the
+    /// num_args = 0..=1 + default_missing_value = "true" combo restores
+    /// bare-flag compatibility while still accepting `--flag=false`.
+    #[test]
+    fn shared_codex_flags_bare_form_remains_compatible() {
+        let cfg = Config::parse_from([
+            "calm-server",
+            "--shared-codex-prompt-cards-enabled",
+            "--shared-codex-empty-cards-enabled",
+            "--shared-codex-spec-cards-enabled",
+            "--shared-codex-worker-cards-enabled",
+            "--shared-codex-appserver-enabled",
+        ]);
         assert!(cfg.shared_codex_prompt_cards_enabled);
         assert!(cfg.shared_codex_empty_cards_enabled);
         assert!(cfg.shared_codex_spec_cards_enabled);
