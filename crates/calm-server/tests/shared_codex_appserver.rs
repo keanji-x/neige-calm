@@ -662,6 +662,62 @@ async fn thread_start_for_card_respects_needs_respawn_flag() {
     );
 }
 
+#[tokio::test]
+async fn manual_respawn_aborts_taken_over_pid_watcher() {
+    let root = tempfile::tempdir().unwrap();
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+
+    let mut child = Command::new(fake_codex_bin())
+        .arg("app-server")
+        .arg("--listen")
+        .arg(format!("unix://{}", sock.display()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn fake app-server for takeover");
+    let old_pid = i32::try_from(child.id().expect("fake app-server pid")).expect("pid fits i32");
+    let process_start_time = wait_for_start_time_and_socket(old_pid, &sock).await;
+
+    let repo = repo().await;
+    persist_running_daemon(&repo, &root, old_pid, old_pid, &sock, process_start_time).await;
+
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+    assert!(
+        daemon.taken_over_pid_watcher_active_for_test().await,
+        "takeover path must install a pid watcher"
+    );
+
+    daemon.mark_needs_respawn();
+    daemon.ensure_respawn_for_current_settings().await.unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+
+    assert!(
+        !daemon.taken_over_pid_watcher_active_for_test().await,
+        "manual reap must clear the takeover watcher slot"
+    );
+    assert!(!daemon.needs_respawn_on_next_thread_start_for_test());
+    let after_manual = daemon.status_snapshot();
+    assert_eq!(after_manual.state, SharedDaemonState::Running);
+    assert_eq!(after_manual.restart_count, 1);
+    assert_ne!(
+        after_manual.runtime.as_ref().map(|runtime| runtime.pid),
+        Some(old_pid)
+    );
+
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    let stable = daemon.status_snapshot();
+    assert_eq!(
+        stable.restart_count, 1,
+        "aborted takeover watcher must not race in a second crash restart"
+    );
+    assert_eq!(stable.state, SharedDaemonState::Running);
+}
+
 #[test]
 fn bounded_exponential_backoff_caps_at_max() {
     let initial = Duration::from_millis(250);

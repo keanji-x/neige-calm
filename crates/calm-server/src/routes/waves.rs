@@ -955,6 +955,9 @@ pub(crate) async fn spawn_push_via_shared_daemon(
         // FIFO mutates. If this persist fails, no stale pending entry can
         // consume a later unrelated thread/started notification.
         persist_shared_spec_runtime_fields(s, spec_card_id, wave, None).await?;
+        s.shared_codex_appserver
+            .ensure_respawn_for_current_settings()
+            .await?;
         pending
             .register(
                 PendingEntry::new(

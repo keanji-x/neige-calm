@@ -328,6 +328,50 @@ async fn empty_wave_registers_pending_spec_thread_without_thread_id() {
 }
 
 #[tokio::test]
+async fn empty_shared_spec_respawns_daemon_when_proxy_changed() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot(true, true).await;
+    let old_pid = boot
+        .state
+        .shared_codex_appserver
+        .status_snapshot()
+        .runtime
+        .expect("shared daemon runtime")
+        .pid;
+    boot.repo
+        .settings_upsert("http_proxy", "http://proxy-after-empty-spec.local:3128")
+        .await
+        .unwrap();
+    boot.state.shared_codex_appserver.mark_needs_respawn();
+
+    let (status, wave) = post_wave(boot.app.clone(), &boot.cove_id, "").await;
+    assert_eq!(status, StatusCode::CREATED, "body={wave:?}");
+
+    let snapshot = boot.state.shared_codex_appserver.status_snapshot();
+    assert_eq!(snapshot.restart_count, 1);
+    assert_ne!(
+        snapshot.runtime.as_ref().map(|runtime| runtime.pid),
+        Some(old_pid),
+        "empty spec path must respawn before the TUI uses the shared remote"
+    );
+    assert!(
+        !boot
+            .state
+            .shared_codex_appserver
+            .needs_respawn_on_next_thread_start_for_test()
+    );
+    assert_eq!(
+        boot.state
+            .pending_codex_threads
+            .as_ref()
+            .unwrap()
+            .pending_count()
+            .await,
+        1
+    );
+}
+
+#[tokio::test]
 async fn empty_shared_spec_pending_register_waits_for_spawn_serial_lock() {
     let _guard = ENV_LOCK.lock().await;
     let boot = boot(true, true).await;

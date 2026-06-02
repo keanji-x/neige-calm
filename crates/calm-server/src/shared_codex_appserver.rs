@@ -19,6 +19,7 @@ use sha2::{Digest, Sha256};
 use tokio::net::UnixStream;
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, broadcast};
+use tokio::task::JoinHandle;
 
 use crate::codex_appserver::{
     ClientInfo, CodexAppServer, InputItem, Notification, ThreadStartParams,
@@ -195,6 +196,7 @@ pub struct SharedCodexAppServer {
     restart_lock: Mutex<()>,
     restart_count: std::sync::atomic::AtomicU64,
     needs_respawn_on_next_thread_start: Arc<AtomicBool>,
+    taken_over_pid_watcher: Mutex<Option<JoinHandle<()>>>,
     last_error: Arc<Mutex<Option<String>>>,
     ingest_url: String,
 }
@@ -244,6 +246,7 @@ impl SharedCodexAppServer {
             restart_lock: Mutex::new(()),
             restart_count: std::sync::atomic::AtomicU64::new(0),
             needs_respawn_on_next_thread_start: Arc::new(AtomicBool::new(false)),
+            taken_over_pid_watcher: Mutex::new(None),
             last_error: Arc::new(Mutex::new(None)),
             ingest_url: "http://127.0.0.1:0".into(),
         })
@@ -285,6 +288,7 @@ impl SharedCodexAppServer {
             restart_lock: Mutex::new(()),
             restart_count: std::sync::atomic::AtomicU64::new(0),
             needs_respawn_on_next_thread_start: Arc::new(AtomicBool::new(false)),
+            taken_over_pid_watcher: Mutex::new(None),
             last_error: Arc::new(Mutex::new(None)),
             ingest_url: cfg.codex_ingest_url_resolved(),
         })
@@ -303,7 +307,7 @@ impl SharedCodexAppServer {
         let record = self.repo.shared_daemon_runtime_get().await?;
         if self.try_takeover_live(&record).await? {
             if let Some(runtime) = self.runtime.lock().await.clone() {
-                self.spawn_taken_over_pid_watcher(runtime);
+                self.spawn_taken_over_pid_watcher(runtime).await;
             }
             return Ok(());
         }
@@ -316,19 +320,14 @@ impl SharedCodexAppServer {
     }
 
     pub async fn thread_start_for_card(
-        &self,
+        self: &Arc<Self>,
         card_id: &str,
         role: CardRole,
         wave_id: Option<&str>,
         params: SharedThreadStartParams,
     ) -> Result<String> {
         let _start_guard = self.kernel_thread_start_serial.lock().await;
-        if self
-            .needs_respawn_on_next_thread_start
-            .load(Ordering::SeqCst)
-        {
-            self.reap_and_respawn_with_current_settings().await?;
-        }
+        self.reap_and_respawn_with_current_settings().await?;
         let client = self.client().await?;
         let thread = client
             .thread_start_with_params(ThreadStartParams {
@@ -360,6 +359,13 @@ impl SharedCodexAppServer {
             "shared codex app-server thread started"
         );
         Ok(thread_id)
+    }
+
+    /// If runtime settings changed, synchronously respawn the daemon so
+    /// later TUI-started `thread/start` calls hit a process with current env.
+    pub async fn ensure_respawn_for_current_settings(self: &Arc<Self>) -> Result<()> {
+        let _start_guard = self.kernel_thread_start_serial.lock().await;
+        self.reap_and_respawn_with_current_settings().await
     }
 
     pub async fn turn_start(&self, thread_id: &str, items: Vec<InputItem>) -> Result<TurnId> {
@@ -685,7 +691,7 @@ impl SharedCodexAppServer {
         Ok(())
     }
 
-    async fn reap_and_respawn_with_current_settings(&self) -> Result<()> {
+    async fn reap_and_respawn_with_current_settings(self: &Arc<Self>) -> Result<()> {
         if !self
             .needs_respawn_on_next_thread_start
             .load(Ordering::SeqCst)
@@ -693,20 +699,23 @@ impl SharedCodexAppServer {
             return Ok(());
         }
 
+        let runtime = self.runtime.lock().await.take();
+        let Some(runtime) = runtime else {
+            return Ok(());
+        };
+
         tracing::info!(
             target: "shared_codex_daemon::restart",
             "respawning shared codex app-server before thread/start because runtime settings changed"
         );
         *self.client.lock().await = None;
-        let runtime = self.runtime.lock().await.take();
         *self.state.lock().await = SharedDaemonState::Restarting;
 
-        if let Some(runtime) = runtime.as_ref() {
-            self.reap_current_child_or_runtime(runtime).await;
-        }
+        self.reap_current_child_or_runtime(&runtime).await;
 
         self.start_new_process(SharedDaemonState::Restarting, true, None)
             .await?;
+        self.spawn_spawned_child_watcher();
         self.needs_respawn_on_next_thread_start
             .store(false, Ordering::SeqCst);
         Ok(())
@@ -733,6 +742,7 @@ impl SharedCodexAppServer {
             return;
         }
 
+        self.abort_taken_over_pid_watcher().await;
         reap_verified_process_group(
             runtime.pid,
             runtime.pgid,
@@ -899,15 +909,28 @@ impl SharedCodexAppServer {
         });
     }
 
-    fn spawn_taken_over_pid_watcher(self: &Arc<Self>, runtime: SharedDaemonRuntime) {
+    async fn spawn_taken_over_pid_watcher(self: &Arc<Self>, runtime: SharedDaemonRuntime) {
         if self.monitor_started.swap(true, Ordering::SeqCst) {
             return;
         }
         let this = Arc::downgrade(self);
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             Self::watch_taken_over_pid(this.clone(), runtime).await;
+            if let Some(this) = this.upgrade() {
+                *this.taken_over_pid_watcher.lock().await = None;
+                Self::watch_spawned_child(Arc::downgrade(&this)).await;
+                return;
+            }
             Self::watch_spawned_child(this).await;
         });
+        *self.taken_over_pid_watcher.lock().await = Some(handle);
+    }
+
+    async fn abort_taken_over_pid_watcher(&self) {
+        if let Some(handle) = self.taken_over_pid_watcher.lock().await.take() {
+            handle.abort();
+            self.monitor_started.store(false, Ordering::SeqCst);
+        }
     }
 
     async fn watch_spawned_child(this: std::sync::Weak<Self>) {
@@ -1261,6 +1284,10 @@ impl SharedCodexAppServer {
     pub fn needs_respawn_on_next_thread_start_for_test(&self) -> bool {
         self.needs_respawn_on_next_thread_start
             .load(Ordering::SeqCst)
+    }
+
+    pub async fn taken_over_pid_watcher_active_for_test(&self) -> bool {
+        self.taken_over_pid_watcher.lock().await.is_some()
     }
 }
 

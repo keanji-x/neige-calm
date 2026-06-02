@@ -514,6 +514,9 @@ pub(crate) async fn create_codex_card(
                     "shared empty-card path enabled without pending registry".into(),
                 )
             })?;
+            s.shared_codex_appserver
+                .ensure_respawn_for_current_settings()
+                .await?;
             pending
                 .register(PendingEntry::new(
                     card.id.to_string(),
