@@ -2524,6 +2524,16 @@ async fn spawn_codex_worker_via_shared_daemon(
     let mut notifications = inner.shared_codex_appserver.subscribe_notifications();
     let remote_uri = inner.shared_codex_appserver.remote_uri();
     let card_id = ctx.card.id.as_str();
+    // Worker role developer_instructions — without this, the agent on the
+    // shared daemon behaves like a plain prompt session and won't call
+    // calm.task_completed / calm.task_failed when the job is done. The
+    // legacy path injects this via SeededCardRole::Worker into the per-card
+    // CODEX_HOME config.toml; for the shared path we must thread it
+    // explicitly through thread_start_for_card.
+    let worker_instructions = crate::spec_card::render_system_prompt(
+        crate::spec_card::SeededCardRole::Worker.prompt_template(),
+        ctx.wave_id.as_str(),
+    );
     let thread_id = inner
         .shared_codex_appserver
         .thread_start_for_card(
@@ -2534,7 +2544,7 @@ async fn spawn_codex_worker_via_shared_daemon(
                 cwd: ctx.cwd.to_string(),
                 approval_policy: "never".into(),
                 sandbox_mode: "workspace-write".into(),
-                developer_instructions: None,
+                developer_instructions: Some(worker_instructions),
             },
         )
         .await?;

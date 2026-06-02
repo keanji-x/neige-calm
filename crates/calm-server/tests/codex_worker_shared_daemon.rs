@@ -291,6 +291,32 @@ async fn worker_via_shared_daemon_persists_thread_mapping() {
             .any(|row| row.get("method").and_then(Value::as_str) == Some("turn/start")),
         "shared daemon should receive turn/start: {rows:?}"
     );
+    // The shared worker must be started with the Worker-role developer
+    // instructions — otherwise the agent on the shared daemon behaves like
+    // a plain prompt session and skips the calm.task_completed /
+    // calm.task_failed reporting contract the legacy per-card path enforces
+    // via CODEX_HOME/config.toml. Assert thread/start carried them.
+    let thread_start = rows
+        .iter()
+        .find(|row| row.get("method").and_then(Value::as_str) == Some("thread/start"))
+        .expect("shared daemon should receive thread/start");
+    let developer_instructions = thread_start
+        .pointer("/params/developerInstructions")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            thread_start
+                .pointer("/params/developer_instructions")
+                .and_then(Value::as_str)
+        })
+        .expect("thread/start params must carry developer_instructions");
+    assert!(
+        developer_instructions.contains("worker agent under spec card"),
+        "developer_instructions must be the Worker prompt: {developer_instructions}"
+    );
+    assert!(
+        developer_instructions.contains("calm.task_completed"),
+        "developer_instructions must include the task reporting contract: {developer_instructions}"
+    );
 }
 
 #[tokio::test]
