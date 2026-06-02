@@ -240,7 +240,6 @@ mod claude_boot_revive_tests {
     }
 }
 
-
 pub async fn takeover_shared_spec_cards_on_boot(state: &state::AppState) {
     if !state.shared_codex_appserver.is_running() {
         return;
@@ -319,7 +318,7 @@ pub async fn takeover_shared_spec_cards_on_boot(state: &state::AppState) {
         ) {
             continue;
         }
-        let watermark = boot_takeover_payload_fields(&card.payload).4;
+        let watermark = boot_takeover_watermark(&card.payload);
         let wave_key: crate::ids::WaveId = wave_id.clone().into();
         let status: spec_push::SharedStatus =
             std::sync::Arc::new(tokio::sync::Mutex::new(spec_push::SpecPushStatus {
@@ -420,7 +419,6 @@ pub async fn takeover_shared_spec_cards_on_boot(state: &state::AppState) {
     }
 }
 
-
 fn payload_codex_source_is_shared(payload: &serde_json::Value) -> bool {
     payload
         .get("codex_source")
@@ -428,37 +426,12 @@ fn payload_codex_source_is_shared(payload: &serde_json::Value) -> bool {
         == Some("shared")
 }
 
-fn boot_takeover_payload_fields(
-    payload: &serde_json::Value,
-) -> (
-    Option<i32>,
-    Option<String>,
-    Option<u64>,
-    Option<String>,
-    i64,
-) {
-    let pgid = payload
-        .get("appserver_pgid")
-        .and_then(serde_json::Value::as_i64)
-        .and_then(|v| i32::try_from(v).ok());
-    let sock = payload
-        .get("appserver_sock")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string);
-    let start_time = payload
-        .get("appserver_start_time")
-        .and_then(serde_json::Value::as_u64);
-    let boot_id = payload
-        .get("appserver_boot_id")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string);
-    let watermark = payload
+fn boot_takeover_watermark(payload: &serde_json::Value) -> i64 {
+    payload
         .get("push_watermark")
         .and_then(serde_json::Value::as_i64)
-        .unwrap_or(0);
-    (pgid, sock, start_time, boot_id, watermark)
+        .unwrap_or(0)
 }
-
 
 async fn register_and_catch_up(
     state: &state::AppState,

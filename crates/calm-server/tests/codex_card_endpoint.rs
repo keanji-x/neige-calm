@@ -1,27 +1,3 @@
-//! Integration tests for `POST /api/waves/:wave_id/codex-cards` —
-//! the atomic codex-card endpoint introduced in #117.
-//!
-//! Twin of `tests/terminal_card_endpoint.rs`. Boots a real Axum router
-//! (in-memory `SqlxRepo`) + the actual terminal renderer for
-//! happy paths, and points `DaemonClient::proc_supervisor_sock` at a
-//! non-existent socket for the "spawn failure but rows persisted" case.
-//!
-//! Test taxonomy:
-//!   * `post_codex_card_atomic_returns_card_with_linked_payload` — 201,
-//!     `kind == "codex"`, `payload.terminal_id` non-empty,
-//!     `payload.cwd` set when provided, `payload.schemaVersion == 1`.
-//!   * `post_codex_card_atomic_emits_single_card_added_event` — exactly
-//!     one `card.added`, zero `card.updated`, payload carries terminal_id.
-//!   * `post_codex_card_atomic_returns_500_on_daemon_spawn_failure_but_persists_row`
-//!     — 500 to the client; card + terminal rows + payload.terminal_id
-//!     all in the DB.
-//!   * `post_codex_card_atomic_404_on_unknown_wave` — 404, no row leak.
-//!   * `post_codex_card_atomic_rejects_control_chars_in_cwd` — 400, no
-//!     row leak, for newline/CR/tab/NUL in `cwd` (regression guard for
-//!     `build_codex_config_toml`'s hand-rolled TOML escape table).
-//!   * `post_codex_card_atomic_defaults_cwd_to_home` — empty body stamps
-//!     `$HOME` (or server cwd) into `payload.cwd`.
-
 #![cfg(unix)]
 
 use std::path::PathBuf;

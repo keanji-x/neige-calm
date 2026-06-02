@@ -74,10 +74,8 @@
 //! ship the two regression-guard tests above instead of inventing a
 //! failing-on-main test that doesn't reflect an actual invariant.
 //!
-//! See: `src/spec_appserver.rs::signal_process_group` (line ~672), the
-//! callers (`Drop for SpecPushHandle` line ~640, `SpawnRollback::drop`
-//! line ~1057, `terminal_sweeper::reap_spec_push` line ~330,
-//! `lib::try_takeover_one_wave` line ~321).
+//! See: `src/spec_appserver.rs::signal_process_group` and the production
+//! teardown callers that route through process-group signaling.
 
 // `/proc/<pid>/stat` is Linux-only — same convention as inv_05.
 #![cfg(target_os = "linux")]
@@ -246,8 +244,7 @@ async fn inv2_pid_only_kill_leaks_grandchild() {
 async fn inv2_signal_process_group_targets_group_not_pid() {
     let (child, pgid, grandchild_pid) = spawn_leader_with_grandchild().await;
 
-    // Production call shape — exactly what Drop / reap_spec_push /
-    // try_takeover_one_wave invoke.
+    // Production call shape — exactly what process-group teardown paths invoke.
     let delivered = signal_process_group(pgid, libc::SIGKILL);
     assert!(
         delivered,

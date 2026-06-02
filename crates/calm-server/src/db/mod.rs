@@ -338,7 +338,6 @@ pub trait RepoRead: Send + Sync + 'static {
     /// Used by boot-time supervisor reconciliation after #388 Phase 3b.
     async fn terminals_running(&self) -> Result<Vec<Terminal>>;
 
-
     /// Shared-daemon empty-goal spec cards that still need the TUI to
     /// fresh-start their first thread. These are excluded from the legacy
     /// initial-prompt bootstrap path and must be re-registered with
@@ -628,8 +627,8 @@ pub trait RepoEventWrite: RepoRead {
     /// the given wave, or `None` when no wave-scoped row exists for
     /// it.
     ///
-    /// Used by [`crate::try_takeover_one_wave`] when the inert
-    /// classifier fires: the helper stamps this value onto
+    /// Used by boot takeover when the inert classifier fires: the helper
+    /// stamps this value onto
     /// `Event::SpecPushAbandoned.last_envelope_id` so SRE / future
     /// re-run code sees an upper bound on the stranded set
     /// (`(push_watermark, last_envelope_id]` for this wave). Returning
@@ -736,7 +735,6 @@ pub trait RepoOutOfDomain: RepoRead {
     // runtime-state table lands, migrate these fields out of card payload into
     // it. Acceptable short-term per #315 review.
     async fn spec_card_set_push_watermark(&self, card_id: &str, watermark: i64) -> Result<()>;
-
 
     async fn card_codex_thread_upsert(
         &self,

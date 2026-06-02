@@ -115,6 +115,10 @@ async fn boot(start_shared: bool) -> Boot {
 }
 
 fn spawn_dispatcher(boot: &Boot) -> Dispatcher {
+    spawn_dispatcher_with_permits(boot, 4)
+}
+
+fn spawn_dispatcher_with_permits(boot: &Boot, permits: usize) -> Dispatcher {
     Dispatcher::spawn_with_terminal_renderer(
         boot.repo.clone(),
         boot.events.clone(),
@@ -126,7 +130,7 @@ fn spawn_dispatcher(boot: &Boot) -> Dispatcher {
         None,
         calm_server::spec_push::SpecPushRegistry::new(),
         boot.shared.clone(),
-        4,
+        permits,
     )
 }
 
@@ -192,6 +196,111 @@ async fn wait_for_requests(path: &Path, min_count: usize) -> Vec<Value> {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     panic!("timed out waiting for fake codex requests");
+}
+
+async fn worker_card_count_by_idem(boot: &Boot, idem: &str) -> usize {
+    boot.repo
+        .cards_by_wave(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|card| card.payload.get("idempotency_key").and_then(Value::as_str) == Some(idem))
+        .count()
+}
+
+async fn worker_card_count_with_prefix(boot: &Boot, prefix: &str) -> usize {
+    boot.repo
+        .cards_by_wave(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|card| {
+            card.payload
+                .get("idempotency_key")
+                .and_then(Value::as_str)
+                .is_some_and(|idem| idem.starts_with(prefix))
+        })
+        .count()
+}
+
+#[tokio::test]
+async fn worker_via_shared_daemon_dedupes_same_idempotency_key() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot(true).await;
+    let _dispatcher = spawn_dispatcher(&boot);
+
+    let idem = "shared-dup-key";
+    dispatch(&boot, idem, "dedup shared worker").await;
+    dispatch(&boot, idem, "dedup shared worker").await;
+
+    wait_for(Duration::from_secs(5), || async {
+        (worker_card_count_by_idem(&boot, idem).await == 1).then_some(())
+    })
+    .await
+    .expect("first shared worker card minted");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    assert_eq!(
+        worker_card_count_by_idem(&boot, idem).await,
+        1,
+        "duplicate shared-worker idempotency_key must create exactly one card"
+    );
+}
+
+#[tokio::test]
+async fn worker_via_shared_daemon_dedupes_under_real_concurrent_race() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot(true).await;
+    let _dispatcher = spawn_dispatcher(&boot);
+
+    let idem = "shared-race-key";
+    tokio::join!(
+        dispatch(&boot, idem, "race shared worker"),
+        dispatch(&boot, idem, "race shared worker"),
+    );
+
+    wait_for(Duration::from_secs(5), || async {
+        (worker_card_count_by_idem(&boot, idem).await == 1).then_some(())
+    })
+    .await
+    .expect("one shared worker card minted after concurrent duplicate requests");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    assert_eq!(
+        worker_card_count_by_idem(&boot, idem).await,
+        1,
+        "concurrent duplicate shared-worker dispatches must not both mint cards"
+    );
+}
+
+#[tokio::test]
+async fn worker_via_shared_daemon_semaphore_caps_concurrent_spawns() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot(true).await;
+    let dispatcher = spawn_dispatcher_with_permits(&boot, 1);
+    assert_eq!(dispatcher.permits(), 1);
+    let sem = dispatcher.semaphore();
+    let held_permit = sem.clone().acquire_owned().await.unwrap();
+
+    for i in 0..2 {
+        dispatch(&boot, &format!("shared-cap-{i}"), "cap shared worker").await;
+    }
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(
+        worker_card_count_with_prefix(&boot, "shared-cap-").await,
+        0,
+        "shared workers must wait while the only permit is occupied"
+    );
+    assert_eq!(sem.available_permits(), 0);
+
+    drop(held_permit);
+
+    wait_for(Duration::from_secs(10), || async {
+        (worker_card_count_with_prefix(&boot, "shared-cap-").await >= 1).then_some(())
+    })
+    .await
+    .expect("a queued shared worker should mint after the permit is released");
 }
 
 #[tokio::test]
@@ -314,13 +423,14 @@ async fn worker_shared_daemon_stopped_rolls_back_card() {
     .await
     .expect("task.failed");
 
-    let cards = boot.repo.cards_by_wave(boot.wave_id.as_str()).await.unwrap();
+    let cards = boot
+        .repo
+        .cards_by_wave(boot.wave_id.as_str())
+        .await
+        .unwrap();
     assert!(
         cards.iter().all(|card| {
-            card.payload
-                .get("idempotency_key")
-                .and_then(Value::as_str)
-                != Some("shared-stopped-1")
+            card.payload.get("idempotency_key").and_then(Value::as_str) != Some("shared-stopped-1")
         }),
         "failed shared worker spawn must roll back orphan worker card"
     );

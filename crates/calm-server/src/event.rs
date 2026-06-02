@@ -541,11 +541,9 @@ pub enum Event {
     },
 
     /// #318 INV-1 (b) — boot takeover has given up on this wave's spec
-    /// push channel. Emitted exactly once by
-    /// [`crate::try_takeover_one_wave`] when the inert classifier fires
-    /// (`thread/resume` → `-32600 "no rollout"`, spawn/connect failure,
-    /// `mkdir` failure on the per-card sock dir, etc.) — i.e. every code
-    /// path that returns [`crate::TakeoverOutcome::Inert`].
+    /// push channel. Emitted exactly once when the takeover inert classifier
+    /// fires (`thread/resume` -> `-32600 "no rollout"`, spawn/connect
+    /// failure, `mkdir` failure on the per-card sock dir, etc.).
     ///
     /// This closes the R1-B1 "no-skip" observability gap from #315
     /// review: when takeover marks a wave inert, the spec card is
@@ -1547,9 +1545,9 @@ mod scope_tests {
 
     // ----- #318 INV-1 (b): Event::SpecPushAbandoned -----------------------
     //
-    // Pin the wire shape of the abandonment signal emitted by
-    // `try_takeover_one_wave` on the inert path. Persisted row format
-    // and broadcast envelope shape are both wire contracts.
+    // Pin the wire shape of the abandonment signal emitted by the boot
+    // takeover inert path. Persisted row format and broadcast envelope shape
+    // are both wire contracts.
 
     #[test]
     fn spec_push_abandoned_kind_tag_pinned() {
