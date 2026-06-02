@@ -32,21 +32,27 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     if !cfg.shared_codex_prompt_cards_enabled {
-        tracing::info!(
-            target: "shared_codex_daemon::config",
-            "shared_codex_prompt_cards_enabled=false - user prompt cards use the legacy per-card codex path"
+        tracing::warn!(
+            target: "shared_codex_daemon::flag",
+            "shared_codex_prompt_cards_enabled DISABLED - fallback to legacy per-card daemon"
         );
     }
     if !cfg.shared_codex_empty_cards_enabled {
-        tracing::info!(
-            target: "shared_codex_daemon::config",
-            "shared_codex_empty_cards_enabled=false - empty user codex cards stay on legacy path until PR3c"
+        tracing::warn!(
+            target: "shared_codex_daemon::flag",
+            "shared_codex_empty_cards_enabled DISABLED - fallback to legacy per-card daemon"
         );
     }
     if !cfg.shared_codex_spec_cards_enabled {
-        tracing::info!(
-            target: "shared_codex_daemon::config",
-            "shared_codex_spec_cards_enabled=false - spec cards use the legacy per-wave codex path"
+        tracing::warn!(
+            target: "shared_codex_daemon::flag",
+            "shared_codex_spec_cards_enabled DISABLED - fallback to legacy per-wave daemon"
+        );
+    }
+    if !cfg.shared_codex_worker_cards_enabled {
+        tracing::warn!(
+            target: "shared_codex_daemon::flag",
+            "shared_codex_worker_cards_enabled DISABLED - fallback to legacy per-card daemon"
         );
     }
     warn_if_worker_hook_callback_is_not_loopback(&cfg);

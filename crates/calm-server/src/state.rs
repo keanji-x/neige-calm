@@ -108,19 +108,20 @@ pub struct AppState {
     /// at boot but started explicitly from `main` after shared CODEX_HOME seed
     /// and MCP server setup; PR4 does not route cards through it yet.
     pub shared_codex_appserver: Arc<SharedCodexAppServer>,
-    /// PR3c gate for routing user prompt cards through the shared codex
-    /// daemon. Config default is true; tests may override through
+    /// Gate for routing user prompt cards through the shared codex daemon.
+    /// Config and fixture defaults are true; tests may override through
     /// `with_shared_codex_prompt_cards_enabled`.
     pub shared_codex_prompt_cards_enabled: bool,
-    /// PR6 -> PR3c gate for routing empty user codex cards through the shared
-    /// daemon. Default false preserves the legacy per-card empty-card path.
+    /// Gate for routing empty user codex cards through the shared codex
+    /// daemon. Config and fixture defaults are true; tests may override
+    /// through `with_shared_codex_empty_cards_enabled`.
     pub shared_codex_empty_cards_enabled: bool,
-    /// PR7b gate for routing spec cards created by `POST /api/waves` through
-    /// the shared codex daemon. Default false preserves the per-wave path.
+    /// Gate for routing spec cards created by `POST /api/waves` through the
+    /// shared codex daemon. Config and fixture defaults are true; tests may
+    /// override through `with_shared_codex_spec_cards_enabled`.
     pub shared_codex_spec_cards_enabled: bool,
-    /// PR7b-worker gate for routing dispatcher-spawned worker codex cards
-    /// through the shared codex daemon. Default false preserves the per-card
-    /// path.
+    /// Gate for routing dispatcher-spawned worker codex cards through the
+    /// shared codex daemon. Config and fixture defaults are true.
     pub shared_codex_worker_cards_enabled: bool,
     /// FIFO attribution registry for empty cards that fresh-start a thread
     /// through the shared daemon's TUI. Present only when the shared daemon is
@@ -239,7 +240,7 @@ impl AppState {
             // #293 — share the push registry (push is the only path now).
             spec_push.clone(),
             shared_codex_appserver.clone(),
-            false,
+            true,
             Dispatcher::permits_from_env(8),
         ));
         Self {
@@ -265,10 +266,10 @@ impl AppState {
             // Same instance the dispatcher above holds a clone of.
             spec_push,
             shared_codex_appserver,
-            shared_codex_prompt_cards_enabled: false,
-            shared_codex_empty_cards_enabled: false,
-            shared_codex_spec_cards_enabled: false,
-            shared_codex_worker_cards_enabled: false,
+            shared_codex_prompt_cards_enabled: true,
+            shared_codex_empty_cards_enabled: true,
+            shared_codex_spec_cards_enabled: true,
+            shared_codex_worker_cards_enabled: true,
             pending_codex_threads: None,
             pending_codex_threads_spawn_serial: Arc::new(Mutex::new(())),
             // #322 — aspect registry. Identical set in test/replay and

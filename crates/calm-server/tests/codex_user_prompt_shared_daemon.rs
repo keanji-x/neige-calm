@@ -220,7 +220,7 @@ fn theme() -> Value {
 }
 
 #[test]
-fn shared_codex_prompt_cards_enabled_defaults_to_false() {
+fn shared_codex_prompt_cards_enabled_defaults_to_true() {
     let tmp = TempDir::new().expect("tempdir");
     let cfg = Config::parse_from([
         "calm-server",
@@ -229,7 +229,7 @@ fn shared_codex_prompt_cards_enabled_defaults_to_false() {
         "--codex-bin",
         fake_codex_bin(),
     ]);
-    assert!(!cfg.shared_codex_prompt_cards_enabled);
+    assert!(cfg.shared_codex_prompt_cards_enabled);
 }
 
 #[tokio::test]
