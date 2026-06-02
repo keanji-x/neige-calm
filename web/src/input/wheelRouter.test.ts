@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { cleanup, render } from '@testing-library/react';
+import { createElement, useRef } from 'react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   getActiveCardShell,
   pixelDelta,
@@ -6,6 +8,7 @@ import {
   type WheelRoute,
 } from './wheelRouter';
 import type { XtermWheelTarget } from './xtermAdapter';
+import { useWheelRouter } from './useWheelRouter';
 import { registerXtermShell, unregisterXtermShell } from './wheelTargets';
 
 function setScrollSize(
@@ -40,7 +43,32 @@ function mockElementFromPoint(el: Element | null) {
   };
 }
 
+function WheelRouterHarness({ scrollRoot }: { scrollRoot: HTMLElement }) {
+  const scrollRef = useRef<HTMLElement | null>(scrollRoot);
+  useWheelRouter(scrollRef);
+  return null;
+}
+
+function mountWheelRouter(scrollRoot: HTMLElement) {
+  render(createElement(WheelRouterHarness, { scrollRoot }));
+}
+
+function dispatchWheel(target: Element, init: WheelEventInit = {}): WheelEvent {
+  const event = new WheelEvent('wheel', {
+    bubbles: true,
+    cancelable: true,
+    clientX: 1,
+    clientY: 1,
+    deltaY: 120,
+    deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+    ...init,
+  });
+  target.dispatchEvent(event);
+  return event;
+}
+
 afterEach(() => {
+  cleanup();
   document.body.replaceChildren();
 });
 
@@ -154,7 +182,7 @@ describe('resolveWheelRoute', () => {
     const xtermTarget: XtermWheelTarget = {
       root: document.createElement('div'),
       mode: () => 'scrollback',
-      scrollback: () => undefined,
+      scrollback: () => true,
     };
     registerXtermShell(activeCard, xtermTarget);
 
@@ -174,7 +202,7 @@ describe('resolveWheelRoute', () => {
     const xtermTarget: XtermWheelTarget = {
       root: document.createElement('div'),
       mode: () => 'passthrough',
-      scrollback: () => undefined,
+      scrollback: () => false,
     };
     registerXtermShell(activeCard, xtermTarget);
 
@@ -313,6 +341,134 @@ describe('resolveWheelRoute', () => {
         deltaY: 120,
       }),
     ).toEqual({ kind: 'native-scroll', target: changes });
+  });
+});
+
+describe('useWheelRouter', () => {
+  it('lets page routes keep native browser scroll behavior', () => {
+    const { scrollRoot } = fixture();
+    const outside = document.createElement('div');
+    document.body.append(outside);
+    const restore = mockElementFromPoint(outside);
+    mountWheelRouter(scrollRoot);
+
+    try {
+      const event = dispatchWheel(scrollRoot);
+
+      expect(event.defaultPrevented).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+
+  it('lets xterm passthrough routes keep native xterm wheel behavior', () => {
+    const { scrollRoot, activeCard } = fixture();
+    const scrollback = vi.fn(() => false);
+    const xtermTarget: XtermWheelTarget = {
+      root: document.createElement('div'),
+      mode: () => 'passthrough',
+      scrollback,
+    };
+    registerXtermShell(activeCard, xtermTarget);
+    const restore = mockElementFromPoint(activeCard);
+    mountWheelRouter(scrollRoot);
+
+    try {
+      const event = dispatchWheel(scrollRoot);
+
+      expect(event.defaultPrevented).toBe(false);
+      expect(scrollback).not.toHaveBeenCalled();
+    } finally {
+      restore();
+      unregisterXtermShell(activeCard);
+    }
+  });
+
+  it('prevents default and scrolls native scroll targets', () => {
+    const { scrollRoot, activeCard } = fixture();
+    const scroller = document.createElement('div');
+    scroller.style.overflowY = 'auto';
+    setScrollSize(scroller, 400, 100);
+    activeCard.append(scroller);
+    const restore = mockElementFromPoint(scroller);
+    mountWheelRouter(scrollRoot);
+
+    try {
+      const event = dispatchWheel(scroller, { deltaY: 32 });
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(scroller.scrollTop).toBe(32);
+    } finally {
+      restore();
+    }
+  });
+
+  it('prevents default when xterm scrollback consumes the wheel', () => {
+    const { scrollRoot, activeCard } = fixture();
+    const scrollback = vi.fn(() => true);
+    const xtermTarget: XtermWheelTarget = {
+      root: document.createElement('div'),
+      mode: () => 'scrollback',
+      scrollback,
+    };
+    registerXtermShell(activeCard, xtermTarget);
+    const restore = mockElementFromPoint(activeCard);
+    mountWheelRouter(scrollRoot);
+
+    try {
+      const event = dispatchWheel(scrollRoot, {
+        deltaY: 48,
+        deltaMode: WheelEvent.DOM_DELTA_LINE,
+      });
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(scrollback).toHaveBeenCalledWith(48, WheelEvent.DOM_DELTA_LINE);
+    } finally {
+      restore();
+      unregisterXtermShell(activeCard);
+    }
+  });
+
+  it('does not prevent default when xterm scrollback cannot consume the wheel', () => {
+    const { scrollRoot, activeCard } = fixture();
+    const scrollback = vi.fn(() => false);
+    const xtermTarget: XtermWheelTarget = {
+      root: document.createElement('div'),
+      mode: () => 'scrollback',
+      scrollback,
+    };
+    registerXtermShell(activeCard, xtermTarget);
+    const restore = mockElementFromPoint(activeCard);
+    mountWheelRouter(scrollRoot);
+
+    try {
+      const event = dispatchWheel(scrollRoot, {
+        deltaY: 48,
+        deltaMode: WheelEvent.DOM_DELTA_LINE,
+      });
+
+      expect(event.defaultPrevented).toBe(false);
+      expect(scrollback).toHaveBeenCalledWith(48, WheelEvent.DOM_DELTA_LINE);
+    } finally {
+      restore();
+      unregisterXtermShell(activeCard);
+    }
+  });
+
+  it('prevents default for sink routes', () => {
+    const { scrollRoot, activeCard } = fixture();
+    const body = document.createElement('div');
+    activeCard.append(body);
+    const restore = mockElementFromPoint(body);
+    mountWheelRouter(scrollRoot);
+
+    try {
+      const event = dispatchWheel(body);
+
+      expect(event.defaultPrevented).toBe(true);
+    } finally {
+      restore();
+    }
   });
 });
 

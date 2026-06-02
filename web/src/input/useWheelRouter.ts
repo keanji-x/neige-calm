@@ -26,15 +26,22 @@ export function useWheelRouter(scrollRef: RefObject<HTMLElement | null>): void {
 
       if (route.kind === 'page' || route.kind === 'xterm-passthrough') return;
 
-      event.preventDefault();
       if (route.kind === 'native-scroll') {
+        event.preventDefault();
         const { x, y } = pixelDelta(event);
         route.target.scrollLeft += x;
         route.target.scrollTop += y;
         return;
       }
       if (route.kind === 'xterm-scrollback') {
-        route.target.scrollback(event.deltaY, event.deltaMode);
+        if (route.target.scrollback(event.deltaY, event.deltaMode)) {
+          event.preventDefault();
+        }
+        return;
+      }
+      if (route.kind === 'sink') {
+        event.preventDefault();
+        return;
       }
     };
 

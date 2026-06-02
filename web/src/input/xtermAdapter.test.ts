@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createXtermWheelTarget,
   deltaYToLines,
@@ -55,10 +55,13 @@ describe('deltaYToLines', () => {
 });
 
 describe('createXtermWheelTarget', () => {
-  function terminal(state: XtermWheelState = {}): XtermScrollTerminal {
+  function terminal(
+    state: XtermWheelState = {},
+    scrollLines: (amount: number) => void = () => undefined,
+  ): XtermScrollTerminal {
     return {
       ...state,
-      scrollLines: () => undefined,
+      scrollLines,
     };
   }
 
@@ -96,5 +99,50 @@ describe('createXtermWheelTarget', () => {
     });
 
     expect(target.mode()).toBe('scrollback');
+  });
+
+  it('returns false when scrollLines does not move the viewport', () => {
+    const target = createXtermWheelTarget({
+      root: document.createElement('div'),
+      terminalRef: {
+        current: terminal({
+          buffer: { active: { type: 'normal', viewportY: 3 } },
+        }),
+      },
+    });
+
+    expect(target.scrollback(120, WheelEvent.DOM_DELTA_PIXEL)).toBe(false);
+  });
+
+  it('returns true when scrollLines moves the viewport', () => {
+    let term: XtermScrollTerminal;
+    term = terminal(
+      { buffer: { active: { type: 'normal', viewportY: 3 } } },
+      (amount) => {
+        term.buffer!.active!.viewportY! += amount;
+      },
+    );
+    const target = createXtermWheelTarget({
+      root: document.createElement('div'),
+      terminalRef: { current: term },
+    });
+
+    expect(target.scrollback(120, WheelEvent.DOM_DELTA_PIXEL)).toBe(true);
+  });
+
+  it('returns false without calling scrollLines for zero delta', () => {
+    const scrollLines = vi.fn();
+    const target = createXtermWheelTarget({
+      root: document.createElement('div'),
+      terminalRef: {
+        current: terminal(
+          { buffer: { active: { type: 'normal', viewportY: 3 } } },
+          scrollLines,
+        ),
+      },
+    });
+
+    expect(target.scrollback(0, WheelEvent.DOM_DELTA_PIXEL)).toBe(false);
+    expect(scrollLines).not.toHaveBeenCalled();
   });
 });
