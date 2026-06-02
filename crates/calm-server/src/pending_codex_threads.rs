@@ -171,15 +171,11 @@ impl PendingThreadStartRegistry {
             *queue = kept;
         }
 
-        for entry in &expired {
-            tracing::info!(
-                target = "shared_codex_daemon::pending_expire",
-                card_id = %entry.card_id,
-                age_ms = entry.registered_at.elapsed().as_millis(),
-                "expired abandoned shared codex empty-card pending start"
-            );
+        let expired_len = expired.len();
+        for entry in expired {
+            self.drop_stale_entry(entry, "ttl_expire").await;
         }
-        expired.len()
+        expired_len
     }
 
     pub async fn expire_dead_pending(&self) -> usize {

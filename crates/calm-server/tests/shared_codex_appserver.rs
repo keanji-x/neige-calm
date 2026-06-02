@@ -10,14 +10,16 @@ use calm_server::db::{
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, now_ms};
 use calm_server::routes::theme::RequestTheme;
 use calm_server::shared_codex_appserver::{
-    BackoffState, SharedCodexAppServer, SharedDaemonState, bounded_exponential_backoff,
-    drop_spawned_child_guard_for_test,
+    BackoffState, SharedCodexAppServer, SharedDaemonState, SharedThreadStartParams,
+    bounded_exponential_backoff, drop_spawned_child_guard_for_test,
 };
 use calm_server::spec_appserver::{read_boot_id, read_proc_start_time};
 use clap::Parser;
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+
+static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn fake_codex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_osc-probe-child")
@@ -596,7 +598,6 @@ async fn takeover_rebuilds_thread_cache_from_db() {
 
 #[tokio::test]
 async fn restart_resumes_rollout_backed_threads() {
-    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _guard = ENV_LOCK.lock().await;
 
     let root = tempfile::tempdir().unwrap();
@@ -620,6 +621,237 @@ async fn restart_resumes_rollout_backed_threads() {
     }
     let requests = std::fs::read_to_string(capture).unwrap();
     assert!(requests.contains("\"method\":\"thread/resume\""));
+}
+
+#[tokio::test]
+async fn thread_start_for_card_respects_needs_respawn_flag() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+    let old_pid = daemon.status_snapshot().runtime.unwrap().pid;
+    let card_id = seed_card(&repo, 1).await;
+
+    daemon.mark_needs_respawn();
+    assert!(daemon.needs_respawn_on_next_thread_start_for_test());
+    let thread_id = daemon
+        .thread_start_for_card(
+            &card_id,
+            CardRole::Plain,
+            None,
+            SharedThreadStartParams {
+                cwd: "/tmp".into(),
+                approval_policy: "never".into(),
+                sandbox_mode: "workspace-write".into(),
+                developer_instructions: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(thread_id, "fake-thread-0001");
+    assert!(!daemon.needs_respawn_on_next_thread_start_for_test());
+    let new_pid = daemon.status_snapshot().runtime.unwrap().pid;
+    assert_ne!(new_pid, old_pid);
+    assert_eq!(
+        repo.card_codex_thread_get_by_card(&card_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .thread_id,
+        "fake-thread-0001"
+    );
+}
+
+#[tokio::test]
+async fn concurrent_mark_during_respawn_is_preserved() {
+    let _guard = ENV_LOCK.lock().await;
+
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+    let card_id = seed_card(&repo, 1).await;
+
+    unsafe {
+        std::env::set_var("FAKE_CODEX_INITIALIZE_DELAY_MS", "500");
+    }
+    daemon.mark_needs_respawn();
+    let respawning_daemon = daemon.clone();
+    let respawning_card_id = card_id.clone();
+    let respawn_task = tokio::spawn(async move {
+        respawning_daemon
+            .thread_start_for_card(
+                &respawning_card_id,
+                CardRole::Plain,
+                None,
+                SharedThreadStartParams {
+                    cwd: "/tmp".into(),
+                    approval_policy: "never".into(),
+                    sandbox_mode: "workspace-write".into(),
+                    developer_instructions: None,
+                },
+            )
+            .await
+    });
+
+    let mut observed_respawn_in_progress = false;
+    for _ in 0..100 {
+        let snapshot = daemon.status_snapshot();
+        if snapshot.state == SharedDaemonState::Restarting
+            && !daemon.needs_respawn_on_next_thread_start_for_test()
+        {
+            observed_respawn_in_progress = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        observed_respawn_in_progress,
+        "respawn did not reach test window"
+    );
+
+    daemon.mark_needs_respawn();
+    unsafe {
+        std::env::remove_var("FAKE_CODEX_INITIALIZE_DELAY_MS");
+    }
+
+    assert_eq!(respawn_task.await.unwrap().unwrap(), "fake-thread-0001");
+    assert!(
+        daemon.needs_respawn_on_next_thread_start_for_test(),
+        "mark made during respawn must survive the completed respawn"
+    );
+    let after_first = daemon.status_snapshot();
+    assert_eq!(after_first.restart_count, 1);
+    let after_first_pid = after_first.runtime.as_ref().map(|runtime| runtime.pid);
+
+    assert_eq!(
+        daemon
+            .thread_start_for_card(
+                &card_id,
+                CardRole::Plain,
+                None,
+                SharedThreadStartParams {
+                    cwd: "/tmp".into(),
+                    approval_policy: "never".into(),
+                    sandbox_mode: "workspace-write".into(),
+                    developer_instructions: None,
+                },
+            )
+            .await
+            .unwrap(),
+        "fake-thread-0001"
+    );
+    let after_second = daemon.status_snapshot();
+    assert_eq!(after_second.restart_count, 2);
+    assert_ne!(
+        after_second.runtime.as_ref().map(|runtime| runtime.pid),
+        after_first_pid,
+        "second preserved mark must trigger the next respawn"
+    );
+    assert!(!daemon.needs_respawn_on_next_thread_start_for_test());
+}
+
+#[tokio::test]
+async fn respawn_failure_then_retry_succeeds() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let bin_dir = root.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let codex_link = bin_dir.join("codex");
+    std::os::unix::fs::symlink(fake_codex_bin(), &codex_link).unwrap();
+
+    let mut cfg = cfg(&root);
+    cfg.codex_bin = codex_link.display().to_string();
+    let home = calm_server::shared_codex_home::SharedCodexHome::new(
+        cfg.data_dir_resolved().join("codex-home"),
+        cfg.data_dir_resolved().join("codex-homes"),
+    );
+    home.seed().unwrap();
+    let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo);
+
+    daemon.start_or_takeover().await.unwrap();
+    let old_pid = daemon.status_snapshot().runtime.unwrap().pid;
+
+    std::fs::remove_file(&codex_link).unwrap();
+    daemon.mark_needs_respawn();
+    assert!(daemon.ensure_respawn_for_current_settings().await.is_err());
+    let failed = daemon.status_snapshot();
+    assert!(
+        failed.runtime.is_none(),
+        "failed respawn must leave no installed runtime"
+    );
+    assert!(
+        daemon.needs_respawn_on_next_thread_start_for_test(),
+        "failed respawn must stay retryable"
+    );
+
+    std::os::unix::fs::symlink(fake_codex_bin(), &codex_link).unwrap();
+    daemon.ensure_respawn_for_current_settings().await.unwrap();
+    let recovered = daemon.status_snapshot();
+    assert_eq!(recovered.state, SharedDaemonState::Running);
+    assert!(!daemon.needs_respawn_on_next_thread_start_for_test());
+    assert_ne!(
+        recovered.runtime.as_ref().map(|runtime| runtime.pid),
+        Some(old_pid)
+    );
+    assert!(recovered.runtime.is_some());
+}
+
+#[tokio::test]
+async fn manual_respawn_aborts_taken_over_pid_watcher() {
+    let root = tempfile::tempdir().unwrap();
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+
+    let mut child = Command::new(fake_codex_bin())
+        .arg("app-server")
+        .arg("--listen")
+        .arg(format!("unix://{}", sock.display()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn fake app-server for takeover");
+    let old_pid = i32::try_from(child.id().expect("fake app-server pid")).expect("pid fits i32");
+    let process_start_time = wait_for_start_time_and_socket(old_pid, &sock).await;
+
+    let repo = repo().await;
+    persist_running_daemon(&repo, &root, old_pid, old_pid, &sock, process_start_time).await;
+
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+    assert!(
+        daemon.taken_over_pid_watcher_active_for_test().await,
+        "takeover path must install a pid watcher"
+    );
+
+    daemon.mark_needs_respawn();
+    daemon.ensure_respawn_for_current_settings().await.unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+
+    assert!(
+        !daemon.taken_over_pid_watcher_active_for_test().await,
+        "manual reap must clear the takeover watcher slot"
+    );
+    assert!(!daemon.needs_respawn_on_next_thread_start_for_test());
+    let after_manual = daemon.status_snapshot();
+    assert_eq!(after_manual.state, SharedDaemonState::Running);
+    assert_eq!(after_manual.restart_count, 1);
+    assert_ne!(
+        after_manual.runtime.as_ref().map(|runtime| runtime.pid),
+        Some(old_pid)
+    );
+
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    let stable = daemon.status_snapshot();
+    assert_eq!(
+        stable.restart_count, 1,
+        "aborted takeover watcher must not race in a second crash restart"
+    );
+    assert_eq!(stable.state, SharedDaemonState::Running);
 }
 
 #[test]

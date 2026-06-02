@@ -444,6 +444,95 @@ async fn create_empty_card_with_empty_cards_flag_enabled_uses_shared_daemon_pend
 }
 
 #[tokio::test]
+async fn empty_user_card_respawns_daemon_when_proxy_changed() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot(true, true, true).await;
+    let old_pid = boot
+        .state
+        .shared_codex_appserver
+        .status_snapshot()
+        .runtime
+        .expect("shared daemon runtime")
+        .pid;
+    boot.repo
+        .settings_upsert(
+            "http_proxy",
+            "http://proxy-after-empty-user-card.local:3128",
+        )
+        .await
+        .unwrap();
+    boot.state.shared_codex_appserver.mark_needs_respawn();
+
+    let (status, card) = post(
+        boot.app.clone(),
+        &boot.wave_id,
+        json!({ "cwd": "/workspace", "theme": theme() }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={card:?}");
+
+    let snapshot = boot.state.shared_codex_appserver.status_snapshot();
+    assert_eq!(snapshot.restart_count, 1);
+    assert_ne!(
+        snapshot.runtime.as_ref().map(|runtime| runtime.pid),
+        Some(old_pid),
+        "empty user-card path must respawn before the TUI uses the shared remote"
+    );
+    assert!(
+        !boot
+            .state
+            .shared_codex_appserver
+            .needs_respawn_on_next_thread_start_for_test()
+    );
+    assert_eq!(
+        boot.state
+            .pending_codex_threads
+            .as_ref()
+            .expect("pending registry")
+            .pending_count()
+            .await,
+        1
+    );
+}
+
+#[tokio::test]
+async fn empty_user_card_respawn_failure_does_not_leave_card_stuck_pending() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot(true, true, true).await;
+    unsafe {
+        std::env::set_var("FAKE_CODEX_FAIL_INITIALIZE", "1");
+    }
+    boot.state.shared_codex_appserver.mark_needs_respawn();
+
+    let (status, body) = post(
+        boot.app.clone(),
+        &boot.wave_id,
+        json!({ "cwd": "/workspace", "theme": theme() }),
+    )
+    .await;
+    unsafe {
+        std::env::remove_var("FAKE_CODEX_FAIL_INITIALIZE");
+    }
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body:?}");
+    assert_eq!(
+        boot.state
+            .pending_codex_threads
+            .as_ref()
+            .expect("pending registry")
+            .pending_count()
+            .await,
+        0
+    );
+    let cards = boot.repo.cards_by_wave(&boot.wave_id).await.unwrap();
+    assert_eq!(cards.len(), 1);
+    assert!(
+        cards[0].payload.get("codex_thread_status").is_none(),
+        "respawn failure must happen before stamping pending status"
+    );
+}
+
+#[tokio::test]
 async fn empty_card_spawn_failure_removes_pending_entry() {
     let _guard = ENV_LOCK.lock().await;
     let missing_sock = std::env::temp_dir().join(format!(

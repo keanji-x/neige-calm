@@ -12,7 +12,7 @@ use calm_server::config::Config;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{CardRole, NewCove};
+use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
@@ -328,6 +328,81 @@ async fn empty_wave_registers_pending_spec_thread_without_thread_id() {
 }
 
 #[tokio::test]
+async fn empty_shared_spec_respawns_daemon_when_proxy_changed() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot(true, true).await;
+    let old_pid = boot
+        .state
+        .shared_codex_appserver
+        .status_snapshot()
+        .runtime
+        .expect("shared daemon runtime")
+        .pid;
+    boot.repo
+        .settings_upsert("http_proxy", "http://proxy-after-empty-spec.local:3128")
+        .await
+        .unwrap();
+    boot.state.shared_codex_appserver.mark_needs_respawn();
+
+    let (status, wave) = post_wave(boot.app.clone(), &boot.cove_id, "").await;
+    assert_eq!(status, StatusCode::CREATED, "body={wave:?}");
+
+    let snapshot = boot.state.shared_codex_appserver.status_snapshot();
+    assert_eq!(snapshot.restart_count, 1);
+    assert_ne!(
+        snapshot.runtime.as_ref().map(|runtime| runtime.pid),
+        Some(old_pid),
+        "empty spec path must respawn before the TUI uses the shared remote"
+    );
+    assert!(
+        !boot
+            .state
+            .shared_codex_appserver
+            .needs_respawn_on_next_thread_start_for_test()
+    );
+    assert_eq!(
+        boot.state
+            .pending_codex_threads
+            .as_ref()
+            .unwrap()
+            .pending_count()
+            .await,
+        1
+    );
+}
+
+#[tokio::test]
+async fn empty_shared_spec_respawn_failure_does_not_leave_card_stamped() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot(true, true).await;
+    unsafe {
+        std::env::set_var("FAKE_CODEX_FAIL_INITIALIZE", "1");
+    }
+    boot.state.shared_codex_appserver.mark_needs_respawn();
+
+    let (status, wave) = post_wave(boot.app.clone(), &boot.cove_id, "").await;
+    unsafe {
+        std::env::remove_var("FAKE_CODEX_FAIL_INITIALIZE");
+    }
+
+    assert_eq!(status, StatusCode::CREATED, "body={wave:?}");
+    let wave_id = wave["id"].as_str().unwrap().to_string();
+    let spec = spec_card(&boot.repo, &wave_id).await;
+    assert!(spec.payload.get("codex_source").is_none());
+    assert!(spec.payload.get("appserver_needs_initial_prompt").is_none());
+    assert_eq!(
+        boot.state
+            .pending_codex_threads
+            .as_ref()
+            .unwrap()
+            .pending_count()
+            .await,
+        0
+    );
+    assert!(!boot.state.spec_push.contains(&wave_id.clone().into()));
+}
+
+#[tokio::test]
 async fn empty_shared_spec_pending_register_waits_for_spawn_serial_lock() {
     let _guard = ENV_LOCK.lock().await;
     let boot = boot(true, true).await;
@@ -478,6 +553,86 @@ async fn empty_shared_spec_tui_spawn_failure_rolls_back_pending_state() {
     );
     let spec = boot.repo.card_get(spec.id.as_str()).await.unwrap().unwrap();
     assert!(spec.payload.get("appserver_needs_initial_prompt").is_none());
+}
+
+#[tokio::test]
+async fn empty_shared_spec_persist_failure_rolls_back_pending_entry() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot(true, true).await;
+    let wave = boot
+        .repo
+        .wave_create(NewWave {
+            cove_id: boot.cove_id.clone().into(),
+            title: "".into(),
+            sort: None,
+            cwd: "/tmp/spec-shared".into(),
+            attach_folder: true,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let spec = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: wave.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!("not-an-object"),
+        })
+        .await
+        .unwrap();
+    let theme = calm_server::routes::theme::RequestTheme::default_dark();
+    let terminal_id = format!("term-{}", calm_server::model::new_id());
+    sqlx::query(
+        r#"INSERT INTO terminals
+               (id, card_id, program, cwd, env, pid, theme_fg, theme_bg, created_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)"#,
+    )
+    .bind(&terminal_id)
+    .bind(spec.id.as_str())
+    .bind("bash")
+    .bind("/tmp/spec-shared")
+    .bind("{}")
+    .bind(theme.fg_arg())
+    .bind(theme.bg_arg())
+    .bind(0_i64)
+    .execute(boot.repo.pool())
+    .await
+    .unwrap();
+
+    let result = calm_server::routes::waves::spawn_push_via_shared_daemon_for_test(
+        &boot.state,
+        spec.id.as_str(),
+        &wave,
+    )
+    .await;
+
+    assert!(result.is_err());
+    let pending = boot.state.pending_codex_threads.as_ref().unwrap();
+    assert_eq!(pending.pending_count().await, 0);
+    assert!(
+        pending
+            .on_thread_started("T-unrelated")
+            .await
+            .unwrap()
+            .is_none(),
+        "failed persist must not consume a later thread/started"
+    );
+    assert!(
+        boot.repo
+            .card_codex_thread_get_by_card(spec.id.as_str())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let terminal = boot
+        .repo
+        .terminal_get(&terminal_id)
+        .await
+        .unwrap()
+        .expect("terminal row remains");
+    assert!(terminal.exit_code.is_none());
+    assert!(!terminal.signal_killed);
 }
 
 #[tokio::test]

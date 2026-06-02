@@ -161,6 +161,9 @@ async fn serve_conn(stream: tokio::net::UnixStream, control: WedgeControl) -> Re
 
         match method.as_str() {
             "initialize" => {
+                if let Some(delay) = env_delay("FAKE_CODEX_INITIALIZE_DELAY_MS") {
+                    tokio::time::sleep(delay).await;
+                }
                 if env_flag("FAKE_CODEX_FAIL_INITIALIZE") {
                     send_error(&mut write, &id, -32000, "forced initialize failure").await?;
                     continue;
