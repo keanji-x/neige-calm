@@ -641,38 +641,13 @@ async fn reset_spec_card_shared(s: AppState, card: Card) -> Result<ResetSpecCard
         ));
     }
 
-    let mcp_token = crate::mcp_server::auth::CardMcpToken::generate().into_inner();
-    if s.mcp_server.is_some() {
-        let card_id_for_tx = card.id.to_string();
-        let hashed = crate::mcp_server::auth::hash_token(&mcp_token);
-        write_in_tx_typed(s.repo.as_ref(), move |tx| {
-            Box::pin(async move {
-                card_mcp_token_set_tx(tx, &card_id_for_tx, &hashed).await?;
-                Ok(())
-            })
-        })
-        .await?;
-    }
-
-    let mut env_for_spawn = terminal.env.clone();
-    if let Some(map) = env_for_spawn.as_object_mut() {
-        map.insert(
-            "CODEX_HOME".into(),
-            serde_json::Value::String(s.codex.codex_home_dir().to_string_lossy().to_string()),
-        );
-        if let Some(server) = s.mcp_server.as_ref() {
-            map.insert(
-                "NEIGE_MCP_TOKEN".into(),
-                serde_json::Value::String(mcp_token.clone()),
-            );
-            map.insert(
-                "NEIGE_MCP_SOCKET".into(),
-                serde_json::Value::String(
-                    server.shim_config.socket_path.to_string_lossy().to_string(),
-                ),
-            );
-        }
-    }
+    // Token rotation is DEFERRED until after spawn_reset_via_shared_daemon's
+    // lifecycle wait has succeeded — otherwise an early thread_start/turn_start
+    // failure would leave the still-running OLD TUI with an invalidated
+    // NEIGE_MCP_TOKEN (the new token hash is already in card_mcp_tokens, and
+    // the OLD TUI can no longer authenticate MCP calls). After the shared
+    // thread is committed, the OLD TUI is reaped a few lines later so
+    // invalidating its token is safe.
 
     let card_id = card.id.clone();
     let wave_id = card.wave_id.clone();
@@ -694,6 +669,43 @@ async fn reset_spec_card_shared(s: AppState, card: Card) -> Result<ResetSpecCard
             let watermark = push_watermark_from_payload(&card_at_lock.payload);
 
             let started = spawn_reset_via_shared_daemon(&s, card_id.as_str(), &wave).await?;
+            // Rotate the per-card MCP token only AFTER the shared thread is
+            // committed (thread_start + turn_start + lifecycle all passed).
+            // From here on the OLD TUI is going to be reaped immediately, so
+            // invalidating its token is the safe ordering.
+            let mcp_token = crate::mcp_server::auth::CardMcpToken::generate().into_inner();
+            if s.mcp_server.is_some() {
+                let card_id_for_tx = card.id.to_string();
+                let hashed = crate::mcp_server::auth::hash_token(&mcp_token);
+                write_in_tx_typed(s.repo.as_ref(), move |tx| {
+                    Box::pin(async move {
+                        card_mcp_token_set_tx(tx, &card_id_for_tx, &hashed).await?;
+                        Ok(())
+                    })
+                })
+                .await?;
+            }
+            let mut env_for_spawn = terminal.env.clone();
+            if let Some(map) = env_for_spawn.as_object_mut() {
+                map.insert(
+                    "CODEX_HOME".into(),
+                    serde_json::Value::String(
+                        s.codex.codex_home_dir().to_string_lossy().to_string(),
+                    ),
+                );
+                if let Some(server) = s.mcp_server.as_ref() {
+                    map.insert(
+                        "NEIGE_MCP_TOKEN".into(),
+                        serde_json::Value::String(mcp_token.clone()),
+                    );
+                    map.insert(
+                        "NEIGE_MCP_SOCKET".into(),
+                        serde_json::Value::String(
+                            server.shim_config.socket_path.to_string_lossy().to_string(),
+                        ),
+                    );
+                }
+            }
             reap_spec_push(&s, &wave_id).await;
             reap_terminal_artifacts(&s, &terminal).await;
             s.repo.terminal_set_pid(&terminal.id, None).await?;
@@ -737,7 +749,22 @@ async fn reset_spec_card_shared(s: AppState, card: Card) -> Result<ResetSpecCard
             )
             .await
             {
-                drop(s.spec_push.remove(&wave_id));
+                // TUI spawn failed but the shared thread + handle are healthy.
+                // KEEP the handle parked — without it, the new thread's
+                // notifications would have no consumer until a server restart
+                // re-parked it, stranding spec output and queue catch-up.
+                // The card payload + card_codex_threads row continue to point
+                // at the new thread; the user retries the reset (or reloads
+                // the card UI to remount the xterm onto the now-orphaned
+                // backend). The 5xx response signals the partial failure.
+                tracing::warn!(
+                    target: "shared_codex_daemon::spec_card_reset",
+                    card_id = %card_id,
+                    wave_id = %wave_id,
+                    thread_id = %started.thread_id,
+                    error = %e,
+                    "tui_spawn_failed_handle_kept_parked"
+                );
                 return Err(e);
             }
 
