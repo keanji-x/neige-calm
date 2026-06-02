@@ -950,14 +950,14 @@ pub(crate) async fn spawn_push_via_shared_daemon(
         let pending = s.pending_codex_threads.as_ref().ok_or_else(|| {
             CalmError::Internal("shared spec-card path enabled without pending registry".into())
         })?;
+        s.shared_codex_appserver
+            .ensure_respawn_for_current_settings()
+            .await?;
         // Empty-goal path: thread is fresh-started by TUI; payload needs the
         // shared marker stamped here without a thread_id before the pending
         // FIFO mutates. If this persist fails, no stale pending entry can
         // consume a later unrelated thread/started notification.
         persist_shared_spec_runtime_fields(s, spec_card_id, wave, None).await?;
-        s.shared_codex_appserver
-            .ensure_respawn_for_current_settings()
-            .await?;
         pending
             .register(
                 PendingEntry::new(

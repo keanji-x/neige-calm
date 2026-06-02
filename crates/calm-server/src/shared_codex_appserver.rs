@@ -694,13 +694,15 @@ impl SharedCodexAppServer {
     async fn reap_and_respawn_with_current_settings(self: &Arc<Self>) -> Result<()> {
         if !self
             .needs_respawn_on_next_thread_start
-            .load(Ordering::SeqCst)
+            .swap(false, Ordering::AcqRel)
         {
             return Ok(());
         }
 
         let runtime = self.runtime.lock().await.take();
         let Some(runtime) = runtime else {
+            self.needs_respawn_on_next_thread_start
+                .store(true, Ordering::Release);
             return Ok(());
         };
 
@@ -713,11 +715,15 @@ impl SharedCodexAppServer {
 
         self.reap_current_child_or_runtime(&runtime).await;
 
-        self.start_new_process(SharedDaemonState::Restarting, true, None)
-            .await?;
+        if let Err(e) = self
+            .start_new_process(SharedDaemonState::Restarting, true, None)
+            .await
+        {
+            self.needs_respawn_on_next_thread_start
+                .store(true, Ordering::Release);
+            return Err(e);
+        }
         self.spawn_spawned_child_watcher();
-        self.needs_respawn_on_next_thread_start
-            .store(false, Ordering::SeqCst);
         Ok(())
     }
 

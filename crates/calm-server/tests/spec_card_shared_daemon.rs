@@ -372,6 +372,37 @@ async fn empty_shared_spec_respawns_daemon_when_proxy_changed() {
 }
 
 #[tokio::test]
+async fn empty_shared_spec_respawn_failure_does_not_leave_card_stamped() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot(true, true).await;
+    unsafe {
+        std::env::set_var("FAKE_CODEX_FAIL_INITIALIZE", "1");
+    }
+    boot.state.shared_codex_appserver.mark_needs_respawn();
+
+    let (status, wave) = post_wave(boot.app.clone(), &boot.cove_id, "").await;
+    unsafe {
+        std::env::remove_var("FAKE_CODEX_FAIL_INITIALIZE");
+    }
+
+    assert_eq!(status, StatusCode::CREATED, "body={wave:?}");
+    let wave_id = wave["id"].as_str().unwrap().to_string();
+    let spec = spec_card(&boot.repo, &wave_id).await;
+    assert!(spec.payload.get("codex_source").is_none());
+    assert!(spec.payload.get("appserver_needs_initial_prompt").is_none());
+    assert_eq!(
+        boot.state
+            .pending_codex_threads
+            .as_ref()
+            .unwrap()
+            .pending_count()
+            .await,
+        0
+    );
+    assert!(!boot.state.spec_push.contains(&wave_id.clone().into()));
+}
+
+#[tokio::test]
 async fn empty_shared_spec_pending_register_waits_for_spawn_serial_lock() {
     let _guard = ENV_LOCK.lock().await;
     let boot = boot(true, true).await;

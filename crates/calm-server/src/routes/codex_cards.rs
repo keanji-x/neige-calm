@@ -466,6 +466,15 @@ pub(crate) async fn create_codex_card(
         }
     } else {
         if use_shared_empty_path {
+            let pending = s.pending_codex_threads.as_ref().ok_or_else(|| {
+                CalmError::Internal(
+                    "shared empty-card path enabled without pending registry".into(),
+                )
+            })?;
+            s.shared_codex_appserver
+                .ensure_respawn_for_current_settings()
+                .await?;
+
             let mut payload = card.payload.clone();
             let Some(map) = payload.as_object_mut() else {
                 return Err(CalmError::Internal(format!(
@@ -509,14 +518,6 @@ pub(crate) async fn create_codex_card(
             .await?;
             card = updated;
 
-            let pending = s.pending_codex_threads.as_ref().ok_or_else(|| {
-                CalmError::Internal(
-                    "shared empty-card path enabled without pending registry".into(),
-                )
-            })?;
-            s.shared_codex_appserver
-                .ensure_respawn_for_current_settings()
-                .await?;
             pending
                 .register(PendingEntry::new(
                     card.id.to_string(),

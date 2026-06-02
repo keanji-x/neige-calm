@@ -19,6 +19,8 @@ use serde_json::json;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
+static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn fake_codex_bin() -> &'static str {
     env!("CARGO_BIN_EXE_osc-probe-child")
 }
@@ -596,7 +598,6 @@ async fn takeover_rebuilds_thread_cache_from_db() {
 
 #[tokio::test]
 async fn restart_resumes_rollout_backed_threads() {
-    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _guard = ENV_LOCK.lock().await;
 
     let root = tempfile::tempdir().unwrap();
@@ -660,6 +661,95 @@ async fn thread_start_for_card_respects_needs_respawn_flag() {
             .thread_id,
         "fake-thread-0001"
     );
+}
+
+#[tokio::test]
+async fn concurrent_mark_during_respawn_is_preserved() {
+    let _guard = ENV_LOCK.lock().await;
+
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+    let card_id = seed_card(&repo, 1).await;
+
+    unsafe {
+        std::env::set_var("FAKE_CODEX_INITIALIZE_DELAY_MS", "500");
+    }
+    daemon.mark_needs_respawn();
+    let respawning_daemon = daemon.clone();
+    let respawning_card_id = card_id.clone();
+    let respawn_task = tokio::spawn(async move {
+        respawning_daemon
+            .thread_start_for_card(
+                &respawning_card_id,
+                CardRole::Plain,
+                None,
+                SharedThreadStartParams {
+                    cwd: "/tmp".into(),
+                    approval_policy: "never".into(),
+                    sandbox_mode: "workspace-write".into(),
+                    developer_instructions: None,
+                },
+            )
+            .await
+    });
+
+    let mut observed_respawn_in_progress = false;
+    for _ in 0..100 {
+        let snapshot = daemon.status_snapshot();
+        if snapshot.state == SharedDaemonState::Restarting
+            && !daemon.needs_respawn_on_next_thread_start_for_test()
+        {
+            observed_respawn_in_progress = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        observed_respawn_in_progress,
+        "respawn did not reach test window"
+    );
+
+    daemon.mark_needs_respawn();
+    unsafe {
+        std::env::remove_var("FAKE_CODEX_INITIALIZE_DELAY_MS");
+    }
+
+    assert_eq!(respawn_task.await.unwrap().unwrap(), "fake-thread-0001");
+    assert!(
+        daemon.needs_respawn_on_next_thread_start_for_test(),
+        "mark made during respawn must survive the completed respawn"
+    );
+    let after_first = daemon.status_snapshot();
+    assert_eq!(after_first.restart_count, 1);
+    let after_first_pid = after_first.runtime.as_ref().map(|runtime| runtime.pid);
+
+    assert_eq!(
+        daemon
+            .thread_start_for_card(
+                &card_id,
+                CardRole::Plain,
+                None,
+                SharedThreadStartParams {
+                    cwd: "/tmp".into(),
+                    approval_policy: "never".into(),
+                    sandbox_mode: "workspace-write".into(),
+                    developer_instructions: None,
+                },
+            )
+            .await
+            .unwrap(),
+        "fake-thread-0001"
+    );
+    let after_second = daemon.status_snapshot();
+    assert_eq!(after_second.restart_count, 2);
+    assert_ne!(
+        after_second.runtime.as_ref().map(|runtime| runtime.pid),
+        after_first_pid,
+        "second preserved mark must trigger the next respawn"
+    );
+    assert!(!daemon.needs_respawn_on_next_thread_start_for_test());
 }
 
 #[tokio::test]
