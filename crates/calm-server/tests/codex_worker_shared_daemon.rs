@@ -456,9 +456,9 @@ async fn worker_turn_start_failure_rolls_back_mapping_and_payload() {
             .cards_by_wave(boot.wave_id.as_str())
             .await
             .unwrap();
-        let any_left = cards
-            .into_iter()
-            .any(|c| c.payload.get("idempotency_key").and_then(Value::as_str) == Some("turn-fail-1"));
+        let any_left = cards.into_iter().any(|c| {
+            c.payload.get("idempotency_key").and_then(Value::as_str) == Some("turn-fail-1")
+        });
         if any_left { None } else { Some(()) }
     })
     .await;
