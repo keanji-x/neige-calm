@@ -382,9 +382,13 @@ impl SharedCodexAppServer {
         }
         let client = self.client().await?;
         let turn = client.turn_start(thread_id, items).await?;
-        turn.turn_id()
+        let turn_id = turn
+            .turn_id()
             .map(ToOwned::to_owned)
-            .ok_or_else(|| CalmError::CodexAppServer("turn/start returned no turn.id".into()))
+            .ok_or_else(|| CalmError::CodexAppServer("turn/start returned no turn.id".into()))?;
+        self.active_turns
+            .insert(thread_id.to_string(), turn_id.clone());
+        Ok(turn_id)
     }
 
     pub async fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> Result<()> {
@@ -926,6 +930,7 @@ impl SharedCodexAppServer {
 
     async fn rebuild_thread_cache_from_db(&self) -> Result<()> {
         self.thread_cache.clear();
+        self.active_turns.clear();
         for row in self.repo.card_codex_threads_active().await? {
             self.thread_cache.insert(row.thread_id, row.card_id);
         }

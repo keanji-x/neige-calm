@@ -2623,14 +2623,12 @@ async fn spawn_codex_worker_via_shared_daemon(
     }
 
     // turn_start BEFORE spawn — codex 0.135's `codex resume <thread_id>
-    // --remote ...` REQUIRES the thread to have at least one turn before a
-    // second connection can resume it; a `codex resume` against a fresh
-    // thread/start (no rollout yet) exits immediately. PR5/PR7b spec take
-    // the same order; PR7b-worker mirrors. The cost: if the subsequent PTY
-    // spawn fails, the shared daemon keeps running the worker's turn with
-    // no visible card — documented as a followup gate for PR8 (same class
-    // of issue PR7b spec deferred). On in-process turn_start failure we
-    // delete the orphan card so its idempotency_key clears for retry.
+    // --remote ...` REQUIRES at least one prior turn on the thread before
+    // a second connection can resume it. PR5/PR7b spec take the same
+    // order; PR7b-worker mirrors. If the subsequent PTY spawn fails, the
+    // shared daemon's turn is interrupted via turn/interrupt — see the
+    // spawn-fail rollback below. On in-process turn_start failure we delete
+    // the orphan card so its idempotency_key clears for retry.
     let initial_turn_result = async {
         let turn_id = inner
             .shared_codex_appserver
