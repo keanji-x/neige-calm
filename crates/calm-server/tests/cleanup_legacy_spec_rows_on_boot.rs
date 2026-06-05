@@ -118,6 +118,34 @@ async fn cleanup_legacy_spec_rows_on_boot_marks_legacy_specs_as_failed_to_spawn(
 }
 
 #[tokio::test]
+async fn cleanup_legacy_spec_rows_on_boot_unlinks_persisted_sock_dir() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let tmp = tempfile::tempdir().expect("tempdir for legacy sock");
+    let sock = tmp.path().join("sock");
+    std::fs::write(&sock, b"stale socket placeholder").expect("create stale sock file");
+    let card_id = seed_spec(
+        &repo,
+        json!({
+            "codex_source": "legacy",
+            "prompt": "pre-pr8",
+            "appserver_sock": sock.to_string_lossy()
+        }),
+        WaveLifecycle::Draft,
+    )
+    .await;
+    let state = state(repo.clone()).await;
+
+    calm_server::cleanup_legacy_spec_rows_on_boot(&state).await;
+
+    let card = repo.card_get(&card_id).await.unwrap().unwrap();
+    assert_eq!(card.payload["codex_thread_status"], "failed_to_spawn");
+    assert!(
+        !sock.exists(),
+        "stale persisted appserver_sock was not removed"
+    );
+}
+
+#[tokio::test]
 async fn cleanup_legacy_spec_rows_on_boot_skips_reap_for_unverified_pgid() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let card_id = seed_spec(

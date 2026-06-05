@@ -380,6 +380,54 @@ async fn card_codex_threads_active_includes_all_roles() {
     assert!(!rows.iter().any(|row| row.card_id == plain.id.as_str()));
 }
 
+#[tokio::test]
+async fn card_codex_threads_active_shared_only_skips_legacy_card() {
+    let repo = fresh_repo().await;
+    let c = make_cove(&repo, "shared-only-map").await;
+    let w = make_wave(&repo, c.id.as_str(), "w").await;
+    let legacy = repo
+        .card_create(NewCard {
+            wave_id: w.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({"codex_source": "legacy"}),
+        })
+        .await
+        .unwrap();
+    let shared = repo
+        .card_create(NewCard {
+            wave_id: w.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({"codex_source": "shared"}),
+        })
+        .await
+        .unwrap();
+
+    repo.card_codex_thread_upsert(
+        legacy.id.as_str(),
+        "thread-legacy",
+        CardRole::Spec,
+        Some(w.id.as_str()),
+    )
+    .await
+    .unwrap();
+    repo.card_codex_thread_upsert(
+        shared.id.as_str(),
+        "thread-shared",
+        CardRole::Spec,
+        Some(w.id.as_str()),
+    )
+    .await
+    .unwrap();
+
+    let rows = repo.card_codex_threads_active_shared_only().await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].card_id, shared.id.as_str());
+    assert_eq!(rows[0].thread_id, "thread-shared");
+    assert!(!rows.iter().any(|row| row.card_id == legacy.id.as_str()));
+}
+
 // ----------------------------------------------------------- Cascades ----
 
 #[tokio::test]

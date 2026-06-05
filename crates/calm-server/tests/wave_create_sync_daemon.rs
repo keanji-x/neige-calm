@@ -297,16 +297,14 @@ async fn post_api_waves_tolerates_broken_codex_bin_returns_201_inert_wave() {
 }
 
 /// Issue #251 (closes) — the wave's title must be threaded into the
-/// spec card so the codex TUI mounts with the goal pre-filled and
-/// `codex_auto_submit` fires its `\r` injection.
+/// spec card so the kernel can send the prompt via `turn/start` directly;
+/// PR8 + PR7c deleted the legacy auto-submit path.
 ///
 /// Two surfaces under test, both of which must carry the title:
 ///
-///   1. The spec card's `payload.prompt` field. This is what
-///      `codex_auto_submit::maybe_submit` reads to decide whether to
-///      inject `\r`; before the fix the field was absent and the
-///      subscriber short-circuited at the gate, leaving the composer
-///      empty and the spec agent waiting forever.
+///   1. The spec card's `payload.prompt` field. This is the prompt sent to
+///      the shared daemon via `turn/start`; before the fix the field was
+///      absent, leaving the spec agent without the wave title.
 ///
 ///   2. The spec card's `payload.prompt` round-trips through the same
 ///      `card_with_codex_create_tx` writer plain hands-free codex cards
@@ -344,8 +342,8 @@ async fn post_api_waves_threads_title_into_spec_card_prompt_payload() {
         .expect("exactly one Spec-role card per wave");
 
     // The #251 contract: `payload.prompt` carries the wave's title
-    // (trimmed). `codex_auto_submit`'s gate keys on this exact field
-    // shape, so any drift here is the bug coming back.
+    // (trimmed). The shared-daemon `turn/start` path keys on this exact
+    // field shape, so any drift here is the bug coming back.
     let prompt = spec_card
         .payload
         .get("prompt")
@@ -364,19 +362,18 @@ async fn post_api_waves_threads_title_into_spec_card_prompt_payload() {
 }
 
 /// Issue #251 — when a wave's title is whitespace-only the spec card
-/// must NOT stamp a `payload.prompt` (would otherwise trigger an
-/// `\r`-on-empty-composer auto-submit) and the codex command line must
+/// must NOT stamp a `payload.prompt` and the codex command line must
 /// fall back to a bare `codex`. The route layer rejects empty titles
 /// in production, but the spec_card seed path defenses against an
 /// empty title here too so a future loosening of route validation
-/// doesn't quietly break the auto-submit gate.
+/// doesn't quietly start an empty shared-daemon turn.
 ///
 /// We can't easily POST a whitespace title through the route (axum's
 /// JSON serde + the `NewWave { title: String }` shape accept anything
 /// non-null), so this test takes the inner path: it creates a wave row
 /// with title = "   " via the repo, then asserts the resulting card
 /// shape. The shape assertion uses the same payload-prompt field
-/// `codex_auto_submit` keys on.
+/// the shared-daemon `turn/start` path keys on.
 #[tokio::test]
 async fn whitespace_title_does_not_stamp_prompt_on_spec_card() {
     let boot = boot().await;

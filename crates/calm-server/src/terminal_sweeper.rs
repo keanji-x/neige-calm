@@ -372,7 +372,7 @@ pub async fn reap_spec_push(state: &AppState, wave_id: &WaveId) {
         crate::spec_appserver::signal_process_group(pgid, libc::SIGKILL);
     }
     // B2: remove the stale socket + the now-empty per-card dir.
-    crate::spec_appserver::cleanup_sock_dir(&sock);
+    let _ = crate::spec_appserver::cleanup_sock_dir(&sock);
     // Drop the handle last: aborts the consumer + client reader tasks. The
     // handle's Drop also fires a best-effort group SIGTERM, a no-op here.
     drop(handle);

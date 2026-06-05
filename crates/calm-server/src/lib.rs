@@ -477,6 +477,38 @@ pub async fn cleanup_legacy_spec_rows_on_boot(state: &state::AppState) {
             }
         }
 
+        if let Some(sock) = card
+            .payload
+            .get("appserver_sock")
+            .and_then(serde_json::Value::as_str)
+        {
+            let sock = std::path::Path::new(sock.strip_prefix("unix://").unwrap_or(sock));
+            match spec_appserver::cleanup_sock_dir(sock) {
+                spec_appserver::SockDirCleanupOutcome::Removed => tracing::info!(
+                    card_id = %card.id,
+                    wave_id = %card.wave_id,
+                    sock = %sock.display(),
+                    outcome = "removed",
+                    "legacy spec boot cleanup removed persisted app-server socket"
+                ),
+                spec_appserver::SockDirCleanupOutcome::NotPresent => tracing::info!(
+                    card_id = %card.id,
+                    wave_id = %card.wave_id,
+                    sock = %sock.display(),
+                    outcome = "not-present",
+                    "legacy spec boot cleanup app-server socket was already absent"
+                ),
+                spec_appserver::SockDirCleanupOutcome::Error(e) => tracing::info!(
+                    card_id = %card.id,
+                    wave_id = %card.wave_id,
+                    sock = %sock.display(),
+                    error = %e,
+                    outcome = "error",
+                    "legacy spec boot cleanup failed to remove persisted app-server socket"
+                ),
+            }
+        }
+
         let mut payload = card.payload.clone();
         let Some(map) = payload.as_object_mut() else {
             tracing::warn!(
