@@ -125,6 +125,7 @@ export function CardHead({
             e.stopPropagation();
             onClose();
           }}
+          onKeyDown={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
         >
           <CloseIcon />
@@ -146,6 +147,7 @@ function ActionButton({ action }: { action: Extract<CardAction, { kind: 'button'
         e.stopPropagation();
         action.run();
       }}
+      onKeyDown={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
     >
       <Icon n={action.icon} s={14} />

@@ -255,6 +255,38 @@ describe('WaveList — rendering + accessibility', () => {
       screen.getByRole('listitem', { name: 'File: /repo' }),
     ).toBeInTheDocument();
   });
+
+  it('does not let iframe head action key events reach the row roving handler', () => {
+    render(
+      <Wrapper client={makeClient()}>
+        <WaveList
+          waveId="w1"
+          cards={[
+            {
+              kind: 'card',
+              card: {
+                type: 'iframe',
+                id: 'iframe_1',
+                url: 'https://example.com',
+              },
+              sort: 10,
+            },
+          ]}
+          onRemoveCard={() => {}}
+        />
+      </Wrapper>,
+    );
+
+    const reload = screen.getByRole('button', { name: 'Reload' });
+    const event = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
+    });
+
+    expect(reload.dispatchEvent(event)).toBe(true);
+    expect(event.defaultPrevented).toBe(false);
+  });
 });
 
 describe('WaveList — keyboard navigation', () => {
