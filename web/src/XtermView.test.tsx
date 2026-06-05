@@ -317,6 +317,27 @@ function serverHello(over: Record<string, unknown> = {}): unknown {
   };
 }
 
+function renderSnapshot(over: Record<string, unknown> = {}): unknown {
+  return {
+    RenderSnapshot: {
+      render_rev: 3,
+      pty_seq: 9,
+      cols: 80,
+      rows: 24,
+      encoding: 'Vt',
+      data: [88, 89],
+      scrollback: null,
+      ...over,
+    },
+  };
+}
+
+function writeArgToString(arg: Uint8Array | string): string {
+  return typeof arg === 'string'
+    ? arg
+    : String.fromCharCode(...Array.from(arg));
+}
+
 describe('XtermView v4 handshake', () => {
   it('exposes an imperative refresh handle', () => {
     const ref = createRef<XtermViewHandle>();
@@ -560,12 +581,9 @@ describe('XtermView v4 handshake', () => {
     const writeCalls = mockTerm.write.mock.calls.map((c: unknown[]) => c[0]);
     expect(writeCalls.length).toBeGreaterThanOrEqual(3);
     expect(Array.from(writeCalls[0] as Uint8Array)).toEqual(scrollbackBytes);
-    const flush = writeCalls[1] as Uint8Array | string;
-    const flushStr =
-      typeof flush === 'string'
-        ? flush
-        : String.fromCharCode(...Array.from(flush));
-    expect(flushStr).toBe('\r\n'.repeat(24));
+    expect(writeArgToString(writeCalls[1] as Uint8Array | string)).toBe(
+      '\r\n'.repeat(24),
+    );
     expect(Array.from(writeCalls[2] as Uint8Array)).toEqual(dataBytes);
   });
 
@@ -754,20 +772,71 @@ describe('XtermView v3 streaming', () => {
     mockTerm.write.mockClear();
     mockTerm.clear.mockClear();
     act(() => {
-      ws.push({
-        RenderSnapshot: {
-          render_rev: 3,
-          pty_seq: 9,
-          cols: 80,
-          rows: 24,
-          encoding: 'Vt',
-          data: [88, 89],
-          scrollback: null,
-        },
-      });
+      ws.push(renderSnapshot());
     });
     expect(mockTerm.clear).toHaveBeenCalledTimes(1);
     expect(mockTerm.write).toHaveBeenCalledTimes(1);
+  });
+
+  it('writes RenderSnapshot.scrollback before data on lag recovery (#473)', () => {
+    render(<XtermView terminalId="term_test" />);
+    const ws = currentWs();
+    act(() => {
+      ws.fireOpen();
+    });
+    act(() => {
+      ws.push(serverHello());
+    });
+    mockTerm.write.mockClear();
+    mockTerm.clear.mockClear();
+
+    const scrollbackBytes = [115, 98]; // 'sb'
+    const dataBytes = [104, 105]; // 'hi'
+    act(() => {
+      ws.push(
+        renderSnapshot({
+          data: dataBytes,
+          scrollback: scrollbackBytes,
+        }),
+      );
+    });
+
+    const writeCalls = mockTerm.write.mock.calls.map((c: unknown[]) => c[0]);
+    expect(mockTerm.clear).toHaveBeenCalledTimes(1);
+    expect(writeCalls).toHaveLength(3);
+    expect(Array.from(writeCalls[0] as Uint8Array)).toEqual(scrollbackBytes);
+    expect(writeArgToString(writeCalls[1] as Uint8Array | string)).toBe(
+      '\r\n'.repeat(24),
+    );
+    expect(Array.from(writeCalls[2] as Uint8Array)).toEqual(dataBytes);
+  });
+
+  it('writes only RenderSnapshot.data when scrollback is null (#473)', () => {
+    render(<XtermView terminalId="term_test" />);
+    const ws = currentWs();
+    act(() => {
+      ws.fireOpen();
+    });
+    act(() => {
+      ws.push(serverHello());
+    });
+    mockTerm.write.mockClear();
+    mockTerm.clear.mockClear();
+
+    const dataBytes = [111, 107]; // 'ok'
+    act(() => {
+      ws.push(
+        renderSnapshot({
+          data: dataBytes,
+          scrollback: null,
+        }),
+      );
+    });
+
+    const writeCalls = mockTerm.write.mock.calls.map((c: unknown[]) => c[0]);
+    expect(mockTerm.clear).toHaveBeenCalledTimes(1);
+    expect(writeCalls).toHaveLength(1);
+    expect(Array.from(writeCalls[0] as Uint8Array)).toEqual(dataBytes);
   });
 
   it('sends typed input as a v3 Input frame', () => {

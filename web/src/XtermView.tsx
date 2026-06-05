@@ -665,7 +665,9 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       }
       if ('RenderSnapshot' in msg) {
         // Standalone snapshot — daemon decided we need a hard re-sync
-        // (typically because a `ResizeCommit` triggered a model reframe).
+        // (typically because a `ResizeCommit` triggered a model reframe, or
+        // because the client lagged on the broadcast channel and the server
+        // pump issued a fresh snapshot — see calm-server client_pump.rs).
         const s = msg.RenderSnapshot;
         if (s.cols !== term.cols || s.rows !== term.rows) {
           term.resize(s.cols, s.rows);
@@ -673,6 +675,13 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
           lastRows = s.rows;
         }
         term.clear();
+        if (s.scrollback) {
+          term.write(Uint8Array.from(s.scrollback));
+          // Same ED 2 erasure guard as ServerHello: snapshot.data leads with
+          // `\x1b[2J`, which would otherwise erase the tail of just-replayed
+          // history still sitting in the viewport.
+          term.write('\r\n'.repeat(term.rows));
+        }
         term.write(Uint8Array.from(s.data));
         renderRev = s.render_rev;
         ptySeq = s.pty_seq;
