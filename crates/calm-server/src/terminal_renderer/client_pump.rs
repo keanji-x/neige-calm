@@ -160,7 +160,11 @@ pub async fn run_client_pump(
                         let snap = {
                             let rp = down_render_plane.lock().unwrap();
                             let sz = rp.current_size();
-                            rp.build_snapshot(sz.cols, sz.rows, ScrollbackLimit::None)
+                            rp.build_snapshot(
+                                sz.cols,
+                                sz.rows,
+                                scrollback_request.unwrap_or(ScrollbackLimit::None),
+                            )
                         };
                         let required = DaemonMsg::SnapshotRequired {
                             reason: format!("broadcast lagged by {n} frames"),
