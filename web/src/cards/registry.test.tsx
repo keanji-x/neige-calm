@@ -1,10 +1,26 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
+
+vi.mock('../api/calm', async () => {
+  const actual = await vi.importActual<typeof import('../api/calm')>(
+    '../api/calm',
+  );
+  return {
+    ...actual,
+    createCard: vi.fn(),
+    createTerminalCard: vi.fn(),
+  };
+});
+
+import * as api from '../api/calm';
 import type { KernelCard } from '../api/wire';
 import {
+  addCardWithValues,
   assertRouterCreateAllowed,
   CatalogCreateNotImplemented,
   KernelMintedOnlyCreateNotAllowed,
 } from '../app/router';
+import { IframeEntry } from './builtins/iframe';
+import { TerminalEntry } from './builtins/terminal';
 import type { WaveCardData } from '../types';
 import {
   __resetRegistryForTest,
@@ -90,7 +106,18 @@ function entry<T extends WaveCardData>(
 
 beforeEach(() => {
   __resetRegistryForTest();
+  vi.clearAllMocks();
 });
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+function queryClientStub(): Parameters<typeof addCardWithValues>[0] {
+  return {
+    invalidateQueries: vi.fn().mockResolvedValue(undefined),
+  } as unknown as Parameters<typeof addCardWithValues>[0];
+}
 
 describe('card registry claims', () => {
   it('dispatches exact claims before prefix claims', () => {
@@ -313,6 +340,67 @@ describe('card registry metadata and create invariants', () => {
     expect(() => assertRouterCreateAllowed(kernelOnlyEntry)).toThrow(
       'KernelMintedOnlyCreateNotAllowed',
     );
+  });
+});
+
+describe('router AddPanel create runtime failures', () => {
+  it('swallows iframe create schema parse failures at the router edge', async () => {
+    registerCard(IframeEntry);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const qc = queryClientStub();
+
+    await expect(
+      addCardWithValues(
+        qc,
+        'wave_1',
+        'iframe',
+        { url: 'javascript:alert(1)' },
+        'dark',
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(api.createCard).not.toHaveBeenCalled();
+    expect(qc.invalidateQueries).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[Calm] iframe create rejected invalid input:',
+      expect.any(Error),
+    );
+  });
+
+  it('swallows rejected legacy terminal creates at the router edge', async () => {
+    registerCard(TerminalEntry);
+    const err = new Error('offline');
+    vi.mocked(api.createTerminalCard).mockRejectedValue(err);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const qc = queryClientStub();
+
+    await expect(
+      addCardWithValues(qc, 'wave_1', 'terminal', {}, 'dark'),
+    ).resolves.toBeUndefined();
+
+    expect(api.createTerminalCard).toHaveBeenCalled();
+    expect(qc.invalidateQueries).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[Calm] terminal create failed:',
+      err,
+    );
+  });
+
+  it('keeps router create contract errors propagating', async () => {
+    registerCard(
+      entry<TestCatalogCardData>({
+        type: 'test-catalog',
+        claim: { mode: 'prefix', prefix: 'ui://' },
+        create: { mode: 'catalog', catalog: 'plugin-views' },
+      }),
+    );
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(
+      addCardWithValues(queryClientStub(), 'wave_1', 'test-catalog', {}, 'dark'),
+    ).rejects.toThrow(CatalogCreateNotImplemented);
+
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 });
 

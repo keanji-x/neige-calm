@@ -446,7 +446,7 @@ function WaveComponent() {
  * (`plugin:*` / `ui://*`) come through their own create path via the
  * plugin host; they're not menu-driven from the AddPanel.
  */
-async function addCardWithValues(
+export async function addCardWithValues(
   qc: ReturnType<typeof useQueryClient>,
   waveId: string,
   type: AddPanelKind,
@@ -455,7 +455,16 @@ async function addCardWithValues(
 ): Promise<void> {
   const entry = getEntry(type);
   if (!entry) return addCardOfKind(qc, waveId, type, theme);
-  const input = entry.addPanel?.createSchema?.parse?.(values) ?? values;
+  let input: unknown;
+  try {
+    input = entry.addPanel?.createSchema?.parse?.(values) ?? values;
+  } catch (err) {
+    console.warn(
+      `[Calm] ${createWarnKind(entry)} create rejected invalid input:`,
+      err,
+    );
+    return;
+  }
   await createFromEntry(qc, waveId, entry, input, theme);
 }
 
@@ -464,7 +473,7 @@ async function createLegacyCard(
   type: string,
   values: Record<string, string>,
   theme: 'light' | 'dark',
-): Promise<{ cardId: string; raw?: unknown }> {
+): Promise<{ cardId: string; raw?: unknown } | null> {
   try {
     dlog('addCardWithValues', `${type} create START`, { waveId, values, theme });
     // Atomic codex-card create (#117). One round-trip writes the card row,
@@ -502,7 +511,7 @@ async function createLegacyCard(
     return { cardId: card.id, raw: card };
   } catch (err) {
     console.warn(`[Calm] ${type} create failed:`, err);
-    throw err;
+    return null;
   }
 }
 
@@ -537,6 +546,19 @@ function createWarnKind(entry: RouterCreateContractEntry): string {
   return entry.claim?.mode === 'exact' ? entry.claim.kind : String(entry.type);
 }
 
+function isCreateContractError(err: unknown): boolean {
+  if (
+    err instanceof CatalogCreateNotImplemented ||
+    err instanceof KernelMintedOnlyCreateNotAllowed
+  ) {
+    return true;
+  }
+  if (!(err instanceof Error)) return false;
+  return /^(MissingCreateStrategy|GenericCreateRequiresExactClaim|EntryMissingMetadata|DuplicateExactClaim|DuplicatePrefixClaim)\(/.test(
+    err.message,
+  );
+}
+
 async function createFromEntry(
   qc: ReturnType<typeof useQueryClient>,
   waveId: string,
@@ -548,14 +570,20 @@ async function createFromEntry(
     if (!LEGACY_CREATE_KINDS.has(String(entry.type))) {
       throw new Error(`MissingCreateStrategy(${entry.type})`);
     }
-    const result = await createLegacyCard(
-      waveId,
-      String(entry.type),
-      input as Record<string, string>,
-      theme,
-    );
-    await qc.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
-    dlog('createFromEntry', 'DONE', { type: entry.type, cardId: result.cardId });
+    try {
+      const result = await createLegacyCard(
+        waveId,
+        String(entry.type),
+        input as Record<string, string>,
+        theme,
+      );
+      if (!result) return;
+      await qc.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
+      dlog('createFromEntry', 'DONE', { type: entry.type, cardId: result.cardId });
+    } catch (err) {
+      if (isCreateContractError(err)) throw err;
+      console.warn(`[Calm] ${createWarnKind(entry)} create failed:`, err);
+    }
     return;
   }
 
@@ -583,6 +611,7 @@ async function createFromEntry(
     await qc.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
     dlog('createFromEntry', 'DONE', { type: entry.type, cardId: result.cardId });
   } catch (err) {
+    if (isCreateContractError(err)) throw err;
     console.warn(`[Calm] ${createWarnKind(entry)} create failed:`, err);
   }
 }
