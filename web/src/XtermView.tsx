@@ -676,6 +676,10 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         }
         term.clear();
         if (s.scrollback) {
+          // xterm clear() keeps the current cursor column; ServerHello uses a
+          // fresh Terminal, but lag-recovery snapshots replay into an existing
+          // session and need to start restored history at column 0.
+          term.write('\x1b[H');
           term.write(Uint8Array.from(s.scrollback));
           // Same ED 2 erasure guard as ServerHello: snapshot.data leads with
           // `\x1b[2J`, which would otherwise erase the tail of just-replayed

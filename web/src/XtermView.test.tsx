@@ -803,12 +803,13 @@ describe('XtermView v3 streaming', () => {
 
     const writeCalls = mockTerm.write.mock.calls.map((c: unknown[]) => c[0]);
     expect(mockTerm.clear).toHaveBeenCalledTimes(1);
-    expect(writeCalls).toHaveLength(3);
-    expect(Array.from(writeCalls[0] as Uint8Array)).toEqual(scrollbackBytes);
-    expect(writeArgToString(writeCalls[1] as Uint8Array | string)).toBe(
+    expect(writeCalls).toHaveLength(4);
+    expect(writeCalls[0]).toBe('\x1b[H');
+    expect(Array.from(writeCalls[1] as Uint8Array)).toEqual(scrollbackBytes);
+    expect(writeArgToString(writeCalls[2] as Uint8Array | string)).toBe(
       '\r\n'.repeat(24),
     );
-    expect(Array.from(writeCalls[2] as Uint8Array)).toEqual(dataBytes);
+    expect(Array.from(writeCalls[3] as Uint8Array)).toEqual(dataBytes);
   });
 
   it('writes only RenderSnapshot.data when scrollback is null (#473)', () => {
