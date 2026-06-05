@@ -58,6 +58,7 @@ import { dlog } from '../util/debug';
 import type { Cove, Wave, WaveCardSlot } from '../types';
 import type { AddPanelKind } from '../shared/components/AddPanel';
 import { getEntry, LEGACY_CREATE_KINDS } from '../cards/registry';
+import type { CardCreateStrategy, CardKindClaim } from '../cards/registry';
 
 // Per-route page components are loaded on demand so the entry chunk only
 // carries the shell + routing wiring; each page's code ships as its own
@@ -505,6 +506,37 @@ async function createLegacyCard(
   }
 }
 
+export class CatalogCreateNotImplemented extends Error {
+  constructor() {
+    super('CatalogCreateNotImplemented');
+  }
+}
+
+export class KernelMintedOnlyCreateNotAllowed extends Error {
+  constructor() {
+    super('KernelMintedOnlyCreateNotAllowed');
+  }
+}
+
+interface RouterCreateContractEntry {
+  type: unknown;
+  claim?: CardKindClaim;
+  create?: { mode: CardCreateStrategy<unknown>['mode'] };
+}
+
+export function assertRouterCreateAllowed(entry: RouterCreateContractEntry): void {
+  if (entry.create?.mode === 'catalog') {
+    throw new CatalogCreateNotImplemented();
+  }
+  if (entry.create?.mode === 'kernel-minted-only') {
+    throw new KernelMintedOnlyCreateNotAllowed();
+  }
+}
+
+function createWarnKind(entry: RouterCreateContractEntry): string {
+  return entry.claim?.mode === 'exact' ? entry.claim.kind : String(entry.type);
+}
+
 async function createFromEntry(
   qc: ReturnType<typeof useQueryClient>,
   waveId: string,
@@ -512,38 +544,47 @@ async function createFromEntry(
   input: unknown,
   theme: 'light' | 'dark',
 ): Promise<void> {
-  const rgb = theme === 'dark' ? DARK_THEME_RGB : LIGHT_THEME_RGB;
-  let result: { cardId: string; raw?: unknown };
   if (!entry.create) {
     if (!LEGACY_CREATE_KINDS.has(String(entry.type))) {
       throw new Error(`MissingCreateStrategy(${entry.type})`);
     }
-    result = await createLegacyCard(
+    const result = await createLegacyCard(
       waveId,
       String(entry.type),
       input as Record<string, string>,
       theme,
     );
-  } else if (entry.create.mode === 'generic') {
-    if (entry.claim?.mode !== 'exact') {
-      throw new Error(`GenericCreateRequiresExactClaim(${entry.type})`);
-    }
-    const card = await api.createCard(waveId, {
-      kind: entry.claim.kind,
-      payload: entry.create.buildPayload(input as never),
-    });
-    result = { cardId: card.id, raw: card };
-  } else if (entry.create.mode === 'atomic') {
-    result = await entry.create.submit(waveId, input as never, {
-      themeRgb: { fg: rgb.fg.join(' '), bg: rgb.bg.join(' ') },
-    });
-  } else if (entry.create.mode === 'catalog') {
-    throw new Error('CatalogCreateNotImplemented');
-  } else {
-    throw new Error('KernelMintedOnlyCreateNotAllowed');
+    await qc.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
+    dlog('createFromEntry', 'DONE', { type: entry.type, cardId: result.cardId });
+    return;
   }
-  await qc.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
-  dlog('createFromEntry', 'DONE', { type: entry.type, cardId: result.cardId });
+
+  try {
+    assertRouterCreateAllowed(entry);
+    const rgb = theme === 'dark' ? DARK_THEME_RGB : LIGHT_THEME_RGB;
+    let result: { cardId: string; raw?: unknown };
+    if (entry.create.mode === 'generic') {
+      if (entry.claim?.mode !== 'exact') {
+        throw new Error(`GenericCreateRequiresExactClaim(${entry.type})`);
+      }
+      const card = await api.createCard(waveId, {
+        kind: entry.claim.kind,
+        payload: entry.create.buildPayload(input as never),
+      });
+      result = { cardId: card.id, raw: card };
+    } else if (entry.create.mode === 'atomic') {
+      result = await entry.create.submit(waveId, input as never, {
+        themeRgb: { fg: rgb.fg.join(' '), bg: rgb.bg.join(' ') },
+      });
+    } else {
+      assertRouterCreateAllowed(entry);
+      throw new Error(`MissingCreateStrategy(${entry.type})`);
+    }
+    await qc.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
+    dlog('createFromEntry', 'DONE', { type: entry.type, cardId: result.cardId });
+  } catch (err) {
+    console.warn(`[Calm] ${createWarnKind(entry)} create failed:`, err);
+  }
 }
 
 async function addCardOfKind(

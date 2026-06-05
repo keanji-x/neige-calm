@@ -1,5 +1,10 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import type { KernelCard } from '../api/wire';
+import {
+  assertRouterCreateAllowed,
+  CatalogCreateNotImplemented,
+  KernelMintedOnlyCreateNotAllowed,
+} from '../app/router';
 import type { WaveCardData } from '../types';
 import {
   __resetRegistryForTest,
@@ -279,6 +284,35 @@ describe('card registry metadata and create invariants', () => {
     );
 
     expect(addPanelEntries().map((item) => item.type)).toEqual(['test-exact']);
+  });
+
+  it('throws the router catalog-create contract error', () => {
+    const catalogEntry = entry<TestCatalogCardData>({
+      type: 'test-catalog',
+      claim: { mode: 'prefix', prefix: 'ui://' },
+      create: { mode: 'catalog', catalog: 'plugin-views' },
+    });
+
+    expect(() => assertRouterCreateAllowed(catalogEntry)).toThrow(
+      CatalogCreateNotImplemented,
+    );
+    expect(() => assertRouterCreateAllowed(catalogEntry)).toThrow(
+      'CatalogCreateNotImplemented',
+    );
+  });
+
+  it('throws the router kernel-minted-only create contract error', () => {
+    const kernelOnlyEntry = entry<TestKernelOnlyCardData>({
+      type: 'test-kernel-only',
+      create: { mode: 'kernel-minted-only' },
+    });
+
+    expect(() => assertRouterCreateAllowed(kernelOnlyEntry)).toThrow(
+      KernelMintedOnlyCreateNotAllowed,
+    );
+    expect(() => assertRouterCreateAllowed(kernelOnlyEntry)).toThrow(
+      'KernelMintedOnlyCreateNotAllowed',
+    );
   });
 });
 
