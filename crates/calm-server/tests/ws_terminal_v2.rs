@@ -7,7 +7,7 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use axum::Router;
@@ -20,9 +20,13 @@ use calm_server::model::{NewCard, NewCove, NewTerminal, NewWave, Terminal};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes::theme::RequestTheme;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
-use calm_server::terminal_renderer::RendererConfig;
+use calm_server::terminal_renderer::{
+    ClientPumpContext, RendererConfig, SharedExitState, SharedOwnerRegistry, SharedRenderPlane,
+    SupervisorControl, run_client_pump,
+};
 use calm_server::ws;
 use calm_server::ws::terminal::pump;
+use calm_session::terminal_session::{OwnerRegistry, RenderPlane};
 use calm_session::{
     ClientCapabilities, ClientMsg, DaemonMsg, InitialScrollback, PROTOCOL_VERSION, PtySize,
     RenderEncoding, RenderPatch, RenderSnapshot, read_frame, write_frame,
@@ -32,7 +36,7 @@ use serde_json::json;
 use tempfile::TempDir;
 use tokio::io::DuplexStream;
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio_tungstenite::tungstenite::Message as TMessage;
 use uuid::Uuid;
 
@@ -329,6 +333,140 @@ async fn initial_scrollback_all_round_trips_into_server_hello_snapshot() {
             );
         }
         other => panic!("expected ServerHello for None, got {other:?}"),
+    }
+}
+
+/// `ws_terminal_v2` normally exercises the WS bridge. The lag-recovery bug
+/// lives one layer lower in `client_pump`, so this focused in-process test
+/// drives `run_client_pump` directly: a tiny broadcast channel is overrun
+/// while the per-client outbound queue is full, producing `RecvError::Lagged`
+/// without relying on websocket timing.
+#[tokio::test]
+async fn lag_recovery_snapshot_respects_initial_scrollback_all() {
+    let terminal_id = Uuid::new_v4().to_string();
+    let render_plane: SharedRenderPlane =
+        Arc::new(StdMutex::new(RenderPlane::new(12, 2, 64 * 1024, 2000)));
+    seed_scrollback(&render_plane);
+
+    let owner_registry: SharedOwnerRegistry = Arc::new(StdMutex::new(OwnerRegistry::new()));
+    let exit: SharedExitState = Arc::new(StdMutex::new(None));
+    let (event_tx, event_rx) = broadcast::channel::<DaemonMsg>(2);
+    let (supervisor_tx, _supervisor_rx) = mpsc::unbounded_channel::<SupervisorControl>();
+    let (incoming_tx, incoming_rx) = mpsc::channel::<ClientMsg>(4);
+    let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<DaemonMsg>(1);
+
+    let pump = tokio::spawn({
+        let render_plane = render_plane.clone();
+        let owner_registry = owner_registry.clone();
+        let exit = exit.clone();
+        let event_tx_for_pump = event_tx.clone();
+        let terminal_id_for_pump = terminal_id.clone();
+        async move {
+            run_client_pump(
+                incoming_rx,
+                outgoing_tx,
+                ClientPumpContext {
+                    event_rx,
+                    event_tx: event_tx_for_pump,
+                    render_plane,
+                    exit,
+                    supervisor_tx,
+                    owner_registry,
+                    session_id: Uuid::new_v4(),
+                    terminal_id: terminal_id_for_pump,
+                },
+            )
+            .await
+        }
+    });
+
+    incoming_tx
+        .send(ClientMsg::ClientHello {
+            protocol_version: PROTOCOL_VERSION,
+            terminal_id,
+            client_id: Uuid::new_v4(),
+            desired_size: PtySize {
+                cols: 12,
+                rows: 2,
+                pixel_width: None,
+                pixel_height: None,
+            },
+            cell_size: None,
+            initial_scrollback: InitialScrollback::All,
+            resume_from: None,
+            role_hint: None,
+            capabilities: ClientCapabilities {
+                render_encodings: vec![RenderEncoding::Vt],
+                supports_scrollback: true,
+                supports_sixel: false,
+                supports_images: false,
+                kernel_originated_input: false,
+            },
+        })
+        .await
+        .expect("send client hello");
+
+    let hello = tokio::time::timeout(Duration::from_secs(2), outgoing_rx.recv())
+        .await
+        .expect("server hello timeout")
+        .expect("server hello channel closed");
+    assert!(matches!(hello, DaemonMsg::ServerHello { .. }));
+
+    for i in 0..16 {
+        event_tx
+            .send(DaemonMsg::RenderPatch(RenderPatch {
+                render_rev: i + 1,
+                prev_render_rev: i,
+                pty_seq: i + 1,
+                encoding: RenderEncoding::Vt,
+                data: format!("lag-{i}\r\n").into_bytes(),
+            }))
+            .expect("send broadcast frame");
+    }
+
+    let snap = wait_for_lag_snapshot(&mut outgoing_rx).await;
+    assert!(
+        snap.scrollback
+            .as_ref()
+            .is_some_and(|bytes| !bytes.is_empty()),
+        "lag-recovery RenderSnapshot should preserve InitialScrollback::All"
+    );
+
+    drop(incoming_tx);
+    tokio::time::timeout(Duration::from_secs(2), pump)
+        .await
+        .expect("pump join timeout")
+        .expect("pump join")
+        .expect("pump result");
+}
+
+fn seed_scrollback(render_plane: &SharedRenderPlane) {
+    let mut rp = render_plane.lock().expect("render plane lock");
+    for i in 0..12 {
+        let _ = rp.on_pty_chunk(format!("line-{i:02}\r\n").into_bytes());
+    }
+}
+
+async fn wait_for_lag_snapshot(rx: &mut mpsc::Receiver<DaemonMsg>) -> RenderSnapshot {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut saw_snapshot_required = false;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "timed out waiting for lag recovery snapshot"
+        );
+        let msg = tokio::time::timeout(remaining, rx.recv())
+            .await
+            .expect("lag snapshot timeout")
+            .expect("daemon channel closed");
+        match msg {
+            DaemonMsg::SnapshotRequired { .. } => {
+                saw_snapshot_required = true;
+            }
+            DaemonMsg::RenderSnapshot(snap) if saw_snapshot_required => return snap,
+            _ => {}
+        }
     }
 }
 
