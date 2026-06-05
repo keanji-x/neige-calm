@@ -330,7 +330,7 @@ async fn seed_card(repo: &SqlxRepo, idx: usize) -> String {
         wave_id: wave.id,
         kind: "terminal".into(),
         sort: None,
-        payload: json!({}),
+        payload: json!({"codex_source": "shared"}),
     })
     .await
     .unwrap()

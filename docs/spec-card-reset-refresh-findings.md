@@ -1,5 +1,7 @@
 # Spec Card Reset / Refresh Findings
 
+Historical: authored before PR7c deleted `spawn_push_appserver` and the legacy per-card daemon. The mechanisms described below were the model at the time; current behavior is in `docs/architecture/410-shared-codex-daemon.md`.
+
 ## Scope
 
 - This document follows the locked brief semantics for spec-card Refresh and Reset. (`docs/spec-card-reset-refresh-brief.md:1`)

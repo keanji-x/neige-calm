@@ -407,6 +407,7 @@ pub trait RepoRead: Send + Sync + 'static {
         card_id: &str,
     ) -> Result<Option<CardCodexThreadRow>>;
     async fn card_codex_threads_active(&self) -> Result<Vec<CardCodexThreadRow>>;
+    async fn card_codex_threads_active_shared_only(&self) -> Result<Vec<CardCodexThreadRow>>;
     async fn shared_daemon_runtime_get(&self) -> Result<SharedCodexDaemonRecord>;
 }
 

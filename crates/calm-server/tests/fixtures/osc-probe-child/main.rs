@@ -370,10 +370,9 @@ fn parse_osc11_bg(buf: &[u8]) -> Option<(u8, u8, u8)> {
 
 fn main() {
     // #293 cutover — when invoked as `codex app-server --listen unix://<sock>`
-    // (the kernel's spec-push boot path, now exercised on EVERY wave create),
-    // act as a minimal fake `codex app-server`: bind the socket, answer the
-    // JSON-RPC handshake (initialize / thread.start / turn.start) and emit the
-    // `turn/started` notification the kernel's `spawn_spec_appserver` awaits.
+    // by the shared-daemon boot path, act as a minimal fake `codex app-server`:
+    // bind the socket, answer the JSON-RPC handshake (initialize /
+    // thread.start / turn.start) and emit the `turn/started` notification.
     // This keeps the OSC-roundtrip tests' real `POST /api/waves` path intact
     // without needing a real codex binary. Any other invocation (e.g. the
     // `codex resume ... --remote ...` PTY child) falls through to the OSC probe

@@ -100,8 +100,9 @@ another ([source](../../crates/calm-server/src/db/sqlite.rs)).
 ## Known limitations
 
 - **codex 0.135 lacks `thread/close`**: interrupted threads remain loaded in
-  shared daemon memory. PR7c will add a periodic daemon-respawn pulse or admin
-  GC for accumulating cruft. Watch for codex 0.136 release.
+  shared daemon memory. Current cleanup interrupts known orphaned turns, but
+  unloaded-thread GC still needs a daemon-respawn pulse, admin GC, or codex
+  close RPC followup.
 - **Soft-deterministic FIFO attribution**: empty cards rely on PTY spawn order
   matching `thread/started` arrival order. Cross-attribution is prevented by
   gate #3 at the cost of occasional missed binds, recoverable via TTL and user
@@ -112,10 +113,6 @@ another ([source](../../crates/calm-server/src/db/sqlite.rs)).
 
 ## Resume points
 
-If issues are observed in production after the flag flip:
+If issues are observed in production:
 
-1. Set `CALM_SHARED_CODEX_<KIND>_CARDS_ENABLED=false` at the service level. The
-   daemon stops minting new shared threads for that kind; existing shared cards
-   continue to function.
-2. PR8 and PR7c can be reverted individually. PR7c, which deletes legacy paths,
-   carries higher rollback cost.
+1. Rollback after PR7c: redeploy a pre-PR8 binary. There is no runtime flag.

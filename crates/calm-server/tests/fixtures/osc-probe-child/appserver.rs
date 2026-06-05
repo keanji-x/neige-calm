@@ -5,9 +5,8 @@
 //! spec card's PTY. The OSC-roundtrip tests can't ship a real codex, so this
 //! stub stands in: invoked as `codex app-server --listen unix://<sock>`, it
 //! binds the socket, accepts the kernel's WebSocket connection, and answers
-//! just enough of the v2 JSON-RPC protocol for
-//! `spec_appserver::spawn_spec_appserver`'s DECISION-A boot sequence to
-//! succeed:
+//! just enough of the v2 JSON-RPC protocol for the shared app-server handshake
+//! to succeed:
 //!
 //!   initialize → thread/start → turn/start → (emit `turn/started`)
 //!

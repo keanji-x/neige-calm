@@ -195,17 +195,29 @@ pub fn signal_process_group(pgid: i32, signal: libc::c_int) -> bool {
     }
 }
 
+#[derive(Debug)]
+pub enum SockDirCleanupOutcome {
+    Removed,
+    NotPresent,
+    Error(std::io::Error),
+}
+
 /// Remove the listen socket and its now-empty per-card dir
 /// (`<data_dir>/appserver/<card_id>/`). Best-effort: a missing socket /
 /// non-empty dir is fine. Mirrors the PTY `remove_file(sock)` cleanup in
 /// [`crate::terminal_sweeper::reap_terminal_artifacts`].
-pub fn cleanup_sock_dir(sock: &Path) {
-    let _ = std::fs::remove_file(sock);
+pub fn cleanup_sock_dir(sock: &Path) -> SockDirCleanupOutcome {
+    let outcome = match std::fs::remove_file(sock) {
+        Ok(()) => SockDirCleanupOutcome::Removed,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => SockDirCleanupOutcome::NotPresent,
+        Err(e) => SockDirCleanupOutcome::Error(e),
+    };
     if let Some(dir) = sock.parent() {
         // `remove_dir` only succeeds when empty — exactly what we want
         // (don't nuke a dir that unexpectedly holds other files).
         let _ = std::fs::remove_dir(dir);
     }
+    outcome
 }
 
 /// #313 problem #1 round-3 (B1) + #335 PR2 — verify that the shared codex

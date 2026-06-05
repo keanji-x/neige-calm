@@ -914,7 +914,7 @@ impl SharedCodexAppServer {
     async fn rebuild_thread_cache_from_db(&self) -> Result<()> {
         self.thread_cache.clear();
         self.active_turns.clear();
-        for row in self.repo.card_codex_threads_active().await? {
+        for row in self.repo.card_codex_threads_active_shared_only().await? {
             self.thread_cache.insert(row.thread_id, row.card_id);
         }
         Ok(())

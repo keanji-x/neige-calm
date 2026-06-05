@@ -1945,6 +1945,36 @@ impl RepoRead for SqlxRepo {
             .collect())
     }
 
+    async fn card_codex_threads_active_shared_only(&self) -> Result<Vec<CardCodexThreadRow>> {
+        let rows = sqlx::query_as::<_, (String, String, CardRole, Option<String>, i64, i64)>(
+            r#"SELECT ct.thread_id,
+                      ct.card_id,
+                      ct.role,
+                      ct.wave_id,
+                      ct.created_at,
+                      ct.updated_at
+               FROM card_codex_threads ct
+               JOIN cards c ON c.id = ct.card_id
+               WHERE COALESCE(json_extract(c.payload, '$.codex_source'), 'legacy') = 'shared'
+               ORDER BY ct.created_at ASC, ct.card_id ASC"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(thread_id, card_id, role, wave_id, created_at, updated_at)| CardCodexThreadRow {
+                    thread_id,
+                    card_id,
+                    role,
+                    wave_id,
+                    created_at,
+                    updated_at,
+                },
+            )
+            .collect())
+    }
+
     async fn shared_daemon_runtime_get(&self) -> Result<SharedCodexDaemonRecord> {
         let row = sqlx::query_as::<
             _,
