@@ -477,35 +477,61 @@ pub async fn cleanup_legacy_spec_rows_on_boot(state: &state::AppState) {
             }
         }
 
-        if let Some(sock) = card
+        let appserver_root = state
+            .daemon
+            .data_dir
+            .parent()
+            .unwrap_or(&state.daemon.data_dir)
+            .join("appserver");
+        let card_id_str = card.id.to_string();
+        if let Some(sock_str) = card
             .payload
             .get("appserver_sock")
             .and_then(serde_json::Value::as_str)
         {
-            let sock = std::path::Path::new(sock.strip_prefix("unix://").unwrap_or(sock));
-            match spec_appserver::cleanup_sock_dir(sock) {
-                spec_appserver::SockDirCleanupOutcome::Removed => tracing::info!(
+            let sock_stripped = sock_str.strip_prefix("unix://").unwrap_or(sock_str);
+            let sock = std::path::Path::new(sock_stripped);
+            let is_safe = sock.is_absolute()
+                && sock.starts_with(&appserver_root)
+                && sock
+                    .components()
+                    .any(|c| c.as_os_str() == std::ffi::OsStr::new(&card_id_str))
+                && std::fs::symlink_metadata(sock)
+                    .map(|m| !m.file_type().is_symlink())
+                    .unwrap_or(true);
+
+            if is_safe {
+                match spec_appserver::cleanup_sock_dir(sock) {
+                    spec_appserver::SockDirCleanupOutcome::Removed => tracing::info!(
+                        card_id = %card.id,
+                        wave_id = %card.wave_id,
+                        sock = %sock.display(),
+                        outcome = "removed",
+                        "legacy spec boot cleanup removed persisted app-server socket"
+                    ),
+                    spec_appserver::SockDirCleanupOutcome::NotPresent => tracing::info!(
+                        card_id = %card.id,
+                        wave_id = %card.wave_id,
+                        sock = %sock.display(),
+                        outcome = "not-present",
+                        "legacy spec boot cleanup app-server socket was already absent"
+                    ),
+                    spec_appserver::SockDirCleanupOutcome::Error(e) => tracing::warn!(
+                        card_id = %card.id,
+                        wave_id = %card.wave_id,
+                        sock = %sock.display(),
+                        error = %e,
+                        outcome = "error",
+                        "legacy spec boot cleanup failed to remove persisted app-server socket"
+                    ),
+                }
+            } else {
+                tracing::warn!(
                     card_id = %card.id,
                     wave_id = %card.wave_id,
-                    sock = %sock.display(),
-                    outcome = "removed",
-                    "legacy spec boot cleanup removed persisted app-server socket"
-                ),
-                spec_appserver::SockDirCleanupOutcome::NotPresent => tracing::info!(
-                    card_id = %card.id,
-                    wave_id = %card.wave_id,
-                    sock = %sock.display(),
-                    outcome = "not-present",
-                    "legacy spec boot cleanup app-server socket was already absent"
-                ),
-                spec_appserver::SockDirCleanupOutcome::Error(e) => tracing::info!(
-                    card_id = %card.id,
-                    wave_id = %card.wave_id,
-                    sock = %sock.display(),
-                    error = %e,
-                    outcome = "error",
-                    "legacy spec boot cleanup failed to remove persisted app-server socket"
-                ),
+                    sock = sock_str,
+                    "legacy spec row's appserver_sock failed path validation; skipping unlink"
+                );
             }
         }
 

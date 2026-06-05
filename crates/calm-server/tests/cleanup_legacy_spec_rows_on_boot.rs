@@ -5,7 +5,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave, WaveLifecycle};
+use calm_server::model::{CardPatch, CardRole, NewCard, NewCove, NewWave, WaveLifecycle};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes::theme::RequestTheme;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -23,7 +23,15 @@ async fn state(repo: Arc<SqlxRepo>) -> AppState {
     AppState::from_parts(
         repo_dyn.clone(),
         events.clone(),
-        Arc::new(DaemonClient::new_stub()),
+        Arc::new(DaemonClient {
+            data_dir: std::env::temp_dir()
+                .join(format!(
+                    "calm-cleanup-legacy-spec-daemon-{}",
+                    uuid::Uuid::new_v4()
+                ))
+                .join("terminals"),
+            proc_supervisor_sock: None,
+        }),
         Arc::new(PluginHost::new_full(
             Arc::new(PluginRegistry::empty()),
             repo_dyn,
@@ -118,17 +126,58 @@ async fn cleanup_legacy_spec_rows_on_boot_marks_legacy_specs_as_failed_to_spawn(
 }
 
 #[tokio::test]
-async fn cleanup_legacy_spec_rows_on_boot_unlinks_persisted_sock_dir() {
+async fn cleanup_legacy_spec_rows_on_boot_unlinks_owned_appserver_sock() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let tmp = tempfile::tempdir().expect("tempdir for legacy sock");
-    let sock = tmp.path().join("sock");
+    let card_id = seed_spec(
+        &repo,
+        json!({
+            "codex_source": "legacy",
+            "prompt": "pre-pr8"
+        }),
+        WaveLifecycle::Draft,
+    )
+    .await;
+    let state = state(repo.clone()).await;
+    let sock_dir = state.daemon.appserver_sock_dir(&card_id);
+    std::fs::create_dir_all(&sock_dir).expect("create owned legacy sock dir");
+    let sock = sock_dir.join("sock");
     std::fs::write(&sock, b"stale socket placeholder").expect("create stale sock file");
+    repo.card_update(
+        &card_id,
+        CardPatch {
+            payload: Some(json!({
+                "codex_source": "legacy",
+                "prompt": "pre-pr8",
+                "appserver_sock": sock.to_string_lossy()
+            })),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    calm_server::cleanup_legacy_spec_rows_on_boot(&state).await;
+
+    let card = repo.card_get(&card_id).await.unwrap().unwrap();
+    assert_eq!(card.payload["codex_thread_status"], "failed_to_spawn");
+    assert!(
+        !sock.exists(),
+        "stale persisted appserver_sock was not removed"
+    );
+}
+
+#[tokio::test]
+async fn cleanup_legacy_spec_rows_on_boot_rejects_traversal_appserver_sock() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let tmp = tempfile::tempdir().expect("tempdir for unrelated legacy sock");
+    let unrelated = tmp.path().join("totally-unrelated");
+    std::fs::write(&unrelated, b"must not be deleted").expect("create unrelated file");
     let card_id = seed_spec(
         &repo,
         json!({
             "codex_source": "legacy",
             "prompt": "pre-pr8",
-            "appserver_sock": sock.to_string_lossy()
+            "appserver_sock": unrelated.to_string_lossy()
         }),
         WaveLifecycle::Draft,
     )
@@ -140,8 +189,8 @@ async fn cleanup_legacy_spec_rows_on_boot_unlinks_persisted_sock_dir() {
     let card = repo.card_get(&card_id).await.unwrap().unwrap();
     assert_eq!(card.payload["codex_thread_status"], "failed_to_spawn");
     assert!(
-        !sock.exists(),
-        "stale persisted appserver_sock was not removed"
+        unrelated.exists(),
+        "unrelated appserver_sock path was incorrectly removed"
     );
 }
 

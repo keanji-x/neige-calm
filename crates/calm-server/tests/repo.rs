@@ -403,6 +403,15 @@ async fn card_codex_threads_active_shared_only_skips_legacy_card() {
         })
         .await
         .unwrap();
+    let default_legacy = repo
+        .card_create(NewCard {
+            wave_id: w.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({}),
+        })
+        .await
+        .unwrap();
 
     repo.card_codex_thread_upsert(
         legacy.id.as_str(),
@@ -420,12 +429,25 @@ async fn card_codex_threads_active_shared_only_skips_legacy_card() {
     )
     .await
     .unwrap();
+    repo.card_codex_thread_upsert(
+        default_legacy.id.as_str(),
+        "thread-default-legacy",
+        CardRole::Spec,
+        Some(w.id.as_str()),
+    )
+    .await
+    .unwrap();
 
     let rows = repo.card_codex_threads_active_shared_only().await.unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].card_id, shared.id.as_str());
     assert_eq!(rows[0].thread_id, "thread-shared");
     assert!(!rows.iter().any(|row| row.card_id == legacy.id.as_str()));
+    assert!(
+        !rows
+            .iter()
+            .any(|row| row.card_id == default_legacy.id.as_str())
+    );
 }
 
 // ----------------------------------------------------------- Cascades ----
