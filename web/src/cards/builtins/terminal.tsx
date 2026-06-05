@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect } from 'react';
 import { z } from 'zod';
-import type { TerminalCardData } from '../../types';
+import type { TermLine } from '../../types';
 import type { CardEntry } from '../registry';
 import { dlog } from '../../util/debug';
 import { useTheme } from '../../app/theme';
@@ -16,6 +16,21 @@ import {
   TERMINAL_PAYLOAD_SCHEMA_VERSION,
   payloadSchemaVersion,
 } from './schemaVersions';
+
+declare module '../../types' {
+  interface WaveCardDataMap {
+    terminal: TerminalCardData;
+  }
+}
+
+export interface TerminalCardData {
+  type: 'terminal';
+  id?: string;
+  title: string;
+  lines: TermLine[];
+  terminalId?: string;
+  unsupportedVersion?: number;
+}
 
 // xterm.js + the fit addon plus its CSS bring real weight (~150 KB raw).
 // Only load the renderer when a terminal card actually goes live; the
@@ -98,6 +113,7 @@ function TerminalCard({
     return (
       <div className="term term-unsupported-version">
         <CardHead
+          card={card}
           className="card-drag-handle"
           title={title || 'terminal'}
           onClose={onClose}
@@ -117,6 +133,7 @@ function TerminalCard({
   return (
     <div className={'term' + (live ? ' live' : '')}>
       <CardHead
+        card={card}
         className="card-drag-handle"
         title={title || 'terminal'}
         onClose={onClose}
@@ -188,6 +205,9 @@ export const TerminalEntry: CardEntry<TerminalCardData> = {
   type: 'terminal',
   Component: TerminalCard,
   defaultSize: { w: 6, h: 10, minW: 4, minH: 6 },
+  claim: { mode: 'exact', kind: 'terminal' },
+  title: (card) => card.title || 'terminal',
+  accessibleName: (card) => (card.title ? `Terminal: ${card.title}` : 'Terminal'),
   fromKernel: (k) => {
     if (k.kind !== 'terminal') return null;
     dlog('TerminalEntry.fromKernel', { id: k.id, payload: k.payload });

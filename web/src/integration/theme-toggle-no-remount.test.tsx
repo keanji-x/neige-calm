@@ -36,8 +36,7 @@ import { Suspense, type ReactNode } from 'react';
 import { act, render, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider, useTheme } from '../app/theme';
-import { CodexEntry } from '../cards/builtins/codex';
-import type { CodexCardData } from '../types';
+import { CodexEntry, type CodexCardData } from '../cards/builtins/codex';
 
 // ---- xterm mock --------------------------------------------------------
 //

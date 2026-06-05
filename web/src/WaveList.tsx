@@ -47,6 +47,7 @@ import { useRovingTabindex } from './ui/hooks/useRovingTabindex';
 import { CloseIcon } from './shared/components/CloseIcon';
 import { WaveCard } from './shared/components/WaveCard';
 import { UnknownCard } from './cards/UnknownCard';
+import { getEntry } from './cards/registry';
 import { dlog } from './util/debug';
 import { useUpdateCardMutation } from './api/queries';
 import type { WaveCardSlot } from './types';
@@ -69,11 +70,8 @@ function slotAccessibleName(slot: WaveCardSlot, idx: number): string {
     return `Unknown card: ${slot.kernelKind}`;
   }
   const card = slot.card;
-  if (card.type === 'terminal') {
-    return card.title ? `Terminal: ${card.title}` : 'Terminal';
-  }
-  if (card.type === 'codex') return 'Codex';
-  if (card.type === 'plugin') return `Plugin: ${card.resource_uri}`;
+  const entry = getEntry(card.type);
+  if (entry) return entry.accessibleName(card);
   // Fallback for future kinds — the index identifies the row uniquely
   // within the wave so screen-reader users can still address it.
   return `Card ${idx + 1}`;

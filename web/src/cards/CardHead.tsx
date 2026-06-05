@@ -25,8 +25,17 @@
 import type { ReactNode } from 'react';
 import { CloseIcon } from '../shared/components/CloseIcon';
 import { LetterAvatar } from './LetterAvatar';
+import { Icon } from '../Icon';
+import type { WaveCardData } from '../types';
+import {
+  getEntry,
+  useOptionalCardInstanceCtx,
+  type CardAction,
+} from './registry';
 
 export type CardHeadProps = {
+  /** Registered card whose entry may contribute title and head actions. */
+  card?: WaveCardData;
   /** Title content. Rendered inside `<span className="card-head-title">`. */
   title?: ReactNode;
   /** Right-aligned status content. Rendered inside `<span className="card-head-status">`. */
@@ -61,6 +70,7 @@ export type CardHeadProps = {
  * `gap` treating an empty span as a child.
  */
 export function CardHead({
+  card,
   title,
   status,
   icon,
@@ -69,6 +79,10 @@ export function CardHead({
   onClose,
   closeAriaLabel,
 }: CardHeadProps) {
+  const ctx = useOptionalCardInstanceCtx();
+  const entry = card ? getEntry(card.type) : undefined;
+  const actions = card && ctx ? entry?.actions?.(card, ctx) ?? [] : [];
+  const titleNode = title ?? (card ? entry?.title(card) : undefined);
   const rootClass = className ? `card-head ${className}` : 'card-head';
   // Synthesise the letter-avatar only when the caller didn't pass an icon
   // AND the title is a plain string (non-string titles often wrap rich
@@ -77,14 +91,25 @@ export function CardHead({
   let iconNode: ReactNode = null;
   if (icon !== undefined) {
     iconNode = <span className="card-head-icon">{icon}</span>;
-  } else if (typeof title === 'string') {
-    iconNode = <LetterAvatar title={title} />;
+  } else if (typeof titleNode === 'string') {
+    iconNode = <LetterAvatar title={titleNode} />;
   }
   return (
     <div className={rootClass}>
       {iconNode}
-      {title !== undefined && <span className="card-head-title">{title}</span>}
+      {titleNode !== undefined && <span className="card-head-title">{titleNode}</span>}
       {children}
+      {actions.length > 0 && (
+        <span className="card-head-actions">
+          {actions.map((action) =>
+            action.kind === 'button' ? (
+              <ActionButton key={action.id} action={action} />
+            ) : (
+              <span key={action.id}>{action.render(ctx!)}</span>
+            ),
+          )}
+        </span>
+      )}
       {status !== undefined && <span className="card-head-status">{status}</span>}
       {onClose !== undefined && (
         // Structurally last so the flex slots (icon/title/children/status)
@@ -106,5 +131,24 @@ export function CardHead({
         </button>
       )}
     </div>
+  );
+}
+
+function ActionButton({ action }: { action: Extract<CardAction, { kind: 'button' }> }) {
+  return (
+    <button
+      className="card-head-action"
+      type="button"
+      aria-label={action.label}
+      title={action.label}
+      disabled={action.disabled}
+      onClick={(e) => {
+        e.stopPropagation();
+        action.run();
+      }}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <Icon n={action.icon} s={14} />
+    </button>
   );
 }

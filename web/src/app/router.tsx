@@ -57,7 +57,7 @@ import { queryClient } from './providers';
 import { dlog } from '../util/debug';
 import type { Cove, Wave, WaveCardSlot } from '../types';
 import type { AddPanelKind } from '../shared/components/AddPanel';
-import { isAllowedIframeUrl } from '../cards/builtins/iframe';
+import { getEntry, LEGACY_CREATE_KINDS } from '../cards/registry';
 
 // Per-route page components are loaded on demand so the entry chunk only
 // carries the shell + routing wiring; each page's code ships as its own
@@ -452,39 +452,18 @@ async function addCardWithValues(
   values: Record<string, string>,
   theme: 'light' | 'dark',
 ): Promise<void> {
-  if (type === 'file-viewer') {
-    try {
-      await api.createCard(waveId, {
-        kind: 'file-viewer',
-        payload: { path: values.path },
-      });
-    } catch (err) {
-      console.warn('[Calm] file-viewer create failed:', err);
-    }
-    return;
-  }
-  if (type === 'iframe') {
-    const url = values.url.trim();
-    if (!isAllowedIframeUrl(url)) {
-      console.warn('[Calm] iframe create rejected invalid URL:', url);
-      return;
-    }
-    try {
-      await api.createCard(waveId, {
-        kind: 'iframe',
-        payload: { url },
-      });
-    } catch (err) {
-      console.warn('[Calm] iframe create failed:', err);
-    }
-    return;
-  }
-  if (type !== 'codex' && type !== 'claude') {
-    // Falls through to the default "no-config" pathway. The AddPanel
-    // shouldn't surface a schema form for kinds without `createSchema`,
-    // so this is defensive only.
-    return addCardOfKind(qc, waveId, type, theme);
-  }
+  const entry = getEntry(type);
+  if (!entry) return addCardOfKind(qc, waveId, type, theme);
+  const input = entry.addPanel?.createSchema?.parse?.(values) ?? values;
+  await createFromEntry(qc, waveId, entry, input, theme);
+}
+
+async function createLegacyCard(
+  waveId: string,
+  type: string,
+  values: Record<string, string>,
+  theme: 'light' | 'dark',
+): Promise<{ cardId: string; raw?: unknown }> {
   try {
     dlog('addCardWithValues', `${type} create START`, { waveId, values, theme });
     // Atomic codex-card create (#117). One round-trip writes the card row,
@@ -505,20 +484,72 @@ async function addCardWithValues(
       prompt: values.prompt || undefined,
       theme: rgb,
     };
-    const card =
-      type === 'claude'
-        ? await api.createClaudeCard(waveId, body)
-        : await api.createCodexCard(waveId, body);
+    let card;
+    if (type === 'claude') {
+      // TODO(#445 follow-up): remove once claude entry declares create.mode='atomic'
+      card = await api.createClaudeCard(waveId, body);
+    } else if (type === 'codex') {
+      // TODO(#445 follow-up): remove once codex entry declares create.mode='atomic'
+      card = await api.createCodexCard(waveId, body);
+    } else if (type === 'terminal') {
+      // TODO(#445 follow-up): remove once terminal entry declares create.mode='atomic'
+      card = await api.createTerminalCard(waveId, { theme: rgb });
+    } else {
+      throw new Error(`MissingCreateStrategy(${type})`);
+    }
     dlog('addCardWithValues', `${type} create DONE`, { cardId: card.id });
+    return { cardId: card.id, raw: card };
   } catch (err) {
     console.warn(`[Calm] ${type} create failed:`, err);
+    throw err;
   }
 }
 
-async function addCardOfKind(
-  _qc: ReturnType<typeof useQueryClient>,
+async function createFromEntry(
+  qc: ReturnType<typeof useQueryClient>,
   waveId: string,
-  _type: AddPanelKind,
+  entry: NonNullable<ReturnType<typeof getEntry>>,
+  input: unknown,
+  theme: 'light' | 'dark',
+): Promise<void> {
+  const rgb = theme === 'dark' ? DARK_THEME_RGB : LIGHT_THEME_RGB;
+  let result: { cardId: string; raw?: unknown };
+  if (!entry.create) {
+    if (!LEGACY_CREATE_KINDS.has(String(entry.type))) {
+      throw new Error(`MissingCreateStrategy(${entry.type})`);
+    }
+    result = await createLegacyCard(
+      waveId,
+      String(entry.type),
+      input as Record<string, string>,
+      theme,
+    );
+  } else if (entry.create.mode === 'generic') {
+    if (entry.claim?.mode !== 'exact') {
+      throw new Error(`GenericCreateRequiresExactClaim(${entry.type})`);
+    }
+    const card = await api.createCard(waveId, {
+      kind: entry.claim.kind,
+      payload: entry.create.buildPayload(input as never),
+    });
+    result = { cardId: card.id, raw: card };
+  } else if (entry.create.mode === 'atomic') {
+    result = await entry.create.submit(waveId, input as never, {
+      themeRgb: { fg: rgb.fg.join(' '), bg: rgb.bg.join(' ') },
+    });
+  } else if (entry.create.mode === 'catalog') {
+    throw new Error('CatalogCreateNotImplemented');
+  } else {
+    throw new Error('KernelMintedOnlyCreateNotAllowed');
+  }
+  await qc.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
+  dlog('createFromEntry', 'DONE', { type: entry.type, cardId: result.cardId });
+}
+
+async function addCardOfKind(
+  qc: ReturnType<typeof useQueryClient>,
+  waveId: string,
+  type: AddPanelKind,
   theme: 'light' | 'dark',
 ): Promise<void> {
   // Atomic terminal-card create (#13). One round-trip handles card + linked
@@ -532,17 +563,7 @@ async function addCardOfKind(
   // the kernel writes `term.theme_fg/_bg` on the terminal row in the same
   // transaction and every later spawn for that row stamps the matching
   // `--terminal-fg/-bg` daemon argv.
-  try {
-    dlog('addCardOfKind', 'createTerminalCard START', { waveId, theme });
-    const rgb = theme === 'dark' ? DARK_THEME_RGB : LIGHT_THEME_RGB;
-    const card = await api.createTerminalCard(waveId, {
-      theme: rgb,
-    });
-    dlog('addCardOfKind', 'createTerminalCard DONE', {
-      cardId: card.id,
-      payload: card.payload,
-    });
-  } catch (err) {
-    console.warn('[Calm] terminal create failed:', err);
-  }
+  const entry = getEntry(type);
+  if (!entry) return;
+  await createFromEntry(qc, waveId, entry, {}, theme);
 }

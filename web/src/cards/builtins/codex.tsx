@@ -19,7 +19,7 @@
 import { lazy, Suspense, useEffect, useRef, type CSSProperties } from 'react';
 import { useState } from '../../shared/state';
 import { z } from 'zod';
-import type { ClaudeCardData, CodexCardData, FsmState } from '../../types';
+import type { FsmState } from '../../types';
 import type { Role } from '../../api/generated-terminal';
 import type { ExitChange, XtermViewHandle } from '../../XtermView';
 import { sharedEventStream } from '../../api/events';
@@ -38,6 +38,34 @@ import {
   CODEX_PAYLOAD_SCHEMA_VERSION,
   payloadSchemaVersion,
 } from './schemaVersions';
+
+declare module '../../types' {
+  interface WaveCardDataMap {
+    codex: CodexCardData;
+    claude: ClaudeCardData;
+  }
+}
+
+export interface CodexCardData {
+  type: 'codex';
+  id?: string;
+  terminalId?: string;
+  cwd?: string;
+  iconBg?: string;
+  iconFg?: string;
+  unsupportedVersion?: number;
+}
+
+export interface ClaudeCardData {
+  type: 'claude';
+  id?: string;
+  terminalId?: string;
+  cwd?: string;
+  iconBg?: string;
+  iconFg?: string;
+  claudeSessionId?: string;
+  unsupportedVersion?: number;
+}
 
 // Lazy-load xterm.js + addon — same pattern as the Terminal card so the
 // two cards share a single code-split chunk for the renderer.
@@ -110,6 +138,7 @@ function UnsupportedCodexCard({
   return (
     <div className="codex-card codex-card-unsupported-version">
       <CardHead
+        card={{ type: 'codex' }}
         className="card-drag-handle"
         title={title}
         onClose={onClose}
@@ -302,6 +331,7 @@ function CodexCardImpl({
   return (
     <div className="codex-card">
       <CardHead
+        card={card}
         className="card-drag-handle"
         title={title}
         icon={<AgentCardLogo provider={provider} bg={card.iconBg} fg={card.iconFg} />}
@@ -455,6 +485,9 @@ export const CodexEntry: CardEntry<CodexCardData> = {
   type: 'codex',
   Component: CodexCard,
   defaultSize: { w: 6, h: 12, minW: 4, minH: 8 },
+  claim: { mode: 'exact', kind: 'codex' },
+  title: () => 'Codex',
+  accessibleName: () => 'Codex',
   fromKernel: (k) => {
     if (k.kind !== 'codex') return null;
     const candidate = k.payload ?? {};
@@ -507,6 +540,9 @@ export const ClaudeEntry: CardEntry<ClaudeCardData> = {
   type: 'claude',
   Component: CodexCard,
   defaultSize: { w: 6, h: 12, minW: 4, minH: 8 },
+  claim: { mode: 'exact', kind: 'claude' },
+  title: () => 'Claude',
+  accessibleName: () => 'Claude',
   fromKernel: (k) => {
     if (k.kind !== 'claude') return null;
     const candidate = k.payload ?? {};

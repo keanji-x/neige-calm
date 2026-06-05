@@ -1,10 +1,21 @@
 import { useEffect, useRef } from 'react';
 import { z } from 'zod';
 import * as api from '../../api/calm';
-import type { IframeCardData } from '../../types';
 import { useState } from '../../shared/state';
 import { CardHead } from '../CardHead';
-import type { CardEntry } from '../registry';
+import { useInstanceValue, type CardEntry } from '../registry';
+
+declare module '../../types' {
+  interface WaveCardDataMap {
+    iframe: IframeCardData;
+  }
+}
+
+export interface IframeCardData {
+  type: 'iframe';
+  id: string;
+  url: string;
+}
 
 export function isAllowedIframeUrl(raw: string): boolean {
   try {
@@ -30,6 +41,7 @@ function IframeCard({
 }) {
   const [currentUrl, setCurrentUrl] = useState(card.url);
   const [draftUrl, setDraftUrl] = useState(card.url);
+  const epoch = useInstanceValue<number>('epoch', 0);
   const pendingUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -64,6 +76,7 @@ function IframeCard({
   return (
     <div className="iframe-card">
       <CardHead
+        card={card}
         className="card-drag-handle"
         title={currentUrl}
         onClose={onClose}
@@ -82,15 +95,21 @@ function IframeCard({
           Go
         </button>
       </form>
-      {/* No allow-same-origin: forces an opaque origin even on same-origin URLs,
-          so an /api/plugins/... target can't read parent cookies. */}
-      <iframe
-        className="iframe-frame"
-        src={currentUrl}
-        title={`Embedded page: ${currentUrl}`}
-        referrerPolicy="no-referrer"
-        sandbox="allow-scripts allow-popups allow-forms allow-popups-to-escape-sandbox"
-      />
+      {[
+        // No allow-same-origin: forces an opaque origin even on same-origin URLs,
+        // so an /api/plugins/... target can't read parent cookies. Keeping the
+        // iframe in a keyed child list makes the reload epoch participate in
+        // reconciliation, which remounts the DOM node instead of only updating
+        // attributes on the existing element.
+        <iframe
+          key={epoch}
+          className="iframe-frame"
+          src={currentUrl}
+          title={`Embedded page: ${currentUrl}`}
+          referrerPolicy="no-referrer"
+          sandbox="allow-scripts allow-popups allow-forms allow-popups-to-escape-sandbox"
+        />,
+      ]}
     </div>
   );
 }
@@ -99,6 +118,28 @@ export const IframeEntry: CardEntry<IframeCardData> = {
   type: 'iframe',
   Component: IframeCard,
   defaultSize: { w: 6, h: 10, minW: 3, minH: 4 },
+  claim: { mode: 'exact', kind: 'iframe' },
+  title: (card) => card.url,
+  accessibleName: (card) => `Web page: ${card.url}`,
+  create: {
+    mode: 'generic',
+    buildPayload(input: { url: string }) {
+      return { url: input.url };
+    },
+  },
+  actions(_card, ctx) {
+    const [, setEpoch] = ctx.useInstance<number>('epoch', 0);
+    return [
+      {
+        kind: 'button',
+        id: 'reload-iframe',
+        label: 'Reload',
+        icon: 'refresh',
+        placement: 'head',
+        run: () => setEpoch((epoch) => epoch + 1),
+      },
+    ];
+  },
   fromKernel: (k) => {
     if (k.kind !== 'iframe') return null;
     const parsed = iframePayloadSchema.safeParse(k.payload ?? {});
@@ -122,6 +163,13 @@ export const IframeEntry: CardEntry<IframeCardData> = {
   addPanel: {
     label: 'Web page',
     createSchema: {
+      parse(values) {
+        const url = values.url.trim();
+        if (!isAllowedIframeUrl(url)) {
+          throw new Error(`Invalid iframe URL: ${url}`);
+        }
+        return { url };
+      },
       fields: [
         {
           key: 'url',

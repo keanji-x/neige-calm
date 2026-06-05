@@ -24,7 +24,6 @@ import { useEffect, useMemo, useRef } from 'react';
 import { useState } from '../shared/state';
 
 import type { CardEntry } from './registry';
-import type { PluginCardData } from '../types';
 import type { KernelCard } from '../api/wire';
 import {
   CalmApiError,
@@ -39,6 +38,19 @@ import type { Implementation } from '@modelcontextprotocol/sdk/types.js';
 import { useTheme } from '../app/theme';
 import { makeUuid } from '../util/uuid';
 import { CardHead } from './CardHead';
+
+declare module '../types' {
+  interface WaveCardDataMap {
+    plugin: PluginCardData;
+  }
+}
+
+export interface PluginCardData {
+  type: 'plugin';
+  id?: string;
+  /** Full `ui://<plugin_id>/<view_id>` URI. */
+  resource_uri: string;
+}
 
 /**
  * Parse a `ui://` resource URI into the (plugin_id, view_id) pair.
@@ -361,6 +373,7 @@ function PluginIframeCard({
       }}
     >
       <CardHead
+        card={card}
         className="card-drag-handle"
         title={`${parsed.plugin_id}:${parsed.view_id}`}
         onClose={onClose}
@@ -403,6 +416,13 @@ export const PluginIframeEntry: CardEntry<PluginCardData> = {
   type: 'plugin',
   Component: PluginIframeCard,
   defaultSize: { w: 4, h: 6, minW: 3, minH: 3 },
+  claim: { mode: 'prefix', prefix: 'ui://' },
+  title: (card) => {
+    const parsed = parsePluginCardKind(card.resource_uri);
+    return parsed ? `${parsed.plugin_id}:${parsed.view_id}` : card.resource_uri;
+  },
+  accessibleName: (card) => `Plugin: ${card.resource_uri}`,
+  create: { mode: 'catalog', catalog: 'plugin-views' },
   fromKernel: (k: KernelCard) => {
     if (!isPluginCardKind(k.kind)) return null;
     const parsed = parsePluginCardKind(k.kind);

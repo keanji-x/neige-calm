@@ -27,11 +27,10 @@ vi.mock('../../api/calm', async () => {
   };
 });
 
-import { WaveReportEntry, parseSections } from './wave-report';
+import { WaveReportEntry, parseSections, type WaveReportCardData } from './wave-report';
 import { WaveContext } from '../../shared/components/WaveContext';
 import * as api from '../../api/calm';
 import type { KernelCard } from '../../api/wire';
-import type { WaveReportCardData } from '../../types';
 
 function makeKernelCard(over: Partial<KernelCard> = {}): KernelCard {
   return {
