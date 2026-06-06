@@ -44,6 +44,7 @@ import { IconButton } from '../../pages/_shared';
 import { ConfirmDialog } from '../../ui/ConfirmDialog/ConfirmDialog';
 import { dlog } from '../../util/debug';
 import { CardHead } from '../CardHead';
+import { useCardStatusOverlay } from '../useCardOverlay';
 import {
   useCardInstanceCtx,
   useOptionalCardInstanceCtx,
@@ -222,6 +223,12 @@ function CodexCardImpl({
   // session_start hook, so this placeholder is usually visible for a few
   // hundred ms at most).
   const [fsm, setFsm] = useState<FsmState>('Starting');
+  const status = useCardStatusOverlay(cardId);
+  useEffect(() => {
+    if (status?.state && isFsmState(status.state)) {
+      setFsm(status.state);
+    }
+  }, [status?.state]);
   // Human-readable "what is codex doing right now" label, derived from the
   // most recent codex.hook event. Independent of the FSM state because the
   // label is a string and the FSM is a closed enum.
@@ -327,18 +334,6 @@ function CodexCardImpl({
           typeof payload.tool_name === 'string' ? payload.tool_name : '';
         setLabel(summarizeHook(payload, eventName, toolName));
         return;
-      }
-      if (ev.ev === 'overlay.set') {
-        const o = ev.data;
-        if (
-          o.entity_kind === 'card' &&
-          o.entity_id === cardId &&
-          o.kind === 'status'
-        ) {
-          const p = o.payload as Record<string, unknown> | null;
-          const s = p && typeof p.state === 'string' ? p.state : null;
-          if (s && isFsmState(s)) setFsm(s);
-        }
       }
     });
     return () => {
