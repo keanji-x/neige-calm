@@ -107,7 +107,7 @@ async fn runtime_start_tx_terminal_persists_active_row() {
         .unwrap()
         .expect("active runtime");
     assert_eq!(active.kind, RuntimeKind::Terminal);
-    assert_eq!(active.status, RunStatus::Running);
+    assert_eq!(active.status, RunStatus::Starting);
     assert_eq!(active.terminal_run_id.as_deref(), Some(term.id.as_str()));
 }
 
@@ -389,7 +389,7 @@ async fn runtime_start_tx_claude_records_session_when_present() {
         .unwrap()
         .expect("active runtime");
     assert_eq!(active.kind, RuntimeKind::ClaudeCard);
-    assert_eq!(active.status, RunStatus::Running);
+    assert_eq!(active.status, RunStatus::Starting);
     assert_eq!(active.terminal_run_id.as_deref(), Some(term.id.as_str()));
     assert_eq!(active.session_id.as_deref(), Some(session_id.as_str()));
 }
