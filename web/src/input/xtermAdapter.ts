@@ -1,6 +1,6 @@
 export type WheelDecision =
   | { kind: 'consume' }
-  | { kind: 'pass'; reason: 'edge' | 'passthrough' | 'no-terminal' };
+  | { kind: 'pass'; reason: 'edge' | 'passthrough' };
 
 export interface XtermWheelTarget {
   root: HTMLElement;
@@ -52,7 +52,7 @@ export function createXtermWheelTarget(args: {
     root,
     decide: (deltaY, deltaMode) => {
       const term = terminalRef.current;
-      if (!term) return { kind: 'pass', reason: 'no-terminal' };
+      if (!term) return { kind: 'consume' };
       if (shouldPassThroughToXterm(term)) {
         return { kind: 'pass', reason: 'passthrough' };
       }

@@ -1,8 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import {
   createXtermWheelTarget,
   deltaYToLines,
   shouldPassThroughToXterm,
+  type WheelDecision,
   type XtermScrollTerminal,
   type XtermWheelState,
 } from './xtermAdapter';
@@ -55,6 +56,8 @@ describe('deltaYToLines', () => {
 });
 
 describe('createXtermWheelTarget', () => {
+  type WheelPassReason = Extract<WheelDecision, { kind: 'pass' }>['reason'];
+
   function terminal(
     state: XtermWheelState = {},
     scrollLines: (amount: number) => void = () => undefined,
@@ -65,7 +68,9 @@ describe('createXtermWheelTarget', () => {
     };
   }
 
-  it("decides pass with reason 'no-terminal' when terminal handle is absent", () => {
+  it('decides consume when terminal handle is absent', () => {
+    expectTypeOf<WheelPassReason>().toEqualTypeOf<'edge' | 'passthrough'>();
+
     const scrollLines = vi.fn();
     const target = createXtermWheelTarget({
       root: document.createElement('div'),
@@ -73,8 +78,7 @@ describe('createXtermWheelTarget', () => {
     });
 
     expect(target.decide(120, WheelEvent.DOM_DELTA_PIXEL)).toEqual({
-      kind: 'pass',
-      reason: 'no-terminal',
+      kind: 'consume',
     });
     expect(() => target.apply(120, WheelEvent.DOM_DELTA_PIXEL)).not.toThrow();
     expect(scrollLines).not.toHaveBeenCalled();

@@ -341,6 +341,21 @@ describe('resolveWheelRoute', () => {
     });
   });
 
+  it('sinks entry-declared xterm wheelTarget when ref is not wired yet', () => {
+    const { scrollRoot, activeCard } = fixture();
+    activeCard.dataset.cardId = 'card_1';
+    registerWheelEntry(() => ({ kind: 'xterm', ref: { current: null } }));
+
+    expect(
+      resolveWheelRoute({
+        scrollRoot,
+        activeCard,
+        eventTarget: scrollRoot,
+        resolveCardById: fakeResolvedCard,
+      }),
+    ).toEqual({ kind: 'sink' });
+  });
+
   it('routes entry-declared native-scroll wheelTarget or page when ref is null', () => {
     const { scrollRoot, activeCard } = fixture();
     activeCard.dataset.cardId = 'card_1';

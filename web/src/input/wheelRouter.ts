@@ -100,9 +100,9 @@ function resolveDeclaredWheelRoute(
       : { kind: 'page' };
   }
   const handle = decl.ref.current;
-  if (!isXtermViewHandle(handle)) return { kind: 'page' };
+  if (!isXtermViewHandle(handle)) return { kind: 'sink' };
   const target = handle.getWheelTarget();
-  return target ? routeForXtermTarget(target) : { kind: 'page' };
+  return target ? routeForXtermTarget(target) : { kind: 'sink' };
 }
 
 export function resolveWheelRoute(args: {
