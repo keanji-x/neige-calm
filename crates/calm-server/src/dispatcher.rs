@@ -211,8 +211,7 @@ impl Dispatcher {
         self.inner.push_cursor.get(spec_card_id)
     }
 
-    /// #313 problem #1 round-2 (B3) — acquire the per-wave push lock and
-    /// hold it for the duration of `body`.
+    /// #313 problem #1 round-2 (B3) — acquire the per-wave push lock.
     ///
     /// The dispatcher's `Inner::push_to_spec` takes this same per-wave
     /// `Mutex` across `(get → compare → bump → push_observation)`. Boot
@@ -228,14 +227,15 @@ impl Dispatcher {
     ///
     /// IMPORTANT: while holding this lock, the only safe way to drive
     /// catch-up is via [`Dispatcher::catch_up_push_under_lock`] (not the
-    /// public [`Dispatcher::catch_up_push`]). The latter takes the same
-    /// per-wave lock and `tokio::sync::Mutex` is NOT reentrant — calling
+    /// public [`Dispatcher::catch_up_push`]); this is now type-enforced by
+    /// requiring a [`PushLockGuard`]. The latter takes the same per-wave
+    /// lock and `tokio::sync::Mutex` is NOT reentrant — calling
     /// `catch_up_push` here would deadlock.
-    pub async fn with_push_lock<F, T>(&self, wave_id: &WaveId, body: F) -> T
-    where
-        F: std::future::Future<Output = T>,
-    {
-        Inner::with_wave_push_lock(&self.inner, wave_id, body).await
+    /// #480 §D — explicit push-lock acquisition. Returns a `PushLockGuard`
+    /// the caller can hold across catch-up sequences and pass to
+    /// [`catch_up_push_under_lock`] (whose signature requires `&PushLockGuard`).
+    pub async fn push_lock(&self, wave_id: &WaveId) -> PushLockGuard {
+        self.inner.acquire_push_lock(wave_id).await
     }
 
     /// #313 problem #1 round-2 (B1) — build the [`WatermarkSink`] the
@@ -525,22 +525,22 @@ impl Dispatcher {
 
     /// #313 problem #1 round-2 (B3) — variant of [`catch_up_push`] that
     /// runs the lock-free body of `push_to_spec` directly, for callers
-    /// already holding the per-wave push lock via
-    /// [`Dispatcher::with_push_lock`]. Must NOT be called outside such a
-    /// scope — the dedup `(get → compare → bump)` is non-atomic without
-    /// the lock and would race with concurrent live pushes.
+    /// already holding the per-wave push lock via [`PushLockGuard`]. The
+    /// guard parameter type-enforces that scope — the dedup `(get → compare
+    /// → bump)` is non-atomic without the lock and would race with
+    /// concurrent live pushes.
     ///
     /// Used by [`crate::legacy spec takeover`] to replay
     /// catch-up events under the same lock that gates a concurrently-
     /// arriving live event.
     pub async fn catch_up_push_under_lock(
         &self,
-        wave_id: WaveId,
+        guard: &PushLockGuard,
         event: crate::event::Event,
         envelope_id: i64,
     ) {
         self.inner
-            .push_to_spec_locked(wave_id, &event, envelope_id)
+            .push_to_spec_locked(guard, &event, envelope_id)
             .await;
     }
 
@@ -735,6 +735,25 @@ impl Dispatcher {
             handle,
             inner,
         }
+    }
+}
+
+/// #480 §D — proof token that the per-wave push lock for `wave_id` is held.
+/// `OwnedMutexGuard<()>` owns the `Arc<tokio::sync::Mutex<()>>` so the guard
+/// is not tied to a `DashMap` entry borrow and can cross `.await`. Holding
+/// across `.await` is intentional (catch-up replay) but can starve that
+/// wave; bound replay bodies.
+///
+/// **Invariant**: this guard proves the lock is held — NOT that replay
+/// events are semantically complete or ordered (#480 §F4).
+pub struct PushLockGuard {
+    wave_id: WaveId,
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl PushLockGuard {
+    pub fn wave_id(&self) -> &WaveId {
+        &self.wave_id
     }
 }
 
@@ -1110,35 +1129,30 @@ impl Inner {
         // sync guard, then drop the guard before awaiting the lock (never
         // hold a `DashMap` shard guard across an `.await`).
         //
-        // #313 round-2 (B3) — `with_push_lock` is the same helper boot
-        // takeover uses, so the lock is shared between live pushes and
-        // catch-up replay; either side waits if the other is mid-sequence.
-        let inner = Arc::clone(self);
-        let wave_id_for_body = wave_id.clone();
-        let event = event.clone();
-        Self::with_wave_push_lock(self, &wave_id, async move {
-            inner
-                .push_to_spec_locked(wave_id_for_body, &event, envelope_id)
-                .await;
-        })
-        .await;
+        // #313 round-2 (B3) — boot takeover uses the same per-wave push
+        // lock, so the lock is shared between live pushes and catch-up
+        // replay; either side waits if the other is mid-sequence.
+        let guard = self.acquire_push_lock(&wave_id).await;
+        self.push_to_spec_locked(&guard, event, envelope_id).await;
     }
 
     /// #313 round-2 (B3) — per-wave push lock helper, shared between
     /// `Inner::push_to_spec` (steady state) and
-    /// [`Dispatcher::with_push_lock`] (boot takeover catch-up). Held by
-    /// either side serializes the other.
-    async fn with_wave_push_lock<F, T>(self: &Arc<Self>, wave_id: &WaveId, body: F) -> T
-    where
-        F: std::future::Future<Output = T>,
-    {
-        let wave_lock = self
+    /// [`Dispatcher::push_lock`] (boot takeover catch-up). Held by either
+    /// side serializes the other.
+    async fn acquire_push_lock(self: &Arc<Self>, wave_id: &WaveId) -> PushLockGuard {
+        // IMPORTANT: do NOT bind the DashMap Entry to a `let` — the shard
+        // guard must drop at this statement's `;` before we `.await` below.
+        let lock = self
             .push_locks
             .entry(wave_id.clone())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone();
-        let _serialize = wave_lock.lock().await;
-        body.await
+        let guard = lock.lock_owned().await;
+        PushLockGuard {
+            wave_id: wave_id.clone(),
+            _guard: guard,
+        }
     }
 
     /// #313 round-2 (B3) — the lock-free body of [`push_to_spec`]. Must
@@ -1148,10 +1162,11 @@ impl Inner {
     /// NOT reentrant, so we can't grab it again here.
     async fn push_to_spec_locked(
         self: &Arc<Self>,
-        wave_id: WaveId,
+        guard: &PushLockGuard,
         event: &Event,
         envelope_id: i64,
     ) {
+        let wave_id = guard.wave_id().clone();
         // Resolve the spec card for this wave via the role cache.
         let spec_card_id = match self.resolve_spec_card(&wave_id).await {
             Some(id) => id,
@@ -3455,16 +3470,14 @@ mod tests {
 
     /// #313 round-2 (B3) — the per-wave push lock map must serialize
     /// concurrent acquisitions for the SAME wave (so boot takeover's
-    /// `with_push_lock` and the live `push_to_spec`'s lock cannot run
+    /// `Dispatcher::push_lock` and the live `push_to_spec`'s lock cannot run
     /// the dedup-check-and-deliver body concurrently — which would lose
     /// events in the seed→insert window). DIFFERENT waves must remain
     /// independent so a slow takeover for wave A doesn't block live
     /// pushes for wave B.
     ///
-    /// Models the exact `DashMap::entry(...).or_insert_with(Arc::new
-    /// Mutex)` + `clone().lock().await` pattern both
-    /// `Inner::with_wave_push_lock` and `Dispatcher::with_push_lock`
-    /// implement (the latter delegates to the former).
+    /// Models the `DashMap::entry(...).or_insert_with(Arc::new Mutex)` +
+    /// `clone().lock_owned().await` pattern `Inner::acquire_push_lock` uses.
     #[tokio::test]
     async fn per_wave_push_lock_serializes_same_wave_runs_in_parallel_across_waves() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -3489,7 +3502,7 @@ mod tests {
             let in_flight = in_flight_a.clone();
             let max_in_flight = max_in_flight_a.clone();
             handles.push(tokio::spawn(async move {
-                let _g = lock.lock().await;
+                let _g = lock.lock_owned().await;
                 let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
                 max_in_flight.fetch_max(now, Ordering::SeqCst);
                 // Simulate the dedup-check-and-deliver body holding the
@@ -3519,7 +3532,7 @@ mod tests {
             let in_flight = in_flight_total.clone();
             let max_in_flight = max_in_flight_total.clone();
             handles.push(tokio::spawn(async move {
-                let _g = lock.lock().await;
+                let _g = lock.lock_owned().await;
                 let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
                 max_in_flight.fetch_max(now, Ordering::SeqCst);
                 tokio::time::sleep(std::time::Duration::from_millis(15)).await;

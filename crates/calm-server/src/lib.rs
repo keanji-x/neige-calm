@@ -812,7 +812,7 @@ async fn register_and_catch_up(
     //     and the live event.
     //
     // We use `catch_up_push_under_lock` (not the public `catch_up_push`)
-    // inside the closure because `tokio::sync::Mutex` is not reentrant.
+    // while holding the lock because `tokio::sync::Mutex` is not reentrant.
     //
     // CRITICAL: every state-mutating step — seed, insert, events_since,
     // replay — runs INSIDE the lock. Reading `events_since` OUTSIDE would
@@ -826,58 +826,58 @@ async fn register_and_catch_up(
     // the SELECT, OR it lands during the replay window and serializes
     // behind us, in which case its own push_to_spec replays it correctly
     // after we release).
-    state
-        .dispatcher
-        .with_push_lock(wave_id, async move {
-            if reset_cursor_to_watermark {
-                // Runtime recovery reuses the same dispatcher process. Its
-                // soft cursor can be ahead of the durable watermark after
-                // enqueue/list persistence failures; force it down before
-                // event-log catch-up so undelivered rows are not deduped.
-                state
-                    .dispatcher
-                    .reset_push_cursor_to_watermark(card_key, watermark);
-            } else {
-                // Boot takeover starts with a fresh in-memory cursor. Keep
-                // the existing monotonic seed so boot cannot lower a cursor
-                // that a serialized live push already advanced.
-                state.dispatcher.seed_push_cursor(card_key, watermark);
-            }
-
-            // Register the handle — `Inner::push_to_spec` resolves on this.
-            // Still under the per-wave lock, so any concurrent live event
-            // for this wave waits at `Inner::push_to_spec`'s lock until
-            // catch-up finishes.
-            //
-            // #322 — `park` (not the bare `insert`) runs the aspect
-            // framework's `BeforeHandleParkInRegistry` checks first; INV-6
-            // (`WatermarkSinkInstalledAspect`) panics in release if a
-            // future refactor drops the `install_watermark_sink` call
-            // above. The `debug_assert!` above is the local fast-fail at
-            // the install site; the aspect is the framework-level
-            // enforcement at the park site (belt + suspenders, both
-            // pointing at INV-6).
+    {
+        let guard = state.dispatcher.push_lock(wave_id).await;
+        if reset_cursor_to_watermark {
+            // Runtime recovery reuses the same dispatcher process. Its
+            // soft cursor can be ahead of the durable watermark after
+            // enqueue/list persistence failures; force it down before
+            // event-log catch-up so undelivered rows are not deduped.
             state
-                .spec_push
-                .park(wave_id.clone(), handle, state.aspects.as_ref())
-                .await;
+                .dispatcher
+                .reset_push_cursor_to_watermark(card_key, watermark);
+        } else {
+            // Boot takeover starts with a fresh in-memory cursor. Keep
+            // the existing monotonic seed so boot cannot lower a cursor
+            // that a serialized live push already advanced.
+            state.dispatcher.seed_push_cursor(card_key, watermark);
+        }
 
-            replay_spec_push_catch_up_under_lock(
-                state,
-                card_id,
-                wave_id,
-                watermark,
-                rehydrated_ids,
-            )
+        // Register the handle — `Inner::push_to_spec` resolves on this.
+        // Still under the per-wave lock, so any concurrent live event
+        // for this wave waits at `Inner::push_to_spec`'s lock until
+        // catch-up finishes.
+        //
+        // #322 — `park` (not the bare `insert`) runs the aspect
+        // framework's `BeforeHandleParkInRegistry` checks first; INV-6
+        // (`WatermarkSinkInstalledAspect`) panics in release if a
+        // future refactor drops the `install_watermark_sink` call
+        // above. The `debug_assert!` above is the local fast-fail at
+        // the install site; the aspect is the framework-level
+        // enforcement at the park site (belt + suspenders, both
+        // pointing at INV-6).
+        state
+            .spec_push
+            .park(wave_id.clone(), handle, state.aspects.as_ref())
             .await;
-        })
+
+        replay_spec_push_catch_up_under_lock(
+            &guard,
+            state,
+            card_id,
+            wave_id,
+            watermark,
+            rehydrated_ids,
+        )
         .await;
+    }
 }
 
 /// Rehydrate durable queue rows and replay event-log rows for a reset-created,
 /// already-parked spec push handle. The caller must hold the per-wave push
 /// lock; this helper intentionally uses `catch_up_push_under_lock`.
 pub(crate) async fn rehydrate_and_catch_up_parked_spec_push_under_lock_parts(
+    guard: &dispatcher::PushLockGuard,
     route: &state::RouteState,
     worker: &state::WorkerState,
     card_id: &str,
@@ -902,6 +902,7 @@ pub(crate) async fn rehydrate_and_catch_up_parked_spec_push_under_lock_parts(
         .dispatcher
         .reset_push_cursor_to_watermark(card_key, watermark);
     replay_spec_push_catch_up_under_lock_parts(
+        guard,
         route,
         worker,
         card_id,
@@ -913,6 +914,7 @@ pub(crate) async fn rehydrate_and_catch_up_parked_spec_push_under_lock_parts(
 }
 
 async fn replay_spec_push_catch_up_under_lock(
+    guard: &dispatcher::PushLockGuard,
     state: &state::AppState,
     card_id: &str,
     wave_id: &crate::ids::WaveId,
@@ -922,6 +924,7 @@ async fn replay_spec_push_catch_up_under_lock(
     let route: state::RouteState = axum::extract::FromRef::from_ref(state);
     let worker: state::WorkerState = axum::extract::FromRef::from_ref(state);
     replay_spec_push_catch_up_under_lock_parts(
+        guard,
         &route,
         &worker,
         card_id,
@@ -933,6 +936,7 @@ async fn replay_spec_push_catch_up_under_lock(
 }
 
 async fn replay_spec_push_catch_up_under_lock_parts(
+    guard: &dispatcher::PushLockGuard,
     route: &state::RouteState,
     worker: &state::WorkerState,
     card_id: &str,
@@ -970,7 +974,7 @@ async fn replay_spec_push_catch_up_under_lock_parts(
         }
         worker
             .dispatcher
-            .catch_up_push_under_lock(wave_id.clone(), ev, id)
+            .catch_up_push_under_lock(guard, ev, id)
             .await;
         replayed += 1;
     }
