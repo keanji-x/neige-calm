@@ -24,7 +24,7 @@ import type { XtermWheelTarget } from './xtermAdapter';
 import { useWheelRouter } from './useWheelRouter';
 import { registerXtermShell, unregisterXtermShell } from './wheelTargets';
 
-type WheelInstance = Pick<CardInstanceCtx, 'cardId' | 'useInstance'>;
+type WheelInstance = Pick<CardInstanceCtx, 'cardId' | 'useCardSlot'>;
 
 function setScrollSize(
   el: HTMLElement,
@@ -86,8 +86,13 @@ function fakeInstance(): WheelInstance {
   const slots = new Map<string, unknown>();
   return {
     cardId: 'card_1',
-    useInstance<S>(key: string, initial: S) {
-      if (!slots.has(key)) slots.set(key, initial);
+    useCardSlot<S>(key: string, initial: S | (() => S)) {
+      if (!slots.has(key)) {
+        slots.set(
+          key,
+          typeof initial === 'function' ? (initial as () => S)() : initial,
+        );
+      }
       const setValue = (next: S | ((prev: S) => S)) => {
         const current = slots.get(key) as S;
         slots.set(

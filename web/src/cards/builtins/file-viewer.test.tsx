@@ -122,7 +122,7 @@ function PaneSlotProbe({
 }: {
   onSlot: (slot: { current: HTMLElement | null }) => void;
 }) {
-  const [slot] = useCardInstanceCtx().useInstance<{
+  const [slot] = useCardInstanceCtx().useCardSlot<{
     current: HTMLElement | null;
   }>('fvPaneRef', { current: null });
   useEffect(() => {

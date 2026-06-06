@@ -132,17 +132,34 @@ export interface CardInstanceCtx {
   cardId: string;
   deletable: boolean;
   /**
-   * Hook-like keyed state accessor for entry.actions().
+   * Keyed state slot shared by CardHead actions, controllers, and the body.
+   * This is not a React hook; it is safe inside entry.actions(card, ctx).
    *
-   * This is a normal function, not a React hook. CardHead calls
-   * entry.actions(card, ctx) during render, and each action can read/write a
-   * provider-owned state slot by key. The first read initializes the slot;
-   * later reads of the same cardId + key return the same value and ignore
-   * their initial argument. Setters resolve functional updates against the
-   * current slot value and force a provider re-render, which makes this act
-   * like a namespaced useState shared by the card head and card body.
+   * Anti-pattern: passing different initial values per render. First read
+   * wins and later initial values are ignored. Use a stable literal or a
+   * memoized/lazy initializer.
+   *
+   * Anti-pattern: storing derived render data. Slots are for cross-component
+   * shared state; compute derived output in render or useMemo instead.
+   *
+   * Anti-pattern: treating useCardSlot like useEffect dependencies. It does
+   * not re-run on dependency changes; only setter calls force the provider
+   * subtree to re-render.
+   *
+   * Recommended shape:
+   * actions: (_card, ctx) => {
+   *   const [, setEpoch] = ctx.useCardSlot('epoch', 0);
+   *   return [{ run: () => setEpoch((n) => n + 1) }];
+   * };
+   * const epoch = useCardSlotValue('epoch', 0);
+   *
+   * Mutable ref containers are valid when a controller and body need the same
+   * imperative handle: useCardSlot('paneRef', () => ({ current: null })).
    */
-  useInstance<S>(key: string, initial: S): [S, Dispatch<SetStateAction<S>>];
+  useCardSlot<S>(
+    key: string,
+    initial: S | (() => S),
+  ): [S, Dispatch<SetStateAction<S>>];
 }
 
 export type CardAction =
@@ -205,6 +222,25 @@ function warnOnce(key: string, msg: string) {
   warned.add(key);
   // eslint-disable-next-line no-console
   console.warn(msg);
+}
+
+function resolveCardSlotInitial<S>(initial: S | (() => S)): S {
+  return typeof initial === 'function' ? (initial as () => S)() : initial;
+}
+
+function describeCardSlotInitial(value: unknown): string {
+  if (typeof value === 'function') {
+    return `[function ${value.name || 'anonymous'}]`;
+  }
+  if (typeof value === 'string') return JSON.stringify(value);
+  if (value === undefined) return 'undefined';
+  try {
+    const json = JSON.stringify(value);
+    if (json !== undefined) return json;
+  } catch {
+    // Fall through to String(value).
+  }
+  return String(value);
 }
 
 export function registerCard<T extends WaveCardData>(entry: CardEntry<T>): void {
@@ -367,6 +403,7 @@ export function CardInstanceProvider({
   children?: ReactNode;
 }) {
   const slots = useRef(new Map<string, unknown>());
+  const initialRecords = useRef(new Map<string, unknown>());
   const [, setVersion] = useState(0);
   const lifecycleWriter = useMemo(() => createCardLifecycleStore(), []);
   const lifecycleStore = useMemo(
@@ -388,8 +425,22 @@ export function CardInstanceProvider({
     cardId,
     deletable,
     emit,
-    useInstance<S>(key: string, initial: S) {
-      if (!slots.current.has(key)) slots.current.set(key, initial);
+    useCardSlot<S>(key: string, initial: S | (() => S)) {
+      if (!slots.current.has(key)) {
+        slots.current.set(key, resolveCardSlotInitial(initial));
+        initialRecords.current.set(key, initial);
+      } else if (import.meta.env.DEV) {
+        const prevInitial = initialRecords.current.get(key);
+        if (!Object.is(prevInitial, initial)) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[useCardSlot] inconsistent initial for cardId=${cardId} key=${JSON.stringify(key)}: ` +
+              `first read used ${describeCardSlotInitial(prevInitial)}, ` +
+              `this read uses ${describeCardSlotInitial(initial)}. ` +
+              'Subsequent initial args are ignored; agree on one or use a stable reference.',
+          );
+        }
+      }
       const value = slots.current.get(key) as S;
       const setValue: Dispatch<SetStateAction<S>> = (next) => {
         const current = slots.current.get(key) as S;
@@ -432,11 +483,11 @@ export function CardInstanceProvider({
       card,
       instance: {
         cardId,
-        useInstance: ctx.useInstance,
+        useCardSlot: ctx.useCardSlot,
       },
       writer: lifecycleWriter,
     });
-  }, [card, cardId, ctx.useInstance, lifecycleWriter]);
+  }, [card, cardId, ctx.useCardSlot, lifecycleWriter]);
 
   useEffect(() => {
     // PR4 will add IntersectionObserver-driven visibility tests.
@@ -448,7 +499,7 @@ export function CardInstanceProvider({
       instance: {
         cardId: current.cardId,
         deletable: current.deletable,
-        useInstance: current.ctx.useInstance,
+        useCardSlot: current.ctx.useCardSlot,
       },
       emit: current.emit,
     });
@@ -514,13 +565,15 @@ export function useOptionalCardInstanceCtx(): CardInstanceCtx | null {
   return useContext(CardInstanceReactCtx);
 }
 
-export function useInstanceValue<S>(key: string, initial: S): S {
-  return useCardInstanceCtx().useInstance<S>(key, initial)[0];
+/** Reads the value side of CardInstanceCtx.useCardSlot. See useCardSlot docs. */
+export function useCardSlotValue<S>(key: string, initial: S | (() => S)): S {
+  return useCardInstanceCtx().useCardSlot<S>(key, initial)[0];
 }
 
-export function useInstanceSetter<S>(
+/** Reads the setter side of CardInstanceCtx.useCardSlot. See useCardSlot docs. */
+export function useCardSlotSetter<S>(
   key: string,
-  initial: S,
+  initial: S | (() => S),
 ): Dispatch<SetStateAction<S>> {
-  return useCardInstanceCtx().useInstance<S>(key, initial)[1];
+  return useCardInstanceCtx().useCardSlot<S>(key, initial)[1];
 }

@@ -30,6 +30,7 @@ import {
   __resetRegistryForTest,
   adaptKernelCard,
   addPanelEntries,
+  CardInstanceProvider,
   getEntry,
   registerCard,
   renderCard,
@@ -160,6 +161,76 @@ function queryClientStub(): Parameters<typeof addCardWithValues>[0] {
     invalidateQueries: vi.fn().mockResolvedValue(undefined),
   } as unknown as Parameters<typeof addCardWithValues>[0];
 }
+
+describe('card instance slots', () => {
+  it('resolves lazy initializers once across repeated slot reads', () => {
+    const init = vi.fn(() => 42);
+
+    function Probe({ label }: { label: string }) {
+      const ctx = useCardInstanceCtx();
+      const [first] = ctx.useCardSlot<number>('k', init);
+      const [second] = ctx.useCardSlot<number>('k', init);
+      return (
+        <div data-testid="slot">
+          {label}:{first}/{second}
+        </div>
+      );
+    }
+
+    const { rerender } = render(
+      <CardInstanceProvider cardId="card_slot" deletable>
+        <Probe label="a" />
+      </CardInstanceProvider>,
+    );
+
+    expect(screen.getByTestId('slot')).toHaveTextContent('a:42/42');
+
+    rerender(
+      <CardInstanceProvider cardId="card_slot" deletable>
+        <Probe label="b" />
+      </CardInstanceProvider>,
+    );
+
+    expect(screen.getByTestId('slot')).toHaveTextContent('b:42/42');
+    expect(init).toHaveBeenCalledTimes(1);
+  });
+
+  it('warns in DEV when later reads use an inconsistent initial value', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    function Probe({ initial }: { initial: number }) {
+      const [value] = useCardInstanceCtx().useCardSlot<number>('k', initial);
+      return <div data-testid="slot">{value}</div>;
+    }
+
+    const { rerender } = render(
+      <CardInstanceProvider cardId="card_warn" deletable>
+        <Probe initial={1} />
+      </CardInstanceProvider>,
+    );
+
+    rerender(
+      <CardInstanceProvider cardId="card_warn" deletable>
+        <Probe initial={2} />
+      </CardInstanceProvider>,
+    );
+
+    expect(screen.getByTestId('slot')).toHaveTextContent('1');
+    if (import.meta.env.DEV) {
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          '[useCardSlot] inconsistent initial for cardId=card_warn key="k"',
+        ),
+      );
+      expect(String(warnSpy.mock.calls[0]![0])).toContain(
+        'first read used 1',
+      );
+      expect(String(warnSpy.mock.calls[0]![0])).toContain('this read uses 2');
+    } else {
+      expect(warnSpy).not.toHaveBeenCalled();
+    }
+  });
+});
 
 describe('card registry claims', () => {
   it('dispatches exact claims before prefix claims', () => {

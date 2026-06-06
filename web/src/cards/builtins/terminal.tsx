@@ -40,6 +40,10 @@ const XtermView = lazy(() =>
   import('../../XtermView').then((m) => ({ default: m.XtermView })),
 );
 
+function createXtermRefSlot(): { current: XtermViewHandle | null } {
+  return { current: null };
+}
+
 /**
  * Wire shape for a `kind: "terminal"` card's `payload`. Server-side it's
  * minted by `POST /api/terminals` and contains the kernel `Terminal.id` so
@@ -64,9 +68,9 @@ function TerminalCard({
 }) {
   const { id: cardId, title, lines, terminalId, unsupportedVersion } = card;
   const { resolved: theme } = useTheme();
-  const [xtermRefSlot] = useCardInstanceCtx().useInstance<{
+  const [xtermRefSlot] = useCardInstanceCtx().useCardSlot<{
     current: XtermViewHandle | null;
-  }>('xtermRef', { current: null });
+  }>('xtermRef', createXtermRefSlot);
   const setXtermRef = useCallback(
     (handle: XtermViewHandle | null) => {
       xtermRefSlot.current = handle;
@@ -222,9 +226,9 @@ export const TerminalEntry: CardEntry<TerminalCardData, Record<string, never>> =
     };
   },
   wheelTarget(_card, instance) {
-    const [xtermRefSlot] = instance.useInstance<{
+    const [xtermRefSlot] = instance.useCardSlot<{
       current: XtermViewHandle | null;
-    }>('xtermRef', { current: null });
+    }>('xtermRef', createXtermRefSlot);
     return { kind: 'xterm', ref: xtermRefSlot };
   },
   claim: { mode: 'exact', kind: 'terminal' },

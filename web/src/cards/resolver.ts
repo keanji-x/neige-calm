@@ -7,7 +7,7 @@ export type { CardLifecycleWriter } from './lifecycle';
 
 export interface CardEntryResolverValue {
   card: WaveCardData;
-  instance: Pick<CardInstanceCtx, 'cardId' | 'useInstance'>;
+  instance: Pick<CardInstanceCtx, 'cardId' | 'useCardSlot'>;
   /**
    * Host-only lifecycle back-channel. Card children must keep using
    * `useCardLifecycle()`, which exposes the frozen read-only store.
