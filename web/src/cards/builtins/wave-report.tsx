@@ -40,7 +40,20 @@ import {
   payloadSchemaVersion,
 } from './schemaVersions';
 import type { CardEntry } from '../registry';
-import type { WaveReportCardData } from '../../types';
+
+declare module '../../types' {
+  interface WaveCardDataMap {
+    'wave-report': WaveReportCardData;
+  }
+}
+
+export interface WaveReportCardData {
+  type: 'wave-report';
+  id?: string;
+  summary: string;
+  body: string;
+  unsupportedVersion?: number;
+}
 
 /** Strict zod schema for the wire payload. `schemaVersion` may be
  *  absent (treated as v1 — historical rows pre-PR B don't exist in
@@ -216,6 +229,7 @@ function UnsupportedWaveReportCard({
   return (
     <div className="wave-report-card wave-report-card-unsupported-version">
       <CardHead
+        card={{ type: 'wave-report', summary: '', body: '' }}
         className="card-drag-handle"
         title="Report"
         onClose={onClose}
@@ -473,6 +487,7 @@ function WaveReportCardImpl({
   return (
     <div className="wave-report-card">
       <CardHead
+        card={card}
         className="card-drag-handle"
         title="Report"
         onClose={onClose}
@@ -540,6 +555,11 @@ export const WaveReportEntry: CardEntry<WaveReportCardData> = {
   // section headings readable; min height keeps at least one
   // section visible.
   defaultSize: { w: 6, h: 12, minW: 4, minH: 6 },
+  claim: { mode: 'exact', kind: 'wave-report' },
+  title: () => 'Report',
+  accessibleName: (card) =>
+    card.summary.trim().length > 0 ? `Report: ${card.summary}` : 'Report',
+  create: { mode: 'kernel-minted-only' },
   fromKernel: (k) => {
     if (k.kind !== 'wave-report') return null;
     const candidate = k.payload ?? {};

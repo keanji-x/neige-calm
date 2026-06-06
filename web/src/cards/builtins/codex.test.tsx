@@ -3,7 +3,7 @@ import { Suspense, type ReactNode, type Ref } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ThemeProvider } from '../../app/theme';
-import type { ClaudeCardData, CodexCardData } from '../../types';
+import type { ClaudeCardData, CodexCardData } from './codex';
 
 const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),

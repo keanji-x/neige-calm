@@ -17,9 +17,19 @@
 // is rejected — `PluginIframeEntry.fromKernel` returns null on it, so the
 // adapter falls through and `renderCard` logs a one-shot warning.
 
-import { createElement, type FC, type ReactNode } from 'react';
+import {
+  createContext,
+  createElement,
+  useContext,
+  useRef,
+  type Dispatch,
+  type FC,
+  type ReactNode,
+  type SetStateAction,
+} from 'react';
 import type { WaveCardData } from '../types';
 import type { KernelCard } from '../api/wire';
+import { useState } from '../shared/state';
 
 export interface CardSize {
   w: number;
@@ -59,9 +69,10 @@ export interface CreateField {
   required?: boolean;
 }
 
-export interface CreateSchema {
+export interface CreateSchema<TInput = Record<string, string>> {
   /** Ordered field list — rendered top-to-bottom. */
   fields: CreateField[];
+  parse?(values: Record<string, string>): TInput;
 }
 
 /** Common props every built-in card component receives. Cards must forward
@@ -74,7 +85,72 @@ export interface CardComponentProps<T extends WaveCardData = WaveCardData> {
   deletable?: boolean;
 }
 
-export interface CardEntry<T extends WaveCardData = WaveCardData> {
+export type CardKindClaim =
+  | { mode: 'exact'; kind: string }
+  | { mode: 'prefix'; prefix: string };
+
+export interface CardCreateContext {
+  themeRgb: { fg: string; bg: string };
+}
+
+export interface CardCreateResult {
+  cardId: string;
+  raw?: unknown;
+}
+
+export type CardCreateStrategy<TInput> =
+  | { mode: 'generic'; buildPayload(input: TInput): unknown }
+  | {
+      mode: 'atomic';
+      submit(
+        waveId: string,
+        input: TInput,
+        ctx: CardCreateContext,
+      ): Promise<CardCreateResult>;
+    }
+  | { mode: 'catalog'; catalog: string }
+  | { mode: 'kernel-minted-only' };
+
+export type CardIconName = 'refresh' | 'edit' | 'reset';
+
+export interface CardInstanceCtx {
+  cardId: string;
+  deletable: boolean;
+  /**
+   * Hook-like keyed state accessor for entry.actions().
+   *
+   * This is a normal function, not a React hook. CardHead calls
+   * entry.actions(card, ctx) during render, and each action can read/write a
+   * provider-owned state slot by key. The first read initializes the slot;
+   * later reads of the same cardId + key return the same value and ignore
+   * their initial argument. Setters resolve functional updates against the
+   * current slot value and force a provider re-render, which makes this act
+   * like a namespaced useState shared by the card head and card body.
+   */
+  useInstance<S>(key: string, initial: S): [S, Dispatch<SetStateAction<S>>];
+}
+
+export type CardAction =
+  | {
+      kind: 'button';
+      id: string;
+      label: string;
+      icon: CardIconName;
+      placement: 'head';
+      run(): void;
+      disabled?: boolean;
+    }
+  | {
+      kind: 'imperative';
+      id: string;
+      placement: 'head';
+      render(ctx: CardInstanceCtx): ReactNode;
+    };
+
+export interface CardEntry<
+  T extends WaveCardData = WaveCardData,
+  TInput = Record<string, string>,
+> {
   /** The discriminator value used in `T['type']`, e.g. `'terminal'`, `'doc'`,
    *  or the sentinel `'plugin'` for `ui://`-backed iframe cards. */
   type: T['type'] | string;
@@ -90,11 +166,24 @@ export interface CardEntry<T extends WaveCardData = WaveCardData> {
     /** When present, picking this entry from the AddPanel menu shows an
      *  inline config card rendered by `SchemaForm` instead of immediately
      *  creating the card. Omit for zero-config kinds (current terminal). */
-    createSchema?: CreateSchema;
+    createSchema?: CreateSchema<TInput>;
   };
+  claim?: CardKindClaim;
+  title(card: T): string;
+  accessibleName(card: T): string;
+  create?: CardCreateStrategy<TInput>;
+  actions?(card: T, ctx: CardInstanceCtx): CardAction[];
 }
 
 const REGISTRY = new Map<string, CardEntry<WaveCardData>>();
+const EXACT_CLAIMS = new Map<string, CardEntry<WaveCardData>>();
+const PREFIX_CLAIMS = new Map<string, CardEntry<WaveCardData>>();
+
+export const LEGACY_CREATE_KINDS: ReadonlySet<string> = new Set([
+  'terminal',
+  'codex',
+  'claude',
+]);
 
 /** Fallback size for unknown card types. Sane mid-range default that fits
  *  any of the built-in shapes; we'd rather render a slightly-wrong-sized
@@ -110,9 +199,44 @@ function warnOnce(key: string, msg: string) {
 }
 
 export function registerCard<T extends WaveCardData>(entry: CardEntry<T>): void {
+  if (!entry.title) throw new Error(`EntryMissingMetadata(${entry.type}, title)`);
+  if (!entry.accessibleName) {
+    throw new Error(`EntryMissingMetadata(${entry.type}, accessibleName)`);
+  }
+  if (entry.create?.mode === 'generic' && entry.claim?.mode !== 'exact') {
+    throw new Error(`GenericCreateRequiresExactClaim(${entry.type})`);
+  }
+  if (entry.create === undefined && !LEGACY_CREATE_KINDS.has(String(entry.type))) {
+    throw new Error(`MissingCreateStrategy(${entry.type})`);
+  }
+  if (entry.claim?.mode === 'exact') {
+    const prior = EXACT_CLAIMS.get(entry.claim.kind);
+    if (prior && prior.type !== entry.type) {
+      throw new Error(`DuplicateExactClaim(${entry.claim.kind})`);
+    }
+  }
+  if (entry.claim?.mode === 'prefix') {
+    const prior = PREFIX_CLAIMS.get(entry.claim.prefix);
+    if (prior && prior.type !== entry.type) {
+      throw new Error(`DuplicatePrefixClaim(${entry.claim.prefix})`);
+    }
+  }
   // The cast is the price of letting one Map hold heterogeneous entries.
   // Callers see the typed `CardEntry<T>`; the map stores the erased shape.
-  REGISTRY.set(entry.type, entry as unknown as CardEntry<WaveCardData>);
+  const erased = entry as unknown as CardEntry<WaveCardData>;
+  REGISTRY.set(entry.type, erased);
+  if (entry.claim?.mode === 'exact') EXACT_CLAIMS.set(entry.claim.kind, erased);
+  if (entry.claim?.mode === 'prefix') PREFIX_CLAIMS.set(entry.claim.prefix, erased);
+}
+
+export function getEntry(type: string): CardEntry<WaveCardData> | undefined {
+  return REGISTRY.get(type);
+}
+
+export function __resetRegistryForTest(): void {
+  REGISTRY.clear();
+  EXACT_CLAIMS.clear();
+  PREFIX_CLAIMS.clear();
 }
 
 export function renderCard(
@@ -129,11 +253,18 @@ export function renderCard(
   // The discriminator (`card.type === entry.type`) guarantees runtime
   // alignment with the entry's Component prop type. createElement (not JSX)
   // so this file stays a plain .ts module — keeps the design-doc filename.
-  return createElement(entry.Component as FC<CardComponentProps>, {
-    card,
-    onClose: opts.onClose,
-    deletable: opts.deletable,
-  });
+  return createElement(
+    CardInstanceProvider,
+    {
+      cardId: card.id ?? card.type,
+      deletable: opts.deletable !== false,
+    },
+    createElement(entry.Component as FC<CardComponentProps>, {
+      card,
+      onClose: opts.onClose,
+      deletable: opts.deletable,
+    }),
+  );
 }
 
 export function sizeFor(card: WaveCardData): CardSize {
@@ -157,7 +288,11 @@ export interface AddPanelMenuItem {
 export function addPanelEntries(): AddPanelMenuItem[] {
   const out: AddPanelMenuItem[] = [];
   for (const entry of REGISTRY.values()) {
-    if (entry.addPanel) {
+    if (
+      entry.addPanel &&
+      entry.create?.mode !== 'catalog' &&
+      entry.create?.mode !== 'kernel-minted-only'
+    ) {
       out.push({
         type: String(entry.type),
         label: entry.addPanel.label,
@@ -178,10 +313,85 @@ export function addPanelEntries(): AddPanelMenuItem[] {
  *  concern.
  */
 export function adaptKernelCard(k: KernelCard): WaveCardData | null {
+  const exact = EXACT_CLAIMS.get(k.kind);
+  if (exact?.fromKernel) {
+    const adapted = exact.fromKernel(k);
+    if (adapted) return adapted;
+  }
+  let prefixEntry: CardEntry<WaveCardData> | null = null;
+  let prefixLen = -1;
+  for (const [prefix, entry] of PREFIX_CLAIMS) {
+    if (k.kind.startsWith(prefix) && prefix.length > prefixLen) {
+      prefixEntry = entry;
+      prefixLen = prefix.length;
+    }
+  }
+  if (prefixEntry?.fromKernel) {
+    const adapted = prefixEntry.fromKernel(k);
+    if (adapted) return adapted;
+  }
   for (const entry of REGISTRY.values()) {
     if (!entry.fromKernel) continue;
+    if (entry === exact || entry === prefixEntry) continue;
     const adapted = entry.fromKernel(k);
     if (adapted) return adapted;
   }
   return null;
+}
+
+const CardInstanceReactCtx = createContext<CardInstanceCtx | null>(null);
+
+export function CardInstanceProvider({
+  cardId,
+  deletable,
+  children,
+}: {
+  cardId: string;
+  deletable: boolean;
+  children?: ReactNode;
+}) {
+  const slots = useRef(new Map<string, unknown>());
+  const [, setVersion] = useState(0);
+
+  const ctx: CardInstanceCtx = {
+    cardId,
+    deletable,
+    useInstance<S>(key: string, initial: S) {
+      if (!slots.current.has(key)) slots.current.set(key, initial);
+      const value = slots.current.get(key) as S;
+      const setValue: Dispatch<SetStateAction<S>> = (next) => {
+        const current = slots.current.get(key) as S;
+        const resolved =
+          typeof next === 'function'
+            ? (next as (prev: S) => S)(current)
+            : next;
+        slots.current.set(key, resolved);
+        setVersion((version) => version + 1);
+      };
+      return [value, setValue];
+    },
+  };
+
+  return createElement(CardInstanceReactCtx.Provider, { value: ctx }, children);
+}
+
+export function useCardInstanceCtx(): CardInstanceCtx {
+  const ctx = useContext(CardInstanceReactCtx);
+  if (!ctx) throw new Error('useCardInstanceCtx outside CardInstanceProvider');
+  return ctx;
+}
+
+export function useOptionalCardInstanceCtx(): CardInstanceCtx | null {
+  return useContext(CardInstanceReactCtx);
+}
+
+export function useInstanceValue<S>(key: string, initial: S): S {
+  return useCardInstanceCtx().useInstance<S>(key, initial)[0];
+}
+
+export function useInstanceSetter<S>(
+  key: string,
+  initial: S,
+): Dispatch<SetStateAction<S>> {
+  return useCardInstanceCtx().useInstance<S>(key, initial)[1];
 }

@@ -2226,6 +2226,45 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   justify-content: flex-end;
   min-width: 0;
 }
+.card-head-actions {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.card-head-status + .card-head-actions,
+.card-head-actions + .card-head-status {
+  flex: 0 0 auto;
+}
+.card-head-action {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-3);
+  font: inherit;
+  line-height: var(--leading-none);
+  cursor: pointer;
+  transition: color var(--motion-quick), background var(--motion-quick);
+}
+.card-head-action:hover {
+  background: var(--overlay-hover-faint);
+  color: var(--text-2);
+}
+.card-head-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.card-head-action:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
 /* Status-slot wrapper spans (e.g. the `<span aria-live="polite">` Codex
    wraps around `<CardStatusDot>` so SR announces FSM transitions) default
    to inline layout, which leaves an inline-block dot sitting on the line-

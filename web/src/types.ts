@@ -65,117 +65,12 @@ export interface TermLine {
   text: string;
 }
 
-export interface TerminalCardData {
-  type: 'terminal';
-  // Kernel `Card.id`. Stable per card across reorders — used as the RGL key
-  // and the lookup for the per-card layout entry in localStorage.
-  id?: string;
-  title: string;
-  lines: TermLine[];
-  // Optional pointer at a kernel Terminal row (calm-server's
-  // `Terminal.id`). When set, the card hosts a live xterm/PTY rather than
-  // rendering the static `lines`.
-  terminalId?: string;
-  // When the payload's `schemaVersion` is newer than what this build of
-  // the frontend understands, the adapter still produces a card so the
-  // grid layout doesn't collapse — but the component renders a fallback
-  // pointing the user at refresh. See Tier A upgrade-stability policy.
-  unsupportedVersion?: number;
+export interface WaveCardDataMap {
+  // Card entries self-register their data shape through module augmentation.
+  // Add new card kinds in their entry module; this central type stays open.
 }
 
-/**
- * Plugin-provided iframe card. The kernel card kind is the canonical MCP Apps
- * resource URI `ui://<plugin_id>/<view_id>`. The legacy Neige-dialect form
- * `plugin:<plugin_id>:<view_id>` was deleted in M4; the hello-world demo
- * (its last consumer) was deleted alongside the WaveLifecycle unification.
- *
- * `plugin_id` and `view_id` are not stored on the card; derive them lazily at
- * use sites via `parsePluginCardKind(resource_uri)` from `cards/plugin-iframe`.
- */
-export interface PluginCardData {
-  type: 'plugin';
-  id?: string;
-  /** Full `ui://<plugin_id>/<view_id>` URI. */
-  resource_uri: string;
-}
-
-/**
- * Codex (OpenAI) agent card. Interactive variant: the kernel binds a
- * terminal PTY running `codex` to this card and stamps the
- * `terminal_id` into the payload. `CodexCard` then renders the live TUI
- * via `XtermView` and overlays a status bar fed from `codex.hook` events
- * on the WS bus.
- *
- * Older cards created before the interactive rewrite may not have a
- * `terminalId` yet — the card renders an "agent is starting" placeholder
- * in that case.
- */
-export interface CodexCardData {
-  type: 'codex';
-  id?: string;
-  /** Optional pointer at the PTY row spawned for this card. */
-  terminalId?: string;
-  cwd?: string;
-  iconBg?: string;
-  iconFg?: string;
-  /** See `TerminalCardData.unsupportedVersion`. */
-  unsupportedVersion?: number;
-}
-
-/**
- * Claude worker card. PTY-backed like codex, but hooks arrive as
- * `claude.hook` and the backend does not attach MCP tooling.
- */
-export interface ClaudeCardData {
-  type: 'claude';
-  id?: string;
-  terminalId?: string;
-  cwd?: string;
-  iconBg?: string;
-  iconFg?: string;
-  claudeSessionId?: string;
-  unsupportedVersion?: number;
-}
-
-/**
- * Wave report card payload — issue #229.
- *
- * Kernel-owned card minted at wave-create time. One per wave. The
- * payload is a single Markdown body plus a one-line summary; the
- * frontend derives sections by splitting at H1 (`^# `) headings at
- * render time. See `web/src/cards/builtins/wave-report.tsx`.
- */
-export interface WaveReportCardData {
-  type: 'wave-report';
-  id?: string;
-  /** One-line preview used by sidebars / wave list rows. */
-  summary: string;
-  /** Markdown source — rendered as collapsible sections in the card. */
-  body: string;
-  /** See `TerminalCardData.unsupportedVersion`. */
-  unsupportedVersion?: number;
-}
-
-export interface FileViewerCardData {
-  type: 'file-viewer';
-  id: string;
-  path: string;
-}
-
-export interface IframeCardData {
-  type: 'iframe';
-  id: string;
-  url: string;
-}
-
-export type WaveCardData =
-  | TerminalCardData
-  | PluginCardData
-  | CodexCardData
-  | ClaudeCardData
-  | WaveReportCardData
-  | FileViewerCardData
-  | IframeCardData;
+export type WaveCardData = WaveCardDataMap[keyof WaveCardDataMap];
 
 /**
  * A position in a Wave's card grid. Either a parsed UI card (the happy

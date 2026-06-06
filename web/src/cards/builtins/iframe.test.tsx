@@ -13,6 +13,12 @@ vi.mock('../../api/calm', async () => {
 
 import { IframeEntry } from './iframe';
 import * as api from '../../api/calm';
+import {
+  __resetRegistryForTest,
+  CardInstanceProvider,
+  registerCard,
+} from '../registry';
+import type { IframeCardData } from './iframe';
 
 function makeKernelCard(over: Partial<KernelCard> = {}): KernelCard {
   return {
@@ -26,6 +32,22 @@ function makeKernelCard(over: Partial<KernelCard> = {}): KernelCard {
     updated_at: 2000,
     ...over,
   };
+}
+
+function renderIframe(
+  card: IframeCardData,
+  opts: { onClose?: () => void } = {},
+) {
+  const Component = IframeEntry.Component;
+  return render(
+    <CardInstanceProvider cardId={card.id} deletable>
+      <Component card={card} onClose={opts.onClose} />
+    </CardInstanceProvider>,
+  );
+}
+
+function iframeNode(): HTMLIFrameElement {
+  return screen.getByTitle(/Embedded page:/) as HTMLIFrameElement;
 }
 
 describe('IframeEntry.fromKernel', () => {
@@ -69,6 +91,8 @@ describe('IframeCard rendering', () => {
   let warnSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
+    __resetRegistryForTest();
+    registerCard(IframeEntry);
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.mocked(api.updateCard).mockResolvedValue(makeKernelCard());
   });
@@ -79,24 +103,14 @@ describe('IframeCard rendering', () => {
   });
 
   it('renders the iframe with the initial URL', () => {
-    const Component = IframeEntry.Component;
-    render(
-      <Component
-        card={{ type: 'iframe', id: 'iframe_1', url: 'https://example.com' }}
-      />,
-    );
+    renderIframe({ type: 'iframe', id: 'iframe_1', url: 'https://example.com' });
 
     const frame = screen.getByTitle('Embedded page: https://example.com');
     expect(frame).toHaveAttribute('src', 'https://example.com');
   });
 
   it('sandboxes the iframe without same-origin access', () => {
-    const Component = IframeEntry.Component;
-    render(
-      <Component
-        card={{ type: 'iframe', id: 'iframe_1', url: 'https://example.com' }}
-      />,
-    );
+    renderIframe({ type: 'iframe', id: 'iframe_1', url: 'https://example.com' });
 
     const frame = screen.getByTitle('Embedded page: https://example.com');
     const sandbox = frame.getAttribute('sandbox');
@@ -109,12 +123,7 @@ describe('IframeCard rendering', () => {
   });
 
   it('URL bar reflects current URL', () => {
-    const Component = IframeEntry.Component;
-    render(
-      <Component
-        card={{ type: 'iframe', id: 'iframe_1', url: 'https://example.com' }}
-      />,
-    );
+    renderIframe({ type: 'iframe', id: 'iframe_1', url: 'https://example.com' });
 
     expect(screen.getByLabelText('Web page URL')).toHaveValue(
       'https://example.com',
@@ -122,12 +131,7 @@ describe('IframeCard rendering', () => {
   });
 
   it('submitting a new URL updates the iframe src and persists it', async () => {
-    const Component = IframeEntry.Component;
-    render(
-      <Component
-        card={{ type: 'iframe', id: 'iframe_1', url: 'https://example.com' }}
-      />,
-    );
+    renderIframe({ type: 'iframe', id: 'iframe_1', url: 'https://example.com' });
 
     const input = screen.getByLabelText('Web page URL');
     fireEvent.change(input, {
@@ -148,12 +152,7 @@ describe('IframeCard rendering', () => {
   });
 
   it('rejects javascript: URLs on submit', () => {
-    const Component = IframeEntry.Component;
-    render(
-      <Component
-        card={{ type: 'iframe', id: 'iframe_1', url: 'https://example.com' }}
-      />,
-    );
+    renderIframe({ type: 'iframe', id: 'iframe_1', url: 'https://example.com' });
 
     const input = screen.getByLabelText('Web page URL');
     fireEvent.change(input, { target: { value: 'javascript:alert(1)' } });
@@ -166,12 +165,7 @@ describe('IframeCard rendering', () => {
   });
 
   it('rejects data: URLs on submit', () => {
-    const Component = IframeEntry.Component;
-    render(
-      <Component
-        card={{ type: 'iframe', id: 'iframe_1', url: 'https://example.com' }}
-      />,
-    );
+    renderIframe({ type: 'iframe', id: 'iframe_1', url: 'https://example.com' });
 
     const input = screen.getByLabelText('Web page URL');
     fireEvent.change(input, {
@@ -188,15 +182,15 @@ describe('IframeCard rendering', () => {
   it('syncs local state when card.url changes externally', () => {
     const Component = IframeEntry.Component;
     const { rerender } = render(
-      <Component
-        card={{ type: 'iframe', id: 'iframe_1', url: 'https://a.com' }}
-      />,
+      <CardInstanceProvider cardId="iframe_1" deletable>
+        <Component card={{ type: 'iframe', id: 'iframe_1', url: 'https://a.com' }} />
+      </CardInstanceProvider>,
     );
 
     rerender(
-      <Component
-        card={{ type: 'iframe', id: 'iframe_1', url: 'https://b.com' }}
-      />,
+      <CardInstanceProvider cardId="iframe_1" deletable>
+        <Component card={{ type: 'iframe', id: 'iframe_1', url: 'https://b.com' }} />
+      </CardInstanceProvider>,
     );
 
     const frame = screen.getByTitle('Embedded page: https://b.com');
@@ -207,9 +201,9 @@ describe('IframeCard rendering', () => {
   it('keeps optimistic URL when a stale card.url prop arrives mid-PATCH', () => {
     const Component = IframeEntry.Component;
     const { rerender } = render(
-      <Component
-        card={{ type: 'iframe', id: 'iframe_1', url: 'https://a.com' }}
-      />,
+      <CardInstanceProvider cardId="iframe_1" deletable>
+        <Component card={{ type: 'iframe', id: 'iframe_1', url: 'https://a.com' }} />
+      </CardInstanceProvider>,
     );
 
     const input = screen.getByLabelText('Web page URL');
@@ -222,9 +216,9 @@ describe('IframeCard rendering', () => {
     ).toHaveAttribute('src', 'https://b.com');
 
     rerender(
-      <Component
-        card={{ type: 'iframe', id: 'iframe_1', url: 'https://a.com' }}
-      />,
+      <CardInstanceProvider cardId="iframe_1" deletable>
+        <Component card={{ type: 'iframe', id: 'iframe_1', url: 'https://a.com' }} />
+      </CardInstanceProvider>,
     );
 
     expect(screen.getByLabelText('Web page URL')).toHaveValue('https://b.com');
@@ -234,12 +228,7 @@ describe('IframeCard rendering', () => {
   });
 
   it('trims whitespace before persisting submitted URLs', async () => {
-    const Component = IframeEntry.Component;
-    render(
-      <Component
-        card={{ type: 'iframe', id: 'iframe_1', url: 'https://example.com' }}
-      />,
-    );
+    renderIframe({ type: 'iframe', id: 'iframe_1', url: 'https://example.com' });
 
     const input = screen.getByLabelText('Web page URL');
     fireEvent.change(input, { target: { value: '  https://example.com  ' } });
@@ -254,12 +243,7 @@ describe('IframeCard rendering', () => {
   });
 
   it('submitting an empty URL does nothing', () => {
-    const Component = IframeEntry.Component;
-    render(
-      <Component
-        card={{ type: 'iframe', id: 'iframe_1', url: 'https://example.com' }}
-      />,
-    );
+    renderIframe({ type: 'iframe', id: 'iframe_1', url: 'https://example.com' });
 
     const input = screen.getByLabelText('Web page URL');
     fireEvent.change(input, { target: { value: '   ' } });
@@ -272,16 +256,27 @@ describe('IframeCard rendering', () => {
   });
 
   it('calling onClose triggers the close handler', () => {
-    const Component = IframeEntry.Component;
     const onClose = vi.fn();
-    render(
-      <Component
-        card={{ type: 'iframe', id: 'iframe_1', url: 'https://example.com' }}
-        onClose={onClose}
-      />,
+    renderIframe(
+      { type: 'iframe', id: 'iframe_1', url: 'https://example.com' },
+      { onClose },
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove panel' }));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('reload action remounts the iframe element', async () => {
+    renderIframe({ type: 'iframe', id: 'iframe_1', url: 'https://example.com' });
+
+    const before = iframeNode();
+    fireEvent.click(screen.getByRole('button', { name: 'Reload' }));
+
+    let after = iframeNode();
+    await waitFor(() => {
+      after = iframeNode();
+      expect(after).not.toBe(before);
+    });
+    expect(after).toHaveAttribute('src', 'https://example.com');
   });
 });

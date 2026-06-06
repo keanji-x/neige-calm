@@ -30,6 +30,12 @@ vi.mock('./api/calm', () => ({
   upsertOverlay: vi.fn(),
   updateCard: vi.fn(),
   getTerminalForCard: vi.fn().mockRejectedValue(new Error('no terminal seed')),
+  listDir: vi.fn().mockResolvedValue({ path: '/repo', parent: null, entries: [] }),
+  readFile: vi.fn(),
+  readFileRaw: vi.fn((path: string) => `/api/fs/read?path=${encodeURIComponent(path)}`),
+  gitStatus: vi.fn().mockResolvedValue({ repo_root: '/repo', files: [] }),
+  gitDiff: vi.fn(),
+  toolCallFromIframe: vi.fn(),
 }));
 
 vi.mock('./api/events', () => ({
@@ -198,6 +204,88 @@ describe('WaveList — rendering + accessibility', () => {
     expect(
       await screen.findByRole('button', { name: 'Refresh terminal' }),
     ).toBeInTheDocument();
+  });
+
+  it('uses entry accessibleName metadata for iframe, plugin, and file-viewer rows', () => {
+    render(
+      <Wrapper client={makeClient()}>
+        <WaveList
+          waveId="w1"
+          cards={[
+            {
+              kind: 'card',
+              card: {
+                type: 'iframe',
+                id: 'iframe_1',
+                url: 'https://example.com',
+              },
+              sort: 10,
+            },
+            {
+              kind: 'card',
+              card: {
+                type: 'plugin',
+                id: 'plugin_1',
+                resource_uri: 'ui://hello/main',
+              },
+              sort: 20,
+            },
+            {
+              kind: 'card',
+              card: {
+                type: 'file-viewer',
+                id: 'file_1',
+                path: '/repo',
+              },
+              sort: 30,
+            },
+          ]}
+          onRemoveCard={() => {}}
+        />
+      </Wrapper>,
+    );
+
+    expect(
+      screen.getByRole('listitem', { name: 'Web page: https://example.com' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('listitem', { name: 'Plugin: ui://hello/main' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('listitem', { name: 'File: /repo' }),
+    ).toBeInTheDocument();
+  });
+
+  it('does not let iframe head action key events reach the row roving handler', () => {
+    render(
+      <Wrapper client={makeClient()}>
+        <WaveList
+          waveId="w1"
+          cards={[
+            {
+              kind: 'card',
+              card: {
+                type: 'iframe',
+                id: 'iframe_1',
+                url: 'https://example.com',
+              },
+              sort: 10,
+            },
+          ]}
+          onRemoveCard={() => {}}
+        />
+      </Wrapper>,
+    );
+
+    const reload = screen.getByRole('button', { name: 'Reload' });
+    const event = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
+    });
+
+    expect(reload.dispatchEvent(event)).toBe(true);
+    expect(event.defaultPrevented).toBe(false);
   });
 });
 

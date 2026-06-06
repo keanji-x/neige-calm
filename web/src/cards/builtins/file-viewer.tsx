@@ -3,7 +3,6 @@ import { useQueryClient } from '@tanstack/react-query';
 import { z } from 'zod';
 import { CardHead } from '../CardHead';
 import type { CardEntry } from '../registry';
-import type { FileViewerCardData } from '../../types';
 import type {
   GitChangedFile,
   GitDiffResponse,
@@ -17,6 +16,18 @@ import {
   useOverlayState,
 } from '../../hooks/useOverlayState';
 import { useState } from '../../shared/state';
+
+declare module '../../types' {
+  interface WaveCardDataMap {
+    'file-viewer': FileViewerCardData;
+  }
+}
+
+export interface FileViewerCardData {
+  type: 'file-viewer';
+  id: string;
+  path: string;
+}
 
 const LazyCodePane = lazy(() =>
   import('./file-viewer-codemirror').then((m) => ({ default: m.CodePane })),
@@ -301,6 +312,7 @@ function FileViewerCard({
   return (
     <div className="file-viewer-card" data-wheel-file-viewer-tab={tab}>
       <CardHead
+        card={card}
         className="card-drag-handle"
         title="file"
         onClose={onClose}
@@ -597,6 +609,15 @@ export const FileViewerEntry: CardEntry<FileViewerCardData> = {
   type: 'file-viewer',
   Component: FileViewerCard,
   defaultSize: { w: 6, h: 12, minW: 4, minH: 6 },
+  claim: { mode: 'exact', kind: 'file-viewer' },
+  title: () => 'file',
+  accessibleName: (card) => `File: ${card.path}`,
+  create: {
+    mode: 'generic',
+    buildPayload(input: { path: string }) {
+      return { path: input.path };
+    },
+  },
   fromKernel: (k) => {
     if (k.kind !== 'file-viewer') return null;
     const parsed = fileViewerPayloadSchema.safeParse(k.payload ?? {});
