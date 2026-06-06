@@ -57,7 +57,7 @@ import { queryClient } from './providers';
 import { dlog } from '../util/debug';
 import type { Cove, Wave, WaveCardSlot } from '../types';
 import type { AddPanelKind } from '../shared/components/AddPanel';
-import { getEntry, LEGACY_CREATE_KINDS } from '../cards/registry';
+import { getEntry } from '../cards/registry';
 import type { CardCreateStrategy, CardKindClaim } from '../cards/registry';
 
 // Per-route page components are loaded on demand so the entry chunk only
@@ -424,25 +424,11 @@ function WaveComponent() {
 }
 
 /**
- * Card create routed by kind. Terminal cards need the two-step "card
- * row + Terminal row + payload patch" dance the kernel expects.
- *
- * Lives here (not in queries.ts) because it composes three mutations
- * in sequence; wrapping that in `useMutation` would obscure the
- * sequencing for not much gain. We call the api client directly and
- * trigger the wave-detail invalidation manually.
- *
- * Non-terminal kinds (doc/git/diff/plan) were removed in Wave 4; new
- * card kinds will arrive through the plugin host (M3) as `ui://` cards,
- * not as additional built-ins, so this function intentionally only
- * handles `'terminal'`.
- */
-/**
  * Schema-driven card create. The Wave page hands us the kind + the
  * SchemaForm values; we look up the right kernel sequence per kind.
  *
- * Today `codex` and `claude` flow through here (multi-field input). Terminal
- * stays on `addCardOfKind` (no schema → default args). Other kinds
+ * Today zero-config entries and schema-backed entries both flow through here.
+ * Other kinds
  * (`plugin:*` / `ui://*`) come through their own create path via the
  * plugin host; they're not menu-driven from the AddPanel.
  */
@@ -466,53 +452,6 @@ export async function addCardWithValues(
     return;
   }
   await createFromEntry(qc, waveId, entry, input, theme);
-}
-
-async function createLegacyCard(
-  waveId: string,
-  type: string,
-  values: Record<string, string>,
-  theme: 'light' | 'dark',
-): Promise<{ cardId: string; raw?: unknown } | null> {
-  try {
-    dlog('addCardWithValues', `${type} create START`, { waveId, values, theme });
-    // Atomic codex-card create (#117). One round-trip writes the card row,
-    // the linked terminal row, payload (with `terminal_id` + optional
-    // `cwd`), AND spawns the codex daemon. Server emits a single
-    // `card.added` event carrying the final payload — no intermediate
-    // empty-payload flash for the renderer's "Codex is starting…"
-    // placeholder to react to.
-    //
-    // #177 — stamp the host browser's current theme RGB onto the body.
-    // The kernel forwards this to the codex daemon's argv so its
-    // `TerminalModel` answers codex's OSC 10/11 startup probe with
-    // matching colors; without it the composer paints against codex's
-    // built-in default and clashes with the surrounding card background.
-    const rgb = theme === 'dark' ? DARK_THEME_RGB : LIGHT_THEME_RGB;
-    const body = {
-      cwd: values.cwd || undefined,
-      prompt: values.prompt || undefined,
-      theme: rgb,
-    };
-    let card;
-    if (type === 'claude') {
-      // TODO(#445 follow-up): remove once claude entry declares create.mode='atomic'
-      card = await api.createClaudeCard(waveId, body);
-    } else if (type === 'codex') {
-      // TODO(#445 follow-up): remove once codex entry declares create.mode='atomic'
-      card = await api.createCodexCard(waveId, body);
-    } else if (type === 'terminal') {
-      // TODO(#445 follow-up): remove once terminal entry declares create.mode='atomic'
-      card = await api.createTerminalCard(waveId, { theme: rgb });
-    } else {
-      throw new Error(`MissingCreateStrategy(${type})`);
-    }
-    dlog('addCardWithValues', `${type} create DONE`, { cardId: card.id });
-    return { cardId: card.id, raw: card };
-  } catch (err) {
-    console.warn(`[Calm] ${type} create failed:`, err);
-    return null;
-  }
 }
 
 export class CatalogCreateNotImplemented extends Error {
@@ -567,24 +506,7 @@ async function createFromEntry(
   theme: 'light' | 'dark',
 ): Promise<void> {
   if (!entry.create) {
-    if (!LEGACY_CREATE_KINDS.has(String(entry.type))) {
-      throw new Error(`MissingCreateStrategy(${entry.type})`);
-    }
-    try {
-      const result = await createLegacyCard(
-        waveId,
-        String(entry.type),
-        input as Record<string, string>,
-        theme,
-      );
-      if (!result) return;
-      await qc.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
-      dlog('createFromEntry', 'DONE', { type: entry.type, cardId: result.cardId });
-    } catch (err) {
-      if (isCreateContractError(err)) throw err;
-      console.warn(`[Calm] ${createWarnKind(entry)} create failed:`, err);
-    }
-    return;
+    throw new Error(`MissingCreateStrategy(${entry.type})`);
   }
 
   try {
@@ -602,7 +524,7 @@ async function createFromEntry(
       result = { cardId: card.id, raw: card };
     } else if (entry.create.mode === 'atomic') {
       result = await entry.create.submit(waveId, input as never, {
-        themeRgb: { fg: rgb.fg.join(' '), bg: rgb.bg.join(' ') },
+        themeRgb: rgb,
       });
     } else {
       assertRouterCreateAllowed(entry);

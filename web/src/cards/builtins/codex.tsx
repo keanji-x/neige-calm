@@ -25,13 +25,22 @@ import type { ExitChange, XtermViewHandle } from '../../XtermView';
 import { sharedEventStream } from '../../api/events';
 import { CardStatusDot } from '../../shared/components/CardStatusDot';
 import { CardExitBadge } from '../../shared/components/CardExitBadge';
-import { getTerminalForCard, resetSpecCard } from '../../api/calm';
+import {
+  createClaudeCard,
+  createCodexCard,
+  getTerminalForCard,
+  resetSpecCard,
+} from '../../api/calm';
 import { useTheme } from '../../app/theme';
 import { Icon } from '../../Icon';
 import { IconButton } from '../../pages/_shared';
 import { ConfirmDialog } from '../../ui/ConfirmDialog/ConfirmDialog';
 import { CardHead } from '../CardHead';
-import type { CardEntry } from '../registry';
+import {
+  useOptionalCardInstanceCtx,
+  type CardEntry,
+  type CardInstanceCtx,
+} from '../registry';
 import { useXtermWheelTargetRef } from '../../input/useXtermWheelTarget';
 import {
   CLAUDE_PAYLOAD_SCHEMA_VERSION,
@@ -97,6 +106,9 @@ const claudePayloadSchema = z.object({
 });
 
 type AgentProvider = 'codex' | 'claude';
+
+type CodexCreateInput = { cwd?: string };
+type ClaudeCreateInput = { cwd?: string; prompt?: string };
 
 type AgentCardLogoStyle = CSSProperties & {
   '--agent-card-logo-bg'?: string;
@@ -187,7 +199,6 @@ function CodexCard({
 function CodexCardImpl({
   card,
   onClose,
-  deletable,
 }: {
   card: CodexCardData | ClaudeCardData;
   onClose?: () => void;
@@ -212,19 +223,35 @@ function CodexCardImpl({
   // XtermView callback re-emits on every state transition.
   const [role, setRole] = useState<Role | null>(null);
   const [xtermRef, setXtermRef] = useXtermWheelTargetRef<XtermViewHandle>();
+  const instanceCtx = useOptionalCardInstanceCtx();
+  const [localRefreshEpoch] = useState(0);
+  const [refreshEpoch] = instanceCtx?.useInstance<number>('refreshEpoch', 0) ?? [
+    localRefreshEpoch,
+  ];
+  const didMountRefreshEffect = useRef(false);
+  useEffect(() => {
+    if (!didMountRefreshEffect.current) {
+      didMountRefreshEffect.current = true;
+      return;
+    }
+    xtermRef.current?.refresh();
+  }, [refreshEpoch, xtermRef]);
   // `card.id` is typed `string | undefined` in the kernel wire model, but a
   // mounted card always has one — gate the Reset button on its presence so
   // TS knows the API call site is safe, matching the `if (!cardId) return`
   // pattern the rest of this component already uses (see line ~200).
-  const canResetSpecSession =
-    provider === 'codex' && deletable === false && !!cardId;
-  const [resetOpen, setResetOpen] = useState(false);
-  const resetOpenRef = useRef(false);
+  const [localResetOpen, setLocalResetOpen] = useState(false);
+  const [resetOpen, setResetOpen] =
+    instanceCtx?.useInstance<boolean>('resetOpen', false) ?? [
+      localResetOpen,
+      setLocalResetOpen,
+    ];
   const [resetPending, setResetPending] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
   useEffect(() => {
-    resetOpenRef.current = resetOpen;
-    if (!resetOpen) {
+    if (resetOpen) {
+      setResetError(null);
+    } else {
       setResetPending(false);
       setResetError(null);
     }
@@ -320,7 +347,11 @@ function CodexCardImpl({
       xtermRef.current?.refresh();
       setResetOpen(false);
     } catch (err) {
-      if (resetOpenRef.current) {
+      const [isResetOpen] = instanceCtx?.useInstance<boolean>(
+        'resetOpen',
+        false,
+      ) ?? [resetOpen];
+      if (isResetOpen) {
         setResetError(err instanceof Error ? err.message : 'Reset failed');
       }
     } finally {
@@ -346,27 +377,6 @@ function CodexCardImpl({
         // which is the kind of churn that confuses some AT.
         status={
           <>
-            {canResetSpecSession && (
-              <>
-                <IconButton
-                  glyph={<Icon n="refresh" s={14} />}
-                  label="Refresh terminal"
-                  title="Refresh terminal (reconnect)"
-                  tone="neutral"
-                  onClick={() => xtermRef.current?.refresh()}
-                />
-                <IconButton
-                  glyph={<Icon n="reset" s={14} />}
-                  label="Reset spec session"
-                  title="Reset spec session (kill daemon, new thread)"
-                  tone="danger"
-                  onClick={() => {
-                    setResetError(null);
-                    setResetOpen(true);
-                  }}
-                />
-              </>
-            )}
             {role === 'Observer' && (
               <span className="card-head-observing-pill">observing</span>
             )}
@@ -437,6 +447,13 @@ function CodexCardImpl({
   );
 }
 
+function canShowSpecSessionActions(
+  card: CodexCardData | ClaudeCardData,
+  deletable?: boolean,
+): boolean {
+  return card.type === 'codex' && deletable === false && !!card.id;
+}
+
 function isFsmState(s: string): s is FsmState {
   return (
     s === 'Starting' ||
@@ -481,13 +498,68 @@ function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
-export const CodexEntry: CardEntry<CodexCardData> = {
+function specSessionActions(
+  card: CodexCardData | ClaudeCardData,
+  ctx: CardInstanceCtx,
+) {
+  if (!canShowSpecSessionActions(card, ctx.deletable)) return [];
+  const [, setRefreshEpoch] = ctx.useInstance<number>('refreshEpoch', 0);
+  const [, setResetOpen] = ctx.useInstance<boolean>('resetOpen', false);
+  return [
+    {
+      kind: 'imperative' as const,
+      id: 'refresh-terminal',
+      placement: 'head' as const,
+      render() {
+        return (
+          <IconButton
+            glyph={<Icon n="refresh" s={14} />}
+            label="Refresh terminal"
+            title="Refresh terminal (reconnect)"
+            tone="neutral"
+            onClick={() => setRefreshEpoch((epoch) => epoch + 1)}
+          />
+        );
+      },
+    },
+    {
+      kind: 'imperative' as const,
+      id: 'reset-spec-session',
+      placement: 'head' as const,
+      render() {
+        return (
+          <IconButton
+            glyph={<Icon n="reset" s={14} />}
+            label="Reset spec session"
+            title="Reset spec session (kill daemon, new thread)"
+            tone="danger"
+            onClick={() => setResetOpen(true)}
+          />
+        );
+      },
+    },
+  ];
+}
+
+export const CodexEntry: CardEntry<CodexCardData, CodexCreateInput> = {
   type: 'codex',
   Component: CodexCard,
   defaultSize: { w: 6, h: 12, minW: 4, minH: 8 },
   claim: { mode: 'exact', kind: 'codex' },
   title: () => 'Codex',
   accessibleName: () => 'Codex',
+  create: {
+    mode: 'atomic',
+    async submit(waveId, input, ctx) {
+      const card = await createCodexCard(waveId, {
+        cwd: input.cwd || undefined,
+        prompt: undefined,
+        theme: ctx.themeRgb,
+      });
+      return { cardId: card.id, raw: card };
+    },
+  },
+  actions: specSessionActions,
   fromKernel: (k) => {
     if (k.kind !== 'codex') return null;
     const candidate = k.payload ?? {};
@@ -536,13 +608,25 @@ export const CodexEntry: CardEntry<CodexCardData> = {
   },
 };
 
-export const ClaudeEntry: CardEntry<ClaudeCardData> = {
+export const ClaudeEntry: CardEntry<ClaudeCardData, ClaudeCreateInput> = {
   type: 'claude',
   Component: CodexCard,
   defaultSize: { w: 6, h: 12, minW: 4, minH: 8 },
   claim: { mode: 'exact', kind: 'claude' },
   title: () => 'Claude',
   accessibleName: () => 'Claude',
+  create: {
+    mode: 'atomic',
+    async submit(waveId, input, ctx) {
+      const card = await createClaudeCard(waveId, {
+        cwd: input.cwd || undefined,
+        prompt: input.prompt || undefined,
+        theme: ctx.themeRgb,
+      });
+      return { cardId: card.id, raw: card };
+    },
+  },
+  actions: specSessionActions,
   fromKernel: (k) => {
     if (k.kind !== 'claude') return null;
     const candidate = k.payload ?? {};

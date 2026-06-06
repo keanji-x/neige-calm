@@ -7,6 +7,8 @@ vi.mock('../api/calm', async () => {
   return {
     ...actual,
     createCard: vi.fn(),
+    createClaudeCard: vi.fn(),
+    createCodexCard: vi.fn(),
     createTerminalCard: vi.fn(),
   };
 });
@@ -21,6 +23,7 @@ import {
 } from '../app/router';
 import { IframeEntry } from './builtins/iframe';
 import { TerminalEntry } from './builtins/terminal';
+import { ClaudeEntry, CodexEntry } from './builtins/codex';
 import type { WaveCardData } from '../types';
 import {
   __resetRegistryForTest,
@@ -367,7 +370,7 @@ describe('router AddPanel create runtime failures', () => {
     );
   });
 
-  it('swallows rejected legacy terminal creates at the router edge', async () => {
+  it('swallows rejected atomic terminal creates at the router edge', async () => {
     registerCard(TerminalEntry);
     const err = new Error('offline');
     vi.mocked(api.createTerminalCard).mockRejectedValue(err);
@@ -401,6 +404,84 @@ describe('router AddPanel create runtime failures', () => {
     ).rejects.toThrow(CatalogCreateNotImplemented);
 
     expect(warnSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('built-in atomic create entries', () => {
+  const themeRgb = {
+    fg: [1, 2, 3] as [number, number, number],
+    bg: [4, 5, 6] as [number, number, number],
+  };
+
+  it('submits terminal creates through the atomic terminal endpoint', async () => {
+    vi.mocked(api.createTerminalCard).mockResolvedValue({
+      id: 'card_terminal',
+    } as Awaited<ReturnType<typeof api.createTerminalCard>>);
+
+    expect(TerminalEntry.create?.mode).toBe('atomic');
+    if (TerminalEntry.create?.mode !== 'atomic') {
+      throw new Error('terminal create is not atomic');
+    }
+
+    await expect(
+      TerminalEntry.create.submit('wave_1', {}, { themeRgb }),
+    ).resolves.toEqual({
+      cardId: 'card_terminal',
+      raw: { id: 'card_terminal' },
+    });
+    expect(api.createTerminalCard).toHaveBeenCalledWith('wave_1', {
+      theme: themeRgb,
+    });
+  });
+
+  it('submits codex creates through the atomic codex endpoint', async () => {
+    vi.mocked(api.createCodexCard).mockResolvedValue({
+      id: 'card_codex',
+    } as Awaited<ReturnType<typeof api.createCodexCard>>);
+
+    expect(CodexEntry.create?.mode).toBe('atomic');
+    if (CodexEntry.create?.mode !== 'atomic') {
+      throw new Error('codex create is not atomic');
+    }
+
+    await expect(
+      CodexEntry.create.submit('wave_1', { cwd: '' }, { themeRgb }),
+    ).resolves.toEqual({
+      cardId: 'card_codex',
+      raw: { id: 'card_codex' },
+    });
+    expect(api.createCodexCard).toHaveBeenCalledWith('wave_1', {
+      cwd: undefined,
+      prompt: undefined,
+      theme: themeRgb,
+    });
+  });
+
+  it('submits claude creates through the atomic claude endpoint', async () => {
+    vi.mocked(api.createClaudeCard).mockResolvedValue({
+      id: 'card_claude',
+    } as Awaited<ReturnType<typeof api.createClaudeCard>>);
+
+    expect(ClaudeEntry.create?.mode).toBe('atomic');
+    if (ClaudeEntry.create?.mode !== 'atomic') {
+      throw new Error('claude create is not atomic');
+    }
+
+    await expect(
+      ClaudeEntry.create.submit(
+        'wave_1',
+        { cwd: '/repo', prompt: 'ship it' },
+        { themeRgb },
+      ),
+    ).resolves.toEqual({
+      cardId: 'card_claude',
+      raw: { id: 'card_claude' },
+    });
+    expect(api.createClaudeCard).toHaveBeenCalledWith('wave_1', {
+      cwd: '/repo',
+      prompt: 'ship it',
+      theme: themeRgb,
+    });
   });
 });
 
