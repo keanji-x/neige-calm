@@ -147,8 +147,14 @@ pub trait RuntimeRepo {
         status: RunStatus,
     ) -> Result<()>;
 
+    /// Idempotent: if no active runtime exists for this card, returns
+    /// `Ok(())` without writing. This handles fast-exit races and
+    /// pre-#488-backfilled-but-already-completed cards.
     async fn runtime_set_status_for_card(&self, card_id: &str, status: RunStatus) -> Result<()>;
 
+    /// Idempotent: if no active runtime exists for this card, returns
+    /// `Ok(())` without writing. This handles fast-exit races and
+    /// pre-#488-backfilled-but-already-completed cards.
     async fn runtime_set_status_for_card_tx(
         &self,
         tx: &mut Tx<'_>,
@@ -184,12 +190,18 @@ pub trait RuntimeRepo {
         terminal_status: RunStatus,
     ) -> Result<()>;
 
+    /// Idempotent: if no active runtime exists for this card, returns
+    /// `Ok(())` without writing. This handles fast-exit races and
+    /// pre-#488-backfilled-but-already-completed cards.
     async fn runtime_complete_for_card(
         &self,
         card_id: &str,
         terminal_status: RunStatus,
     ) -> Result<()>;
 
+    /// Idempotent: if no active runtime exists for this card, returns
+    /// `Ok(())` without writing. This handles fast-exit races and
+    /// pre-#488-backfilled-but-already-completed cards.
     async fn runtime_complete_for_card_tx(
         &self,
         tx: &mut Tx<'_>,

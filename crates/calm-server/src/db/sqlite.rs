@@ -1939,9 +1939,9 @@ pub async fn runtime_set_status_for_card_tx(
     card_id: &str,
     status: RunStatus,
 ) -> RuntimeResult<()> {
-    let runtime = runtime_get_active_for_card_tx(tx, card_id)
-        .await?
-        .ok_or_else(|| runtime_message(format!("active runtime for card {card_id} not found")))?;
+    let Some(runtime) = runtime_get_active_for_card_tx(tx, card_id).await? else {
+        return Ok(());
+    };
     runtime_set_status_tx(tx, &runtime.id, status).await
 }
 
@@ -2067,9 +2067,9 @@ pub async fn runtime_complete_for_card_tx(
     card_id: &str,
     terminal_status: RunStatus,
 ) -> RuntimeResult<()> {
-    let runtime = runtime_get_active_for_card_tx(tx, card_id)
-        .await?
-        .ok_or_else(|| runtime_message(format!("active runtime for card {card_id} not found")))?;
+    let Some(runtime) = runtime_get_active_for_card_tx(tx, card_id).await? else {
+        return Ok(());
+    };
     runtime_complete_tx(tx, &runtime.id, terminal_status).await
 }
 

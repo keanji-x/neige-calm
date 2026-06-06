@@ -44,7 +44,7 @@ SELECT
   c.id,
   'codex',
   'codex',
-  'running',
+  CASE WHEN ct.thread_id IS NULL THEN 'turn_pending' ELSE 'running' END,
   t.id,
   ct.thread_id,
   NULL,
@@ -55,10 +55,11 @@ SELECT
   CAST(strftime('%s','now') AS INTEGER) * 1000,
   CAST(strftime('%s','now') AS INTEGER) * 1000,
   NULL
-FROM card_codex_threads ct
-JOIN cards c ON c.id = ct.card_id
+FROM cards c
+LEFT JOIN card_codex_threads ct ON ct.card_id = c.id
 JOIN terminals t ON t.card_id = c.id
 WHERE c.kind = 'codex'
+  AND c.role != 'spec'
   AND COALESCE(json_extract(c.payload, '$.codex_source'), 'legacy') != 'shared'
   AND t.exit_code IS NULL
   AND COALESCE(t.signal_killed, 0) = 0

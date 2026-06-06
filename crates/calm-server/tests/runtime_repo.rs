@@ -73,6 +73,18 @@ fn runtime_init(
     }
 }
 
+async fn runtime_row_snapshot(repo: &SqlxRepo, runtime_id: &str) -> (String, i64, Option<i64>) {
+    sqlx::query_as(
+        r#"SELECT status, updated_at_ms, completed_at_ms
+           FROM runtimes
+           WHERE id = ?1"#,
+    )
+    .bind(runtime_id)
+    .fetch_one(repo.pool())
+    .await
+    .expect("runtime row snapshot")
+}
+
 #[tokio::test]
 async fn runtime_start_tx_terminal_persists_active_row() {
     let repo = fresh_repo().await;
@@ -212,6 +224,102 @@ async fn runtime_complete_for_terminal_noop_when_no_active() {
         .await
         .unwrap();
     assert_eq!(count, 0);
+}
+
+#[tokio::test]
+async fn runtime_set_status_for_card_noop_when_no_active() {
+    let repo = fresh_repo().await;
+    let wave = make_wave(&repo).await;
+    let mut tx = repo.pool().begin().await.unwrap();
+    let (card, _term) = card_with_terminal_create_tx(
+        &mut tx,
+        new_id(),
+        wave.id,
+        None,
+        "bash".into(),
+        "/tmp".into(),
+        json!({}),
+        CardRole::Plain,
+        true,
+        repo.card_role_cache(),
+        calm_server::routes::theme::RequestTheme::default_dark(),
+    )
+    .await
+    .unwrap();
+    let runtime_id = runtime_get_active_for_card_tx(&mut tx, card.id.as_ref())
+        .await
+        .unwrap()
+        .expect("active runtime")
+        .id;
+    runtime_complete_tx(&mut tx, &runtime_id, RunStatus::Exited)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let before = runtime_row_snapshot(&repo, &runtime_id).await;
+    let mut tx = repo.pool().begin().await.unwrap();
+    runtime_set_status_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Running)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let after = runtime_row_snapshot(&repo, &runtime_id).await;
+
+    assert_eq!(before, after);
+    assert_eq!(after.0, "exited");
+    assert!(
+        repo.runtime_get_active_for_card(&card.id.to_string())
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn runtime_complete_for_card_noop_when_no_active() {
+    let repo = fresh_repo().await;
+    let wave = make_wave(&repo).await;
+    let mut tx = repo.pool().begin().await.unwrap();
+    let (card, _term) = card_with_terminal_create_tx(
+        &mut tx,
+        new_id(),
+        wave.id,
+        None,
+        "bash".into(),
+        "/tmp".into(),
+        json!({}),
+        CardRole::Plain,
+        true,
+        repo.card_role_cache(),
+        calm_server::routes::theme::RequestTheme::default_dark(),
+    )
+    .await
+    .unwrap();
+    let runtime_id = runtime_get_active_for_card_tx(&mut tx, card.id.as_ref())
+        .await
+        .unwrap()
+        .expect("active runtime")
+        .id;
+    runtime_complete_tx(&mut tx, &runtime_id, RunStatus::Exited)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let before = runtime_row_snapshot(&repo, &runtime_id).await;
+    let mut tx = repo.pool().begin().await.unwrap();
+    runtime_complete_for_card_tx(&mut tx, card.id.as_ref(), RunStatus::Failed)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let after = runtime_row_snapshot(&repo, &runtime_id).await;
+
+    assert_eq!(before, after);
+    assert_eq!(after.0, "exited");
+    assert!(
+        repo.runtime_get_active_for_card(&card.id.to_string())
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]

@@ -2047,9 +2047,6 @@ impl Inner {
                     return Err(e);
                 }
                 RollbackOutcome::Preserved => {
-                    self.repo
-                        .runtime_complete_for_card(card_id.as_ref(), RunStatus::Failed)
-                        .await?;
                     spawn_preserved_failure = true;
                     tracing::info!(
                         card_id = %card_id,

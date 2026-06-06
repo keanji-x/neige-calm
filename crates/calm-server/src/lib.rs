@@ -72,6 +72,7 @@ pub async fn reconcile_supervisor_on_boot(state: &state::AppState) {
                         "failed to mark stale terminal exited during boot reconcile"
                     );
                 }
+                // Synthetic -1 means the process outcome is unknown at boot, so treat it as Exited.
                 if let Err(e) = state
                     .repo
                     .runtime_complete_for_terminal(&term.id, RunStatus::Exited)

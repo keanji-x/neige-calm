@@ -443,9 +443,25 @@ pub(crate) async fn create_codex_card(
             shell_single_quote(&cs.shared_codex_appserver.remote_uri()),
         )
     } else {
-        cs.shared_codex_appserver
+        if let Err(e) = cs
+            .shared_codex_appserver
             .ensure_respawn_for_current_settings()
-            .await?;
+            .await
+        {
+            if let Err(mark_err) = w
+                .repo
+                .runtime_complete_for_card(card.id.as_ref(), RunStatus::Failed)
+                .await
+            {
+                tracing::warn!(
+                    card_id = %card.id,
+                    terminal_id = %term.id,
+                    error = %mark_err,
+                    "failed to mark empty codex runtime failed after respawn error"
+                );
+            }
+            return Err(e);
+        }
 
         let mut payload = card.payload.clone();
         let Some(map) = payload.as_object_mut() else {
@@ -531,6 +547,18 @@ pub(crate) async fn create_codex_card(
                 error = %e,
                 "PTY spawn failed; rolled back pending registry + payload"
             );
+            if let Err(mark_err) = w
+                .repo
+                .runtime_complete_for_card(card.id.as_ref(), RunStatus::Failed)
+                .await
+            {
+                tracing::warn!(
+                    card_id = %card.id,
+                    terminal_id = %term.id,
+                    error = %mark_err,
+                    "failed to mark empty codex runtime failed after spawn error"
+                );
+            }
         } else if let Err(mark_err) = w
             .repo
             .runtime_complete_for_card(card.id.as_ref(), RunStatus::Failed)
