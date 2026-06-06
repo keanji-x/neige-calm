@@ -91,6 +91,7 @@ use crate::error::Result;
 use crate::event::{Event, EventScope};
 use crate::ids::ActorId;
 use crate::model::*;
+use crate::runtime_repo::RuntimeRepo;
 use crate::state::WriteContext;
 use crate::wave_cove_cache::WaveCoveCache;
 use async_trait::async_trait;
@@ -893,6 +894,7 @@ pub mod prelude {
     pub use super::{
         Repo, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, RouteRepo,
     };
+    pub use crate::runtime_repo::RuntimeRepo;
 }
 
 /// The trait object route handlers actually see via `AppState::repo`.
@@ -914,8 +916,8 @@ impl<T> RouteRepo for T where T: RepoEventWrite + RepoOutOfDomain + ?Sized {}
 /// helpers, the replay lib, terminal_sweeper, and tests. Production route
 /// handlers see the narrower [`RouteRepo`] trait object instead — see
 /// `AppState::repo`.
-pub trait Repo: RouteRepo + RepoSyncDomainRaw {}
-impl<T> Repo for T where T: RouteRepo + RepoSyncDomainRaw + ?Sized {}
+pub trait Repo: RouteRepo + RepoSyncDomainRaw + RuntimeRepo {}
+impl<T> Repo for T where T: RouteRepo + RepoSyncDomainRaw + RuntimeRepo + ?Sized {}
 
 // ---------------------------------------------------------------------------
 // `write_with_event_typed` — ergonomic generic wrapper around the

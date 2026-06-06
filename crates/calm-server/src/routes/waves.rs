@@ -63,7 +63,8 @@ use crate::codex_appserver::{InputItem, Notification};
 use crate::db::sqlite::{
     card_create_with_id_tx, card_update_tx, card_with_codex_create_tx, cove_folder_create_tx,
     overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_wave_tx, overlay_upsert_tx,
-    terminal_delete_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
+    runtime_get_active_for_card_tx, runtime_start_tx, runtime_supersede_tx, terminal_delete_tx,
+    wave_create_tx, wave_delete_tx, wave_update_tx,
 };
 use crate::db::{write_with_event_typed, write_with_events_typed};
 use crate::error::{CalmError, ErrorBody, Result};
@@ -71,12 +72,13 @@ use crate::event::{EditAuthor, Event, EventScope};
 use crate::ids::ActorId;
 use crate::model::{
     CardPatch, CardRole, CoveKind, FolderConflict, FolderConflictKind, NewCard, NewOverlay,
-    NewWave, Wave, WaveDetail, WavePatch, new_id,
+    NewWave, Wave, WaveDetail, WavePatch, new_id, now_ms,
 };
 use crate::pending_codex_threads::PendingEntry;
 use crate::routes::cards::interrupt_shared_card_active_turn;
 use crate::routes::cove_folders::{is_descendant_of, normalize_path};
 use crate::routes::settings::load_settings;
+use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use crate::spec_card::{SpecPushDaemonArgs, build_codex_env_map, seed_and_spawn_spec_daemon};
 use crate::spec_push::{self, SharedStatus, SpecPushPhase, SpecPushStatus, TurnWatchdogConfig};
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
@@ -1118,6 +1120,31 @@ async fn persist_shared_spec_runtime_fields(
                     },
                 )
                 .await?;
+                let runtime_init = RuntimeInit {
+                    id: new_id(),
+                    card_id: card_id_for_tx.clone(),
+                    kind: RuntimeKind::SharedSpec,
+                    agent_provider: Some(AgentProvider::Codex),
+                    status: if thread_id_for_tx.is_some() {
+                        RunStatus::Running
+                    } else {
+                        RunStatus::TurnPending
+                    },
+                    terminal_run_id: None,
+                    thread_id: thread_id_for_tx.clone(),
+                    session_id: None,
+                    active_turn_id: None,
+                    handle_state_json: None,
+                    lease_owner: None,
+                    lease_until_ms: None,
+                    now_ms: now_ms(),
+                };
+                if let Some(existing) = runtime_get_active_for_card_tx(tx, &card_id_for_tx).await?
+                {
+                    runtime_supersede_tx(tx, &existing.id, runtime_init).await?;
+                } else {
+                    runtime_start_tx(tx, runtime_init).await?;
+                }
                 Ok((card.clone(), Event::CardUpdated(card)))
             })
         },

@@ -25,15 +25,19 @@
 
 use crate::actor::Actor;
 use crate::codex_appserver::{InputItem, Notification};
-use crate::db::sqlite::{card_codex_thread_upsert_tx, card_update_tx, card_with_codex_create_tx};
+use crate::db::sqlite::{
+    card_codex_thread_upsert_tx, card_update_tx, card_with_codex_create_tx,
+    runtime_get_active_for_card_tx, runtime_start_tx, runtime_supersede_tx,
+};
 use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::Event;
-use crate::model::{Card, CardPatch, CardRole, new_id};
+use crate::model::{Card, CardPatch, CardRole, new_id, now_ms};
 use crate::pending_codex_threads::{PendingEntry, card_payload_clear_pending_status};
 use crate::routes::cards::card_scope;
 use crate::routes::settings::load_settings;
 use crate::routes::terminal::spawn_terminal_for_route;
+use crate::runtime_repo::{AgentProvider, RunStatus, RuntimeInit, RuntimeKind};
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use axum::{
     Json, Router,
@@ -383,6 +387,28 @@ pub(crate) async fn create_codex_card(
                         Some(wave_id_for_tx.as_str()),
                     )
                     .await?;
+                    let runtime_init = RuntimeInit {
+                        id: new_id(),
+                        card_id: card_id_for_tx.clone(),
+                        kind: RuntimeKind::CodexCard,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: RunStatus::Running,
+                        terminal_run_id: None,
+                        thread_id: Some(thread_id_for_tx.clone()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        lease_owner: None,
+                        lease_until_ms: None,
+                        now_ms: now_ms(),
+                    };
+                    if let Some(existing) =
+                        runtime_get_active_for_card_tx(tx, &card_id_for_tx).await?
+                    {
+                        runtime_supersede_tx(tx, &existing.id, runtime_init).await?;
+                    } else {
+                        runtime_start_tx(tx, runtime_init).await?;
+                    }
                     let card = card_update_tx(
                         tx,
                         &card_id_for_tx,
@@ -447,6 +473,28 @@ pub(crate) async fn create_codex_card(
             &s.write,
             move |tx| {
                 Box::pin(async move {
+                    let runtime_init = RuntimeInit {
+                        id: new_id(),
+                        card_id: card_id_for_tx.clone(),
+                        kind: RuntimeKind::CodexCard,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: RunStatus::TurnPending,
+                        terminal_run_id: None,
+                        thread_id: None,
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        lease_owner: None,
+                        lease_until_ms: None,
+                        now_ms: now_ms(),
+                    };
+                    if let Some(existing) =
+                        runtime_get_active_for_card_tx(tx, &card_id_for_tx).await?
+                    {
+                        runtime_supersede_tx(tx, &existing.id, runtime_init).await?;
+                    } else {
+                        runtime_start_tx(tx, runtime_init).await?;
+                    }
                     let card = card_update_tx(
                         tx,
                         &card_id_for_tx,

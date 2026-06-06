@@ -1,0 +1,201 @@
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sqlx::{Sqlite, Transaction};
+use std::error::Error;
+use std::fmt;
+
+pub type CardId = String;
+pub type RuntimeId = String;
+pub type TimestampMs = i64;
+pub type Tx<'a> = Transaction<'a, Sqlite>;
+pub type Result<T> = std::result::Result<T, RuntimeRepoError>;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RuntimeKind {
+    #[serde(rename = "terminal")]
+    Terminal,
+    #[serde(rename = "codex")]
+    CodexCard,
+    #[serde(rename = "claude")]
+    ClaudeCard,
+    #[serde(rename = "shared-spec")]
+    SharedSpec,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AgentProvider {
+    #[serde(rename = "codex")]
+    Codex,
+    #[serde(rename = "claude")]
+    Claude,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunStatus {
+    Starting,
+    Running,
+    Idle,
+    TurnPending,
+    Failed,
+    Exited,
+    Superseded,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeRepoError {
+    Message { message: String },
+    IllegalStatusTransition { id: RuntimeId, attempted: RunStatus },
+}
+
+impl fmt::Display for RuntimeRepoError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Message { message } => formatter.write_str(message),
+            Self::IllegalStatusTransition { id, attempted } => {
+                write!(
+                    formatter,
+                    "illegal runtime status transition for {id}: {attempted:?}"
+                )
+            }
+        }
+    }
+}
+
+impl Error for RuntimeRepoError {}
+
+/// Returned by `runtime_get_active_for_card` when caller requests joined view;
+/// schema only stores `terminal_run_id`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalRunRef {
+    pub terminal_id: String,
+    pub program: String,
+    pub cwd: Option<String>,
+    pub pid: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadAttribution {
+    pub runtime_id: RuntimeId,
+    pub provider: AgentProvider,
+    pub thread_id: Option<String>,
+    pub session_id: Option<String>,
+    pub active_turn_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CardRuntime {
+    pub id: RuntimeId,
+    pub card_id: CardId,
+    pub kind: RuntimeKind,
+    pub agent_provider: Option<AgentProvider>,
+    pub status: RunStatus,
+    pub terminal_run_id: Option<String>,
+    /// Lazy-joined view; not a schema column.
+    pub terminal_ref: Option<TerminalRunRef>,
+    pub thread_id: Option<String>,
+    pub session_id: Option<String>,
+    pub active_turn_id: Option<String>,
+    pub handle_state_json: Option<Value>,
+    pub lease_owner: Option<String>,
+    pub lease_until_ms: Option<TimestampMs>,
+    pub created_at_ms: TimestampMs,
+    pub updated_at_ms: TimestampMs,
+    pub completed_at_ms: Option<TimestampMs>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeInit {
+    pub id: RuntimeId,
+    pub card_id: CardId,
+    pub kind: RuntimeKind,
+    pub agent_provider: Option<AgentProvider>,
+    pub status: RunStatus,
+    pub terminal_run_id: Option<String>,
+    pub thread_id: Option<String>,
+    pub session_id: Option<String>,
+    pub active_turn_id: Option<String>,
+    pub handle_state_json: Option<Value>,
+    pub lease_owner: Option<String>,
+    pub lease_until_ms: Option<TimestampMs>,
+    pub now_ms: TimestampMs,
+}
+
+#[async_trait]
+pub trait RuntimeRepo {
+    async fn runtime_get_active_for_card(&self, card_id: &CardId) -> Result<Option<CardRuntime>>;
+
+    async fn runtime_get_by_id(&self, id: &RuntimeId) -> Result<Option<CardRuntime>>;
+
+    async fn runtime_start_tx(&self, tx: &mut Tx<'_>, init: RuntimeInit) -> Result<CardRuntime>;
+
+    async fn runtime_supersede_tx(
+        &self,
+        tx: &mut Tx<'_>,
+        id: &RuntimeId,
+        new_init: RuntimeInit,
+    ) -> Result<CardRuntime>;
+
+    /// `status` MUST NOT be `RunStatus::Superseded`; passing it returns
+    /// `RuntimeRepoError::IllegalStatusTransition`. Use `runtime_supersede_tx`
+    /// for the atomic old-to-Superseded + new insert sequence.
+    async fn runtime_set_status_tx(
+        &self,
+        tx: &mut Tx<'_>,
+        id: &RuntimeId,
+        status: RunStatus,
+    ) -> Result<()>;
+
+    async fn runtime_bind_attribution_tx(
+        &self,
+        tx: &mut Tx<'_>,
+        id: &RuntimeId,
+        attr: ThreadAttribution,
+    ) -> Result<()>;
+
+    async fn runtime_set_handle_state_tx(
+        &self,
+        tx: &mut Tx<'_>,
+        id: &RuntimeId,
+        state: Option<serde_json::Value>,
+    ) -> Result<()>;
+
+    async fn runtime_set_active_turn_tx(
+        &self,
+        tx: &mut Tx<'_>,
+        id: &RuntimeId,
+        turn_id: Option<&str>,
+    ) -> Result<()>;
+
+    async fn runtime_complete_tx(
+        &self,
+        tx: &mut Tx<'_>,
+        id: &RuntimeId,
+        terminal_status: RunStatus,
+    ) -> Result<()>;
+
+    async fn runtimes_recover_orphans_on_boot(&self) -> Result<Vec<CardRuntime>>;
+}
+
+impl From<sqlx::Error> for RuntimeRepoError {
+    fn from(err: sqlx::Error) -> Self {
+        Self::Message {
+            message: err.to_string(),
+        }
+    }
+}
+
+impl From<serde_json::Error> for RuntimeRepoError {
+    fn from(err: serde_json::Error) -> Self {
+        Self::Message {
+            message: err.to_string(),
+        }
+    }
+}
+
+impl From<RuntimeRepoError> for crate::error::CalmError {
+    fn from(err: RuntimeRepoError) -> Self {
+        crate::error::CalmError::Internal(err.to_string())
+    }
+}
