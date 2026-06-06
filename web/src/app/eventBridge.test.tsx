@@ -442,6 +442,85 @@ describe('EventBridge', () => {
     cleanup();
   });
 
+  // Compile-time exhaustiveness evidence for PR #479 PR4:
+  // Temporarily delete the `invalidationPolicies['wave.report_edited']` row
+  // and run `npm run typecheck`. `definePolicies<T extends { [K in EventKind]:
+  // InvalidationPolicy<K> }>` must make tsc reject the table with:
+  // "Property 'wave.report_edited' is missing in type ... but required in type ..."
+  it('wave.report_edited dispatches as an explicit noop policy', () => {
+    const client = makeClient();
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const Wrapper = wrap(client);
+    render(
+      <Wrapper>
+        <EventBridge syncEventVersion={1} />
+      </Wrapper>,
+    );
+    expect(() =>
+      fakeStream.emit({
+        ev: 'wave.report_edited',
+        data: {
+          wave_id: 'wave_1',
+          card_id: 'card_report',
+          author: 'spec',
+          edit_id: 'edit_1',
+          summary_before: 'before',
+          summary_after: 'after',
+          body_before: 'body before',
+          body_after: 'body after',
+        },
+      }),
+    ).not.toThrow();
+    expect(invalidate).not.toHaveBeenCalled();
+    cleanup();
+  });
+
+  it('claude.hook dispatches as an explicit noop policy', () => {
+    const client = makeClient();
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const Wrapper = wrap(client);
+    render(
+      <Wrapper>
+        <EventBridge syncEventVersion={1} />
+      </Wrapper>,
+    );
+    expect(() =>
+      fakeStream.emit({
+        ev: 'claude.hook',
+        data: {
+          card_id: 'card_claude',
+          kind: 'hook.claude.pre_tool_use',
+          payload: { tool: 'Read' },
+        },
+      }),
+    ).not.toThrow();
+    expect(invalidate).not.toHaveBeenCalled();
+    cleanup();
+  });
+
+  it('spec_push.abandoned invalidates the cove list, wave detail, and range cache', () => {
+    const client = makeClient();
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const Wrapper = wrap(client);
+    render(
+      <Wrapper>
+        <EventBridge syncEventVersion={1} />
+      </Wrapper>,
+    );
+    fakeStream.emit({
+      ev: 'spec_push.abandoned',
+      data: {
+        wave_id: 'wave_1',
+        cove_id: 'cove_1',
+        last_envelope_id: 42,
+      },
+    });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['waves', 'cove_1'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['wave', 'wave_1'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['waves-range'] });
+    cleanup();
+  });
+
   it('an event with an unmapped `ev` is ignored without throwing', () => {
     const client = makeClient();
     const invalidate = vi.spyOn(client, 'invalidateQueries');

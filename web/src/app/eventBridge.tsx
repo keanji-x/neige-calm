@@ -38,9 +38,12 @@
 import { useEffect } from 'react';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { sharedEventStream, type EventMeta } from '../api/events';
-import { queryKeys } from '../api/queries';
 import { dlog } from '../util/debug';
-import type { KernelCove, KernelWaveDetail, WireEvent } from '../api/wire';
+import type { KernelWaveDetail, WireEvent } from '../api/wire';
+import {
+  invalidationPolicies,
+  type InvalidationContext,
+} from './invalidationPolicies';
 
 // ---------------------------------------------------------------------------
 // Event trace exposure (issue #56 slice 5).
@@ -233,147 +236,21 @@ export function EventBridge({ syncEventVersion }: EventBridgeProps) {
 }
 
 function dispatch(qc: QueryClient, ev: WireEvent): void {
-  switch (ev.ev) {
-    case 'cove.updated': {
-      // Issue #288 — write-through the event payload directly into the
-      // ['coves'] cache so the Sidebar's cove-nav button repaints with
-      // the new name on the very next render commit, without waiting
-      // for an invalidate → refetch round-trip.
-      //
-      // The user-reported staleness bug (sidebar entry stayed on the
-      // OLD cove name after a cove-page rename until a hard refresh)
-      // resolved here. Before this PR, `cove.updated` only invalidated
-      // the cache; in production we observed cases where the refetch
-      // round-trip's observer notification didn't repaint the Sidebar
-      // even though `GET /api/coves` returned the new name (the
-      // hermetic a11y harness never reproduced it — see #291).
-      // Write-through removes the refetch as a critical path: the cove
-      // row in cache is mutated in-place from the event payload, which
-      // is the exact `Cove` shape the REST endpoint returns. We still
-      // invalidate afterwards as a backstop so a future stale data
-      // window also refetches.
-      const updated = ev.data;
-      qc.setQueryData<KernelCove[]>(queryKeys.coves(), (prev) => {
-        if (!prev) return prev;
-        const idx = prev.findIndex((c) => c.id === updated.id);
-        if (idx === -1) return prev;
-        // Spread to a NEW array so React Query's structural-sharing
-        // detects a reference change and notifies observers.
-        const next = prev.slice();
-        next[idx] = updated;
-        return next;
-      });
-      void qc.invalidateQueries({ queryKey: queryKeys.coves() });
-      return;
-    }
-    case 'cove.deleted': {
-      void qc.invalidateQueries({ queryKey: queryKeys.coves() });
-      // Same orphan reasoning as wave.deleted — overlays attached to the
-      // deleted cove's waves may not get individual cascade events.
-      void qc.invalidateQueries({ queryKey: queryKeys.overlaysByKind('wave') });
-      return;
-    }
-    case 'wave.updated': {
-      const { id, cove_id } = ev.data;
-      void qc.invalidateQueries({ queryKey: queryKeys.wavesInCove(cove_id) });
-      void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(id) });
-      // Issue #250 PR 5 — the calendar's window query (`waves-range`)
-      // mirrors the same rows the cove-scoped list does; any wave
-      // mutation could shift its starting day, terminal day, title,
-      // or owning cove, so every cached window needs to redraw.
-      void qc.invalidateQueries({ queryKey: ['waves-range'] });
-      return;
-    }
-    case 'wave.lifecycle_changed': {
-      // Issue #145 — kernel fires this alongside `wave.updated` whenever
-      // the lifecycle column flips. We piggyback on the wave.updated case
-      // body for the cove/detail invalidations, but the calendar (issue
-      // #250 PR 5) cares specifically about lifecycle: a `working → done`
-      // transition stamps `terminal_at`, which shortens the wave's
-      // continuation bar on the grid. Invalidate the same calendar key
-      // here so the redraw doesn't wait for the sibling wave.updated.
-      const { id, cove_id } = ev.data;
-      void qc.invalidateQueries({ queryKey: queryKeys.wavesInCove(cove_id) });
-      void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(id) });
-      void qc.invalidateQueries({ queryKey: ['waves-range'] });
-      return;
-    }
-    case 'wave.deleted': {
-      const { id, cove_id } = ev.data;
-      void qc.invalidateQueries({ queryKey: queryKeys.wavesInCove(cove_id) });
-      qc.removeQueries({ queryKey: queryKeys.waveDetail(id) });
-      // Kernel doesn't guarantee an overlay.deleted cascade per orphaned
-      // overlay; refresh the global snapshot so stale entries vanish.
-      void qc.invalidateQueries({ queryKey: queryKeys.overlaysByKind('wave') });
-      // Calendar window depends on the wave row; drop it from every
-      // cached week immediately.
-      void qc.invalidateQueries({ queryKey: ['waves-range'] });
-      return;
-    }
-    case 'terminal.deleted': {
-      // Emitted by the orphan-terminal sweeper. The UI's calendar /
-      // sidebar / wave-list views don't read terminal rows directly, so
-      // there's nothing to invalidate here. Arm exists for switch
-      // exhaustiveness — the previous (silent) fallthrough would let a
-      // future relevant projection slip past tsc.
-      return;
-    }
-    case 'card.added':
-    case 'card.updated':
-    case 'card.deleted': {
-      // #13: the atomic terminal-card endpoint emits a single card.added
-      // carrying the final payload, so invalidating immediately no longer
-      // races a half-built intermediate state. TanStack Query coalesces
-      // back-to-back invalidates (e.g. the codex flow's add+update pair)
-      // into a single refetch.
-      void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(ev.data.wave_id) });
-      return;
-    }
-    case 'overlay.set':
-    case 'overlay.deleted': {
-      const ek = ev.data.entity_kind;
-      const eid = ev.data.entity_id;
-      if (ek === 'wave' || ek === 'card') {
-        // Sidebar's status indicators read the global per-kind snapshot.
-        void qc.invalidateQueries({ queryKey: queryKeys.overlaysByKind(ek) });
-      }
-      if (ek === 'wave') {
-        void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(eid) });
-      } else if (ek === 'card') {
-        // Find any cached wave detail that owns this card and invalidate
-        // it. Matches the pre-migration behavior of useKernel — if no
-        // wave is loaded, the overlay change isn't visible yet anyway.
-        const waveId = findWaveOwningCard(qc, eid);
-        if (waveId) {
-          void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
-        }
-      }
-      return;
-    }
-    case 'plugin.state': {
-      // No UI surface for plugin state yet. M3 will add a plugins query
-      // here and invalidate it.
-      return;
-    }
-    case 'codex.hook': {
-      // Codex hooks don't change persisted state — the codex card subscribes
-      // to its own card topic and consumes events directly. No query
-      // invalidation required.
-      return;
-    }
-    case 'codex.job_requested':
-    case 'terminal.job_requested':
-    case 'task.completed':
-    case 'task.failed': {
-      // PR4 of #136: kernel-internal dispatcher / task-lifecycle signals.
-      // No UI invalidation — PR5's Dispatcher consumes via
-      // EventBus::subscribe, and PR8's wait_for_events surfaces them to
-      // the spec agent directly. The case arms exist so the discriminated
-      // union is exhaustive and tsc catches a missed variant on the next
-      // wire-shape change.
-      return;
-    }
-  }
+  const policy = invalidationPolicies[ev.ev];
+  if (!policy) return;
+
+  const ctx: InvalidationContext = {
+    qc,
+    findWaveOwningCard: (id) => findWaveOwningCard(qc, id) ?? null,
+  };
+
+  if (policy.apply) policy.apply(ev as never, ctx);
+  const keys = policy.keys ? policy.keys(ev as never) : [];
+  const ctxKeys = policy.requiresContext ? policy.requiresContext(ev as never, ctx) : [];
+  const remove = policy.remove ? policy.remove(ev as never, ctx) : [];
+
+  for (const k of [...keys, ...ctxKeys]) void qc.invalidateQueries({ queryKey: k });
+  for (const k of remove) qc.removeQueries({ queryKey: k });
 }
 
 /** Search the loaded `['wave', *]` query data for a wave detail that
