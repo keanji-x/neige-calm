@@ -213,7 +213,6 @@ describe('resolveWheelRoute', () => {
         scrollRoot,
         activeCard: null,
         eventTarget: scrollRoot,
-        deltaY: 120,
       }),
     ).toEqual({ kind: 'page' });
   });
@@ -229,7 +228,6 @@ describe('resolveWheelRoute', () => {
       scrollRoot,
       activeCard,
       eventTarget: textarea,
-      deltaY: 120,
     });
 
     expect(route).toEqual({ kind: 'native-scroll', target: textarea });
@@ -245,7 +243,6 @@ describe('resolveWheelRoute', () => {
         scrollRoot,
         activeCard,
         eventTarget: body,
-        deltaY: 120,
       }),
     ).toEqual({ kind: 'sink' });
   });
@@ -263,7 +260,6 @@ describe('resolveWheelRoute', () => {
         scrollRoot,
         activeCard,
         eventTarget: panel,
-        deltaY: 120,
       }),
     ).toEqual({ kind: 'page' });
   });
@@ -272,8 +268,8 @@ describe('resolveWheelRoute', () => {
     const { scrollRoot, activeCard } = fixture();
     const xtermTarget: XtermWheelTarget = {
       root: document.createElement('div'),
-      mode: () => 'scrollback',
-      scrollback: () => true,
+      decide: () => ({ kind: 'consume' }),
+      apply: () => undefined,
     };
     registerXtermShell(activeCard, xtermTarget);
 
@@ -281,30 +277,9 @@ describe('resolveWheelRoute', () => {
       scrollRoot,
       activeCard,
       eventTarget: scrollRoot,
-      deltaY: 120,
     });
 
-    expect(route).toEqual({ kind: 'xterm-scrollback', target: xtermTarget });
-    unregisterXtermShell(activeCard);
-  });
-
-  it('routes xterm passthrough when xterm should handle wheel natively', () => {
-    const { scrollRoot, activeCard } = fixture();
-    const xtermTarget: XtermWheelTarget = {
-      root: document.createElement('div'),
-      mode: () => 'passthrough',
-      scrollback: () => false,
-    };
-    registerXtermShell(activeCard, xtermTarget);
-
-    const route: WheelRoute = resolveWheelRoute({
-      scrollRoot,
-      activeCard,
-      eventTarget: scrollRoot,
-      deltaY: 120,
-    });
-
-    expect(route).toEqual({ kind: 'xterm-passthrough', target: xtermTarget });
+    expect(route).toEqual({ kind: 'xterm', target: xtermTarget });
     unregisterXtermShell(activeCard);
   });
 
@@ -319,7 +294,6 @@ describe('resolveWheelRoute', () => {
         scrollRoot,
         activeCard,
         eventTarget: scrollRoot,
-        deltaY: 120,
       }),
     ).toEqual({ kind: 'sink' });
   });
@@ -338,41 +312,48 @@ describe('resolveWheelRoute', () => {
         scrollRoot,
         activeCard,
         eventTarget: scroller,
-        deltaY: 120,
         resolveCardById: fakeResolvedCard,
       }),
     ).toEqual({ kind: 'native-scroll', target: scroller });
   });
 
-  it('routes entry-declared xterm wheelTarget to scrollback or passthrough', () => {
+  it('routes entry-declared xterm wheelTarget to xterm', () => {
     const { scrollRoot, activeCard } = fixture();
     activeCard.dataset.cardId = 'card_1';
-    let mode: 'scrollback' | 'passthrough' = 'scrollback';
     const xtermTarget: XtermWheelTarget = {
       root: document.createElement('div'),
-      mode: () => mode,
-      scrollback: () => true,
+      decide: () => ({ kind: 'consume' }),
+      apply: () => undefined,
     };
     const handle = { getWheelTarget: () => xtermTarget };
     registerWheelEntry(() => ({ kind: 'xterm', ref: { current: handle } }));
-    const args = {
-      scrollRoot,
-      activeCard,
-      eventTarget: scrollRoot,
-      deltaY: 120,
-      resolveCardById: fakeResolvedCard,
-    };
 
-    expect(resolveWheelRoute(args)).toEqual({
-      kind: 'xterm-scrollback',
+    expect(
+      resolveWheelRoute({
+        scrollRoot,
+        activeCard,
+        eventTarget: scrollRoot,
+        resolveCardById: fakeResolvedCard,
+      }),
+    ).toEqual({
+      kind: 'xterm',
       target: xtermTarget,
     });
+  });
 
-    mode = 'passthrough';
-    expect(resolveWheelRoute(args)).toEqual({
-      kind: 'xterm-passthrough',
-      target: xtermTarget,
-    });
+  it('sinks entry-declared xterm wheelTarget when ref is not wired yet', () => {
+    const { scrollRoot, activeCard } = fixture();
+    activeCard.dataset.cardId = 'card_1';
+    registerWheelEntry(() => ({ kind: 'xterm', ref: { current: null } }));
+
+    expect(
+      resolveWheelRoute({
+        scrollRoot,
+        activeCard,
+        eventTarget: scrollRoot,
+        resolveCardById: fakeResolvedCard,
+      }),
+    ).toEqual({ kind: 'sink' });
   });
 
   it('routes entry-declared native-scroll wheelTarget or page when ref is null', () => {
@@ -385,7 +366,6 @@ describe('resolveWheelRoute', () => {
       scrollRoot,
       activeCard,
       eventTarget: scrollRoot,
-      deltaY: 120,
       resolveCardById: fakeResolvedCard,
     };
 
@@ -408,7 +388,6 @@ describe('resolveWheelRoute', () => {
         scrollRoot,
         activeCard,
         eventTarget: scrollRoot,
-        deltaY: 120,
         resolveCardById: fakeResolvedCard,
       }),
     ).toEqual({ kind: 'sink' });
@@ -419,8 +398,8 @@ describe('resolveWheelRoute', () => {
     const resolveCardById = vi.fn(fakeResolvedCard);
     const xtermTarget: XtermWheelTarget = {
       root: document.createElement('div'),
-      mode: () => 'scrollback',
-      scrollback: () => true,
+      decide: () => ({ kind: 'consume' }),
+      apply: () => undefined,
     };
     registerXtermShell(activeCard, xtermTarget);
 
@@ -430,10 +409,9 @@ describe('resolveWheelRoute', () => {
           scrollRoot,
           activeCard,
           eventTarget: scrollRoot,
-          deltaY: 120,
           resolveCardById,
         }),
-      ).toEqual({ kind: 'xterm-scrollback', target: xtermTarget });
+      ).toEqual({ kind: 'xterm', target: xtermTarget });
       expect(resolveCardById).not.toHaveBeenCalled();
     } finally {
       unregisterXtermShell(activeCard);
@@ -466,13 +444,17 @@ describe('useWheelRouter', () => {
     }
   });
 
-  it('lets xterm passthrough routes keep native xterm wheel behavior', () => {
+  it("falls through when xterm decides pass with reason 'passthrough'", () => {
     const { scrollRoot, activeCard } = fixture();
-    const scrollback = vi.fn(() => false);
+    const decide = vi.fn(() => ({
+      kind: 'pass' as const,
+      reason: 'passthrough' as const,
+    }));
+    const apply = vi.fn();
     const xtermTarget: XtermWheelTarget = {
       root: document.createElement('div'),
-      mode: () => 'passthrough',
-      scrollback,
+      decide,
+      apply,
     };
     registerXtermShell(activeCard, xtermTarget);
     const restore = mockElementFromPoint(activeCard);
@@ -482,7 +464,8 @@ describe('useWheelRouter', () => {
       const event = dispatchWheel(scrollRoot);
 
       expect(event.defaultPrevented).toBe(false);
-      expect(scrollback).not.toHaveBeenCalled();
+      expect(decide).toHaveBeenCalledWith(120, WheelEvent.DOM_DELTA_PIXEL);
+      expect(apply).not.toHaveBeenCalled();
     } finally {
       restore();
       unregisterXtermShell(activeCard);
@@ -508,13 +491,14 @@ describe('useWheelRouter', () => {
     }
   });
 
-  it('prevents default when xterm scrollback consumes the wheel', () => {
+  it('prevents default and applies when xterm consumes', () => {
     const { scrollRoot, activeCard } = fixture();
-    const scrollback = vi.fn(() => true);
+    const decide = vi.fn(() => ({ kind: 'consume' as const }));
+    const apply = vi.fn();
     const xtermTarget: XtermWheelTarget = {
       root: document.createElement('div'),
-      mode: () => 'scrollback',
-      scrollback,
+      decide,
+      apply,
     };
     registerXtermShell(activeCard, xtermTarget);
     const restore = mockElementFromPoint(activeCard);
@@ -527,20 +511,25 @@ describe('useWheelRouter', () => {
       });
 
       expect(event.defaultPrevented).toBe(true);
-      expect(scrollback).toHaveBeenCalledWith(48, WheelEvent.DOM_DELTA_LINE);
+      expect(decide).toHaveBeenCalledWith(48, WheelEvent.DOM_DELTA_LINE);
+      expect(apply).toHaveBeenCalledWith(48, WheelEvent.DOM_DELTA_LINE);
     } finally {
       restore();
       unregisterXtermShell(activeCard);
     }
   });
 
-  it('does not prevent default when xterm scrollback cannot consume the wheel', () => {
+  it("falls through when xterm decides pass with reason 'edge'", () => {
     const { scrollRoot, activeCard } = fixture();
-    const scrollback = vi.fn(() => false);
+    const decide = vi.fn(() => ({
+      kind: 'pass' as const,
+      reason: 'edge' as const,
+    }));
+    const apply = vi.fn();
     const xtermTarget: XtermWheelTarget = {
       root: document.createElement('div'),
-      mode: () => 'scrollback',
-      scrollback,
+      decide,
+      apply,
     };
     registerXtermShell(activeCard, xtermTarget);
     const restore = mockElementFromPoint(activeCard);
@@ -553,7 +542,8 @@ describe('useWheelRouter', () => {
       });
 
       expect(event.defaultPrevented).toBe(false);
-      expect(scrollback).toHaveBeenCalledWith(48, WheelEvent.DOM_DELTA_LINE);
+      expect(decide).toHaveBeenCalledWith(48, WheelEvent.DOM_DELTA_LINE);
+      expect(apply).not.toHaveBeenCalled();
     } finally {
       restore();
       unregisterXtermShell(activeCard);
@@ -606,7 +596,6 @@ describe('getActiveCardShell', () => {
           scrollRoot,
           activeCard,
           eventTarget: outside,
-          deltaY: 120,
         }),
       ).toEqual({ kind: 'page' });
     } finally {

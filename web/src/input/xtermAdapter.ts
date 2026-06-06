@@ -1,7 +1,11 @@
+export type WheelDecision =
+  | { kind: 'consume' }
+  | { kind: 'pass'; reason: 'edge' | 'passthrough' };
+
 export interface XtermWheelTarget {
   root: HTMLElement;
-  mode(): 'scrollback' | 'passthrough';
-  scrollback(deltaY: number, deltaMode: number): boolean;
+  decide(deltaY: number, deltaMode: number): WheelDecision;
+  apply(deltaY: number, deltaMode: number): void;
 }
 
 export interface XtermWheelState {
@@ -12,6 +16,7 @@ export interface XtermWheelState {
     active?: {
       type?: string;
       viewportY?: number;
+      baseY?: number;
     };
   };
 }
@@ -45,20 +50,38 @@ export function createXtermWheelTarget(args: {
   const { root, terminalRef } = args;
   return {
     root,
-    mode: () => {
+    decide: (deltaY, deltaMode) => {
       const term = terminalRef.current;
-      return term && shouldPassThroughToXterm(term)
-        ? 'passthrough'
-        : 'scrollback';
-    },
-    scrollback: (deltaY, deltaMode) => {
-      const term = terminalRef.current;
-      if (!term) return false;
+      if (!term) return { kind: 'consume' };
+      if (shouldPassThroughToXterm(term)) {
+        return { kind: 'pass', reason: 'passthrough' };
+      }
+
       const lines = deltaYToLines(deltaY, deltaMode);
-      if (lines === 0) return false;
-      const beforeY = term.buffer?.active?.viewportY;
-      term.scrollLines(lines);
-      return term.buffer?.active?.viewportY !== beforeY;
+      if (lines === 0) return { kind: 'pass', reason: 'edge' };
+
+      const active = term.buffer?.active;
+      const viewportY = active?.viewportY;
+      const baseY = active?.baseY;
+      if (lines < 0 && typeof viewportY === 'number' && viewportY === 0) {
+        return { kind: 'pass', reason: 'edge' };
+      }
+      if (
+        lines > 0 &&
+        typeof viewportY === 'number' &&
+        typeof baseY === 'number' &&
+        viewportY === baseY
+      ) {
+        return { kind: 'pass', reason: 'edge' };
+      }
+
+      return { kind: 'consume' };
+    },
+    apply: (deltaY, deltaMode) => {
+      const term = terminalRef.current;
+      if (!term || shouldPassThroughToXterm(term)) return;
+      const lines = deltaYToLines(deltaY, deltaMode);
+      if (lines !== 0) term.scrollLines(lines);
     },
   };
 }

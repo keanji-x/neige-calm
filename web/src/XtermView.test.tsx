@@ -57,6 +57,7 @@ interface MockTerm {
   write: ReturnType<typeof vi.fn>;
   writeln: ReturnType<typeof vi.fn>;
   clear: ReturnType<typeof vi.fn>;
+  scrollToBottom: ReturnType<typeof vi.fn>;
   resize: ReturnType<typeof vi.fn>;
   open: ReturnType<typeof vi.fn>;
   loadAddon: ReturnType<typeof vi.fn>;
@@ -89,6 +90,7 @@ vi.mock('@xterm/xterm', () => {
     write = vi.fn();
     writeln = vi.fn();
     clear = vi.fn();
+    scrollToBottom = vi.fn();
     resize = vi.fn((cols: number, rows: number) => {
       this.cols = cols;
       this.rows = rows;
@@ -760,7 +762,7 @@ describe('XtermView v3 streaming', () => {
     expect(Array.from(arg)).toEqual([65, 66, 67]);
   });
 
-  it('clears and re-writes on a standalone RenderSnapshot', () => {
+  it('writes and scrolls on a standalone RenderSnapshot without scrollback', () => {
     render(<XtermView terminalId="term_test" />);
     const ws = currentWs();
     act(() => {
@@ -774,8 +776,15 @@ describe('XtermView v3 streaming', () => {
     act(() => {
       ws.push(renderSnapshot());
     });
-    expect(mockTerm.clear).toHaveBeenCalledTimes(1);
+    expect(mockTerm.clear).not.toHaveBeenCalled();
+    expect(mockTerm.write).toHaveBeenCalled();
     expect(mockTerm.write).toHaveBeenCalledTimes(1);
+
+    const onWriteComplete = mockTerm.write.mock.calls[0]![1];
+    expect(onWriteComplete).toEqual(expect.any(Function));
+    expect(mockTerm.scrollToBottom).not.toHaveBeenCalled();
+    (onWriteComplete as () => void)();
+    expect(mockTerm.scrollToBottom).toHaveBeenCalledTimes(1);
   });
 
   it('writes RenderSnapshot.scrollback before data on lag recovery (#473)', () => {
@@ -835,9 +844,16 @@ describe('XtermView v3 streaming', () => {
     });
 
     const writeCalls = mockTerm.write.mock.calls.map((c: unknown[]) => c[0]);
-    expect(mockTerm.clear).toHaveBeenCalledTimes(1);
+    expect(mockTerm.clear).not.toHaveBeenCalled();
+    expect(mockTerm.write).toHaveBeenCalled();
     expect(writeCalls).toHaveLength(1);
     expect(Array.from(writeCalls[0] as Uint8Array)).toEqual(dataBytes);
+
+    const onWriteComplete = mockTerm.write.mock.calls[0]![1];
+    expect(onWriteComplete).toEqual(expect.any(Function));
+    expect(mockTerm.scrollToBottom).not.toHaveBeenCalled();
+    (onWriteComplete as () => void)();
+    expect(mockTerm.scrollToBottom).toHaveBeenCalledTimes(1);
   });
 
   it('sends typed input as a v3 Input frame', () => {
